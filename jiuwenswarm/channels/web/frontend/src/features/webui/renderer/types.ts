@@ -29,11 +29,14 @@ export interface WebUIAdapterContext {
   instanceKey: string;
   /** Trusted frame scope, supplied by the instance view rather than plugin props. */
   sessionId?: string;
+  packageId?: string;
   connected: boolean;
   /** Optional state port; each component owns the values it chooses to retain. */
   componentState?: WebUIComponentStateStore;
   styles?: WebUIStyleOverrides;
   selected?: boolean;
+  /** Explicit navigation to an existing right-panel instance owned by this package and session. */
+  openPanel?: (instanceKey: string) => void;
 }
 
 export interface WebUIAdapterProps {

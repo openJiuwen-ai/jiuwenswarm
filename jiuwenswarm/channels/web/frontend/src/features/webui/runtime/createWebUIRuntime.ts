@@ -39,6 +39,7 @@ interface InstanceRecord {
 
 interface MountedOwner extends WebUIMountOptions {
   id: number;
+  scope: 'session' | 'application';
   sessionId: string;
   slotId: string;
   instanceKey?: string;
@@ -189,6 +190,9 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     if (existing && frame.revision <= existing.lastRenderRevision) {
       return;
     }
+    const visibilityChanged =
+      existing?.snapshot.frame?.visibleWhen?.key !== frame.visibleWhen?.key ||
+      existing?.snapshot.frame?.visibleWhen?.default !== frame.visibleWhen?.default;
     invalidateBindings(key);
     const snapshot = buildSnapshot(
       frame.target,
@@ -209,7 +213,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       notifyScope(webUISlotKey(frame.target.sessionId, frame.target.slotId));
     }
     notifyInstance(key);
-    if (existing && catalog.getSlot(frame.target.slotId)?.display === 'single') {
+    if (existing && (catalog.getSlot(frame.target.slotId)?.display === 'single' || visibilityChanged)) {
       notifyScope(webUISlotKey(frame.target.sessionId, frame.target.slotId));
     }
   }
@@ -343,7 +347,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       if (state !== 'connected') {
         nodeBindings.clear();
         for (const owner of owners.values()) {
-          if (catalog.getSlot(owner.slotId)?.scope === 'application') {
+          if (owner.scope === 'application') {
             owner.readySent = false;
           }
         }
@@ -364,7 +368,6 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       return;
     }
     owner.readySent = true;
-    const slot = catalog.getSlot(owner.slotId);
     try {
       const receipt = await transport.dispatch({
         event: 'ui.ready',
@@ -373,7 +376,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
           slotId: owner.slotId,
           packageId: packageId ?? owner.packageId ?? '',
           instanceKey,
-          ...(slot?.scope === 'application' ? { scope: 'application' as const } : {}),
+          ...(owner.scope === 'application' ? { scope: 'application' as const } : {}),
         },
         payload: owner.readyPayload ? { ...owner.readyPayload } : {},
       });
@@ -406,13 +409,19 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     if (!slot) {
       throw new Error(`WebUI slot is not registered: ${slotId}`);
     }
-    if (slot.scope === 'application' && sessionId !== '') {
+    const defaultScope = slot.scope ?? 'session';
+    const scope = mountOptions.scope ?? defaultScope;
+    if (scope !== defaultScope && !slot.additionalScopes?.includes(scope)) {
+      throw new Error(`WebUI scope does not match slot: ${slotId}`);
+    }
+    if (scope === 'application' && sessionId !== '') {
       throw new Error(`Application WebUI slot must not specify sessionId: ${slotId}`);
     }
     ownerCounter += 1;
     const owner: MountedOwner = {
       ...mountOptions,
       id: ownerCounter,
+      scope,
       sessionId,
       slotId,
       instanceKey: mountOptions.instanceKey,
@@ -614,7 +623,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       notifyInstance(key);
     }
     for (const [ownerId, owner] of owners) {
-      if (catalog.getSlot(owner.slotId)?.scope === 'application' || owner.sessionId !== sessionId) {
+      if (owner.scope === 'application' || owner.sessionId !== sessionId) {
         continue;
       }
       changedScopes.add(webUISlotKey(owner.sessionId, owner.slotId));

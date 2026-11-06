@@ -1,4 +1,5 @@
-import { component, text, validURL } from './shared.ts';
+import { component, validURL } from './shared.ts';
+import { hasNonEmptyLocalizedText, localizedTextRule } from './localizedText.ts';
 
 function validIframeURL(value: unknown): boolean {
   if (typeof value !== 'string' || !validURL(value) || /[\u0000-\u001f\u007f\\]/.test(value)) return false;
@@ -17,10 +18,27 @@ function validIframeURL(value: unknown): boolean {
   }
 }
 
-export const iframeRule = component('Iframe', { src: text, title: { kind: 'string', maxBytes: 200 } }, {
-  required: ['src', 'title'],
-  validate(props) {
-    if (typeof props.title !== 'string' || props.title.trim().length === 0) return 'Iframe title is required';
-    return validIframeURL(props.src) ? null : 'invalid Iframe URL';
+export const iframeRule = component(
+  'Iframe',
+  {
+    src: localizedTextRule,
+    srcDoc: localizedTextRule,
+    title: localizedTextRule,
+    minWidth: { kind: 'number', min: 0, max: 4096 },
   },
-});
+  {
+    required: ['title'],
+    validate(props) {
+      if (!hasNonEmptyLocalizedText(props.title)) return 'Iframe title is required';
+      const titles =
+        typeof props.title === 'string' ? [props.title] : Object.values(props.title as Record<string, string>);
+      if (titles.some((title) => new TextEncoder().encode(title).byteLength > 200)) return 'Iframe title is too long';
+      if ((props.src !== undefined) === (props.srcDoc !== undefined))
+        return 'Iframe requires exactly one document source';
+      if (props.srcDoc !== undefined)
+        return hasNonEmptyLocalizedText(props.srcDoc) ? null : 'Iframe document is required';
+      const sources = typeof props.src === 'string' ? [props.src] : Object.values(props.src as Record<string, string>);
+      return sources.every(validIframeURL) ? null : 'invalid Iframe URL';
+    },
+  },
+);

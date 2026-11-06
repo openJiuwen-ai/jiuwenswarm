@@ -95,6 +95,7 @@ class UiRenderInput:
     target: RenderTarget
     root: RenderNode | None = None
     mode: RenderMode = RenderMode.REPLACE
+    visible_when: Mapping[str, Any] | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,15 +142,19 @@ class RenderFrame:
     mode: RenderMode
     root: RenderNode | None
     schema_version: int = RENDER_SCHEMA_VERSION
+    visible_when: Mapping[str, Any] | None = field(default=None, kw_only=True)
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "target": self.target.to_payload(),
             "revision": self.revision,
             "mode": self.mode.value,
             "root": node_to_payload(self.root),
             "schema_version": self.schema_version,
         }
+        if self.visible_when is not None:
+            payload["visible_when"] = _content_to_payload(self.visible_when)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

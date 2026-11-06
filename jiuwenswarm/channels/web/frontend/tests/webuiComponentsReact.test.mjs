@@ -48,7 +48,7 @@ after(() => {
   dom.window.close();
 });
 
-const { act, createElement } = await import('react');
+const { act, createElement, useEffect, useState } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { theme } = await import('antd');
@@ -56,6 +56,13 @@ const {
   componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer, FileTree, createComponentState,
   createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIEntryHost, WebUIProvider, WebUIThemeProvider,
   WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n, buttonIcon, browserClientCapabilities, GatewayImage,
+  usePluginSettings,
+  SettingsServicesProvider,
+  panelNavigation,
+  requestPanelOpen,
+  useWebUIPanels,
+  WebUINavigationHost,
+  WebUIPageHost,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
@@ -148,7 +155,7 @@ for (const loaded of [true, false]) {
       { component: 'Image', props: { src: prefix + 'promotion.png', alt: 'Promotion', preview: false } },
       { component: 'Image', props: { src: '/protected-account-image', alt: 'Account', preview: false } },
       { component: 'Input', props: { placeholder: 'Username' } },
-    ] });
+    ] }, { ...target, package_id: 'asset-package' }, {}, { activation_generation: 'asset-generation' });
     const container = document.createElement('div'); document.body.append(container);
     const raw = createRoot(container);
     const complete = async (requests) => {
@@ -201,9 +208,9 @@ for (const loaded of [true, false]) {
       else next.packages = [];
       await act(async () => host.configure(next));
       assert.equal(app.container.querySelector('img[alt="Promotion"]'), null);
-      assert.equal(container.querySelector('img'), null);
-      assert.equal(box.style.backgroundImage, '');
-      assert.ok(urls.every((url) => revoked.includes(url)));
+      assert.equal(container.querySelector('img').src, urls[1], 'standalone resource follows its own mount lifetime');
+      assert.equal(box.isConnected, false, 'the inactive Gateway plugin view is unmounted');
+      assert.ok(revoked.includes(urls[0]));
       assert.ok(pending.every((item) => !item.url.startsWith(prefix)), 'old activations are never requested again');
     } finally {
       ready?.();
@@ -460,7 +467,7 @@ async function pressKey(element, name, code) {
   await act(async () => element.dispatchEvent(new window.KeyboardEvent('keydown', init)));
   await act(async () => element.dispatchEvent(new window.KeyboardEvent('keyup', init)));
 }
-async function setup(tree, scope = target, transportOptions = {}) {
+async function setup(tree, scope = target, transportOptions = {}, frameExtra = {}) {
   const transport = createMockTransport(transportOptions);
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
   runtime.start();
@@ -471,17 +478,276 @@ async function setup(tree, scope = target, transportOptions = {}) {
     createElement(WebUIContentActivity, { active },
       createElement(WebUIHost, { sessionId: scope.session_id, slotId: scope.slot_id }))));
   await act(async () => render());
-  await act(async () => transport.injectRenderFrame(frame(tree, 1, scope)));
+  await act(async () => transport.injectRenderFrame({ ...frame(tree, 1, scope), ...frameExtra }));
   return {
     container, runtime, transport,
     business: () => transport.dispatches.filter((request) => request.event !== 'ui.ready'),
     async replace(next, revision = 2) {
-      await act(async () => transport.injectRenderFrame(frame(next, revision, scope)));
+      await act(async () => transport.injectRenderFrame({ ...frame(next, revision, scope), ...frameExtra }));
     },
     async activity(value) { active = value; await act(async () => render()); },
     async close() { await act(async () => root.unmount()); runtime.dispose(); container.remove(); },
   };
 }
+
+test('Button opens only its own live panel after an accepted receipt; renders never navigate', async () => {
+  const app = await setup(
+    {
+      component: 'Button',
+      props: { value: 'Details', openPanel: 'details' },
+      events: { 'ui.click': { id: 'details', args: {} } },
+    },
+    target,
+    { autoAccept: false },
+  );
+  const owner = app.runtime.mountSlot(target.session_id, 'conversation.panel.right', { notifyReady: false });
+  const destination = { ...target, slot_id: 'conversation.panel.right', instance_key: 'details' };
+  const tree = { component: 'Iframe', props: { title: 'Details', srcDoc: '<p>Usage</p>' } };
+  const navigation = panelNavigation(app.runtime);
+  try {
+    await act(async () => app.transport.resolveNextDispatch({ accepted: true, status: 'ready' }));
+    await act(async () => app.transport.injectRenderFrame(frame(tree, 1, destination)));
+    assert.equal(navigation.getSnapshot(), null);
+    await click(app.container.querySelector('button'));
+    assert.equal(navigation.getSnapshot(), null, 'no navigation while the action is unresolved');
+    await act(async () => app.transport.resolveNextDispatch({ accepted: false, status: 'rejected' }));
+    assert.equal(navigation.getSnapshot(), null);
+    await click(app.container.querySelector('button'));
+    await act(async () => app.transport.resolveNextDispatch({ accepted: true, status: 'delivered' }));
+    const request = navigation.getSnapshot();
+    assert.equal(request.sessionId, target.session_id);
+    assert.equal(request.key, 'sess-1|conversation.panel.right|pkg.demo|details');
+    navigation.consume(request.id);
+    await act(async () => app.transport.injectRenderFrame(frame(tree, 2, destination)));
+    assert.equal(navigation.getSnapshot(), null, 'data refreshes do not reopen or select panels');
+    const source = {
+      sessionId: target.session_id,
+      slotId: target.slot_id,
+      packageId: target.package_id,
+      instanceKey: target.instance_key,
+    };
+    await act(async () =>
+      app.transport.injectRenderFrame(frame(tree, 1, { ...destination, package_id: 'other', instance_key: 'foreign' })),
+    );
+    assert.equal(requestPanelOpen(app.runtime, source, 'foreign'), false);
+    assert.equal(requestPanelOpen(app.runtime, { ...source, sessionId: 'another-session' }, 'details'), false);
+    assert.equal(navigation.getSnapshot(), null);
+  } finally {
+    owner.release();
+    await app.close();
+  }
+});
+
+test('page-owned panel discovery survives a hidden body and opens only on explicit navigation', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const destination = { ...target, slot_id: 'conversation.panel.right', instance_key: 'details' };
+  const details = (value) => ({ component: 'Panel', props: { title: 'Details' },
+    children: [{ component: 'Text', props: { value } }] });
+  function Page() {
+    const { panels, renderPanel, openRequest, consumeOpenRequest } = useWebUIPanels({
+      sessionId: target.session_id, slotId: destination.slot_id,
+    });
+    const [selected, setSelected] = useState(null);
+    useEffect(() => {
+      if (!openRequest || !panels.some((panel) => panel.key === openRequest.key)) return;
+      setSelected(openRequest.key);
+      consumeOpenRequest(openRequest.id);
+    }, [openRequest, panels, consumeOpenRequest]);
+    return createElement('div', null,
+      createElement(WebUIHost, { sessionId: target.session_id, slotId: target.slot_id }),
+      selected ? createElement('section', null, renderPanel(selected),
+        createElement('button', { onClick: () => setSelected(null) }, 'Hide details')) : null);
+  }
+  try {
+    await act(async () => root.render(createElement(WebUIProvider,
+      { runtime, registry: componentRendererRegistry }, createElement(Page))));
+    await act(async () => {
+      transport.injectRenderFrame(frame({ component: 'Button', props: { value: 'Open details', openPanel: 'details' },
+        events: { 'ui.click': { id: 'details' } } }, 1));
+      transport.injectRenderFrame(frame(details('First reading'), 1, destination));
+    });
+    assert.equal(container.querySelector('section'), null, 'background frames do not display the panel');
+    await click(container.querySelector('[data-testid="webui-button"]'));
+    assert.match(container.querySelector('section').textContent, /First reading/);
+    await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Hide details'));
+    assert.equal(container.querySelector('section'), null);
+    assert.equal(runtime.getScopeSnapshot(target.session_id, destination.slot_id).mounted, true);
+    await act(async () => transport.injectRenderFrame(frame(details('Second reading'), 2, destination)));
+    assert.equal(container.querySelector('section'), null, 'updates do not reopen a hidden body');
+    await click(container.querySelector('[data-testid="webui-button"]'));
+    assert.match(container.querySelector('section').textContent, /Second reading/);
+  } finally {
+    await act(async () => root.unmount()); runtime.dispose(); container.remove();
+  }
+});
+
+test('Iframe selects complete localized documents and keeps the fixed sandbox without a URL source', async () => {
+  const previousLanguage = i18n.language;
+  await act(async () => i18n.changeLanguage('en'));
+  const documents = { zh: '<!doctype html><p>用量</p>', en: '<!doctype html><p>Usage</p>' };
+  const app = await setup(
+    {
+      component: 'Iframe',
+      props: {
+        title: { zh: '用量详情', en: 'Usage details' },
+        srcDoc: documents,
+      },
+    },
+    { ...target, slot_id: 'conversation.panel.right' },
+  );
+  try {
+    const first = app.container.querySelector('iframe');
+    assert.equal(first.title, 'Usage details');
+    assert.equal(first.getAttribute('srcdoc'), documents.en);
+    assert.equal(first.hasAttribute('src'), false);
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-open-source"]'), null);
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-source"]').textContent, 'Plugin page');
+    assert.equal(first.getAttribute('sandbox'), 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
+    await act(async () => i18n.changeLanguage('zh'));
+    const translated = app.container.querySelector('iframe');
+    assert.equal(translated.title, '用量详情');
+    assert.equal(translated.getAttribute('srcdoc'), documents.zh);
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-source"]').textContent, '插件页面');
+    assert.notEqual(first, translated);
+    await app.activity(false);
+    assert.equal(app.container.querySelector('iframe'), null);
+    await app.activity(true);
+    assert.equal(app.container.querySelector('iframe').getAttribute('srcdoc'), documents.zh);
+  } finally {
+    await app.close();
+    await act(async () => i18n.changeLanguage(previousLanguage));
+  }
+});
+
+test('Iframe selects localized file URLs, releases the old document and retains its sandbox', async () => {
+  const previousLanguage = i18n.language;
+  await act(async () => i18n.changeLanguage('en'));
+  const urls = { zh: '/extension-assets/_agent/route/set/zh.html', en: '/extension-assets/_agent/route/set/en.html' };
+  const app = await setup({
+    component: 'Iframe', props: { title: { zh: '详情', en: 'Details' }, src: urls },
+  }, { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    const first = app.container.querySelector('iframe');
+    assert.equal(first.getAttribute('src'), urls.en);
+    assert.equal(first.hasAttribute('srcdoc'), false);
+    await act(async () => i18n.changeLanguage('zh'));
+    const translated = app.container.querySelector('iframe');
+    assert.notEqual(first, translated);
+    assert.equal(translated.getAttribute('src'), urls.zh);
+    assert.equal(translated.title, '详情');
+    assert.equal(translated.getAttribute('sandbox'), 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
+    await app.activity(false);
+    assert.equal(app.container.querySelector('iframe'), null);
+    await app.activity(true);
+    assert.equal(app.container.querySelector('iframe').getAttribute('src'), urls.zh);
+  } finally {
+    await app.close();
+    await act(async () => i18n.changeLanguage(previousLanguage));
+  }
+});
+
+for (const { pageUrl, apiBase, expectedBase } of [
+  {
+    pageUrl: 'file:///Applications/Jiuwen/dist/index.html',
+    apiBase: 'http://127.0.0.1:19000',
+    expectedBase: 'http://127.0.0.1:19000',
+  },
+  {
+    pageUrl: 'file:///C:/Jiuwen/dist/index.html',
+    apiBase: 'http://127.0.0.1:19000',
+    expectedBase: 'http://127.0.0.1:19000',
+  },
+  {
+    pageUrl: 'https://web.example/chat/new',
+    apiBase: 'https://gateway.example/agent/',
+    expectedBase: 'https://gateway.example/agent',
+  },
+]) {
+  test(`Iframe resolves plugin resources through the configured Gateway from ${pageUrl}`, async () => {
+    const previousUrl = window.location.href;
+    const desktop = window.jiuwenDesktop;
+    const resourcePath = '/extension-assets/_agent/route/set/en.html';
+    let app;
+    dom.reconfigure({ url: pageUrl });
+    assert.equal(window.location.href, pageUrl);
+    window.jiuwenDesktop = { apiBase };
+    try {
+      app = await setup({ component: 'Iframe', props: { title: 'Details', src: resourcePath } },
+        { ...target, slot_id: 'conversation.panel.right' });
+      const iframe = app.container.querySelector('iframe');
+      const expected = expectedBase + resourcePath;
+      assert.equal(iframe.src, expected);
+      assert.equal(app.container.querySelector('[data-testid="webui-iframe-open-source"]').href, expected);
+      assert.equal(app.container.querySelector('[data-testid="webui-iframe-source"]').textContent, expected);
+      assert.equal(new URL('details.css', iframe.src).href, expectedBase + resourcePath.replace('en.html', 'details.css'));
+      assert.equal(iframe.getAttribute('sandbox'), 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
+      await app.replace({ component: 'Iframe', props: { title: 'External', src: 'https://example.com/page' } });
+      assert.equal(app.container.querySelector('iframe').src, 'https://example.com/page');
+      await app.replace({ component: 'Iframe', props: { title: 'Host page', src: '/preview' } }, 3);
+      assert.equal(app.container.querySelector('iframe').getAttribute('src'), '/preview');
+    } finally {
+      if (app) await app.close();
+      dom.reconfigure({ url: previousUrl });
+      window.jiuwenDesktop = desktop;
+    }
+  });
+}
+
+test('plugin text follows the interface language without remounting or resetting the switch', async () => {
+  const previousLanguage = i18n.language;
+  await act(async () => i18n.changeLanguage('zh'));
+  const app = await setup({
+    component: 'Box',
+    children: [
+      { component: 'Text', props: { value: { zh: '上下文上限 262.1k Token', en: 'Context limit 262.1k tokens' } } },
+      {
+        component: 'Button',
+        props: { value: { zh: '换个风格', en: 'Shuffle' } },
+        events: { 'ui.click': { id: 'shuffle', args: {} } },
+      },
+      {
+        component: 'Switch',
+        props: { defaultChecked: true, ariaLabel: { zh: '显示用量', en: 'Show usage' } },
+        events: { 'ui.change': { id: 'visibility', args: {} } },
+      },
+      { component: 'Text', props: { value: 'Literal / 原样' } },
+    ],
+  });
+  const control = () => app.container.querySelector('[data-testid="webui-switch"]');
+  const label = () => app.container.querySelector('[data-testid="webui-button"]');
+  try {
+    assert.match(app.container.textContent, /上下文上限 262.1k Token/);
+    assert.doesNotMatch(app.container.textContent, /Context limit|Shuffle/);
+    assert.equal(label().textContent, '换个风格');
+    assert.equal(control().getAttribute('aria-label'), '显示用量');
+    await click(control());
+    const off = control();
+    const dispatchCount = app.business().length;
+    await act(async () => i18n.changeLanguage('en'));
+    assert.equal(control(), off);
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    assert.equal(control().getAttribute('aria-label'), 'Show usage');
+    assert.equal(label().textContent, 'Shuffle');
+    assert.match(app.container.textContent, /Context limit 262.1k tokens/);
+    assert.doesNotMatch(app.container.textContent, /上下文上限|换个风格/);
+    assert.match(app.container.textContent, /Literal \/ 原样/);
+    assert.equal(app.business().length, dispatchCount);
+    await click(label());
+    assert.equal(app.business().at(-1).payload.action_id, 'shuffle');
+    await act(async () => i18n.changeLanguage('zh-CN'));
+    assert.equal(label().textContent, '换个风格');
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    await click(control());
+    assert.equal(control().getAttribute('aria-checked'), 'true');
+  } finally {
+    await app.close();
+    await act(async () => i18n.changeLanguage(previousLanguage));
+  }
+});
 
 test('Avatar uses native children, styles and image priority without deriving account presentation', async () => {
   const tree = (props) => ({ component: 'Avatar', props });
@@ -1561,44 +1827,66 @@ test('Iframe releases inactive documents and resets loading on source changes an
   } finally { await app.close(); }
 });
 
-test('Iframe desktop width exposes an outer scroll container without reloading the page', async () => {
-  const app = await setup({ component: 'Iframe', props: { src: 'https://example.com/wide', title: 'Wide page' } },
-    { ...target, slot_id: 'conversation.panel.right' });
-  try {
-    const frame = app.container.querySelector('iframe');
-    const viewport = app.container.querySelector('[data-testid="webui-iframe-viewport"]');
-    const fit = app.container.querySelector('[data-testid="webui-iframe-fit"]');
-    const desktop = app.container.querySelector('[data-testid="webui-iframe-desktop"]');
-    assert.equal(viewport.dataset.variant, 'fit');
-    assert.equal(getComputedStyle(viewport).overflow, 'auto');
-    assert.equal(getComputedStyle(frame).minWidth, '0');
-    await act(async () => desktop.click());
-    assert.equal(viewport.dataset.variant, 'desktop');
-    assert.equal(desktop.getAttribute('aria-pressed'), 'true');
-    assert.equal(fit.getAttribute('aria-pressed'), 'false');
-    assert.equal(getComputedStyle(frame).minWidth, '1280px');
-    assert.equal(app.container.querySelector('iframe'), frame, 'resizing must preserve the browsing context');
-    await act(async () => fit.click());
-    assert.equal(viewport.dataset.variant, 'fit');
-    assert.equal(getComputedStyle(frame).minWidth, '0');
-    assert.equal(app.container.querySelector('iframe'), frame);
-    assert.equal(app.business().length, 0, 'display controls are local host operations');
-  } finally { await app.close(); }
-});
+for (const source of [{ src: 'https://example.com/wide' }, { srcDoc: '<p>Wide page</p>' }]) {
+  test(`Iframe applies plugin minimum width to the ${Object.keys(source)[0]} document without width mode controls`, async () => {
+    const tree = (minWidth) => ({
+      component: 'Iframe',
+      props: {
+        ...source,
+        title: 'Wide page',
+        ...(minWidth === undefined ? {} : { minWidth }),
+      },
+    });
+    const app = await setup(tree(undefined), { ...target, slot_id: 'conversation.panel.right' });
+    try {
+      let frame = app.container.querySelector('iframe');
+      const viewport = app.container.querySelector('[data-testid="webui-iframe-viewport"]');
+      assert.equal(getComputedStyle(viewport).overflow, 'auto');
+      assert.equal(Number.parseFloat(getComputedStyle(frame).minWidth), 0);
+      assert.equal(app.container.querySelector('[data-testid="webui-iframe-modes"]'), null);
+      await app.replace(tree(720));
+      frame = app.container.querySelector('iframe');
+      assert.equal(getComputedStyle(frame).minWidth, '720px');
+      app.container.style.width = '320px';
+      assert.equal(
+        app.container.querySelector('iframe'),
+        frame,
+        'resizing the container preserves the browsing context',
+      );
+      await app.replace(tree(0), 3);
+      frame = app.container.querySelector('iframe');
+      assert.equal(Number.parseFloat(getComputedStyle(frame).minWidth), 0);
+      assert.equal(app.business().length, 0);
+    } finally {
+      await app.close();
+    }
+  });
+}
 
-test('Iframe reload retries the same URL and retains desktop width and sandbox permissions', async () => {
-  const app = await setup({ component: 'Iframe', props: { src: 'https://example.com/retry', title: 'Retry page' } },
-    { ...target, slot_id: 'conversation.panel.right' });
+test('Iframe reload retries the same URL and retains plugin minimum width and sandbox permissions', async () => {
+  const app = await setup(
+    {
+      component: 'Iframe',
+      props: {
+        src: 'https://example.com/retry',
+        title: 'Retry page',
+        minWidth: 720,
+      },
+    },
+    { ...target, slot_id: 'conversation.panel.right' },
+  );
   try {
     const first = app.container.querySelector('iframe');
     await act(async () => first.dispatchEvent(new window.Event('load')));
-    await act(async () => app.container.querySelector('[data-testid="webui-iframe-desktop"]').click());
+    const source = app.container.querySelector('[data-testid="webui-iframe-source"]');
+    assert.equal(source.textContent, 'https://example.com/retry');
+    assert.equal(source.title, 'https://example.com/retry');
     await act(async () => app.container.querySelector('[data-testid="webui-iframe-reload"]').click());
     const reloaded = app.container.querySelector('iframe');
     assert.notEqual(reloaded, first);
     assert.equal(reloaded.src, first.src);
     assert.equal(reloaded.getAttribute('sandbox'), first.getAttribute('sandbox'));
-    assert.equal(app.container.querySelector('[data-testid="webui-iframe-viewport"]').dataset.variant, 'desktop');
+    assert.equal(getComputedStyle(reloaded).minWidth, '720px');
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]').dataset.variant, 'loading');
     await act(async () => reloaded.dispatchEvent(new window.Event('error')));
     assert.equal(app.container.querySelector('iframe'), null);
@@ -1615,7 +1903,9 @@ test('Iframe reload retries the same URL and retains desktop width and sandbox p
     assert.equal(open.target, '_blank');
     assert.equal(open.rel, 'noopener noreferrer');
     assert.equal(app.business().length, 0);
-  } finally { await app.close(); }
+  } finally {
+    await app.close();
+  }
 });
 
 test('Iframe slow loading stays interactive and cancels pending notices on completion and teardown', async (context) => {
@@ -1682,6 +1972,103 @@ test('Iframe keeps relative and absolute host sources sandboxed without same-ori
       assert.equal(iframe.hasAttribute('srcdoc'), false);
     }
   } finally { await app.close(); }
+});
+
+test('task navigation and its page mount without a session and retain their instances across chats', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const language = i18n.language;
+  function Harness({ sessionId }) {
+    const [page, setPage] = useState(null);
+    return createElement(
+      WebUIProvider,
+      { runtime, registry: componentRendererRegistry },
+      createElement(
+        WebUISlotProvider,
+        { sessionId, onOpenPage: setPage, activePage: page },
+        createElement(WebUINavigationHost, { slotId: 'task.function' }),
+        page ? createElement(WebUIPageHost, { target: page }) : null,
+      ),
+    );
+  }
+  const render = async (sessionId) => act(async () => root.render(createElement(Harness, { sessionId })));
+  const taskTarget = {
+    scope: 'application',
+    slot_id: 'task.function',
+    package_id: 'webui.workbench-v2',
+    instance_key: 'task-inspector',
+  };
+  try {
+    await act(async () => i18n.changeLanguage('en'));
+    await render(null);
+    const ready = transport.dispatches[0];
+    assert.equal(ready.event, 'ui.ready');
+    assert.equal(ready.target.scope, 'application');
+    assert.equal(ready.target.sessionId, '');
+    await act(async () =>
+      transport.injectRenderFrame(
+        frame(
+          {
+            component: 'Button',
+            props: { value: { zh: '任务检查', en: 'Inspect tasks' } },
+            events: { 'ui.click': { id: 'workbench.open' } },
+          },
+          1,
+          taskTarget,
+        ),
+      ),
+    );
+    const entry = container.querySelector('[data-testid="webui-button"]');
+    assert.equal(entry.textContent, 'Inspect tasks');
+    await click(entry);
+    const pageReady = transport.dispatches.find((request) => request.target.slotId === 'task.function.main');
+    assert.ok(pageReady);
+    assert.deepEqual(pageReady.target, {
+      scope: 'application',
+      sessionId: '',
+      slotId: 'task.function.main',
+      packageId: taskTarget.package_id,
+      instanceKey: taskTarget.instance_key,
+    });
+    const clickRequest = transport.dispatches.find((request) => request.event === 'ui.click');
+    assert.equal(clickRequest.target.scope, 'application');
+    assert.equal(clickRequest.target.sessionId, '');
+    await act(async () =>
+      transport.injectRenderFrame(
+        frame(
+          {
+            component: 'Iframe',
+            props: { src: '/task-inspection', title: { zh: '任务检查页面', en: 'Task inspection page' } },
+          },
+          1,
+          { ...taskTarget, slot_id: 'task.function.main' },
+        ),
+      ),
+    );
+    const page = container.querySelector('iframe');
+    assert.ok(page);
+    assert.equal(page.title, 'Task inspection page');
+    for (const sessionId of ['session-a', 'session-b', null]) {
+      await render(sessionId);
+      assert.equal(container.querySelector('[data-testid="webui-button"]'), entry);
+      assert.equal(container.querySelector('iframe'), page);
+      assert.equal(transport.dispatches.filter((request) => request.event === 'ui.ready').length, 2);
+    }
+    await act(async () => i18n.changeLanguage('zh'));
+    assert.equal(entry.textContent, '任务检查');
+    assert.equal(page.title, '任务检查页面');
+    assert.equal(runtime.getScopeSnapshot('', 'task.function').instanceKeys.length, 1);
+    assert.equal(runtime.getScopeSnapshot('', 'task.function.main').instanceKeys.length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    runtime.dispose();
+    await act(async () => i18n.changeLanguage(language));
+  }
 });
 
 test('WebUIEntryHost renders application.entry with Avatar and closes on clear frame', async () => {
@@ -2127,5 +2514,363 @@ test('Form drafts survive retained Tabs and activity changes but reset on discon
       await act(async () => app.transport.setConnectionState('connected'));
       assert.equal(input().value, '');
     } finally { await app.close(); }
+  }
+});
+
+test('a plugin display preference hides bars and detail tabs across conversations without losing frames', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const packageId = 'settings-visibility-test';
+  const binding = { key: 'visible', default: true };
+  const widget = { component: 'Box', children: [{ component: 'Text', props: { value: 'Observed usage' } }] };
+  const setting = { component: 'Switch', props: { preference: binding, ariaLabel: 'Show usage' } };
+  const settingTarget = {
+    session_id: '',
+    scope: 'application',
+    slot_id: 'application.settings',
+    package_id: packageId,
+    instance_key: 'show',
+  };
+  const targetFor = (session) => ({ ...target, session_id: session, package_id: packageId });
+  const panelTarget = (session, owner = packageId) => ({
+    ...targetFor(session),
+    slot_id: 'conversation.panel.right',
+    package_id: owner,
+    instance_key: 'details',
+  });
+  const details = (value) => ({
+    component: 'Iframe',
+    props: {
+      title: 'Usage details',
+      srcDoc: `<p>${value}</p>`,
+    },
+  });
+  const visibleFrame = (tree, revision, owner) => ({ ...frame(tree, revision, owner), visible_when: binding });
+  function Panels({ sessionId }) {
+    const { panels, renderPanel } = useWebUIPanels({ slotId: 'conversation.panel.right', sessionId });
+    return createElement(
+      'section',
+      null,
+      ...panels.map((panel) =>
+        createElement(
+          'div',
+          { key: panel.key },
+          createElement('button', { 'data-testid': 'webui-test-panel-tab' }, panel.title),
+          renderPanel(panel.key),
+        ),
+      ),
+    );
+  }
+  const tabs = () => container.querySelectorAll('[data-testid="webui-test-panel-tab"]');
+  const iframes = () => container.querySelectorAll('iframe');
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  try {
+    await act(async () =>
+      root.render(
+        createElement(
+          WebUIProvider,
+          { runtime, registry: componentRendererRegistry },
+          createElement(WebUIHost, { slotId: target.slot_id, sessionId: 's1' }),
+          createElement(WebUIHost, { slotId: target.slot_id, sessionId: 's2' }),
+          createElement(Panels, { sessionId: 's1' }),
+          createElement(Panels, { sessionId: 's2' }),
+          createElement(WebUIHost, {
+            slotId: settingTarget.slot_id,
+            scope: 'application',
+            packageId,
+            instanceKey: 'show',
+          }),
+        ),
+      ),
+    );
+    await act(async () => {
+      transport.injectRenderFrame(visibleFrame(widget, 1, targetFor('s1')));
+      transport.injectRenderFrame(visibleFrame(widget, 1, targetFor('s2')));
+      transport.injectRenderFrame(visibleFrame(details('Observed history s1'), 1, panelTarget('s1')));
+      transport.injectRenderFrame(visibleFrame(details('Observed history s2'), 1, panelTarget('s2')));
+      transport.injectRenderFrame(visibleFrame(details('Another package'), 1, panelTarget('s1', 'unrelated-package')));
+      transport.injectRenderFrame(frame(setting, 1, settingTarget));
+    });
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 2);
+    assert.equal(tabs().length, 3);
+    assert.equal(iframes().length, 3);
+    const originalDocument = iframes()[0];
+    const control = () => container.querySelector('[data-testid="webui-switch"]');
+    await click(control());
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 0);
+    assert.equal(tabs().length, 1, 'the unrelated package keeps its tab');
+    assert.equal(iframes().length, 1, 'hidden documents release their browsing contexts');
+    assert.equal(originalDocument.isConnected, false);
+    await act(async () => {
+      transport.injectRenderFrame(visibleFrame(widget, 2, targetFor('s1')));
+      transport.injectRenderFrame(visibleFrame(details('Updated history while hidden'), 2, panelTarget('s1')));
+      transport.injectRenderFrame(frame(setting, 2, settingTarget));
+    });
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 0);
+    assert.equal(tabs().length, 1, 'background replacements cannot reveal a hidden tab');
+    assert.equal(
+      runtime.getScopeSnapshot('s1', 'conversation.panel.right').instanceKeys.length,
+      2,
+      'hidden instances retain their runtime state',
+    );
+    await click(control());
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 2);
+    assert.equal(tabs().length, 3);
+    assert.equal(iframes().length, 3);
+    assert.ok([...iframes()].some((node) => node.getAttribute('srcdoc').includes('Updated history while hidden')));
+    assert.equal(panelNavigation(runtime).getSnapshot(), null, 'enabling does not request panel selection');
+    const storageKey = Object.keys(window.localStorage).find((key) => !keysBefore.has(key));
+    window.localStorage.setItem(storageKey, 'false');
+    await act(async () =>
+      window.dispatchEvent(
+        new window.StorageEvent('storage', {
+          key: storageKey,
+          newValue: 'false',
+          storageArea: window.localStorage,
+        }),
+      ),
+    );
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 0);
+    assert.equal(tabs().length, 1, 'storage updates apply to detail tabs too');
+    const source = { sessionId: 's1', slotId: target.slot_id, packageId, instanceKey: target.instance_key };
+    assert.equal(requestPanelOpen(runtime, source, 'details'), false, 'hidden instances cannot request navigation');
+    await act(async () =>
+      transport.injectRenderFrame({
+        ...visibleFrame(widget, 3, targetFor('s1')),
+        visible_when: { key: 'another', default: true },
+      }),
+    );
+    assert.equal(
+      container.querySelectorAll('[data-variant="conversation.input.above"]').length,
+      1,
+      'changing only instance metadata invalidates the host scope',
+    );
+    assert.equal(requestPanelOpen(runtime, source, 'details'), false, 'a hidden target cannot be opened');
+    await act(async () => transport.injectRenderFrame(frame(widget, 4, targetFor('s1'))));
+    assert.equal(
+      container.querySelectorAll('[data-variant="conversation.input.above"]').length,
+      1,
+      'omitting the condition removes it instead of retaining the prior binding',
+    );
+    const nestedWidget = { component: 'Box', children: [widget] };
+    await act(async () => transport.injectRenderFrame(visibleFrame(nestedWidget, 5, targetFor('s1'))));
+    assert.equal(
+      container.querySelectorAll('[data-variant="conversation.input.above"]').length,
+      0,
+      'instance visibility hides the container regardless of the component tree layout',
+    );
+    await act(async () => transport.injectRenderFrame(frame(nestedWidget, 6, targetFor('s1'))));
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
+test('the plugin settings switch remains available while off after catalog refresh and settings remount', async () => {
+  const transport = createMockTransport();
+  const packageId = 'settings-page-visibility-test';
+  const binding = { key: 'visible', default: true };
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  const declaration = {
+    package_id: packageId,
+    id: 'show',
+    kind: 'item',
+    location: { menu: 'general', section: 'display' },
+    scope: 'application',
+    instance_key: 'show',
+    presentation: 'row',
+    title: { zh: '显示测试用量', en: 'Show test usage' },
+  };
+  let revision = '1';
+  let renderRevision = 0;
+  const dispatch = transport.dispatch;
+  transport.dispatch = async (request) => {
+    const result = await dispatch(request);
+    if (request.event === 'ui.ready' && request.target.slotId === 'application.settings') {
+      transport.injectRenderFrame(
+        frame({ component: 'Switch', props: { preference: binding, ariaLabel: 'Usage display' } }, ++renderRevision, {
+          session_id: '',
+          scope: 'application',
+          slot_id: request.target.slotId,
+          package_id: packageId,
+          instance_key: 'show',
+        }),
+      );
+    }
+    return result;
+  };
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const definition = {
+    id: 'test',
+    compositionMode: 'base',
+    accessPolicy: { evaluate: () => ({ level: 'editable' }) },
+    modules: [
+      {
+        id: 'general',
+        titleKey: 'settingsPanel.modules.general.title',
+        icon: () => null,
+        sections: [{ id: 'display', items: [] }],
+      },
+    ],
+  };
+  const request = async () => ({ revision, items: [declaration], errors: {} });
+  function PluginSettings() {
+    const settings = usePluginSettings(definition);
+    const Control = settings.definition.modules[0].sections[0].items[0]?.render;
+    return Control ? createElement(Control) : null;
+  }
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const page = (key) =>
+    createElement(
+      WebUIProvider,
+      { runtime, registry: componentRendererRegistry },
+      createElement(
+        SettingsServicesProvider,
+        { request, isConnected: true, connectionState: 'ready' },
+        createElement(PluginSettings, { key }),
+      ),
+    );
+  const control = () => container.querySelector('[data-testid="webui-switch"]');
+  try {
+    await act(async () => root.render(page('first')));
+    assert.ok(control());
+    await click(control());
+    const off = control();
+    assert.equal(off.getAttribute('aria-checked'), 'false');
+    await act(async () => window.dispatchEvent(new window.Event('focus')));
+    assert.equal(control(), off);
+    revision = '2';
+    await act(async () => window.dispatchEvent(new window.Event('focus')));
+    assert.ok(control());
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    await act(async () => root.render(page('second')));
+    assert.ok(control());
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    await click(control());
+    assert.equal(control().getAttribute('aria-checked'), 'true');
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
+test('one settings tree mounts application and session items with independent identities', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  const declarations = [
+    {
+      package_id: 'unified-settings-test',
+      id: 'visible',
+      kind: 'item',
+      scope: 'application',
+      instance_key: 'visible',
+      presentation: 'row',
+      title: { zh: '显示用量', en: 'Show usage' },
+      location: { menu: 'general', section: 'display' },
+    },
+    {
+      package_id: 'workbench-settings-test',
+      id: 'settings',
+      kind: 'item',
+      scope: 'session',
+      instance_key: 'workbench',
+      presentation: 'content',
+      location: { menu: 'general', section: 'display' },
+    },
+  ];
+  let revision = 0;
+  const dispatch = transport.dispatch;
+  transport.dispatch = async (request) => {
+    const result = await dispatch(request);
+    if (request.event !== 'ui.ready' || request.target.slotId !== 'application.settings') return result;
+    const application = request.target.scope === 'application';
+    const tree = {
+      component: 'Switch',
+      props: application
+        ? { preference: { key: 'visible', default: true }, ariaLabel: 'Application setting' }
+        : { checked: true, ariaLabel: 'Workbench setting' },
+    };
+    transport.injectRenderFrame(
+      frame(tree, ++revision, {
+        session_id: request.target.sessionId,
+        slot_id: request.target.slotId,
+        package_id: request.target.packageId,
+        instance_key: request.target.instanceKey,
+        ...(application ? { scope: 'application' } : {}),
+      }),
+    );
+    return result;
+  };
+  const definition = {
+    id: 'test',
+    compositionMode: 'base',
+    accessPolicy: { evaluate: () => ({ level: 'editable' }) },
+    modules: [{ id: 'general', titleKey: 'general', icon: () => null, sections: [{ id: 'display', items: [] }] }],
+  };
+  const request = async () => ({ revision: 'unified-1', items: declarations, errors: {} });
+  function SettingsTree({ active }) {
+    const settings = usePluginSettings(definition);
+    return active
+      ? settings.definition.modules[0].sections[0].items.map((item) => createElement(item.render, { key: item.id }))
+      : null;
+  }
+  const page = (sessionId, active = true) =>
+    createElement(
+      WebUIProvider,
+      { runtime, registry: componentRendererRegistry },
+      createElement(
+        SettingsServicesProvider,
+        { request, isConnected: true, connectionState: 'ready' },
+        createElement(WebUISlotProvider, { sessionId }, createElement(SettingsTree, { active })),
+      ),
+    );
+  const application = () => container.querySelector('[aria-label="Application setting"]');
+  const workbench = () => container.querySelector('[aria-label="Workbench setting"]');
+  try {
+    await act(async () => root.render(page(null)));
+    const original = application();
+    assert.ok(original);
+    assert.equal(workbench(), null);
+    await act(async () => root.render(page('s1')));
+    assert.equal(application(), original);
+    assert.ok(workbench());
+    await click(application());
+    assert.equal(application().getAttribute('aria-checked'), 'false');
+    assert.equal(workbench().getAttribute('aria-checked'), 'true');
+    await act(async () => root.render(page('s2')));
+    assert.equal(application(), original);
+    assert.ok(workbench());
+    await act(async () => root.render(page('s2', false)));
+    assert.equal(container.querySelectorAll('[data-testid="webui-host"]').length, 0);
+    await act(async () => root.render(page('s2')));
+    assert.equal(application().getAttribute('aria-checked'), 'false');
+    await click(application());
+    assert.equal(application().getAttribute('aria-checked'), 'true');
+    assert.ok(container.querySelector('[data-testid="settings-row-main"]'));
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
   }
 });

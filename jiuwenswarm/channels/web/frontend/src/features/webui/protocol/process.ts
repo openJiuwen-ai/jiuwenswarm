@@ -82,6 +82,26 @@ export function processRenderFrame(
   }
   if (!isJSONData(input)) return protocolReject('SCHEMA_ERROR', 'frame must contain only plain JSON data');
 
+  const visibility = input.visible_when;
+  if (
+    visibility !== undefined &&
+    (!isRecord(visibility) ||
+      Object.keys(visibility).length !== 2 ||
+      typeof visibility.key !== 'string' ||
+      !visibility.key.trim() ||
+      utf8ByteLength(visibility.key) > 128 ||
+      /[\uD800-\uDFFF]/u.test(visibility.key) ||
+      typeof visibility.default !== 'boolean' ||
+      !target.value.packageId)
+  ) {
+    return protocolReject('SCHEMA_ERROR', 'invalid visible_when preference binding');
+  }
+
+  if (input.activation_generation !== undefined && (typeof input.activation_generation !== 'string'
+    || !input.activation_generation.trim())) {
+    return protocolReject('SCHEMA_ERROR', 'invalid activation_generation');
+  }
+
   if (input.root === null || input.root === undefined) {
     return protocolReject('SCHEMA_ERROR', 'render tree is required');
   }
@@ -105,11 +125,15 @@ export function processRenderFrame(
 
   return protocolOk({
     kind: 'render',
+    ...(typeof input.activation_generation === 'string' ? { activationGeneration: input.activation_generation } : {}),
     target: target.value,
     revision: revision.value,
     schemaVersion: input.schema_version,
     tree: freezeJSON(tree.value.tree),
     nodeCount: tree.value.nodeCount,
+    ...(isRecord(visibility)
+      ? { visibleWhen: freezeJSON({ key: visibility.key as string, default: visibility.default as boolean }) }
+      : {}),
   });
 }
 
@@ -120,6 +144,9 @@ export function processClearFrame(
 ): WebUIProtocolResult<WebUINormalizedClearFrame> {
   if (!isRecord(input)) {
     return protocolReject('SCHEMA_ERROR', 'clear frame must be an object');
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'visible_when')) {
+    return protocolReject('SCHEMA_ERROR', 'clear frame must not include visible_when');
   }
   const sizeFailure = checkFrameSize(input, limits);
   if (sizeFailure) {
@@ -214,8 +241,12 @@ function readTarget(
   if (raw.application_id !== undefined) {
     return protocolReject('SCHEMA_ERROR', 'application targets are not supported');
   }
-  const expectedScope = slot.scope ?? 'session';
-  if (raw.scope !== undefined && raw.scope !== expectedScope) {
+  const defaultScope = slot.scope ?? 'session';
+  const expectedScope = raw.scope ?? defaultScope;
+  if (
+    (expectedScope !== 'session' && expectedScope !== 'application') ||
+    (expectedScope !== defaultScope && !slot.additionalScopes?.includes(expectedScope))
+  ) {
     return protocolReject('SCHEMA_ERROR', `target.scope does not match slot ${raw.slot_id}`);
   }
   if (expectedScope === 'application') {

@@ -22,6 +22,7 @@ export function WebUIPageHost({ target }: { target: WebUIPageTarget }) {
     <WebUIHost
       slotId={target.slotId}
       sessionId={target.sessionId}
+      scope={target.scope}
       packageId={target.packageId}
       instanceKey={target.instanceKey}
       className="webui-page-host"

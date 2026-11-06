@@ -3,7 +3,7 @@
 | 项目 | 约定 |
 | --- | --- |
 | 维护范围 | 插件侧声明、AgentServer / Gateway 后端校验、Web 前端校验与渲染 |
-| 最近修订 | 2026-11-04 |
+| 最近修订 | 2026-11-05 |
 | 适用协议 | `webui-tree`，`schema_version=1`；本文件修订不等于自动升级 wire 版本 |
 | 相关设计与验证记录 | [F_01 组件目录与渲染适配](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md) |
 | 相邻行为契约 | [S_01 组件运行与交互](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md) |
@@ -63,6 +63,8 @@ Python `RenderNode.children=()` 是模型默认值，序列化时省略；直接
 | 类型或记号 | 约束 |
 | --- | --- |
 | `string` | 合法 Unicode；默认不超过 UTF-8 16 KiB；空字符串是否有效由组件约束决定 |
+| `LocalizedText` | string 或完整 `{zh: string, en: string}`；客户端按当前界面语言选择，各语言分别受文本上限约束 |
+| `LocalizedText` | string 或 `{zh: string, en: string}`；两项必填、无额外键，每项最多 16 KiB，随宿主界面语言切换 |
 | `number` | 有限数值，不接受 NaN、Infinity 或布尔值 |
 | `integer` | 满足表中范围的整数，不接受布尔值 |
 | `boolean` | 只接受 true / false |
@@ -100,8 +102,19 @@ Tabs 隐藏页签的节点也计入整树预算。更小的组件字段限制优
 Panel / Iframe 只能作为允许其使用的槽位的树根。
 `conversation.panel.right` 的根白名单为 Panel / Iframe，二者的 title 同时作为右侧页签名称。
 `application.menu.main` 和 `task.function.main` 允许 Iframe 专用根，也允许普通组件树。
+`task.function` 与 `task.function.main` 使用应用作用域，按当前 Web 连接隔离，不携带 `session_id`；
+空对话也可挂载，切换会话不改变实例归属或关闭已打开的任务页面。入口与页面共享包和实例标识。
+切到聊天时，当前应用范围任务页面仅隐藏、保留 iframe；返回同一任务入口不重建页面。
 其他挂载位置和作用域见 [catalog/slots.ts](../../../channels/web/frontend/src/features/webui/catalog/slots.ts)、[后端 constants.py](../../webui/constants.py) 与 [F_07 槽位与交互](../features/F_07_ui-contributions.md)。
-槽位容量、页面导航和插件启停不是组件 props，不能通过新增 props 绕过这些规则。
+槽位容量、页面导航和插件启停由宿主控制。Button.openPanel 仅表达显式点击后的同包、同会话面板打开意图，不绕过槽位声明、实例存在和生命周期校验。
+
+### 2.4 渲染实例的显示条件
+
+`UiRenderInput.visible_when` 是可选的仅关键字参数，与 root 同级，不属于任何组件 props。replace 帧的可选 `visible_when` 使用 PreferenceBinding；缺省表示该实例始终可见。只接受 key/default，key 去空白非空且最多 128 UTF-8 字节，default 为布尔值；不能声明包身份，实际命名空间来自可信 target.package_id，绑定要求该身份非空。wire 不接受 null；clear 请求不允许附带显示条件。
+
+显示条件与每次 replace 一起完整替换，省略即移除之前的条件；后端快照、下行预算、失败回滚均包含它。客户端按实例身份保存，不按标题或包内槽位猜测实例。宿主依据该条件控制外层展示：right 对应 Tab，普通槽位对应实例容器；内部组件不感知此条件。隐藏移除容器和浏览上下文，保留运行时实例和后台观测。当前选中项隐藏后回到已有原生页签，重新开启不自动选中，也不改变用户手动关闭页签的状态。设置开关可独立保留，不自动隐藏同包所有贡献。
+
+已隐藏的源或目标不能产生打开面板请求。存储读取失败由实例错误边界呈现，不当作关闭偏好。客户端偏好控制显示统一使用实例级 visible_when；Box 和 Iframe 均不接受 visibleWhen 属性，也不保留组件级显示偏好的别名。Box.visibleFrom 继续按响应式断点控制子树活动状态。
 
 ## 3. 嵌套数据结构
 
@@ -110,6 +123,7 @@ Panel / Iframe 只能作为允许其使用的槽位的树根。
 | 结构 | 全部字段 | 附加约束 |
 | --- | --- | --- |
 | `ButtonLoading` | delay: number（可选） | Button.loading 可为 boolean 或此对象；当前没有要求 delay 非负或为整数 |
+| `PreferenceBinding` | key: string（必填，<=128 UTF-8 字节）；default: boolean（必填） | key 去空白后非空；包身份由宿主提供，偏好只作用于当前客户端、同包所有会话 |
 | `SelectOption` | value: OptionValue（必填）；label: string（必填）；disabled: boolean | values 唯一，不能混合字符串和数值；tags 的 value 必须为字符串 |
 | `TreeOption` | value: string（必填）；title: string（必填）；key: string；disabled / disableCheckbox / selectable / checkable: boolean；children: TreeOption[] | value / 实际 key 非空且全树唯一；省略 key 时取 value；最多 8 层 / 512 项 |
 | `TabItem` | key: string（必填）；label: string（必填）；disabled: boolean；children: RenderNode[] | key 非空且唯一；内容节点按普通树遍历、定位和计数 |
@@ -151,13 +165,15 @@ FileTree 子项路径必须以父目录路径加 `/` 为前缀。
 
 允许普通子节点，不声明事件。gap 与 size 是不同枚举，不得把 medium 写入 gap。
 尺寸与 marginInline 的数值和 px 值为 0..4096，百分比为 0..100%；背景地址遵循 URL 规则。
+Box 不接受 background、style 或 className 等自定义背景与样式属性；外观使用宿主公共组件和主题样式。
+按客户端偏好隐藏整项贡献使用第 2.4 节的实例级显示条件。
 低于 visibleFrom 断点时隐藏并停用子树交互，保留已挂载内容的本地状态。
 
 ### 4.2 Text
 
 | 属性 | 类型 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- | --- |
-| `value` | string | 否 | — | 文本内容 |
+| `value` | LocalizedText | 否 | — | 文本内容，完整中英文值跟随界面语言切换 |
 | `type` | `secondary` / `success` / `warning` / `danger` | 否 | — | 语义文字颜色；省略使用普通文字 |
 | `size` | Size | 否 | — | 组件尺寸 |
 | `strong` | boolean | 否 | — | 加粗 |
@@ -171,12 +187,13 @@ FileTree 子项路径必须以父目录路径加 `/` 为前缀。
 | `ellipsis` | boolean | 否 | — | 单行省略 |
 
 省略 value 显示空文案，字号显示回退 medium；不接受任何 children 或事件。宿主 appearance.style 在适配器中最后覆盖排版样式。
+天气等业务状态通过普通 Text.value 的本地化符号与文案、Text.type 的语义色表达；状态分级由插件负责，不新增专用组件或属性。
 
 ### 4.3 Button
 
 | 属性 | 类型 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- | --- |
-| `value` | string | 否 | — | 按钮文案 |
+| `value` | LocalizedText | 否 | — | 按钮文案，完整中英文值跟随界面语言切换 |
 | `type` | `default` / `primary` / `dashed` / `link` / `text` | 否 | — | 组件类型 |
 | `color` | ButtonColor | 否 | — | 语义颜色 |
 | `variant` | `outlined` / `dashed` / `solid` / `filled` / `text` / `link` | 否 | — | 外观样式 |
@@ -191,12 +208,17 @@ FileTree 子项路径必须以父目录路径加 `/` 为前缀。
 | `target` | `_self` / `_blank` | 否 | — | 链接打开位置 |
 | `icon` | IconName | 否 | — | 白名单图标名 |
 | `iconPlacement` | `start` / `end` | 否 | — | 图标在文案前或后 |
-| `aria-label` | string | 否 | — | 纯图标按钮必需的无障碍名称 |
+| `aria-label` | LocalizedText | 否 | — | 纯图标按钮必需的无障碍名称 |
+| `openPanel` | string（<= 128 UTF-8 字节） | 否 | — | 已接受的点击回执后选中同包、同会话的活动右侧面板实例 |
 | `form` | string，最多 200 UTF-8 字节 | 否 | — | Gateway 页面中同一实例的 Form.name；去空白后非空 |
+| `openPanel` | string，最多 128 UTF-8 字节 | 否 | — | 同包、同会话右侧面板的实例 key |
 
 字号显示回退 medium。icon 存在且 value 去空白后为空时，必须提供非空 aria-label；target 只能与 href 一起提供。loading.delay 当前只要求有限数值。支持 ui.click；加载、禁用或断连时不能派发。
 form 引用必须有效；点击时先校验表单，成功后直接发送字段值，失败时展示本地错误并且不发送事件。
 普通按钮始终发送空 data。表单能力不改变 value、type、variant 或无障碍属性的名称。
+openPanel 遵循 `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`。只有用户实际点击且 ui.click 返回明确 accepted 回执、源实例仍存活、目标已在 conversation.panel.right 渲染时，当前客户端打开并选中该目标。目标身份从可信源实例派生，不接受其他包或会话。普通 render、失败、未知或迟到的失效交互不得切换页签。显式再次打开可恢复本客户端关闭的插件 Tab；关闭/隐藏释放 iframe 浏览上下文，后台观测不因此停止。
+
+openPanel 仅接受 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`；实例必须已挂载且活动。渲染更新不触发跳转，拒绝回执不跳转。
 
 ### 4.4 Input
 
@@ -227,12 +249,14 @@ form 引用必须有效；点击时先校验表单，成功后直接发送字段
 | `defaultChecked` | boolean | 否 | `false` | 初始开关状态；checked 优先 |
 | `loading` | boolean | 否 | — | 加载状态 |
 | `disabled` | boolean | 否 | — | 禁用组件 |
-| `ariaLabel` | string | 否 | — | 无障碍名称 |
+| `ariaLabel` | LocalizedText | 否 | — | 无障碍名称 |
 | `size` | CompactSize | 否 | `"medium"` | 组件尺寸 |
 | `checkedChildren` | string | 否 | — | 开启状态文案 |
 | `unCheckedChildren` | string | 否 | — | 关闭状态文案 |
+| `preference` | PreferenceBinding | 否 | — | 宿主管理的客户端布尔偏好，与 checked / defaultChecked 互斥；读写成功后同步 checked，默认使用绑定的 default |
 
 checked 优先于 defaultChecked。支持 ui.click、ui.change，初始化不派发；加载、禁用或断连时不能操作。仅支持 CompactSize。
+客户端偏好仅用于界面显示；持久化失败保留旧值并显示本地化错误，不保存敏感配置。
 
 ### 4.6 Select
 
@@ -415,10 +439,21 @@ file=null 表示无文件；非空对象至少提供 content 或 downloadUrl，n
 
 | 属性 | 类型 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- | --- |
-| `src` | string | 是 | — | 网页地址，遵循本组件的严格 URL 规则 |
-| `title` | string（<= 200 UTF-8 字节） | 是 | — | 页面名称 / 右侧页签名称，去空白后必须非空 |
+| `src` | LocalizedText | 与 srcDoc 二选一 | — | 网页或插件资源地址；每种语言分别遵循本组件的严格 URL 规则 |
+| `srcDoc` | LocalizedText | 与 src 二选一 | — | 插件生成的完整 HTML 文档，每种语言最长 16 KiB，去空白后非空 |
+| `title` | LocalizedText（每种语言 <= 200 UTF-8 字节） | 是 | — | 页面名称 / 右侧页签名称，各语言去空白后必须非空 |
+| `minWidth` | number（>= 0，<= 4096） | 否 | `0` | iframe 文档的最小宽度，单位 px；容器不足此宽度时由宿主外层提供横向滚动 |
 
-只允许作为具备专用根许可的树根，无子节点或事件。URL 额外拒绝控制字符、反斜杠、三斜杠开头、凭据、无效 authority 与端口。宿主固定 sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"，不含 allow-same-origin，插件不可覆盖。适应宽度 / 1280 桌面宽度、外层横向滚动、同 URL 刷新、外链打开与 15 秒慢加载提示均为宿主功能，不是 props。仅在 active 且 connected 时创建，隐藏 / 断连时卸载，不承诺保活。
+只允许作为具备专用根许可的树根，无子节点或事件。URL 额外拒绝控制字符、反斜杠、三斜杠开头、凭据、无效 authority 与端口。宿主固定 sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"，不含 allow-same-origin，插件不可覆盖。iframe 宽度取容器可用宽度与 minWidth 中较大者；URL 和内联文档采用相同规则，不提供适应 / 桌面宽度切换。容器尺寸变化只调整布局，不重建浏览上下文；插件发送 replace 仍遵循整树重建契约。同 URL/文档刷新、URL 模式的外链打开与 15 秒慢加载提示为宿主功能。仅在 active 且 connected 时创建，隐藏 / 断连时卸载，不承诺保活。src 与 srcDoc 必须且只能提供一个；地址、文档和标题独立按宿主语言选择，切换文档释放旧浏览上下文，不接受不完整的语言映射。
+
+以 `/extension-assets/` 开头的插件资源地址由宿主按配置的 Gateway API 基址解析；保留基址的路径前缀。没有显式 API 基址时保持同源相对地址。Electron FrontendOnly 的 file:// 页面使用桌面注入的 HTTP(S) API 基址；普通宿主相对网页和外部绝对地址保持原语义。iframe、来源展示和打开外链使用同一解析后的地址。
+
+插件文件 URL 的部署基址由宿主统一解析，前端不按文件所在后端进程查浏览器能力清单。HTML 继续通过原生 iframe URL 加载，保留相对 CSS 引用。
+
+srcDoc 不开放宿主权限；仍使用同一固定 sandbox。文档随语言变化重建；没有 src 时不显示打开外链按钮。
+
+宿主工具栏只读展示来源：URL 文档显示实际使用的 src（插件资源为解析后的 Gateway 地址），内联文档显示随宿主语言切换的“插件页面 / Plugin page”。来源文字可选择复制，超出可用宽度时单行省略，悬停显示完整值。此处不提供地址编辑，也不表示跨域 iframe 内部导航后的当前 URL。
+
 
 ### 4.19 Avatar
 
@@ -580,7 +615,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | Panel | panel.ts | webuiPanel：专用根容器 | ToolPanel / ExpandedPanel 的插件页签、工作区文件页签 |
 | FileTree | fileTree.ts | webuiFileTree：目录选择、展开、宽度及滚动恢复 | 工作区目录、Session Workspace Ops、文件预览联动 |
 | FilePreview | filePreview.ts | webuiFilePreview：文本、图片、PDF 与状态 | 受管文件下载 / 预览；内部 PDF iframe 不等于通用 Iframe 节点 |
-| Iframe | iframe.ts | webuiIframe：固定沙箱、活跃生命周期、桌面宽度与刷新 | 右侧网页预览、侧栏主页面、任务主页面 |
+| Iframe | iframe.ts | webuiIframe：固定沙箱、活跃生命周期、最小宽度与刷新 | 右侧网页预览、侧栏主页面、任务主页面 |
 | Dropdown | dropdown.ts | webuiDropdown：图标或自定义触发区、菜单选择 | 侧栏用户菜单、轮次菜单 |
 | Icon | icon.ts | webuiIcon：白名单、尺寸与无障碍 | 独立装饰 / 语义图标 |
 
@@ -593,7 +628,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | --- | --- | --- |
 | 首次欢迎页：application.entry | [WebUIAppRoot.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIAppRoot.tsx)、[WebUIEntryHost.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIEntryHost.tsx) | Avatar、Card、Button、首次显示与关闭 |
 | 侧栏菜单与用户入口：application.menu、application.sidebar.footer | [SessionSidebar/index.tsx](../../../channels/web/frontend/src/components/SessionSidebar/index.tsx) | 按钮、头像、Dropdown 触发区与菜单 |
-| 任务功能入口：task.function | [ConversationSidebar.tsx](../../../channels/web/frontend/src/multi-session/sidebar/ConversationSidebar.tsx) | 入口组件、导航及会话作用域 |
+| 任务功能入口：task.function | [ConversationSidebar.tsx](../../../channels/web/frontend/src/multi-session/sidebar/ConversationSidebar.tsx) | 入口组件、导航及应用作用域 |
 | 菜单 / 任务主页面：application.menu.main、task.function.main | [App.tsx](../../../channels/web/frontend/src/App.tsx)、[WebUINavigation.tsx](../../../channels/web/frontend/src/features/webui/react/WebUINavigation.tsx)：WebUINavigationHost / WebUIPageHost | 普通树与 Iframe 专用根、页面切换 |
 | 右侧页签：conversation.panel.right | [ToolPanel/index.tsx](../../../channels/web/frontend/src/components/ToolPanel/index.tsx)、[ExpandedPanel.tsx](../../../channels/web/frontend/src/components/teamArea/ExpandedPanel.tsx)、[useWebUIPanels.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPanels.tsx) | Panel / Iframe 的 title、页签选择、关闭、清理、滚动与隐藏生命周期 |
 | 聊天标题和操作：conversation.header.title.after、conversation.header.actions | [ChatPanel/index.tsx](../../../channels/web/frontend/src/components/ChatPanel/index.tsx) | 文案、图标、Button 与 Dropdown |

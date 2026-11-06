@@ -62,10 +62,15 @@ class SlotSpec:
 
     capacity: str
     scope: SlotScope
+    additional_scopes: tuple[SlotScope, ...] = ()
+
+    def accepts_scope(self, scope: str) -> bool:
+        """Accept only the default or explicitly declared alternate scopes."""
+        return scope in (self.scope, *self.additional_scopes)
 
 
-def _slot(capacity: str, scope: SlotScope = SlotScope.SESSION) -> SlotSpec:
-    return SlotSpec(capacity=capacity, scope=scope)
+def _slot(capacity: str, scope: SlotScope = SlotScope.SESSION, *, additional_scopes: tuple[SlotScope, ...] = ()) -> SlotSpec:
+    return SlotSpec(capacity=capacity, scope=scope, additional_scopes=additional_scopes)
 
 
 # Allowlist. Session rows still require a chat id. Application rows are delivered
@@ -79,9 +84,9 @@ SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
         "conversation.panel.right": _slot("list"),
         "application.menu": _slot("list"),
         "application.menu.main": _slot("single"),
-        "task.function": _slot("list"),
-        "task.function.main": _slot("single"),
-        "application.settings": _slot("list"),
+        "task.function": _slot("list", SlotScope.APPLICATION),
+        "task.function.main": _slot("single", SlotScope.APPLICATION),
+        "application.settings": _slot("list", additional_scopes=(SlotScope.APPLICATION,)),
         "conversation.session.content.after": _slot("list"),
         "conversation.turn.footer.actions": _slot("list"),
         "conversation.header.title.after": _slot("list"),

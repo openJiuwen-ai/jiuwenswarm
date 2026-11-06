@@ -202,10 +202,14 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 范围及目标字段见 [F_06 第 3.2 节](F_06_render-service.md#32-数据模型)，上行参数见
 [F_07 第 4.3 节](F_07_ui-contributions.md#43-请求与回执)。
 
-当前应用范围有 `application.entry` 与 `application.sidebar.footer`。前者由 `WebUIEntryHost` 在首次访问时挂载并发送
+当前应用范围有 `application.entry`、`application.sidebar.footer`、`task.function` 与 `task.function.main`。首次访问入口由 `WebUIEntryHost` 在首次访问时挂载并发送
 `{"reason": "first_visit"}`，ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。
-后者由 `WebUIHost` 在左侧图标栏底部挂载，ready 使用空 payload。`readyOnce` 避免同一挂载消费者重复就绪。
-其余 13 个槽位仍需要真实会话，`application.menu`、`task.function` 和 `application.settings` 在新建空对话中不挂载。
+侧栏底部由 `WebUIHost` 挂载，ready 使用空 payload。`readyOnce` 避免同一挂载消费者重复就绪。
+任务入口由 `WebUINavigationHost` 挂载，对应页面由 `WebUIPageHost` 挂载，均不要求 session；
+切换会话时保持已有实例和页面。示例任务入口只处理导航，不读写会话工作台状态。
+`App` 在查看聊天期间保留当前应用范围页面的挂载，仅隐藏容器；返回同一任务入口继续使用原 iframe。
+隐藏期间不额外挂载任务侧栏，打开其他插件页面时释放原页面，不维护多页面缓存。
+其余 11 个槽位默认使用会话范围，`application.menu` 及其主页面在新建空对话中不挂载；设置范围见 [S_18](../specs/S_18_settings-location.md)。
 
 | 行为 | 会话槽位 | 全局槽位 |
 | --- | --- | --- |
@@ -325,3 +329,13 @@ transport、renderer、i18n-locales）通过，Vite 生产打包通过。
 - 人为保持子文档图片请求未完成时，加载提示仍在，但点击和输入正常；实际提示区域为 117 × 36 px，容器为 1230 × 420 px，计算样式的 `pointer-events` 为 `none`。释放请求后提示消失，停用与重新激活会卸载并重建文档。浅色和深色下均检查了提示外观。
 - 右侧网页预览示例曾临时使用百度进行验证，但百度通过 `frame-ancestors` 限制了本地页面嵌入，且其脚本读取 cookie/localStorage 时触发 sandbox `SecurityError`；现改为 `https://httpbin.org/forms/post`。该页面响应未声明 `X-Frame-Options` 或限制性的 `frame-ancestors`，包含文本框、选项和提交按钮，适合作为 iframe 联调页。
 - 上述浏览器试验只验证组件，不代表已完成真实插件安装、跨进程发帧和生产页面验收。未运行格式化、lint 或类型检查。
+
+### 2026-11-06 隐藏右侧面板的显式打开修复
+
+真实测试页面在窄视口默认隐藏 ToolPanel，此时组件被卸载，原先放在 ToolPanel 中的右侧 WebUI 插槽发现也随之释放。Button.openPanel 在回执成功后要求目标插槽已挂载，因此点击 TokenWeather 的“打开详情”虽然能生成详情树，前端仍无法发出有效的面板打开请求。
+
+将右侧 useWebUIPanels 的发现所有权提升到 App，与当前真实会话同寿命；ToolPanel 只接收面板目录并渲染选中的内容。App 接收同会话的显式打开请求后，调用已有面板展开入口，解除隐藏和心跳面板互斥，再由 ToolPanel 选择对应页签。面板目录也是工具区内容来源，不要求必须已有原生任务或消息。目标、同包、同会话、偏好和挂载校验保持不变，不新增协议字段、重试或 TokenWeather 专用判断。
+
+右侧内容仍按选择挂载，保持隐藏面板的内容不执行；后台渲染只更新目录，不自动展开面板。会话切换和不支持面板导航的模式会消费不适用的旧请求。ToolPanel 等待面板发现完成后再消费有效请求，避免初次挂载时丢失选择。
+
+验证：254 项 WebUI 组件和插件设置测试、7 项面板页面测试及 Vite 生产打包通过。真实插件在浏览器 1100 px 窄视口、ToolPanel 自动隐藏时，点击“打开详情”能展开并选中“用量详情”。本次只有 Web Client 的发现与导航所有权调整；Gateway、Server、Agent Harness、Team 没有相关代码改动。已撤回此前暖黄背景恢复的全部修改，状态条沿用原有灰底。未运行格式化、lint 或类型检查。

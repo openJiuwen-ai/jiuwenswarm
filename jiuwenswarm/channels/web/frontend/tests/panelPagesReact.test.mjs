@@ -34,10 +34,13 @@ async function setup(initial = {}) {
     useEffect(() => () => { unmounted.push(name); }, [name]);
     return h('div', null, `Plugin ${name}`);
   }
-  function Harness({ names = ['a', 'b'], title = '', activeTab = 'planning', showMiddleTab = true }) {
+  function Harness({ names = ['a', 'b'], title = '', activeTab = 'planning', showMiddleTab = true, openRequest }) {
     const [selection, setSelection] = useState(activeTab);
     const [showBrowserTab, setShowBrowserTab] = useState(true);
     useEffect(() => setSelection(activeTab), [activeTab]);
+    useEffect(() => {
+      if (openRequest) setSelection(openRequest.key);
+    }, [openRequest]);
     return h(ExpandedPanel, {
       activeTab: selection, onTabChange: setSelection,
       onTabClose(key) { closed.push(key); setShowBrowserTab(false); },
@@ -159,4 +162,18 @@ test('native tabs remain usable without plugins or optional members', async () =
     ));
     assert.equal(app.active(), 'planning');
   } finally { await app.dispose(); }
+});
+
+test('an explicit open request selects a plugin page without later updates taking selection back', async () => {
+  const app = await setup();
+  const openRequest = { key: 'webui:a' };
+  try {
+    await app.render({ openRequest });
+    assert.equal(app.active(), 'webui:a');
+    await app.click(app.tab('webui:b'));
+    await app.render({ openRequest, title: ' next turn' });
+    assert.equal(app.active(), 'webui:b');
+  } finally {
+    await app.dispose();
+  }
 });
