@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-delivery-policy",
-    "version": "1.0.0",
-    "displayName": "Session Delivery Policy"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session Delivery Policy"
   },
   "extensions": [
     {

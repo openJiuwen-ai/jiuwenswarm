@@ -120,8 +120,8 @@ def write_package(
             "id": package_id,
             "domain": "agentserver",
             "version": version,
-            "displayName": package_id,
         },
+        "display": {"name": package_id},
         "extensions": [
             {
                 "id": "main",

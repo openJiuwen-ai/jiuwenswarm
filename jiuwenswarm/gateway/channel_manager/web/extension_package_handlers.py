@@ -3,7 +3,7 @@
 """Route V2 package-management requests to the Gateway or the AgentServer.
 
 Gateway and AgentServer share ``extension_pkgs``; a request belongs to the
-Gateway only when every addressed source declares ``domain: gateway``. Anything
+Gateway only when every addressed source declares ``package.domain: gateway``. Anything
 else keeps the previous behaviour: the frame is proxied to the owning
 AgentServer unchanged. Management frames never enter the extension bus, so an
 extension cannot intercept its own uninstall.
@@ -315,7 +315,7 @@ async def _import_local(
             ws,
             req_id,
             ok=False,
-            error="manifest.json is missing or declares an unsupported package_type",
+            error="manifest.json is missing or declares an unsupported package_type or domain",
             code=INVALID_PARAMS_CODE,
         )
         return

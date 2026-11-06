@@ -6,24 +6,26 @@
     "id": "webui.token-weather",
     "version": "1.0.0"
   },
-  "display_name": {
-    "zh": "上下文用量",
-    "en": "Token Weather"
-  },
-  "display_description": {
-    "zh": "展示每轮对话的 token 用量和多轮上下文汇总。",
-    "en": "Shows token usage per turn and the session context summary."
-  },
-  "tags": [
-    {
-      "zh": "上下文",
-      "en": "Context"
+  "display": {
+    "name": {
+      "zh": "上下文展示",
+      "en": "Token Weather"
     },
-    {
-      "zh": "用量",
-      "en": "Usage"
-    }
-  ],
+    "description": {
+      "zh": "展示每轮对话的 token 用量和多轮上下文汇总。",
+      "en": "Shows token usage per turn and the session context summary."
+    },
+    "tags": [
+      {
+        "zh": "上下文",
+        "en": "Context"
+      },
+      {
+        "zh": "用量",
+        "en": "Usage"
+      }
+    ]
+  },
   "extensions": [
     {
       "id": "token-weather",

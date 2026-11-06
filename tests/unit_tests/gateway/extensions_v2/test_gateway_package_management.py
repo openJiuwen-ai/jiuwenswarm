@@ -104,8 +104,7 @@ def _package_zip(
     manifest = json.dumps({
         "package_type": "extension",
         "schemaVersion": 1,
-        "package": {"id": package_id, "version": version},
-        "domain": domain,
+        "package": {"id": package_id, "version": version, "domain": domain},
         "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
     })
     (source / "manifest.json").write_text(manifest, encoding="utf-8")
@@ -123,9 +122,8 @@ def _package_dir(tmp_path: Path, **manifest_extra) -> Path:
     manifest = {
         "package_type": "extension",
         "schemaVersion": 1,
-        "domain": "gateway",
         "expose": True,
-        "package": {"id": "demo.gateway", "version": "0.1.0"},
+        "package": {"id": "demo.gateway", "version": "0.1.0", "domain": "gateway"},
         **manifest_extra,
     }
     (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -135,12 +133,15 @@ def _package_dir(tmp_path: Path, **manifest_extra) -> Path:
 def test_detail_projects_preview_readme_and_events(tmp_path):
     root = _package_dir(
         tmp_path,
-        details="## 能力\n- 示例能力",
-        events=[{"name": "gateway.request", "description": {"zh": "放行请求", "en": "Route requests"}}],
+        display={
+            "details": "## 能力\n- 示例能力",
+            "events": [{"name": "gateway.request", "description": {"zh": "放行请求", "en": "Route requests"}}],
+        },
     )
     (root / "README.md").write_text("# 生效机制\n读取请求头", encoding="utf-8")
     image = b"\x89PNG-preview"
-    (root / "preview.png").write_bytes(image)
+    (root / "assets").mkdir()
+    (root / "assets" / "preview.png").write_bytes(image)
 
     detail = package_detail("demo.gateway", tmp_path / "examples", {})
 
@@ -196,10 +197,10 @@ async def test_agent_package_is_rejected_without_copying(tmp_path):
     runtime = await _runtime(tmp_path)
     manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
 
-    reports = await manager.install([_package_zip(tmp_path, package_id="demo.agent", domain="agent")])
+    reports = await manager.install([_package_zip(tmp_path, package_id="demo.agent", domain="agentserver")])
 
     assert [report.status for report in reports] == ["FAILED"]
-    assert reports[0].error.code == "EXTENSION_SOURCE_INVALID"
+    assert reports[0].error.code == "EXTENSION_DOMAIN_MISMATCH"
     assert manager.installed() == []
     assert runtime.user_handler_count == 0
 
@@ -436,8 +437,7 @@ def _example_package(examples_dir: Path, package_id: str, domain: str) -> Path:
     manifest = {
         "package_type": "extension",
         "schemaVersion": 1,
-        "package": {"id": package_id, "version": "0.1.0", "displayName": package_id},
-        "domain": domain,
+        "package": {"id": package_id, "version": "0.1.0", "displayName": package_id, "domain": domain},
         "expose": True,
         "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
     }
@@ -472,7 +472,7 @@ async def test_catalog_lists_gateway_presets_before_any_install(tmp_path, monkey
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
     examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
     _example_package(examples_dir, "demo.gateway", "gateway")
-    _example_package(examples_dir, "demo.agent", "agent")
+    _example_package(examples_dir, "demo.agent", "agentserver")
 
     handled = await _handle(
         runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_CATALOG, {"scope": "catalog"}
@@ -501,7 +501,7 @@ async def test_show_of_an_agent_package_is_forwarded(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
     examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
-    _example_package(examples_dir, "demo.agent", "agent")
+    _example_package(examples_dir, "demo.agent", "agentserver")
 
     handled = await _handle(
         runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": "demo.agent"}
@@ -531,7 +531,7 @@ async def test_install_by_package_id_is_forwarded_for_agent(tmp_path, monkeypatc
     runtime = await _runtime(tmp_path)
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
     examples_dir, install_dir = _local_gateway(tmp_path, monkeypatch)
-    _example_package(examples_dir, "demo.agent", "agent")
+    _example_package(examples_dir, "demo.agent", "agentserver")
 
     handled = await _handle(
         runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": ["demo.agent"]}
@@ -578,7 +578,7 @@ async def test_import_local_routes_agent_packages_to_the_agent_server(tmp_path, 
 
     monkeypatch.setattr(extension_package_handlers, "fetch_agent_unary", fake_fetch)
 
-    extension_source = _example_package(examples_dir, "demo.agent", "agent")
+    extension_source = _example_package(examples_dir, "demo.agent", "agentserver")
     await _handle(
         runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(extension_source)}
     )
@@ -631,6 +631,21 @@ async def test_import_local_rejects_an_unknown_package_type(tmp_path, monkeypatc
     source = tmp_path / "unknown-src"
     source.mkdir()
     (source / "manifest.json").write_text(json.dumps({"package_type": "mcp"}), encoding="utf-8")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["ok"] is False
+    assert runtime.channel.responses[0]["code"] == extension_package_handlers.INVALID_PARAMS_CODE
+
+
+async def test_import_local_rejects_the_legacy_agent_domain(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
+    source = _example_package(examples_dir, "demo.legacy", "agent")
 
     handled = await _handle(
         runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}

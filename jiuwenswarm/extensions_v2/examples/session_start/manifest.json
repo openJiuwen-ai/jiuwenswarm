@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-start",
-    "version": "1.0.0",
-    "displayName": "Session Start Example"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session Start Example"
   },
   "extensions": [
     {

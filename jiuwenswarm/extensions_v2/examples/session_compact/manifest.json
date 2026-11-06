@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-compact",
-    "version": "1.0.0",
-    "displayName": "Project Compaction"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Project Compaction"
   },
   "extensions": [
     {

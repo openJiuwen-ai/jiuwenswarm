@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "webui.plugin-manager",
-    "version": "1.0.0",
-    "displayName": "Plugin Manager / 插件管理",
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Plugin Manager / 插件管理",
     "description": "A top-level WebUI plugin that renders a plugin-manager page in the navigation rail."
   },
   "extensions": [

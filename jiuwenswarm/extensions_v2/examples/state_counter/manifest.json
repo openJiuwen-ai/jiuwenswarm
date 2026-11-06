@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "sample.counter",
-    "version": "1.0.0",
-    "displayName": "State Counter",
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "State Counter",
     "description": "Persistent session counter with state-driven panel refresh."
   },
   "extensions": [

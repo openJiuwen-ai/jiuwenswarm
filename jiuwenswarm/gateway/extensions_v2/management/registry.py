@@ -4,7 +4,7 @@
 
 Gateway packages live in the same ``extension_pkgs`` tree as AgentServer
 packages; this facade only touches entries whose manifest says
-``domain: gateway``. File layout, zip guards and copies come from agent-core's
+``package.domain: gateway``. File layout, zip guards and copies come from agent-core's
 ``PackageManager``; publishing and releasing handlers stay on the Gateway
 runtime, so a package never needs a second ``ops.build``.
 """
@@ -14,21 +14,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.extension import ActivationReport, ExtensionFailure
 from openjiuwen.core.extension.errors import OperationError, operation_error
+from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.package_manager import PackageManager
 
 from jiuwenswarm.gateway.extensions_v2.loader import load_gateway_package
 from jiuwenswarm.gateway.extensions_v2.manifest import DOMAIN_GATEWAY
-from jiuwenswarm.gateway.extensions_v2.management.manifest_source import (
-    InstalledPackage,
-    list_installed,
-    read_domain,
-)
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
@@ -37,6 +34,16 @@ logger = logging.getLogger(__name__)
 
 _DELETE_ATTEMPTS = 3
 _DELETE_BACKOFF_SECONDS = 0.2
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledPackage:
+    """The host-facing fields of one installed version directory."""
+
+    package_id: str
+    version: str
+    domain: str
+    root: Path
 
 
 class GatewayPackageManager:
@@ -51,7 +58,7 @@ class GatewayPackageManager:
     ) -> None:
         self._runtime = runtime
         self.install_dir = Path(install_dir).expanduser()
-        self._store = PackageManager(self.install_dir)
+        self._store = PackageManager(self.install_dir, domain=DOMAIN_GATEWAY)
         self._lock = asyncio.Lock()
         self._on_released = on_released
 
@@ -60,7 +67,21 @@ class GatewayPackageManager:
     def installed(self) -> list[InstalledPackage]:
         """Every installed package in the shared store, both domains."""
 
-        return list_installed(self.install_dir)
+        found: list[InstalledPackage] = []
+        for root in self._store.list_installed():
+            try:
+                manifest = load_manifest(root, require_domain=True)
+            except ExtensionFailure:
+                continue
+            found.append(
+                InstalledPackage(
+                    manifest.package_id,
+                    manifest.version,
+                    (manifest.domain or "").strip().lower(),
+                    root,
+                )
+            )
+        return found
 
     def gateway_installed(self, package_id: str | None = None) -> list[InstalledPackage]:
         """Installed Gateway packages, optionally one package id."""
@@ -82,7 +103,7 @@ class GatewayPackageManager:
 
         try:
             with self._store.open_source(Path(path)) as opened:
-                return read_domain(opened.root)
+                return opened.manifest.domain
         except ExtensionFailure:
             return None
 
@@ -194,15 +215,6 @@ class GatewayPackageManager:
         try:
             with self._store.open_source(path) as opened:
                 package_id = opened.manifest.package_id
-                if read_domain(opened.root) != DOMAIN_GATEWAY:
-                    return _failure(
-                        package_id,
-                        "install",
-                        operation_error(
-                            StatusCode.EXTENSION_SOURCE_INVALID,
-                            reason=f"{package_id} is not a gateway package",
-                        ),
-                    )
                 root = self._store.copy_into_store(opened.root, opened.manifest)
         except ExtensionFailure as exc:
             return _failure(package_id or path.stem, "install", exc.as_error())

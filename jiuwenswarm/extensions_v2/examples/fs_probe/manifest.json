@@ -1,30 +1,31 @@
 {
   "schemaVersion": 1,
   "package_type": "extension",
-  "expose": true,
   "package": {
     "domain": "agentserver",
     "id": "example.fs-probe",
     "version": "1.0.0"
   },
-  "display_name": {
-    "zh": "文件系统探针",
-    "en": "FS Probe"
-  },
-  "display_description": {
-    "zh": "通过 ops.fs.* 读取、写入和扫描工作区文件。",
-    "en": "Reads, writes and scans workspace files through ops.fs.*."
-  },
-  "tags": [
-    {
-      "zh": "文件系统",
-      "en": "Filesystem"
+  "display": {
+    "name": {
+      "zh": "工作区文件识别",
+      "en": "FS Probe"
     },
-    {
-      "zh": "诊断",
-      "en": "Diagnostics"
-    }
-  ],
+    "description": {
+      "zh": "通过 ops.fs.* 读取、写入和扫描工作区文件。",
+      "en": "Reads, writes and scans workspace files through ops.fs.*."
+    },
+    "tags": [
+      {
+        "zh": "文件系统",
+        "en": "Filesystem"
+      },
+      {
+        "zh": "诊断",
+        "en": "Diagnostics"
+      }
+    ]
+  },
   "extensions": [
     {
       "id": "fs-probe",

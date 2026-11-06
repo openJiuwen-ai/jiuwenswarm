@@ -17,7 +17,7 @@ def build_package(output: Path) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
     files = [
         SOURCE / name
-        for name in ("manifest.json", "settings.json", "README.md", "README_EN.md", "preview.png")
+        for name in ("manifest.json", "settings.json", "README.md", "README_EN.md")
     ]
     files.extend(sorted((SOURCE / "auth_login_demo").glob("*.py")))
     files.extend(sorted((SOURCE / "assets").iterdir()))

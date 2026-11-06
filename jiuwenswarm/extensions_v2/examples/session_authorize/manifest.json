@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-authorize",
-    "version": "1.0.0",
-    "displayName": "Session Authorization Probe"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session Authorization Probe"
   },
   "extensions": [
     {

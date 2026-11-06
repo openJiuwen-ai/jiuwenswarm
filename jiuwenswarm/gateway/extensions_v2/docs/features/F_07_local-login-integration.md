@@ -5,7 +5,7 @@
 ## 范围与职责
 
 [auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 是可通过 GatewayPackageManager 安装的示例包。
-示例与其他 V2 插件统一归档在 `jiuwenswarm/extensions_v2/examples/`，由 manifest 的 `domain: gateway` 选择 Gateway 宿主。
+示例与其他 V2 插件统一归档在 `jiuwenswarm/extensions_v2/examples/`，由 manifest 的 `package.domain: gateway` 选择 Gateway 宿主。
 多账号注册、Mock token 签发与校验、退出登录、双语渲染树、页面布局和素材由插件提供。
 Gateway 提供通用的声明下发、客户端操作、资源服务与应用级交互接入，不解释登录字段。
 鉴权统一由插件的 gateway.request USER handler 负责，Gateway 不提供内置认证门禁；请求异常语义仍沿用现有逻辑。职责演进见 [F_02](F_02_gateway-request-and-auth-gate.md)。

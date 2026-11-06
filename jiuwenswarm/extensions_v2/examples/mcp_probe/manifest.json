@@ -1,30 +1,31 @@
 {
   "schemaVersion": 1,
   "package_type": "extension",
-  "expose": true,
   "package": {
     "domain": "agentserver",
     "id": "example.mcp-probe",
     "version": "1.0.0"
   },
-  "display_name": {
-    "zh": "MCP 探针",
-    "en": "MCP Probe"
-  },
-  "display_description": {
-    "zh": "通过 ops.mcp.* 连接 MCP 服务、查看工具并调用。",
-    "en": "Connects to an MCP server, lists tools and calls them through ops.mcp.*."
-  },
-  "tags": [
-    {
-      "zh": "MCP",
-      "en": "MCP"
+  "display": {
+    "name": {
+      "zh": "MCP 调试",
+      "en": "MCP Probe"
     },
-    {
-      "zh": "调试",
-      "en": "Debugging"
-    }
-  ],
+    "description": {
+      "zh": "通过 ops.mcp.* 连接 MCP 服务、查看工具并调用。",
+      "en": "Connects to an MCP server, lists tools and calls them through ops.mcp.*."
+    },
+    "tags": [
+      {
+        "zh": "MCP",
+        "en": "MCP"
+      },
+      {
+        "zh": "调试",
+        "en": "Debugging"
+      }
+    ]
+  },
   "extensions": [
     {
       "id": "mcp-probe",

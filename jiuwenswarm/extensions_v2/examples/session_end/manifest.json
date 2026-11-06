@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-end",
-    "version": "1.0.0",
-    "displayName": "Session End Example"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session End Example"
   },
   "extensions": [
     {

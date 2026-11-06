@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-model-info",
-    "version": "1.0.0",
-    "displayName": "Session Model Info"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session Model Info"
   },
   "extensions": [
     {

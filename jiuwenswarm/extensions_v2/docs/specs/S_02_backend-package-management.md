@@ -21,7 +21,7 @@
 | `extensions.v2.catalog` | `scope: "catalog" \| "mine"` | 列出预设包或已生效包 |
 | `extensions.v2.show` | `package_id: str` | 返回一个包的详情投影 |
 | `extensions.v2.install` | `paths: list[str]`，非空，每项为现有 ZIP 文件的绝对路径 | 安装 ZIP 扩展包，拒绝目录 |
-| `extensions.v2.import` | `path: str`，现有目录或归档的绝对路径 | 按 manifest 的 `domain` 分流安装（Gateway 入口） |
+| `extensions.v2.import` | `path: str`，现有目录或归档的绝对路径 | 按 `package.domain` 分流安装（Gateway 入口） |
 | `extensions.v2.uninstall` | `package_id: str` | 卸载包或未生效副本 |
 | `extensions.v2.reload` | `package_id: str` | 从安装副本热重载，不先卸载 |
 | `extensions.v2.file.list` | `package_id: str` | 列出包内可预览文件树 |
@@ -34,17 +34,16 @@ Plan 或修改安装目录的参数。
 此限制只在外部请求入口生效；启动通过 `load_installed()` 加载安装目录内的解压副本，不受影响。
 
 `extensions.v2.import` 面向未定域的上传入口，由 Gateway 读取包根 `manifest.json` 后分流：
-`package_type` 为 `extension` 的包按 `domain` 归属，`gateway` 在 Gateway 安装，`agent` 转为
+`package_type` 为 `extension` 的包按 `package.domain` 归属，`gateway` 在 Gateway 安装，`agentserver` 转为
 `extensions.v2.install`；其余包（如 `package_type: plugin`）转为 `plugin_packages.import_local`。
 响应附 `kind`（`extension` 或 `plugin`）供前端区分刷新目标。
 
 ### 1.1 详情与文件投影
 
-`details` 取 manifest 的 `details`，`readme` 分别取包根 `README.md` 与 `README_EN.md`；
+展示信息统一取 manifest 的 `display`，见 1.3。`readme` 分别取包根 `README.md` 与 `README_EN.md`；
 两者都编码为 `{zh, en}`，单一语言缺失时回落到另一语言。
-`preview` 取包根固定的 `preview.png`，文件缺失或超过 10 MB 时为 `null`；
-`events` 取 manifest 的 `events`，每项为 `{name, description: {zh, en}}`，
-声明该包消费的事件，不参与加载校验。
+`preview` 取包内固定的 `assets/preview.png`，文件缺失或超过 10 MB 时为 `null`；
+`display.events` 每项为 `{name, description: {zh, en}}`，只用于详情页展示，不参与加载校验。
 
 文件树和文件读取复用 AgentServer 的包预览能力：只列非隐藏文件和目录，`previewable` 覆盖
 `.md`、`.mdx`、`.json`、`.py`、`.pdf`，单文件上限 1 MB，拒绝绝对路径、`..`、隐藏段和符号链接。
@@ -58,18 +57,27 @@ Gateway 不实现本地读取，`files` 与 `file.read` 始终转发给 AgentSer
 | `package_type` | 是 | Core | 固定为 `extension` |
 | `package.id`、`package.version` | 是 | Core | 包标识与版本 |
 | `extensions[]` | 是 | Core | `id`、`runtime=backend`、`module`；模块文件须位于包内 |
-| `domain` | 否 | 宿主 | `gateway` 归 Gateway，缺省为 `agent` |
-| `expose` | 否 | 宿主 | 为 `true` 才出现在插件广场 |
-| `display_name` | 否 | 宿主 | `{zh, en}`，缺省回退 `package.displayName` 或包 ID |
-| `display_description` | 否 | 宿主 | `{zh, en}`，缺省回退 `package.description` |
-| `tags` | 否 | 宿主 | 双语文本数组，渲染为卡片标签 |
-| `avatar` | 否 | 宿主 | 包内相对路径，不超过 256 KB |
-| `details` | 否 | 宿主 | `{zh, en}` Markdown，详情页“内容详情” |
-| `events` | 否 | 宿主 | `[{name, description}]`，详情页“依赖事件” |
+| `package.domain` | 是 | Core / 宿主 | `gateway` 归 Gateway，`agentserver` 归 AgentServer；缺失或其它值拒绝安装 |
+| `expose` | 否 | 宿主 | 本地预设扫描用；为 `true` 才出现在本地插件广场 |
+| `display` | 否 | 宿主 | 展示信息，字段见 1.3 |
 | `ui` | 否 | 宿主 | 槽位贡献，见 [F_07](../features/F_07_ui-contributions.md) |
 | `client` | 否 | Gateway | `requestBindings`，安装激活后随 client.declarations 下发 |
 
-Core 不解析 `domain`、`expose`、`display_name` 等宿主字段，宿主从生效记录的包根读取原始文件。
+Core 解析并校验 `package.domain`；`expose`、`display`、`ui`、`client` 等宿主字段由宿主从生效记录的包根读取原始文件。
+
+包作者的填写示例、README 写法与自检项见 [系统插件包开发指南](../designs/system-plugin-package-guide.md)。
+
+### 1.3 display 字段
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `name` | 否 | `{zh, en}`，卡片与详情页标题；缺省回退包 ID |
+| `description` | 否 | `{zh, en}`，卡片简介 |
+| `tags` | 否 | 双语文本数组，渲染为卡片标签 |
+| `avatar` | 否 | 包内相对路径，不超过 1 MB |
+| `details` | 否 | `{zh, en}` Markdown，详情页“内容详情” |
+| `events` | 否 | `[{name, description}]`，详情页“依赖事件” |
+
 界面文案统一使用 `{zh, en}` 对象，单语字符串按双语同值处理；声明与消费不再有其它文案来源。
 
 ## 2. 响应
@@ -156,7 +164,7 @@ EXE、DMG 使用现有后端程序的 `extension` 分发，参数与结果使用
 
 | 命令参数 | 语义 |
 | --- | --- |
-| `install <ZIP>` | 读取最终 ZIP 的 ID、版本与 domain，再交给对应的运行宿主安装 |
+| `install <ZIP>` | 读取最终 ZIP 的 ID、版本与 `package.domain`，再交给对应的运行宿主安装 |
 | `query [package_id]` | 查询选定宿主；缺省 domain 为 agentserver |
 | `reload <package_id>` | 从选定宿主的安装副本重载 |
 | `uninstall <package_id>` | 卸载选定宿主中的包 |

@@ -517,8 +517,7 @@ async def test_file_preview_serves_both_domains(
             {
                 "package_type": "extension",
                 "schemaVersion": 1,
-                "domain": "gateway",
-                "package": {"id": "gw.pkg", "version": "1.0.0"},
+                "package": {"id": "gw.pkg", "version": "1.0.0", "domain": "gateway"},
                 "extensions": [{"id": "main", "runtime": "backend", "module": "extension.py"}],
             }
         ),
@@ -553,8 +552,7 @@ async def test_file_preview_resolves_an_installed_package_outside_examples(
             {
                 "package_type": "extension",
                 "schemaVersion": 1,
-                "domain": "gateway",
-                "package": {"id": "gw.uploaded", "version": "1.0.0"},
+                "package": {"id": "gw.uploaded", "version": "1.0.0", "domain": "gateway"},
                 "extensions": [{"id": "main", "runtime": "backend", "module": "extension.py"}],
             }
         ),

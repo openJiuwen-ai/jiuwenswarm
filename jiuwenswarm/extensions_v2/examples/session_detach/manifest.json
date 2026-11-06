@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-detach",
-    "version": "1.0.0",
-    "displayName": "Session Detach Example"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session Detach Example"
   },
   "extensions": [
     {

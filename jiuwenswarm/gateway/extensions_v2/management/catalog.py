@@ -27,8 +27,8 @@ _AVATAR_MIME = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
 }
-_AVATAR_LIMIT = 256 * 1024
-_PREVIEW_IMAGE = "preview.png"
+_AVATAR_LIMIT = 1024 * 1024
+_PREVIEW_IMAGE = "assets/preview.png"
 _PREVIEW_IMAGE_LIMIT = 10 * 1024 * 1024
 _README_LIMIT = 64 * 1024
 
@@ -98,13 +98,14 @@ def package_detail(package_id: str, examples_dir: Path, state: Mapping[str, Any]
 
     entry = _find(package_id, examples_dir, state)
     facts = _facts(state)
+    display = _display(entry.document)
     detail = _summary(entry, facts)
     detail.update(
         {
-            "details": _localized(entry.document.get("details"), ""),
+            "details": _localized(display.get("details"), ""),
             "readme": _readme(entry.root),
             "preview": _preview_image(entry.root),
-            "events": _events(entry.document),
+            "events": _events(display),
         }
     )
     return detail
@@ -171,20 +172,25 @@ def _find(package_id: str, examples_dir: Path, state: Mapping[str, Any]) -> Mark
 
 def _summary(entry: MarketEntry, facts: _Facts) -> dict[str, Any]:
     document = entry.document
-    package = document.get("package") if isinstance(document.get("package"), Mapping) else {}
+    display = _display(document)
     record = facts.active.get(entry.package_id)
     installed_root = facts.installed.get(entry.package_id)
     installed = record is not None or installed_root is not None
     return {
         "id": entry.package_id,
         "version": entry.version,
-        "displayName": _localized(document.get("display_name") or package.get("displayName"), entry.package_id),
-        "displayDescription": _localized(document.get("display_description") or package.get("description"), ""),
-        "tags": _localized_list(document.get("tags")),
-        "avatar": _avatar(entry.root, document),
+        "displayName": _localized(display.get("name"), entry.package_id),
+        "displayDescription": _localized(display.get("description"), ""),
+        "tags": _localized_list(display.get("tags")),
+        "avatar": _avatar(entry.root, display),
         "installed": installed,
         "active": record is not None,
     }
+
+
+def _display(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = document.get("display")
+    return value if isinstance(value, Mapping) else {}
 
 
 def _localized(value: object, fallback: str) -> dict[str, str]:
@@ -249,8 +255,8 @@ def _preview_image(root: Path) -> str | None:
     return _data_url(root, root / _PREVIEW_IMAGE, _PREVIEW_IMAGE_LIMIT)
 
 
-def _events(document: Mapping[str, Any]) -> list[dict[str, Any]]:
-    raw = document.get("events")
+def _events(display: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = display.get("events")
     if not isinstance(raw, list):
         return []
     result: list[dict[str, Any]] = []
@@ -264,8 +270,8 @@ def _events(document: Mapping[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
-def _avatar(root: Path, document: Mapping[str, Any]) -> str | None:
-    raw = document.get("avatar")
+def _avatar(root: Path, display: Mapping[str, Any]) -> str | None:
+    raw = display.get("avatar")
     if not isinstance(raw, str) or not raw.strip():
         return None
     relative = Path(raw.strip())

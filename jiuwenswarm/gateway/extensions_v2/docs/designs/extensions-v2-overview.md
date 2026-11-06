@@ -35,7 +35,7 @@ Gateway Extensions V2 因此在 Gateway 进程内建立**一套独立的扩展�
 | 依赖方向 | → `openjiuwen.core.events` | → `openjiuwen.core.events`（不依赖 `jiuwenswarm.extensions_v2`） |
 | 代码复用 | 不引用 Gateway 模块 | 复用 `openjiuwen.core.events` 与自身 models，不 import AgentServer 适配层 |
 
-同一个扩展包只能归属一侧：manifest 顶层 `domain` 声明 `agent`（缺省）或 `gateway`，两侧各自只加载与激活自己归属的包。
+同一个扩展包只能归属一侧：`package.domain` 声明 `agentserver` 或 `gateway`，两侧各自只加载与激活自己归属的包。
 
 ### 1.3 本期范围
 
@@ -45,14 +45,14 @@ Gateway Extensions V2 因此在 Gateway 进程内建立**一套独立的扩展�
 - `local` 路由与宿主本地方法表（初始为空）。
 - `ui.render` / `ui.store` / `ui.click` 三个 WebUI 事件与对应 `ops`。
 - `ops.http.fetch`：受白名单约束的出站 HTTP。
-- 共享 `extension_pkgs` 下的包管理：`domain: gateway` 包本地安装/卸载/热重载，`/extension` 指令按归属分流。
+- 共享 `extension_pkgs` 下的包管理：`package.domain: gateway` 包本地安装/卸载/热重载，`/extension` 指令按归属分流。
 - [auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 示例包。
 
 ### 1.4 非目标
 
 - 不实现 AgentServer 的会话、工具、文件、模型等业务事件。
 - 不引入 Gateway → AgentServer 的反向 RPC；跨进程事件总线不在本期范围。
-- 不支持一个包同时归属两侧；`domain` 只能是 `agent` 或 `gateway`。
+- 不支持一个包同时归属两侧；`package.domain` 只能是 `agentserver` 或 `gateway`。
 - 不替代 Gateway 现有的认证与路由实现，只提供可插入的扩展点。
 - 不在 Gateway 侧实现扩展包的 Python 沙箱。
 

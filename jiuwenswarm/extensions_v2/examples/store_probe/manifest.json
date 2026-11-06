@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.store-probe",
-    "version": "1.0.0",
-    "displayName": "Store Probe",
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Store Probe",
     "description": "Exercise persistent store CRUD after a chat round and log the results."
   },
   "extensions": [

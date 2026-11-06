@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.server-run-command",
-    "displayName": "Project command example",
     "version": "1.0.0"
+  },
+  "display": {
+    "name": "Project command example"
   },
   "extensions": [
     {

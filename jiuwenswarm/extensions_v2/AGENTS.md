@@ -56,6 +56,7 @@
 - [停机撤销](docs/features/F_12_management-shutdown.md)：逆依赖撤销、失败保留及上下文释放。
 - [后端包管理协议](docs/specs/S_02_backend-package-management.md)：`extensions.v2.*` 参数、响应及错误边界。
 - [内置事件开发模板](docs/designs/builtin-event-development-guide.md)：面向 WebClient、Gateway 和 AgentServer 开发者，说明事件、Handler、Ops 登记与真实业务生效；第 3.7 节区分槽位交互与独立内置请求，列出前端、Gateway 转发和 AgentServer 适配器的完整登记入口，第 4.7 节说明 Gateway 渠道事件的往返链路。新增代码标为待实现模板。
+- [系统插件包开发指南](docs/designs/system-plugin-package-guide.md)：面向插件包作者，说明包结构、`manifest.json` 字段写法、`README.md` 生效机制说明与交付前自检。
 
 新增内置事件或 Handler 时，先阅读内置事件开发模板，再根据涉及的模块查阅规约与特性方案；需要了解完整协作与生命周期时，再查阅详细架构。
 
@@ -67,7 +68,7 @@
 - [assembly.py](assembly.py)：AgentServer 进程内唯一装配入口，负责 EventBus、管理门面、WebUI 运行时、启动加载与退出顺序。
 - [management/](management/)：包管理门面与本地后端；调用方只依赖 `ExtensionManager`。
 - [webui/](webui/)：WebUI 事件、渲染校验、实例登记、下行传输与上行适配。
-- [examples/auth_login_demo/](examples/auth_login_demo/)：登录与注册示例包，声明 `domain: gateway`，由 Gateway 加载；
+- [examples/auth_login_demo/](examples/auth_login_demo/)：登录与注册示例包，声明 `package.domain: gateway`，由 Gateway 加载；
   示例源码集中管理，包的运行宿主由 manifest 决定。
 - [examples/token_weather/](examples/token_weather/)：端到端示例包，验证槽位声明、事件 Handler、运行时渲染树和
   `ui.ready` 恢复；不作为产品内置包。

@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / gateway-extension-runtime` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 设计依据 | [详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-06 |
 | 契约状态 | 已实现；本文是 Gateway 扩展对外契约的唯一维护位置 |
 
 本文维护 Gateway 扩展运行时的对外契约：入口函数、事件数据类、路由语义、错误码、配置键与不变量。具体实现方案与决策历史见对应 feature 文档。
@@ -48,7 +48,7 @@
 | `package_type` | 必须为 `extension`；值为 `plugin` 的包归 Agent 插件 |
 | `package.id` | 非空标识符 |
 | `package.version` | 非空字符串 |
-| `domain` | `gateway` 才由 Gateway 加载；缺省视为 `agent`，只允许 `agent` / `gateway` |
+| `package.domain` | 必填；`gateway` 才由 Gateway 加载，只允许 `agentserver` / `gateway` |
 | `modules` | 入口模块列表，执行后调用 `create_extension(registrar)` |
 | `ui` / `client` | 可选映射，缺省为空；声明贡献和请求绑定，详见 [浏览器接入规约](S_06_local-browser-bridge.md) |
 | Handler 层级 | 只能是 USER；登记按包事务化，任一声明失败则整包回滚并报 `FAILED`，不会半注册 |
@@ -140,7 +140,7 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 Gateway 装配完成后创建本机管理入口，关闭运行时时撤销入口。
 
 - **包管理：** `extensions_v2/management/local_cli.py` 调用当前 Gateway 的包管理门面，不导入 AgentServer 扩展模块。
-- **宿主归属：** install 校验 ZIP 的 domain 为 gateway；query/reload/uninstall 仅处理本宿主包。
+- **宿主归属：** install 校验 ZIP 的 `package.domain` 为 gateway；query/reload/uninstall 仅处理本宿主包。
 - **访问权限：** 访问密钥与实例标识由宿主生成，只供当前操作系统账号使用。Web 登录和认证继续使用原有规则。
 
 公共命令和退出码见[本机 CLI 契约](../../../../extensions_v2/docs/specs/S_02_backend-package-management.md#5-本机-cli)，

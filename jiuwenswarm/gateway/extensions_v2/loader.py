@@ -3,10 +3,8 @@
 """Discover and load Gateway extension packages.
 
 Gateway and AgentServer share the install directory (``~/.jiuwenswarm/
-extension_pkgs``); a package declares its host with the manifest top-level
-``domain`` field (``agent`` or ``gateway``, default ``agent``). The field is
-unknown to the Core manifest parser and is therefore ignored when AgentServer
-loads the same package.
+extension_pkgs``); a package declares its host with ``package.domain``
+(``agentserver`` or ``gateway``, default ``agentserver``).
 
 Loading follows the Core loader: every entry file is executed inside a fresh
 package module, then ``create_extension()`` hands a registrar to the package.

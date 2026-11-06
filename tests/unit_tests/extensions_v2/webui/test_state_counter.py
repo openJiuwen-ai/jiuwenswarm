@@ -58,7 +58,7 @@ async def counter(tmp_path, monkeypatch):
     monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
     archive = tmp_path / "state_counter.zip"
     with ZipFile(archive, "w", ZIP_DEFLATED) as output:
-        for name in ("manifest.yaml", "extension.py", "README.md"):
+        for name in ("manifest.json", "extension.py", "README.md"):
             output.write(SOURCE / name, name)
     push = Push()
     host = await assembly.install_extensions(push)

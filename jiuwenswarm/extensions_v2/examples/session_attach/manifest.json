@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-attach",
-    "version": "1.0.0",
-    "displayName": "Session Attach Example"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session Attach Example"
   },
   "extensions": [
     {

@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-history-audit",
-    "version": "1.0.0",
-    "displayName": "Session History Audit"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session History Audit"
   },
   "extensions": [
     {

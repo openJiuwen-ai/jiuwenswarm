@@ -4,8 +4,10 @@
   "package": {
     "domain": "agentserver",
     "id": "example.session-repo-info",
-    "version": "1.0.0",
-    "displayName": "Session Repository Info"
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session Repository Info"
   },
   "extensions": [
     {

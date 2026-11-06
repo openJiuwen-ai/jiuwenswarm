@@ -250,7 +250,7 @@ async def test_deleting_a_live_run_notifies_once_before_release(env, tmp_path, m
     (source / "manifest.json").write_text(json.dumps({
         "package_type": "extension",
         "schemaVersion": 1,
-        "package": {"id": "runtime.end-reader", "version": "1.0.0"},
+        "package": {"id": "runtime.end-reader", "version": "1.0.0", "domain": "agentserver"},
         "extensions": [{"id": "reader", "runtime": "backend", "module": "extension.py"}],
     }), encoding="utf-8")
     (source / "extension.py").write_text('''from dataclasses import asdict
