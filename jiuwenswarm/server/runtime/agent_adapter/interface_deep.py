@@ -11397,8 +11397,9 @@ class JiuWenSwarmDeepAdapter:
             backend_key = (loop, _ssas_backend_fingerprint(ssas_cfg))
             with _SSAS_INIT_TASKS_LOCK:
                 # 缓存治理: 清理已关闭循环的条目(该循环上的 backend 不会再
-                # 被复用), 以及滞留的挂死 init Task/反查表条目(循环关闭后
-                # Task 永不再执行, 强引用滞留会阻止其 backend 被 GC);
+                # 被复用), 以及滞留的挂死 init Task/反查表条目与 close Task
+                # (循环关闭后 Task 永不再执行, 强引用滞留会阻止其 backend
+                # 被 GC、令跟踪集无界增长);
                 # 清扫条目的 backend 不随循环销毁释放(SQLite 连接等同步资源
                 # 在循环生命周期之外), 收集后锁外统一后台关闭防泄漏;
                 # 缓存条目与反查表条目可能引用同一 backend, 按对象同一性
@@ -11426,6 +11427,17 @@ class JiuWenSwarmDeepAdapter:
                     ):
                         stale_seen.add(id(stale_entry[1]))
                         stale_close_pairs.append((stale_entry[1], stale_entry[0][0]))
+                # close Task 同策略清扫(与 init Task 治理对称): 挂在已关闭
+                # 循环上的 close Task 永不再执行, 强引用滞留会令跟踪集随
+                # 多循环进程无界增长; 与 init 清扫一致仅 discard 不 cancel
+                # (已关闭循环无法调度 cancel 回调); 其目标 backend 的资源
+                # 释放无从推进, 由进程退出兜底
+                for stale_close_task in [
+                    task
+                    for task in _SSAS_CLOSE_TASKS
+                    if task.get_loop().is_closed()
+                ]:
+                    _SSAS_CLOSE_TASKS.discard(stale_close_task)
                 shared_backend = _SSAS_BACKEND_CACHE.get(backend_key)
             # 锁外后台释放已关闭循环条目的 backend(其 SQLite 连接等同步
             # 资源不随循环销毁释放): 经独立线程全新事件循环执行 close,
