@@ -1,10 +1,10 @@
 # =====================================================================
-# Web(User Web)nginx 配置模板 —— openshift 部署专用副本
-# (与 docker/web.nginx.conf.template 同源;openshift 部署只挂载本文件,
-#  可按 UBI 镜像形态独立调整,不影响 docker 镜像构建与老镜像部署)
+# Web(User Web)nginx 配置模板(UBI 镜像专用)
 #
-# 由 nginx 官方镜像 entrypoint 在启动时 envsubst 渲染:
-#   /etc/nginx/templates/default.conf.template → /etc/nginx/conf.d/default.conf
+# 由 docker/openshift/web-nginx-start.sh 在启动时 envsubst 渲染:
+#   /etc/nginx/templates/default.conf.template → /opt/app-root/etc/nginx.d/default.conf
+# 环境变量与 web.template.yaml 注入的同名 env 一致(必须全部提供):
+#   /etc/nginx/templates/default.conf.template → /opt/app-root/etc/nginx.d/default.conf
 # 环境变量与 web.template.yaml 注入的同名 env 一致(必须全部提供):
 #   WEB_HTTP_PORT / GATEWAY_URL / GATEWAY_WEB_HTTP_URL /
 #   USER_WEB_IDP_TARGET / USER_WEB_MANAGER_TARGET /

@@ -27,7 +27,7 @@ FROM ${NGINX_IMAGE}
 
 USER root
 
-COPY docker/web.nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/openshift/web.nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY docker/web-optional-upstreams.sh /docker-entrypoint.d/40-optional-upstreams.sh
 COPY docker/openshift/web-nginx-start.sh /app/jiuwenswarm/docker/openshift/web-nginx-start.sh
 RUN chmod +x /docker-entrypoint.d/40-optional-upstreams.sh /app/jiuwenswarm/docker/openshift/web-nginx-start.sh \
