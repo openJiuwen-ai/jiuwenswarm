@@ -1274,6 +1274,63 @@ def _persist_permissions(mutate_fn) -> dict[str, Any]:
     return persist_permissions_mutate(mutate_fn, persist_scope="base")
 
 
+def get_file_soft_delete_settings(
+    config: dict[str, Any] | None,
+    workspace_dir: str | None = None,
+) -> tuple[bool, str]:
+    """返回 Windows 软删除是否开启，以及归档目录。
+
+    只有布尔 ``True`` 才开启。缺省和非布尔值都保持关闭。
+    ``archive_dir`` 为空时落到 ``<workspace>/.trash``。关闭时归档路径为空。
+    """
+    if not isinstance(config, dict):
+        return False, ""
+    permissions = config.get("permissions")
+    if not isinstance(permissions, dict):
+        return False, ""
+    section = permissions.get("soft_delete")
+    if section is None:
+        return False, ""
+    if not isinstance(section, dict):
+        logger.warning("Invalid permissions.soft_delete=%r; leaving soft-delete off", section)
+        return False, ""
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        logger.warning(
+            "Invalid permissions.soft_delete.enabled=%r; leaving soft-delete off",
+            enabled,
+        )
+        return False, ""
+    if not enabled:
+        return False, ""
+
+    archive = section.get("archive_dir", "")
+    if archive is None:
+        archive = ""
+    if not isinstance(archive, str):
+        logger.warning(
+            "Invalid permissions.soft_delete.archive_dir=%r; leaving soft-delete off",
+            archive,
+        )
+        return False, ""
+    archive = archive.strip()
+    if archive:
+        return True, os.path.abspath(os.path.expandvars(os.path.expanduser(archive)))
+
+    workspace = (workspace_dir or "").strip()
+    if not workspace:
+        react = config.get("react")
+        if isinstance(react, dict):
+            raw_workspace = react.get("workspace_dir")
+            if isinstance(raw_workspace, str):
+                workspace = raw_workspace.strip()
+    if not workspace:
+        from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+        workspace = str(get_agent_workspace_dir())
+    return True, os.path.abspath(os.path.join(workspace, ".trash"))
+
+
 def get_permissions_file_guard_workspace_rw_enabled() -> bool:
     """读取 ``permissions.file_guard.workspace.rw_enabled``（缺省为 True）。"""
     fg = _effective_permissions().get("file_guard")
@@ -2806,7 +2863,27 @@ def migrate_config_from_template(
     return False
 
 
-def _prune_override_keys(template: dict[str, Any], override: dict[str, Any], depth: int = 0) -> dict[str, Any]:
+# permissions 段可由 agent_shield / E2E fixture 注入、且不在包内模板中的键。
+# 启动 cleanup_override_against_template 不得把它们当「废弃字段」剪掉，
+# 否则 shell_allowlist: null/[] 丢失后会回落到 default-30，host_guard 也会被摘掉。
+_PERMISSIONS_OVERRIDE_KEEP_KEYS = frozenset(
+    {
+        "shell_allowlist",
+        "host_guard",
+        "package_builtin_rules",
+        "agents",
+        "approval_overrides",
+    }
+)
+
+
+def _prune_override_keys(
+    template: dict[str, Any],
+    override: dict[str, Any],
+    depth: int = 0,
+    *,
+    parent_key: str = "",
+) -> dict[str, Any]:
     """递归清理 override 中模板不存在的字段（Remove 规则）。
 
     与 _deep_merge 的 Remove 规则一致，但只做清理不合并模板值。
@@ -2816,14 +2893,18 @@ def _prune_override_keys(template: dict[str, Any], override: dict[str, Any], dep
     result: dict[str, Any] = {}
     for key, over_val in override.items():
         if key not in template:
-            # 模板没有此字段 → 丢弃
+            if parent_key == "permissions" and key in _PERMISSIONS_OVERRIDE_KEEP_KEYS:
+                result[key] = over_val
+            # 模板没有此字段 → 丢弃（permissions 扩展键除外）
             continue
         tmpl_val = template[key]
         if isinstance(tmpl_val, dict) and isinstance(over_val, dict):
             if not tmpl_val:
                 result[key] = over_val
             else:
-                result[key] = _prune_override_keys(tmpl_val, over_val, depth + 1)
+                result[key] = _prune_override_keys(
+                    tmpl_val, over_val, depth + 1, parent_key=key
+                )
         else:
             result[key] = over_val
     return result
@@ -3254,21 +3335,37 @@ def _looks_like_bare_filename(value: str) -> bool:
     return "/" not in value and "\\" not in value and not Path(value).is_absolute()
 
 
-def _jiuwenbox_configs_dir() -> Path | None:
-    """探测仓库或安装位置上的 ``jiuwenbox/configs/`` 目录。
+def _configs_dir_with_policy(candidate: Path) -> Path | None:
+    """目录里至少有一份 policy yaml 才算可用。"""
+    if candidate.is_dir() and any(candidate.glob("*.yaml")):
+        return candidate
+    return None
 
-    优先在仓库目录树里寻找 (开发场景, ``jiuwenbox/src/jiuwenbox/configs``);
-    失败再尝试已 ``pip install`` 的 jiuwenbox 包内 ``configs/``。
+
+def _frozen_jiuwenbox_configs_dir() -> Path | None:
+    """冻包里的 policy 模板。
+
+    ``collect_all`` 把 yaml 放到 ``_MEIPASS/jiuwenbox/configs``。box-server
+    启动时会把这个目录改名为 ``jiuwenbox_legacy_overlay``，避免磁盘包盖住 PYZ。
     """
-    here = Path(__file__).resolve()
+    if not getattr(sys, "frozen", False):
+        return None
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return None
+    root = Path(meipass)
+    for candidate in (
+        root / "jiuwenbox" / "configs",
+        root / "jiuwenbox_legacy_overlay" / "configs",
+    ):
+        found = _configs_dir_with_policy(candidate)
+        if found is not None:
+            return found
+    return None
 
-    for ancestor in here.parents[1:7]:
-        for candidate in (
-            ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "configs",
-            ancestor / "jiuwenbox" / "configs",
-        ):
-            if candidate.is_dir():
-                return candidate
+
+def _installed_jiuwenbox_configs_dir() -> Path | None:
+    """已安装 jiuwenbox 自带的 ``configs/``（git 依赖或 wheel）。"""
     try:
         import jiuwenbox  # type: ignore[import-not-found]
     except ImportError:
@@ -3277,18 +3374,42 @@ def _jiuwenbox_configs_dir() -> Path | None:
         pkg_dir = Path(jiuwenbox.__file__).resolve().parent
     except Exception:  # noqa: BLE001
         return None
-    # wheel 安装版: policy 模板随包打入 ``<site-packages>/jiuwenbox/configs/``。
-    direct = pkg_dir / "configs"
-    if direct.is_dir():
-        return direct
-
+    found = _configs_dir_with_policy(pkg_dir / "configs")
+    if found is not None:
+        return found
     for steps_up in (2, 3):
         candidate = pkg_dir
         for _ in range(steps_up):
             candidate = candidate.parent
-        candidate = candidate / "configs"
-        if candidate.is_dir():
-            return candidate
+        found = _configs_dir_with_policy(candidate / "configs")
+        if found is not None:
+            return found
+    return None
+
+
+def _jiuwenbox_configs_dir() -> Path | None:
+    """探测 ``jiuwenbox/configs/`` 目录。
+
+    裸文件名（例如 ``windows-policy.yaml``）从这里拼接。
+    顺序：冻包数据目录、已安装的 jiuwenbox 包、本仓库里残留的 ``jiuwenbox/``。
+    """
+    frozen = _frozen_jiuwenbox_configs_dir()
+    if frozen is not None:
+        return frozen
+
+    installed = _installed_jiuwenbox_configs_dir()
+    if installed is not None:
+        return installed
+
+    here = Path(__file__).resolve()
+    for ancestor in here.parents[1:7]:
+        for candidate in (
+            ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "configs",
+            ancestor / "jiuwenbox" / "configs",
+        ):
+            found = _configs_dir_with_policy(candidate)
+            if found is not None:
+                return found
     return None
 
 

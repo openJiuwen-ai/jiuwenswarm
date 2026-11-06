@@ -1690,7 +1690,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setPaused(sessionId, false);
         // 执行中追问：先收尾上一轮仍在 streaming 的 leader，避免新一轮气泡/头像挂错簇
         closeActiveTeamLeaderMessages(sessionId);
-        useChatStore.getState().closeReasoning(sessionId);
+        useChatStore.getState().closeReasoning(sessionId, { dropEmpty: true });
       }
       try {
         let outgoingContent = content.replace(/\{\{skill:([^}]+)\}\}/g, '$1');
@@ -2761,11 +2761,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
         const reasoningContent =
           typeof payload.content === 'string' ? payload.content : '';
-        if (reasoningContent) {
-          useChatStore.getState().appendReasoning(sessionId, reasoningContent, {
-            atMs: eventTimestampMs(payload),
-          });
-        }
+        useChatStore.getState().appendReasoning(sessionId, reasoningContent, {
+          atMs: eventTimestampMs(payload),
+        });
       }),
       webClient.on('chat.final', ({ payload }) => {
         if (shouldDropDuplicatedEvent('chat.final', payload)) return;
@@ -2831,6 +2829,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+          dropEmpty: true,
+        });
 
         // cron B'：本帧 final 写完气泡后（含 chat.send 续跑路径），结束 live 保活窗口。
         // 有权限卡时 noteCronLiveContentFinal 内部会直接 return。

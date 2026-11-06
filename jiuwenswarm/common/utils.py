@@ -302,6 +302,9 @@ def _log_component_from_logger_name(name: str) -> str:
         return "permissions"
     if name.startswith("openjiuwen.harness.security") or name.startswith("openjiuwen.harness.rails.security"):
         return "permissions"
+    # W1a: agent_shield 判定日志进 permissions.log（permission.engine.decision / manager.*）
+    if name.startswith("agent_shield"):
+        return "permissions"
     if name.startswith("jiuwenswarm.agents") or name.startswith("jiuwenswarm.server"):
         return "agent_server"
     return "gateway"

@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -71,7 +71,12 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - **N11 代理解析顺序与重试**：tip/overlay（无进程回退）→ `os.environ`（Windows 大小写
   不敏感已处理）；NO_PROXY 支持 `*` / 域名后缀 / IP / CIDR；`ProxyError` 自动去代理
   重试（fail-open）；requests 封装 `trust_env=False`（`REQUESTS_CA_BUNDLE` 需显式注入）；
-  `JIUWENSWARM_SSL_VERIFY` 默认开启 TLS。
+  `JIUWENSWARM_SSL_VERIFY` 默认开启 TLS。AgentServer 工具执行绑定 NetGuard 配置 key 时，
+  网页/搜索请求改走受保护传输：仅按 key 调用 PermissionManager；每跳解析并校验完整 DNS
+  快照、固定连接 IP、保留原 Host/SNI 并验证证书，重定向重新检查。该路径强制 TLS
+  校验（保留自定义 CA 路径，旧的免校验开关不生效）；当前代理接口无法保证目标 IP 固定，
+  故显式拒绝代理，禁止失败后自动直连。
+  未绑定此执行上下文的原有请求路径保持上述兼容行为（包括 Gateway）。
 - **N12 affinity 不变量 fail-closed**：affinity 开启 ⇒ release 必 false 且默认 provider
   必为 `AscendAffinity`；请求级互斥冲突直接抛 ValueError。provider 判定链：
   `models.defaults[is_default]` → `models.default` → `react.model_client_config` →

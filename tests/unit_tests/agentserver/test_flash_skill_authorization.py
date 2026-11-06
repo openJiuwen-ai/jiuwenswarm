@@ -160,7 +160,9 @@ async def test_flash_file_grants_reopen_revoke_and_never_cross_session(
         {"web_flash": "allow", "web_search": "ask"},
         skill_authorization={"enabled": True},
     )
-    gate = SkillAuthorizationRail(engine=rail._engine, grant_store=reopened)
+    gate = SkillAuthorizationRail(
+        permission_key=rail.permission_key, grant_store=reopened
+    )
     rail.set_skill_scope_resolver(gate.resolve_scope)
     for session_id, expected in [
         ("session", PermissionLevel.ALLOW),
@@ -169,18 +171,16 @@ async def test_flash_file_grants_reopen_revoke_and_never_cross_session(
         ctx = tool_context(
             "web_flash", {"search": {"query": "fixture"}}, session_id=session_id
         )
-        rail._refresh_permissions_for_tool_call(ctx)
-        result = await rail._engine.check_permission(
-            "web_flash", {"search": {"query": "fixture"}}
+        result = await rail._check_tool_permission(
+            "web_flash", {"search": {"query": "fixture"}}, ctx
         )
         assert result.permission == expected
     first.revoke_grants("session", "main")
     ctx = tool_context(
         "web_flash", {"search": {"query": "fixture"}}, session_id="session"
     )
-    rail._refresh_permissions_for_tool_call(ctx)
     assert (
-        await rail._engine.check_permission(
-            "web_flash", {"search": {"query": "fixture"}}
+        await rail._check_tool_permission(
+            "web_flash", {"search": {"query": "fixture"}}, ctx
         )
     ).permission == PermissionLevel.ASK
