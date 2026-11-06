@@ -18,6 +18,20 @@ import jiuwenswarm.server.runtime.agent_adapter.interface_deep as m
 pytestmark = [pytest.mark.filterwarnings("ignore")]
 
 
+@pytest.fixture(autouse=True)
+def _reset_ssas_globals():
+    """用例间隔离宿主侧进程级全局集合。
+
+    本模块对 _SSAS_INIT_TASKS/_SSAS_CLOSE_TASKS 做绝对数量断言, 全量套件
+    中同进程其它模块若滞留条目会令断言假红; 每用例前清空恢复隔离基线。
+    """
+    with m._SSAS_INIT_TASKS_LOCK:
+        m._SSAS_INIT_TASKS.clear()
+        m._SSAS_INIT_TASK_KEYS.clear()
+        m._SSAS_CLOSE_TASKS.clear()
+    yield
+
+
 def _cfg(tmp_path, **overrides):
     ssas = {
         "enabled": True,
