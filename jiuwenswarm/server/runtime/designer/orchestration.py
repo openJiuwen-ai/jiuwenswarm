@@ -64,6 +64,36 @@ def _llm_character_card(
     return card
 
 
+def _merge_analysed_cast(
+    cards: list[dict[str, Any]],
+    analysed: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep every analysed character in the cast the Director authored.
+
+    The Director writes its own cast cards, and that list can be a strict subset
+    of ``script_analysis.characters``. A character it drops is still staged by
+    the storyboard, so the clip would be generated with no identity plate and
+    the face drifts between shots. Restore the missing ones from the analysis,
+    in analysis order, so every staged character keeps one spec.
+    """
+    merged = list(cards)
+    present = {
+        str(cid)
+        for card in merged
+        for cid in (card.get("character_ids") or [card.get("id")])
+        if str(cid or "").strip()
+    }
+    for entry in analysed:
+        if not isinstance(entry, dict):
+            continue
+        cid = str(entry.get("id") or "").strip()
+        if not cid or cid in present:
+            continue
+        merged.append(_llm_character_card(entry, len(merged) + 1, analysed))
+        present.add(cid)
+    return merged
+
+
 def _language_rule() -> str:
     """Keep every user-editable value the Director writes in the content language."""
     return authoring_language_rule(current_content_language())
@@ -1492,7 +1522,7 @@ class Director:
                         continue
                     cleaned_chars.append(_llm_character_card(raw, i, characters))
                 if cleaned_chars:
-                    characters = cleaned_chars
+                    characters = _merge_analysed_cast(cleaned_chars, list(analysis.get("characters") or []))
                     analysis["characters"] = characters
                     notes = "Director LLM authored cast + storyboard."
             llm_shots = parsed.get("clips") if isinstance(parsed.get("clips"), list) else []
@@ -1848,7 +1878,7 @@ class Director:
                     "the execution graph.",
                     code=LLM_API_ERROR,
                 )
-            characters = cleaned_chars
+            characters = _merge_analysed_cast(cleaned_chars, list(analysis.get("characters") or []))
             analysis["characters"] = characters
             analysis["source"] = "llm"
             source = "llm"
