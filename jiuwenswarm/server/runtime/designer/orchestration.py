@@ -1425,6 +1425,9 @@ class Director:
                 "NO scene specs. Crowd/extras persist across same-setting shots "
                 "unless they exit. Each shot needs timeline, camera, action, "
                 "on_screen, offscreen, cast_actions, featured_cast_ids, setting_id, "
+                "crowd_spec {present,density,placement} decided from the shot's meaning "
+                "in any language (present=true when unnamed people are visible, false only "
+                "when you are confident the shot is empty of them, null when undetermined), "
                 "start_state {pose,seats,facing,on_screen,offscreen}, "
                 "end_state {pose,seats,facing,exited,speech_done,on_screen}, "
                 "continuity_lock, clip_prompt, exiting_character_ids, "
@@ -1450,6 +1453,7 @@ class Director:
                 '"action":"...","on_screen":["char_1"],"offscreen":["char_2"],'
                 '"featured_cast_ids":["char_1"],"cast_actions":{"char_1":"..."},'
                 '"ensemble_cast_ids":["char_1","char_2"],"setting_id":"set_1",'
+                '"crowd_spec":{"present":true,"density":"a dozen","placement":"in_frame"},'
                 '"clip_strategy":"compose_from_character_specs",'
                 '"start_state":{"pose":"...","seats":{},"facing":"..."},'
                 '"end_state":{"pose":"...","exited":[],"speech_done":"..."},'
@@ -1576,6 +1580,28 @@ class Director:
         analysis = ensure_audio_locks_on_analysis(analysis, user_prompt)
         analysis = apply_shot_scope(analysis, user_prompt)
         shots = list(analysis.get("clips") or shots)
+        # The storyboard schema keeps crowd_spec optional for model reliability, so
+        # decide any shot the model left undecided before the graph is built.
+        try:
+            from jiuwenswarm.server.runtime.designer.script_analysis import (
+                _apply_shot_crowds,
+                _decide_shot_crowds,
+                _shot_has_crowd,
+                _shots_missing_crowd,
+            )
+
+            if _shots_missing_crowd(shots):
+                decided_before = sum(1 for s in shots if isinstance(s, dict) and _shot_has_crowd(s))
+                decided = await _decide_shot_crowds(shots, timeout_sec=60.0)
+                if decided:
+                    _apply_shot_crowds(shots, decided)
+                    analysis["clips"] = shots
+                    decided_after = sum(
+                        1 for s in shots if isinstance(s, dict) and _shot_has_crowd(s)
+                    )
+                    meta["crowd_decided_by_llm"] = decided_after - decided_before
+        except Exception:  # noqa: BLE001 — crowd decision is best-effort
+            logger.info("crowd decision pass skipped", exc_info=True)
         if shots and not user_declined_speech(user_prompt):
             has_line = any(
                 is_spoken_line(str(s.get("speech_line") or ""))
@@ -1785,6 +1811,7 @@ class Director:
                 "Scene specs ARE required — environment-only Qwen images. "
                 "Each shot: clip_index, timeline, camera, action, on_screen, offscreen, "
                 "cast_actions, featured_cast_ids, ensemble_cast_ids, setting_id, "
+                "crowd_spec {present,density,placement}, "
                 "clip_prompt, exiting_character_ids, clip_strategy, "
                 "speech_by_character, speech_line. "
                 "Schema: "
@@ -2272,10 +2299,14 @@ class Director:
                         cfg["crowd_lock"] = crowd
                     break
         if crowd and role != "clip" and "CROWD LOCK" not in prompt:
+            from jiuwenswarm.server.runtime.designer.pipeline.clip_policy import (
+                crowd_present_label,
+            )
+
             prompt = (
                 prompt
-                + f"\nCROWD LOCK: present={crowd.get('present')}; "
-                f"density={crowd.get('density')}. {str(crowd.get('rule') or '')[:280]}"
+                + f"\nCROWD LOCK: present={crowd_present_label(crowd.get('present'))}; "
+                f"density={crowd.get('density') or 'unspecified'}. {str(crowd.get('rule') or '')[:280]}"
             )
             notes.append("inject_crowd_lock")
             changed = True

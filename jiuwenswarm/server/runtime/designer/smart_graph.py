@@ -642,6 +642,7 @@ def build_smart_video_graph(
     """
     from jiuwenswarm.server.runtime.designer.pipeline.clip_policy import (
         apply_compose_character_specs_setting_policy,
+        crowd_present_label,
     )
 
     prompt_text = prompt.strip()
@@ -1340,8 +1341,9 @@ def build_smart_video_graph(
         crowd_bits = ""
         if crowd:
             crowd_bits = (
-                f"CROWD LOCK: present={crowd.get('present')}; "
-                f"density={crowd.get('density')}; {str(crowd.get('rule') or '')[:220]} "
+                f"CROWD LOCK: present={crowd_present_label(crowd.get('present'))}; "
+                f"density={crowd.get('density') or 'unspecified'}; "
+                f"{str(crowd.get('rule') or '')[:220]} "
             )
         done_bits = ""
         scene_bits = ""
