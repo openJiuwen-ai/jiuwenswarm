@@ -26,7 +26,7 @@
 
 | 术语 | 含义 |
 | --- | --- |
-| 扩展包 / 包根 | 含 `manifest.yaml` 的目录；V2 安装副本位于 `<install_dir>/<package.id>/<version>/` |
+| 扩展包 / 包根 | 含 `manifest.json` 的目录；V2 安装副本位于 `<install_dir>/<package.id>/<version>/` |
 | 扩展单元 | `manifest.extensions` 的一项，指向包根下的一个 `.py` 入口文件 |
 | 生效记录 | agent-core 控制面中该包已生效的事实，含版本、包根与 generation |
 | Report | 一次管理操作的逐包结果，区分成功、失败与依赖未满足 |
@@ -53,7 +53,7 @@
 | 包管理注册表 | 门面直接委托 agent-core `Registry`；控制面与发布不在宿主重建 | EXTV2-03、EXTV2-04 |
 | 包身份 | 归属事实以 agent-core 生效记录为准；发布 Handler 时通过 `register_event_handler(..., package_metadata=...)` 写入注册记录，由 Events 在构建 Ops 时注入，不从事件输入或会话上下文读取；扩展的受限注册入口不接收包身份 | EXTV2-04 |
 | 清理帧 | 独立下行事件 `webui.render.clear`，只携带目标与原因，不复用带 `mode` 的渲染帧 | EXTV2-06 |
-| 界面项声明 | 写在 `manifest.yaml` 的 `ui` 段，字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构；`renderer.kind` 在本方案中新增 `webui-tree`，前端需支持该渲染模式；agent-core 只解析已知字段，JiuwenSwarm 从生效记录的包根读取原始 `manifest.yaml` 并完成内容校验 | EXTV2-07 |
+| 界面项声明 | 写在 `manifest.json` 的 `ui` 段，字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构；`renderer.kind` 在本方案中新增 `webui-tree`，前端需支持该渲染模式；agent-core 只解析已知字段，JiuwenSwarm 从生效记录的包根读取原始 `manifest.json` 并完成内容校验 | EXTV2-07 |
 | revision 作用域 | 实例内单调；实例由会话、slot、包与实例标识定位，跨包排序由前端槽位模式处理 | EXTV2-06、EXTV2-08 |
 | 重连恢复 | 服务端重发各活跃实例最近一帧，revision 不变；不新增同步接口，不要求扩展重新生成 | EXTV2-06 |
 
@@ -86,7 +86,7 @@
 
 ### EXTV2-02 包声明与加载控制面接入
 
-- **目标与范围：** 接入 agent-core 包加载控制面：读取并校验 `manifest.yaml`、写入安装副本、按依赖定序执行单包计划、创建候选模块、写入生效记录、判断卸载条件。JiuwenSwarm 不自建 manifest Schema、依赖排序或版本规则。不包含管理门面、总线发布与界面项。
+- **目标与范围：** 接入 agent-core 包加载控制面：读取并校验 `manifest.json`、写入安装副本、按依赖定序执行单包计划、创建候选模块、写入生效记录、判断卸载条件。JiuwenSwarm 不自建 manifest Schema、依赖排序或版本规则。不包含管理门面、总线发布与界面项。
 - **责任与契约：** `ExtensionManager` 触发 agent-core 的 `package.install` 管理事件，解析、依赖定序、复制与加载全部由对端完成；宿主只读取 `PackageManager.list_installed()` 并补偿 prepare 失败留下的新副本。错误沿用 `EXTENSION_*` 号段，对上层返回逐包 `ActivationReport`。
 - **开工硬前置：** 安装目录解析 `extensions_v2/config.py`（EXTV2-01 的配置子项，已提供）。
 - **独立验证入口：** `tests/unit_tests/extensions_v2/management/test_registry_facade.py`。
@@ -173,14 +173,14 @@
 ### EXTV2-07 界面项声明、挂载与上行交互
 
 - **目标与范围：** 从生效包派生可用的扩展UI界面项与允许槽位供前端发现；挂载上报按该目录校验，未声明的包或槽位被拒，没有界面贡献时不占位；上行交互进入事件链并返回可区分回执。
-- **责任与契约：** `extensions_v2/webui/contributions.py` 从生效记录的包根读取 `manifest.yaml` 的 `ui` 段（`apiVersion` 加 `items`；字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构，`renderer.kind` 新增 `webui-tree`），校验 `type`、`id`、`slot`、`order`、`panel`、`localeId`、`renderer` 与 `web.locale` 资源路径，产出可用界面项目录；语义校验全部在本模块完成，不依赖 agent-core 返回该段。`extensions_v2/webui/adapter.py` 是唯一上行入口，回执沿用 `event`、`accepted`、`status`、`code` 字段。
+- **责任与契约：** `extensions_v2/webui/contributions.py` 从生效记录的包根读取 `manifest.json` 的 `ui` 段（`apiVersion` 加 `items`；字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构，`renderer.kind` 新增 `webui-tree`），校验仅允许 `web.slot.contribution`、`id` 唯一、`slot` 已登记、`order` 为整数且 `renderer.kind` 受支持，产出可用界面项目录；语义校验全部在本模块完成，不依赖 agent-core 返回该段。`extensions_v2/webui/adapter.py` 是唯一上行入口，回执沿用 `event`、`accepted`、`status`、`code` 字段。
 - **开工硬前置：** EXTV2-04、EXTV2-06。
 - **独立验证入口：** `tests/unit_tests/extensions_v2/webui/test_webui_adapter.py`、`tests/unit_tests/extensions_v2/webui/test_webui_runtime.py` 与页面路径。
 - **独立验证条件：** 至少一个含界面声明的样例包与一个纯后端包。
 - **验收标准：**
   1. EXTV2-07-V-01：只有生效包声明的界面项可以挂载；未声明、包已停用或槽位不在声明内均被拒绝。
   2. EXTV2-07-V-02：纯后端包不产生界面项，页面不出现空占位。
-  3. EXTV2-07-V-03：`apiVersion` 非 1、`type` 未知、同类型 `id` 重复、`localeId` 悬空、资源路径逃逸或 `renderer.kind` 不受支持时整包拒绝，不发布部分条目。
+  3. EXTV2-07-V-03：`apiVersion` 非 1、`type` 未知、`ui` 最外层或 `items` 非对象/数组、`id` 重复、`slot` 未登记或 `renderer.kind` 不受支持时整包拒绝，不发布部分条目。
   4. EXTV2-07-V-04：按压、输入、开关、选择四类交互在活跃实例上返回处理结果；无 Handler 时回执为 `no_handler`，非活跃实例为 `inactive`，两者都不产生副作用。
 - **来源验证点与共享场景：** 架构 EXTV2-A06 与第 4.4.1、4.4.2、5.2.2 节；主责 EXTV2-07，参与 EXTV2-M1、M2。
 - **前端独立验证：** 槽位宿主在没有可用界面项时不渲染容器。
@@ -276,7 +276,7 @@
 - **责任与契约：** [S_05](../specs/S_05_session-repo-ops.md)；Ops 登记沿用 session Builder，Git 业务读取位于 `server/runtime/session/session_repo.py`。
 - **开工硬前置：** EXTV2-13 的可信 cwd 与共享 session Ops 接线；不以 EXTV2-14 的模型资料为前提。
 - **验收标准：** [F_15 第 6 节](../features/F_15_session-repo.md#6-验收与未决问题) 的真实子目录、worktree、detached / unborn、缺失、错误、超时、并发隔离、用户包装载与原生入口验证。
-- **独立验证：** `tests/unit_tests/extensions_v2/test_session_repo_ops.py`；示例 `examples/session_repo_info/`。
+- **独立验证：** `tests/unit_tests/extensions_v2/test_session_repo_ops.py`。
 - **前端与联合交付：** 新增同名查询 Event/CORE；不新增前端入口；不据此完成 M1～M3。对应 Server PR-03。
 
 ### EXTV2-16 会话历史读写与追加前扩展
@@ -285,14 +285,14 @@
 - **责任与契约：** [S_06](../specs/S_06_session-history-ops.md)；[F_16](../features/F_16_session-append.md) 说明追加事件/方法，[F_18](../features/F_18_session-messages.md) 独立说明只读历史查询（本 PR 新增文档编号，交付任务不拆分）；事件 / Handler / Ops 登记在 Extensions V2，记录构造、分页及写入服务留在 Server 历史模块。agent-core 不改造，EventBus 只在 Worker。
 - **开工硬前置：** 已有 EXTV2-01 装配、EXTV2-05 共享 Ops Builder、宿主绑定的有效 SessionContext 和原历史服务；不依赖 cwd / model / repo 能力。
 - **验收标准：** 用户包实际加载并调用两项 Ops；改写 / 显式拒绝 / 真写回执与原入口生效；稳定分页、重试去重与冲突、跨会话 / 包隔离、取消 / 失败 / generation 拒绝；已有历史回归和真实 Worker 链路。范围及证据入口见 [F_16 追加验收](../features/F_16_session-append.md#6-验收与未决问题) 与 [F_18 查询验收](../features/F_18_session-messages.md#6-验收与未决问题)。
-- **独立验证：** `tests/unit_tests/extensions_v2/test_session_history_ops.py` 与 `test_session_history_messages.py`；用户示例 `examples/session_history_audit/`，追加字段和迁移见 F_16，查询字段和只读用户示例见 F_18。
+- **独立验证：** `tests/unit_tests/extensions_v2/test_session_history_ops.py` 与 `test_session_history_messages.py`；追加字段和迁移见 F_16，查询字段见 F_18。
 - **前端与联合交付：** 历史可通过既有读取入口恢复，本次不主动渲染 UI，不据此完成 M1～M3。对应 Server PR-04。
 
 ### EXTV2-17 会话轮次与用量查询
 
 - **目标与独立验收：** 新增共享只读 `ops.session.turns()` 和 `ops.session.usage()`；两项派发同名查询事件，前者统计已提交原生用户输入，后者返回 context/rateLimits/可选 cost，未知数字不伪造。验证多会话、重复记录、工具/模型活动、空值与零值、历史恢复、宿主快照、用户包调用与卸载。
 - **必要前置：** 既有 `ops.build`、可信 SessionContext、平台历史和原生用量事实；不依赖追加调用作为查询前置，不新增 session.measure。
-- **代码与契约：** [F_17 usage](../features/F_17_session-usage.md)、[F_20 turns](../features/F_20_session-turns.md)、[S_07](../specs/S_07_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
+- **代码与契约：** [F_17 usage](../features/F_17_session-usage.md)、[F_20 turns](../features/F_20_session-turns.md)、[S_07](../specs/S_07_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py。
 
 ### EXTV2-22 七项只读查询事件化
 
@@ -317,7 +317,7 @@
 - **责任与契约：** [S_10](../specs/S_10_session-end.md)、[F_22](../features/F_22_session-end.md)。event_types 只定义/校验/注册，event_handlers 默认 CORE 确认通知，Server 固定运行结束参与者实际 trigger；原 Runtime 继续唯一执行资源释放，通知不自动删除历史。
 - **必要前置：** 现有 Worker EventBus/Registry/Ops Build 与 Runtime 会话代次/固定结束参与者协议；不依赖未合入 PR04/05/06 或 Core !110。不与 session.start 按包激活实例一一配对。
 - **验收标准：** 真实用户包、回执/目标保护、并发重复、错误/超时/取消、默认释放顺序、KVC 发布共存、跨会话/Team 排除、回合/切页非触发、历史保留、同 ID 新代次、卸载前通知与真实 Worker 接线；证据唯一入口见 [F_22 第 6 节](../features/F_22_session-end.md#6-验收与未决问题)。
-- **独立验证：** `test_session_end.py` 及 Runtime/Worker 结束与删除回归；现成包 `examples/session_end/`。不新增 Ops、前端入口或 Team 接线。
+- **独立验证：** `test_session_end.py` 及 Runtime/Worker 结束与删除回归。不新增 Ops、前端入口或 Team 接线。
 
 ### EXTV2-20 界面与主会话关联建立通知
 
@@ -325,7 +325,7 @@
 - **责任与契约：** [S_11](../specs/S_11_session-attach.md)、[F_23](../features/F_23_session-attach.md)。类型/校验/注册在 event_types，CORE 只确认关联；平台关联表和 trigger 在 Server 通知模块。Runtime 仅组合固定 foreground 观察者，不依赖 EventBus。
 - **必要前置：** 现有 Worker EventBus/Registry/Ops Build、Runtime 提交和 Web view_id；不依赖未合入 PR04/05/06/10 或 Core !110。无新增 Ops、前端请求或 Team 适配。
 - **验收标准：** 真实用户包、提交时点、两视图/切换/重放/稳定重连、输入回执保护、失效/缺失目标、超时/取消、KVC 共存、卸载与真实 Front/Supervisor/Worker；证据见 [F_23 第 6 节](../features/F_23_session-attach.md#6-验收与未决问题)。
-- **独立验证：** test_session_attach.py、test_session_attach_provisioner.py；现成包 examples/session_attach/。关联表在本 Runtime 内复用，PR08/11 原同 PR !95 开发，现随 Server !99 交付，解除文档为 F_24 / S_12，不将 ui.ready 或 Gateway 连接解释为 attach。
+- **独立验证：** test_session_attach.py、test_session_attach_provisioner.py。关联表在本 Runtime 内复用，PR08/11 原同 PR !95 开发，现随 Server !99 交付，解除文档为 F_24 / S_12，不将 ui.ready 或 Gateway 连接解释为 attach。
 
 ### EXTV2-21 界面与主会话关联解除通知
 

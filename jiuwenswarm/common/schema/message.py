@@ -183,9 +183,14 @@ class ReqMethod(Enum):
     WEBUI_CONNECTION_CLOSED = "webui.connection.closed"
 
     EXTENSIONS_V2_QUERY = "extensions.v2.query"
+    EXTENSIONS_V2_CATALOG = "extensions.v2.catalog"
+    EXTENSIONS_V2_SHOW = "extensions.v2.show"
+    EXTENSIONS_V2_IMPORT = "extensions.v2.import"
     EXTENSIONS_V2_INSTALL = "extensions.v2.install"
     EXTENSIONS_V2_UNINSTALL = "extensions.v2.uninstall"
     EXTENSIONS_V2_RELOAD = "extensions.v2.reload"
+    EXTENSIONS_V2_FILE_LIST = "extensions.v2.file.list"
+    EXTENSIONS_V2_FILE_READ = "extensions.v2.file.read"
 
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
     PROACTIVE_FEEDBACK = "proactive.feedback"  # User feedback on proactive recommendation (like/dislike)

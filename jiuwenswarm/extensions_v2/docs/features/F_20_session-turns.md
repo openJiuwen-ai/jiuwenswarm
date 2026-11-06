@@ -105,7 +105,7 @@ USER／BUILTIN 的普通异常或非法输出沿用 Core 故障隔离，可能�
 
 ### 3.4 注册、筛选、改写示例
 
-本例要做的事情是：**按会话保存已观察轮次，并标记十轮提醒**。下面是扩展入口模块 `extension.py`；由已有 manifest 指定该模块并通过管理入口安装即可，包格式参照 [session_query_audit](../../examples/session_query_audit/manifest.yaml)。
+本例要做的事情是：**按会话保存已观察轮次，并标记十轮提醒**。下面是扩展入口模块 `extension.py`；由已有 manifest 指定该模块并通过管理入口安装即可，包格式参照 [auth_login_demo](../../examples/auth_login_demo/manifest.json)。
 
 ```python
 class Extension:
@@ -212,7 +212,7 @@ notify_context_usage 把会话 ID、可信目录与可得快照整理为 Session
 
 默认查询不写平台业务数据、不发模型请求、不自动渲染，也没有全局结果缓存。对返回视图的加工不会成为其他平台操作的可信输入。用户包卸载／重载撤销自己的 Hook，不撤销平台事件、CORE 或共享 Ops；用户自有内存参数与缓存的保留由用户扩展管理。
 
-七项联合示例见 [session_query_audit](../../examples/session_query_audit/)；其中 collect_session_parameters(ops) 是普通用户辅助函数，分别调用七个 Ops 后返回参数字典。它与本文单项业务规则的示例分别维护。共享机制、来源及取消边界见[公共协议的接入与资源边界](../specs/S_08_session-query-events.md#6-平台接入与资源边界)。
+七个查询 Ops 统一由 `handler_ops/session_ops.py` 提供。共享机制、来源及取消边界见[公共协议的接入与资源边界](../specs/S_08_session-query-events.md#6-平台接入与资源边界)。
 
 源码位置：[事件与校验](../../event_types/session_queries.py)、[Ops 登记](../../handler_ops/session_ops.py)、[查询代理](../../handler_ops/session_queries.py)、[分派](../../query_dispatch.py)、[查询 CORE／BUILTIN](../../event_handlers/session_queries.py)、[平台读取](../../../server/runtime/session/query_views.py)、[现有平台通知入口](../../event_types/context_usage.py)。
 

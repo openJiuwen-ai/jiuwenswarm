@@ -12,7 +12,7 @@
 
 ## 1. 概述
 
-扩展包在 `manifest.yaml` 的 `package.domain` 中声明运行域。当前支持 `agentserver` 和 `gateway`；
+扩展包在 `manifest.json` 的 `package.domain` 中声明运行域。当前支持 `agentserver` 和 `gateway`；
 缺失或使用其它值的声明会在安装时被拒绝。
 
 AgentServer 的实现仍位于 `jiuwenswarm/extensions_v2`，启动入口仍为 `assembly.install_extensions`。

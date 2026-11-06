@@ -4,7 +4,7 @@
 
 Gateway packages live in the same ``extension_pkgs`` tree as AgentServer
 packages; this facade only touches entries whose manifest says
-``domain: gateway``. File layout, zip guards and copies come from agent-core's
+``package.domain: gateway``. File layout, zip guards and copies come from agent-core's
 ``PackageManager``; publishing and releasing handlers stay on the Gateway
 runtime, so a package never needs a second ``ops.build``.
 """
@@ -14,26 +14,36 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.extension import ActivationReport, ExtensionFailure
 from openjiuwen.core.extension.errors import OperationError, operation_error
+from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.package_manager import PackageManager
 
 from jiuwenswarm.gateway.extensions_v2.loader import load_gateway_package
-from jiuwenswarm.gateway.extensions_v2.management.manifest_source import (
-    DOMAIN_GATEWAY,
-    InstalledPackage,
-    list_installed,
-    read_domain,
-)
+from jiuwenswarm.gateway.extensions_v2.manifest import DOMAIN_GATEWAY
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
 
 logger = logging.getLogger(__name__)
+
+_DELETE_ATTEMPTS = 3
+_DELETE_BACKOFF_SECONDS = 0.2
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledPackage:
+    """The host-facing fields of one installed version directory."""
+
+    package_id: str
+    version: str
+    domain: str
+    root: Path
 
 
 class GatewayPackageManager:
@@ -48,7 +58,7 @@ class GatewayPackageManager:
     ) -> None:
         self._runtime = runtime
         self.install_dir = Path(install_dir).expanduser()
-        self._store = PackageManager(self.install_dir)
+        self._store = PackageManager(self.install_dir, domain=DOMAIN_GATEWAY)
         self._lock = asyncio.Lock()
         self._on_released = on_released
 
@@ -57,7 +67,21 @@ class GatewayPackageManager:
     def installed(self) -> list[InstalledPackage]:
         """Every installed package in the shared store, both domains."""
 
-        return list_installed(self.install_dir)
+        found: list[InstalledPackage] = []
+        for root in self._store.list_installed():
+            try:
+                manifest = load_manifest(root, require_domain=True)
+            except ExtensionFailure:
+                continue
+            found.append(
+                InstalledPackage(
+                    manifest.package_id,
+                    manifest.version,
+                    (manifest.domain or "").strip().lower(),
+                    root,
+                )
+            )
+        return found
 
     def gateway_installed(self, package_id: str | None = None) -> list[InstalledPackage]:
         """Installed Gateway packages, optionally one package id."""
@@ -74,14 +98,19 @@ class GatewayPackageManager:
 
         return any(package.package_id == package_id for package in self.gateway_installed(package_id))
 
-    def owns_source(self, path: Path) -> bool:
-        """Read a zip or directory manifest without installing it."""
+    def source_domain(self, path: Path) -> str | None:
+        """Read the host declared by a zip or directory source; None when it is not a package."""
 
         try:
             with self._store.open_source(Path(path)) as opened:
-                return read_domain(opened.root) == DOMAIN_GATEWAY
+                return opened.manifest.domain
         except ExtensionFailure:
-            return False
+            return None
+
+    def owns_source(self, path: Path) -> bool:
+        """True when the source declares an installable Gateway package."""
+
+        return self.source_domain(path) == DOMAIN_GATEWAY
 
     def query(self, package_id: str | None = None) -> dict[str, Any]:
         """Return Gateway package facts in the AgentServer query shape."""
@@ -166,7 +195,7 @@ class GatewayPackageManager:
             failure: OperationError | None = None
             for package in versions:
                 try:
-                    self._store.remove_installed(package.package_id, package.version)
+                    await _remove_installed(self._store, package)
                 except ExtensionFailure as exc:
                     failure = exc.as_error()
                     logger.warning("[GatewayExtensions] cannot delete %s: %s", package.root, exc)
@@ -186,15 +215,6 @@ class GatewayPackageManager:
         try:
             with self._store.open_source(path) as opened:
                 package_id = opened.manifest.package_id
-                if read_domain(opened.root) != DOMAIN_GATEWAY:
-                    return _failure(
-                        package_id,
-                        "install",
-                        operation_error(
-                            StatusCode.EXTENSION_SOURCE_INVALID,
-                            reason=f"{package_id} is not a gateway package",
-                        ),
-                    )
                 root = self._store.copy_into_store(opened.root, opened.manifest)
         except ExtensionFailure as exc:
             return _failure(package_id or path.stem, "install", exc.as_error())
@@ -236,6 +256,19 @@ def _success(package_id: str, operation: str) -> ActivationReport:
         previous_generation=None,
         current_generation=1,
     )
+
+
+async def _remove_installed(store: PackageManager, package: InstalledPackage) -> None:
+    """Delete one copy, retrying transient file locks held by other processes."""
+
+    for attempt in range(1, _DELETE_ATTEMPTS + 1):
+        try:
+            store.remove_installed(package.package_id, package.version)
+            return
+        except ExtensionFailure:
+            if attempt == _DELETE_ATTEMPTS:
+                raise
+            await asyncio.sleep(_DELETE_BACKOFF_SECONDS * attempt)
 
 
 def _failure(package_id: str, operation: str, error: OperationError) -> ActivationReport:

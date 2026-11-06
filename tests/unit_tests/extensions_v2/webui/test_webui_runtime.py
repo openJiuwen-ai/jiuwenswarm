@@ -18,9 +18,9 @@ from jiuwenswarm.extensions_v2.webui.models import (
 from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
 from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
 
-EXAMPLES = Path(__file__).resolve().parents[4] / "jiuwenswarm" / "extensions_v2" / "examples" / "token_weather"
+EXAMPLES = Path(__file__).resolve().parents[4] / "jiuwenswarm" / "extensions_v2" / "examples" / "token_weather_glass"
 SLOT = "conversation.input.below"
-PACKAGE = "webui.token-weather"
+PACKAGE = "webui.token-weather-glass"
 INSTANCE = "token-weather.summary"
 
 

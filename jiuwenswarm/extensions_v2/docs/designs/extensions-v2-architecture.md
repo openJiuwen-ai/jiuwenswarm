@@ -69,7 +69,7 @@ Python 扩展在 AgentServer 业务运行时执行，agent-core 管理包与进�
 
 #### 2.1.1 包与注册：哪些代码可以参与处理
 
-AgentServer 把本地扩展包路径交给 agent-core Registry，读取逐包管理结果（Report），据此决定开放哪些业务与扩展UI界面项。包通过 `manifest.yaml` 声明后端扩展及可选UI界面内容；后端 Handler（事件处理函数）参与产品开放的事件，扩展UI界面项供Web前端发现和挂载。
+AgentServer 把本地扩展包路径交给 agent-core Registry，读取逐包管理结果（Report），据此决定开放哪些业务与扩展UI界面项。包通过 `manifest.json` 声明后端扩展及可选UI界面内容；后端 Handler（事件处理函数）参与产品开放的事件，扩展UI界面项供Web前端发现和挂载。
 
 | 接入对象 | JiuwenSwarm 如何使用 |
 | --- | --- |
@@ -111,7 +111,7 @@ flowchart TB
 
 #### 2.1.3 UI界面项与视图：内容显示到哪里
 
-**扩展UI界面项是扩展向 JiuwenSwarm 提供的一项UI界面内容，例如“报告面板”。** 扩展在 `manifest.yaml` 的 `ui` 段声明界面项，字段与 `web.slot.contribution` 的声明同构：`apiVersion` 加 `items`，每项给出类型、标识、目标 slot、排序、面板标题和渲染器，语言资源由同包的 `web.locale` 条目提供；`renderer.kind` 新增 `webui-tree`。用户打开面板后，扩展生成本次显示的 JSON UI界面树，由Web前端渲染。包内可附带静态树模板作为首帧素材；模板仍经同一 Schema 校验和渲染链，包加载本身不创建视图，也不会自动写入 slot。
+**扩展UI界面项是扩展向 JiuwenSwarm 提供的一项UI界面内容，例如“报告面板”。** 扩展在 `manifest.json` 的 `ui` 段声明界面项，字段与 `web.slot.contribution` 的声明同构：`apiVersion` 加 `items`，每项给出类型、标识、目标 slot、排序和渲染器；`renderer.kind` 新增 `webui-tree`。用户打开面板后，扩展生成本次显示的 JSON UI界面树，由Web前端渲染。包内可附带静态树模板作为首帧素材；模板仍经同一 Schema 校验和渲染链，包加载本身不创建视图，也不会自动写入 slot。
 
 **视图实例就是Web前端中一次具体打开的面板。** 例如，用户在会话 A 打开“报告面板”时，Web前端会在页面预留的显示区域中创建一个用于显示该面板的对象，文中称为“视图实例”，后文简称“视图”。创建并放入页面的过程称为“挂载”，预留的显示区域称为 slot。同一个报告面板在会话 B 再打开时，会创建另一个视图；每个视图分别维护自己的显示内容、加载状态和交互状态。报告等业务数据仍由所属服务按会话和业务规则保存。
 
@@ -736,32 +736,32 @@ WebUI 服务由 `extensions_v2/webui/` 提供，运行在 AgentServer 进程内�
 
 AgentServer WebUI 服务分别管理“用户可以打开哪些UI界面项”和“已打开的每个视图属于谁、更新应发到哪里”。
 
-- **可用UI界面目录**从已生效且可访问的包派生，提供UI界面项标识、slot、展示和 renderer／Schema 信息。声明读取 `manifest.yaml` 的 `ui` 段，字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构：`apiVersion`、`items[].type`、`id`、`slot`、`order`、`panel`、`localeId`、`renderer`，以及 `web.locale` 条目的 `resources`；`renderer.kind` 新增 `webui-tree`，前端需支持该渲染模式；同一类型与 `id` 的组合在包内唯一。磁盘文件存在不代表UI界面项可用。
+- **可用UI界面目录**从已生效且可访问的包派生，提供UI界面项标识、slot、展示和 renderer／Schema 信息。声明读取 `manifest.json` 的 `ui` 段，字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构：`apiVersion`、`items[].type`、`id`、`slot`、`order`、`renderer`；`renderer.kind` 新增 `webui-tree`，前端需支持该渲染模式；同一类型与 `id` 的组合在包内唯一。磁盘文件存在不代表UI界面项可用。
 
 包加载只更新可用目录，不自动挂载视图；没有有效视图绑定时不发送渲染帧。包内静态树模板可用于挂载后的首帧，仍按同一 Schema 校验，不能绕过白名单或视图绑定。
 
-  ```yaml
-  ui:
-    apiVersion: 1
-    items:
-      - type: web.locale
-        id: report-messages
-        resources:
-          zh: frontend/locales/zh.json
-          en: frontend/locales/en.json
-      - type: web.slot.contribution
-        id: report-panel
-        slot: conversation.panel.right
-        order: 20
-        panel:
-          titleKey: report.title
-        renderer:
-          kind: webui-tree
-          schemaVersion: 1
-        localeId: report-messages
+  ```json
+  {
+    "package_type": "extension",
+    "schemaVersion": 1,
+    "package": { "id": "report.panel", "version": "1.0.0" },
+    "extensions": [{ "id": "report", "runtime": "backend", "module": "report/extension.py" }],
+    "ui": {
+      "apiVersion": 1,
+      "items": [
+        {
+          "type": "web.slot.contribution",
+          "id": "report-panel",
+          "slot": "conversation.panel.right",
+          "order": 20,
+          "renderer": { "kind": "webui-tree", "schemaVersion": 1 }
+        }
+      ]
+    }
+  }
   ```
 
-  声明校验由 JiuwenSwarm 完成：`apiVersion` 必须为 1，`type` 只接受 `web.slot.contribution` 与 `web.locale`，`slot` 必须在平台槽位白名单内，`order` 必须是安全整数，`localeId` 必须引用同包的 `web.locale` 条目，资源路径不得逃逸包根，首版 `renderer.kind` 只接受 `webui-tree`。agent-core 只解析 manifest 的已知字段；JiuwenSwarm 从生效记录的包根读取原始 `manifest.yaml` 校验 `ui` 段，不依赖 agent-core 返回该段。`web.locale` 资源由服务端从包内读取，按请求方语言解析为标题等文本后再下发，前端不拼接包内文件地址；语言来源与回退顺序在 UI 界面项规约中确定。
+  声明校验由 JiuwenSwarm 完成：`apiVersion` 必须为 1，`type` 只接受 `web.slot.contribution`，`slot` 必须在平台槽位白名单内，`order` 必须是安全整数，首版 `renderer.kind` 只接受 `webui-tree`。agent-core 只解析 manifest 的已知字段；JiuwenSwarm 从生效记录的包根读取原始 `manifest.json` 校验 `ui` 段，不依赖 agent-core 返回该段。面板标题由扩展在渲染树的根节点给出，与 manifest 声明无关。
 
 - **视图绑定记录**在用户打开面板、服务端校验挂载请求后按渲染目标建立，保存目标归属、revision 和最近一帧。
   会话槽位按聊天会话隔离，应用槽位按 Web 连接隔离；具体字段和实例键见
@@ -1585,7 +1585,7 @@ V5 和 WebUI 方案是外部设计材料，下面以文件名标识，不要求�
 | 外部 WebUI 方案：`jiuwenswarm_webui_event_extension_design_v2.0.md` | 文件名 v2.0、正文 v2.2；借鉴 JSON 树、slot、统一交互与三类下行，字段需正式规约化 |
 | [内置事件开发模板](builtin-event-development-guide.md) | 按 WebClient、Gateway 和 AgentServer 分别说明目录、事件定义、Handler、登记和真实触发；新增产品服务方法明确标为开发示例 |
 
-参考冲突按当前 core 规约处理：包入口采用 `manifest.yaml`；EventBus 初始化登记 core 内置事件及九类管理事件；`Registry.init` 执行 swarm 登记回调后触发一次 Build，AgentServer 不再单独 Build；包信息由 Runtime 发布时填入并由 EventBus 保存；重载采用 Handler 热切换。网络仍由 Front、Gateway 和 WebClient 适配。旧示例中的 `delivered`、`handler_error` 和简化 revision 键不直接成为产品契约，分别按第 6.3、8.1、6.2 节解释。
+参考冲突按当前 core 规约处理：包入口采用 `manifest.json`；EventBus 初始化登记 core 内置事件及九类管理事件；`Registry.init` 执行 swarm 登记回调后触发一次 Build，AgentServer 不再单独 Build；包信息由 Runtime 发布时填入并由 EventBus 保存；重载采用 Handler 热切换。网络仍由 Front、Gateway 和 WebClient 适配。旧示例中的 `delivered`、`handler_error` 和简化 revision 键不直接成为产品契约，分别按第 6.3、8.1、6.2 节解释。
 
 概览维护整体说明，本架构维护模块协作；spec 维护定稿契约，feature 维护具体方案与证据，开发计划维护执行进度。包管理门面契约见[门面规约](../specs/S_01_extension-management-facade.md)，包管理与 WebUI 方案见[F_02](../features/F_02_control-plane.md)至[F_08](../features/F_08_frontend-render.md)，开发计划见[特性开发计划](extensions-v2-development-plan.md)；不复制完整公共模型、manifest Schema 或 WebUI 帧结构，也不为填满目录创建空文档。
 

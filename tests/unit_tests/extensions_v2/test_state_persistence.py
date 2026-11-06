@@ -48,18 +48,18 @@ def create_extension() -> StateProbe:
     return StateProbe()
 '''
 
-_MANIFEST = """\
-schemaVersion: 1
-package:
-  id: example.state-probe
-  domain: agentserver
-  version: 1.0.0
-  displayName: State Probe
-  description: Exercise durable session state after a chat round.
-extensions:
-  - id: state-probe
-    runtime: backend
-    module: extension.py
+_MANIFEST = """{
+  "package_type": "extension",
+  "schemaVersion": 1,
+  "package": {
+    "id": "example.state-probe",
+    "version": "1.0.0",
+    "domain": "agentserver",
+    "displayName": "State Probe",
+    "description": "Exercise durable session state after a chat round."
+  },
+  "extensions": [{"id": "state-probe", "runtime": "backend", "module": "extension.py"}]
+}
 """
 
 
@@ -67,7 +67,7 @@ def _archive(tmp_path: Path) -> Path:
     root = tmp_path / "state_probe_src"
     root.mkdir()
     (root / "extension.py").write_text(_EXTENSION_PY, encoding="utf-8")
-    (root / "manifest.yaml").write_text(_MANIFEST, encoding="utf-8")
+    (root / "manifest.json").write_text(_MANIFEST, encoding="utf-8")
     archive = tmp_path / "state_probe.zip"
     with ZipFile(archive, "w") as target:
         for path in root.iterdir():

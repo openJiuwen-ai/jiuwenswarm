@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { X, UploadCloud, Info, FileArchive, Loader2 } from 'lucide-react';
@@ -17,7 +17,7 @@ interface UploadFileCreateModalProps {
   onConfirm: (filePath: string) => void | Promise<void>;
 }
 
-const ACCEPTED_EXTENSIONS = ['.zip', '.tar'];
+const ACCEPTED_EXTENSIONS = ['.zip'];
 const DROP_ZONE_CLASS = 'plugin-upload-dropzone';
 // 跟 ChatPanel/index.tsx 的 markDesktopFileDropZoneActive 同一套节流窗口：desktop_app.py 派发
 // 的 drop 事件坐标不总是准，给命中判定留一小段宽限期。
@@ -58,7 +58,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
   const dropAcceptUntilRef = useRef(0);
   const lastDropIdRef = useRef<string | null>(null);
 
-  function acceptPick(pick: LocalFilePick | undefined) {
+  const acceptPick = useCallback((pick: LocalFilePick | undefined) => {
     if (!pick) return;
     if (!isAcceptedFilename(pick.filename)) {
       setInvalid(true);
@@ -67,7 +67,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
     }
     setInvalid(false);
     setFilePick(pick);
-  }
+  }, []);
 
   async function handleBrowse() {
     if (browsing || filePick) return;
@@ -111,7 +111,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
       acceptPick(files[0]);
     });
     return unregister;
-  }, [desktopReady]);
+  }, [desktopReady, acceptPick]);
 
   useEffect(() => {
     const onFileDrag = (event: Event) => {

@@ -5,24 +5,49 @@
 from __future__ import annotations
 
 import logging
-import re
-from collections.abc import Mapping, Sequence
-from dataclasses import fields, is_dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
 from openjiuwen.core.extension import ActivationReport, ExtensionFailure
+from openjiuwen.core.extension.data.json_values import valid_package_id
 from openjiuwen.core.extension.errors import OperationError
 from openjiuwen.core.extension.management import QueryResult
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.assembly import get_extension_manager
+from jiuwenswarm.extensions_v2.config import resolve_examples_dir, resolve_install_dir
+from jiuwenswarm.extensions_v2.management.catalog import (
+    PackageNotFound,
+    find_entry,
+    list_catalog,
+    list_mine,
+    project_detail,
+    resolve_install_source,
+)
 from jiuwenswarm.extensions_v2.management.recovery import query_after_error
 from jiuwenswarm.extensions_v2.management.registry import CODE_MANAGER_NOT_INITIALIZED, ExtensionManager
+from jiuwenswarm.extensions_v2.manifest_io import DOMAIN_AGENT_SERVER
+from jiuwenswarm.server.runtime.extension_package_manager import (
+    list_package_files,
+    read_package_file,
+)
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
 
 logger = logging.getLogger(__name__)
+
+_PACKAGE_NOT_FOUND = "PACKAGE_NOT_FOUND"
+
+
+@dataclass(frozen=True, slots=True)
+class _Request:
+    paths: tuple[Path, ...] = ()
+    package_ids: tuple[str, ...] = ()
+    package_id: str = ""
+    path: str = ""
+    scope: str = "catalog"
 
 
 class PackageManagementAdapter(GatewayAdapter):
@@ -31,16 +56,20 @@ class PackageManagementAdapter(GatewayAdapter):
     methods: ClassVar[frozenset[str]] = frozenset(
         {
             ReqMethod.EXTENSIONS_V2_QUERY.value,
+            ReqMethod.EXTENSIONS_V2_CATALOG.value,
+            ReqMethod.EXTENSIONS_V2_SHOW.value,
             ReqMethod.EXTENSIONS_V2_INSTALL.value,
             ReqMethod.EXTENSIONS_V2_UNINSTALL.value,
             ReqMethod.EXTENSIONS_V2_RELOAD.value,
+            ReqMethod.EXTENSIONS_V2_FILE_LIST.value,
+            ReqMethod.EXTENSIONS_V2_FILE_READ.value,
         }
     )
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
         method = request.req_method.value if isinstance(request.req_method, ReqMethod) else request.req_method
         try:
-            paths, package_id = _parse_params(method, request.params)
+            parsed = _parse_request(method, request.params)
         except ValueError as exc:
             return _error_response(request, str(exc), code="INVALID_PARAMS")
 
@@ -48,44 +77,84 @@ class PackageManagementAdapter(GatewayAdapter):
         if manager is None or not manager.initialized:
             return _error_response(request, "V2 package manager is unavailable", code=CODE_MANAGER_NOT_INITIALIZED)
 
-        result: object
-        install_reports: list[ActivationReport] | None = None
         try:
-            if method == ReqMethod.EXTENSIONS_V2_QUERY.value:
-                key, result = "state", await manager.query(package_id or None)
-            elif method == ReqMethod.EXTENSIONS_V2_INSTALL.value:
-                install_reports = await manager.install(paths)
-                key, result = "reports", install_reports
-            elif method == ReqMethod.EXTENSIONS_V2_UNINSTALL.value:
-                key, result = "reports", [await manager.uninstall(package_id)]
-            else:
-                key, result = "reports", [await manager.reload(package_id)]
+            payload = await _dispatch(manager, method, parsed)
+        except PackageNotFound as exc:
+            return _error_response(request, f"package {exc} not found", code=_PACKAGE_NOT_FOUND)
+        except ValueError as exc:
+            return _error_response(request, str(exc), code="INVALID_PARAMS")
         except ExtensionFailure as exc:
-            return await _failed_request(request, manager, package_id, exc.message, code=exc.status.name)
+            return await _failed_request(request, manager, parsed.package_id, exc.message, code=exc.status.name)
         except Exception:  # noqa: BLE001 - keep management failures at the request boundary
             logger.exception("[ExtensionsV2] management request failed: %s", method)
-            return await _failed_request(request, manager, package_id, "V2 package management failed")
+            return await _failed_request(request, manager, parsed.package_id, "V2 package management failed")
+        if method == ReqMethod.EXTENSIONS_V2_INSTALL.value:
+            payload["ui_notified"] = await _notify_installed_packages(payload.get("reports", ()))
         try:
-            payload = {key: _encode(result)}
-            if install_reports is not None:
-                payload["installed_packages"] = _installed_packages(manager, install_reports)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=_encode(payload),
+                metadata=request.metadata,
+                agent_ref=request.agent_ref,
+            )
         except Exception:  # noqa: BLE001 - a received Report is not an unknown operation result
             logger.exception("[ExtensionsV2] could not encode management result")
             return _error_response(request, "Could not encode V2 package management result")
-        if install_reports is not None:
-            payload["ui_notified"] = await _notify_changed_packages(install_reports)
-        return AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=True,
-            payload=payload,
-            metadata=request.metadata,
-            agent_ref=request.agent_ref,
+
+
+async def _dispatch(manager: ExtensionManager, method: str, parsed: _Request) -> dict[str, Any]:
+    if method == ReqMethod.EXTENSIONS_V2_CATALOG.value:
+        state = await manager.query()
+        examples_dir = resolve_examples_dir()
+        packages = (
+            list_catalog(examples_dir, state, domain=DOMAIN_AGENT_SERVER)
+            if parsed.scope == "catalog"
+            else list_mine(examples_dir, state, domain=DOMAIN_AGENT_SERVER)
         )
+        return {"packages": packages}
+    if method == ReqMethod.EXTENSIONS_V2_SHOW.value:
+        state = await manager.query()
+        entry = find_entry(
+            parsed.package_id,
+            resolve_examples_dir(),
+            state,
+            domain=DOMAIN_AGENT_SERVER,
+            install_dir=resolve_install_dir(),
+        )
+        return {"package": project_detail(entry, state)}
+    if method in (ReqMethod.EXTENSIONS_V2_FILE_LIST.value, ReqMethod.EXTENSIONS_V2_FILE_READ.value):
+        state = await manager.query()
+        entry = find_entry(
+            parsed.package_id,
+            resolve_examples_dir(),
+            state,
+            install_dir=resolve_install_dir(),
+        )
+        if method == ReqMethod.EXTENSIONS_V2_FILE_LIST.value:
+            return {"tree": list_package_files(entry.root)}
+        return read_package_file(entry.root, parsed.path)
+    if method == ReqMethod.EXTENSIONS_V2_INSTALL.value:
+        paths = list(parsed.paths)
+        if parsed.package_ids:
+            examples_dir = resolve_examples_dir()
+            install_dir = resolve_install_dir()
+            paths = [
+                resolve_install_source(package_id, examples_dir=examples_dir, install_dir=install_dir)
+                for package_id in parsed.package_ids
+            ]
+        reports = await manager.install(paths)
+        return {"reports": reports, "installed_packages": _installed_packages(manager, reports)}
+    if method == ReqMethod.EXTENSIONS_V2_UNINSTALL.value:
+        return {"reports": [await manager.uninstall(parsed.package_id)]}
+    if method == ReqMethod.EXTENSIONS_V2_RELOAD.value:
+        return {"reports": [await manager.reload(parsed.package_id)]}
+    return {"state": await manager.query(parsed.package_id or None)}
 
 
-async def _notify_changed_packages(reports: Sequence[ActivationReport]) -> bool:
-    """Refresh mounted WebUI slots after a confirmed package installation."""
+async def _notify_installed_packages(reports: Sequence[ActivationReport]) -> bool:
+    """Refresh mounted WebUI slots after a confirmed install."""
     succeeded = [report.package_id for report in reports if report.status == "SUCCESS"]
     if not succeeded:
         return False
@@ -104,6 +173,7 @@ def _installed_packages(
     reports: Sequence[ActivationReport],
 ) -> list[dict[str, str | int]]:
     """Return actual roots for the generations this install activated."""
+
     succeeded = {
         (report.package_id, report.current_generation)
         for report in reports
@@ -123,43 +193,80 @@ def _installed_packages(
     ]
 
 
-def _parse_params(method: object, params: object) -> tuple[list[Path], str]:
-    allowed = PackageManagementAdapter.methods
-    if not isinstance(method, str) or method not in allowed:
+def _parse_request(method: object, params: object) -> _Request:
+    if not isinstance(method, str) or method not in PackageManagementAdapter.methods:
         raise ValueError("unsupported V2 package management method")
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
+
     if method == ReqMethod.EXTENSIONS_V2_INSTALL.value:
-        if set(params) != {"paths"}:
-            raise ValueError("install requires only paths")
-        raw_paths = params["paths"]
-        if not isinstance(raw_paths, list) or not raw_paths:
-            raise ValueError("paths must be a nonempty array of absolute paths")
-        paths: list[Path] = []
-        for raw_path in raw_paths:
-            if not isinstance(raw_path, str) or not raw_path.strip():
-                raise ValueError("each path must be a nonempty string")
-            path = Path(raw_path)
-            if not path.is_absolute():
-                raise ValueError("install requires an absolute ZIP file path")
-            if path.suffix.lower() != ".zip" or not path.is_file():
-                raise ValueError("install accepts existing .zip files only; directories are not supported")
-            paths.append(path)
-        return paths, ""
+        if set(params) == {"paths"}:
+            return _Request(paths=tuple(_zip_paths(params["paths"])))
+        if set(params) == {"package_ids"}:
+            return _Request(package_ids=tuple(_package_ids(params["package_ids"])))
+        raise ValueError("install requires exactly one of paths or package_ids")
+
+    if method == ReqMethod.EXTENSIONS_V2_CATALOG.value:
+        if set(params) - {"scope"}:
+            raise ValueError("catalog accepts scope only")
+        scope = params.get("scope", "catalog")
+        if scope not in {"catalog", "mine"}:
+            raise ValueError("scope must be 'catalog' or 'mine'")
+        return _Request(scope=scope)
+
+    if method == ReqMethod.EXTENSIONS_V2_SHOW.value:
+        if set(params) != {"package_id"}:
+            raise ValueError("show requires only package_id")
+        return _Request(package_id=_package_id(params["package_id"]))
+
+    if method == ReqMethod.EXTENSIONS_V2_FILE_LIST.value:
+        if set(params) != {"package_id"}:
+            raise ValueError("file list requires only package_id")
+        return _Request(package_id=_package_id(params["package_id"]))
+
+    if method == ReqMethod.EXTENSIONS_V2_FILE_READ.value:
+        if set(params) != {"package_id", "path"}:
+            raise ValueError("file read requires package_id and path")
+        relative = params.get("path")
+        if not isinstance(relative, str) or not relative.strip():
+            raise ValueError("path must be a nonempty string")
+        return _Request(package_id=_package_id(params["package_id"]), path=relative.strip())
+
     if set(params) - {"package_id"}:
         raise ValueError("only package_id is accepted")
     if method == ReqMethod.EXTENSIONS_V2_QUERY.value and "package_id" not in params:
-        return [], ""
-    package_id = params.get("package_id")
-    if (
-        not isinstance(package_id, str)
-        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", package_id) is None
-        or ".." in package_id
-    ):
+        return _Request()
+    return _Request(package_id=_package_id(params.get("package_id")))
+
+
+def _package_id(value: object) -> str:
+    if not isinstance(value, str) or not valid_package_id(value):
         raise ValueError(
             "package_id must use 1-128 letters, digits, dots, underscores or hyphens, without spaces or '..'"
         )
-    return [], package_id
+    return value
+
+
+def _package_ids(value: object) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("package_ids must be a nonempty array of string ids")
+    return [_package_id(item) for item in value]
+
+
+def _zip_paths(value: object) -> list[Path]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("paths must be a nonempty array of absolute paths")
+    paths: list[Path] = []
+    for raw_path in value:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValueError("each path must be a nonempty string")
+        path = Path(raw_path)
+        if not path.is_absolute():
+            raise ValueError("install requires an absolute ZIP file path")
+        if path.suffix.lower() != ".zip" or not path.is_file():
+            raise ValueError("install accepts existing .zip files only; directories are not supported")
+        paths.append(path)
+    return paths
 
 
 def _error_response(
@@ -199,6 +306,7 @@ async def _failed_request(
 
 def _encode(value: object) -> Any:
     """Encode Core value objects without publishing their implementation enums."""
+
     if isinstance(value, QueryResult):
         state = {field.name: _encode(getattr(value, field.name)) for field in fields(value)}
         state["package_ids"] = sorted(record.package_id for record in value.packages if record.successful)
@@ -213,7 +321,7 @@ def _encode(value: object) -> Any:
         return str(value)
     if is_dataclass(value) and not isinstance(value, type):
         return {field.name: _encode(getattr(value, field.name)) for field in fields(value)}
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         return {str(key): _encode(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_encode(item) for item in value]

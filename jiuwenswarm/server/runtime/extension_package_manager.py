@@ -65,6 +65,7 @@ class AgentGroupPackageError(ValueError):
         super().__init__(message)
         self.code = code
 
+
 _CATALOG_PREVIEWABLE_EXTS: frozenset[str] = frozenset(
     {".md", ".mdx", ".json", ".py", ".pdf"}
 )
@@ -1568,7 +1569,7 @@ def _build_file_tree(directory: Path, root: Path) -> list[dict]:
         # PermissionError is an OSError subclass — do not list both (G.ERR.09).
         return result
     for entry in entries:
-        if entry.name.startswith(".") or entry.is_symlink():
+        if entry.name.startswith(".") or entry.name == "__pycache__" or entry.is_symlink():
             continue
         rel = entry.relative_to(root).as_posix()
         if entry.is_dir():
@@ -3536,15 +3537,24 @@ def _read_previewable_file(pkg_dir: Path, rel_path: str) -> dict:
     }
 
 
+def list_package_files(pkg_dir: Path) -> list[dict]:
+    """Return the previewable file tree of one package directory."""
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+def read_package_file(pkg_dir: Path, rel_path: str) -> dict:
+    """Read one previewable file from a package directory."""
+    return _read_previewable_file(pkg_dir, rel_path)
+
+
 def list_agent_template_files(name: str) -> list[dict]:
     """Return the file tree for one agent_template package."""
-    pkg_dir = _agent_template_preview_dir(name)
-    return _build_file_tree(pkg_dir, pkg_dir)
+    return list_package_files(_agent_template_preview_dir(name))
 
 
 def read_agent_template_file(name: str, rel_path: str) -> dict:
     """Read one previewable file from an agent_template package."""
-    return _read_previewable_file(_agent_template_preview_dir(name), rel_path)
+    return read_package_file(_agent_template_preview_dir(name), rel_path)
 
 
 async def list_agent_template_files_with_hub(

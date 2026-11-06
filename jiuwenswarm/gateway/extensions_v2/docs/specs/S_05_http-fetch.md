@@ -85,7 +85,7 @@
 | 出站来源 | 由具体能力（如文件读取）内部完成 | 由扩展包显式调用 |
 | 策略来源 | 无统一出站策略 | `extensions.gateway.http` 统一约束 |
 
-`ops.http.fetch` 只在 Gateway 侧存在；`domain: agent` 的包调用会因命名空间缺失而失败，无法借用 Gateway 的出站能力。
+`ops.http.fetch` 只在 Gateway 侧存在；`package.domain: agentserver` 的包调用会因命名空间缺失而失败，无法借用 Gateway 的出站能力。
 
 ## 6. 与登录示例的关系
 

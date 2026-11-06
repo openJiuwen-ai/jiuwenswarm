@@ -3,7 +3,7 @@
 """Gateway-side package management for Extensions V2.
 
 The Gateway shares ``extension_pkgs`` with AgentServer. This package owns the
-Gateway half: reading the raw manifest ``domain``, copying Gateway zips into the
+Gateway half: reading ``package.domain``, copying Gateway zips into the
 shared store, publishing and releasing them on the live runtime, and answering
 ``extensions.v2.*`` requests that address Gateway packages.
 """

@@ -15,7 +15,7 @@ def build_package(output: Path) -> Path:
     """Place the manifest at the archive root without generated Python caches."""
     output = output.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    files = [SOURCE / name for name in ("manifest.yaml", "README.md", "README_EN.md")]
+    files = [SOURCE / name for name in ("manifest.json", "README.md", "README_EN.md")]
     files.extend(sorted((SOURCE / "token_weather_glass").glob("*.py")))
     files.extend(SOURCE / "assets" / name for name in ("details.html", "details.css"))
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:

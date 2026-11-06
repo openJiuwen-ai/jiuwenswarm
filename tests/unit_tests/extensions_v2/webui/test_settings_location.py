@@ -59,7 +59,8 @@ async def test_catalog_request_uses_the_bound_web_connection_without_a_conversat
     package_id = "test.settings-catalog"
     manifest = {
         "schemaVersion": 1,
-        "package": {"id": package_id, "version": "1.0.0"},
+        "package_type": "extension",
+        "package": {"domain": "agentserver", "id": package_id, "version": "1.0.0"},
         "ui": {"apiVersion": 1, "items": [{
             "type": "web.slot.contribution",
             "id": "test-settings",
@@ -70,7 +71,7 @@ async def test_catalog_request_uses_the_bound_web_connection_without_a_conversat
             "renderer": {"kind": "webui-tree"},
         }]},
     }
-    (tmp_path / "manifest.yaml").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     record = SimpleNamespace(root=tmp_path, package_id=package_id, version="1.0.0", generation=1)
     catalog = WebUICatalogService(lambda: (record,))
     monkeypatch.setattr(assembly, "get_webui_runtime", lambda: SimpleNamespace(catalog=lambda: catalog))

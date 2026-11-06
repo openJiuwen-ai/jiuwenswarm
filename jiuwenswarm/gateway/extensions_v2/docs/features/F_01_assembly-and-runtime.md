@@ -24,7 +24,7 @@ Gateway 在一次进程启动中只应创建一套扩展运行时。装配必须
 
 - `install_gateway_extensions(channel, config)` 单例装配与 `shutdown_gateway_extensions()`。
 - 事件总线创建、`bootstrap.register_event_types` / `register_handlers`。
-- 安装目录解析与共享 `extension_pkgs` 中 `domain: gateway` 包的加载。
+- 安装目录解析与共享 `extension_pkgs` 中 `package.domain: gateway` 包的加载。
 - 装配失败时扩展能力降级，不阻断 Gateway。
 - 渠道侧两个钩子：启动装配/停机、断线通知。
 
@@ -32,7 +32,7 @@ Gateway 在一次进程启动中只应创建一套扩展运行时。装配必须
 
 - 不定义事件语义与渲染协议，分别归 F_02～F_06。
 - 在线安装、卸载与热重载由 `management/` 模块承担，不在本章范围。
-- 不加载共享目录中 `domain: agent` 的包。
+- 不加载共享目录中 `package.domain: agentserver` 的包。
 
 ## 3. 总体设计
 
@@ -69,7 +69,7 @@ sequenceDiagram
 | `config` | `extensions.gateway` 配置与 `HttpPolicy` |
 | `loader` | 扫描目录、解析 manifest、执行入口、产出 `LoadedPackage` |
 | `registry` | 包侧 registrar 与 `HandlerDeclaration` |
-| `management` | 共享目录中 `domain: gateway` 包的安装、卸载、热重载与 `/extension` 本地分流 |
+| `management` | 共享目录中 `package.domain: gateway` 包的安装、卸载、热重载与 `/extension` 本地分流 |
 
 ### 3.3 顺序约束
 
@@ -86,7 +86,7 @@ sequenceDiagram
 
 ### 4.2 domain 过滤
 
-manifest 的 `domain` 字段决定归属：只有 `gateway` 由 Gateway 加载，缺省与 `agent` 均跳过；`domain` 不是 `agent`/`gateway` 之一时该包解析失败并跳过。AgentServer 侧对称地只加载 `agent`（含缺省）包，并在显式安装时拒绝 `gateway` 包且不写入共享目录。
+manifest 的 `package.domain` 字段决定归属：只有 `gateway` 由 Gateway 加载，`agentserver` 与缺失值跳过；值不是 `agentserver`/`gateway` 时该包解析失败并跳过。AgentServer 侧对称地只加载 `agentserver`（含缺省）包，并在显式安装时拒绝 `gateway` 包且不写入共享目录。
 
 ### 4.3 版本选择
 

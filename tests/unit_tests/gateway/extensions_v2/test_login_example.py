@@ -149,6 +149,8 @@ async def test_zip_registration_login_logout_and_multiple_persistent_accounts(tm
         visited, _ = await runtime.intercept(ws, "config", "config.get", {})
         assert visited and channel.responses[-1]["code"] == "AUTH_REQUIRED"
         assert channel.events[0]["event"] == "client.declarations"
+        declaration = channel.events[0]["payload"]["packages"][0]
+        assert len(declaration["requestBindings"]) == 2
         assert any(item["event"] == "webui.render" for item in channel.events)
         for username in ("alpha", "bravo"):
             token = await _register(runtime, channel, ws, username)
@@ -188,7 +190,7 @@ async def test_zip_registration_login_logout_and_multiple_persistent_accounts(tm
         await runtime.intercept(ws, "reload", "config.get", {})
         await _login(runtime, channel, ws, "alpha")
         with ZipFile(_zip(tmp_path)) as archive:
-            assert "manifest.yaml" in archive.namelist()
+            assert "manifest.json" in archive.namelist()
             assert not any("accounts.sqlite3" in name or "__pycache__" in name for name in archive.namelist())
     finally:
         await runtime.shutdown()

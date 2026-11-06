@@ -3,10 +3,8 @@
 """Discover and load Gateway extension packages.
 
 Gateway and AgentServer share the install directory (``~/.jiuwenswarm/
-extension_pkgs``); a package declares its host with the manifest top-level
-``domain`` field (``agent`` or ``gateway``, default ``agent``). The field is
-unknown to the Core manifest parser and is therefore ignored when AgentServer
-loads the same package.
+extension_pkgs``); a package declares its host with ``package.domain``
+(``agentserver`` or ``gateway``, default ``agentserver``).
 
 Loading follows the Core loader: every entry file is executed inside a fresh
 package module, then ``create_extension()`` hands a registrar to the package.
@@ -25,17 +23,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from jiuwenswarm.gateway.extensions_v2.registry import GatewayRegistrar, HandlerDeclaration
+from jiuwenswarm.gateway.extensions_v2.manifest import (
+    DOMAIN_AGENT_SERVER,
+    DOMAIN_GATEWAY,
+    has_manifest,
+    read_manifest_document,
+)
 
 logger = logging.getLogger(__name__)
 
-MANIFEST_NAME = "manifest.yaml"
-DOMAIN_AGENT = "agent"
-DOMAIN_GATEWAY = "gateway"
-DEFAULT_DOMAIN = DOMAIN_AGENT
-KNOWN_DOMAINS = frozenset({DOMAIN_AGENT, DOMAIN_GATEWAY})
+DEFAULT_DOMAIN = DOMAIN_AGENT_SERVER
+KNOWN_DOMAINS = frozenset({DOMAIN_AGENT_SERVER, DOMAIN_GATEWAY})
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,10 +101,10 @@ def discover_package_roots(install_dir: Path) -> list[Path]:
     for package_dir in sorted(directory.iterdir()):
         if not package_dir.is_dir():
             continue
-        candidates = [package_dir] if (package_dir / MANIFEST_NAME).is_file() else [
+        candidates = [package_dir] if has_manifest(package_dir) else [
             child
             for child in package_dir.iterdir()
-            if child.is_dir() and (child / MANIFEST_NAME).is_file()
+            if child.is_dir() and has_manifest(child)
         ]
         for root in candidates:
             key = _version_key(root.name)
@@ -116,26 +115,12 @@ def discover_package_roots(install_dir: Path) -> list[Path]:
 
 
 def _read_manifest(root: Path) -> dict[str, Any]:
-    path = root / MANIFEST_NAME
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        raise ValueError(f"cannot read {MANIFEST_NAME}: {exc}") from exc
-    if not isinstance(raw, Mapping):
-        raise ValueError("manifest top level must be a mapping")
-    if raw.get("schemaVersion") != 1:
-        raise ValueError("schemaVersion must be 1")
-    package = raw.get("package")
-    if not isinstance(package, Mapping):
-        raise ValueError("package must be a mapping")
-    package_id = _identifier(package.get("id"), "package.id")
-    version = package.get("version")
-    if not isinstance(version, str) or not version.strip():
-        raise ValueError("package.version must be a non-empty string")
+    raw = read_manifest_document(root)
+    package = raw["package"]
     return {
-        "package_id": package_id,
-        "version": version.strip(),
-        "domain": _domain(raw.get("domain")),
+        "package_id": package["id"],
+        "version": str(package["version"]).strip(),
+        "domain": _domain(package.get("domain")),
         "modules": _modules(raw.get("extensions"), root),
         "ui": _optional_mapping(raw.get("ui"), "ui"),
         "client": _optional_mapping(raw.get("client"), "client"),
@@ -150,21 +135,8 @@ def _optional_mapping(value: object, field_name: str) -> Mapping[str, Any]:
     return dict(value)
 
 
-def _identifier(value: object, field: str) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or ".." in value
-        or not value[0].isalnum()
-        or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for character in value)
-        or len(value) > 128
-    ):
-        raise ValueError(f"{field} is invalid: {value!r}")
-    return value
-
-
 def _domain(value: object) -> str:
-    """Read the host split; an omitted field keeps the Core default (agent)."""
+    """Read the host split; an omitted field keeps the Core default (agentserver)."""
 
     if value is None:
         return DEFAULT_DOMAIN

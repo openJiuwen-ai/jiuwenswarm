@@ -176,8 +176,7 @@ AgentServer 将目录传给 `ExtensionManager(store_dir=...)`，由门面构造
 成功卸载才删除包数据，重载保留数据。Core 的 CRUD 与文件契约引用其 store 规约，不在本仓重复定义。
 
 验证入口为 `tests/unit_tests/extensions_v2/test_store_persistence.py`、`test_config.py` 和
-`management/test_management_shutdown.py`；方案见 [F_27 store 持久化](F_27_store-persistence.md)；
-调试包见 [Store Probe](../../examples/store_probe/README.md)。
+`management/test_management_shutdown.py`；方案见 [F_27 store 持久化](F_27_store-persistence.md)。
 2026-11-03：排除本地依赖、Token Weather 修复、额外 WebUI 清理行为及其测试后，
 使用 rebase 后的本地 Core 执行 Extensions V2 全量回归，结果为 **734 passed、2 skipped**。
 跳过 Windows 环境不支持的符号链接和命名管道用例；未启动真实模型或浏览器。
@@ -194,4 +193,3 @@ AgentServer 将目录传给 `ExtensionManager(store_dir=...)`，由门面构造
 `ExtensionManager(state_dir=...)`，门面构造 `JsonState` 并经 `Registry.init(states=...)` 注入。
 初始化失败与停机成功时调用 `unconfigure_state`，与 store 对称。
 CRUD、CAS、会话作用域与卸载删除由 Core 维护；本仓只负责目录与装配。
-调试包见 [State Counter](../../examples/state_counter/README.md)。

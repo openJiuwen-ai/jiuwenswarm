@@ -55,17 +55,16 @@ def _load_manifest(root: Path):
 
         return load_manifest(root)
     except (ImportError, ModuleNotFoundError):
-        import yaml
+        import json
         from types import SimpleNamespace
 
-        with open(root / "manifest.yaml", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        data = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         pkg = data.get("package", {})
         return SimpleNamespace(package_id=pkg.get("id"), version=pkg.get("version"))
 
 
 def build_zip() -> Path:
-    """Package the plugin source into a ZIP with manifest.yaml at the root."""
+    """Package the plugin source into a ZIP with manifest.json at the root."""
 
     from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -107,7 +106,7 @@ def main() -> int:
     parser.add_argument("--zip-only", action="store_true", help="only build the ZIP, skip deployment")
     args = parser.parse_args()
 
-    if not (SOURCE / "manifest.yaml").is_file():
+    if not (SOURCE / "manifest.json").is_file():
         print(f"[error] 未找到插件源码: {SOURCE}")
         return 1
 

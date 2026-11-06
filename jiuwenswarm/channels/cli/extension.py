@@ -64,7 +64,7 @@ class Settings:
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             raise ClientError("INVALID_CONFIG", "--timeout 必须是大于零的有限秒数。")
         try:
-            context = control.read_context("gateway" if args.domain == "gateway" else "agent")
+            context = control.read_context("gateway" if args.domain == "gateway" else "agent_server")
         except control.ControlError as error:
             raise ClientError("HOST_UNAVAILABLE", str(error)) from None
         return cls(context, args.timeout)
@@ -108,17 +108,13 @@ def inspect_zip(value: str) -> dict[str, str]:
     if source.suffix.lower() != ".zip" or not source.is_file():
         raise ClientError("INVALID_INPUT", "install 需要一个已存在的 ZIP 文件。")
     try:
-        import yaml
-    except ImportError:
-        raise ClientError("DEPENDENCY_MISSING", "读取 ZIP 中的 manifest 需要 PyYAML，请使用目标项目的 Python 环境。") from None
-    try:
         with ZipFile(source) as archive:
-            if archive.namelist().count("manifest.yaml") != 1:
-                raise ValueError("ZIP 根目录必须恰好包含一份 manifest.yaml。")
-            entry = archive.getinfo("manifest.yaml")
+            if archive.namelist().count("manifest.json") != 1:
+                raise ValueError("ZIP 根目录必须恰好包含一份 manifest.json。")
+            entry = archive.getinfo("manifest.json")
             if entry.file_size > 64 * 1024:
-                raise ValueError("manifest.yaml 超过 64 KiB，请检查包内容。")
-            manifest = yaml.safe_load(archive.read(entry))
+                raise ValueError("manifest.json 超过 64 KiB，请检查包内容。")
+            manifest = json.loads(archive.read(entry))
         package = manifest.get("package") if isinstance(manifest, dict) else None
         if not isinstance(package, dict) or not isinstance(package.get("id"), str):
             raise ValueError("manifest 缺少 package.id。")
@@ -128,7 +124,7 @@ def inspect_zip(value: str) -> dict[str, str]:
             raise ValueError("manifest 中的 package.version 必须是非空字符串。")
     except ClientError:
         raise
-    except (BadZipFile, OSError, ValueError, RuntimeError, UnicodeError, yaml.YAMLError) as error:
+    except (BadZipFile, OSError, ValueError, RuntimeError, UnicodeError) as error:
         raise ClientError("INVALID_ZIP", str(error)) from None
     try:
         with source.open("rb") as stream:
@@ -300,11 +296,7 @@ def parser() -> argparse.ArgumentParser:
     command = JsonArgumentParser(description="管理当前运行实例中的扩展包；无需提供 Gateway 地址或浏览器登录凭据。")
     command.add_argument("action", choices=("install", "query", "reload", "uninstall"))
     command.add_argument("target", nargs="?", help="install 传最终 ZIP；其他操作传 package_id，query 可省略")
-    command.add_argument(
-        "--domain",
-        choices=("agentserver", "gateway"),
-        help="install 从 package.domain 确定；其他操作默认 agentserver",
-    )
+    command.add_argument("--domain", choices=("agentserver", "gateway"), help="install 从 package.domain 确定；其他操作默认 agentserver")
     command.add_argument("--json", action="store_true", help="使用结构化 JSON 输出（默认也是 JSON）")
     command.add_argument("--server-path", help="宿主可读取的 ZIP 绝对路径；默认使用最终 ZIP 路径，不负责上传")
     command.add_argument("--timeout", type=float, default=None, help="每次请求的超时秒数，默认配置的依赖等待时间加 30 秒")

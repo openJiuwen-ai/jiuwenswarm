@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
@@ -35,9 +34,10 @@ from openjiuwen.core.extension.management import (
     unbind_context,
 )
 
-from jiuwenswarm.extensions_v2.management.session_start import SessionStartGate
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartOutput
 from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface
+from jiuwenswarm.extensions_v2.management.session_start import SessionStartGate
+from jiuwenswarm.extensions_v2.manifest_io import DOMAIN_AGENT_SERVER, DOMAIN_GATEWAY
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ class ExtensionManager:
                 )
                 await self._registry.open_install_dir(
                     self.install_dir, report_path=self.report_path, host_version=host_version,
-                    domain="agentserver", allowed_domains=("gateway", "agentserver"),
+                    domain=DOMAIN_AGENT_SERVER, allowed_domains=(DOMAIN_GATEWAY, DOMAIN_AGENT_SERVER),
                     poll_interval=self._poll_interval, dependency_timeout=self._dependency_timeout,
                     lock_timeout=self._lock_timeout,
                 )
@@ -274,15 +274,3 @@ class ExtensionManager:
                 StatusCode.EXTENSION_LOAD_FAILED,
                 reason="extension manager is not initialized",
             )
-
-
-def _failure(package_id: str, operation: str, error: OperationError) -> ActivationReport:
-    return ActivationReport(
-        plan_id="",
-        package_id=package_id,
-        operation=operation,
-        status="FAILED",
-        previous_generation=None,
-        current_generation=None,
-        error=error,
-    )
