@@ -53,6 +53,12 @@ type DesignerRunStore = {
   applyUploadedOutput: (nodeId: string, outputRef: AssetRef) => void;
   /** Clear upload-produced preview on a node. */
   clearUploadedOutput: (nodeId: string) => void;
+  /**
+   * Re-read the run from the server. Events sent while the page was hidden or
+   * the socket was reconnecting are lost, which used to leave the canvas stuck
+   * on "Running…" until a full reload (#31).
+   */
+  reconcile: (graph: DesignerExecutionGraph | null) => Promise<void>;
 };
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -367,6 +373,28 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
     get().applyUploadedOutput(nodeId, outputRef);
   },
 
+  reconcile: async (graph) => {
+    const current = get().run;
+    const graphId = graph?.graph_id;
+    if (!graphId) return;
+    const runId = current?.run_id;
+    try {
+      const result = await designerGraphClient.getRun(
+        runId ? { runId } : { graphId },
+      );
+      const fresh = result.run;
+      if (!fresh) return;
+      if (fresh.graph_id !== graphId) return;
+      // Nothing changed: keep the current snapshot so polling is untouched.
+      if (current && fresh.run_id === current.run_id && fresh.status === current.status) {
+        return;
+      }
+      get().applyRun(fresh);
+    } catch {
+      // A failed reconcile must never surface as a run error to the user.
+    }
+  },
+
   applyUploadedOutput: (nodeId, outputRef) => {
     const state = get();
     const current = state.nodeStates[nodeId] ?? { status: DESIGNER_NODE_STATUS_PENDING };
@@ -430,6 +458,12 @@ export function bindDesignerRuntime(): () => void {
     const graphId = useDesignerStore.getState().domainGraph?.graph_id;
     return Boolean(run?.run_id && (run.run_id === current?.run_id || (graphId && run.graph_id === graphId)));
   };
+  const onVisible = () => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    void useDesignerRunStore
+      .getState()
+      .reconcile(useDesignerStore.getState().domainGraph);
+  };
   const offRun = webClient.on('designer.run.updated', ({ payload }) => {
     const run = (payload as { run?: DesignerExecutionRun }).run ?? (payload as DesignerExecutionRun);
     if (matches(run)) useDesignerRunStore.getState().applyRun(run);
@@ -461,9 +495,20 @@ export function bindDesignerRuntime(): () => void {
     offLeader();
     offGraph();
     clearPoll();
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisible);
+    }
     runtimeBound = false;
     unbindRuntime = null;
   };
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisible);
+  }
+  // A reload repairs a missed terminal event, so the same read on bind repairs
+  // a page that was restored from bfcache or reconnected silently.
+  void useDesignerRunStore
+    .getState()
+    .reconcile(useDesignerStore.getState().domainGraph);
   return unbindRuntime;
 }
 
