@@ -13,23 +13,13 @@ A showcase plugin that covers the main WebUI slots and components, demonstrating
 
 ## How it works
 
-1. The plugin declares its UI contributions and slots in `ui.items` inside `manifest.json`.
-2. After loading the active package, the WebUI renders each contribution into its declared slot.
-3. The plugin backend returns view data through events; the file tab reads the current conversation directory.
-4. Application-scoped slots appear without a conversation; conversation-scoped slots appear inside a real conversation.
+- Every UI position is declared in `ui.items` inside `manifest.json`, naming where it goes and which renderer draws it.
+- Once the plugin is installed and active, the page places each contribution accordingly, and the plugin backend supplies the content when the page opens.
+- The Workbench Files tab reads the current conversation directory, so its content follows the conversation.
+- Application-scoped positions appear without a conversation; conversation-scoped positions appear inside a real conversation.
 
 ## Notes
 
 - The example calls no model or external business API; it only demonstrates slots, components and interaction protocols.
 - The main page, task page and web preview use `Iframe`; the file tab uses `FileTree` and `FilePreview`.
 - The backend sends complete view trees, and components handle expansion, selection and hints themselves.
-
-## Install
-
-From the repository root:
-
-```sh
-python scripts/install_workbench_plugin.py --zip-only
-```
-
-Install the generated ZIP into the plugin directory, then refresh the page or re-enter the conversation.

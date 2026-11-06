@@ -99,7 +99,7 @@ SessionEndOutput(sessionId="demo-session-a")
 
 例如插件在 A 的每次用量更新后保存活跃摘要。平台真正清理 A 的运行或正常关闭 Worker 时，on_end 按 sessionId 清理 A 的活跃缓存，记录 reason 与 resume.id；B 的缓存不受影响。示例包记录真实清理日志；若需要跨进程持久保存摘要，应使用用户自己的存储能力，不能把普通内存字典当作已落盘。
 
-下列代码来自 [现有示例包](../../examples/session_end/extension.py)，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
+下列代码位于包内入口模块，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
 
 ```python
 """Keep user-owned session state and release it when that Runtime run ends."""
@@ -255,5 +255,4 @@ result.json、user-handler-results.jsonl、各删除/归档响应、日志和 so
 - [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionEndInput/Result；参照小写 Mods 事件。
 - [主责规约 S_10](../specs/S_10_session-end.md)。
 - [事件定义与校验](../../event_types/session_end.py)、[默认 CORE](../../event_handlers/session_end.py)。
-- [示例包说明](../../examples/session_end/README.md)。
 - [session.append 文档格式基准](F_16_session-append.md)。

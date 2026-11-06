@@ -152,7 +152,7 @@ Handler 的普通异常或非法输入/输出可能被 Core 隔离并继续默�
 
 ### 3.4 可直接安装的 USER Handler
 
-将下面模块与 [manifest.json](../../examples/server_run_command/manifest.json) 放在 ZIP 根目录安装。在能到达 Worker 原生文本入口的会话输入 `/project_status demo`：返回目录文字，备注进入模型上下文，不执行任何原生命令。
+将下面模块与 manifest.json 放在 ZIP 根目录安装。在能到达 Worker 原生文本入口的会话输入 `/project_status demo`：返回目录文字，备注进入模型上下文，不执行任何原生命令。
 
 ```python
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
@@ -281,6 +281,6 @@ async def on_list(event, ops, next_handler):
 - [Claude Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)：CommandRunInput / Result、CommandPresentation、PromptOrigin、command.run。
 - [S_17](../specs/S_17_server-run-command.md)、[输入输出与校验](../../event_types/server_run_command.py)、[CORE](../../event_handlers/server_run_command.py)。
 - [可信执行封装](../../../server/runtime/commands/run_command_events.py)、[原生适配和备注写入](../../../server/runtime/commands/adapter_commands.py)。
-- [可安装示例](../../examples/server_run_command/README.md)、[原生文本入口](../../../server/runtime/agent_adapter/interface_deep.py)。
+- [原生文本入口](../../../server/runtime/agent_adapter/interface_deep.py)。
 - [事件测试](../../../../tests/unit_tests/extensions_v2/test_server_run_command.py)、[适配与模型上下文测试](../../../../tests/unit_tests/extensions_v2/test_server_run_command_adapter.py)。
 - [session.append 文档格式](F_16_session-append.md)、[内置事件开发模板](../designs/builtin-event-development-guide.md)。

@@ -111,7 +111,7 @@ SessionDetachOutput(clientId="web:view-main")
 
 例如窗口 V 从 A 切到 B：旧 detach 绑定 A、clientId 仍为 web:V，插件按旧 attachment_id 取消 A 的刷新任务；随后新 attach 绑定 B，同一个 clientId 对应新的 attachment_id。迟到的 A 清理只能删旧键，不会误删 B 的资源。若只是关停 A 的运行，则对仍看 A 的窗口发送 reason=end，B 的窗口继续保留。
 
-下列代码来自 [现有示例包](../../examples/session_detach/extension.py)，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
+下列代码位于包内入口模块，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
 
 ```python
 """Own resources by association identity, allowing independent view cleanup."""
@@ -251,5 +251,4 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2 tests/unit_tests/
 - [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionDetachInput/Result；参照小写 Mods 事件。
 - [主责规约 S_12](../specs/S_12_session-detach.md)。
 - [事件定义与校验](../../event_types/session_detach.py)、[默认 CORE](../../event_handlers/session_detach.py)。
-- [示例包说明](../../examples/session_detach/README.md)。
 - [session.append 文档格式基准](F_16_session-append.md)。

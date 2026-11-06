@@ -574,10 +574,9 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | 功能 | 主要入口 | 需要同步的内容 |
 | --- | --- | --- |
 | 插件渲染树与 wire 序列化 | [models.py](../../webui/models.py)：RenderNode、node_to_payload、_content_to_payload | 字段结构、嵌套节点、事件声明；不能序列化掉应报错的旧字段 |
-| 插件 API 与业务视图 | [webui 导出](../../webui/__init__.py)、[工作台视图](../../examples/webui_workbench_v2/webui_workbench_v2/views.py)、[Token Weather](../../examples/token_weather/token_weather/handlers.py) | 公开名称、构造函数、helper、事件 Handler 与示例输出 |
+| 插件 API 与业务视图 | [webui 导出](../../webui/__init__.py)、[工作台视图](../../examples/webui_workbench_v2/webui_workbench_v2/views.py)、[Token Weather](../../examples/token_weather_glass/token_weather_glass/extension.py) | 公开名称、构造函数、helper、事件 Handler 与示例输出 |
 | 后端属性与事件数据校验 | [component_rules.py](../../webui/component_rules.py)：COMPONENT_RULES、validate_props、validate_event_data | 完整字段、类型、枚举、必填、依赖约束和事件语义 |
 | Gateway 页面校验与示例 | [Gateway WebUI](../../../gateway/extensions_v2/webui)、[登录示例](../../examples/auth_login_demo/auth_login_demo/views.py) | 共用组件的新 props、Gateway 表单与菜单扩展、字段集合及应用级资源 |
-| FS / MCP 探测面板 | [FS Probe](../../examples/fs_probe/fs_probe/views.py)、[MCP Probe](../../examples/mcp_probe/mcp_probe/views.py) | Button 文案与样式、Text 状态与代码排版；单行截断使用 ellipsis，不恢复 max_lines |
 | 整树、根节点和规模校验 | [schema.py](../../webui/schema.py)：validate_request、validate_root、_validate_node、_validate_events；[constants.py](../../webui/constants.py) | children、Tabs 内容遍历、专用根、预算和错误码 |
 | 已发布实例、版本与事件门禁 | [registry.py](../../webui/registry.py)、[action_validation.py](../../webui/action_validation.py)：validate_upstream、_find_node | 快照、节点路径、版本、action / args / data 核对 |
 | 后端渲染、清空和连接释放 | [runtime.py](../../webui/runtime.py)、[render_core.py](../../webui/core_handlers/render_core.py)、[action_core.py](../../webui/core_handlers/action_core.py) | 在何处拒绝、是否发布、旧实例与断连清理 |
@@ -675,7 +674,7 @@ max_lines=1 迁移为 ellipsis=true；多行截断没有对应属性，移除该
 | 完整树、子节点与递归内容 | test:webui-components、test:webui-protocol；后端 validate_root 回归 |
 | 实际适配器、主题、显示与交互 | test:webui-components、test:webui-renderer；浏览器实际验证另行记录 |
 | 版本、断连、释放与通信 | test:webui-runtime、test:webui-transport；后端 test_webui_runtime.py / test_application_slots.py |
-| 插件示例与安装副本 | test_workbench_turn_actions.py、test_token_weather.py、包安装查询与实际渲染结果 |
+| 插件示例与安装副本 | test_workbench_turn_actions.py、test_token_weather_glass.py、包安装查询与实际渲染结果 |
 | Gateway 共用字段与页面树 | [test_gateway_ui_render.py](../../../../tests/unit_tests/gateway/extensions_v2/test_gateway_ui_render.py)、webuiGatewayCases.json；复用 webuiComponentCases.json / webuiEventCases.json 中宿主共同支持的部分 |
 | 登录与探测示例 | [test_login_example.py](../../../../tests/unit_tests/gateway/extensions_v2/test_login_example.py)、[test_probe_example_props.py](../../../../tests/unit_tests/extensions_v2/webui/test_probe_example_props.py)；实际安装 ZIP 与空态、成功、失败面板树 |
 

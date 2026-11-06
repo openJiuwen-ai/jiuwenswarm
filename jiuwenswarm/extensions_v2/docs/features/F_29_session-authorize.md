@@ -138,7 +138,7 @@ def create_extension():
     return Extension()
 ```
 
-本事件没有可改写的业务输入，示例的“改写”指结果隐藏或拒绝；不能在此构造新的有效 handle。next 继续当前授权链，Ops 调用才会另起授权事件。用户把 manifest.json 与模块放在包根目录，通过既有管理入口安装；可直接参考 [可安装示例](../../examples/session_authorize/README.md)。平台负责事件触发、会话事实和宿主绑定，用户不需要改原业务方法或采集真实凭据。
+本事件没有可改写的业务输入，示例的“改写”指结果隐藏或拒绝；不能在此构造新的有效 handle。next 继续当前授权链，Ops 调用才会另起授权事件。用户把 manifest.json 与模块放在包根目录，通过既有管理入口安装。平台负责事件触发、会话事实和宿主绑定，用户不需要改原业务方法或采集真实凭据。
 
 ## 4. 方法契约
 
@@ -224,6 +224,6 @@ Extensions V2 全组为 933 通过、2 跳过、7 失败。7 项失败已在未�
 
 ## 7. 参考资料
 
-- [规约 S_16](../specs/S_16_session-authorize.md)、[可安装示例](../../examples/session_authorize/README.md)。
+- [规约 S_16](../specs/S_16_session-authorize.md)。
 - [事件定义与校验](../../event_types/session_authorize.py)、[默认 CORE](../../event_handlers/session_authorize.py)、[Ops 登记](../../handler_ops/session_authorize.py)。
 - [宿主绑定与签发](../../session_authorization/service.py)、[事件触发与结果解包](../../session_authorization/dispatch.py)。

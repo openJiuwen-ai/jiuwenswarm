@@ -264,5 +264,5 @@ await run_history_io(
 - [内置事件接入说明](../designs/builtin-event-development-guide.md)：公共 EventBus/Handler/Ops 机制。
 - [事件类型](../../event_types/session_history.py)、[平台触发](../../../server/runtime/session/history_events.py)、[消息映射](../../../server/runtime/session/history_message.py)、[默认 CORE](../../event_handlers/session_history.py)。
 - [Ops](../../handler_ops/session_ops.py)、[历史查询和提交服务](../../../server/runtime/session/session_history_ops.py)、[平台上下文](../../../server/runtime/session/history_context.py)。
-- [可安装示例](../../examples/session_history_audit/README.md)、[原生 BaseMessage](https://gitcode.com/huenrui_/agent-core/tree/rsi_native_agent_os/openjiuwen/core/foundation/llm/schema/message.py)。
+- [原生 BaseMessage](https://gitcode.com/huenrui_/agent-core/tree/rsi_native_agent_os/openjiuwen/core/foundation/llm/schema/message.py)。
 - [Claude 固定提交类型定义](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)：SessionAppendInput/Message/Origin/Args/Result；不宣称当前最新版互换兼容。

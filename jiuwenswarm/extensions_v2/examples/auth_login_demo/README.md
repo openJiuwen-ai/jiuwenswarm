@@ -11,23 +11,13 @@
 
 ## 生效机制
 
-1. 插件由 Gateway 加载，激活后在 `application.entry` 渲染登录页。
-2. 登录成功后，插件把凭证写入当前浏览器的本地存储。
-3. `requestBindings` 在请求发出前把凭证注入请求头，`gateway.request` 校验登录态。
-4. 侧边栏 `application.sidebar.footer` 展示账号菜单，退出登录会撤销凭证。
+- 插件由 Gateway 加载。第一次打开应用时会先看到登录页，登录或注册成功后才进入主界面。
+- 登录成功后，凭证留在当前浏览器里，之后的 HTTP 和 WebSocket 请求会自动带上。
+- 插件在请求链路上校验登录态，没有有效凭证的请求会被拦下。
+- 侧边栏底部显示当前账号和退出入口；退出时本地凭证被清除，token 同时失效。
 
 ## 说明
 
 - 账号与 token 保存在插件安装副本的 `data/accounts.sqlite3`，不会写入源码包。
 - 账号不参与平台数据路由，不同账号看到相同的已有项目、会话与数据。
 - 本示例用于演示插件自有认证，不作为平台内置认证。
-
-## 安装
-
-在仓库根目录执行：
-
-```sh
-python jiuwenswarm/extensions_v2/examples/auth_login_demo/pack.py --output /tmp/webui-login-demo.zip
-```
-
-将 ZIP 放到运行 Gateway 的机器可读取的位置，通过插件详情页安装后重载。

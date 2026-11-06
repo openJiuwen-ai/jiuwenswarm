@@ -8,7 +8,7 @@
 | 字段契约 | [S_02 §1.2、§1.3](../specs/S_02_backend-package-management.md) |
 | 界面项 | [F_07](../features/F_07_ui-contributions.md)、[S_17](../specs/S_17_webui-component-props.md) |
 | Gateway 请求绑定 | [S_06](../../../gateway/extensions_v2/docs/specs/S_06_local-browser-bridge.md) |
-| 示例包 | [fs_probe](../../examples/fs_probe)、[auth_login_demo](../../examples/auth_login_demo) |
+| 示例包 | [token_weather_glass](../../examples/token_weather_glass)、[auth_login_demo](../../examples/auth_login_demo) |
 
 本文面向插件包作者，说明一个系统插件包由哪些文件组成、`manifest.json` 各段如何填写、`README.md` 应说明哪些内容。字段语义以 S_02 为准，本文给出可直接改用的写法与交付前自检项。
 

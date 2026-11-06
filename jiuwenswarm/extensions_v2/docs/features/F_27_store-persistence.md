@@ -71,8 +71,7 @@ Core 不加入 Swarm 目录、WebUI 类型或应用配置；面向应用的示�
 未捕获到原失败的结构化原因，因此没有将短路径或任何具体猜测写成根因，也没有添加生产自动重试。
 既有示例安装断言现在保留 ActivationReport，便于再次出现时定位。
 
-交付包只包含 manifest.json、extension.py 和 README.md；用法见
-[示例说明](../../examples/store_probe/README.md)。验证复用了生产管理/事件链，未启动真实浏览器或运行真实模型对话。
+交付包只包含 manifest.json、extension.py 和 README.md；用法见交付包内的 README.md。验证复用了生产管理/事件链，未启动真实浏览器或运行真实模型对话。
 
 本地调试依赖已指向 `D:/lzy/test/agent-core`；这是本地开发配置，发布前需切回正式依赖。
 
@@ -114,7 +113,7 @@ reload 只重读安装副本，不会从仓库更新。卸载会清空该示例�
 ```
 
 本次没有启动真实模型或浏览器；用已有 notify_context_usage 入口驱动真实装配、包管理、事件与文件链路，
-传输端收集实际 WebUI 消息。真实服务复测按[示例说明](../../examples/store_probe/README.md)替换旧包后进行。
+传输端收集实际 WebUI 消息。真实服务复测需替换旧包后进行。
 
 额外观察：同一 Python 进程中销毁并重建 Registry，可能因模块命名重复复用旧包的子模块缓存。
 此次独立进程重启验证通过；进程内重建的问题另行留作 SDK 加载器问题，不在本次用量 Handler 修复中改动。

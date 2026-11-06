@@ -70,8 +70,9 @@
 - [webui/](webui/)：WebUI 事件、渲染校验、实例登记、下行传输与上行适配。
 - [examples/auth_login_demo/](examples/auth_login_demo/)：登录与注册示例包，声明 `package.domain: gateway`，由 Gateway 加载；
   示例源码集中管理，包的运行宿主由 manifest 决定。
-- [examples/token_weather/](examples/token_weather/)：端到端示例包，验证槽位声明、事件 Handler、运行时渲染树和
-  `ui.ready` 恢复；不作为产品内置包。
+- [examples/token_weather_glass/](examples/token_weather_glass/)：上下文用量示例包，验证槽位声明、事件 Handler、
+  运行时渲染树和 `ui.ready` 恢复。
+- [examples/webui_workbench_v2/](examples/webui_workbench_v2/)：插槽与组件示例包，覆盖应用入口、侧栏、任务区与对话区域。
 
 ## 命名与编号
 

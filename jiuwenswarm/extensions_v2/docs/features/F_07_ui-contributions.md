@@ -329,7 +329,7 @@ ready、刷新和热重载均恢复同一记录。零值明确显示 0；未收�
 不解释为输入或输出，不读取宿主内部历史补值。按用户后续确认省略 Token/tokens 后缀，
 格式化沿用十进制 K、一位小数及省略末尾零。输入框上方的上下文天气条及宿主组件接口不变。
 
-验证：`.venv/bin/python -m pytest tests/unit_tests/extensions_v2/webui/test_workbench_turn_actions.py tests/unit_tests/extensions_v2/webui/test_application_slots.py tests/unit_tests/extensions_v2/webui/test_token_weather.py -q --no-cov -o log_cli=false`
+验证：`.venv/bin/python -m pytest tests/unit_tests/extensions_v2/webui/test_workbench_turn_actions.py tests/unit_tests/extensions_v2/webui/test_application_slots.py tests/unit_tests/extensions_v2/webui/test_token_weather_glass.py -q --no-cov -o log_cli=false`
 共 71 项通过，覆盖通知时序、重复更新、隔离、持久化失败、非法值、零值、旧记录、刷新、重载恢复及中英文标签。
 本地 1.0.9 安装副本已同步两个实现文件及中英文说明，ZIP 已重建；正式 `/extension reload` 返回热重载成功。
 Chrome 在用户截图对应的 20:13 历史回合确认显示“输入 未上报 · 输出 未上报”，刷新后保留，

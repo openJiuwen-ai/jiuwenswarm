@@ -276,7 +276,7 @@
 - **责任与契约：** [S_05](../specs/S_05_session-repo-ops.md)；Ops 登记沿用 session Builder，Git 业务读取位于 `server/runtime/session/session_repo.py`。
 - **开工硬前置：** EXTV2-13 的可信 cwd 与共享 session Ops 接线；不以 EXTV2-14 的模型资料为前提。
 - **验收标准：** [F_15 第 6 节](../features/F_15_session-repo.md#6-验收与未决问题) 的真实子目录、worktree、detached / unborn、缺失、错误、超时、并发隔离、用户包装载与原生入口验证。
-- **独立验证：** `tests/unit_tests/extensions_v2/test_session_repo_ops.py`；示例 `examples/session_repo_info/`。
+- **独立验证：** `tests/unit_tests/extensions_v2/test_session_repo_ops.py`。
 - **前端与联合交付：** 新增同名查询 Event/CORE；不新增前端入口；不据此完成 M1～M3。对应 Server PR-03。
 
 ### EXTV2-16 会话历史读写与追加前扩展
@@ -285,14 +285,14 @@
 - **责任与契约：** [S_06](../specs/S_06_session-history-ops.md)；[F_16](../features/F_16_session-append.md) 说明追加事件/方法，[F_18](../features/F_18_session-messages.md) 独立说明只读历史查询（本 PR 新增文档编号，交付任务不拆分）；事件 / Handler / Ops 登记在 Extensions V2，记录构造、分页及写入服务留在 Server 历史模块。agent-core 不改造，EventBus 只在 Worker。
 - **开工硬前置：** 已有 EXTV2-01 装配、EXTV2-05 共享 Ops Builder、宿主绑定的有效 SessionContext 和原历史服务；不依赖 cwd / model / repo 能力。
 - **验收标准：** 用户包实际加载并调用两项 Ops；改写 / 显式拒绝 / 真写回执与原入口生效；稳定分页、重试去重与冲突、跨会话 / 包隔离、取消 / 失败 / generation 拒绝；已有历史回归和真实 Worker 链路。范围及证据入口见 [F_16 追加验收](../features/F_16_session-append.md#6-验收与未决问题) 与 [F_18 查询验收](../features/F_18_session-messages.md#6-验收与未决问题)。
-- **独立验证：** `tests/unit_tests/extensions_v2/test_session_history_ops.py` 与 `test_session_history_messages.py`；用户示例 `examples/session_history_audit/`，追加字段和迁移见 F_16，查询字段和只读用户示例见 F_18。
+- **独立验证：** `tests/unit_tests/extensions_v2/test_session_history_ops.py` 与 `test_session_history_messages.py`；追加字段和迁移见 F_16，查询字段见 F_18。
 - **前端与联合交付：** 历史可通过既有读取入口恢复，本次不主动渲染 UI，不据此完成 M1～M3。对应 Server PR-04。
 
 ### EXTV2-17 会话轮次与用量查询
 
 - **目标与独立验收：** 新增共享只读 `ops.session.turns()` 和 `ops.session.usage()`；两项派发同名查询事件，前者统计已提交原生用户输入，后者返回 context/rateLimits/可选 cost，未知数字不伪造。验证多会话、重复记录、工具/模型活动、空值与零值、历史恢复、宿主快照、用户包调用与卸载。
 - **必要前置：** 既有 `ops.build`、可信 SessionContext、平台历史和原生用量事实；不依赖追加调用作为查询前置，不新增 session.measure。
-- **代码与契约：** [F_17 usage](../features/F_17_session-usage.md)、[F_20 turns](../features/F_20_session-turns.md)、[S_07](../specs/S_07_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
+- **代码与契约：** [F_17 usage](../features/F_17_session-usage.md)、[F_20 turns](../features/F_20_session-turns.md)、[S_07](../specs/S_07_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py。
 
 ### EXTV2-22 七项只读查询事件化
 
@@ -317,7 +317,7 @@
 - **责任与契约：** [S_10](../specs/S_10_session-end.md)、[F_22](../features/F_22_session-end.md)。event_types 只定义/校验/注册，event_handlers 默认 CORE 确认通知，Server 固定运行结束参与者实际 trigger；原 Runtime 继续唯一执行资源释放，通知不自动删除历史。
 - **必要前置：** 现有 Worker EventBus/Registry/Ops Build 与 Runtime 会话代次/固定结束参与者协议；不依赖未合入 PR04/05/06 或 Core !110。不与 session.start 按包激活实例一一配对。
 - **验收标准：** 真实用户包、回执/目标保护、并发重复、错误/超时/取消、默认释放顺序、KVC 发布共存、跨会话/Team 排除、回合/切页非触发、历史保留、同 ID 新代次、卸载前通知与真实 Worker 接线；证据唯一入口见 [F_22 第 6 节](../features/F_22_session-end.md#6-验收与未决问题)。
-- **独立验证：** `test_session_end.py` 及 Runtime/Worker 结束与删除回归；现成包 `examples/session_end/`。不新增 Ops、前端入口或 Team 接线。
+- **独立验证：** `test_session_end.py` 及 Runtime/Worker 结束与删除回归。不新增 Ops、前端入口或 Team 接线。
 
 ### EXTV2-20 界面与主会话关联建立通知
 
@@ -325,7 +325,7 @@
 - **责任与契约：** [S_11](../specs/S_11_session-attach.md)、[F_23](../features/F_23_session-attach.md)。类型/校验/注册在 event_types，CORE 只确认关联；平台关联表和 trigger 在 Server 通知模块。Runtime 仅组合固定 foreground 观察者，不依赖 EventBus。
 - **必要前置：** 现有 Worker EventBus/Registry/Ops Build、Runtime 提交和 Web view_id；不依赖未合入 PR04/05/06/10 或 Core !110。无新增 Ops、前端请求或 Team 适配。
 - **验收标准：** 真实用户包、提交时点、两视图/切换/重放/稳定重连、输入回执保护、失效/缺失目标、超时/取消、KVC 共存、卸载与真实 Front/Supervisor/Worker；证据见 [F_23 第 6 节](../features/F_23_session-attach.md#6-验收与未决问题)。
-- **独立验证：** test_session_attach.py、test_session_attach_provisioner.py；现成包 examples/session_attach/。关联表在本 Runtime 内复用，PR08/11 原同 PR !95 开发，现随 Server !99 交付，解除文档为 F_24 / S_12，不将 ui.ready 或 Gateway 连接解释为 attach。
+- **独立验证：** test_session_attach.py、test_session_attach_provisioner.py。关联表在本 Runtime 内复用，PR08/11 原同 PR !95 开发，现随 Server !99 交付，解除文档为 F_24 / S_12，不将 ui.ready 或 Gateway 连接解释为 attach。
 
 ### EXTV2-21 界面与主会话关联解除通知
 
