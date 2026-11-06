@@ -179,7 +179,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(actual["MODEL_NAME"], "keep")
         self.assertEqual(actual["CUSTOM_APP_VALUE"], "keep")
         self.assertIn("ADX_TOKEN", actual)
-        self.assertFalse(set(actual) & set(deploy._OBSOLETE_APPLICATION_ENV))
+        self.assertFalse(set(actual) & set(deploy._AGENTOS_ENV_CLEANUP))
         self.assertFalse(any(name in actual for name, _, _ in deploy._TOOL_ENV_SETTINGS))
 
     def test_invalid_legacy_resource_env_does_not_modify_existing_configuration(self):
@@ -192,6 +192,36 @@ class DeploymentTests(unittest.TestCase):
             deploy.configure(self.settings)
         for path, content in before.items():
             self.assertEqual(path.read_bytes(), content)
+
+    def test_service_ports_are_generated_for_cli_readers(self):
+        from dotenv import dotenv_values
+
+        environment = self.root / "service.env"
+        environment.write_text("GATEWAY_PORT=1234\nFRONTEND_PORT=4567\n")
+        self.settings["gateway"].update(host="0.0.0.0", port=29001,
+                                        web_host="127.0.0.1", web_port=29000, static_port=25173)
+        deploy.update_environment(environment, self.settings, service=True)
+        actual = dotenv_values(environment)
+        self.assertEqual(actual["GATEWAY_HOST"], "0.0.0.0")
+        self.assertEqual(actual["GATEWAY_PORT"], "29001")
+        self.assertEqual(actual["WEB_HOST"], "127.0.0.1")
+        self.assertEqual(actual["WEB_PORT"], "29000")
+        self.assertEqual(actual["FRONTEND_HOST"], "0.0.0.0")
+        self.assertEqual(actual["FRONTEND_PORT"], "25173")
+
+    def test_standalone_retains_existing_environment_inputs_and_refreshes_token_alias(self):
+        from dotenv import dotenv_values
+
+        environment = self.root / "standalone.env"
+        original = {"GATEWAY_PORT": "29001", "FRONTEND_PORT": "25173", "TOOL_SANDBOX_CPU": "1300",
+                    "YR_PYTHON_VERSION": "3.11", "CUSTOM_APP_VALUE": "keep"}
+        environment.write_text("".join(f"{key}={value}\n" for key, value in original.items())
+                               + "ADX_GATEWAY_TOKEN=old-fixture\n")
+        deploy.update_environment(environment, dict(self.settings, profile="standalone"))
+        actual = dotenv_values(environment)
+        for key, value in original.items():
+            self.assertEqual(actual[key], value)
+        self.assertEqual(actual["ADX_GATEWAY_TOKEN"], actual["ADX_TOKEN"])
 
     def test_missing_config_initialization_preserves_existing_workspace(self):
         sentinel = self.root / "home/.jiuwenswarm/history.db"

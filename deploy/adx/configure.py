@@ -70,16 +70,16 @@ def read_environment(path):
 
 
 
-# These names belong to the retired YuanRong installer, or duplicate values
-# now supplied by the ADX deployment's service launcher.
-_OBSOLETE_APPLICATION_ENV = (
+# AgentOS replaces these legacy deployment inputs. Other launch paths may
+# still consume them, so this cleanup must remain scoped to the managed profile.
+_AGENTOS_ENV_CLEANUP = (
     "YR_PYTHON_VERSION", "YR_FUNC_CODE_DIR", "FUNC_SVC_NAME", "FUNCTION_ID", "SANDBOX_TYPE",
     "MGR_CPU", "MGR_MEMORY", "MGR_MIN_INSTANCE", "MGR_MAX_INSTANCE", "MGR_CONCURRENT_NUM",
-    "MASTER_NODE_IP", "FRONTEND_HOST", "FRONTEND_PORT", "ETCD_ENDPOINTS", "WEB_ENABLED",
+    "MASTER_NODE_IP", "ETCD_ENDPOINTS", "WEB_ENABLED",
     "GATEWAY_CONCURRENCY", "GATEWAY_INVOKE_TIMEOUT", "GATEWAY_SESSION_MAP_SCOPE",
     "TOOL_SANDBOX_TYPE", "TOOL_SANDBOX_ENABLE", "TOOL_SANDBOX_IMAGE", "TOOL_SANDBOX_EXECUTOR",
     "TOOL_SANDBOX_USER", "TOOL_SANDBOX_GROUP", "BIND_IP",
-    "GATEWAY_HOST", "GATEWAY_PORT", "WEB_HOST", "WEB_PORT", "WEB_STATIC_HOST", "WEB_STATIC_PORT",
+    "WEB_STATIC_HOST", "WEB_STATIC_PORT",
     "ADX_GATEWAY_TOKEN",
 )
 _TOOL_ENV_SETTINGS = (
@@ -287,17 +287,28 @@ def update_environment(path, settings, owner=None, *, service=False):
         values[node_ingress_key] = settings["node_ingress_url"]
     elif node_ingress_key in dotenv_values(path, interpolate=False):
         unset_key(str(path), node_ingress_key)
+    if settings.get("profile", "standalone") != "agentos":
+        if "ADX_GATEWAY_TOKEN" in dotenv_values(path, interpolate=False):
+            values["ADX_GATEWAY_TOKEN"] = token
     if service:
+        options = settings.get("gateway", {})
         values.update({
+            "GATEWAY_HOST": options.get("host", "127.0.0.1"),
+            "GATEWAY_PORT": options.get("port", 19001),
+            "WEB_HOST": options.get("web_host", "127.0.0.1"),
+            "WEB_PORT": options.get("web_port", 19000),
+            "FRONTEND_HOST": options.get("host", "127.0.0.1"),
+            "FRONTEND_PORT": options.get("static_port", 5173),
             "AGENTOS_BUILTIN_AGENT_CPU": str(settings["runtime"].get("cpu", 2000)),
             "AGENTOS_BUILTIN_AGENT_MEMORY": str(settings["runtime"].get("memory", 4096)),
         })
     for key, setting in values.items():
         set_key(str(path), key, str(setting))
     existing = dotenv_values(path, interpolate=False)
-    for key in (*_OBSOLETE_APPLICATION_ENV, *(item[0] for item in _TOOL_ENV_SETTINGS)):
-        if key in existing:
-            unset_key(str(path), key)
+    if settings.get("profile", "standalone") == "agentos":
+        for key in (*_AGENTOS_ENV_CLEANUP, *(item[0] for item in _TOOL_ENV_SETTINGS)):
+            if key in existing:
+                unset_key(str(path), key)
     os.chown(path, owner.st_uid, owner.st_gid)
     path.chmod(0o600)
 

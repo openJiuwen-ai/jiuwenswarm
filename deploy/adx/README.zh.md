@@ -65,8 +65,10 @@ Gateway 和工具 SDK 统一读取 `ADX_TOKEN`；`gateway.adx.token_env` 指向�
 不再生成值相同的 `ADX_GATEWAY_TOKEN`。旧 Gateway 配置在部署时同步更新。
 模型与嵌入模型凭据继续保留在 `.env`，未知业务变量保留。
 
-Gateway/Web 的 host、port 来自部署 settings，由启动器传入进程；应用 `.env`
-中的旧端口变量会清除，避免覆盖部署选择。`AGENTOS_BUILTIN_AGENT_CPU/MEMORY`
+Gateway/Web 的 host、port 来自部署 settings，同时生成到应用 `.env`，供 CLI、
+Web 和升级入口读取。AgentOS 启动器已注入的端口优先于 `.env`，避免旧值覆盖
+当前部署选择；这些变量本身仍有效。旧变量清理仅作用于 AgentOS 托管配置，
+standalone 保留已有环境输入与凭据别名。`AGENTOS_BUILTIN_AGENT_CPU/MEMORY`
 仍由部署 settings 转换成进程变量，因为 Gateway 的资源读取方需要这些变量。
 CA 和 `ADX_TOKEN` 继续保留在 `.env`。节点地址只保留启动器的运行时注入。
 

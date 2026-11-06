@@ -49,3 +49,16 @@ def test_agentos_shared_dotenv_cannot_replace_injected_tool_identity(monkeypatch
         assert load_dotenv_runtime(dotenv, override=True)
         assert all(os.environ[key] == value for key, value in injected.items())
         assert os.environ["MODEL_NAME"] == "after"
+
+
+def test_agentos_launcher_ports_win_while_cli_can_load_generated_ports(monkeypatch, tmp_path):
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
+    monkeypatch.setenv("GATEWAY_PORT", "29001")
+    monkeypatch.setenv("FRONTEND_HOST", "0.0.0.0")
+    monkeypatch.delenv("FRONTEND_PORT", raising=False)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("GATEWAY_PORT=19001\nFRONTEND_HOST=localhost\nFRONTEND_PORT=25173\n")
+    assert load_dotenv_runtime(dotenv, override=True)
+    assert os.environ["GATEWAY_PORT"] == "29001"
+    assert os.environ["FRONTEND_HOST"] == "0.0.0.0"
+    assert os.environ["FRONTEND_PORT"] == "25173"

@@ -129,8 +129,10 @@ process overrides retain their existing priority and dynamic update behavior.
 Gateway and tool SDK authentication share `ADX_TOKEN`; the generated
 `gateway.adx.token_env` selects it. The identical `ADX_GATEWAY_TOKEN` duplicate is
 removed. Model credentials and unknown application variables are retained.
-Gateway/Web listen addresses and ports come from deployment settings via the
-launcher, so stale application dotenv copies are removed. Builtin Agent resource
+Gateway/Web listen addresses and ports come from deployment settings and are
+also written to application dotenv for CLI, Web and upgrade readers. AgentOS
+launcher values take precedence when present. Legacy input cleanup is scoped to
+the managed AgentOS profile; standalone retains existing inputs and token aliases. Builtin Agent resource
 environment variables and CA settings remain active inputs. Node ingress is
 supplied only by the runtime launcher.
 

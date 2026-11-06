@@ -135,6 +135,8 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
             "JIUWENSWARM_ADX_NODE_INGRESS_URL", "JIUWENSWARM_RUNTIME_PROFILE",
             "JIUWENSWARM_AGENTOS_SANDBOX_CONFIG", "JIUWENSWARM_USER_DIRECTORY",
             "SSL_CERT_FILE", "ADX_TOKEN",
+            "GATEWAY_HOST", "GATEWAY_PORT", "WEB_HOST", "WEB_PORT",
+            "FRONTEND_HOST", "FRONTEND_PORT",
         )
     saved = {k: os.environ[k] for k in preserved_keys if k in os.environ}
     loaded = load_dotenv(dotenv_path=dotenv_path, override=override)
