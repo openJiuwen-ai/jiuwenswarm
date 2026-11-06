@@ -236,6 +236,13 @@ datas += collect_data_files(
     include_py_files=True,
     includes=EXTENSION_DATA_FILE_PATTERNS,
 )
+# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json), read at runtime;
+# the template loads its rail from rails/*.py.
+datas += collect_data_files(
+    "jiuwenswarm.office",
+    include_py_files=True,
+    includes=["powerpoint/**/*"],
+)
 # DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
 # 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern
 datas += collect_data_files(
@@ -281,6 +288,8 @@ for lazy_package in (
     "jiuwenswarm.agents.harness.common.rails",
     "jiuwenswarm.common.auth",
     "jiuwenswarm.agents.swarm",
+    # An app template's rail file imports its rail (jiuwenswarm.office.rails) at load time.
+    "jiuwenswarm.office",
 ):
     lazy_runtime_submodules += collect_submodules(lazy_package)
 

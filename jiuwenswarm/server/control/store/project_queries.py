@@ -35,7 +35,7 @@ def attribute_session_project(
     visible_project_ids: set[str],
     removed_project_ids: set[str] = frozenset(),
 ) -> str:
-    """Return the owning project ID, ``""`` for a removed project, or the default.
+    """Return the owning project ID, ``""`` for a removed project or a client app's conversation, or the default.
 
     Removed (hidden) projects keep their sessions on disk, but those sessions
     must not surface: returning ``""`` makes every caller skip them instead of
@@ -43,6 +43,10 @@ def attribute_session_project(
     record is missing entirely, or that carry no ``project_id`` at all, still
     fall back to the default project so legacy metadata stays readable.
     """
+    from jiuwenswarm.server.client_attachments.registry import conversation_app
+
+    if conversation_app(metadata) is not None:
+        return ""
     project_id = str(metadata.get("project_id") or "")
     if project_id:
         if project_id in visible_project_ids:
