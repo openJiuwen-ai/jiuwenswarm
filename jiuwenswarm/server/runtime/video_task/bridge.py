@@ -72,3 +72,5 @@ def resolve_checkpoint_ack(request):
     if not future.done():
         future.set_result(params.get("result") or {})
     return True
+
+

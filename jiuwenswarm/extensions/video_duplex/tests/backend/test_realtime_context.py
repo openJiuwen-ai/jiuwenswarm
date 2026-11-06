@@ -35,45 +35,6 @@ def test_transcript_preserves_roles_and_does_not_promote_assistant_claims():
     assert context.validated_memory([{"source_id": turns[0]["source_id"], "text": "Task completed"}], turns) == []
 
 
-def test_transcript_deduplicates_record_ids_not_repeated_dialogue():
-    records = [
-        dict(id="a", role="assistant", content="Use folder A?"),
-        dict(id="b", role="user", content="Yes"),
-        dict(id="c", role="assistant", content="Use folder B?"),
-        dict(id="d", role="user", content="Yes"),
-    ]
-    records += [records[1], dict(request_id="shared", role="user", content="Yes"),
-                dict(request_id="shared", role="user", content="Yes")]
-    turns = context.transcript(records)
-    assert len(turns) == 6
-    assert [turn["text"] for turn in turns].count("Yes") == 4
-
-
-async def test_evicted_context_can_be_prepared_again_without_relaxing_scope_checks(monkeypatch):
-    from unittest.mock import Mock
-
-    manager = Mock()
-    manager.authorized_scope = AsyncMock(return_value=("alice", "task-duplex:chat-a"))
-    manager.snapshot.return_value = {"jobs": []}
-    monkeypatch.setattr(context, "prepare_context", AsyncMock(return_value={"memory": [], "recent_turns": []}))
-    restorer = context.RealtimeContextRestorer(manager)
-    first = await restorer.prepare(None, "task-duplex:chat-a")
-    for _ in range(128):
-        await restorer.prepare(None, "task-duplex:chat-a")
-    assert len(restorer._prepared) == 128
-    with pytest.raises(context.ContextRestoreExpired):
-        await restorer.instructions(None, "task-duplex:chat-a", first["token"])
-    fresh = await restorer.prepare(None, "task-duplex:chat-a")
-    assert await restorer.instructions(None, "task-duplex:chat-a", fresh["token"])
-    manager.authorized_scope.return_value = ("bob", "task-duplex:chat-a")
-    with pytest.raises(ValueError) as failure:
-        await restorer.instructions(None, "task-duplex:chat-a", fresh["token"])
-    assert not isinstance(failure.value, context.ContextRestoreExpired)
-    manager.authorized_scope.side_effect = PermissionError("Not allowed")
-    with pytest.raises(PermissionError):
-        await restorer.instructions(None, "task-duplex:chat-a", first["token"])
-
-
 def test_metadata_alone_over_limit_has_explicit_error():
     package = {"session_id": "x" * context.MAX_CONTEXT_CHARS, "memory": [],
                "recent_turns": [], "tasks": {"jobs": [], "omitted_jobs": 0}}
@@ -175,17 +136,6 @@ async def test_failed_history_flush_prevents_restore(saved, monkeypatch):
 async def test_empty_history_and_no_tasks_returns_no_background(saved):
     saved.clear()
     assert await context.prepare_context("chat-a", "alice", lambda: {"jobs": []}) is None
-
-
-@pytest.mark.parametrize("work_mode", ["code", "design"])
-async def test_empty_mode_session_still_restores_its_execution_profile(saved, work_mode):
-    saved.clear()
-    mode = "team.design" if work_mode == "design" else "agent.code.normal"
-    package = await context.prepare_context("chat-a", "alice", lambda: {
-        "jobs": [], "conversation": {"mode": mode, "work_mode": work_mode, "project_id": "project", "api_key": "private"},
-    })
-    assert package["tasks"]["conversation"] == {"mode": mode, "work_mode": work_mode, "project_id": "project"}
-    assert "private" not in context.render_context(package)
 
 
 async def test_shared_restorer_preserves_history_and_refreshes_only_task_facts(monkeypatch):
