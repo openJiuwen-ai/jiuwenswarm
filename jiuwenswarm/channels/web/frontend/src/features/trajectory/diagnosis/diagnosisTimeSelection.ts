@@ -161,6 +161,52 @@ export function timedNodeInterval(cell: WallClockSample): { startMs: number; end
   return { startMs: started, endMs: Math.max(started, end) };
 }
 
+function isTrajectoryRecord(cell: WallClockSample): boolean {
+  if (cell.requestOnly === true) return false;
+  const kind = cell.kind;
+  return kind === 'user'
+    || kind === 'message'
+    || kind === 'tool'
+    || kind === 'subtool'
+    || kind === 'compacted';
+}
+
+/**
+ * Wall-clock intervals of the trajectory records on one lane.
+ *
+ * One record is one user, assistant, or tool row. The two context reminders
+ * beside a user message are not records. A record without a start time is
+ * omitted, matching cells the swimlane cannot select.
+ */
+export function trajectoryRecordIntervals(
+  turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[],
+): { startMs: number; endMs: number }[] {
+  const intervals: { startMs: number; endMs: number }[] = [];
+  for (const turn of turns) {
+    for (const group of turn.groups) {
+      for (const cell of group.cells) {
+        if (!isTrajectoryRecord(cell)) continue;
+        const interval = timedNodeInterval(cell);
+        if (interval !== null) intervals.push(interval);
+      }
+    }
+  }
+  return intervals;
+}
+
+/**
+ * Trajectory records shown when a lane's ledger is fully expanded.
+ *
+ * Same set as `trajectoryRecordIntervals`. System prompts, context reminders,
+ * and request-only markers stay in the ledger but are not nodes. Raw OTel
+ * spans are a separate total.
+ */
+export function trajectoryRecordCount(
+  turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[],
+): number {
+  return trajectoryRecordIntervals(turns).length;
+}
+
 /** Every timed node on a lane, in snapshot order. */
 export function timedNodeIntervals(
   turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[],
@@ -737,14 +783,16 @@ export function userTurnDisplayGaps(
  * Subtract `user_turn` display gaps from a span.
  *
  * Spans wholly inside a gap disappear; spans that cross a gap split into one
- * piece on each side (call site keeps the same record identity).
+ * piece on each side (call site keeps the same record identity). A zero-duration
+ * mark stays, unless that instant lies strictly inside a gap. Input-lane rows
+ * are recorded as instants and still need the mark.
  */
 export function clipIntervalAgainstGaps(
   startMs: number,
   endMs: number,
   gaps: readonly AxisInterval[],
 ): AxisInterval[] {
-  if (!(endMs > startMs) || !Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
     return [];
   }
   let pieces: AxisInterval[] = [{ startMs, endMs }];
@@ -756,6 +804,7 @@ export function clipIntervalAgainstGaps(
         next.push(piece);
         continue;
       }
+      if (piece.endMs === piece.startMs) continue;
       if (piece.startMs < gap.startMs) {
         next.push({ startMs: piece.startMs, endMs: gap.startMs });
       }
@@ -765,7 +814,7 @@ export function clipIntervalAgainstGaps(
     }
     pieces = next;
   }
-  return pieces.filter(piece => piece.endMs > piece.startMs);
+  return pieces.filter(piece => piece.endMs >= piece.startMs);
 }
 
 /** Wall-clock instant as local `HH:mm:ss`, or an empty string when invalid. */

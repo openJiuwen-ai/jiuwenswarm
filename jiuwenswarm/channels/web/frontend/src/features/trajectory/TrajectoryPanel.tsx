@@ -125,8 +125,9 @@ import {
 import {
   collectUserInteractionWallRanges,
   mainAgentLastNode,
-  rawOtelSpanIntervals,
   resolveSelectionWallMs,
+  trajectoryRecordCount,
+  trajectoryRecordIntervals,
   userTurnGapHalfAxisMs,
   type SharedTurnAxisRange,
 } from './diagnosis/diagnosisTimeSelection';
@@ -193,7 +194,7 @@ export interface TrajectoryPanelProps {
    * main agent. `null` when that lane has no timed node.
    */
   onMainAgentLastNodeChange?: (node: TrajectoryMainAgentLastNode | null) => void;
-  /** Timed nodes on each lane, used to tell when a pick is too large to run. */
+  /** Trajectory records on each lane, used to tell when a pick is too large to run. */
   onDiagnosisNodesChange?: (lanes: ReadonlyArray<TrajectoryDiagnosisLaneNodes>) => void;
   /** Steps to emphasise on every lane, as `stepRefKey` values. */
   highlightStepKeys?: ReadonlySet<string>;
@@ -275,9 +276,8 @@ export interface TrajectoryPanelSummary {
    */
   spans: number;
   /**
-   * Selectable timed nodes on the swimlanes (`rawOtelSpanIntervals`).
-   * Same rule the analysis header used to label as "OTel Span".
-   * Matches `selectedNodeCount(..., fullScope: true)`.
+   * Expanded trajectory records on the swimlanes (`trajectoryRecordCount`):
+   * user, assistant, and tool rows. Not the raw OTel span total.
    */
   nodes: number;
   /** Scheduled Team control facts, when `main` contains task events. */
@@ -1328,7 +1328,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   onDiagnosisNodesChangeRef.current = onDiagnosisNodesChange;
   const diagnosisNodesKey = JSON.stringify(subjectGroups.groups.map(group => ({
     subjectId: group.subject.id,
-    intervals: rawOtelSpanIntervals(group.rawRecords),
+    intervals: trajectoryRecordIntervals(subjectSnapshots.get(group.subject.id)?.turns ?? []),
   })));
   useEffect(() => {
     onDiagnosisNodesChangeRef.current?.(
@@ -1349,10 +1349,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     // Same OTel Span total as the conversation trajectory panel header when the
     // session is shown as lanes: every loaded raw record, not only timed nodes.
     const spans = allDisplayedRawRecords.length || allDisplayedRecords.length;
+    const nodes = subjectGroups.groups.reduce((sum, group) => (
+      sum + trajectoryRecordCount(subjectSnapshots.get(group.subject.id)?.turns ?? [])
+    ), 0);
     onSummaryChangeRef.current?.({
       agents: lanes.length,
       spans,
-      nodes: lanes.reduce((sum, lane) => sum + lane.intervals.length, 0),
+      nodes,
       ...(scheduledTeamMode && scheduledTeamControlModel !== null
         ? {
           team: {
@@ -1370,6 +1373,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     allDisplayedRecords.length,
     diagnosisNodesKey,
     reviewRunCount,
+    subjectGroups.groups,
+    subjectSnapshots,
     scheduledTeamControlModel,
     scheduledTeamMode,
     sharedTimeAxis,
@@ -1965,8 +1970,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                     selection.onChange(current => toggleAgent(current, subjectId));
                   },
                   canSelectAll: (subjectId: string) => (
-                    unionWallRange(rawOtelSpanIntervals(
-                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
+                    unionWallRange(trajectoryRecordIntervals(
+                      subjectSnapshots.get(subjectId)?.turns ?? [],
                     )) !== null
                   ),
                   isSelectAllActive: (subjectId: string) => {
@@ -1974,14 +1979,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                     // "clear" — those buttons stay available to narrow the pick
                     // to one agent's whole span.
                     if (fullScopeSelection) return false;
-                    const intervals = rawOtelSpanIntervals(
-                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
+                    const intervals = trajectoryRecordIntervals(
+                      subjectSnapshots.get(subjectId)?.turns ?? [],
                     );
                     return isAgentFullySelected(selection.state, subjectId, intervals);
                   },
                   onSelectAll: (subjectId: string) => {
-                    const intervals = rawOtelSpanIntervals(
-                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
+                    const intervals = trajectoryRecordIntervals(
+                      subjectSnapshots.get(subjectId)?.turns ?? [],
                     );
                     if (fullScopeSelection) {
                       leaveFullScope();

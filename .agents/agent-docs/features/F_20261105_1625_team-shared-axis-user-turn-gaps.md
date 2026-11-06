@@ -47,6 +47,7 @@ design_note: 无独立 D；按分析页对照单 Agent 隔夜双时间交界的�
 | 执行日期 / 验证范围 | 实现版本与环境 | 命令 / 复现步骤 / 记录链接 | 实际结果 | 未覆盖项 / 失败原因 |
 | --- | --- | --- | --- | --- |
 | 2026-11-05 / harness 过滤与空隙 prop | 工作区未提交候选；Node 前端测试 | `npm run test:trajectory-diagnosis`（106 pass）；`npm run test:trajectory-host`（19 pass） | 通过 | 未做真实集群隔夜会话人工点验 |
+| 2026-11-06 / 零时长 Input 保留 | 工作区未提交候选；Node 前端测试 | `npm run test:trajectory-diagnosis` | 110 pass | 未在页面上点验贪吃蛇会话 |
 
 ### 可见行为、副作用与证据有效范围
 
@@ -89,3 +90,13 @@ design_note: 无独立 D；按分析页对照单 Agent 隔夜双时间交界的�
 做法：`userTurnDisplayGaps` + `clipIntervalAgainstGaps`；`TrajectoryTimeline` 用区间差替代端点 pad，跨缝拆两侧。
 
 验证：`npm run test:trajectory-diagnosis` 110 pass；`npm run test:trajectory-host` 19 pass。
+
+### 2026-11-06 零时长 Input 不再被裁剪丢掉
+
+现象：分析页「时间」泳道的 Input 行整行空白，Model / Tools 仍在。账本里的 SYSTEM / USER / CONTEXT 还在。
+
+根因：这些准备行只记 `startedAt`，`timeSeconds` 为 `null`，投影是一个点。`clipIntervalAgainstGaps` 要求结束时间大于开始时间，点被整段丢掉。裁剪前 CSS `min-width: 2px` 会把点画成细条。
+
+做法：点保留；只有严格落在交界空白内部的点才去掉。有时长且整段落在空白里的色块仍去掉，跨缝的仍拆成两侧。
+
+验证：`npm run test:trajectory-diagnosis` 110 pass。未在页面上点验贪吃蛇会话。
