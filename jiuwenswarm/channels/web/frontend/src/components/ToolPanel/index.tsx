@@ -23,13 +23,9 @@ import { CollapsibleSection } from './CollapsibleSection';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { getMemberAvatarIdentity, getMemberAvatarKey, getMemberPlainName, type TabType, type TeamDetailTab } from '../teamArea/shared';
-import { useWebUIPanels, type WebUIStyleOverrides } from '../../features/webui';
+import type { useWebUIPanels } from '../../features/webui';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
 
-const rightPanelStyles: WebUIStyleOverrides = {
-  Panel: { className: 'flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-auto p-3' },
-  Box: { style: { minWidth: 0, minHeight: 0 } },
-};
 import type { TeamMemberExecutionEvent, TeamTask, TeamTaskStatus } from '../../stores/sessionStore';
 import type { ProjectInfo, TodoItem, TodoStatus } from '../../types';
 import teamIcon from '../../assets/team.svg';
@@ -77,6 +73,7 @@ function todoItemToTeamTask(todo: TodoItem): TeamTask {
 }
 
 interface ToolPanelProps {
+  webUIPanels: ReturnType<typeof useWebUIPanels>;
   sessionId?: string;
   project?: ProjectInfo | null;
   isNewSessionPromotion?: boolean;
@@ -130,6 +127,7 @@ function mergeById<T>(historyItems: T[], currentItems: T[], getId: (item: T) => 
 }
 
 export function ToolPanel({
+  webUIPanels,
   sessionId,
   project = null,
   isNewSessionPromotion = false,
@@ -497,11 +495,7 @@ export function ToolPanel({
 
   const panelExpanded = mode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
   const nativePanelTab = mode === 'team' ? teamAreaActiveTab : singleAgentPanelActiveTab;
-  const { panels, renderPanel, openRequest, consumeOpenRequest } = useWebUIPanels({
-    slotId: 'conversation.panel.right',
-    sessionId: resolvedSessionId && resolvedSessionId !== 'new' ? resolvedSessionId : null,
-    styles: rightPanelStyles,
-  });
+  const { panels, renderPanel, openRequest, consumeOpenRequest } = webUIPanels;
   const [pluginSelection, setPluginSelection] = useState<{
     key: string; sessionId: string; mode: string; nativeTab: string;
   } | null>(null);
@@ -525,22 +519,19 @@ export function ToolPanel({
   }, [pluginSelection, selectedPluginKey]);
 
   useEffect(() => {
-    if (!openRequest) return;
-    const key = `webui:${openRequest.key}`;
     if (
-      openRequest.sessionId === resolvedSessionId &&
-      mode !== 'auto_harness' &&
-      panels.some((panel) => `webui:${panel.key}` === key)
-    ) {
-      setClosedPluginKeys((previous) => {
-        const next = new Set(previous);
-        next.delete(key);
-        return next;
-      });
-      setPluginSelection({ key, sessionId: resolvedSessionId, mode, nativeTab: nativePanelTab });
-      if (mode === 'team') setTeamAreaExpanded(true);
-      else setSingleAgentPanelExpanded(true);
-    }
+      !openRequest ||
+      openRequest.sessionId !== resolvedSessionId ||
+      mode === 'auto_harness' ||
+      !panels.some((panel) => panel.key === openRequest.key)
+    ) return;
+    const key = `webui:${openRequest.key}`;
+    setClosedPluginKeys((previous) => {
+      const next = new Set(previous);
+      next.delete(key);
+      return next;
+    });
+    setPluginSelection({ key, sessionId: resolvedSessionId, mode, nativeTab: nativePanelTab });
     consumeOpenRequest(openRequest.id);
   }, [
     openRequest,
@@ -549,8 +540,6 @@ export function ToolPanel({
     nativePanelTab,
     panels,
     consumeOpenRequest,
-    setTeamAreaExpanded,
-    setSingleAgentPanelExpanded,
   ]);
 
   const handlePanelTabChange = (key: string) => {

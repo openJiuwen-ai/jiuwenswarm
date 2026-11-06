@@ -48,7 +48,7 @@ after(() => {
   dom.window.close();
 });
 
-const { act, createElement, useState } = await import('react');
+const { act, createElement, useEffect, useState } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { theme } = await import('antd');
@@ -535,6 +535,53 @@ test('Button opens only its own live panel after an accepted receipt; renders ne
   } finally {
     owner.release();
     await app.close();
+  }
+});
+
+test('page-owned panel discovery survives a hidden body and opens only on explicit navigation', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const destination = { ...target, slot_id: 'conversation.panel.right', instance_key: 'details' };
+  const details = (value) => ({ component: 'Panel', props: { title: 'Details' },
+    children: [{ component: 'Text', props: { value } }] });
+  function Page() {
+    const { panels, renderPanel, openRequest, consumeOpenRequest } = useWebUIPanels({
+      sessionId: target.session_id, slotId: destination.slot_id,
+    });
+    const [selected, setSelected] = useState(null);
+    useEffect(() => {
+      if (!openRequest || !panels.some((panel) => panel.key === openRequest.key)) return;
+      setSelected(openRequest.key);
+      consumeOpenRequest(openRequest.id);
+    }, [openRequest, panels, consumeOpenRequest]);
+    return createElement('div', null,
+      createElement(WebUIHost, { sessionId: target.session_id, slotId: target.slot_id }),
+      selected ? createElement('section', null, renderPanel(selected),
+        createElement('button', { onClick: () => setSelected(null) }, 'Hide details')) : null);
+  }
+  try {
+    await act(async () => root.render(createElement(WebUIProvider,
+      { runtime, registry: componentRendererRegistry }, createElement(Page))));
+    await act(async () => {
+      transport.injectRenderFrame(frame({ component: 'Button', props: { value: 'Open details', openPanel: 'details' },
+        events: { 'ui.click': { id: 'details' } } }, 1));
+      transport.injectRenderFrame(frame(details('First reading'), 1, destination));
+    });
+    assert.equal(container.querySelector('section'), null, 'background frames do not display the panel');
+    await click(container.querySelector('[data-testid="webui-button"]'));
+    assert.match(container.querySelector('section').textContent, /First reading/);
+    await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Hide details'));
+    assert.equal(container.querySelector('section'), null);
+    assert.equal(runtime.getScopeSnapshot(target.session_id, destination.slot_id).mounted, true);
+    await act(async () => transport.injectRenderFrame(frame(details('Second reading'), 2, destination)));
+    assert.equal(container.querySelector('section'), null, 'updates do not reopen a hidden body');
+    await click(container.querySelector('[data-testid="webui-button"]'));
+    assert.match(container.querySelector('section').textContent, /Second reading/);
+  } finally {
+    await act(async () => root.unmount()); runtime.dispose(); container.remove();
   }
 });
 

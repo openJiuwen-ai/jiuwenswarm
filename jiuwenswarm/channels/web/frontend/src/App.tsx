@@ -89,7 +89,13 @@ import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
-import { WebUISlotProvider, WebUIPageHost, type WebUIPageTarget } from './features/webui';
+import {
+  WebUISlotProvider,
+  WebUIPageHost,
+  useWebUIPanels,
+  type WebUIPageTarget,
+  type WebUIStyleOverrides,
+} from './features/webui';
 import {
   applyBrowserDisplaySettings,
   browserDisplayRevision,
@@ -258,6 +264,11 @@ function normalizeConfigBoolean(value: unknown): boolean {
     String(value ?? '').trim().toLowerCase(),
   );
 }
+
+const rightPanelWebUIStyles: WebUIStyleOverrides = {
+  Panel: { className: 'flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-auto p-3' },
+  Box: { style: { minWidth: 0, minHeight: 0 } },
+};
 
 type MainNavKey = SidebarNavKey | 'connectorMarket' | 'webui' | ApplicationPluginNavKey;
 
@@ -1166,10 +1177,25 @@ function AppContent({
   const setProactiveNotification = useHarnessStore((s) => s.setProactiveNotification);
 
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
+  const webUIPanels = useWebUIPanels({
+    slotId: 'conversation.panel.right',
+    sessionId: sessionId && sessionId !== NEW_CONVERSATION_ID ? sessionId : null,
+    styles: rightPanelWebUIStyles,
+  });
+  useEffect(() => {
+    const request = webUIPanels.openRequest;
+    if (!request) return;
+    if (request.sessionId !== sessionId || mode === 'auto_harness') {
+      webUIPanels.consumeOpenRequest(request.id);
+      return;
+    }
+    handleToggleDetailPanel(true);
+  }, [webUIPanels.openRequest, webUIPanels.consumeOpenRequest, sessionId, mode, handleToggleDetailPanel]);
   const toolPanelHasContent = useMemo(() => {
     // Electron 下工具面板始终可达（内置浏览器页签等桌面能力），但新建会话首页
     // 没有任何会话内容，悬浮收起条不应出现（tool-panel-collapsed 首页闪现 bug）。
     if (isElectron) return sessionId !== NEW_CONVERSATION_ID;
+    if (mode !== 'auto_harness' && webUIPanels.panels.length > 0) return true;
     const hasMessages = messages.length > 0;
     const hasCodeEnvironment = sessionProject?.work_mode === 'code' && sessionId !== NEW_CONVERSATION_ID;
     switch (mode) {
@@ -1183,7 +1209,7 @@ function AppContent({
           || hasMessages
           || hasCodeEnvironment;
     }
-  }, [isElectron, mode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
+  }, [isElectron, mode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode, webUIPanels.panels.length]);
   // 单 agent 模式同样复用集群模式的展开布局（百分比宽度 + 可拖拽分割线），
   // 避免右侧面板与聊天面板平分空间导致宽度与集群模式不一致；auto_harness 走收起态分支。
   const panelExpanded = mode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
@@ -4743,6 +4769,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 {/* Tool Panel / Expanded Team Panel */}
                 {!toolPanelHidden && trajectoryTaskPanelAvailable && !showConversationNotFound && !heartbeatPanelOpen && (
                   <ToolPanel
+                    webUIPanels={webUIPanels}
                     sessionId={sessionId}
                     project={sessionProject}
                     isNewSessionPromotion={isNewSessionPromotion}
