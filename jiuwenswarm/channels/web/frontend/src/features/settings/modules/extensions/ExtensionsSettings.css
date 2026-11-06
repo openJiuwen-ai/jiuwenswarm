@@ -20,6 +20,6 @@
   border-top: 1px solid var(--color-settings-border);
 }
 
-.settings-extensions__page {
-  padding-top: 12px;
+.settings-extension-page {
+  min-width: 0;
 }

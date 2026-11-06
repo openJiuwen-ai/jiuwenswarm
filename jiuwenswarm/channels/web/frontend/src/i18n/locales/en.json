@@ -479,7 +479,7 @@
       "extensions": "Extensions"
     },
     "extensions": {
-      "description": "Startup splashes and settings pages provided by extensions",
+      "description": "Startup splashes provided by extensions: play order and which ones play",
       "unavailable": "The extension service is not connected",
       "loading": "Loading…",
       "splash": {
@@ -497,12 +497,6 @@
         "reset": "Restore default order",
         "loadFailed": "Cannot load the splash settings",
         "saveFailed": "Cannot save the splash settings"
-      },
-      "pages": {
-        "title": "Extension settings",
-        "empty": "No extension provides a settings page.",
-        "ariaLabel": "Extension settings pages",
-        "loadFailed": "Cannot load the extension settings pages"
       }
     },
     "feedback": {

@@ -3435,7 +3435,7 @@ test('WebUISplashGate holds the workspace and entry until the queue ends and ski
 
 const {
   transfersModule, applicationSettingsModule, WebUIUploadContext, SplashProviderSettings,
-  ExtensionSettingsPages,
+  pluginPagesModule, extensionsModule,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const SETTINGS_SLOT = 'application.settings.page';
@@ -3688,29 +3688,93 @@ test('Extensions settings lists splash providers and saves order, switches and r
 test('Extensions settings shows its empty and disconnected states', async () => {
   const offline = settingsRequest(() => ({ providers: [], customized: false }));
   let view = await mounted(createElement(SettingsServicesProvider, { isConnected: false, connectionState: 'closed',
-    request: offline.request }, createElement(SplashProviderSettings, { disabled: false }),
-  createElement(ExtensionSettingsPages, { disabled: false })));
+    request: offline.request }, createElement(SplashProviderSettings, { disabled: false })));
   assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-status"]').dataset.variant, 'disconnected');
-  assert.equal(view.container.querySelector('[data-testid="settings-extensions-pages-status"]').dataset.variant, 'disconnected');
   assert.deepEqual(offline.calls, []);
   await view.unmount();
-  const empty = settingsRequest((method) => (method === 'webui.settings.pages' ? { pages: [] } : { providers: [], customized: false }));
+  const empty = settingsRequest(() => ({ providers: [], customized: false }));
   view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
-    request: empty.request }, createElement(SplashProviderSettings, { disabled: false }),
-  createElement(ExtensionSettingsPages, { disabled: false })));
+    request: empty.request }, createElement(SplashProviderSettings, { disabled: false })));
   assert.ok(view.container.querySelector('[data-testid="settings-extensions-splash-empty"]'));
-  assert.ok(view.container.querySelector('[data-testid="settings-extensions-pages-empty"]'));
   await view.unmount();
 });
 
-test('Extensions settings pages mount only the selected package page', async () => {
+// ── Plugin settings entries (Gateway F_13 D-08) ──────────────────────────────
+
+const PLUGIN_PAGES = { pages: [{ package_id: 'pkg.a', title: 'Aurora' }, { package_id: 'pkg.b', title: 'Hive' }] };
+
+test('plugin settings entries follow the Extensions module in navigation order', () => {
+  const modules = ['general', 'extensions', 'experimental'].map((id) => ({ module: { id } }));
+  const pages = applicationSettingsModule.parseSettingsPages(PLUGIN_PAGES);
+  const ids = (entries) => entries.map((entry) => entry.id);
+  assert.deepEqual(ids(pluginPagesModule.withPluginEntries(modules, pages)),
+    ['general', 'extensions', 'extension-page:pkg.a', 'extension-page:pkg.b', 'experimental']);
+  const entries = pluginPagesModule.withPluginEntries(modules, pages);
+  assert.equal(entries[1].module, modules[1]);
+  assert.deepEqual(entries[2].page, { packageId: 'pkg.a', title: 'Aurora' });
+  // Without the Extensions module (hidden by the access policy) there are no plugin entries.
+  assert.deepEqual(ids(pluginPagesModule.withPluginEntries([modules[0], modules[2]], pages)), ['general', 'experimental']);
+  assert.deepEqual(ids(pluginPagesModule.withPluginEntries(modules, [])), ['general', 'extensions', 'experimental']);
+});
+
+test('plugin settings pages are read only while enabled and connected, and kept across a disconnect', async () => {
+  const titles = [];
+  function Probe({ enabled }) {
+    const pages = pluginPagesModule.useApplicationSettingsPages(enabled);
+    titles.push(pages.map((page) => page.title).join(','));
+    return null;
+  }
+  const services = settingsRequest(() => PLUGIN_PAGES);
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const render = (enabled, connected) => act(async () => {
+    root.render(createElement(SettingsServicesProvider, { isConnected: connected, connectionState: connected ? 'ready' : 'closed',
+      request: services.request }, createElement(Probe, { enabled })));
+    await settle();
+  });
+  try {
+    await render(false, true);
+    await render(true, false);
+    assert.deepEqual(services.calls, []);
+    await render(true, true);
+    assert.deepEqual(services.calls, [['webui.settings.pages', {}]]);
+    assert.equal(titles.at(-1), 'Aurora,Hive');
+    await render(true, false);
+    assert.equal(titles.at(-1), 'Aurora,Hive');
+    await render(false, true);
+    assert.equal(titles.at(-1), '');
+    assert.deepEqual(services.calls, [['webui.settings.pages', {}]]);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+  const warn = console.warn;
+  console.warn = () => {};
+  const failing = settingsRequest(() => { throw new Error('offline'); });
+  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
+    request: failing.request }, createElement(Probe, { enabled: true })));
+  try {
+    assert.equal(failing.calls.length, 1);
+    assert.equal(titles.at(-1), '');
+  } finally {
+    console.warn = warn;
+    await view.unmount();
+  }
+});
+
+test('a plugin settings entry mounts only its own package page', async () => {
   const transport = splashTransport({});
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
   runtime.start();
-  const services = settingsRequest(() => ({ pages: [{ package_id: 'pkg.a', title: 'Aurora' }, { package_id: 'pkg.b', title: 'Hive' }] }));
-  const view = await mounted(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
-    createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready', request: services.request },
-      createElement(ExtensionSettingsPages, { disabled: false }))));
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const show = (packageId, title) => act(async () => {
+    root.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+      createElement(pluginPagesModule.PluginSettingsPage, { page: { packageId, title } })));
+    await settle();
+  });
   const readies = () => transport.dispatches.filter((request) => request.event === 'ui.ready' && request.target.slotId === SETTINGS_SLOT)
     .map((request) => [request.target.packageId, request.target.instanceKey]);
   const page = (packageId, value) => act(async () => {
@@ -3718,25 +3782,26 @@ test('Extensions settings pages mount only the selected package page', async () 
     await settle();
   });
   try {
-    assert.deepEqual(services.calls, [['webui.settings.pages', {}]]);
+    await show('pkg.a', 'Aurora');
     assert.deepEqual(readies(), [['pkg.a', 'main']]);
-    assert.deepEqual([...view.container.querySelectorAll('[data-testid="settings-extensions-pages-tab"]')]
-      .map((tab) => tab.textContent), ['Aurora', 'Hive']);
+    assert.equal(container.querySelector('[data-testid="settings-extension-page"]').dataset.variant, 'pkg.a');
     await page('pkg.a', 'Aurora page');
-    assert.match(view.container.textContent, /Aurora page/);
-    const hive = [...view.container.querySelectorAll('[data-testid="settings-extensions-pages-tab"]')][1];
-    await act(async () => hive.click());
-    await act(async () => settle());
+    assert.match(container.textContent, /Aurora page/);
+    await show('pkg.b', 'Hive');
     assert.deepEqual(readies(), [['pkg.a', 'main'], ['pkg.b', 'main']]);
-    assert.equal(view.container.querySelector('[data-testid="settings-extensions-pages-host"]').dataset.variant, 'pkg.b');
     await page('pkg.a', 'Late Aurora page');
     await page('pkg.b', 'Hive page');
-    assert.match(view.container.textContent, /Hive page/);
-    assert.doesNotMatch(view.container.textContent, /Aurora page/);
+    assert.match(container.textContent, /Hive page/);
+    assert.doesNotMatch(container.textContent, /Aurora page/);
   } finally {
-    await view.unmount();
+    await act(async () => root.unmount());
+    container.remove();
     runtime.dispose();
   }
+});
+
+test('the Extensions module keeps only host features', () => {
+  assert.deepEqual(extensionsModule.sections.map((section) => section.id), ['extensions-splash']);
 });
 
 // ── Splash preview (Gateway F_14) ────────────────────────────────────────────
