@@ -173,6 +173,7 @@ def _specs_referenced_by_clips(nodes: list[dict[str, Any]]) -> set[str]:
     spec looks orphaned even though the clip cannot be shot without it.
     """
     wanted_chars: set[str] = set()
+    wanted_names: set[str] = set()
     wanted_settings: set[str] = set()
     for node in nodes:
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
@@ -183,23 +184,39 @@ def _specs_referenced_by_clips(nodes: list[dict[str, Any]]) -> set[str]:
                 token = str(cid or "").strip()
                 if token:
                     wanted_chars.add(token)
+        # The cast is also named in prose; the id list is backfilled later than
+        # this prune runs, so a name match has to count too.
+        for key in ("on_screen", "cast_names", "visible_cast_names"):
+            for name in cfg.get(key) or []:
+                token = str(name or "").strip().lower()
+                if token and not token.startswith("char_"):
+                    wanted_names.add(token)
         setting = str(cfg.get("setting_id") or "").strip()
         if setting:
             wanted_settings.add(setting)
         specs = cfg.get("scene_specs")
-        if isinstance(specs, dict) and str(specs.get("setting_id") or "").strip():
-            wanted_settings.add(str(specs["setting_id"]).strip())
+        if isinstance(specs, dict):
+            if str(specs.get("setting_id") or "").strip():
+                wanted_settings.add(str(specs["setting_id"]).strip())
+            if str(specs.get("scene_name") or "").strip():
+                wanted_settings.add(str(specs["scene_name"]).strip().lower())
     keep: set[str] = set()
     for node in nodes:
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
         pipeline = node_pipeline(node)
         if pipeline == "character":
             ids = {str(c) for c in (cfg.get("character_ids") or []) if str(c or "").strip()}
-            if ids & wanted_chars:
+            names = {
+                str(v).strip().lower()
+                for v in [*(cfg.get("character_names") or []), cfg.get("character_name"), cfg.get("label"), node.get("label")]
+                if str(v or "").strip()
+            }
+            if ids & wanted_chars or names & wanted_names:
                 keep.add(str(node.get("id")))
         elif pipeline == "scene":
             setting = str(cfg.get("setting_id") or "").strip()
-            if setting and setting in wanted_settings:
+            label = str(node.get("label") or "").strip().lower()
+            if (setting and setting in wanted_settings) or (label and label in wanted_settings):
                 keep.add(str(node.get("id")))
     return keep
 
