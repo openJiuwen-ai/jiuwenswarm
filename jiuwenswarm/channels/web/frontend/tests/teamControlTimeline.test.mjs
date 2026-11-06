@@ -162,9 +162,7 @@ test('direct task completion without a reviewer closes the task', () => {
     }),
     record('0000000000000043', 'task.t5-direct.completed', 3_000, {
       task_id: 't5-direct',
-    }, [
-      attribute('agentteam.task.status', 'completed'),
-    ]),
+    }),
   ]);
 
   assert.equal(model.tasks[0].phase, 'completed');
@@ -180,6 +178,47 @@ test('direct task completion without a reviewer closes the task', () => {
     'running',
     'completed',
   ]);
+});
+
+test('direct task completion ignores stale status snapshots', () => {
+  const model = buildTeamControlModel([
+    record('0000000000000044', 'task.t5-direct-stale.created', 1_000, {
+      task_id: 't5-direct-stale',
+      status: 'pending',
+    }),
+    record('0000000000000045', 'event.task.started', 2_000, {
+      task_id: 't5-direct-stale',
+      member_name: 'direct-writer',
+    }),
+    record('0000000000000046', 'task.t5-direct-stale.completed', 3_000, {
+      task_id: 't5-direct-stale',
+    }, [
+      attribute('agentteam.task.status', 'running'),
+    ]),
+  ]);
+
+  assert.equal(model.tasks[0].phase, 'completed');
+  assert.equal(model.tasks[0].completedAtMs, 3_000);
+  assert.equal(model.completedTaskCount, 1);
+});
+
+test('task phases parse task ids containing dots', () => {
+  const model = buildTeamControlModel([
+    record('0000000000000047', 'task.report.v2.created', 1_000, {
+      task_id: 'report.v2',
+      status: 'pending',
+    }),
+    record('0000000000000048', 'event.task.started', 2_000, {
+      task_id: 'report.v2',
+    }),
+    record('0000000000000049', 'task.report.v2.completed', 3_000, {
+      task_id: 'report.v2',
+    }),
+  ]);
+
+  assert.equal(model.tasks[0].taskId, 'report.v2');
+  assert.equal(model.tasks[0].phase, 'completed');
+  assert.equal(model.tasks[0].completedAtMs, 3_000);
 });
 
 test('submissions without an explicit round follow the rework review cursor', () => {
