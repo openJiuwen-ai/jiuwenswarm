@@ -412,6 +412,82 @@ async def test_ensure_code_mode_state_syncs_plan_to_normal() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ensure_code_mode_state_pins_session_adapter_before_sync() -> None:
+    """①号修复（issue 5223）：sync 前先钉 serving 轮将用的会话适配器。
+
+    适配器未就绪时 get_live_session_instance 会 MISS，fallback 只写
+    checkpointer，serving 适配器按 pre-commit 快照 primed 后停留 stale
+    normal。钉扎（ensure_session_adapter）必须先于 _open_plan_state_session。
+    """
+    session_id = "sess_pin"
+
+    plan_agent = MagicMock()
+    plan_instance = MagicMock()
+    plan_agent.ensure_instance = AsyncMock(return_value=plan_instance)
+    pinned = AsyncMock(return_value=plan_instance)
+    plan_agent.ensure_session_adapter = pinned
+    plan_instance.card = SimpleNamespace(id="code-agent")
+    plan_state = SimpleNamespace(mode="plan", plan_slug="test")
+    plan_instance.load_state.return_value = SimpleNamespace(plan_mode=plan_state)
+
+    session = MagicMock()
+    session.pre_run = AsyncMock()
+    session.commit = AsyncMock()
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    request = _chat_request(session_id, "hello", mode="code.plan")
+
+    with patch(
+        "openjiuwen.core.single_agent.create_agent_session",
+        MagicMock(return_value=session),
+    ):
+        restored = await _default._ensure_code_mode_state(
+            _default_ctx(server, request),
+            request, "code", "plan", plan_agent
+        )
+
+    # 目标 plan == 当前 plan，无切换；钉扎恰好一次且带 request 上下文。
+    assert restored is False
+    pinned.assert_awaited_once()
+    assert pinned.await_args.args == (session_id,)
+    assert pinned.await_args.kwargs.get("request") is request
+
+
+@pytest.mark.asyncio
+async def test_ensure_code_mode_state_pin_failure_falls_back() -> None:
+    """①号修复 fail-open：钉扎异常不阻塞 chat，退回既有 fallback 语义。"""
+    session_id = "sess_pin_fail"
+
+    plan_agent = MagicMock()
+    plan_instance = MagicMock()
+    plan_agent.ensure_instance = AsyncMock(return_value=plan_instance)
+    plan_agent.ensure_session_adapter = AsyncMock(side_effect=RuntimeError("boom"))
+    plan_instance.card = SimpleNamespace(id="code-agent")
+    plan_state = SimpleNamespace(mode="plan", plan_slug="test")
+    plan_instance.load_state.return_value = SimpleNamespace(plan_mode=plan_state)
+
+    session = MagicMock()
+    session.pre_run = AsyncMock()
+    session.commit = AsyncMock()
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    request = _chat_request(session_id, "hello", mode="code.normal")
+
+    with patch(
+        "openjiuwen.core.single_agent.create_agent_session",
+        MagicMock(return_value=session),
+    ):
+        restored = await _default._ensure_code_mode_state(
+            _default_ctx(server, request),
+            request, "code", "normal", plan_agent
+        )
+
+    assert restored is True
+    plan_instance.switch_mode.assert_called_once_with(session=session, mode="normal")
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_ensure_code_mode_state_skips_if_mode_already_matches() -> None:
     """_ensure_code_mode_state does nothing when plan_mode already matches."""
     session_id = "sess_skip"
