@@ -149,13 +149,15 @@ def test_concurrent_repeats_have_exact_counts(caplog):
     assert "total=100 suppressed=99" in caplog.text
 
 
-def test_exit_flush_skips_closed_console_and_preserves_file_summary(monkeypatch):
+def test_exit_flush_skips_closed_console_and_preserves_file_summary(monkeypatch, caplog):
     logger = logging.getLogger("team")
     closed = io.StringIO()
     closed.close()
     live = io.StringIO()
     monkeypatch.setattr(logger, "handlers", [logging.StreamHandler(closed), logging.StreamHandler(live)])
     monkeypatch.setattr(logger, "propagate", False)
+    monkeypatch.setattr(logger, "disabled", False)
+    caplog.set_level(logging.ERROR, logger="team")
     limiter = runtime_log_filter.RuntimeLogFilter()
     assert limiter.filter(_record(_POOL_ERROR))
     assert not limiter.filter(_record(_POOL_ERROR))

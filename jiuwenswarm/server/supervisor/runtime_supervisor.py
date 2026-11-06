@@ -112,11 +112,11 @@ class RuntimeSupervisor:
         self._forwarder = forwarder
         self._ipc_mode = runtime_ipc_mode()
         if self._ipc_mode == FRONT_LOOPBACK and socket_path is None:
-            from jiuwenswarm.common.utils import get_user_workspace_dir
+            from jiuwenswarm.common.utils import get_infra_data_dir
 
             # A log location only; attached mode never resolves a resident
             # socket endpoint, creates socket files or takes its locks.
-            socket_path = str(get_user_workspace_dir() / "run" / "runtime-attached")
+            socket_path = str(get_infra_data_dir() / "run" / "runtime-attached")
         self._socket_path = socket_path or default_socket_path()
         self._launch_generation: int | None = None
         self._host = host
@@ -991,7 +991,7 @@ class RuntimeSupervisor:
             else:
                 from jiuwenswarm.common.utils import get_logs_dir
 
-                directory = get_logs_dir() / "runtime_diagnostics"
+                directory = get_logs_dir() / "agent" / "runtime_diagnostics"
             self._last_dump_path = dump_runtime_state(directory, snapshot)
             self._observed_loop_lag = 0.0
             logger.warning(
