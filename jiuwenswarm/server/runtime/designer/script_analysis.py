@@ -797,7 +797,7 @@ def _normalize_shot_crowd(raw: Any) -> dict[str, Any]:
     return out
 
 
-def _shot_has_crowd(shot: Any) -> bool:
+def shot_has_crowd(shot: Any) -> bool:
     """True when the storyboard agent already decided this shot's crowd."""
     if not isinstance(shot, dict):
         return False
@@ -805,12 +805,12 @@ def _shot_has_crowd(shot: Any) -> bool:
     return isinstance(spec, dict) and "present" in spec
 
 
-def _shots_missing_crowd(shots: list[Any]) -> bool:
+def shots_missing_crowd(shots: list[Any]) -> bool:
     """True when at least one shot still has no agent crowd decision."""
-    return any(not _shot_has_crowd(shot) for shot in shots)
+    return any(not shot_has_crowd(shot) for shot in shots)
 
 
-def _apply_shot_crowds(shots: list[Any], decisions: list[dict[str, Any]]) -> None:
+def apply_shot_crowds(shots: list[Any], decisions: list[dict[str, Any]]) -> None:
     """Attach the model's per-shot crowd decisions, matched by shot number.
 
     Only shots the storyboard left undecided are filled. Overwriting a decided
@@ -829,7 +829,7 @@ def _apply_shot_crowds(shots: list[Any], decisions: list[dict[str, Any]]) -> Non
         if normalized:
             by_index[idx] = normalized
     for i, shot in enumerate(shots, start=1):
-        if not isinstance(shot, dict) or _shot_has_crowd(shot):
+        if not isinstance(shot, dict) or shot_has_crowd(shot):
             continue
         idx = int(shot.get("clip_index") or i)
         decision = by_index.get(idx)
@@ -837,7 +837,7 @@ def _apply_shot_crowds(shots: list[Any], decisions: list[dict[str, Any]]) -> Non
             shot["crowd_spec"] = decision
 
 
-async def _decide_shot_crowds(
+async def decide_shot_crowds(
     shots: list[Any],
     *,
     timeout_sec: float = 60.0,
@@ -856,7 +856,7 @@ async def _decide_shot_crowds(
 
     payload = []
     for i, shot in enumerate(shots, start=1):
-        if not isinstance(shot, dict) or _shot_has_crowd(shot):
+        if not isinstance(shot, dict) or shot_has_crowd(shot):
             continue
         payload.append(
             {

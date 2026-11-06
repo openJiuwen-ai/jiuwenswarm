@@ -290,6 +290,8 @@ def _speech_lines(
 
 def _sound_line(cfg: dict[str, Any], lang: str = "en") -> str:
     """Diegetic sound only — a clip never renders the film score."""
+    if str(cfg.get("audio_policy") or "") == "silent":
+        return ""
     cues = cfg.get("sfx") if isinstance(cfg.get("sfx"), list) else []
     cues = [
         str(c).strip()

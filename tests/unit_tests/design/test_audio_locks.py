@@ -326,3 +326,36 @@ def test_speech_is_default_unless_mime_or_silence() -> None:
     )
     assert opened["include_speech"] is True
     assert opened["policy"] == "speech_and_music"
+
+
+def test_optional_music_policy_alone_never_asks_for_a_score() -> None:
+    from jiuwenswarm.server.runtime.designer.audio_locks import (
+        resolve_audio_intent_flags,
+        stamp_audio_fields_on_clip_config,
+    )
+
+    meta = {"audio_intent": {"policy": "optional_music", "include_music": False}}
+    cfg: dict[str, object] = {"clip_index": 1}
+    stamp_audio_fields_on_clip_config(cfg, meta=meta)
+    assert cfg["include_music"] is False
+    assert cfg["audio_policy"] == "optional_music"
+    assert resolve_audio_intent_flags(meta, {"clip_index": 1})["include_music"] is False
+
+
+def test_silent_policy_drops_shot_cues_from_the_clip_prompt() -> None:
+    from jiuwenswarm.server.runtime.designer.audio_locks import (
+        audio_lock_prompt_block,
+        stamp_audio_fields_on_clip_config,
+    )
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import _sound_line
+
+    meta = {"audio_intent": {"policy": "silent", "include_speech": False, "include_music": False}}
+    shot = {"sfx": ["rain on the roof", "distant thunder"]}
+    cfg: dict[str, object] = {"clip_index": 1}
+    stamp_audio_fields_on_clip_config(cfg, shot=shot, meta=meta)
+    assert cfg["sfx"] == []
+    assert cfg["audio_policy"] == "silent"
+    assert _sound_line(cfg, "en") == ""
+    block = audio_lock_prompt_block(include_speech=False, include_music=False, silent=True)
+    assert "this shot is silent" in block
+    assert "room tone" not in block

@@ -1625,24 +1625,24 @@ class Director:
         # decide any shot the model left undecided before the graph is built.
         try:
             from jiuwenswarm.server.runtime.designer.script_analysis import (
-                _apply_shot_crowds,
-                _decide_shot_crowds,
-                _shot_has_crowd,
-                _shots_missing_crowd,
+                apply_shot_crowds,
+                decide_shot_crowds,
+                shot_has_crowd,
+                shots_missing_crowd,
             )
 
-            if _shots_missing_crowd(shots):
-                decided_before = sum(1 for s in shots if isinstance(s, dict) and _shot_has_crowd(s))
-                decided = await _decide_shot_crowds(shots, timeout_sec=60.0)
+            if shots_missing_crowd(shots):
+                decided_before = sum(1 for s in shots if isinstance(s, dict) and shot_has_crowd(s))
+                decided = await decide_shot_crowds(shots, timeout_sec=60.0)
                 if decided:
-                    _apply_shot_crowds(shots, decided)
+                    apply_shot_crowds(shots, decided)
                     analysis["clips"] = shots
                     decided_after = sum(
-                        1 for s in shots if isinstance(s, dict) and _shot_has_crowd(s)
+                        1 for s in shots if isinstance(s, dict) and shot_has_crowd(s)
                     )
                     meta["crowd_decided_by_llm"] = decided_after - decided_before
         except Exception:  # noqa: BLE001 — crowd decision is best-effort
-            logger.info("crowd decision pass skipped", exc_info=True)
+            logger.warning("crowd decision pass skipped", exc_info=True)
         if shots and not user_declined_speech(user_prompt):
             has_line = any(
                 is_spoken_line(str(s.get("speech_line") or ""))
@@ -2718,6 +2718,7 @@ class Director:
                 clip_embedded=bool(flags.get("clip_embedded")),
                 can_music=bool(routing.get("can_music")),
                 sfx=list(cfg.get("sfx") or []),
+                silent=str(flags.get("policy") or cfg.get("audio_policy") or "") == "silent",
             )
             missing_lock = any(
                 lock not in prompt for lock in ("LANGUAGE LOCK", "SPEECH LOCK", "BGM LOCK")

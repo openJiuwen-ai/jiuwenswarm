@@ -409,6 +409,7 @@ def detect_music_request(prompt: str) -> dict[str, bool]:
     when the request names it.
     """
     text = (prompt or "").lower()
+    # "b gm" covers the spaced form chat input produces ("B GM" for BGM).
     requested_markers = ("music", "bgm", "soundtrack", "score", "song", "配乐", "音乐", "b gm")
     declined_markers = (
         "no music",
@@ -440,6 +441,7 @@ def audio_lock_prompt_block(
     clip_embedded: bool = False,
     can_music: bool = False,
     sfx: list[str] | None = None,
+    silent: bool = False,
 ) -> str:
     """Director / clip prompt clause for locked speech + sound (+ BGM status).
 
@@ -475,7 +477,11 @@ def audio_lock_prompt_block(
     else:
         lines.append("SPEECH LOCK: intentional silence this shot — no invented dialogue.")
     cues = [str(c).strip() for c in (sfx or []) if str(c).strip()][:3]
-    if cues:
+    if silent:
+        lines.append(
+            "SOUND LOCK: this shot is silent — no dialogue, no ambience, no effects, no score."
+        )
+    elif cues:
         lines.append(
             "SOUND LOCK (diegetic only): " + "; ".join(cues) + ". Room tone and action sound, no score."
         )
@@ -546,12 +552,9 @@ def resolve_audio_intent_flags(meta: dict[str, Any] | None, cfg: dict[str, Any] 
         or speech_line
         or cfg.get("include_speech")
     )
-    include_music = bool(
-        audio.get("include_music")
-        or audio.get("policy") in {"optional_music", "music", "speech_and_music"}
-        or cfg.get("include_music")
-        or bgm
-    )
+    # Music is opt-in: a policy name never implies a score. A legacy graph can
+    # still carry a bgm_lock, which keeps its clip-level BGM statement.
+    include_music = bool(audio.get("include_music") or cfg.get("include_music") or bgm)
     if str(audio.get("policy") or "") == "silent":
         include_speech = False
         include_music = False
@@ -712,24 +715,26 @@ def stamp_audio_fields_on_clip_config(
     cfg["speech_by_character"] = by_char
     cfg["speech_line"] = speech_line
     cfg["bgm_lock"] = bgm or {}
+    policy = str(audio.get("policy") or "").strip()
     include_speech = bool(audio.get("include_speech") or by_char or speech_line)
-    include_music = bool(
-        audio.get("include_music")
-        or audio.get("policy") in {"optional_music", "music", "speech_and_music"}
-        or bgm
-    )
-    if str(audio.get("policy") or "") == "silent":
+    # Music is opt-in: a policy name never implies a score. A legacy graph can
+    # still carry a bgm_lock, which keeps its clip-level BGM statement.
+    include_music = bool(audio.get("include_music") or cfg.get("include_music") or bgm)
+    cfg["audio_policy"] = policy
+    if policy == "silent":
         include_speech = False
         include_music = False
         by_char = {}
         speech_line = ""
         cfg["speech_by_character"] = {}
         cfg["speech_line"] = ""
+        cfg["sfx"] = []
     cfg["include_speech"] = include_speech
     cfg["include_music"] = include_music
-    cues = shot.get("sfx") or shot.get("sound_cues") or cfg.get("sfx")
-    if isinstance(cues, (list, tuple)):
-        cfg["sfx"] = [str(c).strip()[:80] for c in cues if str(c).strip()][:4]
+    if policy != "silent":
+        cues = shot.get("sfx") or shot.get("sound_cues") or cfg.get("sfx")
+        if isinstance(cues, (list, tuple)):
+            cfg["sfx"] = [str(c).strip()[:80] for c in cues if str(c).strip()][:4]
     # Clip-native audio is dialogue only. Missing music backends never fold BGM
     # into the clip — compose mixes one brief-derived score after concat.
     if include_speech and (
