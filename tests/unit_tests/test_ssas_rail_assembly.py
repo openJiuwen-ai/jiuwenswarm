@@ -21,11 +21,16 @@ pytestmark = [
 
 
 def _cfg(tmp_path, **overrides):
-    ssas = {"enabled": True, "ssas_home": str(tmp_path), "observe_only": True}
+    ssas = {
+        "enabled": True,
+        "ssas_home": str(tmp_path),
+        "decision_policy": "observe_only",
+    }
     ssas.update(overrides)
     return {"ssas": ssas}
 
 
+@pytest.mark.asyncio
 async def test_disabled_or_missing_config_returns_none():
     assert (
         m.JiuWenSwarmDeepAdapter._build_ssas_rail({"ssas": {"enabled": False}})
@@ -34,6 +39,7 @@ async def test_disabled_or_missing_config_returns_none():
     assert m.JiuWenSwarmDeepAdapter._build_ssas_rail({"other": 1}) is None
 
 
+@pytest.mark.asyncio
 async def test_enabled_build_await_init_and_report(tmp_path):
     rail = m.JiuWenSwarmDeepAdapter._build_ssas_rail(_cfg(tmp_path))
     assert rail is not None
@@ -55,6 +61,7 @@ async def test_enabled_build_await_init_and_report(tmp_path):
     await rail._backend._ssas_backend.close()
 
 
+@pytest.mark.asyncio
 async def test_backend_reuse_same_loop_and_config(tmp_path):
     cfg = _cfg(tmp_path)
     rail_a = m.JiuWenSwarmDeepAdapter._build_ssas_rail(cfg)
@@ -68,6 +75,7 @@ async def test_backend_reuse_same_loop_and_config(tmp_path):
     await rail_a._backend._ssas_backend.close()
 
 
+@pytest.mark.asyncio
 async def test_rail_priority_knob(tmp_path):
     rail = m.JiuWenSwarmDeepAdapter._build_ssas_rail(
         _cfg(tmp_path, rail_priority=100)
@@ -91,6 +99,7 @@ def test_fingerprint_excludes_rail_knobs_and_is_order_insensitive():
     assert fp1 == fp2
 
 
+@pytest.mark.asyncio
 async def test_init_failure_evicts_cache_for_retry(tmp_path):
     cfg = _cfg(tmp_path)
     rail = m.JiuWenSwarmDeepAdapter._build_ssas_rail(cfg)
@@ -107,7 +116,10 @@ async def test_init_failure_evicts_cache_for_retry(tmp_path):
         m._SSAS_INIT_TASKS.add(fail_task)
         m._SSAS_INIT_TASK_KEYS[fail_task] = (key, backend)
     fail_task.add_done_callback(m._log_ssas_init_result)
-    await asyncio.sleep(0.05)
+    # 确定性等待: await 该 Task 本身, done callback(_log_ssas_init_result)
+    # 先于 wait 完成, 无需固定 sleep 依赖调度时序
+    with pytest.raises(RuntimeError, match="injected init failure"):
+        await asyncio.wait_for(fail_task, timeout=5.0)
     assert m._SSAS_BACKEND_CACHE.get(key) is None
 
     rail_retry = m.JiuWenSwarmDeepAdapter._build_ssas_rail(cfg)
@@ -118,6 +130,7 @@ async def test_init_failure_evicts_cache_for_retry(tmp_path):
     await rail_retry._backend._ssas_backend.close()
 
 
+@pytest.mark.asyncio
 async def test_wait_timeout_cancels_and_evicts_hung_task(tmp_path):
     rail = m.JiuWenSwarmDeepAdapter._build_ssas_rail(_cfg(tmp_path))
     await m._await_ssas_init_tasks()
@@ -141,7 +154,9 @@ async def test_wait_timeout_cancels_and_evicts_hung_task(tmp_path):
     finally:
         m._SSAS_INIT_WAIT_TIMEOUT = old_timeout
     assert 0.03 <= elapsed < 5.0
-    await asyncio.sleep(0.05)
+    # 确定性等待取消生效: 直接 await 被取消的 Task, 而非固定 sleep 赌调度时序
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(hung, timeout=5.0)
     assert hung.cancelled()
     with m._SSAS_INIT_TASKS_LOCK:
         assert hung not in m._SSAS_INIT_TASKS
@@ -152,14 +167,30 @@ async def test_wait_timeout_cancels_and_evicts_hung_task(tmp_path):
     await rail._backend._ssas_backend.close()
 
 
+@pytest.mark.asyncio
 async def test_stale_closed_loop_entries_swept_on_build(tmp_path):
     other_loop = asyncio.new_event_loop()
 
-    async def hang():
-        await asyncio.sleep(3600)
+    def _hang_then_close():
+        # 在独立线程内驱动 other_loop(运行中循环内禁止跨 loop run_until_complete):
+        # 先让 hang 真正挂起, 再取消并等待其完成, 避免 other_loop.close() 后
+        # 遗留 pending Task 触发 "Task was destroyed but it is pending!" 告警;
+        # 清扫条件是 task.get_loop().is_closed(), 与 Task 是否 pending 无关,
+        # 故已完成的 Task 仍可验证已关闭循环条目的清扫逻辑
+        async def hang():
+            await asyncio.sleep(3600)
 
-    hung = other_loop.create_task(hang())
-    other_loop.close()
+        hung = other_loop.create_task(hang())
+        other_loop.run_until_complete(asyncio.sleep(0))
+        hung.cancel()
+        try:
+            other_loop.run_until_complete(hung)
+        except asyncio.CancelledError:
+            pass
+        other_loop.close()
+        return hung
+
+    hung = await asyncio.to_thread(_hang_then_close)
     stale_key = (other_loop, "fp_stale_probe")
     with m._SSAS_INIT_TASKS_LOCK:
         m._SSAS_BACKEND_CACHE[stale_key] = object()
@@ -176,6 +207,7 @@ async def test_stale_closed_loop_entries_swept_on_build(tmp_path):
     await rail._backend._ssas_backend.close()
 
 
+@pytest.mark.asyncio
 async def test_sync_context_fails_open(tmp_path):
     rail = await asyncio.to_thread(
         m.JiuWenSwarmDeepAdapter._build_ssas_rail, _cfg(tmp_path)
@@ -183,6 +215,7 @@ async def test_sync_context_fails_open(tmp_path):
     assert rail is None
 
 
+@pytest.mark.asyncio
 async def test_double_checked_lock_race_loser_closed_in_background(
     tmp_path, monkeypatch
 ):
@@ -213,7 +246,12 @@ async def test_double_checked_lock_race_loser_closed_in_background(
         state["armed"] = False
         monkeypatch.undo()
     assert rail is not None
-    await asyncio.sleep(0.1)
+    # 确定性等待竞态落败者的后台 close Task 完成, 而非固定 sleep 赌调度时序
+    pending_close = [t for t in m._SSAS_CLOSE_TASKS if not t.done()]
+    if pending_close:
+        await asyncio.wait_for(
+            asyncio.gather(*pending_close, return_exceptions=True), timeout=5.0
+        )
     assert rail._backend._ssas_backend is state["winner"]
     with m._SSAS_INIT_TASKS_LOCK:
         assert len(m._SSAS_CLOSE_TASKS) == 0
