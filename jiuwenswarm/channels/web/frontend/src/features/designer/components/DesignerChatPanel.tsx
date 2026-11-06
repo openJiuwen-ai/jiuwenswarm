@@ -20,7 +20,7 @@ import {
   composeDesignerSession,
   sendDesignerLeaderMessage,
 } from '../designerEntry';
-import { findDesignModelsProblem, loadedDesignChatAnthropicProblem } from '../designPromptReadiness';
+import { findDesignModelsProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
@@ -172,7 +172,7 @@ export function DesignerChatPanel() {
       return;
     }
     let cancelled = false;
-    void findDesignModelsProblem(sessionId).then((problem) => {
+    void findDesignModelsProblem().then((problem) => {
       if (!cancelled) setBlockedProblem(problem ?? '');
     });
     return () => {
@@ -252,9 +252,8 @@ export function DesignerChatPanel() {
     if ((!content && attachments.length === 0) || chatBusy) return;
     // Same gate as the landing page: a round needs the chat model and both
     // generation slots, so refuse loudly instead of failing mid-run (#5266).
-    const protocolProblem = loadedDesignChatAnthropicProblem(sessionId, selectedModelName);
-    if (protocolProblem || blockedProblem) {
-      toast.open({ content: protocolProblem || blockedProblem, variant: 'error' });
+    if (blockedProblem) {
+      toast.open({ content: blockedProblem, variant: 'error' });
       return;
     }
     setSending(true);
