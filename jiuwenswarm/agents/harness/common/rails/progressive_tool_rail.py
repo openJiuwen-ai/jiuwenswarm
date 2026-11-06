@@ -949,6 +949,21 @@ class ProgressiveToolRail(DeepAgentRail):
             removed,
             sorted(disabled),
         )
+        # ②号防线（issue 5223 复盘）：eager 名单成员在过滤输入里缺席，
+        # 说明 ability_manager 字典与 inputs.tools 之间发生了上游改写
+        # （如 AgentModeRail 按陈旧 mode 过滤）或注册丢失——只告警不回注：
+        # 盲目回注会绕过 85 号 mode rail 的过滤语义（normal 态重新外泄
+        # plan 工具）。
+        missing_eager = sorted(
+            name for name in self.eager_tools if name and name not in input_tool_names
+        )
+        if missing_eager:
+            logger.warning(
+                "%s eager tools missing from filter input: %s "
+                "(upstream tool-list rewrite or registration loss suspected)",
+                _LOG_PREFIX,
+                missing_eager,
+            )
 
         if lazy_load_active:
             await self._add_navigation_section(ctx)
