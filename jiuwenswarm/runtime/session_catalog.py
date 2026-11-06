@@ -244,6 +244,8 @@ def list_sessions(
     request: SessionListInput, *, include_team: bool = False, read_only: bool = False
 ) -> SessionListResult:
     """List owned Sessions; single-Agent scope remains the default for SDK calls."""
+    from jiuwenswarm.server.client_attachments.registry import conversation_app
+
     if not isinstance(request, SessionListInput):
         raise SessionCatalogError("session list input is required", code="BAD_REQUEST")
     channel_id = _normalize_channel_id(request.channel_id)
@@ -261,7 +263,7 @@ def list_sessions(
         )
         session_items: list[SessionSummary] = []
         for metadata in raw_sessions:
-            if not isinstance(metadata, Mapping):
+            if not isinstance(metadata, Mapping) or conversation_app(metadata) is not None:
                 continue
             projected = _project_session(
                 metadata, channel_id=channel_id, include_team=include_team

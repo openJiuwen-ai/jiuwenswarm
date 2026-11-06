@@ -944,7 +944,10 @@ export function AgentManagementPanel({
     try {
       const result = await client.installDefinition(id);
       if (result.kind === 'auth_required') {
-        throw new Error(t('agentManagement.states.authRequired'));
+        // The expert package is valid but needs authentication first. Keep
+        // the imported package: returning 'queued' avoids rollback and lets
+        // the user retry the install after authenticating.
+        return 'queued';
       }
       if (options.includeTeamCompatibility) {
         await loadCatalog({ includeTeamCompatibility: true });
@@ -1255,7 +1258,16 @@ export function AgentManagementPanel({
       let installOutcomeUnknown = false;
       let installErrorMessage = '';
       if (kind === 'group') {
-        await groupClient.installGroup(result.id);
+        try {
+          await groupClient.installGroup(result.id);
+        } catch (installError) {
+          // The package is already imported at this point; keep the imported
+          // group visible and report "imported but install failed" instead of
+          // bubbling up as a misleading upload failure (#5431 PR review).
+          installFailed = true;
+          installErrorMessage = formatActionError(installError, t('agentManagement.states.actionError'));
+          showActionError(installErrorMessage, { inline: false });
+        }
         await loadGroups('mine');
         setMineKind('group');
         setGroupMineQuery('');

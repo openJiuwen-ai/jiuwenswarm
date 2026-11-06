@@ -71,7 +71,7 @@ class FakeWebChannel:
         self.rebounds: list[tuple[str | None, str]] = []
         self.cleared: list[str | None] = []
 
-    def register_method(self, name, handler):
+    def register_method(self, name, handler, *, local_only=False):
         self.methods[name] = handler
 
     def on_connect(self, handler):
@@ -1914,7 +1914,7 @@ async def test_openai_account_logout_wins_against_inflight_poll(
     ("method", "params"),
     [
         ("channel.feishu.set_conf", {"apps": [{"app_id": "app-1"}]}),
-        ("channel.dingtalk.set_conf", {"enabled": False, "client_id": "client-1"}),
+        ("channel.dingtalk.set_conf", {"apps": [{"client_id": "client-1", "enabled": False, "allow_from": ["tester"]}]}),
         ("health_check.set_conf", {"every": 30, "target": "web"}),
         ("heartbeat.set_conf", {"every": 30, "target": "web"}),
     ],
@@ -1938,6 +1938,12 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
         "agent_gateway.channel_manager.web.app_web_handlers.update_health_check_in_config",
         lambda payload: persisted.append(("health_check", dict(payload))),
     )
+    async def edit_channel(channel_id, edit):
+        saved = edit({})
+        persisted.append((channel_id, saved))
+        return saved
+
+    monkeypatch.setattr("agent_gateway.channel_manager.web.persistent_bindings.edit_channel_body", edit_channel)
 
     _register_web_handlers(
         WebHandlersBindParams(
@@ -5045,16 +5051,15 @@ async def test_channel_xiaoyi_get_conf_empty_returns_default_apps(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_channel_feishu_set_conf_apps_mode(monkeypatch):
+async def test_channel_feishu_set_conf_apps_mode(monkeypatch, tmp_path):
     """feishu.set_conf 带 apps → 写 channels.feishu.apps，返回归一化配置。"""
     channel = FakeWebChannel()
     cm = FakeChannelManager()
-    recorded_subsection: list[tuple] = []
+    from agent_gateway.common import config as config_module
 
-    monkeypatch.setattr(
-        "agent_gateway.channel_manager.web.app_web_handlers.replace_channel_subsection_with_cleanup",
-        lambda cid, sub, conf, keep_keys: recorded_subsection.append((cid, sub, conf, keep_keys)),
-    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("channels: {}\n")
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
 
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
 
@@ -5069,10 +5074,7 @@ async def test_channel_feishu_set_conf_apps_mode(monkeypatch):
     )
 
     # 验证写入了归一化后的 subsection（默认字段已填充）
-    assert len(recorded_subsection) == 1
-    assert recorded_subsection[0][0] == "feishu"
-    assert recorded_subsection[0][1] == "apps"
-    written_apps = recorded_subsection[0][2]
+    written_apps = config_module.load_yaml_round_trip(config_path)["channels"]["feishu"]["apps"]
     assert len(written_apps) == 2
     assert written_apps[0]["name"] == "应用A"
     assert written_apps[0]["app_id"] == "cli_a"
@@ -5092,6 +5094,173 @@ async def test_channel_feishu_set_conf_apps_mode(monkeypatch):
     # 缺省字段已被填充
     assert config["apps"][0]["allow_from"] == ["0.0.0.0/0"]
     assert config["apps"][0]["enable_streaming"] is True
+
+
+@pytest.mark.asyncio
+async def test_channel_feishu_bind_agent_persists_one_to_one_persistent_agent_id(monkeypatch, tmp_path):
+    from agent_gateway.common import config as config_module
+
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["feishu"] = {
+        "apps": [
+            {
+                "name": "现有应用",
+                "app_id": "cli_existing",
+                "app_secret": "existing-secret",
+                "persistent_agent_id": "mate_existing",
+            },
+            {
+                "name": "同事的旧应用",
+                "app_id": "cli_old_for_new",
+                "app_secret": "old-secret",
+                "persistent_agent_id": "mate_new",
+            },
+        ]
+    }
+    config_path = tmp_path / "config.yaml"
+    config_module.dump_yaml_round_trip(config_path, {"channels": {"feishu": cm.configs["feishu"]}})
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+
+    async def send_request(envelope):
+        # AgentServer answers with the agent it keeps for this app of the colleague.
+        payload = {"agent_id": "mate_new"} if envelope.method == "jiuwenmate.connection.attach" else {}
+        return SimpleNamespace(ok=True, payload=payload)
+
+    _register_web_handlers(WebHandlersBindParams(
+        channel=channel, channel_manager=cm, agent_client=SimpleNamespace(send_request=send_request),
+    ))
+
+    await channel.methods["channel.feishu.bind_agent"](
+        object(),
+        "req-bind-agent",
+        {"app_id": "cli_new", "app_secret": "new-secret", "config_id": "mate_colleague"},
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    saved_config = config_module.load_yaml_round_trip(config_path)
+    apps = saved_config["channels"]["feishu"]["apps"]
+    assert [(app["app_id"], app.get("persistent_agent_id")) for app in apps] == [
+        ("cli_existing", "mate_existing"),
+        ("cli_new", "mate_new"),
+    ]
+    new_app = apps[1]
+    assert new_app["app_secret"] == "new-secret"
+    assert "agent_id" not in new_app
+    assert cm.configs["feishu"]["apps"] == apps
+    assert channel.responses[-1]["payload"]["binding"] == {
+        "app_id": "cli_new",
+        "persistent_agent_id": "mate_new",
+    }
+
+
+@pytest.mark.asyncio
+async def test_channel_feishu_get_bindings_returns_ids_without_credentials():
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["feishu"] = {
+        "apps": [
+            {
+                "app_id": "cli_bound",
+                "app_secret": "must-not-leak",
+                "persistent_agent_id": "mate_bound",
+                "enabled": True,
+            },
+            {
+                "app_id": "cli_unbound",
+                "app_secret": "must-not-leak-either",
+                "enabled": True,
+            },
+        ]
+    }
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.feishu.get_bindings"](object(), "req-bindings", {}, "sess-1")
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == {"agent_ids": ["mate_bound"]}
+
+
+@pytest.mark.asyncio
+async def test_channel_feishu_revoke_disables_only_the_bound_colleague(monkeypatch, tmp_path):
+    from agent_gateway.common import config as config_module
+
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["feishu"] = {
+        "apps": [
+            {
+                "app_id": "cli_keep",
+                "app_secret": "keep-secret",
+                "persistent_agent_id": "mate_keep",
+                "enabled": True,
+            },
+            {
+                "app_id": "cli_drop",
+                "app_secret": "drop-secret",
+                "persistent_agent_id": "mate_drop",
+                "enabled": True,
+            },
+        ]
+    }
+    config_path = tmp_path / "config.yaml"
+    config_module.dump_yaml_round_trip(config_path, {"channels": {"feishu": cm.configs["feishu"]}})
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.feishu.revoke"](
+        object(), "req-revoke-feishu", {"persistent_agent_id": "mate_drop"}, "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == {"revoked": True}
+    assert "drop-secret" not in str(channel.responses[-1])
+    saved = config_module.load_yaml_round_trip(config_path)["channels"]["feishu"]["apps"]
+    by_agent = {app["persistent_agent_id"]: app for app in saved}
+    assert by_agent["mate_drop"]["enabled"] is False
+    assert by_agent["mate_drop"]["app_secret"] == "drop-secret"
+    assert by_agent["mate_keep"]["enabled"] is True
+    assert cm.configs["feishu"]["apps"] == saved
+
+
+@pytest.mark.asyncio
+async def test_channel_welink_revoke_disables_polling_and_keeps_the_account(monkeypatch, tmp_path):
+    from agent_gateway.common import config as config_module
+
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["welink"] = {
+        "enabled": True,
+        "account": "h00557917",
+        "persistent_agent_id": "mate_xiaojiu",
+        "credential_dir": "C:/welink/mate_xiaojiu",
+        "poll_interval_seconds": 5,
+    }
+    config_path = tmp_path / "config.yaml"
+    config_module.dump_yaml_round_trip(config_path, {"channels": {"welink": cm.configs["welink"]}})
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.welink.revoke"](
+        object(), "req-revoke-other", {"persistent_agent_id": "mate_other"}, "sess-1",
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert cm.configs["welink"]["enabled"] is True
+
+    await channel.methods["channel.welink.revoke"](
+        object(), "req-revoke-welink", {"persistent_agent_id": "mate_xiaojiu"}, "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == {"revoked": True}
+    saved = config_module.load_yaml_round_trip(config_path)["channels"]["welink"]
+    assert saved["enabled"] is False
+    assert saved["account"] == "h00557917"
+    assert saved["bindings"] == []
+    assert saved["reader_credential_dir"] == "C:/welink/mate_xiaojiu"
+    assert cm.configs["welink"]["enabled"] is False
+    assert cm.configs["welink"]["account"] == "h00557917"
 
 
 @pytest.mark.asyncio
@@ -5146,16 +5315,15 @@ async def test_channel_xiaoyi_set_conf_apps_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_channel_feishu_set_conf_apps_empty_list(monkeypatch):
+async def test_channel_feishu_set_conf_apps_empty_list(monkeypatch, tmp_path):
     """空 apps 列表 → 保存并返回空列表。"""
     channel = FakeWebChannel()
     cm = FakeChannelManager()
-    recorded_subsection: list[tuple] = []
+    from agent_gateway.common import config as config_module
 
-    monkeypatch.setattr(
-        "agent_gateway.channel_manager.web.app_web_handlers.replace_channel_subsection_with_cleanup",
-        lambda cid, sub, conf, keep_keys: recorded_subsection.append((cid, sub, conf, keep_keys)),
-    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("channels: {}\n")
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
 
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
 
@@ -5163,7 +5331,7 @@ async def test_channel_feishu_set_conf_apps_empty_list(monkeypatch):
         object(), "req-empty", {"apps": []}, "sess-1"
     )
 
-    assert recorded_subsection[0][2] == []
+    assert config_module.load_yaml_round_trip(config_path)["channels"]["feishu"]["apps"] == []
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["config"]["apps"] == []
 
@@ -5848,6 +6016,39 @@ async def test_external_cli_custom_agent_remove_drops_config_before_uninstalling
     assert calls == [("config", [{"cli_agent": "claude"}]), ("remove", "acme")]
     assert missing["ok"] is False
     assert missing["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_welink_multi_binding_status_and_revoke_preserve_shared_reader(monkeypatch, tmp_path):
+    from agent_gateway.common import config as config_module
+
+    channel, cm = FakeWebChannel(), FakeChannelManager()
+    cm.configs['welink'] = {
+        'account': 'reader', 'reader_credential_dir': '/reader', 'cli_authorized': True,
+        'bindings': [
+            {'persistent_agent_id': 'mate_1', 'config_id': 'config_1', 'assistant_credential_id': 'ak1', 'assistant_secret': 'secret1', 'credential_dir': '/assistant1'},
+            {'persistent_agent_id': 'mate_2', 'config_id': 'config_2', 'assistant_credential_id': 'ak2', 'assistant_secret': 'secret2', 'credential_dir': '/assistant2'},
+        ],
+    }
+    path = tmp_path / 'config.yaml'
+    config_module.dump_yaml_round_trip(path, {'channels': cm.configs})
+    monkeypatch.setattr(config_module, 'CONFIG_YAML_PATH', path)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+    await channel.methods['channel.welink.get_bindings'](object(), 'status', {'config_id': 'config_2'}, 'session')
+    response = channel.responses[-1]
+    assert response['ok'] is True
+    assert response['payload']['persistent_agent_id'] == 'mate_2'
+    assert response['payload']['config_id'] == 'config_2'
+    assert len(response['payload']['bindings']) == 2
+    assert 'secret1' not in str(response)
+    await channel.methods['channel.welink.revoke'](object(), 'revoke', {'config_id': 'config_2'}, 'session')
+    assert channel.responses[-1]['ok'] is True
+    saved = config_module.load_yaml_round_trip(path)['channels']['welink']
+    assert saved['cli_authorized'] is True
+    assert saved['reader_credential_dir'] == '/reader'
+    assert [b['persistent_agent_id'] for b in saved['bindings']] == ['mate_1']
+    assert saved['bindings'][0]['enabled'] is True
+
 
 @pytest.mark.asyncio
 async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> None:

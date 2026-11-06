@@ -1,13 +1,17 @@
 """Video adapter regressions over the persisted task service (no private queue mirrors)."""
 
+# White-box fixtures inject an isolated persisted service and cached routing state.
+# pylint: disable=protected-access
+
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.extensions.video_duplex.backend import video_search
+from jiuwenswarm.extensions.video_duplex.backend import queue_manager, video_search
+from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call, qwen_omni_tools
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import task_identity
 from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import QueueVersionConflict, TaskRevisionConflict
 
@@ -64,15 +68,17 @@ async def queue(monkeypatch, tmp_path):
 
     async def execute(_client, **kwargs):
         name = kwargs["question"]
-        executed.append(name)
-        execution_users.append(kwargs.get("user_id"))
-        await gates[name].wait()
         with manager.service.store.transaction() as db:
             task = next(
                 t
                 for t in manager.service.store.rows(db)
                 if t["request_id"] == kwargs["request_id"]
             )
+        # This fake represents a running Core invocation, after admission.
+        manager.service.store.update(task["id"], lambda t: t.update(execution_bound=True))
+        executed.append(name)
+        execution_users.append(kwargs.get("user_id"))
+        await gates[name].wait()
         manager.service.store.update(
             task["id"], lambda t: t.update(execution_settled=True)
         )
@@ -152,6 +158,30 @@ async def test_reorder_and_cancel_waiter(queue):
     await until(lambda: q.record(c)["status"] == "completed")
     assert q.executed == ["A", "C"] and not q.cancels
     assert q.record(b)["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("stale_version", [False, True])
+async def test_voice_reorder_accepts_missing_version_and_rejects_stale_version(queue, stale_version):
+    q = queue
+    await q.start("A")
+    await until(lambda: q.executed == ["A"])
+    b, c = await q.start("B"), await q.start("C")
+    args = {"job_id": c, "action": "next"}
+    if stale_version:
+        args["queue_version"] = q.manager.snapshot("alice", "scope")["queue_version"] - 1
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_reorder", "call_id": "voice-reorder", "arguments": args,
+    })
+    result = await q.manager.operate("alice", "scope", call)
+    if stale_version:
+        assert result["operation"]["code"] == "QUEUE_VERSION_CONFLICT"
+    else:
+        assert result["operation"]["state"] == "reordered"
+    queued = sorted(
+        (job for job in q.manager.snapshot("alice", "scope")["jobs"] if job["status"] == "queued"),
+        key=lambda job: job["queue_position"],
+    )
+    assert [job["id"] for job in queued] == ([b, c] if stale_version else [c, b])
 
 
 async def test_preempt_stays_pending_until_exact_stop_ack(queue):
@@ -286,6 +316,7 @@ async def test_connection_identity_and_saved_conversation_scope(monkeypatch, cas
 
     monkeypatch.setattr(task_adapter, "task_agent_query", metadata)
     manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
     manager.authorize, manager.client = task_identity, object()
     ws = SimpleNamespace(
         remote_address=("127.0.0.1", 1234), request_headers={"Origin": "http://127.0.0.1:5384"},
@@ -360,7 +391,14 @@ async def test_remote_task_controls_preserve_connection_user_scope(queue, operat
             "queue_version": q.manager.snapshot(owner or "", "scope").get("queue_version"),
         }, None)
 
-    assert q.responses[-1].get("ok") is False
+    if operation == "answer":
+        assert q.responses[-1].get("ok") is True
+        rejection = q.responses[-1]["payload"]["tool_result"]
+        assert rejection["code"] == "TASK_NOT_FOUND"
+        assert rejection["applied"] is False
+        assert "jobs" not in rejection and "result" not in rejection
+    else:
+        assert q.responses[-1].get("ok") is False
     assert record() == before
     assert q.executed == ["A"] and not q.cancels
     assert q.execution_users == [owner]
@@ -422,7 +460,8 @@ async def test_answer_forwards_task_user_without_local_prefix_special_case(owner
 
     executor = AgentTaskExecutor(SimpleNamespace(send_request=send_request), None, None)
     await executor.answer({
-        "owner": owner, "core_session_id": "execution-a",
+        "id": "task-a", "request_id": "execution-request-a", "resume_answer": True,
+        "owner": owner, "core_session_id": "execution-a", "request": {},
         "interaction": {
             "operation_id": "answer-a", "request_id": "question-a", "source": "ask_user_interrupt",
             "answers": [{"question": "Budget?", "answer": "5000"}],
@@ -431,6 +470,8 @@ async def test_answer_forwards_task_user_without_local_prefix_special_case(owner
     assert len(sent) == 1
     assert sent[0].user_id == (owner or None)
     assert sent[0].session_id == "execution-a"
+    assert sent[0].params["managed_task_request"] == "execution-request-a"
+    assert sent[0].params["managed_task_binding"]["task_id"] == "task-a"
 
 
 async def test_cancel_completed_task_never_sends_cancel_to_following_execution(queue):
@@ -483,6 +524,7 @@ async def test_query_summary_covers_unfinished_tasks_beyond_first_page(tmp_path)
     service.started = True  # No executions: use isolated persisted records only.
     service.kick = Mock(return_value=None)
     manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
     manager._service, manager.concurrency = service, 2
     for i in range(7):
         task = service.submit("alice", "scope", str(i), str(i))
@@ -502,8 +544,9 @@ async def test_query_summary_covers_unfinished_tasks_beyond_first_page(tmp_path)
     assert missing["jobs"] == [] and missing["summary"]["all_finished"] is False
     assert "do not infer" in missing["message"]
     call.arguments = {"job_id": result["jobs"][0]["id"]}
-    with pytest.raises(ValueError, match="not found"):
-        await manager.operate("mallory", "scope", call)
+    rejected = await manager.operate("mallory", "scope", call)
+    assert rejected["code"] == "TASK_NOT_FOUND" and rejected["applied"] is False
+    assert "jobs" not in rejected and "result" not in rejected
 
 
 def test_voice_artifacts_use_file_events_not_answer_claims():
@@ -562,6 +605,7 @@ async def test_voice_reorder_rejects_stale_queue_then_accepts_new_request(tmp_pa
     service.started = True
     service.kick = Mock(return_value=None)
     manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
     manager._service, manager.concurrency = service, 2
     jobs = [service.submit("alice", "scope", str(i), str(i)) for i in range(8)]
     stale_version = manager.snapshot("alice", "scope").get("queue_version")
@@ -680,3 +724,236 @@ async def test_untyped_validation_errors_are_never_treated_as_conflicts(queue, m
     reject.assert_called_once()
     assert queue.record(task_id) == before
     assert queue.executed == queue.cancels == []
+
+
+async def test_5597_voice_query_sees_scheduled_jobs_created_in_another_conversation(tmp_path, monkeypatch):
+    """A Cron job created in conversation A is visible to a voice query in conversation B (#5597).
+
+    The voice task list is conversation-scoped; scheduled jobs live in the Gateway Cron store,
+    owner-scoped like the sidebar's cron.job.list. The query must read that store directly.
+    """
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
+    from agent_gateway.cron.controller import CronController
+    from jiuwenswarm.runtime.cron.store import CronJobStore
+
+    cron_store = CronJobStore(tmp_path / "cron_jobs.json")
+    scheduler = SimpleNamespace(project_execution_allowed=lambda *_: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(CronController, "_instance", CronController(store=cron_store, scheduler=scheduler))
+    created = await cron_store.create_job(
+        name="喝水提醒", cron_expr="0 9 * * *", timezone="Asia/Shanghai",
+        description="提醒我喝水", targets="web", session_id="conversation-a", user_id="alice",
+    )
+    await cron_store.create_job(
+        name="别人的提醒", cron_expr="0 8 * * *", timezone="Asia/Shanghai",
+        description="other", targets="web", session_id="conversation-x", user_id="mallory",
+    )
+
+    service = TaskService(TaskStore(tmp_path / "scheduled.sqlite"), None)
+    service.started = True
+    service.kick = Mock(return_value=None)
+    manager = video_search.VideoSearchManager(
+        SimpleNamespace(), SimpleNamespace(), log_event=lambda _: None, qwen_active=lambda: True,
+        path=tmp_path / "unused.sqlite",
+    )
+    manager._service = service
+
+    query = SimpleNamespace(name="jiuwen_task_query", arguments={})
+    result = await manager.operate("alice", "task-duplex:conversation-b", query)
+    assert result["jobs"] == [], "Core invocations stay conversation-scoped"
+    scheduled = result["scheduled_jobs"]
+    assert scheduled["available"] is True and scheduled["total"] == 1
+    assert [(job["id"], job["name"]) for job in scheduled["jobs"]] == [(created.id, "喝水提醒")]
+    assert "all conversations" in scheduled["message"]
+    # Same owner scope as the sidebar list.
+    assert [job["id"] for job in await CronController.get_instance().list_jobs(user_id="alice")] == [created.id]
+
+    query.arguments = {"query": "定时任务"}
+    filtered = await manager.operate("alice", "task-duplex:conversation-b", query)
+    assert filtered["scheduled_jobs"]["total"] == 1, "Invocation text filters never hide scheduled jobs"
+
+    other = await manager.operate("bob", "task-duplex:conversation-b", SimpleNamespace(
+        name="jiuwen_task_query", arguments={}))
+    assert other["scheduled_jobs"]["total"] == 0
+
+    anonymous = await manager.operate("", "task-duplex:conversation-b", SimpleNamespace(
+        name="jiuwen_task_query", arguments={}))
+    assert anonymous["scheduled_jobs"]["total"] == 0
+
+
+async def test_5597_unreadable_scheduled_jobs_are_not_reported_as_none(tmp_path):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
+
+    async def broken(_owner):
+        raise RuntimeError("cron store offline")
+
+    service = TaskService(TaskStore(tmp_path / "broken.sqlite"), None)
+    service.started = True
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager._service, manager.concurrency = service, 2
+    manager.list_scheduled_jobs = broken
+    result = await manager.operate("alice", "scope", SimpleNamespace(name="jiuwen_task_query", arguments={}))
+    assert result["scheduled_jobs"]["available"] is False
+    assert "do not claim there are none" in result["scheduled_jobs"]["message"]
+
+
+@pytest.mark.parametrize("source", ["confirm_interrupt", "permission_interrupt"])
+async def test_voice_is_told_how_to_answer_approval_cards(tmp_path, source):
+    # Voice may answer approval cards, but only on explicit consent; the query receipt carries the rules.
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
+    service = TaskService(TaskStore(tmp_path / "approval.sqlite"), None)
+    service.started = True
+    service.kick = Mock(return_value=None)
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager._service, manager.concurrency = service, 2
+    card = {"id": "card-a", "request_id": "core-approval", "state": "pending", "source": source,
+            "questions": [{"question": "cua_agent 将操作桌面：打开计算器", "header": "操作确认: cua_agent",
+                           "options": [{"label": "允许"}, {"label": "拒绝"}]}]}
+    task = service.submit("alice", "scope", "cua", "打开计算器")
+    service.store.update(task["id"], lambda t: t.update(status="waiting_user", interaction=card))
+    asking = service.submit("alice", "scope", "trip", "规划行程")
+    service.store.update(asking["id"], lambda t: t.update(status="waiting_user", interaction={
+        "id": "question-a", "request_id": "q", "state": "pending", "source": "ask_user_interrupt",
+        "questions": [{"question": "预算是多少？"}]}))
+
+    query = await manager.operate("alice", "scope", SimpleNamespace(name="jiuwen_task_query", arguments={}))
+    jobs = {job["id"]: job for job in query["jobs"]}
+    if source == "permission_interrupt":
+        assert "approval_cards" not in jobs[task["id"]]
+        assert "interaction" not in jobs[task["id"]]
+        assert jobs[task["id"]]["interaction_requires_ui"] is True
+    else:
+        assert jobs[task["id"]]["approval_cards"] == [
+            {"header": "操作确认: cua_agent", "message": "cua_agent 将操作桌面：打开计算器"}]
+    assert "approval_cards" not in jobs[asking["id"]], "Information questions are not approval cards"
+    message = query["message"]
+    assert "answered by voice with jiuwen_task_answer" in message
+    assert "同意, 允许, 可以 or 批准, choose the allow option" in message
+    assert "拒绝, 不要 or 取消这个操作, choose the reject option" in message
+    assert "only when the user says 本会话保持同意" in message
+    assert "permanent option (e.g. 永久记住) only when the user explicitly says 永久同意" in message
+    assert "ask one short question and do not submit" in message
+    assert "several cards are pending, confirm which card" in message
+    assert "Never use a new request as an answer to a card" in message
+    assert "Cards left by typed chat also appear in jiuwen_task_query" in message
+    assert "已批准 only after the answer receipt or a later query confirms the task resumed" in message
+    assert "permission_interrupt" in message and "manual click" in message
+
+
+@pytest.mark.parametrize("version_kind", ["quoted", "invalid", "omitted"])
+async def test_voice_reorder_with_quoted_version_pushes_queue_and_changes_execution_order(queue, version_kind):
+    q = queue
+    await q.start("A")
+    await until(lambda: q.executed == ["A"])
+    desktop, weather = await q.start("B"), await q.start("C")
+    before = q.manager.snapshot("alice", "scope")
+    q.events.clear()
+    await q.manager.handle_qwen_tool(None, "voice-move", {
+        "name": "jiuwen_task_reorder", "call_id": "move-weather",
+        "search_session_id": "scope", "question": "把天气任务调到最前面",
+        "arguments": json.dumps({
+            "job_id": weather, "action": "next",
+            **({"queue_version": str(before["queue_version"])} if version_kind == "quoted" else
+               {"queue_version": "invalid"} if version_kind == "invalid" else {}),
+        }),
+    }, None)
+    assert q.responses[-1]["ok"]
+    receipt = q.responses[-1]["payload"]["tool_result"]
+    assert receipt["operation"]["state"] == "reordered"
+    assert receipt["queue_version"] > before["queue_version"]
+    await until(lambda: any(name == "video.search.queue" for name, _ in q.events))
+    pushed = next(payload for name, payload in q.events if name == "video.search.queue")
+    positions = {job["job_id"]: job["queue_position"] for job in pushed["jobs"]}
+    assert positions[weather] == 1 and positions[desktop] == 2
+    assert q.executed == ["A"], "Reordering must not interrupt current work"
+    q.gates["A"].set()
+    await until(lambda: len(q.executed) == 2)
+    assert q.executed == ["A", "C"]
+    q.gates["C"].set()
+    await until(lambda: len(q.executed) == 3)
+    assert q.executed == ["A", "C", "B"]
+    q.gates["B"].set()
+    await until(lambda: q.record(desktop)["status"] == "completed")
+
+
+def management_call():
+    return parse_qwen_omni_tool_call({
+        "name": "jiuwen_queue_manage", "call_id": "manage-1",
+        "arguments": {"instruction": "先打开飞书，再打开微信"},
+    })
+
+
+def test_qwen_exposes_queue_manager_and_preserves_voice_approval_answers():
+    names = {t["function"]["name"] for t in qwen_omni_tools(queue_manager=True)}
+    assert names == {"jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_answer"}
+    for args in ({}, {"instruction": " "}, {"instruction": "move", "job_id": "invented"}):
+        with pytest.raises(ValueError):
+            parse_qwen_omni_tool_call({"name": "jiuwen_queue_manage", "call_id": "m", "arguments": args})
+
+
+@pytest.mark.asyncio
+async def test_reorder_queries_then_executes_and_returns_real_receipts(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
+        {"jobs": [{"job_id": "wechat", "revision": 1}, {"job_id": "feishu", "revision": 1}]},
+        {"operation": {"state": "reordered"}},
+    ]))
+    step = AsyncMock(side_effect=[
+        json.dumps({"tool": {"name": "jiuwen_task_reorder", "arguments": {
+            "job_id": "feishu", "action": "before", "before_job_id": "wechat"}}}),
+        json.dumps({"response": "已将飞书排在微信前面。"}),
+    ])
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "先飞书再微信")
+    calls = manager.operate.call_args_list
+    assert calls[0].args[2].name == "jiuwen_task_query"
+    assert calls[1].args[:2] == ("alice", "voice")
+    assert calls[1].args[2].arguments == {"job_id": "feishu", "action": "before", "before_job_id": "wechat"}
+    assert result["receipts"][1]["receipt"]["operation"]["state"] == "reordered"
+
+
+@pytest.mark.asyncio
+async def test_unknown_ids_and_new_delegations_cannot_execute(monkeypatch):
+    for tool in [
+        {"name": "jiuwen_task_cancel", "arguments": {"job_id": "guessed"}},
+        {"name": "jiuwen_delegate", "arguments": {"task": "new"}},
+    ]:
+        manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+        monkeypatch.setattr(queue_manager, "request_step", AsyncMock(return_value=json.dumps({"tool": tool})))
+        result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消任务")
+        assert result["state"] == "incomplete"
+        assert manager.operate.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_joyai_manager_cannot_submit_information_answers(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": [{"job_id": "form", "revision": 1}]}))
+    step = AsyncMock(return_value=json.dumps({"tool": {"name": "jiuwen_task_answer", "arguments": {
+        "job_id": "form", "interaction_id": "question", "answers": ["yes"]}}}))
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(
+        manager, "alice", "voice", management_call(), "回答问题", allow_answers=False, reply_language="en",
+    )
+    assert result["state"] == "incomplete"
+    assert manager.operate.await_count == 1
+    context = json.loads(step.call_args.args[0][1]["content"])
+    assert context["reply_language"] == "en"
+    assert "jiuwen_task_answer" not in [t["function"]["name"] for t in context["allowed_tools"]]
+
+
+@pytest.mark.asyncio
+async def test_failure_after_write_preserves_receipt_without_repeating(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
+        {"jobs": [{"job_id": "feishu", "revision": 1}]}, {"state": "cancelling"},
+    ]))
+    monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[
+        json.dumps({"tool": {"name": "jiuwen_task_cancel", "arguments": {"job_id": "feishu"}}}),
+        TimeoutError(),
+    ]))
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消飞书任务")
+    assert result["state"] == "incomplete"
+    assert result["receipts"][-1]["receipt"]["state"] == "cancelling"
+    assert manager.operate.await_count == 2

@@ -68,7 +68,7 @@ export type WithSessionFn = <T extends Record<string, unknown> = Record<string, 
 ) => T & { session_id: string };
 
 export type SkillPanelTab = 'my' | 'marketplace' | 'graph';
-export type MarketplaceSubView = 'list' | 'team' | 'skill' | 'detail';
+export type MarketplaceSubView = 'list' | 'team' | 'skill' | 'packs' | 'detail';
 
 interface UseHubMarketplaceParams {
   activeTab: SkillPanelTab;

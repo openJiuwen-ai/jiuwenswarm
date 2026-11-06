@@ -488,6 +488,10 @@ class TeamManager:
             return False
         return session_id in self._stream_tasks
 
+    def get_stream_task(self, session_id: str) -> asyncio.Task | None:
+        """Return the registered worker without changing its ownership."""
+        return self._stream_tasks.get(session_id)
+
     def pop_stream_task(
         self,
         session_id: str,
@@ -756,6 +760,12 @@ class TeamManager:
             }:
                 current_round.continued_after_flow = True
 
+        from jiuwenswarm.server.runtime.group_execution import project_group_stream_event
+
+        projected = await project_group_stream_event(session_id, event)
+        if projected is None:
+            return
+        event = projected
         waiters = self._select_broadcast_waiters(session_id)
 
         if not waiters:
@@ -4094,6 +4104,23 @@ def is_team_session_running(session_id: str) -> bool:
         and run.status == "running"
         and any(agent.status == "running" for phase in run.phases for agent in phase.agents)
         for run_id, run in handler.get_run_states().items()
+    )
+
+
+def team_session_has_active_work(session_id: str) -> bool:
+    """Whether a round, an admitted turn or an executing member still owns the Session.
+
+    Unlike :func:`is_team_session_running` this also counts the windows before
+    and between member execution, so a ``false`` here means no Team signal will
+    later settle the Session's processing state on its own.
+    """
+    manager = _team_manager
+    if manager is None:
+        return False
+    return (
+        manager.is_round_active(session_id)
+        or manager.has_inflight_request(session_id)
+        or is_team_session_running(session_id)
     )
 
 

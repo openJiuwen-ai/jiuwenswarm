@@ -465,7 +465,7 @@ async def test_web_moa_status_routes_to_authenticated_user_runtime(monkeypatch: 
         channel_id="web", methods={}, send_response=AsyncMock(),
         on_connect=lambda _: None, on_disconnect=lambda _: None,
     )
-    channel.register_method = lambda method, callback: channel.methods.update({method: callback})
+    channel.register_method = lambda method, callback, *, local_only=False: channel.methods.update({method: callback})
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     selection = {"kind": "model_group", "id": "mgp_moa"}
     ws = object()

@@ -12,9 +12,9 @@ import type {
   XiaoyiFormValues,
 } from '../channelTypes';
 import type { ChannelFormController } from '../useChannelForm';
+import { DingtalkChannelForm, type DingtalkChannelFormHandle } from '../forms/DingtalkChannelForm';
 import { FeishuChannelForm, type FeishuChannelFormHandle } from '../forms/FeishuChannelForm';
 import {
-  DingtalkChannelForm,
   DiscordChannelForm,
   SlackChannelForm,
   TelegramChannelForm,
@@ -37,13 +37,17 @@ export type SettingsChannelControllers = {
 function ChannelFormContent({
   channelId,
   activeFeishuAppIndex,
+  activeDingtalkAppIndex,
   controllers,
   feishuFormRef,
+  dingtalkFormRef,
 }: {
   channelId: SettingsChannelId;
   activeFeishuAppIndex: number;
+  activeDingtalkAppIndex: number;
   controllers: SettingsChannelControllers;
   feishuFormRef: RefObject<FeishuChannelFormHandle>;
+  dingtalkFormRef: RefObject<DingtalkChannelFormHandle>;
 }) {
   switch (channelId) {
     case 'xiaoyi':
@@ -51,7 +55,13 @@ function ChannelFormContent({
     case 'feishu':
       return <FeishuChannelForm ref={feishuFormRef} controller={controllers.feishu} appIndex={activeFeishuAppIndex} />;
     case 'dingtalk':
-      return <DingtalkChannelForm controller={controllers.dingtalk} />;
+      return (
+        <DingtalkChannelForm
+          ref={dingtalkFormRef}
+          controller={controllers.dingtalk}
+          appIndex={activeDingtalkAppIndex}
+        />
+      );
     case 'telegram':
       return <TelegramChannelForm controller={controllers.telegram} />;
     case 'discord':
@@ -67,6 +77,7 @@ export function ChannelConfigDialog({
   open,
   activeChannelId,
   activeFeishuAppIndex,
+  activeDingtalkAppIndex,
   isConnected,
   controllers,
   onCancel,
@@ -75,6 +86,7 @@ export function ChannelConfigDialog({
   open: boolean;
   activeChannelId: SettingsChannelId;
   activeFeishuAppIndex: number;
+  activeDingtalkAppIndex: number;
   isConnected: boolean;
   controllers: SettingsChannelControllers;
   onCancel: () => void;
@@ -82,6 +94,7 @@ export function ChannelConfigDialog({
 }) {
   const { t } = useTranslation();
   const feishuFormRef = useRef<FeishuChannelFormHandle>(null);
+  const dingtalkFormRef = useRef<DingtalkChannelFormHandle>(null);
   const controller = controllers[activeChannelId];
   const label = getSettingsChannelLabel(t, activeChannelId);
 
@@ -104,6 +117,7 @@ export function ChannelConfigDialog({
       testVariant={activeChannelId}
       onConfirm={async () => {
         if (activeChannelId === 'feishu' && feishuFormRef.current?.validate() !== true) return;
+        if (activeChannelId === 'dingtalk' && dingtalkFormRef.current?.validate() !== true) return;
         if (await controller.save()) onSaved();
       }}
       onCancel={onCancel}
@@ -111,8 +125,10 @@ export function ChannelConfigDialog({
       <ChannelFormContent
         channelId={activeChannelId}
         activeFeishuAppIndex={activeFeishuAppIndex}
+        activeDingtalkAppIndex={activeDingtalkAppIndex}
         controllers={controllers}
         feishuFormRef={feishuFormRef}
+        dingtalkFormRef={dingtalkFormRef}
       />
     </FormDialog>
   );

@@ -18,6 +18,7 @@ after(() => {
 });
 
 const {
+  readComposerText,
   setTeamOrganizationUiEnabled,
   isTeamOrganizationUiEnabled,
   selectedExpertTeamId,
@@ -1609,7 +1610,7 @@ test('composer mentions follow the selected Team and discard old member chips', 
     && node.declarationList.declarations.some((d) => d.name.getText(source) === 'EMPTY_TEAM_MEMBERS'));
   assert.ok(fallback, 'composer fallback must be stable before the component renders');
   const fallbackBody = ts.transpileModule(fallback.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-  const probe = new Function('useOrganizationConversationKey', 'isReachableTeamMemberStatus', 'useSessionStore', 'useChatStore', 'React', 'editor', 'report', `
+  const probe = new Function('readComposerText', 'useOrganizationConversationKey', 'isReachableTeamMemberStatus', 'useSessionStore', 'useChatStore', 'React', 'editor', 'report', `
     const { useMemo, useRef, useEffect, useCallback } = React;
     ${fallbackBody}
     return function Probe({ activeSessionId }) {
@@ -1627,7 +1628,7 @@ test('composer mentions follow the selected Team and discard old member chips', 
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const editor = document.getElementById('editor');
   const report = { closed: [] };
-  const Probe = probe(useOrganizationConversationKey, isReachableTeamMemberStatus, useSessionStore, useChatStore, React, editor, report);
+  const Probe = probe(readComposerText, useOrganizationConversationKey, isReachableTeamMemberStatus, useSessionStore, useChatStore, React, editor, report);
   const root = createRoot(document.getElementById('root'));
   const originalRequest = webClient.request;
   webClient.request = async () => { throw new Error('snapshot unavailable'); };

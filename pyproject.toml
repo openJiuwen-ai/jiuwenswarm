@@ -19,14 +19,14 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@79f6ec656f513dadc412aaafa13f60ecf7f0fc04",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@2dc7477af89ceedbad550de88aac3291db578506",
     "JiuwenMemory>=0.2.0",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@cbbadde9101db6e3d75e4ef2b9bdb6029fd92088#subdirectory=openjiuwen-protocol",
     # Gateway 传输层已拆分为独立仓 agent-gateway
-    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@a9e4d447033f0eadf5e8583c06cfb8993e01e539",
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@cff3b1b9c2dd02bf29e0cb331dec12be989bc656",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -99,7 +99,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@79f6ec656f513dadc412aaafa13f60ecf7f0fc04",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@2dc7477af89ceedbad550de88aac3291db578506",
     "filelock>=3.25.0,<4",  # task-owned async locks strand openjiuwen FS locks
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
@@ -189,6 +189,8 @@ namespaces = false
 "*" = ["LICENSE"]
 jiuwenswarm = [
     "channels/process_cli/protocol/schema.json",
+    "agents/harness/common/auto_harness/issue_fix/code_rule.txt",
+    "server/runtime/agent_adapter/browser_runtime_network_guard.js",
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",
     "agents/harness/common/rsi/harness_config.yaml",
@@ -203,6 +205,9 @@ jiuwenswarm = [
     # styles markdown 与 index.json，运行期由 designer.skills_loader 读取
     "server/runtime/designer/skills/*",
     "server/runtime/designer/skills/**/*",
+    # Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json), read at runtime
+    "office/powerpoint/*",
+    "office/powerpoint/**/*",
 ]
 jiuwenbox = [
     "configs/**/*",
@@ -211,6 +216,8 @@ jiuwenbox = [
 
 [tool.setuptools.exclude-package-data]
 jiuwenswarm = [
+    "resources/.env",
+    "resources/*.lock",
     "channels/web/frontend/node_modules/**",
     "channels/web/frontend/node_modules/*",
     "resources/agent/workspace/skills/project-maintainer/**/*",
@@ -227,18 +234,18 @@ default-groups = ['dev']
 # 导致 --extra cua 不再引入 pyautogui 等。因此每个带 extras 的 extra 在此按
 # extra 名等价重放；marker 引用的是本仓 extra 名（distribute → openjiuwen[postgres,zmq]）。
 override-dependencies = [
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@79f6ec656f513dadc412aaafa13f60ecf7f0fc04",
-    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@79f6ec656f513dadc412aaafa13f60ecf7f0fc04 ; extra == 'cua'",
-    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@79f6ec656f513dadc412aaafa13f60ecf7f0fc04 ; extra == 'claude'",
-    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@79f6ec656f513dadc412aaafa13f60ecf7f0fc04 ; extra == 'codex'",
-    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@79f6ec656f513dadc412aaafa13f60ecf7f0fc04 ; extra == 'distribute'",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@2dc7477af89ceedbad550de88aac3291db578506",
+    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@2dc7477af89ceedbad550de88aac3291db578506 ; extra == 'cua'",
+    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@2dc7477af89ceedbad550de88aac3291db578506 ; extra == 'claude'",
+    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@2dc7477af89ceedbad550de88aac3291db578506 ; extra == 'codex'",
+    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@2dc7477af89ceedbad550de88aac3291db578506 ; extra == 'distribute'",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@cbbadde9101db6e3d75e4ef2b9bdb6029fd92088#subdirectory=openjiuwen-protocol",
 ]
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "a9e4d447033f0eadf5e8583c06cfb8993e01e539" }
-openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "79f6ec656f513dadc412aaafa13f60ecf7f0fc04" }
+agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "cff3b1b9c2dd02bf29e0cb331dec12be989bc656" }
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "2dc7477af89ceedbad550de88aac3291db578506" }
 openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "cbbadde9101db6e3d75e4ef2b9bdb6029fd92088", subdirectory = "openjiuwen-protocol" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
 

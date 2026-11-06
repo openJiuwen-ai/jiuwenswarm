@@ -8,6 +8,7 @@ from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness import DeepAgent, DeepAgentConfig
 from openjiuwen.harness.observability import AgentObservabilityRail
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
+from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
 
 from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail import (
     PlanApprovalInterruptRail,
@@ -39,7 +40,8 @@ _build_runtime_prompt_rail _build_eternal_conversation_rail _build_response_prom
 _build_multimodal_image_rail
 _build_task_planning_rail _build_security_rail _build_heartbeat_rail
 _build_model_anomaly_detection_rail _build_circuit_breaker_rail _build_avatar_rail
-_build_memory_forbidden_rail _build_subagent_rail _build_structured_ask_user_rail
+_build_memory_forbidden_rail _build_subagent_rail _build_cua_delegation_approval_rail
+_build_structured_ask_user_rail
 _build_work_agent_mode_rail _build_work_plan_approval_rail
 """.split()
 
@@ -130,7 +132,7 @@ def test_parent_composition_preserves_order_and_wiring(
         "_stream_event_rail _task_planning_rail _security_rail "
         "_model_anomaly_detection_rail _heartbeat_rail _session_messaging_route_rail "
         "_circuit_breaker_rail _avatar_rail "
-        "_memory_forbidden_rail _subagent_rail _permission_rail "
+        "_memory_forbidden_rail _subagent_rail _cua_delegation_approval_rail _permission_rail "
         "_root_permission_completion_rail _context_processor_rail _eternal_conversation_rail "
         "_ask_user_rail _work_agent_mode_rail _work_plan_approval_rail"
     ).split()
@@ -163,6 +165,32 @@ def test_parent_composition_preserves_order_and_wiring(
         plan = adapter._work_plan_approval_rail
         assert permission.priority >= ask.priority > plan.priority
         assert rails.index(permission) < rails.index(ask)
+
+
+@pytest.mark.parametrize("omit_message_rules", [False, True])
+def test_client_message_rules_do_not_remove_web_research_budget(
+    monkeypatch: pytest.MonkeyPatch, omit_message_rules: bool
+) -> None:
+    adapter = _adapter()
+    if omit_message_rules:
+        adapter._instance_overrides["left_out_capabilities"] = frozenset({
+            interface_deep.Capability.MESSAGE_RULES,
+        })
+    response_builder = MagicMock(return_value=object())
+    _stub_profile(adapter, monkeypatch)
+    monkeypatch.setattr(adapter, "_build_response_prompt_rail", response_builder)
+    rails = adapter._build_agent_rails(
+        {}, {"permissions": {"enabled": False}}, mode="agent",
+    )
+
+    budget_rails = [rail for rail in rails if isinstance(rail, WebResearchBudgetRail)]
+    assert budget_rails == [adapter._web_research_budget_rail]
+    if omit_message_rules:
+        response_builder.assert_not_called()
+        assert response_builder.return_value not in rails
+    else:
+        response_builder.assert_called_once()
+        assert rails.index(budget_rails[0]) < rails.index(response_builder.return_value)
 
 
 @pytest.mark.parametrize(

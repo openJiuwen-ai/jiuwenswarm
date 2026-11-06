@@ -16,10 +16,12 @@ export function FreeModelSettingsDialog({
   open,
   models,
   onClose,
+  onSaved,
 }: {
   open: boolean;
   models: ModelEntry[];
   onClose: () => void;
+  onSaved?: () => void;
 }) {
   const { t } = useTranslation();
   const titleId = useId();
@@ -71,6 +73,7 @@ export function FreeModelSettingsDialog({
     try {
       await saveQueue.enqueue('free_models.context_window', async () => {
         await request('config.save_all', { login_model_settings: changes }, { timeoutMs: 600_000 });
+        onSaved?.();
         const parsed = parseModelsPayload(await request('models.list'));
         setAvailableModels(parsed.models, parsed.activeModel);
       });

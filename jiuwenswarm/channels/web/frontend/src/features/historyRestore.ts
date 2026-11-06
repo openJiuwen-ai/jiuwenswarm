@@ -1247,6 +1247,11 @@ function parseSessionHistoryTimelineEntry(
   }
 
   if (eventType === 'chat.final') {
+    // A full-duplex task's raw Core answer (with its spoken-brief markers) is never shown
+    // live; the duplex runtime persists the clean result as its own tool_result reply.
+    if (record.channel_id === 'video_tool' || payload.channel_id === 'video_tool') {
+      return null;
+    }
     // Goal 完成卡片落盘的是 `goal.completed:` + JSON 信封，不是展示文本。
     // normalizeFinalContent 会把字面 `\n` 还原成真换行（GFM 表格要靠这个），信封里的
     // JSON 字符串于是带上非法控制符，parseGoalCompletedContent 解析失败 →

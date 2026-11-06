@@ -757,82 +757,14 @@ def role_output_text(ctx: NodeExecutionContext, role: str) -> str:
 
 
 async def complete_designer_text(prompt: str, *, max_tokens: int = 8192) -> str:
-    """Call the default chat model. Tests monkeypatch this function."""
-    from jiuwenswarm.common.config import get_config, get_default_models
-    from openjiuwen.core.foundation.llm import Model
-    from openjiuwen.core.foundation.llm.schema.config import (
-        ModelClientConfig,
-        ModelRequestConfig,
+    """Call the Designer chat model for node text. Tests monkeypatch this function."""
+    from jiuwenswarm.server.runtime.designer.model_tools import (
+        call_model_tool,
+        model_text_or_raise,
     )
 
-    entries = get_default_models(get_config())
-    entry = next((item for item in entries if item.get("is_default") is True), None)
-    if entry is None and entries:
-        entry = entries[0]
-    client = (entry or {}).get("model_client_config") if isinstance(entry, dict) else {}
-    mco = (entry or {}).get("model_config_obj") if isinstance(entry, dict) else {}
-    if not isinstance(client, dict):
-        return ""
-    if not isinstance(mco, dict):
-        mco = {}
-    api_key = str(client.get("api_key") or "").strip()
-    api_base = str(client.get("api_base") or "").strip()
-    model_name = str(client.get("model_name") or "").strip()
-    provider = str(client.get("client_provider") or "").strip()
-    if not api_key or not model_name:
-        return ""
-    kwargs: dict[str, object] = {
-        "api_key": api_key,
-        "api_base": api_base,
-        "client_provider": provider,
-    }
-    profile = str(client.get("endpoint_profile") or "").strip()
-    if profile:
-        kwargs["endpoint_profile"] = profile
-    request = ModelRequestConfig(
-        model_name=model_name,
-        temperature=float(mco.get("temperature", 0.4) or 0.4),
-        top_p=float(mco.get("top_p", 0.95) or 0.95),
-        max_tokens=max_tokens,
-    )
-    model = Model(
-        model_client_config=ModelClientConfig(**kwargs),
-        model_config=request,
-    )
-    invoke_input = {
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.4,
-        "max_tokens": max_tokens,
-        "model": model_name,
-    }
-    from jiuwenswarm.server.runtime.designer.trajectory import (
-        current_trajectory_span,
-    )
-
-    with current_trajectory_span(
-        action="agent_call",
-        phase="inference",
-        detail={
-            "agent_type": "chat_model",
-            "prompt": prompt,
-            "system_prompt": "",
-            "input": invoke_input,
-        },
-    ) as span_payload:
-        response = await model.invoke(**invoke_input)
-        content = getattr(response, "content", response)
-        span_payload["output"] = content
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("text"):
-                parts.append(str(block["text"]))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(parts).strip()
-    return str(content).strip()
+    result = await call_model_tool(prompt=prompt, system="", max_tokens=max_tokens)
+    return model_text_or_raise(result)
 
 
 _IMAGE_GEN_SEM = None
