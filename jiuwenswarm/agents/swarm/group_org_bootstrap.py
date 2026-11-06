@@ -128,6 +128,12 @@ _OWNER_PROMPT_SUFFIX = (
     "org_claim_task. Create every child "
     "before any of them finishes, and do not start this Owner team's own "
     "writing until the other children exist. Then review their submissions. "
+    "When describing the final deliverable in organization children or a summary task, preserve the "
+    "user's original length requirements. Keep approximate length approximate: 'about 500 words' or "
+    "'约500字' does not authorize percentage tolerances, strict ranges, per-section quotas, or a "
+    "required count report. Do not add these as acceptance criteria. Preserve explicit user limits "
+    "such as '不超过500字' and user-specified per-section counts. Carry the original requirements "
+    "into org_create_summary_execution without tightening them. "
     "When you selected SUMMARY_TEAM, call "
     "org_create_summary_execution after every source task is accepted and wait "
     "until its Summary Task completes the root. When you selected HIERARCHICAL, "
@@ -1037,6 +1043,16 @@ def remember_proxy_tool(session_id: str, tool: Any) -> None:
     member_name = str(getattr(backend, "member_name", "") or "")
     if session_id and member_name and tool is not None:
         _proxy_tools[(session_id, member_name)] = tool
+
+
+def route_bound_organization_plan(
+    session_id: str, member_name: str, plan: dict,
+) -> tuple[str, dict]:
+    """Queue a bound request behind shared members without changing its identity."""
+    plan_id = str(plan["plan_id"])
+    blocked = bool(_blocking_earlier_plans(session_id, plan))
+    claim_organization_plan(session_id, plan_id, member_name)
+    return ("queue" if blocked else "join", plan)
 
 
 def route_live_organization_plan(
@@ -2634,6 +2650,13 @@ async def _organization_rows(
         for task in children
         if not _is_summary_task(task)
     ]
+    # The runtime may pre-create a Summary Task while sources are still pending.
+    # Keep it off the card (including progress totals) until every chapter is accepted.
+    if not source_done or not all(source_done):
+        for task in children:
+            if _is_summary_task(task):
+                tasks.pop(str(task.task_id), None)
+                details.pop(str(task.task_id), None)
     # The root is in progress as soon as the Owner starts it. That is not the
     # summary. Show this row only after every chapter is accepted. A child sent
     # back for revision stays failed on its own row; its accepted repair closes
@@ -2730,7 +2753,9 @@ async def publish_organization_card(
         if status == "running":
             if task_pool is None:
                 stage = "starting"
-            elif any(_is_summary_task(task) for task in children) or (
+            elif any(
+                _is_summary_task(task) and str(task.task_id) in tasks for task in children
+            ) or (
                 root is not None and str(root.task_id) in tasks
             ):
                 stage = "summarizing"

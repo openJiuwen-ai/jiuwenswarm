@@ -183,6 +183,16 @@ def test_owner_prompt_lets_the_model_choose_an_unnamed_aggregation_mode():
     assert "requested deliverable" in reminder
 
 
+def test_owner_preserves_user_length_requirements_when_creating_summary_tasks():
+    prompt = bootstrap._OWNER_PROMPT_SUFFIX
+    assert "Keep approximate length approximate" in prompt
+    assert "'约500字' does not authorize percentage tolerances" in prompt
+    assert "Do not add these as acceptance criteria" in prompt
+    assert "Preserve explicit user limits such as '不超过500字'" in prompt
+    assert "user-specified per-section counts" in prompt
+    assert "into org_create_summary_execution without tightening them" in prompt
+
+
 @pytest.mark.asyncio
 async def test_owner_prime_does_not_select_or_start_the_root(monkeypatch):
     calls = []
@@ -1818,11 +1828,89 @@ async def test_organization_stage_follows_real_tasks(monkeypatch, task_type, sta
     task = SimpleNamespace(task_id="child", task_type=task_type, status=status,
                            parent_task_id=bootstrap._root_task_id(plan["plan_id"]),
                            root_task_id=bootstrap._root_task_id(plan["plan_id"]))
-    pool = SimpleNamespace(list_tasks=AsyncMock(return_value=[task]))
+    listed = [task]
+    if task_type == "organization.summary":
+        listed.append(SimpleNamespace(
+            task_id="source", task_type="work", status="COMPLETED", created_at=1,
+            parent_task_id=bootstrap._root_task_id(plan["plan_id"]),
+        ))
+    pool = SimpleNamespace(
+        list_tasks=AsyncMock(return_value=listed),
+        get_task_review=AsyncMock(return_value=SimpleNamespace(review_status="ACCEPTED")),
+    )
     await bootstrap.publish_organization_card(session_id=SESSION, plan=plan, organization_id=ORG,
                                                team_id="owner", task_pool=pool)
     assert store.calls[-1][1]["organization_stage"] == expected
     pool.list_tasks.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_status,review_status", [
+    ("OPEN", None),
+    ("IN_PROGRESS", None),
+    ("COMPLETED", None),
+    ("COMPLETED", "PENDING"),
+    ("COMPLETED", "REJECTED"),
+    ("COMPLETED", "NEEDS_REVISION"),
+    ("IN_PROGRESS", "ACCEPTED"),
+])
+async def test_summary_card_waits_for_all_three_sources_to_be_accepted(
+    monkeypatch, source_status, review_status,
+):
+    from unittest.mock import AsyncMock
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    plan = _stale_plan()
+    root_id = bootstrap._root_task_id(plan["plan_id"])
+    sources = [SimpleNamespace(
+        task_id=f"source-{index}", parent_task_id=root_id, root_task_id=root_id,
+        title=f"Expert {index}", task_type=None, status="COMPLETED", created_at=index,
+    ) for index in range(3)]
+    sources[-1].status = source_status
+    summary = SimpleNamespace(
+        task_id="org-summary-early", parent_task_id=None, root_task_id=root_id,
+        title="Report", task_type="organization.summary", status="WAITING_SOURCES",
+        created_at=4,
+    )
+    reviews = {task.task_id: SimpleNamespace(review_status="ACCEPTED") for task in sources}
+    reviews[sources[-1].task_id] = SimpleNamespace(review_status=review_status)
+    pool = SimpleNamespace(
+        list_tasks=AsyncMock(return_value=[*sources, summary]),
+        get_task_review=AsyncMock(side_effect=lambda task_id: reviews.get(task_id)),
+    )
+
+    async def publish():
+        await bootstrap.publish_organization_card(
+            session_id=SESSION, plan=plan, organization_id=ORG,
+            team_id="owner", task_pool=pool,
+        )
+        return store.calls[-1][1]
+
+    fields = await publish()
+    assert len(fields["tasks"]) == 3
+    assert summary.task_id not in fields["tasks"]
+    assert summary.task_id not in fields["task_details"]
+    assert fields["organization_stage"] == "executing"
+    assert summary.status == "WAITING_SOURCES"
+
+    sources[-1].status = "COMPLETED"
+    reviews[sources[-1].task_id].review_status = "ACCEPTED"
+    summary.status = "IN_PROGRESS"
+    fields = await publish()
+    assert list(fields["tasks"]) == [task.task_id for task in sources] + [summary.task_id]
+    assert fields["organization_stage"] == "summarizing"
+    assert fields["task_details"][summary.task_id]["member_id"] == "Summary Team"
+
+    summary.status = "COMPLETED"
+    fields = await publish()
+    assert all(status == "completed" for status in fields["tasks"].values())
+
+    pool.list_tasks.return_value = [summary]
+    fields = await publish()
+    assert fields["tasks"] == {}
+    assert fields["task_details"] == {}
+    assert fields["organization_stage"] == "processing"
 
 
 @pytest.mark.asyncio
@@ -1909,21 +1997,30 @@ async def test_organization_card_rows_follow_expert_children_only(monkeypatch):
     rows, details = await bootstrap._organization_rows(
         SESSION, plan, _Pool(), fail_unfinished=False
     )
-    assert list(rows) == ["child-business", "child-insight", "org-summary-1"]
+    assert list(rows) == ["child-business", "child-insight"]
     assert rows["child-business"] == "completed"
     assert rows["child-insight"] == "in_progress"
-    assert rows["org-summary-1"] == "in_progress"
+    assert "org-summary-1" not in details
     assert details["child-business"]["title"] == "用户价值及第一版功能范围"
     assert details["child-business"]["member_id"] == "商业策划专家团"
     assert details["child-insight"]["title"] == "技术路线及主要风险"
     assert details["child-insight"]["member_id"] == "技术洞察专家团"
-    assert details["org-summary-1"]["title"] == "可行性报告汇总"
-    assert details["org-summary-1"]["member_id"] == "Summary Team"
     failed_rows, _failed_details = await bootstrap._organization_rows(
         SESSION, plan, _Pool(), fail_unfinished=True
     )
     assert failed_rows["child-business"] == "completed"
     assert failed_rows["child-insight"] == "failed"
+    assert "org-summary-1" not in failed_rows
+
+    claimed.status = "COMPLETED"
+    reviews["child-insight"] = SimpleNamespace(review_status="ACCEPTED")
+    rows, details = await bootstrap._organization_rows(
+        SESSION, plan, _Pool(), fail_unfinished=False
+    )
+    assert list(rows) == ["child-business", "child-insight", "org-summary-1"]
+    assert rows["org-summary-1"] == "in_progress"
+    assert details["org-summary-1"]["title"] == "可行性报告汇总"
+    assert details["org-summary-1"]["member_id"] == "Summary Team"
 
     store = _install_card_store(monkeypatch)
     await bootstrap.publish_organization_card(
@@ -1940,6 +2037,8 @@ async def test_organization_card_rows_follow_expert_children_only(monkeypatch):
     assert fields["owner_member"] == "business"
     assert fields["root_task_id"] == root_id
     assert fields["task_details"]["child-business"]["title"] == "用户价值及第一版功能范围"
+    claimed.status = "CLAIMED"
+    reviews.pop("child-insight")
     await bootstrap.publish_organization_card(
         session_id=SESSION,
         plan=plan,
@@ -2122,7 +2221,8 @@ async def test_hierarchical_summary_row_names_the_owner_team(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
+@pytest.mark.parametrize("mode", ["HIERARCHICAL", "SUMMARY_TEAM"])
+async def test_accepted_repair_opens_the_summary_row(monkeypatch, mode):
     plan = _stale_plan()
     root_id = bootstrap._root_task_id(plan["plan_id"])
     root = SimpleNamespace(
@@ -2135,7 +2235,7 @@ async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
         created_at=1,
         assignment=SimpleNamespace(team_id="org-expert-business"),
         aggregation=SimpleNamespace(
-            mode="HIERARCHICAL",
+            mode=mode,
             controller_team_id="org-expert-business",
         ),
         output_context=SimpleNamespace(description="10人团队内部知识问答助手 · 可行性报告（简）"),
@@ -2161,10 +2261,19 @@ async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
         metadata={"repairs_task_id": "child-tech"},
     )
     reviews = {"child-tech": SimpleNamespace(review_status="NEEDS_REVISION")}
+    listed = [root, original, repair]
+    summary_id = root_id
+    if mode == "SUMMARY_TEAM":
+        summary_id = "org-summary-repair"
+        listed.append(SimpleNamespace(
+            task_id=summary_id, parent_task_id=None, root_task_id=root_id,
+            title="汇总：联合调研", status="COMPLETED", task_type="organization.summary",
+            created_at=4, assignment=SimpleNamespace(team_id="org-summary"),
+        ))
 
     class _Pool:
         async def list_tasks(self, **_kwargs):
-            return [root, original, repair]
+            return listed
 
         async def get_task_review(self, task_id):
             return reviews.get(task_id)
@@ -2180,6 +2289,7 @@ async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
         SESSION, plan, _Pool(), fail_unfinished=False
     )
     assert root_id not in hidden
+    assert summary_id not in hidden
     assert hidden["child-tech"] == "failed"
 
     repair.status = "COMPLETED"
@@ -2189,9 +2299,11 @@ async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
     )
     assert rows["child-tech"] == "failed"
     assert rows["repair-tech"] == "completed"
-    assert rows[root_id] == "completed"
-    assert details[root_id]["title"] == "汇总：联合调研"
-    assert details[root_id]["member_id"] == "商业策划专家团"
+    assert rows[summary_id] == "completed"
+    assert details[summary_id]["title"] == "汇总：联合调研"
+    assert details[summary_id]["member_id"] == (
+        "商业策划专家团" if mode == "HIERARCHICAL" else "Summary Team"
+    )
 
 
 @pytest.mark.asyncio

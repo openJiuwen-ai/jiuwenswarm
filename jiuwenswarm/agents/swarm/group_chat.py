@@ -396,6 +396,15 @@ class RunTeam(_GroupTool):
             return ToolOutput(success=False, error="invalid run_team action")
         if self.backend.conversation_mode != "group_chat":
             return ToolOutput(success=False, error="run_team requires a group_chat runtime")
+        from jiuwenswarm.agents.swarm.group_turn import current_group_turn
+
+        turn = current_group_turn(self.context.session_id, self.backend.member_name)
+        if turn is not None and turn.route == "unknown":
+            return ToolOutput(success=False, error="run_team requires an unambiguous triggering group message")
+        if turn is not None and turn.route == "organization":
+            if action == "cancel":
+                return ToolOutput(success=False, error="one expert team cannot cancel a Team Organization")
+            return await self._invoke_bound_organization(turn.client_message_id)
         if action in {"update", "cancel"}:
             return await self._adjust({**inputs, "action": action})
         run_id, task = inputs.get("run_id"), inputs.get("content") or inputs.get("task")
@@ -410,6 +419,7 @@ class RunTeam(_GroupTool):
             direct_route_for_member,
             recorded_organization_plan,
             release_organization_plan_claim,
+            release_member_turn,
             remember_proxy_backend,
             remember_proxy_tool,
             route_live_organization_plan,
@@ -426,19 +436,21 @@ class RunTeam(_GroupTool):
         remember_proxy_backend(session, self.backend)
         remember_proxy_tool(session, self)
 
-        bound = peek_member_turn(session, self.backend.member_name)
-        message_plan_id = bound or await triggering_plan_id(
-            self.backend, self.backend.member_name
+        bound = peek_member_turn(session, self.backend.member_name) if turn is None else None
+        message_plan_id = turn.client_message_id if turn is not None else (
+            bound or await triggering_plan_id(self.backend, self.backend.member_name)
         )
         if bound and bound == message_plan_id:
             consume_member_turn(session, self.backend.member_name)
+        elif turn is not None and turn.route == "direct" and message_plan_id:
+            release_member_turn(session, self.backend.member_name, message_plan_id)
         direct = direct_route_for_member(
             session, self.backend.member_name, message_plan_id
-        )
+        ) or bool(turn is not None and getattr(turn, "mixed_mentions", False))
         live = pending_organization_plan(session, self.backend.member_name)
         recorded = (
             recorded_organization_plan(session, self.backend.member_name, message_plan_id)
-            if message_plan_id and not direct
+            if turn is None and message_plan_id and not direct
             else None
         )
         plan = None
@@ -449,7 +461,7 @@ class RunTeam(_GroupTool):
             plan = organization_plan_for_member(
                 session, self.backend.member_name, message_plan_id
             )
-        elif live is not None and not organization_plan_accepted(
+        elif turn is None and live is not None and not organization_plan_accepted(
             session, str(live.get("plan_id") or ""), self.backend.member_name
         ):
             # The proxy still owes its join to an older organization message.
@@ -619,6 +631,56 @@ class RunTeam(_GroupTool):
                     if current["phase"] != "publishing":
                         await store.update(execution["execution_id"], status="failed", phase="failed")
                 return ToolOutput(success=False, error=str(exc))
+
+    async def _invoke_bound_organization(self, plan_id: str) -> ToolOutput:
+        """A consumed multi-team message always keeps its own organization."""
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+            closed_organization_plan_result,
+            organization_execution_id,
+            queue_organization_plan,
+            recorded_organization_plan,
+            release_member_turn,
+            release_organization_plan_claim,
+            remember_proxy_backend,
+            remember_proxy_tool,
+            route_bound_organization_plan,
+            run_organization_member,
+        )
+
+        session = self.context.session_id
+        member = self.backend.member_name
+        plan = recorded_organization_plan(session, member, plan_id)
+        if plan is None:
+            return ToolOutput(success=False, error="the triggering message has no organization plan for this member")
+        if plan.get("status") not in {"pending", "running"}:
+            release_member_turn(session, member, plan_id)
+            return closed_organization_plan_result(plan)
+        remember_proxy_backend(session, self.backend)
+        remember_proxy_tool(session, self)
+        route, plan = route_bound_organization_plan(session, member, plan)
+        from jiuwenswarm.agents.swarm.group_turn import bind_group_turn, reset_group_turn
+
+        # Background tasks carry their explicit plan, not this proxy tool's
+        # invocation context. Otherwise asyncio would retain a stale turn.
+        token = bind_group_turn(None)
+        try:
+            if route == "queue":
+                result = queue_organization_plan(backend=self.backend, session_id=session, plan=plan)
+            else:
+                result = await run_organization_member(backend=self.backend, session_id=session, plan=plan)
+        except Exception:
+            release_organization_plan_claim(session, plan_id, member)
+            raise
+        finally:
+            reset_group_turn(token)
+        if getattr(result, "success", True) is False:
+            release_organization_plan_claim(session, plan_id, member)
+        else:
+            # Consume only the accepted message, even if an older turn is still queued.
+            release_member_turn(session, member, plan_id)
+            if isinstance(result.data, dict):
+                result.data.update(plan_id=plan_id, execution_id=organization_execution_id(session, plan_id))
+        return result
 
     async def _adjust(self, inputs):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
