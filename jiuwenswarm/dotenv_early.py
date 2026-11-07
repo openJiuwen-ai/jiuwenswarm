@@ -94,6 +94,13 @@ DESKTOP_BROWSER_PRESERVED_ENV_KEYS = (
 )
 ELECTRON_ENV_FLAG = "JIUWENSWARM_ELECTRON"
 
+# Timezone knob consumed by jiuwenswarm.common.timezone.get_default_timezone().
+# It needs no special handling here: load_dotenv_runtime() (called by
+# parse_dotenv_early) populates it from .env before any other jiuwenswarm
+# module-level tz code runs. Kept as a named constant so the single source of
+# truth is greppable and matches what .env.template documents.
+TIMEZONE_ENV_KEY = "JIUWENSWARM_TIMEZONE"
+
 # Flag set by jiuwenswarm-start when it injects the resolved port group into
 # child env. Mirrors JIUWENSWARM_DESKTOP=1 for the CLI launcher path (issue #2749).
 CLI_PORTS_ENV_FLAG = "JIUWENSWARM_CLI_PORTS"

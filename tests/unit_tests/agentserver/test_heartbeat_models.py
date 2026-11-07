@@ -14,7 +14,6 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.agents.harness.code.rails.heartbeat.models import (
-    DEFAULT_TIMEZONE,
     HEARTBEAT_CONCURRENCY_POLICIES,
     HEARTBEAT_SCHEDULE_TYPES,
     HEARTBEAT_SESSION_DELETED_POLICIES,
@@ -37,6 +36,8 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.models import (
     empty_heartbeat_jobs_doc,
     validate_metadata_source,
 )
+
+from jiuwenswarm.common.timezone import get_default_timezone
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ def test_schedule_cron_valid_uses_cron_expr_helper() -> None:
     s = HeartbeatSchedule.from_dict({"type": "cron", "cron_expr": "0 9 * * *"})
     assert s.type == SCHEDULE_CRON
     assert s.cron_expr == "0 9 * * *"
-    assert s.timezone == DEFAULT_TIMEZONE
+    assert s.timezone == get_default_timezone().key
 
 
 def test_schedule_cron_rejects_invalid_expr() -> None:

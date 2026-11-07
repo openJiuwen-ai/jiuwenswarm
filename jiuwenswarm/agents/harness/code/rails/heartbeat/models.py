@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from jiuwenswarm.common.timezone import get_default_timezone
+
 from .cron_schedule import validate_cron_expression
 
 # ---------------------------------------------------------------------------
@@ -91,7 +93,6 @@ HEARTBEAT_SESSION_DELETED_POLICIES: tuple[str, ...] = (
 )
 
 # 默认值(可被 config 覆盖)。
-DEFAULT_TIMEZONE: str = "Asia/Shanghai"
 DEFAULT_MAX_RUNS: int = 12
 DEFAULT_CONCURRENCY_POLICY: str = CONCURRENCY_SKIP
 DEFAULT_SESSION_DELETED_POLICY: str = SESSION_DELETED_DISABLE
@@ -106,11 +107,11 @@ HEARTBEAT_PROMPT_MAX_LENGTH: int = 2000
 HEARTBEAT_ID_PREFIX: str = "hb_"
 
 
-def _validate_timezone(raw: str, *, default: str = DEFAULT_TIMEZONE) -> str:
-    """校验 IANA 时区,空值回退默认。"""
+def _validate_timezone(raw: str, *, default: str | None = None) -> str:
+    """校验 IANA 时区,空值回退全局统一时区。"""
     value = str(raw or "").strip()
     if not value:
-        return default
+        return default or get_default_timezone().key
     try:
         from zoneinfo import ZoneInfo
 
@@ -161,7 +162,7 @@ class HeartbeatSchedule:
     interval_seconds: int | None = None
     # cron 模式使用,支持 5 字段 crontab 或普通 Cron 任务使用的 7 字段格式。
     cron_expr: str | None = None
-    # cron 模式时区,默认 Asia/Shanghai。
+    # cron 模式时区,未显式指定时使用全局默认时区。
     timezone: str | None = None
     # once 模式使用,Unix 时间戳。
     run_at: float | None = None
@@ -172,13 +173,13 @@ class HeartbeatSchedule:
             d["interval_seconds"] = int(self.interval_seconds) if self.interval_seconds is not None else None
         elif self.type == SCHEDULE_CRON:
             d["cron_expr"] = self.cron_expr or ""
-            d["timezone"] = self.timezone or DEFAULT_TIMEZONE
+            d["timezone"] = self.timezone or get_default_timezone().key
         elif self.type == SCHEDULE_ONCE:
             d["run_at"] = float(self.run_at) if self.run_at is not None else None
         return d
 
     @staticmethod
-    def from_dict(data: dict[str, Any], *, default_timezone: str = DEFAULT_TIMEZONE) -> "HeartbeatSchedule":
+    def from_dict(data: dict[str, Any], *, default_timezone: str | None = None) -> "HeartbeatSchedule":
         if not isinstance(data, dict):
             raise ValueError("schedule must be object")
         stype = str(data.get("type") or "").strip()
@@ -354,8 +355,8 @@ class HeartbeatJob:
     session_id: str
     prompt: str
     schedule: HeartbeatSchedule
-    # 顶层默认时区,cron schedule 未显式传时使用。
-    timezone: str = DEFAULT_TIMEZONE
+    # 顶层默认时区,cron schedule 未显式传时使用;创建时按全局统一时区解析。
+    timezone: str = field(default_factory=lambda: get_default_timezone().key)
     status: str = STATUS_SCHEDULED
     concurrency_policy: str = DEFAULT_CONCURRENCY_POLICY
     session_deleted_policy: str = DEFAULT_SESSION_DELETED_POLICY
@@ -426,9 +427,7 @@ class HeartbeatJob:
                 f"prompt must be at most {HEARTBEAT_PROMPT_MAX_LENGTH} characters"
             )
 
-        job_timezone = _validate_timezone(
-            str(data.get("timezone") or "").strip() or DEFAULT_TIMEZONE
-        )
+        job_timezone = _validate_timezone(str(data.get("timezone") or "").strip())
 
         schedule = HeartbeatSchedule.from_dict(
             data.get("schedule") or {},
