@@ -2,6 +2,7 @@
 
 """Application settings contributions, host methods and splash preferences (F_13)."""
 
+import asyncio
 import json
 import zipfile
 from pathlib import Path
@@ -389,8 +390,22 @@ def create_extension():
 """
 
 
-def _splash_entry(log: Path, *, unpublishable: bool = False) -> str:
+GATED = (
+    '        async def closed(event, ops, next_handler):\n'
+    '            import asyncio\n'
+    '            with LOG.open("a", encoding="utf-8") as handle:\n'
+    '                handle.write("closing\\n")\n'
+    '            while not Path(GATE).exists():\n'
+    '                await asyncio.sleep(0.01)\n'
+)
+
+
+def _splash_entry(log: Path, *, unpublishable: bool = False, gate: Path | None = None) -> str:
     entry = SPLASH_ENTRY.format(log=str(log))
+    if gate is not None:
+        # ui.closed announces itself, then waits until the test creates the gate file.
+        entry = entry.replace("LOG = Path(", f"GATE = {str(gate)!r}\nLOG = Path(", 1)
+        entry = entry.replace("        async def closed(event, ops, next_handler):\n", GATED, 1)
     if unpublishable:
         # Loads fine, but registering a handler for an event type nobody declared fails at publish.
         entry = entry.replace('registrar.register_event_handler("ui.closed", closed, match, "user")',
@@ -400,7 +415,7 @@ def _splash_entry(log: Path, *, unpublishable: bool = False) -> str:
 
 
 def _splash_zip(tmp_path: Path, log: Path, version: str, splash: dict | None = None, *,
-                unpublishable: bool = False) -> Path:
+                unpublishable: bool = False, gate: Path | None = None) -> Path:
     source = tmp_path / "src" / version
     (source / "demo_splash").mkdir(parents=True)
     (source / "manifest.json").write_text(json.dumps({
@@ -412,8 +427,8 @@ def _splash_zip(tmp_path: Path, log: Path, version: str, splash: dict | None = N
              **({"splash": splash} if splash is not None else {})},
         ]},
     }), encoding="utf-8")
-    (source / "demo_splash" / "extension.py").write_text(_splash_entry(log, unpublishable=unpublishable),
-                                                          encoding="utf-8")
+    (source / "demo_splash" / "extension.py").write_text(
+        _splash_entry(log, unpublishable=unpublishable, gate=gate), encoding="utf-8")
     archive = tmp_path / f"demo-{version}.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
         for path in source.rglob("*"):
@@ -510,3 +525,85 @@ async def test_a_reload_whose_handlers_cannot_register_keeps_the_running_version
         assert _running(runtime, target) == ("1.0.0", True)
     finally:
         await runtime.shutdown()
+
+
+async def _until(predicate, timeout: float = 3.0) -> None:
+    for _ in range(int(timeout / 0.01)):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not reached")
+
+
+def _closing(log: Path) -> bool:
+    return log.exists() and "closing" in log.read_text(encoding="utf-8")
+
+
+async def test_a_cancelled_upgrade_finishes_once_the_running_splash_is_closing(tmp_path):
+    """Closing the running splash is the commit point: a cancellation after it still completes the switch."""
+    log, gate = tmp_path / "closed.log", tmp_path / "gate"
+    runtime = await _start(tmp_path, install_dir=tmp_path / "pkgs")
+    manager = GatewayPackageManager(runtime, tmp_path / "pkgs")
+    try:
+        assert (await manager.install([_splash_zip(tmp_path, log, "1.0.0", gate=gate)]))[0].status == "SUCCESS"
+        target = await _play(runtime)
+        install = asyncio.create_task(manager.install([_splash_zip(tmp_path, log, "1.1.0")]))
+        await _until(lambda: _closing(log))
+        install.cancel()
+        gate.write_text("go", encoding="utf-8")
+        with pytest.raises(asyncio.CancelledError):
+            await install
+        assert _running(runtime, target) == ("1.1.0", False), "the switch completed; the old splash is gone"
+    finally:
+        gate.write_text("go", encoding="utf-8")
+        await runtime.shutdown()
+    restarted = await _start(tmp_path, install_dir=tmp_path / "pkgs")
+    try:
+        assert [package.version for package in restarted.active_packages()] == ["1.1.0"]
+    finally:
+        await restarted.shutdown()
+
+
+async def test_a_switch_prepared_before_shutdown_cannot_commit_after_it(tmp_path):
+    log, gate = tmp_path / "closed.log", tmp_path / "gate"
+    runtime = await _start(tmp_path, install_dir=tmp_path / "pkgs")
+    manager = GatewayPackageManager(runtime, tmp_path / "pkgs")
+    try:
+        assert (await manager.install([_splash_zip(tmp_path, log, "1.0.0", gate=gate)]))[0].status == "SUCCESS"
+        await _play(runtime)
+        install = asyncio.create_task(manager.install([_splash_zip(tmp_path, log, "1.1.0")]))
+        await _until(lambda: _closing(log))
+        await runtime.shutdown()
+        gate.write_text("go", encoding="utf-8")
+        [report] = await install
+        assert report.status == "FAILED"
+        assert runtime.active_packages() == () and runtime.user_handler_count == 0
+        assert [path.name for path in (tmp_path / "pkgs" / "demo.splash").iterdir()] == ["1.0.0"]
+    finally:
+        gate.write_text("go", encoding="utf-8")
+        await runtime.shutdown()
+
+
+async def test_a_cancelled_uninstall_finishes_once_the_running_splash_is_closing(tmp_path):
+    log, gate = tmp_path / "closed.log", tmp_path / "gate"
+    runtime = await _start(tmp_path, install_dir=tmp_path / "pkgs")
+    manager = GatewayPackageManager(runtime, tmp_path / "pkgs")
+    try:
+        assert (await manager.install([_splash_zip(tmp_path, log, "1.0.0", gate=gate)]))[0].status == "SUCCESS"
+        await _play(runtime)
+        uninstall = asyncio.create_task(manager.uninstall("demo.splash"))
+        await _until(lambda: _closing(log))
+        uninstall.cancel()
+        gate.write_text("go", encoding="utf-8")
+        with pytest.raises(asyncio.CancelledError):
+            await uninstall
+        assert runtime.active_packages() == ()
+        assert not manager.gateway_installed("demo.splash")
+    finally:
+        gate.write_text("go", encoding="utf-8")
+        await runtime.shutdown()
+    restarted = await _start(tmp_path, install_dir=tmp_path / "pkgs")
+    try:
+        assert restarted.active_packages() == ()
+    finally:
+        await restarted.shutdown()

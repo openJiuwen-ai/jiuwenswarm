@@ -98,6 +98,9 @@ class GatewayRuntime:
         self._ops_owner: weakref.WeakKeyDictionary[Any, _Activation] = weakref.WeakKeyDictionary()
         # Handler and data calls in flight per package, across activations (S_01 invariant 12).
         self._inflight: dict[str, int] = {}
+        # Prepared switches not yet committed, and the runtime cycle they belong to (S_01 section 3.2).
+        self._prepared: set[PreparedPackage] = set()
+        self._cycle = 0
         self._management: Any = None
         self._started = False
         self.browser = BrowserBridge(self)
@@ -141,6 +144,11 @@ class GatewayRuntime:
     async def shutdown(self) -> None:
         """Unregister every handler and drop in-process state."""
 
+        # A switch prepared in this cycle can no longer commit; its handlers go with the others below.
+        self._cycle += 1
+        for prepared in self._prepared:
+            prepared.activation.release()
+        self._prepared.clear()
         for handler_id in (*self._handler_ids, *self._builtin_ids):
             try:
                 self.bus.unregister_event_handler(handler_id)
@@ -248,11 +256,23 @@ class GatewayRuntime:
             self._user_handlers[declaration.event_type] = (
                 self._user_handlers.get(declaration.event_type, 0) + 1
             )
-        return PreparedPackage(package, activation, registered)
+        prepared = PreparedPackage(package, activation, registered, self._cycle)
+        self._prepared.add(prepared)
+        return prepared
 
     def commit(self, prepared: PreparedPackage) -> None:
-        """Replace the running version by a prepared one in one synchronous step."""
+        """Replace the running version by a prepared one in one synchronous step.
 
+        Raises:
+            ExtensionFailure: The switch was aborted, or the runtime shut down after it was
+                prepared; nothing is changed (shutdown already dropped its handlers).
+        """
+
+        if prepared not in self._prepared or prepared.cycle != self._cycle:
+            raise ExtensionFailure(
+                StatusCode.EXTENSION_LOAD_FAILED, reason="the prepared switch ended before it was committed",
+            )
+        self._prepared.discard(prepared)
         package = prepared.package
         self.unpublish(package.package_id)
         prepared.activation.go_live()
@@ -264,7 +284,9 @@ class GatewayRuntime:
     def abort(self, prepared: PreparedPackage) -> None:
         """Drop a prepared package that will not be committed; the running version is untouched."""
 
-        self._drop_handlers(prepared.registered)
+        if prepared in self._prepared:
+            self._prepared.discard(prepared)
+            self._drop_handlers(prepared.registered)
         prepared.activation.release()
 
     def unpublish(self, package_id: str) -> bool:
@@ -662,13 +684,17 @@ def _normalized_headers(headers: Mapping[str, str] | None) -> Mapping[str, str]:
     return MappingProxyType(normalized)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class PreparedPackage:
-    """A validated package whose handlers are registered but inert (see :meth:`GatewayRuntime.prepare`)."""
+    """A validated package whose handlers are registered but inert (see :meth:`GatewayRuntime.prepare`).
+
+    Identity-compared; only the runtime cycle that prepared it may commit it.
+    """
 
     package: LoadedPackage
     activation: _Activation
     registered: list[tuple[str, str]]
+    cycle: int
 
 
 def _count(counter: dict[str, int], key: str, delta: int) -> None:
