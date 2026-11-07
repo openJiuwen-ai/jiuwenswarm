@@ -3,6 +3,7 @@
  * 每个等待都有时限，门控总会开放；结束先在本地关闭，再通知提供者。
  */
 
+import { isRecord } from '../protocol/utils.ts';
 import type { MediaSurfaceEvent } from '../renderer/adapters/webuiMediaSurface/hostPolicy.ts';
 import type { WebUIRuntime } from '../runtime/types.ts';
 import type { WebUIDispatchReceipt } from '../transport/types.ts';
@@ -73,9 +74,6 @@ const defaultTimers: SplashTimers = {
   clear: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /** Read the Gateway provider list; malformed entries are dropped. */
 export function parseProviders(value: unknown): SplashProvider[] {

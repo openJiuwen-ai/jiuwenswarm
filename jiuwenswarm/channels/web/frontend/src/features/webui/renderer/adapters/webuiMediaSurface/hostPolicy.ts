@@ -8,8 +8,11 @@ export interface MediaSurfaceHostPolicy {
   role: MediaSurfaceRole;
   /** Play silently whatever the plugin's muted prop says; HTML pages get no autoplay delegation either. */
   forceMuted: boolean;
-  /** How long an HTML document may take to report ready before the poster replaces it. */
-  readyTimeoutMs: number;
+  /**
+   * How long an HTML document may take to report ready before the poster replaces it; omitted when
+   * the host times the surface itself (the splash gate).
+   */
+  readyTimeoutMs?: number;
   /** Show only the poster under reduced motion when one is provided. */
   honorReducedMotion: boolean;
   /** Whether a video may follow its loop prop. */
@@ -18,6 +21,13 @@ export interface MediaSurfaceHostPolicy {
   onPresence?: (present: boolean) => void;
   /** Playback events for hosts that time the surface, such as the splash gate. */
   onSurfaceEvent?: (event: MediaSurfaceEvent) => void;
+}
+
+export const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+
+/** Current reduced-motion preference, shared by surfaces and the splash gate; false without matchMedia. */
+export function prefersReducedMotion(): boolean {
+  return window.matchMedia?.(REDUCED_MOTION_QUERY).matches ?? false;
 }
 
 export const BACKGROUND_SURFACE_POLICY: MediaSurfaceHostPolicy = {
@@ -32,7 +42,6 @@ export const BACKGROUND_SURFACE_POLICY: MediaSurfaceHostPolicy = {
 export const SPLASH_SURFACE_POLICY: MediaSurfaceHostPolicy = {
   role: 'splash',
   forceMuted: false,
-  readyTimeoutMs: 60_000,
   honorReducedMotion: false,
   allowLoop: false,
 };

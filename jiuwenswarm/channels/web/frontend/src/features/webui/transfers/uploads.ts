@@ -4,11 +4,12 @@
  * runtime or the client; the host injects this service.
  */
 
+import { UPLOAD_ID } from '../catalog/components/fileImport.ts';
+import { isRecord } from '../protocol/utils.ts';
 import type { WebUIRuntime } from '../runtime/types.ts';
 
 export const UPLOAD_BEGIN_METHOD = 'webui.upload.begin';
 export const UPLOAD_PREFIX = '/extension-uploads/';
-const UPLOAD_ID = /^[0-9a-f]{32}$/;
 
 export interface WebUIUploadFile {
   /** Relative path: the file name, or the path inside the picked directory. */
@@ -63,8 +64,8 @@ export function describePickedFiles(files: Iterable<File>): WebUIUploadFile[] {
 }
 
 function readTicket(value: unknown): { uploadId: string; url: string } | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
+  if (!isRecord(value)) return null;
+  const record = value;
   const uploadId = record.upload_id;
   if (typeof uploadId !== 'string' || !UPLOAD_ID.test(uploadId) || record.url !== `${UPLOAD_PREFIX}${uploadId}/`) return null;
   return { uploadId, url: record.url };

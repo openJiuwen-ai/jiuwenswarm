@@ -3,6 +3,8 @@
  * or a download link in a browser.
  */
 
+import { isRecord } from '../protocol/utils.ts';
+
 export const DOWNLOAD_EVENT = 'webui.download';
 const DOWNLOAD_URL = /^\/extension-downloads\/[0-9a-f]{32}$/;
 
@@ -15,9 +17,8 @@ export interface WebUIDownloadOffer {
 
 /** Validate a download frame; anything else is ignored. */
 export function readDownloadOffer(value: unknown): WebUIDownloadOffer | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const { package_id: packageId, url, filename, size } = record;
+  if (!isRecord(value)) return null;
+  const { package_id: packageId, url, filename, size } = value;
   if (typeof packageId !== 'string' || !packageId || typeof url !== 'string' || !DOWNLOAD_URL.test(url)
     || typeof filename !== 'string' || !filename.trim() || /[/\\\u0000-\u001f\u007f]/.test(filename)
     || typeof size !== 'number' || !Number.isInteger(size) || size < 0) return null;

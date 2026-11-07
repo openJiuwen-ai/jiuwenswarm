@@ -6,7 +6,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { MediaSurfacePolicyContext, SPLASH_SURFACE_POLICY } from '../renderer/adapters/webuiMediaSurface/hostPolicy.ts';
+import {
+  MediaSurfacePolicyContext, prefersReducedMotion, SPLASH_SURFACE_POLICY,
+} from '../renderer/adapters/webuiMediaSurface/hostPolicy.ts';
 import type { WebUIRendererRegistry } from '../renderer/types.ts';
 import type { WebUIMountOptions, WebUIRuntime } from '../runtime/types.ts';
 import {
@@ -42,14 +44,6 @@ export interface WebUISplashGateProps {
   runtime?: WebUIRuntime;
   registry?: WebUIRendererRegistry;
   timers?: SplashTimers;
-}
-
-function prefersReducedMotion(): boolean {
-  try {
-    return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-  } catch {
-    return false;
-  }
 }
 
 function SkipHint({ onSkip }: { onSkip: () => void }) {

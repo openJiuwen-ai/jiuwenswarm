@@ -125,7 +125,6 @@ export function translucentVariables(opacity: number, bases: SurfaceBases): Reco
 
 const block = (selector: string, variables: Record<string, string>) =>
   `${selector}{${Object.entries(variables).map(([name, value]) => `${name}:${value}`).join(';')}}`;
-const scoped = (selectors: readonly string[]) => selectors.map((selector) => `:root${TRANSLUCENT} ${selector}`).join(',');
 
 /** Build the contribution style sheet for one appearance object. */
 export function buildAppearanceCss(appearance: WebUIAppearance, bases: SurfaceBases): string {
@@ -146,8 +145,9 @@ export function buildAppearanceCss(appearance: WebUIAppearance, bases: SurfaceBa
         '--color-surface-floating': rgba(floating, 0.9),
         '--effect-surface-floating-backdrop': 'blur(24px) saturate(1.3)',
         '--color-surface-popover': rgba(card, 0.97),
+        // The page itself shows the background host underneath; body paints this variable.
+        '--effect-page-background': 'transparent',
       }),
-      `${scoped(['body', '#root'])}{background:transparent !important}`,
     );
   }
   return rules.join('\n');

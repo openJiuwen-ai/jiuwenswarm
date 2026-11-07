@@ -5,6 +5,7 @@
  */
 
 import type { LocalizedText } from '../catalog/components/localizedText.ts';
+import { isRecord } from '../protocol/utils.ts';
 
 export const SPLASH_SETTINGS_METHOD = 'webui.splash.settings';
 export const SPLASH_SETTINGS_UPDATE_METHOD = 'webui.splash.settings.update';
@@ -23,9 +24,6 @@ export interface SplashSettings {
   customized: boolean;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function text(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;

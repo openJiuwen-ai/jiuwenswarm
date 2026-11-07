@@ -3,6 +3,8 @@
  * 只接受来自当前 iframe 窗口且携带本次令牌的消息；沙箱文档来源为 null，不依据 origin 判断。
  */
 
+import { randomHex } from '../../../protocol/utils.ts';
+
 export const SURFACE_MESSAGE_TYPE = 'webui.surface';
 export const SURFACE_PROTOCOL_VERSION = 1;
 export const SURFACE_TOKEN_PARAM = 'webui-surface-token';
@@ -21,9 +23,7 @@ export interface SurfaceContext {
 
 /** A fresh random token for each iframe the host creates. */
 export function createSurfaceToken(): string {
-  const bytes = new Uint8Array(16);
-  globalThis.crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return randomHex();
 }
 
 /** Append the token as a fragment parameter, joining an existing fragment with `&`. */

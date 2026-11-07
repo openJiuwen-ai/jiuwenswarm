@@ -3,6 +3,8 @@
  * 存储不可用时按“未完成、首次访问”处理，门控仍有时限保证进入界面。
  */
 
+import { randomHex } from '../protocol/utils.ts';
+
 export const LAUNCH_SESSION_KEY = 'workswarm.launch';
 export const COMPLETED_LAUNCH_KEY = 'workswarm.splash.completedLaunch';
 export const SPLASH_PLAYED_KEY = 'workswarm.splash.played';
@@ -46,12 +48,6 @@ export function writeItem(key: string, value: string | null, kind: 'localStorage
   }
 }
 
-function randomId(): string {
-  const bytes = new Uint8Array(16);
-  globalThis.crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
 /**
  * Electron shares one identifier per start; a browser tab falls back to its session.
  *
@@ -63,7 +59,7 @@ export function resolveLaunch(desktopLaunchId?: string): SplashLaunch {
   const desktop = typeof desktopLaunchId === 'string' && desktopLaunchId ? desktopLaunchId : null;
   let id = desktop ?? readItem(LAUNCH_SESSION_KEY, 'sessionStorage');
   if (!id) {
-    id = randomId();
+    id = randomHex();
     writeItem(LAUNCH_SESSION_KEY, id, 'sessionStorage');
   }
   const launchId = id;

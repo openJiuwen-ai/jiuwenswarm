@@ -59,7 +59,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
 
   const records = new Map<string, InstanceRecord>();
   // Clear revisions outlive local instances and mounts, until the connection/request context ends.
-  const clearedFrames = new Map<string, WebUINormalizedClearFrame>();
+  const clearedRevisions = new Map<string, number>();
   let entryContextChanged = false;
   /** 挂载区 -> 实例键集合，范围订阅只关心成员变化。 */
   const scopeIndex = new Map<string, Set<string>>();
@@ -193,7 +193,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   function commitRenderFrame(frame: WebUINormalizedRenderFrame): void {
     adoptEntryContext(frame.target);
     const key = webUIInstanceKey(frame.target);
-    if (frame.target.scope === 'application' && frame.revision <= (clearedFrames.get(key)?.revision ?? -1)) return;
+    if (frame.target.scope === 'application' && frame.revision <= (clearedRevisions.get(key) ?? -1)) return;
     const existing = records.get(key);
     if (existing && frame.revision <= existing.lastRenderRevision) {
       return;
@@ -233,8 +233,8 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       return;
     }
     if (frame.target.scope === 'application') {
-      if (frame.revision <= (clearedFrames.get(key)?.revision ?? -1)) return;
-      clearedFrames.set(key, frame);
+      if (frame.revision <= (clearedRevisions.get(key) ?? -1)) return;
+      clearedRevisions.set(key, frame.revision);
     }
     if (!existing) {
       if (frame.target.scope === 'application') {
@@ -254,7 +254,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   function commitErrorFrame(frame: WebUINormalizedErrorFrame): void {
     adoptEntryContext(frame.target);
     const key = webUIInstanceKey(frame.target);
-    if (frame.target.scope === 'application' && frame.revision <= (clearedFrames.get(key)?.revision ?? -1)) return;
+    if (frame.target.scope === 'application' && frame.revision <= (clearedRevisions.get(key) ?? -1)) return;
     const existing = records.get(key);
     const error = { code: frame.code, message: frame.message };
     if (existing) {
@@ -380,7 +380,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       refreshConnectedFlag();
       notifyAll();
       if (state === 'connected') {
-        clearedFrames.clear();
+        clearedRevisions.clear();
         void reportReadyAfterReconnect().then(() => {
           if (!disposed && appearanceStale && connectionState === 'connected') {
             appearanceStale = false;
@@ -728,7 +728,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       unsubscribeTransport = null;
     }
     records.clear();
-    clearedFrames.clear();
+    clearedRevisions.clear();
     scopeIndex.clear();
     scopeOwners.clear();
     owners.clear();
@@ -745,7 +745,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
 
   function resetRequestContext(): void {
     nodeBindings.clear();
-    clearedFrames.clear();
+    clearedRevisions.clear();
     entryContextChanged = true;
     for (const record of [...records.values()]) {
       if (record.target.slotId === 'application.entry') continue;

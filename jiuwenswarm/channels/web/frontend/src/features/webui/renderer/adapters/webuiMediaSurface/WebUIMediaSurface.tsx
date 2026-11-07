@@ -6,7 +6,9 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { WebUIAdapterProps } from '../../types.ts';
-import { useMediaSurfacePolicy, type MediaSurfaceEvent } from './hostPolicy.ts';
+import {
+  prefersReducedMotion, REDUCED_MOTION_QUERY, useMediaSurfacePolicy, type MediaSurfaceEvent,
+} from './hostPolicy.ts';
 import {
   createSurfaceToken,
   readSurfaceMessage,
@@ -31,14 +33,12 @@ interface MediaSurfaceProps {
   opacity: number;
 }
 
-const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
-
 function subscribeReducedMotion(listener: () => void): () => void {
   const query = window.matchMedia?.(REDUCED_MOTION_QUERY);
   query?.addEventListener?.('change', listener);
   return () => query?.removeEventListener?.('change', listener);
 }
-const getReducedMotion = (): boolean => window.matchMedia?.(REDUCED_MOTION_QUERY).matches ?? false;
+const getReducedMotion = prefersReducedMotion;
 function subscribeVisibility(listener: () => void): () => void {
   document.addEventListener('visibilitychange', listener);
   return () => document.removeEventListener('visibilitychange', listener);
@@ -83,7 +83,7 @@ function SurfaceVideo({ src, poster, style, loop, muted, autoPlay, visible, emit
   useEffect(() => {
     // React does not reflect `muted` reliably; autoplay policies read the property.
     if (video.current) video.current.muted = muted;
-  }, [muted, failed]);
+  }, [muted]);
 
   useEffect(() => {
     const element = video.current;
@@ -98,12 +98,8 @@ function SurfaceVideo({ src, poster, style, loop, muted, autoPlay, visible, emit
       element.muted = true;
       void element.play()?.catch(() => undefined);
     };
-    try {
-      void element.play()?.catch(retryMuted);
-    } catch {
-      // An unsupported play() leaves the poster frame in place.
-    }
-  }, [autoPlay, visible, failed]);
+    void element.play()?.catch(retryMuted);
+  }, [autoPlay, visible]);
 
   if (failed) return <Poster src={poster} style={style} />;
   return <video ref={video} className="webui-media-surface__media" data-testid="webui-media-surface-video"
@@ -120,7 +116,8 @@ interface SurfaceFrameProps {
   poster?: string;
   posterStyle: CSSProperties;
   context: SurfaceContext;
-  readyTimeoutMs: number;
+  /** Fall back to the poster when the page is not ready in time; omitted when the host owns timing. */
+  readyTimeoutMs?: number;
   /** Delegate autoplay with sound; withheld for silent surfaces so the page cannot start audio. */
   allowAudio: boolean;
   emit: Emit;
@@ -156,7 +153,7 @@ function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs
   }, [token]);
 
   useEffect(() => {
-    if (phase !== 'loading') return undefined;
+    if (phase !== 'loading' || readyTimeoutMs === undefined) return undefined;
     const timer = window.setTimeout(() => setPhase('failed'), readyTimeoutMs);
     return () => window.clearTimeout(timer);
   }, [phase, readyTimeoutMs]);
