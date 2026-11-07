@@ -11,9 +11,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -102,6 +103,45 @@ def _current_identity() -> dict[str, str]:
     if not subject:
         return {"user_id": "", "group_id": ""}
     return {"user_id": subject[0], "group_id": subject[1]}
+
+
+async def _current_packages() -> list[dict[str, Any]]:
+    """Read current grants through the DB facade available to AgentServer workers."""
+    from agent_gateway.config.enterprise.tables.application_config_models import PACKAGE_ALLOWLIST_TABLE_DEF
+    from jiuwenswarm.enterprise.config.effective import db_queries
+
+    try:
+        rows = await db_queries.list_records(PACKAGE_ALLOWLIST_TABLE_DEF.table_name)
+        if len(rows) != 1:
+            return []
+        return _packages_from_metadata({METADATA_KEY: rows[0].get("packages")})
+    except Exception:
+        logger.warning("[package_allowlist] background grants unavailable, treating as empty", exc_info=True)
+        return []
+
+
+@asynccontextmanager
+async def bind_background_subject(session_id: str, *, enabled: bool = True) -> AsyncIterator[None]:
+    """Bind the session's identity and fresh grants, never another task's authority."""
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not enabled or not is_enterprise():
+        yield
+        return
+
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    metadata = await asyncio.to_thread(session_metadata.get_session_metadata, session_id, cache_bust=True)
+    channel_metadata = metadata.get("channel_metadata") if isinstance(metadata, Mapping) else None
+    if isinstance(channel_metadata, Mapping):
+        subject_metadata = dict(channel_metadata)
+        # Stored request grants are historical; revocation must apply to the next turn.
+        subject_metadata[METADATA_KEY] = await _current_packages()
+    else:
+        logger.warning("[package_allowlist] background session identity unavailable: %s", session_id)
+        subject_metadata = None
+    with bind_request_subject(subject_metadata):
+        yield
 
 
 def _request_packages() -> list[dict[str, Any]]:
