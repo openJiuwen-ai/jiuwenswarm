@@ -191,6 +191,87 @@ def _stream_patches(proc: _Proc, *, route: dict[str, str] | None = None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("via_binding", [True, False])
+async def test_flash_research_uses_the_bound_todo_workspace(tmp_path, monkeypatch, via_binding):
+    from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local._rw_lock_manager import (
+        ReadWriteLockManager,
+    )
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoModifyTool
+
+    from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
+        ProgressiveToolRail,
+    )
+
+    await ReadWriteLockManager.stop()
+    monkeypatch.setattr(ReadWriteLockManager, "_lock_dir", tmp_path / "locks")
+    workspace = tmp_path / "agent_office" / "todo"
+    todo_path = workspace / "flash-todo" / "todo.json"
+    todo_path.parent.mkdir(parents=True)
+    todo_path.write_text(json.dumps({"plan_id": "P", "revision": 1, "todos": []}))
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(workspace))
+    tool.snapshot_guard = AsyncMock()
+    proc = _Proc([])
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    route = {
+        "request_id": "r", "channel_id": "officeclaw", "session_id": "flash-todo",
+        "agent_id": "office", "service_id": "default", "workspace_key": "default",
+        "todo_tool_provider": lambda: tool,
+    }
+    rail = ProgressiveToolRail(deepresearch_context_provider=lambda: route)
+    monkeypatch.setattr(rail, "_skill_gate_blocks_direct_call", AsyncMock(return_value=False))
+    call = SimpleNamespace(id="research-call", name="deepresearch_stream", arguments={"query": "q"})
+    ctx = SimpleNamespace(inputs=ToolCallInputs(tool_call=call, tool_name=call.name, tool_args=call.arguments), extra={})
+    real_get_route = dt._get_route
+    try:
+        with ExitStack() as stack:
+            for item in _stream_patches(proc, route=route):
+                stack.enter_context(item)
+            stack.enter_context(patch.object(dt, "_get_route", side_effect=real_get_route))
+            stack.enter_context(patch(
+                "jiuwenswarm.common.local_env_config.build_effective_env_overlay", return_value={},
+            ))
+            stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                      return_value=(tool, "flash-todo") if via_binding else (None, None)))
+            stack.enter_context(patch(
+                "jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress.get_tenant_agent_workspace_dir",
+                return_value=tmp_path / "agent_default",
+            ))
+            stack.enter_context(patch.object(dt, "_consume_stream", consume))
+            await rail.before_tool_call(ctx)
+            try:
+                result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+            finally:
+                await rail.after_tool_call(ctx)
+        assert result["status"] == "interrupted"
+        actual_path, target = consume.await_args.kwargs["todo_context"]
+        assert actual_path == todo_path
+        assert target.plan_id == "P"
+    finally:
+        await ReadWriteLockManager.stop()
+
+
+@pytest.mark.asyncio
+async def test_flash_research_without_request_session_fails_before_spawn():
+    proc = _Proc([])
+    spawn = AsyncMock(return_value=proc)
+    tool = SimpleNamespace(snapshot_guard=object(), get_file_path=lambda sid: f"/todo/{sid}/todo.json")
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": ""}):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(tool, "flash-todo")))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert result["status"] == "error"
+    assert result["error"] == "DeepResearch stream failed: ValueError"
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_flash_todo_capture_finishes_before_research_process_starts():
     proc = _Proc([])
     entered, release = asyncio.Event(), asyncio.Event()
@@ -208,7 +289,9 @@ async def test_flash_todo_capture_finishes_before_research_process_starts():
         for item in _stream_patches(proc, route=route):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
-                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+                                  return_value=(SimpleNamespace(snapshot_guard=object(),
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "flash-todo")))
         stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", capture))
         stack.enter_context(patch.object(dt, "_consume_stream", consume))
         stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
@@ -236,7 +319,9 @@ async def test_flash_resume_keeps_captured_todo_owner_and_revised_outline(tmp_pa
         for item in _stream_patches(proc, route=route):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
-                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+                                  return_value=(SimpleNamespace(snapshot_guard=object(),
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "flash-todo")))
         stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=tmp_path / "todo.json"))
         stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", AsyncMock(return_value=target)))
         stack.enter_context(patch.object(dt, "_resolve_outline_interaction_feedback", return_value=feedback))
@@ -257,13 +342,43 @@ async def test_flash_todo_capture_failure_does_not_start_research():
         for item in _stream_patches(proc, route={"session_id": "flash-todo"}):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
-                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+                                  return_value=(SimpleNamespace(snapshot_guard=object(),
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "flash-todo")))
         stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
                                         AsyncMock(side_effect=ValueError("missing Todo"))))
         stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
         result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
     assert result["status"] == "error" and result["error_code"] == "stream_failed"
     spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("framework_error", [False, True])
+async def test_ordinary_todo_capture_failure_does_not_block_research(framework_error):
+    from openjiuwen.core.common.exception.codes import StatusCode
+    from openjiuwen.core.common.exception.errors import build_error
+
+    proc, spawn = _Proc([]), AsyncMock()
+    spawn.return_value = proc
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    error = (build_error(StatusCode.TOOL_TODOS_LOAD_FAILED, reason="unsupported backend")
+             if framework_error else RuntimeError("unsupported backend"))
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": "ordinary"}):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(SimpleNamespace(snapshot_guard=None,
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "ordinary")))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                         AsyncMock(side_effect=error)))
+        stack.enter_context(patch.object(dt, "_consume_stream", consume))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert result["status"] == "interrupted"
+    assert consume.await_args.kwargs["todo_context"] == (None, None)
+    spawn.assert_awaited_once()
 
 
 def test_config_frame_accepts_exact_limit_and_rejects_one_byte_over():
@@ -1969,7 +2084,8 @@ def _race_route() -> dict[str, str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delivery", ["stream", "stop_race"])
-async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery):
+@pytest.mark.parametrize("capture_failure", [False, True])
+async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery, capture_failure):
     frame = {
         "__deepsearch_status__": "completed", "conversation_id": "C1",
         "final_result": {
@@ -1990,6 +2106,9 @@ async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery
         for item in _stream_patches(proc, route=_race_route()):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool", return_value=(None, None)))
+        if capture_failure:
+            stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                             AsyncMock(side_effect=RuntimeError("unsupported backend"))))
         stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=path))
         stack.enter_context(patch.object(dt, "persist_deepresearch_task_update", persist))
         stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
