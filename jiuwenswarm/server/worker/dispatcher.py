@@ -810,24 +810,28 @@ class WorkerDispatcher:
             return
         frames = self._bridge.events.replay_by_request(record.scope, rid, after=after)
         await _reply("ok", dispatch_id=record.dispatch_id, count=len(frames))
-        for index, frame in enumerate(frames):
-            if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
-                return
-            payload = frame["payload"]
-            if isinstance(payload, dict):
-                metadata = dict(payload.get("metadata") or {})
-                runtime_event = dict(metadata.get("runtime_event") or {})
-                runtime_event["replayed"] = True
-                metadata["runtime_event"] = runtime_event
-                payload["metadata"] = metadata
-            try:
-                await conn.send({**frame, "kind": KIND_WIRE, "wire_id": uuid.uuid4().hex,
-                                 "generation": generation, "replayed": True})
-            except (OSError, RuntimeError):
-                logger.info("[Worker] subscribe_by_id replay lost on IPC detach")
-                return
-            if index % 32 == 0:
-                await asyncio.sleep(0)
+        # 重放帧与该 scope 的实时帧共用发布锁（同 _subscribe 重放先例）：锁内逐帧
+        # send，保证重放与实时帧对同一 scope 的到达顺序有全序；锁 scope 取
+        # record.scope（live 帧经 publication_scope 对本 dispatch 解析出的同一 scope）。
+        async with self._bridge.publication_lock(record.scope):
+            for index, frame in enumerate(frames):
+                if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
+                    return
+                payload = frame["payload"]
+                if isinstance(payload, dict):
+                    metadata = dict(payload.get("metadata") or {})
+                    runtime_event = dict(metadata.get("runtime_event") or {})
+                    runtime_event["replayed"] = True
+                    metadata["runtime_event"] = runtime_event
+                    payload["metadata"] = metadata
+                try:
+                    await conn.send({**frame, "kind": KIND_WIRE, "wire_id": uuid.uuid4().hex,
+                                     "generation": generation, "replayed": True})
+                except (OSError, RuntimeError):
+                    logger.info("[Worker] subscribe_by_id replay lost on IPC detach")
+                    return
+                if index % 32 == 0:
+                    await asyncio.sleep(0)
 
 
 def _is_session_work_request(request: AgentRequest) -> bool:

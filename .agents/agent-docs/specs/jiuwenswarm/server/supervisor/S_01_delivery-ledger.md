@@ -19,7 +19,7 @@ files:
 | --- | --- |
 | 类型 | spec |
 | 关联模块 | `jiuwenswarm/server/supervisor`、`jiuwenswarm/server/ipc`、`jiuwenswarm/common` |
-| 最近一次修订日期 | 2026-11-06 |
+| 最近一次修订日期 | 2026-11-07 |
 | 关联 feature | — |
 | 修复依据 | feishu-msg-defects-20261106 批次 P6（.omo/plans/feishu-msg-defects-20261106/P6-v9-design.md） |
 
@@ -31,7 +31,7 @@ supervisor 进程（Front 侧）对已受理未交付请求维护交付台账：
 
 - 落盘：`get_delivery_ledger_dir()` = `{root}/run/delivery-ledger/<request_id>.json`（尊重 `JIUWENSWARM_DATA_DIR`；jiuwenswarm/common/utils.py）。
 - 字段（delivery_ledger.LedgerEntry）：scope（request_scope 五元组）/channel_id/user_id/app_id/agent_ref_json/session_id/request_id/dispatch_id/worker_instance/sequence 游标/last_visible_output_ts/deadline（墙钟）/placeholder_state/dump_ref（诊断转储关联路径）/registered_at/send_failures/identity_metadata（仅投递身份键交集，非用户正文）。
-- 落盘分级：注册/deadline/状态转移**同步写**（temp+os.replace 原子写）；sequence 游标与 last_visible_output_ts **批量写**（50 帧/2s 阈值，`_flush_batched`）。
+- 落盘分级：注册/deadline/状态转移**同步写**（temp+os.replace 原子写）；sequence 游标与 last_visible_output_ts **批量写**（50 帧/2s 阈值，`_flush_batched`）。终态条目（sent/retracted）的迟到白名单帧只更新内存簿记，deadline/游标随批量阈值落盘——**终态帧禁逐帧 fsync**（该链跑在 supervisor 事件循环线程上，逐帧 fsync 阻塞同 loop IPC 收发）。
 - Front 启动重载：`DeliveryLedger.load()` 逐条读盘，墙钟 deadline 原样保留，由 sweep 判到期。
 
 ## 计时与白名单
@@ -62,7 +62,7 @@ supervisor 进程（Front 侧）对已受理未交付请求维护交付台账：
 
 - 常量：`execution.subscribe_by_id`（jiuwenswarm/server/ipc/protocol.py，PROTOCOL_VERSION 不变）。
 - supervisor→worker 请求载荷：仅身份字段（channel_id/user_id/app_id/agent_ref_json/session_id）+ worker_instance + after（sequence 游标），不含用户正文。
-- worker 反查键=`(scope[:4], request_id)`（与 `WorkerEventStore._active` 同键构造）；miss → 回执 `status=miss`；worker_instance 不匹配（worker 重启丢保留帧）→ `status=history_required`；命中 → `status=ok` 后按 request_id 逐帧 `KIND_WIRE` 回放（携 wire_id，`replayed` 标记）。
+- worker 反查键=`(scope[:4], request_id)`（与 `WorkerEventStore._active` 同键构造）；miss → 回执 `status=miss`；worker_instance 不匹配（worker 重启丢保留帧）→ `status=history_required`；命中 → `status=ok` 后按 request_id 逐帧 `KIND_WIRE` 回放（携 wire_id，`replayed` 标记）。重放帧 send 全程持有 `publication_lock(record.scope)`（与 live 帧经 `publication_scope` 解析出的同一 scope 锁）——重放与同 scope 实时帧到达顺序有全序（同 `_subscribe` 重放先例）。
 - worker 侧实现：dispatcher `_subscribe_by_id`（保留帧读取走 `WorkerEventStore.replay_by_request`）。
 - supervisor 回执处理：miss/history_required → 按不可恢复处理，sweep 到期直接占位卡（`_delivery_unrecoverable`）；回放帧走 `_forward_wire` 正常出站与 KIND_DELIVERY_ACK 回执链；delivered=False → 回落台账重试或转 pending_flush。
 - 触发点两处：attach_gateway_connection 与 Front 启动重载。
@@ -72,6 +72,8 @@ supervisor 进程（Front 侧）对已受理未交付请求维护交付台账：
 ## 占位状态机与互斥
 
 - `pending（已注册未到期）→ pending_flush（到期但 gateway 未 attach）→ sent（占位卡已送达，吸收终态）`；`pending/pending_flush → retracted（真实回复送达后取消未送达占位，纯簿记无线缆动作）/ failed（T+24h 过期审计或连续发送失败留痕）`。
+- **终态吸收守卫**：`transition` 拒绝从终态迁出（返回 False 并日志留痕）；sweep 在 send 前复查条目最新状态（`ledger.entry`），快照到 send 之间已转终态的条目直接跳过——防「真实回复已送达（retracted）后占位卡仍发出且被快照竞态覆盖成 sent」。
+- **终态回收**：终态条目经 `reap_terminal`（sweep 周期调用）在保留窗（`_REAP_SECONDS`=3600s，自 terminal_at 起算，旧盘档回退 registered_at）后删除内存与磁盘副本，回收前日志留痕（state/age/request_id）；内存与 `{root}/run/delivery-ledger/*.json` 不随请求数无界增长。
 - sent 条目在真实回复迟到时保持 sent（不重发、不改状态）；**本契约无撤回帧**——已送达的飞书卡不做线缆撤回。
 - 互斥：真实回复送达取消未送达占位卡；占位卡送达后迟到的真实回复仍送达（不压制，保内容不丢）。
 - 幂等：sweep 对 sent/retracted/failed 终态条目不重发；同一到期项仅成功送达一次。dispatch_id:worker_instance=多对一，台账条目内字段换算 (dispatch_id, sequence) ↔ (worker_instance, sequence)。

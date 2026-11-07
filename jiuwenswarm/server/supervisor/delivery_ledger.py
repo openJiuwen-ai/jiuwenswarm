@@ -61,6 +61,9 @@ DELIVERY_IDENTITY_METADATA_KEYS = frozenset({
 _BATCH_FRAMES = 50
 _BATCH_SECONDS = 2.0
 
+# 终态回收：条目进入终态后保留窗（sweep 周期回收内存与磁盘副本，日志留痕）。
+_REAP_SECONDS = 3600.0
+
 _PLACEHOLDER_ERROR_TEXT = "长时间未收到回复，本次处理可能已中断"
 _PLACEHOLDER_RESEND_HINT = "请重新发送该消息重试；如持续无响应，请稍后再试或联系管理员"
 
@@ -83,6 +86,7 @@ class LedgerEntry:
     dump_ref: str = ""
     registered_at: float = 0.0
     send_failures: int = 0
+    terminal_at: float = 0.0
     identity_metadata: dict[str, Any] = field(default_factory=dict)
     dirty_frames: int = 0
     dirty_at: float = 0.0
@@ -98,10 +102,12 @@ class DeliveryLedger:
         idle_seconds: float = 600.0,
         expire_seconds: float = 24 * 3600.0,
         max_push_failures: int = 3,
+        reap_seconds: float = _REAP_SECONDS,
     ) -> None:
         self._directory = Path(directory) if directory is not None else None
         self._idle_seconds = idle_seconds
         self._expire_seconds = expire_seconds
+        self._reap_seconds = reap_seconds
         self._max_push_failures = max_push_failures
         self._entries: dict[str, LedgerEntry] = {}
 
@@ -184,20 +190,34 @@ class DeliveryLedger:
             self._flush_batched(entry, now)
             return
         entry.last_visible_output_ts = now
-        if entry.placeholder_state == PLACEHOLDER_SENT:
-            # 已送达占位卡：deadline 停止重置，仅簿记。
-            self._flush(entry)
+        if entry.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
+            # 终态条目（retracted/sent）：迟到帧只更新内存簿记，deadline/游标随
+            # 批量落盘（分级阈值），禁止每帧 fsync——该链跑在 supervisor 事件
+            # 循环线程上，逐帧 fsync 会阻塞同 loop 的 IPC 收发。
+            if entry.placeholder_state == PLACEHOLDER_RETRACTED:
+                entry.deadline = now + self._idle_seconds
+            self._flush_batched(entry, now)
             return
         entry.deadline = now + self._idle_seconds
         if entry.placeholder_state in {PLACEHOLDER_PENDING, PLACEHOLDER_PENDING_FLUSH}:
             entry.placeholder_state = PLACEHOLDER_RETRACTED
+            entry.terminal_at = now
         self._flush(entry)
 
     def transition(self, request_id: str, state: str, *, audit: str = "") -> bool:
         entry = self._entries.get(str(request_id or ""))
         if entry is None or entry.placeholder_state == state:
             return False
+        if entry.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
+            # 终态吸收：终态不可迁出（sweep 快照竞态下防 SENT 覆盖 RETRACTED）。
+            logger.info(
+                "[DeliveryLedger] transition rejected from terminal state=%s request_id=%s audit=%s",
+                entry.placeholder_state, entry.request_id, audit,
+            )
+            return False
         entry.placeholder_state = state
+        if state in PLACEHOLDER_TERMINAL_STATES:
+            entry.terminal_at = time.time()
         self._flush(entry)
         if state == PLACEHOLDER_FAILED:
             logger.warning(
@@ -248,6 +268,33 @@ class DeliveryLedger:
         return [item for item in self._entries.values()
                 if item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
                 and item.registered_at > 0 and now - item.registered_at > self._expire_seconds]
+
+    def reap_terminal(self, now: float | None = None) -> int:
+        """终态条目回收：超过保留窗的 sent/retracted/failed 删除内存与磁盘副本。
+
+        终态时间取 terminal_at（旧盘档缺省回退 registered_at）；回收前日志留痕
+        （request_id/终态/终态龄期），保留审计线索于日志面。返回回收条数。
+        """
+        now = time.time() if now is None else now
+        reaped = 0
+        for entry in list(self._entries.values()):
+            if entry.placeholder_state not in PLACEHOLDER_TERMINAL_STATES:
+                continue
+            settled_at = entry.terminal_at or entry.registered_at
+            if not settled_at or now - settled_at <= self._reap_seconds:
+                continue
+            self._entries.pop(entry.request_id, None)
+            try:
+                self._entry_path(entry.request_id).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("[DeliveryLedger] reap unlink failed request_id=%s",
+                               entry.request_id, exc_info=True)
+            logger.info(
+                "[DeliveryLedger] reaped terminal state=%s age=%.0fs request_id=%s",
+                entry.placeholder_state, now - settled_at, entry.request_id,
+            )
+            reaped += 1
+        return reaped
 
     # ----------------------------------------------------------- persistence
     def load(self) -> int:

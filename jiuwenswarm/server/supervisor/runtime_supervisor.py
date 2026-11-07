@@ -1515,6 +1515,7 @@ class RuntimeSupervisor:
         now = time.time()
         for entry in ledger.expired_entries(now):
             ledger.transition(entry.request_id, PLACEHOLDER_FAILED, audit="t+24h_expired_audit")
+        ledger.reap_terminal(now)
         ws, lock = self._gateway_ws, self._gateway_lock
         attached = ws is not None and lock is not None
         if attached and self._delivery_replay_retry:
@@ -1525,7 +1526,14 @@ class RuntimeSupervisor:
                 # gateway 未 attach：不在线推，待 attach 后 sweep 周期补推。
                 ledger.transition(entry.request_id, PLACEHOLDER_PENDING_FLUSH)
                 continue
-            wire = build_placeholder_wire(entry)
+            fresh = ledger.entry(entry.request_id)
+            if fresh is None or fresh.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
+                # send 前复查：快照到 send 之间真实回复已撤回占位（on_wire_delivered
+                # 置 retracted）→ 直接跳过，不发占位卡；配合 ledger.transition 终态
+                # 吸收守卫双保险。多条到期仍逐条 send（gateway 发送本就共享
+                # send_lock 串行），复查把逐条 10s 超时窗口内的竞态面清零。
+                continue
+            wire = build_placeholder_wire(fresh)
             delivered = False
             if self._forwarder is not None:
                 try:

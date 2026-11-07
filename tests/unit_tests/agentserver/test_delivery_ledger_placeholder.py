@@ -181,7 +181,6 @@ async def test_a_online_expiry_pushes_placeholder(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------- B
-@pytest.mark.asyncio
 async def test_b_whitelist_resets_and_nonwhitelist_does_not(tmp_path) -> None:
     """白名单帧送达重置 deadline；非白名单帧传输成功只推进游标。"""
     ledger = DeliveryLedger(directory=tmp_path / "ledger")
@@ -206,7 +205,6 @@ async def test_b_whitelist_resets_and_nonwhitelist_does_not(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------- C
-@pytest.mark.asyncio
 async def test_c_front_restart_reloads_and_judges_wall_clock(tmp_path) -> None:
     """Front 重启：台账重载（无注册丢失）并按墙钟 deadline 判到期执行动作。"""
     directory = tmp_path / "ledger"
@@ -226,7 +224,6 @@ async def test_c_front_restart_reloads_and_judges_wall_clock(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------- D
-@pytest.mark.asyncio
 async def test_d_not_attached_pending_flush_then_attach_repush(tmp_path) -> None:
     """未 attach 到期→pending_flush；attach 后 sweep 周期补推。"""
     supervisor = _registered_supervisor(tmp_path / "ledger")
@@ -370,7 +367,6 @@ async def test_g_mutex_retract_only_unsent(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------- H
-@pytest.mark.asyncio
 async def test_h_replay_route_rebind_and_new_cleanup_point(tmp_path) -> None:
     """Front 重启后非流式重放送达：路由重绑主路径（无 server-push 标记）；终态送达后新清理点 pop。"""
     supervisor = _registered_supervisor(tmp_path / "ledger")
@@ -400,7 +396,6 @@ async def test_h_replay_route_rebind_and_new_cleanup_point(tmp_path) -> None:
         assert not supervisor._delivery_replay_routes
 
 
-@pytest.mark.asyncio
 async def test_h2_replay_delivery_failure_falls_back(tmp_path, monkeypatch) -> None:
     """回执链 delivered=False：回落台账重试标记。"""
     monkeypatch.setattr(module, "_FORWARD_TIMEOUT", 0.05, raising=False)
@@ -422,7 +417,6 @@ async def test_h2_replay_delivery_failure_falls_back(tmp_path, monkeypatch) -> N
 
 
 # ---------------------------------------------------------------- I
-@pytest.mark.asyncio
 async def test_i_failed_worker_placeholder_still_outbound(tmp_path) -> None:
     """worker FAILED（粘滞态）：deadline 内占位卡经网关 socket 必达；sweep 不随代际取消。"""
     supervisor = _registered_supervisor(tmp_path / "ledger")
@@ -445,7 +439,6 @@ async def test_i_failed_worker_placeholder_still_outbound(tmp_path) -> None:
     await asyncio.gather(sweep, return_exceptions=True)
 
 
-@pytest.mark.asyncio
 async def test_i2_start_side_tasks_does_not_own_sweep(tmp_path) -> None:
     """sweep 不进入 _start_side_tasks 面。"""
     supervisor = _registered_supervisor(tmp_path / "ledger")
@@ -460,7 +453,6 @@ async def test_i2_start_side_tasks_does_not_own_sweep(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------- J
-@pytest.mark.asyncio
 async def test_j_late_real_reply_delivered_after_placeholder(tmp_path) -> None:
     """占位卡送达后迟到的真实回复仍送达（占位只作用于自身键，端到端）。"""
     supervisor = _registered_supervisor(tmp_path / "ledger")
@@ -594,7 +586,6 @@ async def test_k_placeholder_wire_contract_end_to_end(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------- sweep 独立行为补证
-@pytest.mark.asyncio
 async def test_placeholder_push_failures_exhaust_to_failed(tmp_path) -> None:
     """连续发送失败留痕：达到阈值转 failed（过期审计面）。"""
     supervisor = _registered_supervisor(tmp_path / "ledger")
@@ -607,7 +598,6 @@ async def test_placeholder_push_failures_exhaust_to_failed(tmp_path) -> None:
     ws.release.set()
 
 
-@pytest.mark.asyncio
 async def test_loopback_reload_skips_replay_and_audits(tmp_path, monkeypatch) -> None:
     """LOOPBACK 模式：启动重载跳过重放，遗留条目当场过期审计（不悬挂）。"""
     from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK
@@ -624,7 +614,6 @@ async def test_loopback_reload_skips_replay_and_audits(tmp_path, monkeypatch) ->
     assert supervisor._delivery_ledger.entry("req-1").placeholder_state == PLACEHOLDER_FAILED
 
 
-@pytest.mark.asyncio
 async def test_subscribe_reply_marks_unrecoverable(tmp_path) -> None:
     """worker 回执 miss/history_required：按不可恢复处理，不再重试重放。"""
     supervisor = _registered_supervisor(tmp_path / "ledger")
@@ -636,7 +625,6 @@ async def test_subscribe_reply_marks_unrecoverable(tmp_path) -> None:
     assert "d-1" not in supervisor._delivery_replay_routes
 
 
-@pytest.mark.asyncio
 async def test_emit_error_retracts_pending_entry(tmp_path) -> None:
     """_emit_error 直发成功同按可见帧记账：pending 台账转 retracted（互斥面）。"""
     supervisor = _registered_supervisor(tmp_path / "ledger")
@@ -647,7 +635,6 @@ async def test_emit_error_retracts_pending_entry(tmp_path) -> None:
     assert supervisor._delivery_ledger.entry("req-1").placeholder_state == PLACEHOLDER_RETRACTED
 
 
-@pytest.mark.asyncio
 async def test_worker_instance_uuid_unique() -> None:
     """幂等面：worker instance 唯一（重放失配判定依赖）。"""
     assert (WorkerGatewayBridge(ConnHolder()).events.instance
@@ -670,3 +657,114 @@ def test_identity_payload_has_no_user_content(tmp_path) -> None:
 
 def _unused_uuid_guard() -> str:  # pragma: no cover
     return uuid.uuid4().hex
+
+
+# ---------------------------------------------------------------- 检视整改面（!9693 CR-001/002/004）
+def test_l_terminal_visible_frames_batched_not_per_frame(tmp_path, monkeypatch) -> None:
+    """CR-001：终态条目迟到白名单帧只更新内存簿记，deadline/游标随批量阈值落盘（禁逐帧 fsync）。"""
+    ledger = DeliveryLedger(directory=tmp_path / "ledger")
+    ledger.register(_request("req-1"), dispatch_id="d-1", worker_instance="w-1",
+                    deadline=time.time() + 600.0)
+    ledger.on_wire_delivered(request_id="req-1", payload=_final_payload("req-1"), now=1000.0)
+    assert ledger.entry("req-1").placeholder_state == PLACEHOLDER_RETRACTED
+
+    flushes: list[str] = []
+    monkeypatch.setattr(ledger, "_flush", lambda entry: flushes.append(entry.request_id))
+    delta = {"payload": {"event_type": "chat.delta", "content": "x"}}
+    for index in range(30):  # <50 帧阈值且 <2s 跨度：零同步落盘
+        delta["metadata"] = {"runtime_event": {"sequence": 10 + index}}
+        ledger.on_wire_delivered(request_id="req-1", payload=delta, now=1001.0 + index * 0.05)
+    assert flushes == []
+    entry = ledger.entry("req-1")
+    assert entry.last_visible_output_ts == pytest.approx(1001.0 + 29 * 0.05)
+    assert entry.deadline == pytest.approx(1001.0 + 29 * 0.05 + 600.0)
+    assert entry.sequence == 10 + 29
+
+    # 真实落盘面：终态簿记（sequence/deadline/terminal_at）随批量写持久化
+    monkeypatch.undo()
+    ledger._flush(entry)
+    data = json.loads((tmp_path / "ledger" / "req-1.json").read_text(encoding="utf-8"))
+    assert data["sequence"] == entry.sequence
+    assert data["deadline"] == pytest.approx(entry.deadline)
+    assert data["last_visible_output_ts"] == pytest.approx(entry.last_visible_output_ts)
+    assert data["terminal_at"] == pytest.approx(1000.0)
+
+
+def test_m_terminal_entries_reaped_after_retention(tmp_path, caplog) -> None:
+    """CR-002：终态条目超保留窗回收内存与磁盘副本（日志留痕）；未终态条目不回收。"""
+    import logging
+
+    ledger = DeliveryLedger(directory=tmp_path / "ledger", reap_seconds=100.0)
+    ledger.register(_request("req-1"), dispatch_id="d-1", worker_instance="w-1",
+                    deadline=time.time() + 600.0)
+    ledger.on_wire_delivered(request_id="req-1", payload=_final_payload("req-1"), now=time.time())
+    ledger.register(_request("req-2"), dispatch_id="d-2", worker_instance="w-1",
+                    deadline=time.time() + 600.0)
+    with caplog.at_level(logging.INFO, logger="jiuwenswarm.server.supervisor.delivery_ledger"):
+        assert ledger.reap_terminal(now=time.time() + 1000.0) == 1
+    assert ledger.entry("req-1") is None
+    assert not (tmp_path / "ledger" / "req-1.json").exists()
+    assert ledger.entry("req-2") is not None
+    assert any("reaped terminal" in record.message for record in caplog.records)
+
+
+def test_n_transition_rejected_from_terminal(tmp_path) -> None:
+    """CR-004 守卫：transition 拒绝从终态迁出（retracted/sent 均吸收，防快照竞态覆盖）。"""
+    ledger = DeliveryLedger(directory=tmp_path / "ledger")
+    ledger.register(_request("req-1"), dispatch_id="d-1", worker_instance="w-1",
+                    deadline=time.time() + 600.0)
+    ledger.on_wire_delivered(request_id="req-1", payload=_final_payload("req-1"))
+    assert ledger.transition("req-1", PLACEHOLDER_SENT) is False
+    assert ledger.entry("req-1").placeholder_state == PLACEHOLDER_RETRACTED
+    assert ledger.transition("req-1", PLACEHOLDER_FAILED) is False
+    assert ledger.entry("req-1").placeholder_state == PLACEHOLDER_RETRACTED
+
+    ledger.register(_request("req-2"), dispatch_id="d-2", worker_instance="w-1",
+                    deadline=time.time() + 600.0)
+    assert ledger.transition("req-2", PLACEHOLDER_SENT) is True
+    assert ledger.transition("req-2", PLACEHOLDER_FAILED) is False
+    assert ledger.entry("req-2").placeholder_state == PLACEHOLDER_SENT
+
+
+@pytest.mark.asyncio
+async def test_o_sweep_skips_entry_terminal_before_send(tmp_path, monkeypatch) -> None:
+    """CR-004：sweep 快照到 send 之间真实回复已撤回占位 → send 前复查跳过，占位卡不出站。"""
+    supervisor = _registered_supervisor(tmp_path / "ledger")
+    ws, lock = _WebSocket(), asyncio.Lock()
+    supervisor._gateway_ws, supervisor._gateway_lock = ws, lock
+    _register(supervisor, rid="req-1", deadline_in=0.0)
+    ledger = supervisor._delivery_ledger
+    stale = list(ledger.due_entries())  # 快照（此刻 pending）
+    ledger.on_wire_delivered(request_id="req-1", payload=_final_payload("req-1"))  # 真实回复送达
+    monkeypatch.setattr(ledger, "due_entries", lambda now=None: stale)
+
+    sent_calls: list[dict] = []
+
+    async def _fake_send(wire, ws=None, send_lock=None):
+        sent_calls.append(wire)
+        return True
+
+    supervisor._forwarder = SimpleNamespace(send=_fake_send)
+    await supervisor._delivery_sweep_once()
+    assert sent_calls == []  # 终态条目 send 前复查直接跳过
+    assert ws.frames == []
+    assert ledger.entry("req-1").placeholder_state == PLACEHOLDER_RETRACTED
+
+
+@pytest.mark.asyncio
+async def test_o2_reply_during_send_not_overwritten_to_sent(tmp_path) -> None:
+    """CR-004 端到端：send 期间真实回复送达（retracted）后，快照竞态不得覆盖成 sent。"""
+    supervisor = _registered_supervisor(tmp_path / "ledger")
+    ws, lock = _WebSocket(), asyncio.Lock()
+    supervisor._gateway_ws, supervisor._gateway_lock = ws, lock
+    _register(supervisor, rid="req-1", deadline_in=0.0)
+    ledger = supervisor._delivery_ledger
+
+    async def _fake_send(wire, ws=None, send_lock=None):
+        ledger.on_wire_delivered(request_id="req-1",
+                                 payload=_final_payload("req-1"))  # 竞态：send 窗口内真实回复
+        return True
+
+    supervisor._forwarder = SimpleNamespace(send=_fake_send)
+    await supervisor._delivery_sweep_once()
+    assert ledger.entry("req-1").placeholder_state == PLACEHOLDER_RETRACTED
