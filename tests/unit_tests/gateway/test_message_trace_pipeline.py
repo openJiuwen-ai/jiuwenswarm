@@ -505,7 +505,6 @@ async def test_supplement_stream_keeps_parent_until_producer_and_responses_finis
                                      payload=None, is_complete=True)
 
     handler = MessageHandler(Client())
-    handler._sync_agentos_cron_jobs = AsyncMock()
     handler._apply_session_login_owner = AsyncMock()
     handler._broadcast_task_global_running = AsyncMock()
     handler._trigger_before_chat_request_hook = AsyncMock()

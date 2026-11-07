@@ -62,7 +62,6 @@ async def gateway(monkeypatch):
     monkeypatch.setattr(MessageHandler, "_instance", None)
     client = GatedClient()
     handler = MessageHandler(client)
-    handler._sync_agentos_cron_jobs = AsyncMock()
     handler._broadcast_task_global_running = AsyncMock()
     handler._trigger_before_chat_request_hook = AsyncMock()
     await handler.start_forwarding()
