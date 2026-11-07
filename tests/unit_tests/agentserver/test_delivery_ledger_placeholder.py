@@ -181,19 +181,23 @@ async def test_a_online_expiry_pushes_placeholder(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------- B
-async def test_b_whitelist_resets_and_nonwhitelist_does_not(tmp_path) -> None:
-    """白名单帧送达重置 deadline；非白名单帧传输成功只推进游标。"""
+async def test_b_liveness_resets_on_any_frame_visible_marks_output(tmp_path) -> None:
+    """P7 活性语义：任意送达帧重置 deadline；白名单帧额外记可见时间戳。
+
+    纯工具执行的长轮次零可见帧属健康形态（帧流在推进=worker 未中断），
+    占位卡只对「管线整体静默」报警。
+    """
     ledger = DeliveryLedger(directory=tmp_path / "ledger")
     ledger.register(_request("req-1"), dispatch_id="d-1", worker_instance="w-1",
                     deadline=time.time() + 600.0)
-    entry = ledger.entry("req-1")
-    registered_deadline = entry.deadline
 
     nonvisible = {"payload": {"event_type": "processing_status"}, "metadata": {
         "runtime_event": {"sequence": 7}}}
     ledger.on_wire_delivered(request_id="req-1", payload=nonvisible, now=1000.0)
-    assert ledger.entry("req-1").deadline == pytest.approx(registered_deadline)
+    assert ledger.entry("req-1").deadline == pytest.approx(1000.0 + 600.0)
     assert ledger.entry("req-1").sequence == 7
+    # 活性重置不更新可见时间戳（可见静默时长仍可观测）。
+    assert ledger.entry("req-1").last_visible_output_ts == 0.0
     assert ledger.entry("req-1").placeholder_state == PLACEHOLDER_PENDING
 
     visible = _final_payload("req-1")
@@ -202,6 +206,41 @@ async def test_b_whitelist_resets_and_nonwhitelist_does_not(tmp_path) -> None:
     assert ledger.entry("req-1").deadline == pytest.approx(1001.0 + 600.0)
     assert ledger.entry("req-1").last_visible_output_ts == 1001.0
     assert ledger.entry("req-1").placeholder_state == PLACEHOLDER_RETRACTED
+
+
+async def test_b2_pipeline_silence_still_alarms(tmp_path) -> None:
+    """P7 反向面：帧流停止后 deadline 不再被推进，到期照发占位卡。"""
+    ledger = DeliveryLedger(directory=tmp_path / "ledger")
+    ledger.register(_request("req-1"), dispatch_id="d-1", worker_instance="w-1",
+                    deadline=1000.0 + 600.0)
+    nonvisible = {"payload": {"event_type": "processing_status"}, "metadata": {
+        "runtime_event": {"sequence": 1}}}
+    ledger.on_wire_delivered(request_id="req-1", payload=nonvisible, now=1000.0)
+    # 之后再无任何帧：deadline 停在最后一次活性时刻，sweep 判到期。
+    assert ledger.due_entries(now=1000.0 + 600.0 + 1.0) == [ledger.entry("req-1")]
+
+
+async def test_b3_control_plane_requests_skip_registration(tmp_path) -> None:
+    """P7 控制面豁免：cron/healthcheck 渠道与 interrupt_ 前缀请求不建条目。"""
+    ledger = DeliveryLedger(directory=tmp_path / "ledger")
+    for rid, channel in (("cron-job-1:1794003600", "__cron__"),
+                         ("healthcheck-abc_000813", "__health_check__"),
+                         ("interrupt_1a1b290647e_e85ed3", "feishu")):
+        request = _request(rid)
+        request.channel_id = channel
+        assert ledger.register(request, dispatch_id="d-1", worker_instance="w-1",
+                               deadline=time.time() + 600.0) is None
+        assert ledger.entry(rid) is None
+    # 渠道与 request_id 双判据各自独立生效（feishu 渠道 interrupt 前缀同样豁免）。
+    assert ledger.entries() == []
+
+
+async def test_b4_user_channel_requests_still_register(tmp_path) -> None:
+    """P7 豁免不外溢：用户渠道普通请求照常登记。"""
+    ledger = DeliveryLedger(directory=tmp_path / "ledger")
+    entry = ledger.register(_request("req-1"), dispatch_id="d-1", worker_instance="w-1",
+                            deadline=time.time() + 600.0)
+    assert entry is not None and ledger.entry("req-1") is entry
 
 
 # ---------------------------------------------------------------- C
@@ -751,7 +790,6 @@ async def test_o_sweep_skips_entry_terminal_before_send(tmp_path, monkeypatch) -
     assert ledger.entry("req-1").placeholder_state == PLACEHOLDER_RETRACTED
 
 
-@pytest.mark.asyncio
 async def test_o2_reply_during_send_not_overwritten_to_sent(tmp_path) -> None:
     """CR-004 端到端：send 期间真实回复送达（retracted）后，快照竞态不得覆盖成 sent。"""
     supervisor = _registered_supervisor(tmp_path / "ledger")

@@ -25,20 +25,22 @@ files:
 
 ## 范围
 
-supervisor 进程（Front 侧）对已受理未交付请求维护交付台账：派发接受起 600s 无用户可见输出即经网关 socket 直发 `chat.error` 占位卡，消除「请求生命周期结束零出站无兜底」的静默吞回复。台账只存投递身份与游标，**不存用户正文**。占位卡出站与 worker 状态完全解耦（FAILED 粘滞态照发）；`FRONT_LOOPBACK` 模式本契约不覆盖（启动重载跳过重放，遗留条目当场过期审计）。
+supervisor 进程（Front 侧）对已受理未交付请求维护交付台账：派发接受起 600s 管线零帧（P7 活性语义）即经网关 socket 直发 `chat.error` 占位卡，消除「请求生命周期结束零出站无兜底」的静默吞回复。控制面请求（`__cron__`/`__health_check__` 渠道、`interrupt_` 前缀 request_id）零用户可见回复属设计使然，**登记时刻直接跳过**（P7）。台账只存投递身份与游标，**不存用户正文**。占位卡出站与 worker 状态完全解耦（FAILED 粘滞态照发）；`FRONT_LOOPBACK` 模式本契约不覆盖（启动重载跳过重放，遗留条目当场过期审计）。
 
 ## 交付台账
 
 - 落盘：`get_delivery_ledger_dir()` = `{root}/run/delivery-ledger/<request_id>.json`（尊重 `JIUWENSWARM_DATA_DIR`；jiuwenswarm/common/utils.py）。
 - 字段（delivery_ledger.LedgerEntry）：scope（request_scope 五元组）/channel_id/user_id/app_id/agent_ref_json/session_id/request_id/dispatch_id/worker_instance/sequence 游标/last_visible_output_ts/deadline（墙钟）/placeholder_state/dump_ref（诊断转储关联路径）/registered_at/send_failures/identity_metadata（仅投递身份键交集，非用户正文）。
 - 落盘分级：注册/deadline/状态转移**同步写**（temp+os.replace 原子写）；sequence 游标与 last_visible_output_ts **批量写**（50 帧/2s 阈值，`_flush_batched`）。终态条目（sent/retracted）的迟到白名单帧只更新内存簿记，deadline/游标随批量阈值落盘——**终态帧禁逐帧 fsync**（该链跑在 supervisor 事件循环线程上，逐帧 fsync 阻塞同 loop IPC 收发）。
+- 登记豁免（P7）：`register()` 对 channel_id ∈ `CONTROL_CHANNEL_IDS`（`__cron__`/`__health_check__`）或 request_id 前缀 ∈ `CONTROL_REQUEST_ID_PREFIXES`（`interrupt_`）的请求返回 None 不建条目——这些请求无用户可见回复语义，登记只会恒发占位卡。
 - Front 启动重载：`DeliveryLedger.load()` 逐条读盘，墙钟 deadline 原样保留，由 sweep 判到期。
 
 ## 计时与白名单
 
 - 计时起点=派发接受时刻（`_delivery_register`，deadline=now+600s 墙钟，`_DELIVERY_IDLE_DEADLINE`）。
-- 用户可见白名单={chat.final, chat.error, chat.ask_user_question}，流式模式 chat.delta 也计（`STREAM_VISIBLE_EVENT_WHITELIST`）；仅白名单帧 forwarder send True 重置 deadline=now+600s 并更新 last_visible_output_ts，非白名单帧传输成功只推进 sequence 游标。
-- 占位卡 sent 后 deadline 停止重置；sent 为吸收终态，真实回复迟到时保持 sent（不重发、不改状态）。
+- **活性语义（P7）**：deadline 以「管线帧流」为活性源——forwarder send True 的**任意帧**（含非白名单工具/进度帧）重置 deadline=now+600s；纯工具执行的长轮次零可见帧属健康形态（2026-11-07 实锚：流式活跃轮 10 分钟推进 4925 帧被误判超时）。占位卡只对「管线整体静默 idle_seconds」报警——worker 卡死/崩溃后帧流停止，deadline 到期照发。
+- 用户可见白名单={chat.final, chat.error, chat.ask_user_question}，流式模式 chat.delta 也计（`STREAM_VISIBLE_EVENT_WHITELIST`）；白名单帧额外更新 last_visible_output_ts（活性重置不更新该字段——可见静默时长仍可观测）。
+- 占位卡 sent 后 deadline 停止重置；sent 为吸收终态，真实回复迟到时保持 sent（不重发、不改状态；终态条目不参与 sweep 到期判定，deadline 值惰性）。
 
 ## sweep 生命周期
 
