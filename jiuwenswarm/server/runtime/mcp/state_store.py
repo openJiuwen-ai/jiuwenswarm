@@ -26,10 +26,12 @@ Layout::
           "state": "connected|disconnected",
           "enabled": false,        # TUI-only default switch; web ignores
           "server_id_scope": "mcp:<name>",
+          "managed": "env",        # provenance mark: admin env-preset channel
           "skills": ["..."]        # cli/skill-only
         }
       },
-      "mounts": {}
+      "mounts": {},
+      "preset": {"ts": 0, "hash": "..."}  # admin env-preset fence (applied ts + content hash)
     }
 
 Token values are NEVER stored here — only ``${VAR}`` placeholders. Real
@@ -39,15 +41,25 @@ tokens live in ``mcp/credentials/<name>.json`` and are resolved at
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
+
+
+def get_workspace_dir() -> Path:
+    """MCP 数据根锚点：租户感知的 agent workspace（保留旧名供测试 patch）。
+
+    个人版即全局 ``~/.jiuwenswarm/agent/workspace``；企业版随 ``TenantContext``
+    解析到 ``workspace_{tenant_key}``，state.json 按租户隔离。
+    """
+    return get_agent_workspace_dir()
 
 _STATE_VERSION = 1
 _STATE_FILE = "state.json"
@@ -269,6 +281,51 @@ def list_registered_mcps() -> list[dict[str, Any]]:
     return out
 
 
+def _upsert_locked(
+    st: dict[str, Any],
+    name: str,
+    entry: dict[str, Any],
+    *,
+    state: str,
+    integration_type: str | None = None,
+    skills: list[str] | None = None,
+    enabled: bool | None = None,
+    managed: str | None = None,
+) -> dict[str, Any]:
+    """Lock-free record upsert on an already-loaded state dict.
+
+    Caller must hold ``_lock`` and is responsible for the final ``_save``.
+    Mirrors the historical ``upsert_mcp_record`` merge exactly (entry fields
+    stored verbatim, placeholders preserved for CredentialStore).
+    """
+    n = str(name or "").strip()
+    if not n:
+        raise ValueError("mcp name is required")
+    cons = st.setdefault("mcp", {})
+    prior = cons.get(n)
+    record = dict(prior) if isinstance(prior, dict) else {}
+    # First insert defaults enabled=False; later upserts preserve it
+    # unless the caller passes an explicit value.
+    if "enabled" not in record and prior is None:
+        record["enabled"] = False
+    # Merge the entry's transport/connection fields (placeholders kept).
+    for k in ("transport", "url", "headers", "command", "args", "env",
+              "timeout_s", "server_id_scope"):
+        if k in entry:
+            record[k] = entry[k]
+    record["state"] = state
+    if integration_type is not None:
+        record["integration_type"] = integration_type
+    if skills is not None:
+        record["skills"] = list(skills)
+    if enabled is not None:
+        record["enabled"] = bool(enabled)
+    if managed is not None:
+        record["managed"] = managed
+    cons[n] = record
+    return dict(record)
+
+
 def upsert_mcp_record(
     name: str,
     entry: dict[str, Any],
@@ -277,6 +334,7 @@ def upsert_mcp_record(
     integration_type: str | None = None,
     skills: list[str] | None = None,
     enabled: bool | None = None,
+    managed: str | None = None,
 ) -> dict[str, Any]:
     """Insert or update an MCP record. ``entry`` is the build_config_entry
     result (or a custom-mcp dict); its transport/url/headers/command/args/env
@@ -289,34 +347,25 @@ def upsert_mcp_record(
     leave False (default) for web-connected MCPs so they don't pollute the
     TUI default set. Pass a non-None value on update to flip it; ``None``
     leaves the existing value untouched.
+
+    ``managed`` is the provenance mark (``"env"`` = admin env-preset
+    channel, see :func:`apply_managed_preset`); absent/``None`` keeps the
+    record a plain user-created one.
     """
-    n = str(name or "").strip()
-    if not n:
-        raise ValueError("mcp name is required")
     with _lock:
         st = _load()
-        cons = st.setdefault("mcp", {})
-        prior = cons.get(n)
-        record = dict(prior) if isinstance(prior, dict) else {}
-        # First insert defaults enabled=False; later upserts preserve it
-        # unless the caller passes an explicit value.
-        if "enabled" not in record and prior is None:
-            record["enabled"] = False
-        # Merge the entry's transport/connection fields (placeholders kept).
-        for k in ("transport", "url", "headers", "command", "args", "env",
-                  "timeout_s", "server_id_scope"):
-            if k in entry:
-                record[k] = entry[k]
-        record["state"] = state
-        if integration_type is not None:
-            record["integration_type"] = integration_type
-        if skills is not None:
-            record["skills"] = list(skills)
-        if enabled is not None:
-            record["enabled"] = bool(enabled)
-        cons[n] = record
+        record = _upsert_locked(
+            st,
+            name,
+            entry,
+            state=state,
+            integration_type=integration_type,
+            skills=skills,
+            enabled=enabled,
+            managed=managed,
+        )
         _save(st)
-        return dict(record)
+        return record
 
 
 def remove_mcp_record(name: str) -> dict[str, Any] | None:
@@ -331,6 +380,103 @@ def remove_mcp_record(name: str) -> dict[str, Any] | None:
         if removed is not None:
             _save(st)
         return removed
+
+
+def _preset_hash(entries: dict[str, dict[str, Any]]) -> str:
+    """Stable short hash of a preset payload (for stale-content warnings)."""
+    canonical = json.dumps(entries, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def apply_managed_preset(
+    ts: int,
+    entries: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Reconcile the admin env preset into state.json behind a ts fence.
+
+    ``ts`` is the management-plane timestamp (epoch ms) carried by the env
+    channel; the top-level ``preset.ts`` records what this workspace already
+    applied. Fence semantics are whole-set and all-or-nothing:
+
+    * ``ts <= preset.ts`` → skip entirely: no write, no removal, no restore
+      of user-deleted records. A stale pod generation during a rolling
+      rebuild therefore can never write an older preset back, and user
+      deletions between pushes are respected. Content that changed without
+      a ts bump only logs a warning — refreshing ``ts`` is the admin
+      contract.
+    * ``ts > preset.ts`` → full overwrite of the managed set: records
+      marked ``managed`` that are no longer in ``entries`` are removed
+      (their names come back in ``removed`` so the caller can best-effort
+      drop their credentials); each surviving entry is remove-then-inserted
+      so dropped fields don't survive the merge. A same-name USER record
+      (no ``managed`` mark) always wins and is left untouched.
+
+    Runs atomically under ``_lock`` and must execute inside the tenant
+    context (the workspace anchor); callers without one must not invoke it.
+    Returns ``{"applied": bool, "removed": [names], "skipped_user": [names]}``.
+    """
+    fence_ts = int(ts)
+    with _lock:
+        st = _load()
+        prior_preset = st.get("preset")
+        prior_preset = prior_preset if isinstance(prior_preset, dict) else {}
+        applied_ts = int(prior_preset.get("ts") or 0)
+        payload_hash = _preset_hash(entries)
+        if fence_ts <= applied_ts:
+            if prior_preset.get("hash") not in (None, payload_hash):
+                logger.warning(
+                    "[mcp.state] preset content changed without a ts bump "
+                    "(applied_ts=%s, incoming_ts=%s); skipping — refresh ts "
+                    "to apply",
+                    applied_ts,
+                    fence_ts,
+                )
+            return {"applied": False, "removed": [], "skipped_user": []}
+        cons = st.setdefault("mcp", {})
+        removed: list[str] = []
+        skipped_user: list[str] = []
+        for name in list(cons.keys()):
+            rec = cons[name]
+            if not (isinstance(rec, dict) and rec.get("managed")):
+                continue
+            if name in entries:
+                continue
+            del cons[name]
+            removed.append(name)
+        for name in sorted(entries):
+            entry = entries[name]
+            prior = cons.get(name)
+            if isinstance(prior, dict) and not prior.get("managed"):
+                # A user-created record with the same name wins; the admin
+                # preset never clobbers user data.
+                skipped_user.append(name)
+                logger.warning(
+                    "[mcp.state] preset entry '%s' shadowed by a user record; "
+                    "skipping",
+                    name,
+                )
+                continue
+            # Remove-then-insert so fields dropped from the new payload do
+            # not survive the upsert merge (fresh record, enabled=False).
+            cons.pop(name, None)
+            transport = str(entry.get("transport", "") or "")
+            _upsert_locked(
+                st,
+                name,
+                entry,
+                state="connected",
+                integration_type=(
+                    "stdio-mcp" if transport == "stdio" else "remote-mcp"
+                ),
+                managed="env",
+            )
+        st["preset"] = {"ts": fence_ts, "hash": payload_hash}
+        _save(st)
+        return {
+            "applied": True,
+            "removed": sorted(removed),
+            "skipped_user": sorted(skipped_user),
+        }
 
 
 def set_mcp_state(name: str, *, state: str) -> None:
@@ -419,6 +565,7 @@ __all__ = [
     "list_registered_mcps",
     "upsert_mcp_record",
     "remove_mcp_record",
+    "apply_managed_preset",
     "set_mcp_state",
     "set_mcp_enabled",
     "record_to_mcp_entry",

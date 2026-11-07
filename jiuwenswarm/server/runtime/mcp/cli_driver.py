@@ -28,15 +28,27 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from jiuwenswarm.common.runtime_platform import is_harmony_runtime as _is_harmony_runtime
-from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
+from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.server.runtime.mcp.paths import ensure_builtins_packages
 from jiuwenswarm.server.runtime.mcp.package_manifest import resolve_mcp_package
 
 logger = logging.getLogger(__name__)
 
 
+def get_workspace_dir() -> Path:
+    """MCP 数据根锚点：租户感知的 agent workspace（保留旧名供测试 patch）。
+
+    个人版即全局 ``~/.jiuwenswarm/agent/workspace``；企业版随 ``TenantContext``
+    解析到 ``workspace_{tenant_key}``，CLI MCP 安装/暂存目录按租户隔离。
+    """
+    return get_agent_workspace_dir()
+
+
 def _packages_dir() -> Path:
     """Marketplace 包目录：<workspace>/mcp/mcp_builtins/."""
-    return get_workspace_dir() / "mcp" / "mcp_builtins"
+    pkgs = get_workspace_dir() / "mcp" / "mcp_builtins"
+    ensure_builtins_packages(pkgs)
+    return pkgs
 
 
 def _hub_packages_dir() -> Path:
