@@ -21,3 +21,13 @@ async def worker_callback_framework(monkeypatch):
     if owner is not None:
         await owner.aclose()
     await kernel.close()
+
+
+@pytest.fixture(autouse=True)
+def _delivery_ledger_tmp_dir(tmp_path, monkeypatch):
+    """P6 交付台账：agentserver 目录测试一律落 tmp，防真目录被测试条目污染。"""
+    from jiuwenswarm.common import utils
+
+    directory = tmp_path / "delivery-ledger-home"
+    monkeypatch.setattr(utils, "get_delivery_ledger_dir", lambda: directory, raising=False)
+    yield directory

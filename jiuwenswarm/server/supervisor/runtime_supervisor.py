@@ -29,6 +29,7 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_SHUTDOWN,
     KIND_SHUTDOWN_DONE,
     KIND_SUBSCRIBE,
+    KIND_SUBSCRIBE_BY_ID,
     KIND_SNAPSHOT,
     KIND_WIRE,
     PROTOCOL_VERSION,
@@ -39,6 +40,15 @@ from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
 from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
 from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor.affinity import SessionAffinity
+from jiuwenswarm.server.supervisor.delivery_ledger import (
+    DeliveryLedger,
+    PLACEHOLDER_FAILED,
+    PLACEHOLDER_PENDING_FLUSH,
+    PLACEHOLDER_SENT,
+    PLACEHOLDER_TERMINAL_STATES,
+    build_placeholder_wire,
+    wire_event,
+)
 from jiuwenswarm.server.supervisor.diagnostics import dump_runtime_state
 from jiuwenswarm.server.supervisor.identity import WorkerIdentityError
 from jiuwenswarm.server.supervisor.worker_process import (
@@ -70,6 +80,13 @@ _SNAPSHOT_WAIT_ATTEMPTS = 3
 _WATCHDOG_INTERVAL = 5.0
 _FORWARD_QUEUE_SIZE = 256
 _FORWARD_TIMEOUT = 10.0
+# P6 交付台账：空闲 deadline（派发接受起算，用户可见帧送达重置）与 sweep 周期。
+# sweep 为 Front 生命周期独立任务：不进 _start_side_tasks/_cancel_side_tasks，
+# 不随 worker 代际取消，仅 _finish_stop 终止时取消（watchdog 事件循环卡顿时会
+# 跳过判定轮，sweep 不挂靠该循环）。
+_DELIVERY_IDLE_DEADLINE = 600.0
+_DELIVERY_SWEEP_INTERVAL = 30.0
+_DELIVERY_EXPIRE_SECONDS = 24 * 3600.0
 _FORWARD_DRAIN_TIMEOUT = 1.0
 # Transport stays alive (pongs flow) but the Worker's business loop has not
 # run: warn once it outlasts a heartbeat window, replace the Worker only when
@@ -203,6 +220,13 @@ class RuntimeSupervisor:
         self._session_lock = asyncio.Lock()
         self._forward_bytes = 0
         self._recover_lock = asyncio.Lock()
+        # P6 交付台账（Front 生命周期独立，随 supervisor 存续）。
+        self._delivery_ledger: DeliveryLedger | None = None
+        self._delivery_sweep_task: asyncio.Task[None] | None = None
+        self._delivery_replay_routes: set[str] = set()
+        self._delivery_unrecoverable: set[str] = set()
+        self._delivery_replay_retry = False
+        self._delivery_reloaded = False
 
     accepts_warming = True
 
@@ -282,6 +306,10 @@ class RuntimeSupervisor:
         """Connect to a resident Worker, or spawn one, then return."""
         if self._loop_task is None:
             self._loop_task = asyncio.create_task(self._supervise(), name="runtime-supervisor")
+        if not self._delivery_reloaded:
+            self._delivery_reloaded = True
+            self._reload_delivery_ledger()
+        self._ensure_delivery_sweep()
         await self._ipc_ready.wait()
         if self._fatal and self._conn is None:
             raise RuntimeError(self._fatal_reason or "runtime worker failed to start")
@@ -290,6 +318,8 @@ class RuntimeSupervisor:
         """Remember the Front-owned Gateway socket. The Worker never sees it."""
         self._gateway_ws = ws
         self._gateway_lock = send_lock
+        self._ensure_delivery_sweep()
+        self._schedule(self._replay_delivery_entries())
         self._schedule(self._notify_gateway(attached=True))
 
     async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
@@ -434,6 +464,9 @@ class RuntimeSupervisor:
                     "payload": dump_agent_request(request),
                 }
             )
+            if request_id:
+                # 派发接受时刻登记台账（计时起点；同步落盘，Front 异常退出不丢）。
+                self._delivery_register(request, dispatch_id)
             if not request_id:
                 return
             result = await future
@@ -532,6 +565,11 @@ class RuntimeSupervisor:
         if conn is not None:
             await conn.close()
         await self._cancel_side_tasks()
+        sweep = self._delivery_sweep_task
+        if sweep is not None and not sweep.done():
+            sweep.cancel()
+            await asyncio.gather(sweep, return_exceptions=True)
+        self._delivery_sweep_task = None
         task = self._loop_task
         if task is not None and not task.done():
             done, _ = await asyncio.wait({task}, timeout=5.0)
@@ -1137,6 +1175,9 @@ class RuntimeSupervisor:
             return
         if kind == KIND_HELLO:
             return
+        if kind == KIND_SUBSCRIBE_BY_ID:
+            self._delivery_subscribe_by_id_reply(message)
+            return
         logger.info("[Supervisor] ignored ipc kind=%s", kind)
 
     def _wire_route(self, message: dict[str, Any]) -> _GatewayRoute | None:
@@ -1205,6 +1246,39 @@ class RuntimeSupervisor:
             self._forward_started = 0.0
             self._forward_request_id = ""
             await self._ack_delivery(message, delivered is True)
+        self._delivery_note_forward(message, delivered is True)
+
+    def _delivery_note_forward(self, message: dict[str, Any], delivered: bool) -> None:
+        """白名单帧送达→重置 deadline 并取消未送达占位；重放路由新清理点。
+
+        清理点为新增代码（非沿用 :413-415 dispatch finally / :1015 _fail_forwarding /
+        :1283 _fail_pending 等请求生命周期与失败路径清理）：重放终态
+        （chat.final/chat.error）送达或 delivered=False 时 pop 重放路由。
+        """
+        ledger = self._delivery_ledger
+        payload = message.get("payload")
+        rid = str(message.get("request_id") or (payload.get("request_id") if isinstance(payload, dict) else "") or "")
+        if ledger is not None and isinstance(payload, dict) and rid:
+            try:
+                if delivered:
+                    ledger.on_wire_delivered(request_id=rid, payload=payload)
+                else:
+                    ledger.mark_sequence_only(rid, payload)
+            except Exception:
+                logger.warning(
+                    "[Supervisor] delivery ledger update failed request_id=%s", rid, exc_info=True
+                )
+        dispatch_id = str(message.get("dispatch_id") or "")
+        if not dispatch_id or dispatch_id not in self._delivery_replay_routes:
+            return
+        terminal = isinstance(payload, dict) and wire_event(payload) in {"chat.final", "chat.error"}
+        if delivered and not terminal:
+            return
+        if not delivered:
+            self._delivery_replay_retry = True
+        # 新清理点：重放路由用毕即 pop（终态送达或回执链判明失败）。
+        self._routes.pop(dispatch_id, None)
+        self._delivery_replay_routes.discard(dispatch_id)
 
     async def _ack_delivery(self, message: dict[str, Any], delivered: bool) -> None:
         if not message.get("wire_id") or self._conn is None:
@@ -1378,6 +1452,18 @@ class RuntimeSupervisor:
         try:
             async with asyncio.timeout(_FORWARD_TIMEOUT):
                 await self._forwarder.send(wire, ws=ws, send_lock=send_lock)
+                if self._delivery_ledger is not None and request.request_id:
+                    try:
+                        self._delivery_ledger.on_wire_delivered(
+                            request_id=request.request_id,
+                            payload={"payload": {"event_type": "chat.error"}},
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[Supervisor] delivery ledger update failed request_id=%s",
+                            request.request_id,
+                            exc_info=True,
+                        )
         except Exception:  # noqa: BLE001
             logger.warning(
                 "[Supervisor] Gateway error delivery failed; request_id=%s error=%s",
@@ -1394,6 +1480,183 @@ class RuntimeSupervisor:
             coro.close()
             return
         loop.create_task(coro)
+
+    def _delivery_ledger_or_init(self) -> DeliveryLedger | None:
+        if self._delivery_ledger is None:
+            try:
+                self._delivery_ledger = DeliveryLedger(
+                    idle_seconds=_DELIVERY_IDLE_DEADLINE,
+                    expire_seconds=_DELIVERY_EXPIRE_SECONDS,
+                )
+            except Exception:
+                logger.warning("[Supervisor] delivery ledger init failed", exc_info=True)
+        return self._delivery_ledger
+
+    def _delivery_register(self, request: AgentRequest, dispatch_id: str) -> None:
+        ledger = self._delivery_ledger_or_init()
+        if ledger is None:
+            return
+        try:
+            ledger.register(
+                request,
+                dispatch_id=dispatch_id,
+                worker_instance=self._worker_instance or "",
+                deadline=time.time() + _DELIVERY_IDLE_DEADLINE,
+            )
+        except Exception:
+            logger.warning(
+                "[Supervisor] delivery ledger register failed request_id=%s",
+                request.request_id,
+                exc_info=True,
+            )
+
+    def _delivery_subscribe_by_id_reply(self, message: dict[str, Any]) -> None:
+        """worker 对 KIND_SUBSCRIBE_BY_ID 的回执：miss/history_required → 占位卡路径。"""
+        ledger = self._delivery_ledger
+        if ledger is None:
+            return
+        status = str(message.get("status") or "")
+        rid = str(message.get("request_id") or "")
+        entry = ledger.entry(rid)
+        if entry is None:
+            return
+        if status in {"miss", "history_required"}:
+            # 按不可恢复处理：不再重试重放，sweep 到期直接占位卡。
+            self._delivery_unrecoverable.add(rid)
+            self._delivery_replay_routes.discard(
+                str(message.get("dispatch_id") or entry.dispatch_id))
+            logger.info(
+                "[Supervisor] replay unrecoverable status=%s request_id=%s",
+                status, rid,
+            )
+
+    def _reload_delivery_ledger(self) -> None:
+        """Front 启动重载台账：按墙钟 deadline 判到期（sweep 执行到期动作）。"""
+        ledger = self._delivery_ledger_or_init()
+        if ledger is None:
+            return
+        try:
+            count = ledger.load()
+        except Exception:
+            logger.warning("[Supervisor] delivery ledger reload failed", exc_info=True)
+            return
+        if count:
+            logger.info("[Supervisor] delivery ledger reloaded entries=%s", count)
+        if self._ipc_mode == FRONT_LOOPBACK:
+            # LOOPBACK 本批不覆盖：启动重载跳过重放，遗留条目当场过期审计（不悬挂）。
+            for entry in ledger.entries():
+                if entry.placeholder_state not in PLACEHOLDER_TERMINAL_STATES:
+                    ledger.transition(entry.request_id, PLACEHOLDER_FAILED,
+                                      audit="front_loopback_reload_skip")
+
+    def _ensure_delivery_sweep(self) -> None:
+        if self._delivery_sweep_task is not None and not self._delivery_sweep_task.done():
+            return
+        try:
+            self._delivery_sweep_task = asyncio.create_task(
+                self._delivery_sweep(), name="delivery-ledger-sweep")
+        except RuntimeError:
+            self._delivery_sweep_task = None
+
+    async def _delivery_sweep(self) -> None:
+        # Front 生命周期独立：仅 _finish_stop 取消；不随 worker 代际（generation
+        # 递增、恢复、重启、FAILED）取消。
+        while not self._stopping:
+            try:
+                await self._delivery_sweep_once()
+            except Exception:
+                logger.warning("[Supervisor] delivery sweep iteration failed", exc_info=True)
+            await asyncio.sleep(_DELIVERY_SWEEP_INTERVAL)
+
+    async def _delivery_sweep_once(self) -> None:
+        ledger = self._delivery_ledger
+        if ledger is None:
+            return
+        now = time.time()
+        for entry in ledger.expired_entries(now):
+            ledger.transition(entry.request_id, PLACEHOLDER_FAILED, audit="t+24h_expired_audit")
+        ledger.reap_terminal(now)
+        ws, lock = self._gateway_ws, self._gateway_lock
+        attached = ws is not None and lock is not None
+        if attached and self._delivery_replay_retry:
+            self._delivery_replay_retry = False
+            await self._replay_delivery_entries()
+        for entry in ledger.due_entries(now):
+            if not attached:
+                # gateway 未 attach：不在线推，待 attach 后 sweep 周期补推。
+                ledger.transition(entry.request_id, PLACEHOLDER_PENDING_FLUSH)
+                continue
+            fresh = ledger.entry(entry.request_id)
+            if fresh is None or fresh.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
+                # send 前复查：快照到 send 之间真实回复已撤回占位（on_wire_delivered
+                # 置 retracted）→ 直接跳过，不发占位卡；配合 ledger.transition 终态
+                # 吸收守卫双保险。多条到期仍逐条 send（gateway 发送本就共享
+                # send_lock 串行），复查把逐条 10s 超时窗口内的竞态面清零。
+                continue
+            wire = build_placeholder_wire(fresh)
+            delivered = False
+            if self._forwarder is not None:
+                try:
+                    async with asyncio.timeout(_FORWARD_TIMEOUT):
+                        # 占位卡出站与 worker 状态完全无关（FAILED 粘滞态照发）：
+                        # 只需网关 socket 在场。
+                        delivered = await self._forwarder.send(wire, ws=ws, send_lock=lock)
+                except asyncio.TimeoutError:
+                    delivered = False
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "[Supervisor] placeholder send failed request_id=%s",
+                        entry.request_id, exc_info=True,
+                    )
+                    delivered = False
+            if delivered:
+                ledger.transition(entry.request_id, PLACEHOLDER_SENT)
+            elif ledger.note_push_failure(entry.request_id):
+                self._delivery_unrecoverable.add(entry.request_id)
+
+    async def _replay_delivery_entries(self) -> None:
+        """台账待重放项发 KIND_SUBSCRIBE_BY_ID（身份型契约，载荷仅身份字段）。
+
+        触发点两处：attach_gateway_connection 与 Front 启动重载。
+        主路径=路由重绑当前 attach 的 (ws, send_lock)；重放帧的 server-push 标记
+        仅在路由缺失时经 _wire_route 回落。清理点见 _delivery_note_forward（新增）。
+        """
+        ledger = self._delivery_ledger
+        conn = self._conn
+        if ledger is None or conn is None:
+            return
+        if self._ipc_mode == FRONT_LOOPBACK:
+            return
+        for entry in ledger.entries():
+            if entry.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
+                continue
+            if entry.request_id in self._delivery_unrecoverable:
+                continue
+            dispatch_id = entry.dispatch_id
+            if dispatch_id and dispatch_id not in self._routes and self._gateway_ws is not None:
+                self._routes[dispatch_id] = (self._gateway_ws, self._gateway_lock)
+                self._delivery_replay_routes.add(dispatch_id)
+            try:
+                await conn.send({
+                    "kind": KIND_SUBSCRIBE_BY_ID,
+                    "generation": self._peer_generation,
+                    "request_id": entry.request_id,
+                    "dispatch_id": dispatch_id,
+                    "query_id": uuid.uuid4().hex,
+                    "worker_instance": entry.worker_instance,
+                    "after": entry.sequence,
+                    "payload": {
+                        "channel_id": entry.channel_id,
+                        "user_id": entry.user_id,
+                        "app_id": entry.app_id,
+                        "agent_ref": entry.agent_ref_json,
+                        "session_id": entry.session_id,
+                    },
+                })
+            except (OSError, RuntimeError):
+                self._delivery_replay_retry = True
+                logger.info("[Supervisor] subscribe_by_id lost on IPC detach")
+                return
 
     def _start_side_tasks(self) -> None:
         generation = self._generation

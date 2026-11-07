@@ -308,3 +308,11 @@ class WorkerEventStore:
         scope = request_scope(request)
         return [copy.deepcopy(frame) for owner, frame, _ in self._frames
                 if owner == scope and frame["sequence"] > after]
+
+    def replay_by_request(
+        self, scope: tuple[str, ...], request_id: str, *, after: int = 0
+    ) -> list[dict[str, Any]]:
+        """P6 身份型重放：按 (scope, request_id) 取单请求保留帧（游标之后）。"""
+        rid = str(request_id or "")
+        return [copy.deepcopy(frame) for owner, frame, _ in self._frames
+                if owner == scope and frame["request_id"] == rid and frame["sequence"] > after]
