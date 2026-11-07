@@ -44,6 +44,7 @@ from jiuwenswarm.common.utils import (
     get_builtin_skills_dir,
     is_package_installation,
 )
+from jiuwenswarm.server.runtime.skill.skill_type import apply_skill_type_fields
 from jiuwenswarm.extensions.sdk.skill_source import (
     ArtifactDescriptor,
     DownloadPolicy,
@@ -118,7 +119,9 @@ _FREE_SEARCH_DEFAULT_NO_PROXY = "127.0.0.1,.huawei.com,localhost,local,.local,10
 
 # Team Skills Hub（仅 TEAM_SKILLS_HUB_* 环境变量）
 _TEAM_SKILLS_HUB_MARKET_TIMEOUT: float = float(os.environ.get("TEAM_SKILLS_HUB_TIMEOUT", "60"))
-_TEAM_SKILLS_HUB_BASE_URL_DEFAULT = "https://teamskills.openjiuwen.com"
+# Hosted Hub is swarmskills.openjiuwen.com (teamskills.* currently times out).
+# Align with develop ``marketplace.hub_client.DEFAULT_HUB_BASE_URL``.
+_TEAM_SKILLS_HUB_BASE_URL_DEFAULT = "https://swarmskills.openjiuwen.com"
 _TEAM_SKILLS_HUB_DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = (
     "openjiuwen-market.obs.*.myhuaweicloud.com",
 )
@@ -490,6 +493,156 @@ def _state_transactional(method: Callable[..., Any]) -> Callable[..., Any]:
     return sync_wrapper
 
 
+# A skill name is also its directory name inside the single global library, so a
+# name that could never be such a directory can never match a real skill. These
+# are the characters no filesystem this runtime targets accepts in a name:
+# Windows rejects them outright, and ``:`` additionally spells a drive or an NTFS
+# alternate data stream.
+_INVALID_SKILL_NAME_CHARS = frozenset('<>:"|?*')
+
+# Windows device names, reserved whatever the extension is.
+_RESERVED_SKILL_NAME_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+
+# Generous upper bound: real names are dashes-and-words slugs, while most
+# filesystems stop accepting a single component well before this.
+_MAX_SKILL_NAME_LENGTH = 128
+
+
+def _validate_skill_name(name: str) -> str:
+    """Validate one skill name before it is persisted into visibility metadata.
+
+    Visibility names are compared against library directory names and are never
+    joined onto a path, so an odd name is not a traversal today. It would still
+    be written to disk forever, and a later reader that does resolve it as a
+    directory would inherit the problem; reject it at the door instead.
+
+    The rule stays deliberately permissive — letters of any script, digits,
+    dots, dashes, underscores and spaces all pass, because a skill name is
+    simply the name of its library directory — so that a legitimately named
+    skill is never silently dropped.
+
+    Args:
+        name: Stripped, non-empty candidate name.
+
+    Returns:
+        The accepted name.
+
+    Raises:
+        ValueError: The name is not usable as a skill name.
+    """
+    safe = _safe_path_name(name, "skill")
+    if len(safe) > _MAX_SKILL_NAME_LENGTH:
+        raise ValueError(f"invalid skill name: longer than {_MAX_SKILL_NAME_LENGTH} characters")
+    # "..." and friends: relative-path lookalikes that no installer produces.
+    if set(safe) <= {"."}:
+        raise ValueError(f"invalid skill name: {safe}")
+    # A leading dot marks sidecar state (the ".<name>.lock" files the visibility
+    # writer creates, ".git", ...), not a skill a user meant to authorize.
+    if safe.startswith("."):
+        raise ValueError(f"invalid skill name: {safe}")
+    # Windows silently drops a trailing dot from a filename, so such a name
+    # could never round-trip to the directory it claims to address.
+    if safe.endswith("."):
+        raise ValueError(f"invalid skill name: {safe}")
+    if _INVALID_SKILL_NAME_CHARS.intersection(safe):
+        raise ValueError(f"invalid skill name: {safe}")
+    # Control characters only. A plain space is legal: a skill name is whatever
+    # its library directory is called, and directories may contain spaces.
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in safe):
+        raise ValueError("invalid skill name: contains a control character")
+    if safe.split(".", 1)[0].upper() in _RESERVED_SKILL_NAME_STEMS:
+        raise ValueError(f"invalid skill name: {safe}")
+    return safe
+
+
+def _coerce_skill_name_list(raw: Any, field_label: str) -> list[str]:
+    """Normalize an RPC-supplied skill-name list.
+
+    Accepts a list/tuple/set of names or a single name, drops blanks,
+    non-string entries and names :func:`_validate_skill_name` rejects, and
+    preserves nothing else: the visibility writer sorts and de-duplicates what
+    it receives. A rejected name is logged and skipped rather than raised, so
+    one bad entry never aborts an otherwise valid authorization change.
+
+    Args:
+        raw: Raw ``allow`` / ``deny`` value from the request params.
+        field_label: Parameter name reported in the rejection warning.
+
+    Returns:
+        Cleaned list of skill names; empty when nothing usable was supplied.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        candidates: list[Any] = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        candidates = list(raw)
+    else:
+        return []
+    names: list[str] = []
+    for item in candidates:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name:
+            continue
+        try:
+            names.append(_validate_skill_name(name))
+        except ValueError as exc:
+            _log_rejected_name(f"skills.visibility.{field_label}", "skill", item, exc)
+    return names
+
+
+def _compose_workspace_skill_visibility(
+    member_path: Path | None,
+    member_id: str,
+    team_path: Path | None,
+    team_id: str,
+) -> tuple[set[str], set[str]]:
+    """Compose the effective skill allow / deny sets of one team workspace.
+
+    The composition rule is owned by openJiuWen's team skill layer:
+    ``enabled = member.allow UNION team.allow`` and
+    ``disabled = member.deny UNION team.deny UNION globally disabled skills``.
+
+    An empty enabled set means "inherit the whole library", never "deny
+    everything" — substituting the full name set would freeze the view against
+    Skills installed later.
+
+    Args:
+        member_path: Member ``skills-visibility.json`` path; None when the
+            request addresses a team document only.
+        member_id: Member name recorded as the document id.
+        team_path: Team ``skills-visibility.json`` path, or None.
+        team_id: Team name recorded as the team document id.
+
+    Returns:
+        Tuple of (enabled skill names, disabled skill names).
+    """
+    from openjiuwen.agent_teams.skill.visibility import (
+        SCOPE_MEMBER,
+        SCOPE_TEAM,
+        SkillVisibility,
+        compose_skill_visibility,
+        read_skill_visibility,
+    )
+
+    from jiuwenswarm.server.runtime.skill.skilldev.state_utils import load_execution_disabled_skills
+
+    if member_path is None:
+        member = SkillVisibility(scope=SCOPE_MEMBER, id=member_id)
+    else:
+        member = read_skill_visibility(member_path, scope=SCOPE_MEMBER, entity_id=member_id)
+    team = None
+    if team_path is not None:
+        team = read_skill_visibility(team_path, scope=SCOPE_TEAM, entity_id=team_id)
+    return compose_skill_visibility(member, team, load_execution_disabled_skills())
+
+
 class SkillManager:
     """Skill 管理器，对应 skills.* 请求方法."""
 
@@ -749,6 +902,245 @@ class SkillManager:
     # -----------------------------------------------------------------------
     # 公开 handler
     # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_skill_visibility_target(params: dict) -> tuple[str, str, Path] | dict:
+        """Resolve the visibility document addressed by an RPC request.
+
+        Args:
+            params: RPC parameters carrying ``scope``, ``team_name`` and, for the
+                member scope, ``member_name``.
+
+        Returns:
+            Tuple of (scope, entity id, metadata path), or an error payload dict
+            when the request is malformed.
+        """
+        from openjiuwen.agent_teams.paths import (
+            member_skill_visibility_path,
+            team_skill_visibility_path,
+        )
+        from openjiuwen.agent_teams.skill.visibility import SCOPE_MEMBER, SCOPE_TEAM
+
+        scope = str(params.get("scope") or SCOPE_MEMBER).strip()
+        if scope not in (SCOPE_MEMBER, SCOPE_TEAM):
+            return {"success": False, "detail": f"无效参数: scope={scope}（应为 member 或 team）"}
+        try:
+            team_name = _safe_path_name(params.get("team_name"), "team")
+        except ValueError as exc:
+            _log_rejected_name("skills.visibility", "team", params.get("team_name"), exc)
+            return {"success": False, "detail": str(exc)}
+
+        if scope == SCOPE_TEAM:
+            return SCOPE_TEAM, team_name, team_skill_visibility_path(team_name)
+
+        try:
+            member_name = _safe_path_name(params.get("member_name"), "member")
+        except ValueError as exc:
+            _log_rejected_name("skills.visibility", "member", params.get("member_name"), exc)
+            return {"success": False, "detail": str(exc)}
+        return SCOPE_MEMBER, member_name, member_skill_visibility_path(team_name, member_name)
+
+    @staticmethod
+    def _compose_skill_visibility_for_params(params: dict, scope: str) -> tuple[set[str], set[str]]:
+        """Compose the effective allow / deny sets addressed by an RPC request.
+
+        Args:
+            params: RPC parameters already validated by
+                :meth:`_resolve_skill_visibility_target`.
+            scope: Resolved scope, ``member`` or ``team``.
+
+        Returns:
+            Tuple of (enabled skill names, disabled skill names).
+        """
+        from openjiuwen.agent_teams.paths import (
+            member_skill_visibility_path,
+            team_skill_visibility_path,
+        )
+        from openjiuwen.agent_teams.skill.visibility import SCOPE_MEMBER
+
+        team_name = str(params.get("team_name") or "").strip()
+        team_path = team_skill_visibility_path(team_name)
+        if scope != SCOPE_MEMBER:
+            # A team document has no member half; compose it against itself so
+            # the team's own deny list and the global disabled set still apply.
+            return _compose_workspace_skill_visibility(
+                member_path=None,
+                member_id="",
+                team_path=team_path,
+                team_id=team_name,
+            )
+        member_name = str(params.get("member_name") or "").strip()
+        return _compose_workspace_skill_visibility(
+            member_path=member_skill_visibility_path(team_name, member_name),
+            member_id=member_name,
+            team_path=team_path,
+            team_id=team_name,
+        )
+
+    async def handle_skills_visibility_get(self, params: dict) -> dict:
+        """读取某个 member/team 的 skill 可见性 metadata.
+
+        params:
+            scope: "member" 或 "team"
+            team_name: 团队名
+            member_name: 成员名（scope=member 时必填）
+
+        Returns:
+            allow / deny 名单，以及合成后的 enabled / disabled 生效集合。
+            metadata 不存在时返回一份空文档（空 allow 表示继承全库）。
+        """
+        from openjiuwen.agent_teams.skill.visibility import read_skill_visibility
+
+        target = await asyncio.to_thread(self._resolve_skill_visibility_target, params)
+        if isinstance(target, dict):
+            return target
+        scope, entity_id, path = target
+
+        visibility = await asyncio.to_thread(
+            read_skill_visibility,
+            path,
+            scope=scope,
+            entity_id=entity_id,
+        )
+        enabled, disabled = await asyncio.to_thread(
+            self._compose_skill_visibility_for_params,
+            params,
+            scope,
+        )
+        return {
+            "success": True,
+            "scope": scope,
+            "id": entity_id,
+            "path": str(path),
+            "allow": visibility.allow,
+            "deny": visibility.deny,
+            "bootstrapped_from": visibility.bootstrapped_from,
+            "enabled_skills": sorted(enabled),
+            "disabled_skills": sorted(disabled),
+        }
+
+    async def handle_skills_visibility_set(self, params: dict) -> dict:
+        """设置某个 member/team 的 skill 可见性 metadata.
+
+        全量替换 allow 与 deny 两份名单。空 allow 表示继承全库而非全禁；
+        deny 无条件优先于 allow。写入经跨进程文件锁 + 原子替换落盘。
+
+        params:
+            scope: "member" 或 "team"
+            team_name: 团队名
+            member_name: 成员名（scope=member 时必填）
+            allow: skill 名列表，缺省或空表示继承全库
+            deny: skill 名列表，缺省或空表示不禁用
+
+        Returns:
+            落盘后的 allow / deny 名单与合成后的生效集合。
+        """
+        from openjiuwen.agent_teams.skill.file_lock import FileLockTimeout
+        from openjiuwen.agent_teams.skill.visibility import set_skill_visibility
+
+        target = await asyncio.to_thread(self._resolve_skill_visibility_target, params)
+        if isinstance(target, dict):
+            return target
+        scope, entity_id, path = target
+
+        allow = _coerce_skill_name_list(params.get("allow"), "allow")
+        deny = _coerce_skill_name_list(params.get("deny"), "deny")
+        try:
+            visibility = await asyncio.to_thread(
+                set_skill_visibility,
+                path,
+                scope=scope,
+                entity_id=entity_id,
+                allow=allow,
+                deny=deny,
+            )
+        except FileLockTimeout as exc:
+            logger.warning("[SkillVisibility] lock timeout: path=%s error=%s", path, exc)
+            return {"success": False, "detail": "可见性文件被占用，请稍后重试。"}
+        except OSError as exc:
+            logger.warning("[SkillVisibility] write failed: path=%s error=%s", path, exc)
+            return {"success": False, "detail": f"写入可见性配置失败: {exc}"}
+
+        enabled, disabled = await asyncio.to_thread(
+            self._compose_skill_visibility_for_params,
+            params,
+            scope,
+        )
+        return {
+            "success": True,
+            "scope": scope,
+            "id": entity_id,
+            "path": str(path),
+            "allow": visibility.allow,
+            "deny": visibility.deny,
+            "enabled_skills": sorted(enabled),
+            "disabled_skills": sorted(disabled),
+        }
+
+    async def handle_skills_visibility_update(self, params: dict) -> dict:
+        """增量修改某个 member/team 的 skill 可见性 metadata.
+
+        与全量 set 的区别在于「读-改-写」发生在**同一次持锁内**：两个客户端
+        并发授权时互不覆盖，各自的增删都会保留。语义仍为空 allow 表示继承全库，
+        deny 无条件优先于 allow。
+
+        params:
+            scope: "member" 或 "team"
+            team_name: 团队名
+            member_name: 成员名（scope=member 时必填）
+            add_allow: 追加到 allow 名单的 skill 名列表
+            remove_allow: 从 allow 名单移除的 skill 名列表
+            add_deny: 追加到 deny 名单的 skill 名列表
+            remove_deny: 从 deny 名单移除的 skill 名列表
+
+        Returns:
+            落盘后的 allow / deny 名单与合成后的生效集合。
+        """
+        from openjiuwen.agent_teams.skill.file_lock import FileLockTimeout
+        from openjiuwen.agent_teams.skill.visibility import update_skill_visibility
+
+        target = await asyncio.to_thread(self._resolve_skill_visibility_target, params)
+        if isinstance(target, dict):
+            return target
+        scope, entity_id, path = target
+
+        add_allow = _coerce_skill_name_list(params.get("add_allow"), "add_allow")
+        remove_allow = _coerce_skill_name_list(params.get("remove_allow"), "remove_allow")
+        add_deny = _coerce_skill_name_list(params.get("add_deny"), "add_deny")
+        remove_deny = _coerce_skill_name_list(params.get("remove_deny"), "remove_deny")
+        try:
+            visibility = await asyncio.to_thread(
+                update_skill_visibility,
+                path,
+                scope=scope,
+                entity_id=entity_id,
+                add_allow=add_allow,
+                remove_allow=remove_allow,
+                add_deny=add_deny,
+                remove_deny=remove_deny,
+            )
+        except FileLockTimeout as exc:
+            logger.warning("[SkillVisibility] lock timeout: path=%s error=%s", path, exc)
+            return {"success": False, "detail": "可见性文件被占用，请稍后重试。"}
+        except OSError as exc:
+            logger.warning("[SkillVisibility] update failed: path=%s error=%s", path, exc)
+            return {"success": False, "detail": f"写入可见性配置失败: {exc}"}
+
+        enabled, disabled = await asyncio.to_thread(
+            self._compose_skill_visibility_for_params,
+            params,
+            scope,
+        )
+        return {
+            "success": True,
+            "scope": scope,
+            "id": entity_id,
+            "path": str(path),
+            "allow": visibility.allow,
+            "deny": visibility.deny,
+            "enabled_skills": sorted(enabled),
+            "disabled_skills": sorted(disabled),
+        }
 
     async def handle_skills_list(self, params: dict) -> dict:
         """返回所有可用 skill（本地 + marketplace 中未安装的）.
@@ -4634,6 +5026,8 @@ class SkillManager:
             meta["has_evolutions"] = (child / _EVOLUTION_FILENAME).is_file()
             # 不在列表中返回 body
             meta.pop("body", None)
+            # Keep frontmatter ``kind``; add develop-compatible ``skill_type``.
+            apply_skill_type_fields(meta, child)
             results.append(meta)
 
         return results
@@ -4678,6 +5072,7 @@ class SkillManager:
             self._apply_enabled_config(meta, meta.get("name", ""))
             # 不在列表中返回 body
             meta.pop("body", None)
+            apply_skill_type_fields(meta, child)
             results.append(meta)
 
         return results
@@ -4876,6 +5271,7 @@ class SkillManager:
                 meta["has_evolutions"] = False
                 self._apply_enabled_config(meta, meta.get("name", ""))
                 meta.pop("body", None)
+                apply_skill_type_fields(meta, plugin_dir)
                 results.append(meta)
 
         return results

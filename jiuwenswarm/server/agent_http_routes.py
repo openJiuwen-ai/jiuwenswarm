@@ -177,6 +177,12 @@ ROUTES: list[RouteSpec] = [
         "/teams/{team_name}/sessions/{session_id}/bind",
         ReqMethod.TEAM_SESSION_BIND.value,
     ),
+    # Dissolve is session-scoped (unbind / clear generated team without path team_name).
+    RouteSpec(
+        "POST",
+        "/sessions/{session_id}/team/runtime/dissolve",
+        ReqMethod.TEAM_RUNTIME_DISSOLVE.value,
+    ),
     # 这三个都是**按会话**查询（handler 读 params.session_id），因此挂在会话下。
     RouteSpec("GET", "/sessions/{session_id}/team/snapshot", ReqMethod.TEAM_SNAPSHOT.value),
     RouteSpec("GET", "/sessions/{session_id}/team/members", ReqMethod.TEAM_MEMBERS_GET.value),

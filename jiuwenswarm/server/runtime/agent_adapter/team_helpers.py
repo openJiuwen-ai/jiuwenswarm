@@ -2104,20 +2104,28 @@ async def _execute_team_slash_rebuild(
 
 
 def _resolve_team_slash_skills_dir(session_id: str) -> str | None:
+    """Return the Skill library for team slash commands, if the session is a team."""
     metadata = get_session_metadata(session_id)
     team_name = str(metadata.get("team_name") or "").strip()
     if not team_name:
         return None
-    return str(team_home(team_name) / "team-workspace" / "skills")
+    from jiuwenswarm.common.utils import primary_team_skill_library_dir
+
+    return str(primary_team_skill_library_dir())
 
 
 def _team_spec_skills_dir(team_spec: Any) -> str:
-    workspace = getattr(team_spec, "workspace", None)
-    root_path = str(getattr(workspace, "root_path", "") or "").strip()
-    if root_path:
-        return str(Path(root_path) / "skills")
-    team_name = str(getattr(team_spec, "team_name", "") or "").strip()
-    return str(team_home(team_name) / "team-workspace" / "skills")
+    """Return the primary Skill library used by team slash/evolution paths.
+
+    Aligns with member rail assembly (:func:`primary_team_skill_library_dir`)
+    so Ace SHARED deployments evolve the same library members can see.
+    ``team_spec`` is accepted for call-site compatibility; teams no longer own
+    a mirrored ``skills/`` directory.
+    """
+    del team_spec
+    from jiuwenswarm.common.utils import primary_team_skill_library_dir
+
+    return str(primary_team_skill_library_dir())
 
 
 def _team_spec_monitor_roots(team_spec: Any, session_id: str | None = None) -> list[str]:
@@ -2507,17 +2515,6 @@ async def process_team_message_stream(
 
     team_name = team_spec.team_name
     team_skills_dir = _team_spec_skills_dir(team_spec)
-    ensure_ready = getattr(team_manager, "ensure_team_shared_skills_ready_for_session", None)
-    shared_skills_ready_prepared = False
-    if is_first_request and callable(ensure_ready):
-        # The manager is a duck-typed extension point: implementations may be
-        # sync (older/embedded variants) or async (the link sync now runs via
-        # asyncio.to_thread so it cannot stall the loop - BUG20260918365771).
-        # Support both signatures here.
-        ensure_ready_result = ensure_ready(session_id, team_spec)
-        if inspect.isawaitable(ensure_ready_result):
-            await ensure_ready_result
-        shared_skills_ready_prepared = True
 
     slash_result = await _handle_team_slash_command(
         channel_id,
@@ -2910,11 +2907,6 @@ async def process_team_message_stream(
                 return
 
         if is_first_request:
-            if callable(ensure_ready) and not shared_skills_ready_prepared:
-                ensure_ready_result = ensure_ready(session_id, team_spec)
-                if inspect.isawaitable(ensure_ready_result):
-                    await ensure_ready_result
-                shared_skills_ready_prepared = True
             request_queue = await _start_team_stream_round(
                 channel_id=channel_id,
                 session_id=session_id,
