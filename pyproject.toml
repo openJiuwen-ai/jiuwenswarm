@@ -18,7 +18,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+https://gitcode.com/robbluo/agent-core.git@9bd0ca7d58f6373d8a89444a4e9b69547145a4a5",
+    "openjiuwen @ git+https://gitcode.com/robbluo/agent-core.git@cf5f45af172de4f408bc30f68783d820d88429ea",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
@@ -85,7 +85,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+https://gitcode.com/robbluo/agent-core.git@9bd0ca7d58f6373d8a89444a4e9b69547145a4a5",
+    "openjiuwen @ git+https://gitcode.com/robbluo/agent-core.git@cf5f45af172de4f408bc30f68783d820d88429ea",
     "filelock>=3.25.0,<4",  # task-owned async locks strand openjiuwen FS locks
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
@@ -207,7 +207,7 @@ default-groups = ['dev']
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-openjiuwen = { git = "https://gitcode.com/robbluo/agent-core.git", rev = "9bd0ca7d58f6373d8a89444a4e9b69547145a4a5" }
+openjiuwen = { git = "https://gitcode.com/robbluo/agent-core.git", rev = "cf5f45af172de4f408bc30f68783d820d88429ea" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)

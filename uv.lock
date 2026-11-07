@@ -3068,7 +3068,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.20"
-source = { git = "https://gitcode.com/robbluo/agent-core.git?rev=9bd0ca7d58f6373d8a89444a4e9b69547145a4a5#9bd0ca7d58f6373d8a89444a4e9b69547145a4a5" }
+source = { git = "https://gitcode.com/robbluo/agent-core.git?rev=cf5f45af172de4f408bc30f68783d820d88429ea#cf5f45af172de4f408bc30f68783d820d88429ea" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -6208,12 +6208,12 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/robbluo/agent-core.git?rev=9bd0ca7d58f6373d8a89444a4e9b69547145a4a5" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/robbluo/agent-core.git?rev=9bd0ca7d58f6373d8a89444a4e9b69547145a4a5" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/robbluo/agent-core.git?rev=9bd0ca7d58f6373d8a89444a4e9b69547145a4a5" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/robbluo/agent-core.git?rev=9bd0ca7d58f6373d8a89444a4e9b69547145a4a5" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/robbluo/agent-core.git?rev=9bd0ca7d58f6373d8a89444a4e9b69547145a4a5" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/robbluo/agent-core.git?rev=9bd0ca7d58f6373d8a89444a4e9b69547145a4a5" },
+    { name = "openjiuwen", git = "https://gitcode.com/robbluo/agent-core.git?rev=cf5f45af172de4f408bc30f68783d820d88429ea" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/robbluo/agent-core.git?rev=cf5f45af172de4f408bc30f68783d820d88429ea" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/robbluo/agent-core.git?rev=cf5f45af172de4f408bc30f68783d820d88429ea" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/robbluo/agent-core.git?rev=cf5f45af172de4f408bc30f68783d820d88429ea" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/robbluo/agent-core.git?rev=cf5f45af172de4f408bc30f68783d820d88429ea" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/robbluo/agent-core.git?rev=cf5f45af172de4f408bc30f68783d820d88429ea" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<1.42" },
