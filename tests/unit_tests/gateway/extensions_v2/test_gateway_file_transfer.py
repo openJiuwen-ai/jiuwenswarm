@@ -2,6 +2,7 @@
 
 """Host-mediated file import and export for application UI packages (F_13)."""
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -349,6 +350,64 @@ async def test_tickets_expire_and_close_with_the_connection(tmp_path):
         await runtime.on_disconnect(ws)
         await runtime.browser.settle()
         assert runtime.browser.transfers.uploads == {} and list(uploads.iterdir()) == []
+    finally:
+        await runtime.shutdown()
+
+
+async def test_concurrent_expiry_removes_each_ticket_once(tmp_path):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    transfers = runtime.browser.transfers
+    clock = [1000.0]
+    transfers._clock = lambda: clock[0]
+    discard, gate, removed = transfers._discard, asyncio.Event(), []
+
+    async def slow_discard(upload):
+        removed.append(upload.upload_id)
+        await gate.wait()
+        await discard(upload)
+
+    try:
+        ws = SimpleNamespace(closed=False)
+        revision = await _mount(runtime, package, tmp_path, ws)
+        files = [{"path": "a.zip", "size": 1}]
+        opened = [(await _call(runtime, "webui.upload.begin", _begin(revision, files), ws))["payload"]["upload_id"]
+                  for _ in range(2)]
+        clock[0] += transfers_module.UPLOAD_TTL_S + 1
+        transfers._discard = slow_discard
+        first, second = asyncio.create_task(transfers.expire()), asyncio.create_task(transfers.expire())
+        await asyncio.sleep(0)
+        assert transfers.uploads == {}, "records leave before any directory is deleted"
+        gate.set()
+        await asyncio.gather(first, second)
+        assert sorted(removed) == sorted(opened)
+        uploads = runtime.package_data_dir(PACKAGE) / ".uploads"
+        assert not any((uploads / upload_id).exists() for upload_id in opened)
+    finally:
+        gate.set()
+        await runtime.shutdown()
+
+
+async def test_concurrent_imports_of_one_connection_respect_the_open_ticket_limit(tmp_path):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    try:
+        ws = SimpleNamespace(closed=False)
+        revision = await _mount(runtime, package, tmp_path, ws)
+        files = [{"path": "a.zip", "size": 1}]
+        count = transfers_module.MAX_OPEN_UPLOADS + 3
+        results = await asyncio.gather(*(runtime.browser.transfers.begin_upload(SimpleNamespace(
+            params=_begin(revision, files), connection_id="browser-1")) for _ in range(count)), return_exceptions=True)
+        tickets = runtime.browser.transfers.uploads
+        assert len(tickets) == transfers_module.MAX_OPEN_UPLOADS
+        issued = [result["upload_id"] for result in results if isinstance(result, dict)]
+        refused = [result for result in results if not isinstance(result, dict)]
+        # Requests replaced by newer ones before their directory existed are refused, not handed a dead ticket.
+        assert set(tickets) <= set(issued)
+        assert all(getattr(error, "code", None) == transfers_module.CODE_TARGET_INACTIVE for error in refused)
+        uploads = runtime.package_data_dir(PACKAGE) / ".uploads"
+        await runtime.browser.settle()
+        assert sorted(path.name for path in uploads.iterdir()) == sorted(tickets)
     finally:
         await runtime.shutdown()
 

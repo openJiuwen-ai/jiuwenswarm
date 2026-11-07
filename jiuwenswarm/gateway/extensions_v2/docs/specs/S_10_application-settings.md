@@ -149,7 +149,8 @@ S_09 第 3.1 节的返回改为：只含启用的提供者，按生效顺序，�
 | 大小 | 每个文件为非负整数；总和不超过 `extensions.gateway.uploads.max_bytes` |
 
 成功返回 `{"upload_id": <导入凭据>, "url": "/extension-uploads/<upload_id>/"}`。凭据自开始起 10 分钟有效；
-每个连接最多同时持有 4 个未完成的凭据，超出时最早的一个作废。
+每个连接最多同时持有 4 个未完成的凭据，超出时最早的一个作废。上限对同时到达的请求同样成立：凭据在创建临时目录之前就计入上限；
+目录建好之前就被更新的请求挤出、或期间包被释放与连接关闭的请求，返回 `TARGET_INACTIVE`，不交出已失效的凭据。
 
 ### 6.3 传输：`PUT /extension-uploads/<upload_id>/<path>`
 
@@ -179,6 +180,7 @@ S_09 第 3.1 节的返回改为：只含启用的提供者，按生效顺序，�
 ### 6.5 清理
 
 凭据过期、连接关闭、包释放时删除对应的 `.uploads/<upload_id>`；Gateway 启动时删除各活动包的 `.uploads`。
+清理时先同步移除凭据记录，再删除目录，并发的清理各自只处理一次同一凭据。
 
 ## 7. 文件导出
 
@@ -216,7 +218,7 @@ S_09 第 3.1 节的返回改为：只含启用的提供者，按生效顺序，�
 | --- | --- | --- |
 | `BAD_REQUEST` | 宿主方法 | 参数缺失、多余或不合法 |
 | `SETTINGS_WRITE_FAILED` | `webui.splash.settings.update` | 开场设置写盘失败，设置保持不变 |
-| `TARGET_INACTIVE` | `webui.upload.begin` | 实例、版本或节点不是当前状态 |
+| `TARGET_INACTIVE` | `webui.upload.begin` | 实例、版本或节点不是当前状态；或凭据在准备期间被同一连接更新的请求挤出、包被释放、连接关闭 |
 | `UPLOAD_TOO_LARGE` | `webui.upload.begin` | 总大小超过配置上限 |
 
 ## 9. 不变量

@@ -7,7 +7,7 @@
 | 类型 | feature |
 | 编号 / slug | `F_13 / application-settings-page` |
 | 建档日期 | 2026-11-05 |
-| 后续修订 | 2026-11-07：统一到 S_18 设置贡献模型（D-11）；2026-11-05：导入与导出对远程浏览器同样开放（D-07）；2026-11-06：每个插件的设置页在设置导航中单独一项，“扩展”模块只放宿主功能（D-08）；与 AgentServer 插件设置并存（D-09）；2026-11-07：标题改取 manifest.json 的 `display.name` 并按界面语言显示（D-10） |
+| 后续修订 | 2026-11-07（第二轮检视）：实例键规则统一、导入凭据并发与下载前再次核对激活（第 8.2 节 V-12）；2026-11-07：统一到 S_18 设置贡献模型（D-11）；2026-11-05：导入与导出对远程浏览器同样开放（D-07）；2026-11-06：每个插件的设置页在设置导航中单独一项，“扩展”模块只放宿主功能（D-08）；与 AgentServer 插件设置并存（D-09）；2026-11-07：标题改取 manifest.json 的 `display.name` 并按界面语言显示（D-10） |
 | 计划条目 | [EXTV2-GW-12](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 1.1、3.3 节 |
 | 方案成熟度 | 已确认，已实现 |
@@ -277,6 +277,15 @@ F_13-V-11（2026-11-06，D-08）：
 | 真实应用 | 隔离实例：开发分支的 Gateway、AgentServer、`app_web` 与构建产物，安装主题背景 2.0.0 与登录示例 | 设置导航为“常规……已归档的任务、扩展、主题背景、实验功能”；“扩展”的开场提供者显示“主题背景”；登录前后都能打开插件项 |
 
 验证中发现并修正：插件名较长时按钮随名称撑宽导航列（导航列表为 grid，子项默认最小宽度取内容宽度）；改为按钮可收缩、名称单行省略，完整名称放在悬停提示中。
+
+F_13-V-12（2026-11-07，PR #10763 第二轮检视）：
+
+| 问题 | 修订 | 用例（修复前失败） |
+| --- | --- | --- |
+| 实例键规则不一致：S_18 声明接受 `settings:main`，Gateway 的 `webui.dispatch`、开场生命周期帧与 `webui.upload.begin` 却只接受 `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`，声明成功的设置页连 `ui.ready` 都被拒绝 | `webui/models.py` 的 `valid_instance_key()` 作为唯一规则（与渲染目标、AgentServer 相同），各处共用；共享用例补充冒号、中间空格与 200 字节边界 | `test_every_declarable_instance_key_renders_dispatches_and_imports`（3 种键）；`test_instance_keys_outside_the_shared_rule_are_refused_everywhere` 修复前后都通过 |
+| 并发清理过期导入时 `KeyError`：先取过期列表，等待删除目录后才逐个移除记录 | 先同步移除记录，再删除目录；开始导入时作废最早凭据也改为先移除记录 | `test_concurrent_expiry_removes_each_ticket_once` |
+| 同一连接并发开始导入可越过 4 个凭据的上限：新凭据在创建目录之后才登记 | 凭据在任何等待之前登记；准备期间被挤出或包被释放时返回 `TARGET_INACTIVE` 并删除目录 | `test_concurrent_imports_of_one_connection_respect_the_open_ticket_limit`（修复前留下 7 个） |
+| 下载准备期间包被释放，仍向浏览器发送无法取回的 `webui.download` | 清理过期凭据之后、生成凭据之前再次核对激活 | `test_a_release_while_the_download_is_prepared_sends_no_offer` |
 
 ### 8.3 验证结论
 

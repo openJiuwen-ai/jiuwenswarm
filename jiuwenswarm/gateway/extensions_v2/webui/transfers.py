@@ -177,22 +177,37 @@ class TransferManager:
             raise HostRequestError(CODE_TARGET_INACTIVE, "the import control is not current")
         files = validate_manifest(node.props, params["files"], self.runtime.config.upload_max_bytes)
         await self.expire()
+        # Records change synchronously and the new ticket is counted before any
+        # await, so concurrent requests of one connection cannot exceed the limit.
         own = sorted((item for item in self.uploads.values() if item.connection_id == request.connection_id),
                      key=lambda item: item.created)
-        for stale in own[:max(0, len(own) - MAX_OPEN_UPLOADS + 1)]:
-            await self._discard(self.uploads.pop(stale.upload_id))
+        stale = own[:max(0, len(own) - MAX_OPEN_UPLOADS + 1)]
+        for item in stale:
+            self.uploads.pop(item.upload_id, None)
         upload_id = uuid4().hex
         data_dir = self.runtime.package_data_dir(package_id)
         directory = data_dir / UPLOAD_DIR / upload_id
-        await asyncio.to_thread(directory.mkdir, parents=True)
-        if (data_dir / UPLOAD_DIR).is_symlink() or not directory.resolve().is_relative_to(data_dir.resolve()):
-            await asyncio.to_thread(shutil.rmtree, directory, True)
-            raise HostRequestError(CODE_BAD_REQUEST, "package data directory is not usable")
-        self.uploads[upload_id] = Upload(
+        upload = Upload(
             upload_id=upload_id, connection_id=request.connection_id, package_id=package_id,
             generation=browser.generations[package_id], target=scoped, node_key=params["node_key"],
             files=files, directory=directory, created=self._clock(),
         )
+        self.uploads[upload_id] = upload
+        try:
+            for item in stale:
+                await self._discard(item)
+            await asyncio.to_thread(directory.mkdir, parents=True)
+        except BaseException:
+            self._forget(upload)
+            raise
+        unusable = (data_dir / UPLOAD_DIR).is_symlink() or not directory.resolve().is_relative_to(data_dir.resolve())
+        if unusable or self.uploads.get(upload_id) is not upload:
+            # Released, closed or replaced by newer imports of this connection while the directory was made.
+            self._forget(upload)
+            await asyncio.to_thread(shutil.rmtree, directory, True)
+            if unusable:
+                raise HostRequestError(CODE_BAD_REQUEST, "package data directory is not usable")
+            raise HostRequestError(CODE_TARGET_INACTIVE, "the import was withdrawn before it was ready")
         return {"upload_id": upload_id, "url": f"{UPLOAD_PREFIX}{upload_id}/"}
 
     async def receive(self, upload_id: str, relative: str, chunks: AsyncIterator[bytes]) -> int:
@@ -311,12 +326,19 @@ class TransferManager:
     # ── lifecycle ─────────────────────────────────────────────────────────
 
     async def expire(self) -> None:
-        """Drop expired tickets and their directories."""
+        """Drop expired tickets and their directories.
+
+        The records leave synchronously before any directory is deleted, so
+        concurrent callers each remove a ticket at most once.
+        """
         now = self._clock()
-        for upload in [item for item in self.uploads.values() if now - item.created > UPLOAD_TTL_S]:
-            await self._discard(self.uploads.pop(upload.upload_id))
+        expired = [item for item in self.uploads.values() if now - item.created > UPLOAD_TTL_S]
+        for upload in expired:
+            self.uploads.pop(upload.upload_id, None)
         for token in [key for key, item in self.downloads.items() if now - item.created > DOWNLOAD_TTL_S]:
             self.downloads.pop(token, None)
+        for upload in expired:
+            await self._discard(upload)
 
     def release(self, *, connection_id: str | None = None, package_id: str | None = None) -> list[Upload]:
         """Invalidate the tickets of a closed connection or a released package."""
@@ -339,6 +361,11 @@ class TransferManager:
                 await asyncio.to_thread(directory.unlink, True)
             elif directory.exists():
                 await asyncio.to_thread(shutil.rmtree, directory, True)
+
+    def _forget(self, upload: Upload) -> None:
+        """Drop this ticket's record unless something else replaced or removed it."""
+        if self.uploads.get(upload.upload_id) is upload:
+            del self.uploads[upload.upload_id]
 
     async def _discard(self, upload: Upload) -> None:
         if upload.directory.exists():
