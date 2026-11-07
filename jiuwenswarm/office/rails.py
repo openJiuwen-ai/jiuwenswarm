@@ -14,6 +14,7 @@ from __future__ import annotations
 from functools import partial
 from typing import Any
 
+from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail
 from openjiuwen.harness.rails._multimodal import should_enable_read_image_multimodal
 
@@ -41,7 +42,7 @@ class OfficeToolsRail(AgentRail):
 
     def init(self, agent: Any) -> None:
         store = OfficeAssetStore()
-        client_tools = build_powerpoint_tools(partial(should_enable_read_image_multimodal, agent), store)
+        client_tools = build_powerpoint_tools(partial(_native_image_model, agent), store)
         self._client_tool_names = frozenset(tool.card.name for tool in client_tools)
         self._tools = [*client_tools, PublishPowerPointAssetTool(store), ListOpenDocumentsTool()]
         for tool in self._tools:
@@ -60,6 +61,11 @@ class OfficeToolsRail(AgentRail):
             return
         hidden = self._client_tool_names - _supported_tools(session_id_of(ctx.session))
         ctx.inputs.tools = [tool for tool in tools if _tool_name(tool) not in hidden]
+
+
+def _native_image_model(agent: Any) -> Model | None:
+    """The conversation's current model when it takes images, else ``None``; a model switch replaces it."""
+    return agent.deep_config.model if should_enable_read_image_multimodal(agent) else None
 
 
 def _supported_tools(session_id: str) -> frozenset[str]:
