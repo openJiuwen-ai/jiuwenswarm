@@ -30,26 +30,6 @@ const FALLBACK_BASES: Readonly<Record<keyof typeof SURFACE_GROUPS, RGB>> = {
   page: [245, 247, 249], side: [247, 248, 248], panel: [255, 255, 255], card: [255, 255, 255],
 };
 
-// Host containers that paint the shared card surface over large areas, and the inner layers that
-// would stack a second translucent layer on top. Popover containers stay nearly opaque.
-const WORKSPACE_CONTAINERS = ['.chat-workspace', '.app-page-body', '.page-content', '.settings-page'];
-const NESTED_CONTAINERS = [
-  '.chat-workspace .chat-layout__surface', '.app-page-body .page-content', '.settings-page .settings-page__main',
-];
-const FLOATING_SIDEBAR = '.conversation-sidebar.is-floating';
-const FLOATING_NAV = '.settings-page__nav.is-floating';
-const POPOVER_CONTAINERS = [
-  '.ui-dialog', '.ui-toast', '.form-drawer', '.asset-publish-drawer', '.code-mode-dialog', '.code-publish-dialog',
-  '.code-review__source-menu', '.auth-tip-portal', '.human-share-modal', '.perm-warning-modal',
-  '.chat-mode-select__menu', '.chat-skill-select__menu', '.chat-picker-panel', '.chat-swarmflow-config-panel',
-  '.chat-input-attachment-menu', '.chat-msg-file-more__menu', '.desktop-text-edit-context-menu', '.dropdown-menu',
-  '.agent-management-tag-picker__options', '.agent-management-upload-dialog', '.agent-management-selection-dialog',
-  '.agent-management-selection-filter__menu', '.settings-model-provider-select__menu', '.settings-model-name-field__menu',
-  '.settings-model-group-route-picker__menu', '.settings-model-group-route-picker__submenu',
-  '.designer-run-control__menu', '.designer-page__recent-menu', '.designer-node-toolbar__panel',
-  '.conversation-dialog__panel', '.conversation-path-dialog', '.app-restart-modal__panel', '.rsi-config-dialog__inner',
-];
-
 const ACCENT_ROOT = ':root[data-webui-appearance][data-theme][data-color-mode]';
 const TRANSLUCENT = "[data-webui-surface='translucent'][data-webui-background='active']";
 const TRANSLUCENT_ROOT = `:root[data-webui-appearance]${TRANSLUCENT}[data-theme][data-color-mode]`;
@@ -154,20 +134,20 @@ export function buildAppearanceCss(appearance: WebUIAppearance, bases: SurfaceBa
   if (Object.keys(variables).length) rules.push(block(ACCENT_ROOT, variables));
   if (appearance.surface === 'translucent') {
     const opacity = appearance.surfaceOpacity ?? DEFAULT_SURFACE_OPACITY;
-    const workspace = rgba(bases['--color-surface-card'] ?? FALLBACK_BASES.card, opacity * 0.7);
+    const card = bases['--color-surface-card'] ?? FALLBACK_BASES.card;
     const floating = bases['--color-sidebar-surface'] ?? FALLBACK_BASES.side;
-    const popover = bases['--color-surface-card'] ?? FALLBACK_BASES.card;
     rules.push(
-      block(TRANSLUCENT_ROOT, translucentVariables(opacity, bases)),
+      block(TRANSLUCENT_ROOT, {
+        ...translucentVariables(opacity, bases),
+        // Role variables of the theme: the workspace shows the background through one layer, floating layers
+        // stay readable over text and popovers stay nearly opaque. Components only consume these variables.
+        '--color-surface-workspace': rgba(card, opacity * 0.7),
+        '--color-surface-workspace-layer': 'transparent',
+        '--color-surface-floating': rgba(floating, 0.9),
+        '--effect-surface-floating-backdrop': 'blur(24px) saturate(1.3)',
+        '--color-surface-popover': rgba(card, 0.97),
+      }),
       `${scoped(['body', '#root'])}{background:transparent !important}`,
-      `${scoped(WORKSPACE_CONTAINERS)}{background-color:${workspace} !important}`,
-      `${scoped(NESTED_CONTAINERS)}{background-color:transparent !important}`,
-      // Floating layers sit over text: frosted sidebar, near-opaque menus and dialogs.
-      `${scoped([FLOATING_SIDEBAR])}{background-color:${rgba(floating, 0.86)} !important;isolation:isolate}`,
-      `${scoped([`${FLOATING_SIDEBAR}::before`])}{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;`
-        + '-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3)}',
-      `${scoped([FLOATING_NAV])}{background-color:${rgba(floating, 0.97)} !important}`,
-      `${scoped(POPOVER_CONTAINERS)}{background-color:${rgba(popover, 0.97)} !important}`,
     );
   }
   return rules.join('\n');

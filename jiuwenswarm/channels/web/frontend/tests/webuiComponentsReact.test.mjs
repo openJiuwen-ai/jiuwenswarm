@@ -3118,7 +3118,13 @@ test('translucent preset uses theme bases, concrete colors and only applies with
   for (const rule of css.split('\n')) {
     assert.match(rule, /\[data-webui-surface='translucent'\]\[data-webui-background='active'\]/, rule);
   }
-  assert.match(css, /\.ui-dialog[^{]*\{background-color:rgba\(250, 250, 250, 0\.97\) !important\}/);
+  // Only role variables of the theme are overridden; no component class appears in the sheet.
+  assert.match(css, /--color-surface-popover:rgba\(250, 250, 250, 0\.97\)/);
+  assert.match(css, /--color-surface-workspace:rgba\(250, 250, 250, 0\.56\)/);
+  assert.match(css, /--color-surface-workspace-layer:transparent/);
+  assert.match(css, /--color-surface-floating:rgba\(1, 2, 3, 0\.9\)/);
+  assert.match(css, /--effect-surface-floating-backdrop:blur\(24px\) saturate\(1\.3\)/);
+  assert.doesNotMatch(css.replace(/:root[^{]*\{/g, '{'), /\.[a-z][a-z0-9_-]*[\s,{]/, 'no business selectors');
   assert.match(buildAppearanceCss({ surface: 'translucent' }, bases), /rgba\(245, 247, 249, 0\.361\)/, 'default opacity 0.86');
 });
 
