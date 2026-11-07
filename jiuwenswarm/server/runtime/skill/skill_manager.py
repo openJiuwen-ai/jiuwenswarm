@@ -6838,6 +6838,29 @@ class SkillManager:
         return obj
 
     @staticmethod
+    def _sanitize_unicode(obj: Any) -> Any:
+        """合并 YAML 双引号标量里 ``\\uXXXX`` 解出的代理对，孤立代理替换为 U+FFFD.
+
+        PyYAML 按 UTF-16 码元逐个解码 ``"\\ud83e\\udd9e"``，得到两个孤立代理
+        码点而不是 🦞；这类字符串无法编码为 UTF-8，会让整个 skills.list 响应
+        在出口抛 UnicodeEncodeError。
+        """
+        if isinstance(obj, str):
+            if not any("\ud800" <= char <= "\udfff" for char in obj):
+                return obj
+            return obj.encode("utf-16-le", "surrogatepass").decode(
+                "utf-16-le", "replace"
+            )
+        if isinstance(obj, dict):
+            return {
+                SkillManager._sanitize_unicode(key): SkillManager._sanitize_unicode(value)
+                for key, value in obj.items()
+            }
+        if isinstance(obj, list):
+            return [SkillManager._sanitize_unicode(item) for item in obj]
+        return obj
+
+    @staticmethod
     def _parse_skill_md(path: Path) -> dict | None:
         from jiuwenswarm.runtime.kernel import KernelIdentity, ResourceKey, identity_reference, process_kernel
         try:
@@ -6880,7 +6903,9 @@ class SkillManager:
             try:
                 loaded = yaml.safe_load(fm_text)
                 if isinstance(loaded, dict):
-                    loaded = SkillManager._convert_yaml_date(loaded)
+                    loaded = SkillManager._sanitize_unicode(
+                        SkillManager._convert_yaml_date(loaded)
+                    )
                     meta = {str(k): v for k, v in loaded.items()}
                 else:
                     meta = {}
@@ -6939,7 +6964,9 @@ class SkillManager:
         if not fm_match:
             return {}
         try:
-            loaded = yaml.safe_load(fm_match.group(1))
+            loaded = SkillManager._sanitize_unicode(
+                yaml.safe_load(fm_match.group(1))
+            )
         except Exception:
             logger.warning("无法解析 skill_display.md: %s", path)
             return {}
