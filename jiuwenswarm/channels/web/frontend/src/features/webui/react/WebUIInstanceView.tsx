@@ -22,9 +22,13 @@ export interface WebUIInstanceViewProps {
   mountLeaseId?: number;
   styles?: WebUIStyleOverrides;
   selected?: boolean;
+  /** Keep the mounted components when a new frame arrives (see WebUIHostProps.keepMountedAcrossFrames). */
+  keepMountedAcrossFrames?: boolean;
 }
 
-export function WebUIInstanceView({ runtime, registry, instanceKey, mountLeaseId, styles, selected }: WebUIInstanceViewProps) {
+export function WebUIInstanceView({
+  runtime, registry, instanceKey, mountLeaseId, styles, selected, keepMountedAcrossFrames,
+}: WebUIInstanceViewProps) {
   useSyncExternalStore(
     (listener) => runtime.subscribeInstance(instanceKey, listener),
     () => runtime.getInstanceVersion(instanceKey),
@@ -52,6 +56,8 @@ export function WebUIInstanceView({ runtime, registry, instanceKey, mountLeaseId
     if (frame) visit(frame.tree);
     componentState.prune(nodes);
   }, [frame, componentState]);
+  // Each valid frame rebuilds the tree unless the host keeps it mounted for the instance's lifetime.
+  const mountKey = keepMountedAcrossFrames ? `lifetime:${instance?.lifetimeId ?? ''}` : instance?.localFrameId ?? 0;
   // Display acknowledgements do not rebuild an unchanged component tree.
   const renderedTree = useMemo(() => {
     if (!frame || !instance) return null;
@@ -73,11 +79,12 @@ export function WebUIInstanceView({ runtime, registry, instanceKey, mountLeaseId
             }
           },
         }}
-        renderGeneration={instance.localFrameId}
+        renderGeneration={mountKey}
         bindNode={(nodeKey) => runtime.bindNode(instanceKey, instance.localFrameId, nodeKey, mountLeaseId)}
       />
     );
-  }, [frame, registry, runtime, instanceKey, instance?.connected, instance?.localFrameId, mountLeaseId, componentState, styles, selected]);
+  }, [frame, registry, runtime, instanceKey, instance?.connected, instance?.localFrameId, mountLeaseId, componentState, styles,
+    selected, mountKey]);
   if (!instance || !clientFrameActive) {
     return null;
   }
@@ -104,7 +111,7 @@ export function WebUIInstanceView({ runtime, registry, instanceKey, mountLeaseId
 
   return (
     <WebUIInstanceErrorBoundary
-      key={generation}
+      key={mountKey}
       resetKey={generation}
       fallback={
         renderFailure ? (

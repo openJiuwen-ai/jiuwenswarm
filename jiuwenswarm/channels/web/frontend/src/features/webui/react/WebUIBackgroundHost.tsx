@@ -39,7 +39,8 @@ export function WebUIBackgroundHost({ runtime, registry }: WebUIBackgroundHostPr
   return (
     <div ref={makeInert} className="webui-background-host" data-testid="webui-background-host" aria-hidden="true">
       <MediaSurfacePolicyContext.Provider value={policy}>
-        <WebUIHost slotId={BACKGROUND_SLOT_ID} runtime={runtime} registry={registry}
+        {/* MediaSurface keeps the running page per src, so a dim or blur update only restyles it. */}
+        <WebUIHost slotId={BACKGROUND_SLOT_ID} runtime={runtime} registry={registry} keepMountedAcrossFrames
           className="webui-background-host__slot" instanceClassName="webui-background-host__instance" />
       </MediaSurfacePolicyContext.Provider>
     </div>

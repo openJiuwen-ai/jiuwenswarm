@@ -2515,6 +2515,44 @@ test('WebUIBackgroundHost mounts application.background below the UI and marks t
   }
 });
 
+test('background updates with the same page keep it running and only restyle it', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const changes = [];
+  const observer = new MutationObserver(() => changes.push(document.documentElement.getAttribute('data-webui-background')));
+  try {
+    await act(async () => root.render(createElement(WebUIBackgroundHost, { runtime, registry: componentRendererRegistry })));
+    const page = surfaceAsset('scene/index.html');
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: page, dim: 0.1 }), 1, backgroundScope)));
+    const first = container.querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.ok(first);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-webui-background'] });
+
+    // A slider drag re-renders the same page with new dim and blur values.
+    for (const [revision, dim, blur] of [[2, 0.2, 0], [3, 0.35, 4], [4, 0.5, 8]]) {
+      await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: page, dim, blur }), revision,
+        backgroundScope)));
+    }
+    const current = container.querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.equal(current === first, true, 'the running page is not reloaded');
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-dim"]').style.opacity, '0.5');
+    assert.equal(container.querySelector('.webui-media-surface__layer').style.filter, 'blur(8px)');
+    assert.deepEqual(changes, [], 'the document stays marked while the background updates');
+
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: surfaceAsset('other/index.html') }), 5,
+      backgroundScope)));
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-frame"]') === first, false, 'a new page loads anew');
+  } finally {
+    observer.disconnect();
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+  }
+});
+
 test('a new request context can replace the blocking entry without exposing the old view', async () => {
   const target = { scope: 'application', slot_id: 'application.entry', package_id: 'pkg.demo', instance_key: 'old' };
   const transport = createMockTransport();

@@ -2,6 +2,7 @@
  * 全局渲染器：接收一棵已规范化的 schema 树，按节点 component 查注册表并递归渲染。
  * 缺失适配器时抛错，由实例视图的错误边界把整棵实例树降级为失败态，不做部分展示。
  * 每次合法 replace 通过 renderGeneration 整树重建；组件可显式借助实例状态端口保留自己的交互值。
+ * 宿主可让 renderGeneration 在实例生命周期内保持不变（keepMountedAcrossFrames），新帧只更新属性。
  */
 
 import { Fragment, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';

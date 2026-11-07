@@ -209,6 +209,15 @@ HTML 页面的双向消息、错误回退与减少动态在 Chromium 157 无头�
 
 桌面端的处理方式：2026-11-07 决定维持应用当前的 autoplay 策略，写明限制，见第 9.2 节。
 
+2026-11-07 修订（隔离实例实测）：拖动主题背景的“背景暗化”“背景模糊”滑块时动态背景抽动，松手后仍持续数秒。
+无头 Chromium 中记录到：每一步都是同一 `src`、只改 `dim` 的新帧，而背景 iframe 每帧都被移除再创建，HTML 页面从头加载；
+25 步拖动产生 25 次重建，重载占住主线程，后面的滑块事件推迟到约 5 秒后才发出。原因在 WebUI 的整树重建契约：
+`WebUIInstanceView` 以帧号作为错误边界的 key，`SchemaRenderer` 以 `renderGeneration` 作为根 key，每个合法帧都重新挂载整棵树。
+`MediaSurface` 自己按 `src` 保留媒体，但上层的重新挂载使它失效。修订：`WebUIHost` 增加 `keepMountedAcrossFrames`，
+背景宿主启用后两处 key 取实例生命周期，错误边界仍按帧号复位；其他槽位不变（整树重建用于让 `defaultValue` 等非受控属性生效）。
+契约见 S_07 不变量 6；回归用例 `background updates with the same page keep it running and only restyle it` 在修复前失败。
+修复后同样的拖动只更新暗化层与模糊样式。
+
 ## 9. 风险与已知遗留
 
 ### 9.2 已知遗留

@@ -88,11 +88,14 @@
 3. HTML 内容固定在 `sandbox="allow-scripts"` 中运行，不含 `allow-same-origin`，插件不能覆盖。
 4. 背景容器不接收输入、不获得焦点、始终静音。视频由宿主强制静音；HTML 页面不获得 autoplay 委派，在浏览器中无法开始有声播放。桌面应用（Electron）当前的 autoplay 策略不要求用户手势，也不按 iframe 权限策略拦截，背景 HTML 若自行播放声音，宿主在桌面端不能阻止——背景页面不得发声，这一点由插件遵守（见 F_10 第 9.2 节）。
 5. 令牌在每次创建 iframe 时重新生成；旧 iframe 的消息不会影响新实例。
+6. 背景宿主（`application.background`）的实例在生命周期内跨帧保持挂载：新帧的 `src` 与 `kind` 不变时，正在运行的页面或视频
+   不重新加载，`dim`、`blur`、`opacity`、`fit`、`position` 只改变样式，文档根上的 `data-webui-background` 也不随之切换；`src` 或 `kind`
+   变化时按新内容创建。其他槽位仍按 WebUI 的整树重建契约处理每个合法帧。
 
 ## 5. 验证入口
 
 | 契约 | 用例 |
 | --- | --- |
 | 字段、根节点与槽位 | `test_gateway_ui_render.py`、`webuiGatewayCases.json`；前端 `test:webui-protocol`、`test:webui-components` |
-| 宿主行为与消息协议 | 前端 `test:webui-components`（`MediaSurface` 与背景宿主用例） |
+| 宿主行为与消息协议 | 前端 `test:webui-components`（`MediaSurface` 与背景宿主用例；跨帧保持挂载见 `background updates with the same page keep it running and only restyle it`） |
 | 包参与与 `ui.ready` 分派 | `test_gateway_application_assets.py` |
