@@ -29,9 +29,55 @@ from jiuwenswarm.server.dispatch import dispatch_with_context
 from jiuwenswarm.server.handlers._default import _handle_stream, _handle_unary
 from jiuwenswarm.server.handlers._shared import _request_query_text
 from jiuwenswarm.server.handlers.chat import _ensure_auto_team_binding_for_chat
-from jiuwenswarm.server.ws_send import send_wire_payload
 
 logger = logging.getLogger(__name__)
+
+
+def _persist_preflight_turn(
+    request: AgentRequest,
+    *,
+    exc: BaseException | None = None,
+) -> None:
+    """Keep a turn that aborted before the adapter persisted it.
+
+    Pre-flight steps (hook, table dispatch, auto team binding -- the last one
+    makes a live model call) run before the adapter, which is the only other
+    place the user turn reaches history. ``exc is None`` means the turn was
+    cancelled or the client went away: only the user record is written, because
+    neither is a model failure.
+
+    Sync only by design: the cancellation path must not await, and the history
+    writer is a non-blocking queue + metadata touch.
+
+    Best effort: the caller is already reporting the failure to the client, so a
+    persistence error here must never replace or mask it.
+    """
+    try:
+        from jiuwenswarm.server.runtime.agent_adapter.interface import (
+            record_failed_turn,
+            record_interrupted_turn,
+        )
+
+        written = (
+            record_interrupted_turn(request)
+            if exc is None
+            else record_failed_turn(request, exc)
+        )
+        if written:
+            server_logger.info(
+                "[AgentServer] pre-flight turn persisted to history: "
+                "request_id=%s session_id=%s outcome=%s",
+                request.request_id,
+                request.session_id,
+                "interrupted" if exc is None else type(exc).__name__,
+            )
+    except Exception as persist_exc:  # noqa: BLE001
+        server_logger.warning(
+            "[AgentServer] pre-flight history persist failed: "
+            "request_id=%s: %s",
+            request.request_id,
+            persist_exc,
+        )
 
 
 def _should_trigger_before_chat_request_hook(request: AgentRequest) -> bool:
@@ -92,6 +138,7 @@ async def dispatch_parsed_request(
             )
 
         _ext_token = lift_from_metadata(request.metadata)
+        hook_passed = False
         try:
             if request.channel_id == "acp" and request.req_method != ReqMethod.INITIALIZE:
                 metadata = dict(request.metadata or {})
@@ -103,6 +150,9 @@ async def dispatch_parsed_request(
                 request.metadata = metadata
 
             await _trigger_before_chat_request_hook(request)
+            # Hook rejections are policy decisions, not failed chat turns: the
+            # content must not reach history when a hook blocked it.
+            hook_passed = True
 
             # 表驱动分发dispatch.py：命中即返回；未命中落到下方默认路径agent去调用。
             if await dispatch_with_context(ctx, request):
@@ -128,8 +178,15 @@ async def dispatch_parsed_request(
                 request.request_id,
                 request.session_id,
             )
+            # 取消常发生在前置步骤（建队命名是 live LLM 调用，最长 45s）；
+            # 不补写就留下一个"刷新即空"的会话，而这正是本次修复的场景。
+            # 这里是同步写、不 await，已取消的任务也能安全入队。
+            if hook_passed:
+                _persist_preflight_turn(request)
             raise
         except WebSocketConnectionClosed as e:
+            if hook_passed:
+                _persist_preflight_turn(request)
             logger.info(
                 "[AgentWebSocketServer] WebSocket 已关闭，放弃请求回包: %s",
                 format_ws_diagnostics(
@@ -144,7 +201,9 @@ async def dispatch_parsed_request(
                 ),
             )
         except Exception as e:
-            logger.exception(
+            if hook_passed:
+                _persist_preflight_turn(request, exc=e)
+            server_logger.exception(
                 "[AgentWebSocketServer] 处理请求失败: request_id=%s: %s",
                 request.request_id,
                 e,

@@ -7,9 +7,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from weakref import WeakValueDictionary
 
-from jiuwenswarm.common.config import get_config
+from openjiuwen.core.common.logging import server_logger
+
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
@@ -31,7 +31,10 @@ from jiuwenswarm.server.handlers._shared import (
     resolve_agent_request_mode,
     resolve_request_project_dir,
 )
-from jiuwenswarm.server.handlers.team import _create_generated_team_binding
+from jiuwenswarm.server.handlers.team import (
+    _create_fallback_team_binding,
+    _create_generated_team_binding,
+)
 from jiuwenswarm.server.utils.utils import is_team_params
 
 logger = logging.getLogger(__name__)
@@ -430,9 +433,6 @@ async def handle_chat_cancel_dispatch(ctx: RequestContext) -> None:
                 await ctx.sink.send_wire(wire)
 
 
-#: 按 session 串行化自动建队。弱引用持有，一次性会话不累积进程级状态。
-
-
 # chat.send的自动team绑定
 async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any | None:
     """Create and bind a team before the first team chat without consuming its query."""
@@ -494,13 +494,39 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
                 params.setdefault("team_template_id", template_id)
             return existing_team_name
 
+        from jiuwenswarm.agents.harness.team import TeamNameGenerationError
         from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
         from jiuwenswarm.server.runtime.team_entity_store import get_team_entity_store
 
-        binding, _template = await _create_generated_team_binding(
-            description=query,
-            config_base=_effective_config_for_request(request),
-        )
+        config_base = _effective_config_for_request(request)
+        try:
+            binding, _template = await _create_generated_team_binding(
+                description=query,
+                config_base=config_base,
+            )
+        except TeamNameGenerationError as exc:
+            if exc.reason == TeamNameGenerationError.REASON_CONFIG:
+                # 缺 model / 缺 model_name 属于部署配置问题：用兜底名继续跑，
+                # 只会把最需要被看见的错误变成一串无意义的 hash 团队名。
+                raise
+            # Naming is cosmetic; the first user turn is not. Without a binding this
+            # chat is dropped before the turn is persisted, leaving a session that
+            # reopens empty and fails identically on every later message.
+            #
+            # Only transient naming failures degrade; template/store errors keep
+            # propagating so a genuinely broken team config stays visible.
+            server_logger.warning(
+                "[AgentWebSocketServer] auto team naming degraded: "
+                "session_id=%s reason=%s error=%s",
+                session_id,
+                exc.reason,
+                exc,
+                exc_info=True,
+            )
+            binding, _template = _create_fallback_team_binding(
+                session_id=session_id,
+                config_base=config_base,
+            )
         binding_store = get_team_binding_store()
         entity_store = get_team_entity_store()
         try:
