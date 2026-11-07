@@ -410,3 +410,43 @@ async def test_auto_advance_uses_latest_plan_and_refuses_old_work(env):
     before = path.read_bytes()
     await rail._auto_advance_pending_to_in_progress(ctx, task_id="B")
     assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_flash_unified_update_errors_preserve_file_and_allow_valid_batch(env):
+    from openjiuwen.harness.tools.todo import TodoListTool
+
+    from jiuwenswarm.agents.harness.flash.tools.flash_todo import UnifiedTodoTool
+
+    creator, modifier, session, path = env
+    listing = TodoListTool(SimpleNamespace(fs=lambda: modifier.fs), creator.workspace)
+    unified = UnifiedTodoTool({"create": creator, "modify": modifier, "list": listing}, "cn")
+    await unified.invoke({"action": "create", "tasks": [
+        {"id": "env", "content": "Prepare"}, {"id": "build", "content": "Build"},
+    ]}, session=session)
+    before = path.read_bytes()
+    plan_id = json.loads(before)["plan_id"]
+
+    malformed = await unified.invoke(
+        {"action": "modify", "modify_action": "update", "id": "env", "status": "completed"}, session=session
+    )
+    assert malformed.success is False
+    assert '"todos":[{"id":"env"' in malformed.error
+    assert path.read_bytes() == before
+
+    conflict = await unified.invoke({"action": "modify", "modify_action": "update", "todos": [
+        {"id": "build", "status": "in_progress"},
+    ]}, session=session)
+    assert conflict.success is False
+    assert "Current in_progress task IDs: ['env']" in conflict.error
+    assert "not committed" in conflict.error
+    assert path.read_bytes() == before
+
+    await unified.invoke({"action": "modify", "modify_action": "update", "todos": [
+        {"id": "env", "status": "completed"}, {"id": "build", "status": "in_progress"},
+    ]}, session=session)
+    saved = json.loads(path.read_text())
+    assert saved["plan_id"] == plan_id and saved["revision"] == 2
+    assert [(row["id"], row["status"]) for row in saved["todos"]] == [
+        ("env", "completed"), ("build", "in_progress"),
+    ]

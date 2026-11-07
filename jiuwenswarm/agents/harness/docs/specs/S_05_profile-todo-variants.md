@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_05 |
 | 状态 | 当前实现的真实描述（含未装配遗留的登记） |
-| 修订日期 | 2026-10-28 |
+| 修订日期 | 2026-11-06 |
 | 关联模块 | `jiuwenswarm/agents/harness/code/rails/code_task_planning_rail.py`（code 侧装配 rail，~290 行）<br>`jiuwenswarm/agents/harness/code/tools/code_todo_tools.py`（四子类，115 行）<br>`jiuwenswarm/agents/harness/code/prompt/code_todo_tool_prompts.py`（CC 对齐描述与 schema，174 行）<br>`jiuwenswarm/agents/harness/flash/tools/flash_todo.py`（UnifiedTodoTool 4 合 1，222 行）<br>`jiuwenswarm/agents/harness/flash/rails/flash_todo_rail.py`（flash 侧挂载 rail，310 行）<br>`jiuwenswarm/agents/harness/flash/permissions/tool_policy_projection.py`（统一名权限投影，~95-126）<br>`jiuwenswarm/agents/harness/common/tools/todo_compat.py`（openjiuwen 兼容 shim + 持久提醒，404 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_resume.py`（持久提醒 / 代际 token / 续跑词汇层，476 行）<br>`jiuwenswarm/agents/harness/common/tools/user_todo_tool.py`（用户个人待办，400 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_toolkits.py`（markdown 行式工具链，**未装配遗留**，367 行） |
 | 装配点 | code：`server/runtime/agent_adapter/interface_code.py` `_build_code_task_planning_rail()`（~885）+ `agents/swarm/providers/code_rails.py`（~434，swarm 编排路径）<br>flash：`server/runtime/agent_adapter/interface_flash.py` `_build_task_planning_rail()`（~994，替换 stock `TaskPlanningRail` 的 4→1 位点）<br>compat：`interface_deep.py` 模块级 `install_todo_modify_compat_patch()`（~744，import 时执行，详见 [[S_01]]）<br>user_todos：`interface_code.py` 工具构建映射 `"user_todos" → _build_user_todos_tool`（~309/~1593）+ `agents/swarm/providers/tools.py` `build_user_todos`（~565）+ `resources/config*.yaml` 三份的工具清单 |
 | 消费点 | 前端 `channels/web/frontend/src/utils/toolProtocol.ts`（工具名白名单 + `todo_` 前缀兜底）、`AvatarPermEditor.tsx`（权限编辑器列五个历史名）、subagent 展示层（`includes('todo')` 宽匹配） |
@@ -67,7 +67,9 @@ init 建四个 openjiuwen 引擎实例（create/list/get/modify，共享**单个
 权限面 `project_operations("todo", args)`：先校验 `action ∈ {create, list, get, modify}`（非法 raise），产出引擎名操作 `todo_{action}`；modify 再校验 `modify_action ∈ {update, append, delete, cancel, insert_before, insert_after}` 并产出 `todo_modify`，同时**追加历史 fallback 名**——append/insert_* → `todo_insert`，delete/cancel → `todo_remove`，update 且含 completed 条目 → `todo_complete`。旧权限配置（`config.yaml` 三份、前端 `AvatarPermEditor` 五历史名）与新统一名都能匹配。
 
 **N12 参数错误返回结构化 ToolOutput，不 raise**
-未知 action、modify 缺 id 等参数错误返回带错误文案的 ToolOutput——flash 工具面约定（与 `flash_read_tool` / `flash_glob_tool` 的"整包一次性产出、不走增量流式"同族）。权限投影层（N11）的非法值才 raise（那是调用方 bug，不是模型输入）。
+未知 action、get 缺 id 等参数错误返回带错误文案的 ToolOutput——flash 工具面约定（与 `flash_read_tool` / `flash_glob_tool` 的"整包一次性产出、不走增量流式"同族）。权限投影层（N11）的非法值才 raise（那是调用方 bug，不是模型输入）。
+
+modify 的 update/append 必须提供 `todos` 数组，单项修改也使用数组；顶层 id/status 不替代它。工具描述和 schema 的条目属性说明该形状，运行时缺数组时返回正确示例，不调用引擎。仅对“多个进行中任务”校验错误，补充可读取的当前进行中 ID 和未提交说明；不自动改状态，其他引擎异常沿原路径传播。字段及权限投影规则保持既有约定。
 
 ### 2.3 common 支线一：兼容 shim 与持久提醒（todo_compat + todo_resume）
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 
+from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.tool.base import Tool, ToolCard
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
@@ -52,7 +53,9 @@ def _unified_todo_description(language: str) -> str:
             "- list: list all active (non-completed, non-cancelled) tasks with id/content/status.\n"
             "- get: fetch one task's full record (content/description/status) by `id`.\n"
             "- modify: mutate tasks; pass `modify_action` to select the operation:\n"
-            "    update (batch field updates — send ONLY changed fields, usually id + status),\n"
+            "    update (requires `todos`: [{id, ...changed fields}], e.g. "
+            "{action: modify, modify_action: update, todos: [{id: env, status: completed}]}), "
+            "not top-level id/status,\n"
             "    delete / cancel (pass `ids`: list of task ids),\n"
             "    append (add `todos` to the end),\n"
             "    insert_before / insert_after (pass `todo_data`: {target_id, items}).\n"
@@ -74,7 +77,9 @@ def _unified_todo_description(language: str) -> str:
         "- list：列出全部未完成（非 completed/cancelled）任务的 id/content/status 概要。\n"
         "- get：按 id 查询单个任务的完整记录（content/description/status）。\n"
         "- modify：修改任务，用 modify_action 指定操作：\n"
-        "    update（批量更新字段——只传变化字段，通常仅 id + status）、\n"
+        "    update（必传 todos 数组，每项为 id + 变化字段，例如 "
+        "{action: modify, modify_action: update, todos: [{id: env, status: completed}]}；"
+        "不能把 id/status 放在顶层）、\n"
         "    delete / cancel（传 ids：任务 ID 列表）、\n"
         "    append（传 todos：追加到末尾）、\n"
         "    insert_before / insert_after（传 todo_data：{target_id, items}，插到目标任务前/后）。\n"
@@ -131,10 +136,22 @@ def _unified_todo_input_params(language: str) -> dict:
             },
             "todos": {
                 "type": "array",
-                "items": {"type": "object"},
+                "items": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {
+                        "id": {"type": "string"},
+                        "status": {"type": "string"},
+                        "content": {"type": "string"},
+                        "activeForm": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                },
                 "description": d(
-                    "modify_action=update/append 时：任务数据数组（update 只传变化字段）",
-                    "for modify_action=update/append: task data array (update: changed fields only)",
+                    "modify_action=update/append 必填，单项更新也必须使用数组；"
+                    "update 示例 [{id: env, status: completed}, {id: build, status: in_progress}]",
+                    "required for modify_action=update/append, including a single update; "
+                    "example [{id: env, status: completed}, {id: build, status: in_progress}]",
                 ),
             },
             "ids": {
@@ -207,11 +224,37 @@ class UnifiedTodoTool(Tool):
                 return ToolOutput(
                     success=False, error="'modify_action' is required for action=modify"
                 )
+            if modify_action in ("update", "append") and not isinstance(data.get("todos"), list):
+                return ToolOutput(
+                    success=False,
+                    error="'todos' must be an array, including for a single task. "
+                    'Update example: {"action":"modify","modify_action":"update",'
+                    '"todos":[{"id":"env","status":"completed"}]}; '
+                    "for append, include id/content/status in each item. "
+                    "Top-level id/status does not update a task.",
+                )
             inner = {"action": modify_action}
             for key in ("todos", "ids", "todo_data"):
                 if data.get(key) is not None:
                     inner[key] = data[key]
-            return await self._engines["modify"].invoke(inner, **kwargs)
+            try:
+                return await self._engines["modify"].invoke(inner, **kwargs)
+            except BaseError as exc:
+                if "More than one task is marked as 'in_progress'" not in str(exc):
+                    raise
+                hint = ""
+                try:
+                    listing = await self._engines["list"].invoke({}, **kwargs)
+                    active = [row["id"] for row in listing["tasks"] if row.get("status") == "in_progress"]
+                    hint = f" Current in_progress task IDs: {active}."
+                except Exception:
+                    logger.debug("Could not read active tasks for Todo validation feedback", exc_info=True)
+                return ToolOutput(
+                    success=False,
+                    error=f"{exc}.{hint} The update was not committed. Complete the current task "
+                    "only if its work is done, then start the next task in the same todos array; "
+                    "do not assume a failed update changed task status.",
+                )
 
         return ToolOutput(success=False, error=f"unsupported todo action: {action!r}")
 
