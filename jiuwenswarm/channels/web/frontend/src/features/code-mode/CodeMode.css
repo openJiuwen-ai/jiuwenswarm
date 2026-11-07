@@ -76,14 +76,20 @@
   margin-left: auto;
 }
 
-.code-branch--environment .code-branch__menu,
-.code-branch--environment .code-branch__error {
+.code-branch--environment .code-branch__menu {
   top: auto;
   bottom: calc(100% + 7px);
 }
 
 .code-branch--environment .code-branch__menu {
   width: min(286px, calc(var(--tool-panel-width) - 32px));
+}
+
+.code-branch--environment .code-branch__error {
+  position: static;
+  width: 100%;
+  margin: 2px 0 6px;
+  line-height: 18px;
 }
 
 .code-branch__chevron {
