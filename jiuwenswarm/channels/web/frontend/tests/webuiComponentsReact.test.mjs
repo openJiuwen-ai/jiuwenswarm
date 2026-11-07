@@ -3690,6 +3690,29 @@ test('Extensions settings lists splash providers and saves order, switches and r
   }
 });
 
+test('Extensions settings reports a failed save and keeps the previous state', async () => {
+  const state = { customized: false, providers: [
+    { package_id: 'pkg.a', title: 'Aurora', skippable: true, max_duration_ms: 9500, enabled: true },
+  ] };
+  const services = settingsRequest((method) => {
+    if (method === 'webui.splash.settings.update') throw Object.assign(new Error('write failed'), { code: 'SETTINGS_WRITE_FAILED' });
+    return state;
+  });
+  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
+    request: services.request }, createElement(SplashProviderSettings, { disabled: false })));
+  const toggle = () => view.container.querySelector('[data-testid="settings-extensions-splash-switch"]');
+  try {
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-save-error"]'), null);
+    await act(async () => toggle().click());
+    await act(async () => settle());
+    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { disabled: ['pkg.a'] }]);
+    assert.ok(view.container.querySelector('[data-testid="settings-extensions-splash-save-error"]'));
+    assert.equal(toggle().getAttribute('aria-checked'), 'true', 'the switch shows the state that is still saved');
+  } finally {
+    await view.unmount();
+  }
+});
+
 test('Extensions settings shows localized plugin names in the interface language', async () => {
   const services = settingsRequest(() => ({ customized: false, providers: [
     { package_id: 'pkg.l', title: { zh: '主题背景', en: 'Theme background' }, skippable: true, max_duration_ms: 9500,

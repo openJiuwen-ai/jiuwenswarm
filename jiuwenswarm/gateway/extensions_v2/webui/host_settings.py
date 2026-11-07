@@ -33,6 +33,7 @@ METHOD_SPLASH_UPDATE = "webui.splash.settings.update"
 METHOD_UPLOAD_BEGIN = "webui.upload.begin"
 HOST_METHODS = frozenset({METHOD_SETTINGS_PAGES, METHOD_SPLASH_SETTINGS, METHOD_SPLASH_UPDATE, METHOD_UPLOAD_BEGIN})
 CODE_BAD_REQUEST = "BAD_REQUEST"
+CODE_SETTINGS_WRITE_FAILED = "SETTINGS_WRITE_FAILED"
 
 
 class HostRequestError(ValueError):
@@ -80,17 +81,26 @@ class SplashPreferences:
             return
         self.installed, self.order, self.disabled = installed, order, disabled
 
-    def _save(self) -> None:
+    def _write(self, installed: list[str], order: list[str] | None, disabled: list[str]) -> None:
+        """Replace the saved record atomically; raises ``OSError`` and leaves the old file on failure."""
         directory = self.path.parent
+        if directory.is_symlink():
+            raise OSError("host settings directory must not be a symlink")
+        directory.mkdir(parents=True, exist_ok=True)
+        temporary = directory / f".{SPLASH_FILE}.{uuid4().hex}.tmp"
         try:
-            if directory.is_symlink():
-                raise OSError("host settings directory must not be a symlink")
-            directory.mkdir(parents=True, exist_ok=True)
-            temporary = directory / f".{SPLASH_FILE}.{uuid4().hex}.tmp"
             temporary.write_text(json.dumps({
-                "version": 1, "installed": self.installed, "order": self.order, "disabled": self.disabled,
+                "version": 1, "installed": installed, "order": order, "disabled": disabled,
             }, ensure_ascii=False), encoding="utf-8")
             os.replace(temporary, self.path)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
+
+    def _save(self) -> None:
+        """Persist bookkeeping that is not a user choice; a failure is logged and retried by the next write."""
+        try:
+            self._write(self.installed, self.order, self.disabled)
         except OSError as exc:
             logger.warning("[GatewayExtensions] cannot save splash preferences %s: %s", self.path, exc)
 
@@ -141,9 +151,15 @@ class SplashPreferences:
             # Inactive packages keep their record until they are uninstalled.
             disabled = [item for item in self.disabled if item not in active] + chosen
         newly = set(disabled) - set(self.disabled)
-        self.order = list(order) if order is not None else None
-        self.disabled = list(disabled)
-        self._save()
+        order = list(order) if order is not None else None
+        disabled = list(disabled)
+        # A user choice counts only once it is saved; on failure the previous state stays in effect.
+        try:
+            self._write(self.installed, order, disabled)
+        except OSError as exc:
+            logger.warning("[GatewayExtensions] cannot save splash preferences %s: %s", self.path, exc)
+            raise HostRequestError(CODE_SETTINGS_WRITE_FAILED, "splash settings could not be saved") from exc
+        self.order, self.disabled = order, disabled
         return newly
 
 

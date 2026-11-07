@@ -229,6 +229,44 @@ async def test_unreadable_preferences_count_as_empty(tmp_path, monkeypatch):
         await runtime.shutdown()
 
 
+async def test_a_failed_save_keeps_the_previous_splash_settings(tmp_path, monkeypatch):
+    """A choice that cannot be written is refused, and neither memory nor the file changes."""
+    packages = [Package(f"test.p{index}") for index in (1, 2)]
+    runtime = await _start(tmp_path)
+    saved = tmp_path / "data" / "host" / "splash.json"
+    try:
+        for package in packages:
+            runtime.publish(package.loaded(tmp_path / package.package_id))
+        before = saved.read_text(encoding="utf-8")
+
+        def refuse(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(host_settings.os, "replace", refuse)
+        for params in ({"disabled": ["test.p1"]}, {"order": ["test.p2", "test.p1"]}):
+            _, response = await _call(runtime, "webui.splash.settings.update", params)
+            assert response["ok"] is False and response["code"] == "SETTINGS_WRITE_FAILED", params
+        _, response = await _call(runtime, "webui.splash.settings")
+        assert [(item["package_id"], item["enabled"]) for item in response["payload"]["providers"]] == [
+            ("test.p1", True), ("test.p2", True)]
+        assert response["payload"]["customized"] is False
+        assert saved.read_text(encoding="utf-8") == before
+        assert list(saved.parent.glob(".*.tmp")) == []
+        monkeypatch.undo()
+        _, response = await _call(runtime, "webui.splash.settings.update", {"disabled": ["test.p1"]})
+        assert response["ok"] is True
+    finally:
+        await runtime.shutdown()
+    restarted = await _start(tmp_path)
+    try:
+        for package in packages:
+            restarted.publish(package.loaded(tmp_path / package.package_id))
+        _, response = await _call(restarted, "webui.splash.settings")
+        assert [item["enabled"] for item in response["payload"]["providers"]] == [False, True]
+    finally:
+        await restarted.shutdown()
+
+
 async def test_disabling_a_playing_splash_closes_it_once(tmp_path):
     provider, other = Package("test.play"), Package("test.other")
     runtime = await _start(tmp_path)
