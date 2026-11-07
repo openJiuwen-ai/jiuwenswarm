@@ -161,6 +161,13 @@ export interface AskUserQuestionPayload {
   planApprovalKind?: string;
   planContent?: string;
   planLanguage?: 'cn' | 'en';
+  /** SwarmFlow 人工节点提问元数据（树/图视图点击 waiting_for_human 时注入） */
+  swarmflowMeta?: {
+    run_id: string;
+    correlation_id?: string;
+    agent_id?: string;
+    agent_name?: string;
+  };
 }
 
 /**

@@ -31,6 +31,7 @@ import { GoalCompletedCard } from '../GoalBar/GoalCompletedCard';
 import { isGoalCompletedContent } from '../GoalBar/goalCompletedMessage';
 import { a2uiContentToText } from '../../features/a2ui/a2uiContent';
 import { formatTimestamp, onTtsStop, sanitizeTtsText } from '../../utils';
+import { stripSwarmflowAdvisory } from '../../utils/swarmflowAdvisory';
 import { useSpeechSynthesis } from '../../hooks';
 import clsx from 'clsx';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
@@ -330,7 +331,7 @@ export const MessageItem = memo(function MessageItem({
 
   const handleCopy = useCallback(async () => {
     if (!content) return;
-    const raw = role === 'user' ? stripUploadDocumentBlocks(content) : content;
+    const raw = role === 'user' ? stripUploadDocumentBlocks(stripSwarmflowAdvisory(content)) : content;
     if (!raw) return;
     const copyContent = a2uiContentToText(raw) || raw;
     try {
@@ -551,7 +552,7 @@ export const MessageItem = memo(function MessageItem({
 
   // 用户/助手消息
   const isUser = role === 'user';
-  const displayContent = isUser ? stripUploadDocumentBlocks(content) : content;
+  const displayContent = isUser ? stripSwarmflowAdvisory(stripUploadDocumentBlocks(content)) : content;
   const showTTS = Boolean(
     !isUser && !isStreaming && content && (ttsSupported || audioBase64)
   );
