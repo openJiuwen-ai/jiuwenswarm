@@ -171,10 +171,11 @@ class UserTurn:
         tz_name, tz = self._resolve_timezone()
         envelope: dict[str, Any] = {"source": "system" if is_system else prompt_channel}
         prepared_current_date = self._prepared_context("currentDate")
-        if self.prepared_contexts is None:
-            envelope["timestamp"] = _render_timestamp(datetime.now(tz), tz_name)
-        elif prepared_current_date is not None:
-            envelope["timestamp"] = prepared_current_date.text
+        envelope["timestamp"] = (
+            prepared_current_date.text
+            if prepared_current_date is not None and prepared_current_date.text.strip()
+            else _render_timestamp(datetime.now(tz), tz_name)
+        )
         envelope.update(
             {
                 "preferred_response_language": self.language,

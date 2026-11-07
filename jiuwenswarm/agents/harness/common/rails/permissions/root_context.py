@@ -416,7 +416,9 @@ _REQUIRED_ENVELOPE_KEYS = frozenset(
         "origin_kind",
     }
 )
-_OPTIONAL_ENVELOPE_KEYS = frozenset({"skills_to_use", "trusted_dirs", "timezone"})
+_OPTIONAL_ENVELOPE_KEYS = frozenset(
+    {"prompt_context", "skills_to_use", "trusted_dirs", "timezone"}
+)
 
 
 def extract_permission_user_content(rendered_prompt: Any) -> str | None:
