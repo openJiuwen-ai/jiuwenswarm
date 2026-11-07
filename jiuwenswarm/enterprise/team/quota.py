@@ -43,6 +43,7 @@ KIND_REQUESTED_TEAM_SIZE = "requested_team_size"
 STATUS_RELEASED = "released"
 
 LEASE_TTL_SEC = 60.0
+HOLD_REFRESH_INTERVAL_SEC = 5 * 60
 FEATURE_ENABLED_ENV = "TEAM_QUOTA_ENABLED"
 
 QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
@@ -572,6 +573,43 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                         "now": now,
                         "kind": KIND_TEAM_CREATE,
                         "key": key,
+                    },
+                )
+
+            await run_tx(actor.handler, _tx)
+
+        actor.call(_op)
+
+    def hold_reserved_create(self, session_id: str) -> None:
+        """Keep a chat reservation occupying until the resident stream ends.
+
+        Only a still-reserved team_create row is touched. Clearing ``expires_at``
+        stops the 60s TTL from dropping it before ``team.runtime_ready``.
+        A committed lease is left alone, and no team entity is inserted.
+        """
+        sid = _clean(session_id)
+        if not sid or not self._use_mysql():
+            return
+        from sqlalchemy import text
+
+        from jiuwenswarm.infrastructure.db.team_mysql_actor import run_tx
+
+        key = team_create_key(sid)
+        now = _now()
+        actor = self._mysql()
+
+        async def _op() -> None:
+            async def _tx(conn: Any) -> None:
+                await conn.execute(
+                    text(
+                        "UPDATE team_quota_lease SET expires_at=NULL, updated_at=:now "
+                        "WHERE kind=:kind AND idempotency_key=:key AND status=:res"
+                    ),
+                    {
+                        "now": now,
+                        "kind": KIND_TEAM_CREATE,
+                        "key": key,
+                        "res": STATUS_RESERVED,
                     },
                 )
 

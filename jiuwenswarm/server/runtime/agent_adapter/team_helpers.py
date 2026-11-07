@@ -2613,6 +2613,67 @@ async def _release_team_create_off_loop(lease: Any) -> None:
     await run_team_store(_release_uncommitted_team_create, lease)
 
 
+def _release_uncommitted_session_team_create(session_id: str) -> None:
+    """Release a chat reservation that is still reserved when its stream ends."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not is_enterprise():
+        return
+    from jiuwenswarm.enterprise.team.quota import get_team_quota_service
+
+    get_team_quota_service().release_reserved_create(sid)
+
+
+async def _release_stream_team_create(session_id: str) -> None:
+    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+
+    await run_team_store(_release_uncommitted_session_team_create, session_id)
+
+
+def _hold_uncommitted_team_create(session_id: str) -> None:
+    """Keep a still-reserved chat lease occupying while its stream is alive."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not is_enterprise():
+        return
+    from jiuwenswarm.enterprise.team.quota import get_team_quota_service
+
+    get_team_quota_service().hold_reserved_create(sid)
+
+
+async def _hold_team_create_off_loop(session_id: str) -> None:
+    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+
+    await run_team_store(_hold_uncommitted_team_create, session_id)
+
+
+async def _refresh_team_create_hold(session_id: str) -> None:
+    """Refresh a held team-create reservation until this stream task ends.
+
+    The first wait is the full interval. A committed lease matches no row.
+    """
+    from jiuwenswarm.enterprise.team.quota import HOLD_REFRESH_INTERVAL_SEC
+
+    while True:
+        await asyncio.sleep(HOLD_REFRESH_INTERVAL_SEC)
+        try:
+            await _hold_team_create_off_loop(session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug(
+                "[TeamHelpers] team-create hold refresh failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+
 async def _apply_enterprise_runtime_ready_hooks(
     *,
     channel_id: str | None,
@@ -4497,6 +4558,7 @@ async def _process_team_message_stream(
             await _release_team_create_off_loop(enterprise_create_lease)
             return
 
+    stream_kept_lease = False
     try:
         first_request_source = "first"
         if not is_first_request:
@@ -4905,6 +4967,10 @@ async def _process_team_message_stream(
                 raise
             await startup.aclose()
             await _finish_round_submission(accepted=True)
+            if enterprise_create_lease is not None:
+                # 流任务已经接过这次建队。预留跟着流走，这次 HTTP 结束不再释放。
+                stream_kept_lease = True
+                await _hold_team_create_off_loop(session_id)
             if session_live_queue is not None:
                 # 提交已经进 runner。拆掉这次 HTTP 对队列的引用，
                 # finally 才不会把会话等待者一起摘掉。
@@ -5107,7 +5173,8 @@ async def _process_team_message_stream(
         _schedule_unstarted_organization_close(session_id, recorded_organization_plan_id)
         raise
     finally:
-        await _release_team_create_off_loop(enterprise_create_lease)
+        if not stream_kept_lease:
+            await _release_team_create_off_loop(enterprise_create_lease)
         if request_queue is not None:
             _remove_team_waiter(
                 team_manager,
@@ -5329,7 +5396,12 @@ async def _consume_stream_with_query(
                 exc_info=True,
             )
 
+    hold_refresh_task: asyncio.Task | None = None
     try:
+        hold_refresh_task = asyncio.create_task(
+            _refresh_team_create_hold(session_id),
+            name="team-create-hold-refresh",
+        )
         logger.info(
             "[TeamHelpers] stream started: source=stream_started is_processing=True "
             "channel_id=%s session_id=%s round_id=%s",
@@ -5981,6 +6053,20 @@ async def _consume_stream_with_query(
                 session_id,
                 generation=generation,
             )
+            if hold_refresh_task is not None:
+                hold_refresh_task.cancel()
+                try:
+                    await hold_refresh_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            try:
+                await _release_stream_team_create(session_id)
+            except Exception:
+                logger.debug(
+                    "[TeamHelpers] stream end team-create release failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
 
 
 async def _consume_monitor_events(

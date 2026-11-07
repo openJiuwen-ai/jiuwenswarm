@@ -1325,3 +1325,59 @@ def test_mysql_reserve_counts_extra_teams_before_the_actor_transaction(monkeypat
     assert calls["n"] == 1
     assert seen["thread"] is not None
     assert seen["thread"] is not thread
+
+
+def test_hold_reserved_create_clears_expiry_without_inserting_an_entity(monkeypatch) -> None:
+    import threading
+
+    statements: list[tuple[str, dict]] = []
+
+    class _Conn:
+        async def execute(self, sql, params=None):
+            statements.append((str(sql), dict(params or {})))
+
+    class _Begin:
+        async def __aenter__(self):
+            return _Conn()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _Engine:
+        def begin(self):
+            return _Begin()
+
+    class _Handler:
+        def get_engine(self):
+            return _Engine()
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, name="fake-team-hold", daemon=True)
+    thread.start()
+
+    class _Actor:
+        handler = _Handler()
+
+        def call(self, coro_fn):
+            fut = asyncio.run_coroutine_threadsafe(coro_fn(), loop)
+            return fut.result(timeout=2)
+
+    svc = TeamQuotaService()
+    monkeypatch.setattr(svc, "_use_mysql", lambda: True)
+    monkeypatch.setattr(svc, "_mysql", lambda: _Actor())
+    try:
+        svc.hold_reserved_create("sess-hold")
+        svc.hold_reserved_create("  ")
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+
+    assert len(statements) == 1
+    sql, params = statements[0]
+    assert "UPDATE team_quota_lease SET expires_at=NULL" in sql
+    assert "status=:res" in sql
+    assert "team_entity" not in sql
+    assert "INSERT" not in sql
+    assert params["res"] == STATUS_RESERVED
+    assert params["kind"] == KIND_TEAM_CREATE
+    assert params["key"] == "session:sess-hold"
