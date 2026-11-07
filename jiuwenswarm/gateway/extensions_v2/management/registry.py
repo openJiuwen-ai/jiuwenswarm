@@ -247,11 +247,11 @@ class GatewayPackageManager:
     async def _switch(self, package) -> None:
         """Replace the running version by ``package``, or leave it running (S_01 section 3.2).
 
-        Preparing validates the new version and registers its handlers inert; it does not
-        await, so a failure there changes nothing. Closing the running splash is the commit
-        point: it already changes what browsers show, so from there the switch runs to its
-        end (commit, or abort when the runtime stopped) even if the caller is cancelled,
-        and the cancellation is raised afterwards.
+        Preparing validates the new version and checks that its handlers can be registered;
+        it does not await, so a failure there changes nothing. Closing the running splash is
+        the commit point: it already changes what browsers show, so from there the switch
+        runs to its end (commit, or abort when the commit fails or the runtime stopped) even
+        if the caller is cancelled, and the cancellation is raised afterwards.
         """
 
         prepared = self._runtime.prepare(package)
@@ -260,10 +260,6 @@ class GatewayPackageManager:
     async def _finish_switch(self, prepared) -> None:
         try:
             await self._close_splashes(prepared.package.package_id)
-        except BaseException:
-            self._runtime.abort(prepared)
-            raise
-        try:
             self._runtime.commit(prepared)
         except BaseException:
             self._runtime.abort(prepared)

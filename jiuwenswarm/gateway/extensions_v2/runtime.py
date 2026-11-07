@@ -47,6 +47,7 @@ from jiuwenswarm.gateway.extensions_v2 import bootstrap
 from jiuwenswarm.gateway.extensions_v2.builtin.router import GatewayLocalRouter, LocalRequest
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage, load_gateway_packages, release_package_modules
+from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.models import (
     EVENT_GATEWAY_REQUEST,
     EVENT_GATEWAY_DISCONNECT,
@@ -98,9 +99,10 @@ class GatewayRuntime:
         self._ops_owner: weakref.WeakKeyDictionary[Any, _Activation] = weakref.WeakKeyDictionary()
         # Handler and data calls in flight per package, across activations (S_01 invariant 12).
         self._inflight: dict[str, int] = {}
-        # Prepared switches not yet committed, and the runtime cycle they belong to (S_01 section 3.2).
+        # Prepared switches not yet committed or aborted (S_01 section 3.2); shutdown ends them.
         self._prepared: set[PreparedPackage] = set()
-        self._cycle = 0
+        # Set for good by shutdown: nothing more is prepared, and a runtime does not start twice.
+        self._closed = False
         self._management: Any = None
         self._started = False
         self.browser = BrowserBridge(self)
@@ -144,8 +146,8 @@ class GatewayRuntime:
     async def shutdown(self) -> None:
         """Unregister every handler and drop in-process state."""
 
-        # A switch prepared in this cycle can no longer commit; its handlers go with the others below.
-        self._cycle += 1
+        # No switch is prepared from here on, and one prepared earlier can no longer commit.
+        self._closed = True
         for prepared in self._prepared:
             prepared.activation.release()
         self._prepared.clear()
@@ -209,39 +211,95 @@ class GatewayRuntime:
         act between the two (management closes the running splash) use them directly.
         """
 
-        self.commit(self.prepare(package))
+        prepared = self.prepare(package)
+        try:
+            self.commit(prepared)
+        except BaseException:
+            self.abort(prepared)
+            raise
 
     def prepare(self, package: LoadedPackage) -> PreparedPackage:
-        """Validate a package and register all its handlers without letting them run.
+        """Validate a package and check that every handler can be registered, changing nothing.
 
-        Nothing that is running changes: the handlers stay inert until :meth:`commit`.
-        Registration is all-or-nothing; on failure the handlers registered so far are
-        dropped, the package's modules are released and the failure is re-raised.
+        The check registers a placeholder for each handler and removes the batch again in the
+        same synchronous step, so no event chain can match it and no package code runs. The
+        caller owns the result: it either commits or aborts it, and shutdown ends it.
+
+        Raises:
+            ExtensionFailure: The runtime has shut down.
+            Exception: Validation or registration failed; the package's modules are released.
         """
 
         try:
+            if self._closed:
+                raise ExtensionFailure(StatusCode.EXTENSION_LOAD_FAILED, reason="the runtime has shut down")
             self.browser.validate_package(package)
+            self._drop_handlers(self._register_batch(package, lambda declaration: _pass_on))
         except Exception:
             release_package_modules(package)
             raise
+        activation = _Activation(package, uuid4().hex, application=self.browser.is_application_package(package),
+                                 ops_owner=self._ops_owner, inflight=self._inflight)
+        prepared = PreparedPackage(package, activation)
+        self._prepared.add(prepared)
+        return prepared
+
+    def commit(self, prepared: PreparedPackage) -> None:
+        """Replace the running version by a prepared one in one synchronous step.
+
+        The new batch is registered before the old one is dropped, with no await in between:
+        a chain matched before this step holds only the old handlers, one matched after it
+        only the new ones (agent-core ``replace_published``).
+
+        Raises:
+            ExtensionFailure: The switch was aborted or the runtime shut down after it was prepared.
+            Exception: Registering the new batch failed; the running version is untouched.
+            The caller aborts the prepared package in both cases.
+        """
+
+        if prepared not in self._prepared:
+            raise ExtensionFailure(
+                StatusCode.EXTENSION_LOAD_FAILED, reason="the prepared switch ended before it was committed",
+            )
+        package, activation = prepared.package, prepared.activation
+        registered = self._register_batch(package, lambda declaration: _async_handler(declaration.handler, activation))
+        self._prepared.discard(prepared)
+        self.unpublish(package.package_id)
+        self._package_handlers[package.package_id] = registered
+        self._activations[package.package_id] = activation
+        self._packages.append(package)
+        self.browser.published(package.package_id)
+
+    def abort(self, prepared: PreparedPackage) -> None:
+        """Drop a prepared package that will not be committed; the running version is untouched."""
+
+        self._prepared.discard(prepared)
+        prepared.activation.release()
+
+    def _register_batch(self, package: LoadedPackage,
+                        handler_for: Callable[[HandlerDeclaration], Callable[..., Any]]) -> list[tuple[str, str]]:
+        """Register one handler per declaration, all or nothing.
+
+        Raises:
+            Exception: A registration failed; the handlers registered so far are dropped.
+        """
+
         metadata = PackageMetadata(
             package_id=package.package_id,
             package_version=package.version,
             root=package.root,
         )
         registered: list[tuple[str, str]] = []
-        activation = _Activation(package, uuid4().hex, application=self.browser.is_application_package(package),
-                                 ops_owner=self._ops_owner, inflight=self._inflight)
         for declaration in package.handlers:
             try:
                 handler_id = self.bus.register_event_handler(
                     declaration.event_type,
-                    _async_handler(declaration.handler, activation),
+                    handler_for(declaration),
                     declaration.match_pattern,
                     HandlerLevel.USER,
                     package_metadata=metadata,
                 )
-            except Exception as exc:  # noqa: BLE001 - roll the package back as a whole
+            except Exception as exc:  # noqa: BLE001 - roll the batch back as a whole
                 logger.warning(
                     "[GatewayExtensions] package %s cannot register %s: %s",
                     package.package_id,
@@ -249,45 +307,13 @@ class GatewayRuntime:
                     exc,
                 )
                 self._drop_handlers(registered)
-                activation.release()
                 raise
             self._handler_ids.append(handler_id)
             registered.append((handler_id, declaration.event_type))
             self._user_handlers[declaration.event_type] = (
                 self._user_handlers.get(declaration.event_type, 0) + 1
             )
-        prepared = PreparedPackage(package, activation, registered, self._cycle)
-        self._prepared.add(prepared)
-        return prepared
-
-    def commit(self, prepared: PreparedPackage) -> None:
-        """Replace the running version by a prepared one in one synchronous step.
-
-        Raises:
-            ExtensionFailure: The switch was aborted, or the runtime shut down after it was
-                prepared; nothing is changed (shutdown already dropped its handlers).
-        """
-
-        if prepared not in self._prepared or prepared.cycle != self._cycle:
-            raise ExtensionFailure(
-                StatusCode.EXTENSION_LOAD_FAILED, reason="the prepared switch ended before it was committed",
-            )
-        self._prepared.discard(prepared)
-        package = prepared.package
-        self.unpublish(package.package_id)
-        prepared.activation.go_live()
-        self._package_handlers[package.package_id] = prepared.registered
-        self._activations[package.package_id] = prepared.activation
-        self._packages.append(package)
-        self.browser.published(package.package_id)
-
-    def abort(self, prepared: PreparedPackage) -> None:
-        """Drop a prepared package that will not be committed; the running version is untouched."""
-
-        if prepared in self._prepared:
-            self._prepared.discard(prepared)
-            self._drop_handlers(prepared.registered)
-        prepared.activation.release()
+        return registered
 
     def unpublish(self, package_id: str) -> bool:
         """Release every handler of one package and drop its active record."""
@@ -686,15 +712,13 @@ def _normalized_headers(headers: Mapping[str, str] | None) -> Mapping[str, str]:
 
 @dataclass(frozen=True, eq=False)
 class PreparedPackage:
-    """A validated package whose handlers are registered but inert (see :meth:`GatewayRuntime.prepare`).
+    """A validated package whose handlers can be registered (see :meth:`GatewayRuntime.prepare`).
 
-    Identity-compared; only the runtime cycle that prepared it may commit it.
+    Identity-compared; the runtime that prepared it commits it at most once, and shutdown ends it.
     """
 
     package: LoadedPackage
     activation: _Activation
-    registered: list[tuple[str, str]]
-    cycle: int
 
 
 def _count(counter: dict[str, int], key: str, delta: int) -> None:
@@ -723,21 +747,12 @@ class _Activation:
         self._ops_owner = ops_owner
         self._inflight = inflight
         self._running = 0
-        self._live = False
         self._released = False
         self._purged = False
 
     @property
     def released(self) -> bool:
         return self._released
-
-    @property
-    def live(self) -> bool:
-        """True from commit until release; prepared and released handlers do not run."""
-        return self._live
-
-    def go_live(self) -> None:
-        self._live = True
 
     def enter(self, ops: Any) -> None:
         self._ops_owner[ops] = self
@@ -750,7 +765,6 @@ class _Activation:
         self._purge_when_idle()
 
     def release(self) -> None:
-        self._live = False
         self._released = True
         self._purge_when_idle()
 
@@ -760,13 +774,20 @@ class _Activation:
             release_package_modules(self.package)
 
 
+async def _pass_on(event: Any, ops: Any, event_next: Any) -> Any:
+    """Placeholder registered by :meth:`GatewayRuntime.prepare` to check a handler can be registered."""
+
+    del ops
+    return await event_next(event)
+
+
 def _async_handler(handler: Callable[..., Any], activation: _Activation) -> Callable[..., Awaitable[Any]]:
     """Return a handler the event bus can await, counted against its activation."""
 
     @functools.wraps(handler)
     async def adapter(event: Any, ops: Any, event_next: Any) -> Any:
-        if not activation.live:
-            # Prepared but not committed, or released after a chain collected this handler: skip it.
+        if activation.released:
+            # A chain matched before the release still holds this handler: pass the event on instead.
             return await event_next(event)
         activation.enter(ops)
         try:

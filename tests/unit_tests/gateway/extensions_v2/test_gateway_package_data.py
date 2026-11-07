@@ -16,6 +16,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.extension import ExtensionFailure
 
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig, load_gateway_config
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
@@ -462,6 +463,73 @@ async def test_a_chain_collected_before_uninstall_skips_the_released_handler(tmp
     finally:
         gate.set()
         await runtime.shutdown()
+
+
+def _version(root: Path, version: str, seen: list[str], gate: asyncio.Event | None = None) -> LoadedPackage:
+    """``test.switch`` at ``version``: notes each ``switch`` frame it sees, waits on ``gate``, passes it on."""
+
+    async def handler(event, ops, next_handler):
+        if event.event_input.method == "switch":
+            seen.append(version)
+            if gate is not None:
+                await gate.wait()
+        return await next_handler(event)
+
+    return LoadedPackage(package_id="test.switch", version=version, root=root,
+                         handlers=(HandlerDeclaration("gateway.request", handler, {}, "handler"),))
+
+
+async def test_a_chain_running_across_a_switch_reaches_one_version_only(tmp_path):
+    """The new batch replaces the old one in one step, so no chain holds both versions (S_01 section 3.2)."""
+    gate, seen = asyncio.Event(), []
+    runtime = await _runtime(tmp_path)
+    try:
+        runtime.publish(_version(tmp_path, "1.0.0", seen, gate))
+        call = asyncio.create_task(runtime.intercept(SimpleNamespace(closed=False), "switch", "switch", {}))
+        await asyncio.sleep(0.02)
+        prepared = runtime.prepare(_version(tmp_path, "1.1.0", seen))
+        assert runtime.user_handler_count == 1, "a prepared version holds no registration"
+        runtime.commit(prepared)
+        gate.set()
+        await call
+        assert seen == ["1.0.0"], "the chain matched before the commit does not reach the new version"
+        await runtime.intercept(SimpleNamespace(closed=False), "switch", "switch", {})
+        assert seen == ["1.0.0", "1.1.0"]
+    finally:
+        gate.set()
+        await runtime.shutdown()
+
+
+async def test_a_commit_whose_registration_fails_keeps_the_running_version(tmp_path, monkeypatch):
+    seen: list[str] = []
+    runtime = await _runtime(tmp_path)
+    try:
+        runtime.publish(_version(tmp_path, "1.0.0", seen))
+        register, calls = runtime.bus.register_event_handler, []
+
+        def refuse_the_commit(*args, **kwargs):
+            calls.append(args[0])
+            if len(calls) == 2:  # the check in prepare passes; registering the new batch fails
+                raise RuntimeError("the bus refused the handler")
+            return register(*args, **kwargs)
+
+        monkeypatch.setattr(runtime.bus, "register_event_handler", refuse_the_commit)
+        with pytest.raises(RuntimeError):
+            runtime.publish(_version(tmp_path, "1.1.0", seen))
+        assert [package.version for package in runtime.active_packages()] == ["1.0.0"]
+        assert runtime.user_handler_count == 1
+        await runtime.intercept(SimpleNamespace(closed=False), "switch", "switch", {})
+        assert seen == ["1.0.0"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_nothing_is_prepared_once_the_runtime_has_shut_down(tmp_path):
+    runtime = await _runtime(tmp_path)
+    await runtime.shutdown()
+    with pytest.raises(ExtensionFailure) as failure:
+        runtime.prepare(_version(tmp_path, "1.0.0", []))
+    assert failure.value.as_error().status is StatusCode.EXTENSION_LOAD_FAILED
 
 
 async def test_uninstall_is_busy_while_a_replaced_activation_still_runs(tmp_path):
