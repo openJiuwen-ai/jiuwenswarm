@@ -48,7 +48,7 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 | `application.sidebar.footer` | `application` | `list` | 侧边栏底部列表槽位，可同时容纳多个包的内容 |
 | `application.background` | `application` | `single` | 全窗口底层背景，只接受 `MediaSurface` 根；宿主策略与消息协议见 [S_07](S_07_media-surface.md) |
 | `application.splash` | `application` | `single` | 启动开场，只接受 `MediaSurface` 根；声明、时机与平台帧见 [S_09](S_09_startup-splash.md) |
-| `application.settings.page` | `application` | `list` | 设置页“扩展”模块中每个包一个页签，接受普通组件树；见 [S_10](S_10_application-settings.md) |
+| `application.settings` | `application` | `list` | 与 AgentServer 共用的设置槽位；Gateway 只渲染其包按 S_18 声明的 application 范围配置项，接受普通组件树；见 [S_10](S_10_application-settings.md) |
 
 槽位是通用能力：任何 Gateway 包都可以渲染这些槽位，平台不规定其内容。未知槽位返回 `SCHEMA_ERROR`。会话槽位由 AgentServer 渲染，Gateway 侧一律拒绝。
 

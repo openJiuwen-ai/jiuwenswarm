@@ -3,8 +3,8 @@ import type { SettingsModuleDefinition } from '../../registry/types';
 import { SplashProviderSettings } from './SplashProviderSettings';
 
 /**
- * Host features for Gateway extensions: the startup splash order (Gateway S_10). Each extension's own
- * settings page is a navigation entry of its own after this module (see pluginPages.tsx, F_13 D-08).
+ * Host features for Gateway extensions: the startup splash order (Gateway S_10). Extensions add their own
+ * settings through the shared settings catalog (AgentServer S_18), usually as a menu after this module.
  */
 export const extensionsModule: SettingsModuleDefinition = {
   id: 'extensions',

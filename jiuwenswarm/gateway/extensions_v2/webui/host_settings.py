@@ -27,11 +27,10 @@ logger = logging.getLogger(__name__)
 
 HOST_DIR = "host"
 SPLASH_FILE = "splash.json"
-METHOD_SETTINGS_PAGES = "webui.settings.pages"
 METHOD_SPLASH_SETTINGS = "webui.splash.settings"
 METHOD_SPLASH_UPDATE = "webui.splash.settings.update"
 METHOD_UPLOAD_BEGIN = "webui.upload.begin"
-HOST_METHODS = frozenset({METHOD_SETTINGS_PAGES, METHOD_SPLASH_SETTINGS, METHOD_SPLASH_UPDATE, METHOD_UPLOAD_BEGIN})
+HOST_METHODS = frozenset({METHOD_SPLASH_SETTINGS, METHOD_SPLASH_UPDATE, METHOD_UPLOAD_BEGIN})
 CODE_BAD_REQUEST = "BAD_REQUEST"
 CODE_SETTINGS_WRITE_FAILED = "SETTINGS_WRITE_FAILED"
 
@@ -184,9 +183,6 @@ async def answer_host_method(runtime: GatewayRuntime, request: GatewayRequestInp
     """Answer one host method or raise :class:`HostRequestError`."""
     params = dict(request.params)
     browser = runtime.browser
-    if request.method == METHOD_SETTINGS_PAGES:
-        _empty(params)
-        return {"pages": browser.settings_pages()}
     if request.method == METHOD_SPLASH_SETTINGS:
         _empty(params)
         return splash_settings(runtime)

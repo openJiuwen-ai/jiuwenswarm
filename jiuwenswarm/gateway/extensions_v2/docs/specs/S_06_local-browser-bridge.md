@@ -8,7 +8,7 @@
 Gateway 包可声明 `ui.items` 及 `client.requestBindings`。两类能力分开判定：
 
 - **应用级 UI 包**：至少一项 `web.slot.contribution` 指向 Gateway 应用级槽位（`application.entry`、
-  `application.sidebar.footer`、`application.background`、`application.splash`、`application.settings.page`）的活动包。取得激活代次、所声明槽位的 `ui.ready` 与交互分派、`ops.ui.asset_url`
+  `application.sidebar.footer`、`application.background`、`application.splash`、`application.settings`）的活动包。`application.settings` 与 AgentServer 共用，Gateway 只认领其包声明的配置项实例（S_10 第 2 节）。取得激活代次、所声明槽位的 `ui.ready` 与交互分派、`ops.ui.asset_url`
   及本包素材，并按激活代次拦截迟到调用。不需要声明 `client`。
 - **客户端能力包**：声明 `client` 的应用级 UI 包。安装并激活后在上述能力之外直接具备请求绑定、
   `client.declarations` 与 `ops.client.*`（浏览器存储写删与页面刷新）；无需额外权限声明、Gateway 授权配置或确认，
@@ -63,7 +63,7 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 - Web UI 静态服务将 `/extension-assets/` 请求按原路径转发到 WebChannel HTTP 服务，与 Vite 开发服务保持一致。
   GET/HEAD 保留后端状态码、内容类型和缓存策略；无效或过期素材返回后端的 404，不返回 SPA HTML。
   打包版前端由 `channels/web/app_web.py` 将 `/extension-assets/` 与 `/api` 一同转发到 WebChannel，响应按块写回。
-- 宿主方法 `webui.settings.pages`、`webui.splash.settings`、`webui.splash.settings.update`、`webui.upload.begin`
+- 宿主方法 `webui.splash.settings`、`webui.splash.settings.update`、`webui.upload.begin`
   经 `gateway.request` 的 USER 请求策略继续后由 BUILTIN 处理器应答；`FileImport` 的 `ui.change` 由宿主核对导入凭据后替换为可信数据；
   `ops.ui.download` 向调用所在的连接发送 `webui.download`。契约见 [S_10](S_10_application-settings.md)。
 - `/extension-uploads/` 与 `/extension-downloads/` 的访问权只来自一次性凭据，不进入 `gateway.request`，本机与远程浏览器都可使用；

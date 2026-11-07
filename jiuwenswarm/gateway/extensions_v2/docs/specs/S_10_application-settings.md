@@ -8,43 +8,53 @@
 | 编号 / slug | `S_10 / application-settings` |
 | 所属模块 | Gateway `webui/`（设置槽位、宿主方法、开场偏好、导入与导出）、`management/`（包释放前关闭开场）；`channels/web/app_web.py`（导入与导出的转发）；Web 前端 `features/settings/`（“扩展”模块与插件设置项）与 `features/webui/`（`FileImport`、导入导出服务、开场顺序） |
 | 最近一次修订日期 | 2026-11-07 |
-| 契约状态 | 已实现（2026-11-05 修订：导入与导出对远程浏览器同样开放；2026-11-06 修订：插件设置页在设置导航中单独成项；2026-11-07 修订：标题取 `display.name` 并按语言显示） |
+| 契约状态 | 已实现（2026-11-05 修订：导入与导出对远程浏览器同样开放；2026-11-06 修订：插件设置页在设置导航中单独成项；2026-11-07 修订：标题取 `display.name` 并按语言显示；插件设置改用 S_18 共享目录，移除 `application.settings.page` 与 `webui.settings.pages`） |
 | 关联文档 | [F_13](../features/F_13_application-settings-page.md)、[S_09 启动门控与开场](S_09_startup-splash.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_01 运行时](S_01_gateway-extension-runtime.md)、[S_17 组件属性](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) §4.25 |
 
 ## 1. 范围与术语
 
-本规约定义：不依赖会话的应用级设置槽位、宿主设置方法、开场顺序与停用、`ui.closed` 的 `disabled` / `removed`
+本规约定义：Gateway 包的设置贡献（与 AgentServer S_18 共用一套声明与目录）、宿主设置方法、开场顺序与停用、`ui.closed` 的 `disabled` / `removed`
 原因、经宿主中转的文件导入与导出。
 
 | 术语 | 含义 |
 | --- | --- |
-| 设置页包 | 声明 `application.settings.page` 贡献的活动 Gateway 包 |
+| 设置贡献 | Gateway 活动包在 `application.settings` 上按 S_18 声明的菜单、分类与配置项 |
 | 开场提供者 | 声明 `application.splash` 的活动包（S_09 第 1 节） |
 | 宿主方法 | 本规约第 3 节列出、由 Gateway 自身应答的 WebSocket 方法 |
 | 导入凭据 | 一次导入的随机标识（32 位十六进制），绑定连接、包、激活代次、实例与节点 |
 | 下载凭据 | 一次导出的随机标识（32 位十六进制），绑定连接、包、激活代次与文件 |
 
-## 2. 设置槽位
+## 2. 设置贡献
 
-`application.settings.page`：应用级、`list`，接受普通组件树（`MediaSurface` 等专用根组件不可用）。
+Gateway 包与 AgentServer 包使用同一套设置声明（[AgentServer S_18](../../../../extensions_v2/docs/specs/S_18_settings-location.md)）：
+manifest `ui.items` 中 `slot=application.settings`，`kind` 为 menu / section / item，带 `location`、`title {zh, en}`，
+菜单使用白名单图标，配置项使用 `renderer={kind: webui-tree}`。没有另一个 Gateway 专用的设置槽位。
 
 ```json
 {
   "ui": {
     "apiVersion": 1,
-    "items": [{ "type": "web.slot.contribution", "id": "theme.settings", "slot": "application.settings.page" }]
+    "items": [
+      { "type": "web.slot.contribution", "slot": "application.settings", "id": "menu", "kind": "menu",
+        "location": { "after": "extensions" }, "title": { "zh": "主题背景", "en": "Theme background" }, "icon": "image" },
+      { "type": "web.slot.contribution", "slot": "application.settings", "id": "section", "kind": "section",
+        "location": { "menu": "workswarm-theme::menu" }, "title": { "zh": "主题", "en": "Themes" } },
+      { "type": "web.slot.contribution", "slot": "application.settings", "id": "page",
+        "location": { "menu": "workswarm-theme::menu", "section": "workswarm-theme::section" },
+        "renderer": { "kind": "webui-tree" }, "scope": "application", "instanceKey": "main" }
+    ]
   }
 }
 ```
 
-- 导航标题取 manifest.json 的 `display.name`，按 `{zh, en}` 下发，前端按界面语言显示；单个字符串按双语同值处理，
-  只有一种语言时另一种取同值，缺省或为空时两种语言都取包标识。`webui.settings.pages` 与 `webui.splash.settings`
-  中的 `title` 均为此对象。
-- 前端设置导航中，每个设置页包单独一项，排在宿主“扩展”模块之后，顺序同 `webui.settings.pages`；名称为上条的标题，图标统一。
-  选中该项时只挂载该包，实例键为 `main`。“扩展”模块只含宿主功能（第 4 节的开场顺序与停用）。
-- 宿主访问策略隐藏“扩展”模块时，不显示插件项，也不发出 `webui.settings.pages`。
-- 挂载时发送指定 `package_id` 的 `ui.ready`（载荷为空对象）。该帧与之后的交互都经 `gateway.request`，受请求策略约束，不是平台帧。
-- 设置页只在门控开放之后可达（S_09 第 5 节）。
+| 规则 | 说明 |
+| --- | --- |
+| 字段校验 | 与 AgentServer `parse_settings` 相同；两侧共用 `tests/fixtures/settings_contribution_cases.json`。不合法时包发布失败 |
+| 范围 | Gateway 配置项必须显式声明 `scope: "application"`（S_18 的缺省值是 session，Gateway 不寻址会话） |
+| 目录 | `webui.settings.catalog` 由 Gateway 先取 AgentServer 的目录，再追加 Gateway 活动包的声明，`revision` 覆盖两者；没有 Gateway 声明时原样返回 AgentServer 的应答。AgentServer 目录取不到时整次请求失败，浏览器保留上次目录并提示（S_18 第 4 节） |
+| 位置 | 按 S_18 的 location 规则合成；插件菜单通常写 `location.after: "extensions"`，排在宿主“扩展”模块之后。“扩展”模块只含宿主功能（第 4 节的开场顺序与停用） |
+| 分派 | `application.settings` 与 AgentServer 包共用。Gateway 只认领 `package_id` 属于 Gateway 活动包、且实例键是该包已声明配置项的帧，其余照常转发给 AgentServer |
+| 交互 | 挂载时发送 `ui.ready`（载荷为空对象）；该帧与之后的交互都经 `gateway.request`，受请求策略约束，不是平台帧。设置页只在门控开放之后可达（S_09 第 5 节） |
 
 ## 3. 宿主方法
 
@@ -52,16 +62,16 @@
 宿主方法同样不可用（鉴权职责见 [S_01 第 6 节](S_01_gateway-extension-runtime.md)）。参数不合法时返回 `deny`，
 `error.code` 见第 7 节。没有任何 USER Handler 时这些方法同样由 Gateway 应答，不转发给 AgentServer。
 
-### 3.1 `webui.settings.pages`
+### 3.1 （已移除）`webui.settings.pages`
 
-参数为空对象。返回 `{"pages": [{"package_id": str, "title": str}]}`，按发布顺序。
+2026-11-07 起移除：插件设置改由第 2 节的共享目录提供。保留本节编号以免引用错位。
 
 ### 3.2 `webui.splash.settings`
 
-参数为空对象。返回全部开场提供者（含已停用的），按生效顺序（第 4 节）：
+参数为空对象。返回全部开场提供者（含已停用的），按生效顺序（第 4 节）。`title` 取 manifest.json 的 `display.name`，以 `{zh, en}` 下发，前端按界面语言显示；单个字符串按双语同值处理，只有一种语言时另一种取同值，缺省或为空时取包标识：
 
 ```json
-{ "providers": [ { "package_id": "pkg.theme", "title": "WorkSwarm Theme", "skippable": true,
+{ "providers": [ { "package_id": "pkg.theme", "title": { "zh": "主题背景", "en": "Theme background" }, "skippable": true,
                    "max_duration_ms": 9500, "enabled": true } ],
   "customized": false }
 ```
@@ -122,7 +132,7 @@ S_09 第 3.1 节的返回改为：只含启用的提供者，按生效顺序，�
 ### 6.2 开始：`webui.upload.begin`
 
 ```json
-{ "target": { "scope": "application", "slot_id": "application.settings.page", "package_id": "pkg.theme",
+{ "target": { "scope": "application", "slot_id": "application.settings", "package_id": "pkg.theme",
               "instance_key": "main" },
   "node_key": "0.2", "revision": 3,
   "files": [ { "path": "aurora.zip", "size": 1048576 } ] }

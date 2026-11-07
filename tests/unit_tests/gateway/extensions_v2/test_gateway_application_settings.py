@@ -1,11 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Application settings page, host methods and splash preferences (F_13)."""
+"""Application settings contributions, host methods and splash preferences (F_13)."""
 
 import json
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
@@ -44,6 +46,19 @@ def _channel():
                            send_event=send_event, send_response=send_response)
 
 
+def _settings_items(package_id: str, title: dict | None = None) -> list[dict]:
+    """An S_18 settings menu after the host Extensions module, with one application-scoped page."""
+    title = title or {"zh": "主题", "en": "Theme"}
+    menu, section = f"{package_id}::menu", f"{package_id}::section"
+    slot = {"type": "web.slot.contribution", "slot": "application.settings"}
+    return [
+        {**slot, "id": "menu", "kind": "menu", "location": {"after": "extensions"}, "title": title, "icon": "image"},
+        {**slot, "id": "section", "kind": "section", "location": {"menu": menu}, "title": title},
+        {**slot, "id": "main", "location": {"menu": menu, "section": section}, "renderer": {"kind": "webui-tree"},
+         "scope": "application", "instanceKey": "main"},
+    ]
+
+
 class Package:
     """A Gateway package with splash and settings contributions that records lifecycle events."""
 
@@ -71,9 +86,13 @@ class Package:
     def loaded(self, root: Path) -> LoadedPackage:
         root.mkdir(parents=True, exist_ok=True)
         match = {"target.package_id": self.package_id}
+        items = []
+        for slot in self.slots:
+            items.extend(_settings_items(self.package_id, self.title) if slot == "application.settings"
+                         else [{"type": "web.slot.contribution", "slot": slot}])
         return LoadedPackage(
             package_id=self.package_id, version="1.0.0", root=root, client={}, display_name=self.title or {},
-            ui={"apiVersion": 1, "items": [{"type": "web.slot.contribution", "slot": slot} for slot in self.slots]},
+            ui={"apiVersion": 1, "items": items},
             handlers=(HandlerDeclaration("ui.ready", self.ready, match, "ready"),
                       HandlerDeclaration("ui.closed", self.on_closed, match, "closed")),
         )
@@ -109,30 +128,70 @@ def _dispatch(slot, event, package_id, payload=None, instance_key="main"):
                        "instance_key": instance_key}}
 
 
-async def test_settings_pages_list_declaring_packages_with_their_titles(tmp_path):
-    theme = Package("test.theme", ("application.settings.page", "application.background"),
+async def test_settings_contributions_follow_s18_and_only_declared_instances_are_claimed(tmp_path):
+    theme = Package("test.theme", ("application.settings", "application.background"),
                     title={"zh": "主题工作室", "en": "Theme Studio"})
     plain = Package("test.plain", ("application.background",))
-    untitled = Package("test.untitled", ("application.settings.page",))
     runtime = await _start(tmp_path)
     try:
-        for package in (theme, plain, untitled):
+        for package in (theme, plain):
             runtime.publish(package.loaded(tmp_path / package.package_id))
-        visited, response = await _call(runtime, "webui.settings.pages")
-        assert visited is True and response["ok"] is True
-        assert response["payload"] == {"pages": [
-            {"package_id": "test.theme", "title": {"zh": "主题工作室", "en": "Theme Studio"}},
-            {"package_id": "test.untitled", "title": {"zh": "test.untitled", "en": "test.untitled"}},
-        ]}
-        _, response = await _call(runtime, "webui.dispatch", _dispatch("application.settings.page", "ui.ready",
-                                                                        "test.theme"))
+        assert runtime.browser.settings_contributions() == [
+            {"package_id": "test.theme", "id": "menu", "kind": "menu", "location": {"after": "extensions"},
+             "title": {"zh": "主题工作室", "en": "Theme Studio"}, "icon": "image"},
+            {"package_id": "test.theme", "id": "section", "kind": "section", "location": {"menu": "test.theme::menu"},
+             "title": {"zh": "主题工作室", "en": "Theme Studio"}},
+            {"package_id": "test.theme", "id": "main", "kind": "item",
+             "location": {"menu": "test.theme::menu", "section": "test.theme::section"},
+             "scope": "application", "instance_key": "main", "presentation": "content"},
+        ]
+        _, response = await _call(runtime, "webui.dispatch", _dispatch("application.settings", "ui.ready", "test.theme"))
         assert response["payload"]["accepted"] is True
-        assert theme.readies == [("application.settings.page", {})] and untitled.readies == []
-        target = RenderTarget(session_id="", slot_id="application.settings.page", package_id="test.theme",
+        assert theme.readies == [("application.settings", {})] and plain.readies == []
+        target = RenderTarget(session_id="", slot_id="application.settings", package_id="test.theme",
                               instance_key="main", scope="application", connection_id="browser-1")
         assert runtime.registry.get(target).root == PAGE
-        _, response = await _call(runtime, "webui.settings.pages", {"extra": 1})
-        assert response["ok"] is False and response["code"] == "BAD_REQUEST"
+        # The slot is shared with AgentServer packages: anything not declared by a Gateway package is forwarded.
+        for package_id, instance_key in (("agent.weather", "main"), ("", "main"), ("test.theme", "other"),
+                                         ("test.plain", "main")):
+            visited, _ = await runtime.intercept(SimpleNamespace(closed=False), "req", "webui.dispatch",
+                                                 _dispatch("application.settings", "ui.ready", package_id,
+                                                           instance_key=instance_key))
+            assert visited is False, (package_id, instance_key)
+        assert theme.readies == [("application.settings", {})]
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("change,reason", [
+    ({"scope": "session"}, "application scope"),
+    ({"scope": None}, "application scope"),
+    ({"location": {"menu": "test.theme::menu"}}, "location"),
+    ({"renderer": None}, "renderer"),
+    ({"instanceKey": "a|b"}, "instanceKey"),
+])
+async def test_invalid_settings_declarations_block_publication(tmp_path, change, reason):
+    items = _settings_items("test.theme")
+    item = {key: value for key, value in {**items[2], **change}.items() if value is not None}
+    package = LoadedPackage(package_id="test.theme", version="1.0.0", root=tmp_path, client={},
+                            ui={"apiVersion": 1, "items": [items[0], items[1], item]}, handlers=())
+    runtime = await _start(tmp_path)
+    try:
+        with pytest.raises(ValueError, match=reason):
+            runtime.publish(package)
+        assert runtime.browser.settings_contributions() == []
+    finally:
+        await runtime.shutdown()
+
+
+async def test_duplicate_settings_targets_block_publication(tmp_path):
+    items = _settings_items("test.theme")
+    package = LoadedPackage(package_id="test.theme", version="1.0.0", root=tmp_path, client={},
+                            ui={"apiVersion": 1, "items": [*items, {**items[2], "id": "again"}]}, handlers=())
+    runtime = await _start(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="duplicate settings render target"):
+            runtime.publish(package)
     finally:
         await runtime.shutdown()
 
@@ -141,8 +200,6 @@ async def test_host_methods_are_answered_without_user_handlers(tmp_path):
     runtime = await _start(tmp_path)
     try:
         assert runtime.active is False
-        visited, response = await _call(runtime, "webui.settings.pages")
-        assert visited is True and response["payload"] == {"pages": []}
         visited, response = await _call(runtime, "webui.splash.settings")
         assert visited is True and response["payload"] == {"providers": [], "customized": False}
     finally:
@@ -150,21 +207,20 @@ async def test_host_methods_are_answered_without_user_handlers(tmp_path):
 
 
 async def test_host_methods_follow_the_request_policy(tmp_path):
-    theme = Package("test.theme", ("application.settings.page",))
+    theme = Package("test.theme", ("application.settings", "application.splash"))
     runtime = await _start(tmp_path)
     try:
         runtime.publish(theme.loaded(tmp_path / "theme"))
         runtime.publish(_policy(tmp_path / "login", require_login=True))
         # A USER policy that requires a login guards the host methods as well.
-        for method in ("webui.settings.pages", "webui.splash.settings", "webui.splash.settings.update",
-                       "webui.upload.begin"):
+        for method in ("webui.splash.settings", "webui.splash.settings.update", "webui.upload.begin"):
             visited, response = await _call(runtime, method, {"order": None})
             assert visited is True and response["ok"] is False and response["code"] == "AUTH_REQUIRED", method
-        _, response = await _call(runtime, "webui.settings.pages", headers=AUTH)
-        assert response["ok"] is True and response["payload"]["pages"][0]["package_id"] == "test.theme"
+        _, response = await _call(runtime, "webui.splash.settings", headers=AUTH)
+        assert response["ok"] is True and response["payload"]["providers"][0]["package_id"] == "test.theme"
         # A USER request policy decides before the host does.
         runtime.publish(_policy(tmp_path / "deny", deny=True))
-        _, response = await _call(runtime, "webui.settings.pages", headers=AUTH)
+        _, response = await _call(runtime, "webui.splash.settings", headers=AUTH)
         assert response["ok"] is False and response["code"] == "AUTH_REQUIRED"
     finally:
         await runtime.shutdown()

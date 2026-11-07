@@ -23,10 +23,23 @@ from jiuwenswarm.gateway.extensions_v2.webui.models import (
 )
 
 PACKAGE = "test.theme"
-SLOT = "application.settings.page"
+SLOT = "application.settings"
 LOCAL = ("127.0.0.1", 50000)
 TARGET = RenderTarget(session_id="", slot_id=SLOT, package_id=PACKAGE, instance_key="main", scope="application",
                       connection_id="browser-1")
+
+
+def _settings_items(package_id: str) -> list[dict]:
+    """An S_18 settings menu with one application-scoped page (instance ``main``)."""
+    menu, section = f"{package_id}::menu", f"{package_id}::section"
+    slot = {"type": "web.slot.contribution", "slot": "application.settings"}
+    return [
+        {**slot, "id": "menu", "kind": "menu", "location": {"after": "extensions"},
+         "title": {"zh": "主题", "en": "Theme"}, "icon": "image"},
+        {**slot, "id": "section", "kind": "section", "location": {"menu": menu}, "title": {"zh": "主题", "en": "Theme"}},
+        {**slot, "id": "main", "location": {"menu": menu, "section": section}, "renderer": {"kind": "webui-tree"},
+         "scope": "application", "instanceKey": "main"},
+    ]
 
 
 def _channel():
@@ -97,7 +110,7 @@ class ThemePackage:
         match = {"target.package_id": PACKAGE}
         return LoadedPackage(
             package_id=PACKAGE, version="1.0.0", root=root, client={},
-            ui={"apiVersion": 1, "items": [{"type": "web.slot.contribution", "slot": SLOT}]},
+            ui={"apiVersion": 1, "items": _settings_items(PACKAGE)},
             handlers=(HandlerDeclaration("ui.ready", self.ready, match, "ready"),
                       HandlerDeclaration("ui.change", self.change, match, "change"),
                       HandlerDeclaration("ui.click", self.click, match, "click")),
@@ -305,7 +318,7 @@ async def test_start_removes_imports_left_by_an_earlier_process(tmp_path):
         "schemaVersion": 1, "package_type": "extension",
         "package": {"id": PACKAGE, "version": "1.0.0", "domain": "gateway"},
         "extensions": [{"id": "theme", "runtime": "backend", "module": "theme/extension.py"}],
-        "ui": {"apiVersion": 1, "items": [{"type": "web.slot.contribution", "id": "theme.page", "slot": SLOT}]},
+        "ui": {"apiVersion": 1, "items": _settings_items(PACKAGE)},
     }), encoding="utf-8")
     (install / "theme" / "extension.py").write_text(
         "class Extension:\n    def register(self, registrar):\n        pass\n\n\n"

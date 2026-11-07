@@ -1,0 +1,507 @@
+[
+  {
+    "name": "menu with title and allowlisted icon",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "menu",
+      "kind": "menu",
+      "location": {
+        "after": "extensions"
+      },
+      "title": {
+        "zh": "主题",
+        "en": "Theme"
+      },
+      "icon": "image"
+    },
+    "agentserver": true,
+    "gateway": true
+  },
+  {
+    "name": "menu without icon",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "menu",
+      "kind": "menu",
+      "location": {
+        "after": "extensions"
+      },
+      "title": {
+        "zh": "主题",
+        "en": "Theme"
+      }
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "menu with unknown icon",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "menu",
+      "kind": "menu",
+      "location": {
+        "after": "extensions"
+      },
+      "title": {
+        "zh": "主题",
+        "en": "Theme"
+      },
+      "icon": "no-such-icon"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "menu with a renderer",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "menu",
+      "kind": "menu",
+      "location": {
+        "after": "extensions"
+      },
+      "title": {
+        "zh": "主题",
+        "en": "Theme"
+      },
+      "icon": "image",
+      "renderer": {
+        "kind": "webui-tree"
+      }
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "menu with a render target",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "menu",
+      "kind": "menu",
+      "location": {
+        "after": "extensions"
+      },
+      "title": {
+        "zh": "主题",
+        "en": "Theme"
+      },
+      "icon": "image",
+      "instanceKey": "main"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "section under a menu",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "section",
+      "kind": "section",
+      "location": {
+        "menu": "pkg::menu"
+      },
+      "title": {
+        "zh": "主题",
+        "en": "Theme"
+      }
+    },
+    "agentserver": true,
+    "gateway": true
+  },
+  {
+    "name": "section without menu",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "section",
+      "kind": "section",
+      "location": {},
+      "title": {
+        "zh": "主题",
+        "en": "Theme"
+      }
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "section without title",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "section",
+      "kind": "section",
+      "location": {
+        "menu": "pkg::menu"
+      }
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "application item",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application"
+    },
+    "agentserver": true,
+    "gateway": true
+  },
+  {
+    "name": "item with title and description",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "title": {
+        "zh": "a",
+        "en": "a"
+      },
+      "description": {
+        "zh": "b",
+        "en": "b"
+      }
+    },
+    "agentserver": true,
+    "gateway": true
+  },
+  {
+    "name": "item description without title",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "description": {
+        "zh": "b",
+        "en": "b"
+      }
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "item without scope is a session item",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      }
+    },
+    "agentserver": true,
+    "gateway": false
+  },
+  {
+    "name": "session item",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "session"
+    },
+    "agentserver": true,
+    "gateway": false
+  },
+  {
+    "name": "unknown scope",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "global"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "item without section",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "before and after together",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section",
+        "before": "a",
+        "after": "b"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "unknown location field",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section",
+        "slot": "x"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "blank location value",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": " ",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "item without renderer",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "scope": "application"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "item with another renderer",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "html"
+      },
+      "scope": "application"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "explicit instance key",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "instanceKey": "settings-main"
+    },
+    "agentserver": true,
+    "gateway": true
+  },
+  {
+    "name": "instance key with a bar",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "instanceKey": "a|b"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "instance key with outer spaces",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "instanceKey": " a"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "id with a leading dot",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": ".main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "one-language title",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "title": {
+        "zh": "仅中文"
+      }
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "unknown kind",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "kind": "page"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
+    "name": "another slot",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings.page",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application"
+    },
+    "agentserver": false,
+    "gateway": false
+  }
+]

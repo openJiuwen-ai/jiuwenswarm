@@ -3450,10 +3450,11 @@ test('WebUISplashGate holds the workspace and entry until the queue ends and ski
 
 const {
   transfersModule, applicationSettingsModule, WebUIUploadContext, SplashProviderSettings,
-  pluginPagesModule, extensionsModule,
+  extensionsModule,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
-const SETTINGS_SLOT = 'application.settings.page';
+// Gateway packages render their settings items in the shared settings slot (AgentServer S_18).
+const SETTINGS_SLOT = 'application.settings';
 const importTree = (props = { label: 'Import theme', accept: ['.zip'] }) => ({ component: 'Box', children: [
   { component: 'FileImport', props, events: { 'ui.change': { id: 'import' } } },
 ] });
@@ -3473,17 +3474,13 @@ async function mounted(element) {
 }
 
 test('application settings answers are validated and the shown order follows the saved choice', () => {
-  const { parseSettingsPages, parseSplashSettings, displayedProviders, movedOrder, toggledDisabled } = applicationSettingsModule;
-  assert.deepEqual(parseSettingsPages({ pages: [
-    { package_id: 'pkg.a', title: 'Aurora' }, { package_id: 'pkg.a', title: 'Again' }, { package_id: '', title: 'x' },
-    { package_id: 'pkg.b' }, 'pkg.c',
-  ] }), [{ packageId: 'pkg.a', title: 'Aurora' }]);
+  const { parseSplashSettings, displayedProviders, movedOrder, toggledDisabled } = applicationSettingsModule;
   // Manifest display.name arrives as { zh, en }; both languages are required and extra fields are dropped.
-  assert.deepEqual(parseSettingsPages({ pages: [
-    { package_id: 'pkg.l', title: { zh: '主题背景', en: 'Theme background', extra: 1 } },
-    { package_id: 'pkg.m', title: { zh: '只有中文' } }, { package_id: 'pkg.n', title: { zh: '', en: 'Blank' } },
-  ] }), [{ packageId: 'pkg.l', title: { zh: '主题背景', en: 'Theme background' } }]);
-  assert.deepEqual(parseSettingsPages(null), []);
+  assert.deepEqual(parseSplashSettings({ customized: false, providers: [
+    { package_id: 'pkg.l', title: { zh: '主题背景', en: 'Theme background', extra: 1 }, skippable: true,
+      max_duration_ms: 9500, enabled: true },
+    { package_id: 'pkg.m', title: { zh: '只有中文' }, skippable: true, max_duration_ms: 9500, enabled: true },
+  ] }).providers.map((provider) => provider.title), [{ zh: '主题背景', en: 'Theme background' }]);
   const settings = parseSplashSettings({ customized: false, providers: [
     { package_id: 'pkg.a', title: 'A', skippable: true, max_duration_ms: 9500, enabled: true },
     { package_id: 'pkg.b', title: 'B', skippable: false, max_duration_ms: 60000, enabled: false },
@@ -3579,7 +3576,7 @@ test('FileImport uploads picked files through the host service and emits the tic
   };
   const view = await mounted(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
     createElement(WebUIUploadContext.Provider, { value: service },
-      createElement(WebUIHost, { slotId: SETTINGS_SLOT, packageId: 'pkg.theme', instanceKey: 'main' }))));
+      createElement(WebUIHost, { slotId: SETTINGS_SLOT, scope: 'application', packageId: 'pkg.theme', instanceKey: 'main' }))));
   const find = (testId) => view.container.querySelector(`[data-testid="${testId}"]`);
   const pick = async (files) => {
     const input = find('webui-file-import-input');
@@ -3619,7 +3616,7 @@ test('FileImport stays disabled without a host import service', async () => {
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
   runtime.start();
   const view = await mounted(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
-    createElement(WebUIHost, { slotId: SETTINGS_SLOT, packageId: 'pkg.theme', instanceKey: 'main' })));
+    createElement(WebUIHost, { slotId: SETTINGS_SLOT, scope: 'application', packageId: 'pkg.theme', instanceKey: 'main' })));
   try {
     await act(async () => transport.render('pkg.theme', importTree(), SETTINGS_SLOT));
     await act(async () => settle());
@@ -3762,107 +3759,6 @@ test('Extensions settings shows its empty and disconnected states', async () => 
     request: empty.request }, createElement(SplashProviderSettings, { disabled: false })));
   assert.ok(view.container.querySelector('[data-testid="settings-extensions-splash-empty"]'));
   await view.unmount();
-});
-
-// ── Plugin settings entries (Gateway F_13 D-08) ──────────────────────────────
-
-const PLUGIN_PAGES = { pages: [{ package_id: 'pkg.a', title: 'Aurora' }, { package_id: 'pkg.b', title: 'Hive' }] };
-
-test('plugin settings entries follow the Extensions module in navigation order', () => {
-  const modules = ['general', 'extensions', 'experimental'].map((id) => ({ module: { id } }));
-  const pages = applicationSettingsModule.parseSettingsPages(PLUGIN_PAGES);
-  const ids = (entries) => entries.map((entry) => entry.id);
-  assert.deepEqual(ids(pluginPagesModule.withPluginEntries(modules, pages)),
-    ['general', 'extensions', 'extension-page:pkg.a', 'extension-page:pkg.b', 'experimental']);
-  const entries = pluginPagesModule.withPluginEntries(modules, pages);
-  assert.equal(entries[1].module, modules[1]);
-  assert.deepEqual(entries[2].page, { packageId: 'pkg.a', title: 'Aurora' });
-  // Without the Extensions module (hidden by the access policy) there are no plugin entries.
-  assert.deepEqual(ids(pluginPagesModule.withPluginEntries([modules[0], modules[2]], pages)), ['general', 'experimental']);
-  assert.deepEqual(ids(pluginPagesModule.withPluginEntries(modules, [])), ['general', 'extensions', 'experimental']);
-});
-
-test('plugin settings pages are read only while enabled and connected, and kept across a disconnect', async () => {
-  const titles = [];
-  function Probe({ enabled }) {
-    const pages = pluginPagesModule.useApplicationSettingsPages(enabled);
-    titles.push(pages.map((page) => page.title).join(','));
-    return null;
-  }
-  const services = settingsRequest(() => PLUGIN_PAGES);
-  const container = document.createElement('div');
-  document.body.append(container);
-  const root = createRoot(container);
-  const render = (enabled, connected) => act(async () => {
-    root.render(createElement(SettingsServicesProvider, { isConnected: connected, connectionState: connected ? 'ready' : 'closed',
-      request: services.request }, createElement(Probe, { enabled })));
-    await settle();
-  });
-  try {
-    await render(false, true);
-    await render(true, false);
-    assert.deepEqual(services.calls, []);
-    await render(true, true);
-    assert.deepEqual(services.calls, [['webui.settings.pages', {}]]);
-    assert.equal(titles.at(-1), 'Aurora,Hive');
-    await render(true, false);
-    assert.equal(titles.at(-1), 'Aurora,Hive');
-    await render(false, true);
-    assert.equal(titles.at(-1), '');
-    assert.deepEqual(services.calls, [['webui.settings.pages', {}]]);
-  } finally {
-    await act(async () => root.unmount());
-    container.remove();
-  }
-  const warn = console.warn;
-  console.warn = () => {};
-  const failing = settingsRequest(() => { throw new Error('offline'); });
-  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
-    request: failing.request }, createElement(Probe, { enabled: true })));
-  try {
-    assert.equal(failing.calls.length, 1);
-    assert.equal(titles.at(-1), '');
-  } finally {
-    console.warn = warn;
-    await view.unmount();
-  }
-});
-
-test('a plugin settings entry mounts only its own package page', async () => {
-  const transport = splashTransport({});
-  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
-  runtime.start();
-  const container = document.createElement('div');
-  document.body.append(container);
-  const root = createRoot(container);
-  const show = (packageId, title) => act(async () => {
-    root.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
-      createElement(pluginPagesModule.PluginSettingsPage, { page: { packageId, title } })));
-    await settle();
-  });
-  const readies = () => transport.dispatches.filter((request) => request.event === 'ui.ready' && request.target.slotId === SETTINGS_SLOT)
-    .map((request) => [request.target.packageId, request.target.instanceKey]);
-  const page = (packageId, value) => act(async () => {
-    transport.render(packageId, { component: 'Text', props: { value } }, SETTINGS_SLOT);
-    await settle();
-  });
-  try {
-    await show('pkg.a', 'Aurora');
-    assert.deepEqual(readies(), [['pkg.a', 'main']]);
-    assert.equal(container.querySelector('[data-testid="settings-extension-page"]').dataset.variant, 'pkg.a');
-    await page('pkg.a', 'Aurora page');
-    assert.match(container.textContent, /Aurora page/);
-    await show('pkg.b', 'Hive');
-    assert.deepEqual(readies(), [['pkg.a', 'main'], ['pkg.b', 'main']]);
-    await page('pkg.a', 'Late Aurora page');
-    await page('pkg.b', 'Hive page');
-    assert.match(container.textContent, /Hive page/);
-    assert.doesNotMatch(container.textContent, /Aurora page/);
-  } finally {
-    await act(async () => root.unmount());
-    container.remove();
-    runtime.dispose();
-  }
 });
 
 test('the Extensions module keeps only host features', () => {

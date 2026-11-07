@@ -1,22 +1,15 @@
 /**
- * Application settings (Gateway S_10 sections 3 and 4): parse the settings pages and splash settings and
- * compute the shown and adjusted orders. No React or client dependency; callers pass the request function.
+ * Host splash settings (Gateway S_10 sections 3 and 4): parse the splash settings and compute the shown and
+ * adjusted orders. No React or client dependency; callers pass the request function. Extension settings
+ * themselves come through the shared settings catalog (AgentServer S_18).
  */
 
 import type { LocalizedText } from '../catalog/components/localizedText.ts';
 
-export const SETTINGS_PAGE_SLOT_ID = 'application.settings.page';
-export const SETTINGS_PAGE_INSTANCE_KEY = 'main';
-export const SETTINGS_PAGES_METHOD = 'webui.settings.pages';
 export const SPLASH_SETTINGS_METHOD = 'webui.splash.settings';
 export const SPLASH_SETTINGS_UPDATE_METHOD = 'webui.splash.settings.update';
 
 /** Titles come from the manifest ``display.name``: one string or ``{zh, en}``, resolved when shown. */
-export interface ApplicationSettingsPage {
-  packageId: string;
-  title: LocalizedText;
-}
-
 export interface SplashProviderSetting {
   packageId: string;
   title: LocalizedText;
@@ -45,16 +38,6 @@ function title(value: unknown): value is LocalizedText {
 
 function titleOf(value: LocalizedText): LocalizedText {
   return typeof value === 'string' ? value : { zh: value.zh, en: value.en };
-}
-
-export function parseSettingsPages(value: unknown): ApplicationSettingsPage[] {
-  if (!isRecord(value) || !Array.isArray(value.pages)) return [];
-  const seen = new Set<string>();
-  return value.pages.flatMap((item) => {
-    if (!isRecord(item) || !text(item.package_id) || !title(item.title) || seen.has(item.package_id)) return [];
-    seen.add(item.package_id);
-    return [{ packageId: item.package_id, title: titleOf(item.title) }];
-  });
 }
 
 export function parseSplashSettings(value: unknown): SplashSettings | null {

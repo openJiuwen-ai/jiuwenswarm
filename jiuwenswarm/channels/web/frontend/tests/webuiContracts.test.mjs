@@ -54,11 +54,8 @@ test('catalog contains the supported components', () => {
     rootComponents: ['MediaSurface'],
     strictRoot: true,
   });
-  assert.deepEqual(componentCatalog.getSlot('application.settings.page'), {
-    id: 'application.settings.page',
-    display: 'list',
-    scope: 'application',
-  });
+  // Gateway settings share application.settings with AgentServer packages; there is no separate page slot.
+  assert.ok(!componentCatalog.getSlot('application.settings.page'));
   assert.deepEqual(componentCatalog.getSlot('application.menu.main').rootComponents, ['Iframe']);
   assert.equal(WEBUI_COMPONENT_SCHEMA_VERSION, 1);
 });

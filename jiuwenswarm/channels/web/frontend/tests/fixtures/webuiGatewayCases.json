@@ -1591,8 +1591,8 @@
     "valid": false
   },
   {
-    "name": "FileImport in the settings page slot",
-    "slot": "application.settings.page",
+    "name": "FileImport in the application settings slot",
+    "slot": "application.settings",
     "root": {
       "component": "Box",
       "children": [
@@ -1751,8 +1751,8 @@
     "valid": false
   },
   {
-    "name": "application.settings.page rejects a MediaSurface root",
-    "slot": "application.settings.page",
+    "name": "application.settings rejects a MediaSurface root",
+    "slot": "application.settings",
     "root": {
       "component": "MediaSurface",
       "props": {

@@ -250,6 +250,22 @@ async def test_slow_ready_handlers_time_out(tmp_path, monkeypatch):
         await runtime.shutdown()
 
 
+def _settings_items(package_id: str) -> list[dict]:
+    """An S_18 settings menu with one application-scoped page (instance ``main``)."""
+    menu, section = f"{package_id}::menu", f"{package_id}::section"
+    slot = {"type": "web.slot.contribution", "slot": "application.settings"}
+    return [
+        {**slot, "id": "menu", "kind": "menu", "location": {"after": "extensions"},
+         "title": {"zh": "主题", "en": "Theme"}, "icon": "image"},
+        {**slot, "id": "section", "kind": "section", "location": {"menu": menu}, "title": {"zh": "主题", "en": "Theme"}},
+        {**slot, "id": "main", "location": {"menu": menu, "section": section}, "renderer": {"kind": "webui-tree"},
+         "scope": "application", "instanceKey": "main"},
+    ]
+
+
+SETTINGS = "application.settings"
+
+
 class Previewer:
     """A settings page that asks for its own splash preview when it mounts (F_14)."""
 
@@ -262,7 +278,7 @@ class Previewer:
 
     async def ready(self, event, ops, next_handler):
         target = event.event_input.target
-        if target.slot_id == "application.settings.page":
+        if target.slot_id == SETTINGS:
             try:
                 self.answers.append(await ops.splash.preview())
             except ValueError as exc:
@@ -279,6 +295,9 @@ class Previewer:
         root.mkdir(parents=True, exist_ok=True)
         items = []
         for slot in self.slots:
+            if slot == SETTINGS:
+                items.extend(_settings_items(self.package_id))
+                continue
             item = {"type": "web.slot.contribution", "slot": slot}
             if slot == "application.splash" and self.splash is not None:
                 item["splash"] = self.splash
@@ -290,7 +309,6 @@ class Previewer:
         )
 
 
-SETTINGS = "application.settings.page"
 
 
 async def test_preview_sends_the_declared_splash_to_the_calling_connection(tmp_path):

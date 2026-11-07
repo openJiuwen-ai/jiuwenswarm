@@ -83,15 +83,16 @@ def _slot(capacity: str, scope: SlotScope = SlotScope.SESSION) -> SlotSpec:
 # content and does not depend on a chat session.
 # ``application.background`` is the full-window layer below the workspace and
 # ``application.splash`` the startup layer above it; both only accept a
-# ``MediaSurface`` root. ``application.settings.page`` holds one settings page
-# per package in the host Extensions settings module (S_10).
+# ``MediaSurface`` root. ``application.settings`` carries the application-scoped
+# settings items of Gateway packages; the slot is shared with AgentServer packages,
+# and the Gateway only renders its own (S_10, AgentServer S_18).
 SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
     {
         "application.entry": _slot("single", SlotScope.APPLICATION),
         "application.sidebar.footer": _slot("list", SlotScope.APPLICATION),
         "application.background": _slot("single", SlotScope.APPLICATION),
         "application.splash": _slot("single", SlotScope.APPLICATION),
-        "application.settings.page": _slot("list", SlotScope.APPLICATION),
+        "application.settings": _slot("list", SlotScope.APPLICATION),
     }
 )
 

@@ -1,8 +1,7 @@
 import { useCallback, useMemo, useState, useSyncExternalStore, type HTMLAttributes } from 'react';
-import { Check, CircleAlert, Puzzle } from 'lucide-react';
+import { Check, CircleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Loading } from '../../components/ui';
-import { resolveLocalizedText } from '../webui/renderer/useLocalizedText';
 import { SettingItemRenderer, SettingsConfirmDialog, SettingsSection } from './components';
 import type { SettingsAccessResult, SettingsModuleDefinition, SettingsPageDefinition } from './registry/types';
 import { restrictSettingsAccess } from './registry/buildSettingsPageDefinition';
@@ -10,12 +9,6 @@ import { usePluginSettings } from './registry/usePluginSettings';
 import { useSettingsServices } from './services/SettingsServicesProvider';
 import { formatSettingsSaveError, InlineSaveFeedbackContext } from './services/settingsSaveFeedback';
 import { SettingsSourceProvider, SettingsSourceVisibility } from './services/SettingsSourceProvider';
-import {
-  PLUGIN_PAGES_ANCHOR,
-  PluginSettingsPage,
-  useApplicationSettingsPages,
-  withPluginEntries,
-} from './modules/extensions/pluginPages';
 import type { SettingsModuleTarget } from './settingsNavigation';
 import './SettingsPage.css';
 
@@ -114,8 +107,7 @@ export function SettingsPageLayout({
   initialModuleId?: SettingsModuleTarget;
   sidebar?: SettingsSidebarControls;
 }) {
-  const { t, i18n } = useTranslation();
-  const language = i18n.resolvedLanguage ?? i18n.language ?? 'zh';
+  const { t } = useTranslation();
   const { definition, loadError, contributionErrors } = usePluginSettings(baseDefinition);
   const { saveQueue, unsavedChanges } = useSettingsServices();
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
@@ -148,19 +140,12 @@ export function SettingsPageLayout({
         .filter(({ visible }) => visible.sections.length > 0),
     [definition],
   );
-  // Plugin settings entries follow the Extensions module and share its access result (Gateway F_13 D-08).
-  const pluginPages = useApplicationSettingsPages(
-    availableModules.some(({ module }) => module.id === PLUGIN_PAGES_ANCHOR),
-  );
-  const entries = useMemo(() => withPluginEntries(availableModules, pluginPages), [availableModules, pluginPages]);
-  const activeEntry = entries.find((entry) => entry.id === (activeModuleId ?? initialModuleId)) ?? entries[0];
-  const active = activeEntry?.module;
-  const activePage = activeEntry?.page;
+  const active = availableModules.find(({ module }) => module.id === (activeModuleId ?? initialModuleId)) ?? availableModules[0];
   const onNavigate = sidebar?.peek ? sidebar.onNavigate : undefined;
   const selectModule = useCallback(
     (nextId: string) => {
       if (saveStatus.status === 'saving') return;
-      if (nextId === activeEntry?.id) {
+      if (nextId === active?.module.id) {
         onNavigate?.();
         return;
       }
@@ -172,9 +157,9 @@ export function SettingsPageLayout({
       setActiveModuleId(nextId);
       onNavigate?.();
     },
-    [activeEntry?.id, saveQueue, saveStatus.status, unsavedChanges, onNavigate],
+    [active?.module.id, saveQueue, saveStatus.status, unsavedChanges, onNavigate],
   );
-  if (!activeEntry) return null;
+  if (!active) return null;
   return (
     <div
       className={`settings-page${sidebar?.collapsed ? ' settings-page--collapsed' : ''}${sidebar?.isActive === false ? ' settings-page--peek-only' : ''}`}
@@ -193,22 +178,21 @@ export function SettingsPageLayout({
           >
             <h1 data-testid="settings-nav-title">{t('settingsPanel.title')}</h1>
             <nav data-testid="settings-nav-list">
-              {entries.map((entry) => {
-                const Icon = entry.module ? entry.module.module.icon : Puzzle;
+              {availableModules.map(({ module }) => {
+                const Icon = module.icon;
                 return (
                   <button
-                    key={entry.id}
+                    key={module.id}
                     type="button"
                     className="settings-page__nav-button"
-                    aria-current={activeEntry.id === entry.id ? 'page' : undefined}
+                    aria-current={active.module.id === module.id ? 'page' : undefined}
                     data-testid="settings-nav-button"
-                    data-variant={entry.id}
-                    title={entry.page ? resolveLocalizedText(entry.page.title, language) : undefined}
-                    onClick={() => selectModule(entry.id)}
+                    data-variant={module.id}
+                    onClick={() => selectModule(module.id)}
                     disabled={saveStatus.status === 'saving'}
                   >
                     <Icon aria-hidden />
-                    <span>{entry.module ? t(entry.module.module.titleKey) : entry.page ? resolveLocalizedText(entry.page.title, language) : null}</span>
+                    <span>{t(module.titleKey)}</span>
                   </button>
                 );
               })}
@@ -221,8 +205,8 @@ export function SettingsPageLayout({
           <div className="settings-page__content">
             <header className="settings-page__header" data-testid="settings-header">
               <div className="settings-page__header-copy">
-                <h1 data-testid="settings-module-title">{active ? t(active.module.titleKey) : activePage ? resolveLocalizedText(activePage.title, language) : null}</h1>
-                {active?.module.descriptionKey ? <p data-testid="settings-module-description">{t(active.module.descriptionKey)}</p> : null}
+                <h1 data-testid="settings-module-title">{t(active.module.titleKey)}</h1>
+                {active.module.descriptionKey ? <p data-testid="settings-module-description">{t(active.module.descriptionKey)}</p> : null}
               </div>
               {saveStatus.status === 'saving' ? (
                 <span className="settings-page__status" role="status" data-testid="settings-save-status" data-variant="saving">
@@ -252,29 +236,23 @@ export function SettingsPageLayout({
               </p>
             )}
             <InlineSaveFeedbackContext.Provider value={registerInlineFeedback}>
-              {active ? (
-                <SettingsSourceProvider source={active.module.source}>
-                  <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
-                    {active.visible.sections.map(({ section, items }) => (
-                      <SettingsSourceVisibility key={section.id} when={section.visibleWhen}>
-                        <SettingsSection
-                          title={section.titleKey ? t(section.titleKey) : undefined}
-                          description={section.descriptionKey ? t(section.descriptionKey) : undefined}
-                          separatedRows={section.separatedRows === true}
-                        >
-                          {items.map(({ item, access }) => (
-                            <SettingsItem key={item.id} item={item} access={access} />
-                          ))}
-                        </SettingsSection>
-                      </SettingsSourceVisibility>
-                    ))}
-                  </div>
-                </SettingsSourceProvider>
-              ) : activePage ? (
-                <div className="settings-page__module" data-settings-module={activeEntry.id} data-testid="settings-module" data-variant={activeEntry.id}>
-                  <PluginSettingsPage page={activePage} />
+              <SettingsSourceProvider source={active.module.source}>
+                <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
+                  {active.visible.sections.map(({ section, items }) => (
+                    <SettingsSourceVisibility key={section.id} when={section.visibleWhen}>
+                      <SettingsSection
+                        title={section.titleKey ? t(section.titleKey) : undefined}
+                        description={section.descriptionKey ? t(section.descriptionKey) : undefined}
+                        separatedRows={section.separatedRows === true}
+                      >
+                        {items.map(({ item, access }) => (
+                          <SettingsItem key={item.id} item={item} access={access} />
+                        ))}
+                      </SettingsSection>
+                    </SettingsSourceVisibility>
+                  ))}
                 </div>
-              ) : null}
+              </SettingsSourceProvider>
             </InlineSaveFeedbackContext.Provider>
           </div>
         </main>

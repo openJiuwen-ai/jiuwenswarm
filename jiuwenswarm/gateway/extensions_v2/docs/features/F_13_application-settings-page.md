@@ -7,7 +7,7 @@
 | 类型 | feature |
 | 编号 / slug | `F_13 / application-settings-page` |
 | 建档日期 | 2026-11-05 |
-| 后续修订 | 2026-11-05：导入与导出对远程浏览器同样开放（D-07）；2026-11-06：每个插件的设置页在设置导航中单独一项，“扩展”模块只放宿主功能（D-08）；与 AgentServer 插件设置并存（D-09）；2026-11-07：标题改取 manifest.json 的 `display.name` 并按界面语言显示（D-10） |
+| 后续修订 | 2026-11-07：统一到 S_18 设置贡献模型（D-11）；2026-11-05：导入与导出对远程浏览器同样开放（D-07）；2026-11-06：每个插件的设置页在设置导航中单独一项，“扩展”模块只放宿主功能（D-08）；与 AgentServer 插件设置并存（D-09）；2026-11-07：标题改取 manifest.json 的 `display.name` 并按界面语言显示（D-10） |
 | 计划条目 | [EXTV2-GW-12](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 1.1、3.3 节 |
 | 方案成熟度 | 已确认，已实现 |
@@ -39,7 +39,7 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 
 ### 2.3 本次范围与非目标
 
-范围：`application.settings.page` 槽位与前端扩展设置模块；宿主方法；开场偏好的保存与生效；
+范围：Gateway 包的设置贡献（2026-11-07 起按 AgentServer S_18 声明，见 D-11）与前端扩展设置模块；宿主方法；开场偏好的保存与生效；
 `disabled` / `removed`；`FileImport` 组件、导入凭据与上传路由；`ops.ui.download` 与下载路由；`app_web` 转发。
 
 非目标：导入进度的断点续传；设置页搜索；
@@ -58,7 +58,7 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 
 ### 4.1 方案概览
 
-插件声明 `application.settings.page`，在设置导航中单独成项，排在宿主的“扩展”模块之后。“扩展”模块只放宿主自带的“启动开场”分组，
+插件按 S_18 在 `application.settings` 上声明菜单、分类与配置项，经共享目录排在宿主的“扩展”模块之后（D-11；此前为 `application.settings.page`，见 D-01、D-08）。“扩展”模块只放宿主自带的“启动开场”分组，
 经宿主方法读写开场偏好；Gateway 把偏好保存在 `<data_dir>/host/splash.json`，`webui.splash.providers` 直接给出生效顺序。
 导入由宿主组件 `FileImport` 发起：前端先取得导入凭据，把用户选中的文件流式上传到 Gateway，
 再以 `ui.change` 把凭据交给插件；Gateway 把凭据换成数据目录中的相对路径。导出由插件调用 `ops.ui.download`，
@@ -66,7 +66,7 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 
 ### 4.2 关键决策
 
-#### D-01 新增 Gateway 应用级设置槽位
+#### D-01 新增 Gateway 应用级设置槽位（已被 D-11 替代）
 
 不复用 `application.settings`：它属于 AgentServer 的会话级渲染链路，改成双宿主会让同一槽位的作用域取决于包的
 `domain`。新槽位与 `application.entry` 等同属 Gateway，按连接寻址，插件不需要会话。
@@ -111,7 +111,7 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 历史：首版实现（同日）两处路由都只接受回环地址，因为概览把远程浏览器上传列为推迟，而这一点当时没有得到用户的明确答复。
 用户随后决定都放开，回环判断与相应的前端提示一并移除。
 
-#### D-08 每个插件在设置导航中单独一项，“扩展”只放宿主功能（2026-11-06）
+#### D-08 每个插件在设置导航中单独一项，“扩展”只放宿主功能（2026-11-06；实现方式已被 D-11 替代，导航效果保留）
 
 首版把所有插件的设置页放在“扩展”模块里，每个插件一个页签。用户试用后要求按插件分开，并保留“扩展”放宿主自己的功能：
 
@@ -124,7 +124,7 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 放弃的做法：在 manifest 的设置页贡献中另设标题或图标字段（新增契约；用户选择直接用插件名与统一图标）；
 把启动开场移到“常规”或单独成项（用户选择保留“扩展”放宿主功能）。
 
-#### D-09 与 AgentServer 插件设置并存（2026-11-06）
+#### D-09 与 AgentServer 插件设置并存（2026-11-06；已被 D-11 替代）
 
 `releases/0.2.9.beta3` 引入了 AgentServer 插件设置：`webui.settings.catalog` 返回 `kind: menu|section|item` 贡献，
 按 location 规则合成进已有设置模块（[S_18](../../../../extensions_v2/docs/specs/S_18_settings-location.md)）；
@@ -139,7 +139,7 @@ S_18 说明 Gateway 域插件目录未接入该接口。合入时两套机制并
 目标分支的侧栏收起与悬浮、初始模块、行内保存错误和插件目录错误提示同样作用于插件项。目标分支已移除布局底部通用的
 `application.settings` 宿主，本特性不恢复。统一两套机制（例如让 Gateway 包也按 location 声明设置位置）留待后续评估。
 
-#### D-10 标题取 manifest.json 的 `display.name`（2026-11-07）
+#### D-10 标题取 manifest.json 的 `display.name`（2026-11-07；设置菜单标题改由 D-11 的声明提供，本条只用于启动开场列表）
 
 `releases/0.2.9.beta3` 把系统插件包统一为 `manifest.json`：包归属写在 `package.domain`，展示信息写在 `display`，
 所有文案为 `{zh, en}`（[系统插件包指南](../../../../extensions_v2/docs/designs/system-plugin-package-guide.md)）。
@@ -147,6 +147,24 @@ S_18 说明 Gateway 域插件目录未接入该接口。合入时两套机制并
 `display.name`：单个字符串按双语同值，缺一种语言时取另一种，为空或超过 200 字节时忽略；`webui.settings.pages`
 与 `webui.splash.settings` 的 `title` 改为 `{zh, en}`，前端设置导航、页头与启动开场列表按界面语言显示，切换语言即时生效。
 前端仍接受字符串标题，以兼容旧的应答。放弃的做法：由 Gateway 选定一种语言（Gateway 不知道浏览器的界面语言）。
+
+#### D-11 统一到 S_18 的设置贡献模型（2026-11-07，PR #10763 检视）
+
+检视指出：已有 `webui.settings.catalog` 与 S_18，本特性又加了 `application.settings.page`、`webui.settings.pages`
+和设置导航的单独拼接，目录、刷新、错误提示与国际化出现两套语义；S_18 明文规定“没有另一个设置承载槽位”；
+新目录读取失败时直接清空列表；D-01 以“原设置属于会话级”为理由，但 S_18 已支持 application 范围
+（真正的原因是 S_18 写明 Gateway 域插件目录未接入）。现在：
+
+- 两侧保留各自的插件归属：AgentServer 包仍由 AgentServer 列出，Gateway 包由 Gateway 列出；声明方式相同（S_18），
+  Gateway 配置项须显式为 application 范围。校验规则在 Gateway 侧另实现一份（模块边界不允许互相 import），
+  两侧共用 `tests/fixtures/settings_contribution_cases.json`。
+- `webui.settings.catalog` 由 Gateway 取 AgentServer 的目录后追加自己包的声明，`revision` 覆盖两者；前端只有一套目录、
+  刷新、失败提示与国际化（`usePluginSettings`），失败时保留上次目录，不再清空。
+- `application.settings` 由两侧共用，Gateway 只认领其包已声明的配置项实例，其余转发给 AgentServer。
+- 删除 `application.settings.page`、`webui.settings.pages`、`pluginPages.tsx` 与 `SettingsPageLayout` 中的拼接，
+  `SettingsPageLayout` 恢复为目标分支原样；“扩展”模块只含宿主的开场设置。插件菜单写 `location.after: "extensions"`
+  即可得到 D-08 的导航效果。
+- 代价：插件设置页从“整页”变为放在设置行内容中的组件树，布局需随插件调整；主题背景插件需改写声明。
 
 ### 4.3 替代方案与排除理由
 
@@ -176,8 +194,8 @@ S_18 说明 Gateway 域插件目录未接入该接口。合入时两套机制并
 | 前端 `catalog/`、`renderer/adapters/webuiFileImport/` | `FileImport` 规则与适配器 |
 | 前端 `transfers/` | 导入服务（凭据、上传、完成）与下载处理 |
 | 前端 `splash/` | 读取 `customized` 合并顺序 |
-| 前端 `features/settings/modules/extensions/` | “扩展”模块：启动开场分组；插件设置项的读取与挂载（`pluginPages.tsx`） |
-| 前端 `features/settings/SettingsPageLayout.tsx` | 在导航中“扩展”之后为每个插件加一项（D-08） |
+| 前端 `features/settings/modules/extensions/` | “扩展”模块：启动开场分组（插件设置经共享目录，D-11） |
+| 前端 `features/settings/SettingsPageLayout.tsx` | 2026-11-07 起不再修改，恢复目标分支原样（D-11） |
 | 前端 `react/WebUIAppRoot.tsx` | 提供导入服务，订阅 `webui.download` |
 
 ### 5.2 状态与生命周期
@@ -269,6 +287,6 @@ F_13-V-11（2026-11-06，D-08）：
 
 - 远程浏览器使用导入与导出时，凭据随请求地址经网络传输；部署方应使用 HTTPS。两台机器之间的导入与导出尚未实测。
 - 桌面打包版与真实 Gateway 的联调随壁纸插件进行。
-- Gateway 插件设置页与 AgentServer 插件设置（S_18）是两套机制，统一方式待评估（D-09）。
+- 插件设置页放在设置行内容中，复杂页面（如主题图库）需随插件调整布局（D-11）。
 - 设置页在 560 px 宽时的既有横向溢出不属于本条目，未处理。
 - `FileImport` 的“完成”状态在插件重新渲染后不保留（节点随新版本重建）；插件应在页面中自行反映导入结果。

@@ -34,11 +34,11 @@ from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS, W
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
 from jiuwenswarm.gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import SplashPreferences
+from jiuwenswarm.gateway.extensions_v2.webui.settings_contributions import SETTINGS_SLOT, package_settings
 from jiuwenswarm.gateway.extensions_v2.webui.transfers import TransferManager
 
-SETTINGS_PAGE_SLOT = "application.settings.page"
 SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background", "application.splash",
-                   SETTINGS_PAGE_SLOT})
+                   SETTINGS_SLOT})
 SPLASH_SLOT = "application.splash"
 #: Display-only slots whose lifecycle frames bypass request policy (S_09 section 3).
 PLATFORM_SLOTS = frozenset({"application.background", SPLASH_SLOT})
@@ -169,15 +169,21 @@ class BrowserBridge:
             return {"zh": names["zh"], "en": names["en"]}
         return {"zh": package_id, "en": package_id}
 
-    def settings_pages(self) -> list[dict[str, Any]]:
-        """Packages contributing ``application.settings.page``, in publication order (S_10 section 3.1)."""
-        return [{"package_id": package.package_id, "title": self.package_title(package.package_id)}
+    def settings_contributions(self) -> list[dict[str, Any]]:
+        """Settings declarations of active Gateway packages, as ``webui.settings.catalog`` items (S_18, S_10 section 2)."""
+        return [{"package_id": package.package_id, "id": item_id, **settings}
                 for package in self.application_packages()
-                if any(isinstance(item, Mapping) and item.get("type") == "web.slot.contribution"
-                       and item.get("slot") == SETTINGS_PAGE_SLOT for item in package.ui.get("items", []))]
+                for item_id, settings in package_settings(package.ui)]
+
+    @staticmethod
+    def _settings_instance(package, instance_key: str) -> bool:
+        """Whether the package declared a settings item with this instance key."""
+        return any(settings["kind"] == "item" and settings["instance_key"] == instance_key
+                   for _, settings in package_settings(package.ui))
 
     def validate_package(self, package) -> None:
         """Validate browser declarations before publication."""
+        package_settings(package.ui)
         splash = self.splash_declaration(package)
         if splash is not None and splash["declared_max_duration_ms"] > MAX_SPLASH_MS:
             logger.warning("[GatewayExtensions] %s declares a %d ms splash; it runs for at most %d ms",
@@ -666,6 +672,11 @@ class BrowserBridge:
             return None
         slot_id = target.get("slot_id")
         if slot_id not in SLOTS:
+            return None
+        # application.settings is shared with AgentServer packages: only claim declared Gateway instances.
+        if slot_id == SETTINGS_SLOT and (not package_id or not any(
+                package.package_id == package_id and self._settings_instance(package, target.get("instance_key", ""))
+                for package in own)):
             return None
         if (set(params) - {"event", "target", "payload"} or set(target) - {"scope", "slot_id", "package_id", "instance_key"}
                 or target.get("scope") != "application"):
