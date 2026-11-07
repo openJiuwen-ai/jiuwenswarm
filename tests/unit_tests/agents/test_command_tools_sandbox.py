@@ -153,6 +153,34 @@ async def test_bound_sandbox_background_never_uses_host_subprocess(
 
 
 @pytest.mark.asyncio
+async def test_bound_sandbox_threads_configured_head_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        command_tools,
+        "_get_shell_output_config",
+        lambda: (20000, 0.2),
+    )
+
+    captured: dict[str, float] = {}
+
+    def _recording_clip(value: str, max_chars: int, *, head_ratio: float = 0.6) -> str:
+        captured["head_ratio"] = head_ratio
+        return value
+
+    monkeypatch.setattr(command_tools, "_clip_head_tail", _recording_clip)
+    sys_operation = _SysOperation("A")
+    token = bind_command_execution(sys_operation, sandboxed=True)
+    try:
+        await _invoke(command="printf ok")
+    finally:
+        reset_command_execution(token)
+
+    assert captured["head_ratio"] == 0.2
+
+
+@pytest.mark.asyncio
 async def test_bound_sandbox_rejects_workdir_escape_before_execution(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
