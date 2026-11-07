@@ -2,9 +2,12 @@
 
 """交付台账与占位卡（P6 静默吞回复兜底）。
 
-supervisor 在派发接受时刻登记台账（deadline 墙钟），用户可见白名单帧送达即重置；
-到期未冲刷时按占位帧线缆五要素（构造先例 ``server/gateway_push/wire.py``
-``build_server_push_wire``）经网关 socket 直发 ``chat.error`` 占位卡。
+supervisor 在派发接受时刻登记台账（deadline 墙钟），任意送达帧即重置
+（P7 活性语义：帧流在推进＝worker 未中断；可见白名单帧额外记
+``last_visible_output_ts``）；到期未冲刷时按占位帧线缆五要素（构造先例
+``server/gateway_push/wire.py`` ``build_server_push_wire``）经网关 socket
+直发 ``chat.error`` 占位卡。控制面请求（``__cron__``/``__health_check__``
+渠道、``interrupt_`` 前缀）零可见回复属设计使然，登记时刻直接跳过。
 台账只存投递身份与游标，不存用户正文。
 
 契约全文见
@@ -22,9 +25,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from openjiuwen_protocol.e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
-from openjiuwen_protocol.e2a.wire_codec import encode_agent_chunk_for_wire
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,12 @@ PLACEHOLDER_TERMINAL_STATES = frozenset({PLACEHOLDER_SENT, PLACEHOLDER_RETRACTED
 # 用户可见白名单：send True 即重置 deadline；流式模式 chat.delta 也计。
 VISIBLE_EVENT_WHITELIST = frozenset({"chat.final", "chat.error", "chat.ask_user_question"})
 STREAM_VISIBLE_EVENT_WHITELIST = VISIBLE_EVENT_WHITELIST | {"chat.delta"}
+
+# 控制面请求豁免（P7 误报根治）：这些请求的用户可见回复为零帧属设计使然
+# （cron 调度/健康探测无用户渠道可回，interrupt 中断控制操作无回复语义），
+# 登记台账只会恒发占位卡——登记时刻直接跳过。
+CONTROL_CHANNEL_IDS = frozenset({"__cron__", "__health_check__"})
+CONTROL_REQUEST_ID_PREFIXES = ("interrupt_",)
 
 # 投递身份键（网关 message_handler._DELIVERY_IDENTITY_METADATA_KEYS 的镜像；
 # 单测断言两侧同值防漂移）。台账只允许存这些键的交集，绝不存用户正文。
@@ -129,9 +138,16 @@ class DeliveryLedger:
         worker_instance: str,
         deadline: float,
         dump_ref: str = "",
-    ) -> LedgerEntry:
-        """派发接受时刻登记（同步写）。"""
+    ) -> LedgerEntry | None:
+        """派发接受时刻登记（同步写）。控制面请求跳过（零可见回复属设计使然）。"""
         metadata = request.metadata or {}
+        if (str(getattr(request, "channel_id", "") or "") in CONTROL_CHANNEL_IDS
+                or str(request.request_id or "").startswith(CONTROL_REQUEST_ID_PREFIXES)):
+            logger.info(
+                "[DeliveryLedger] control-plane request skipped request_id=%s channel_id=%s",
+                request.request_id, getattr(request, "channel_id", ""),
+            )
+            return None
         identity = {
             key: metadata[key]
             for key in DELIVERY_IDENTITY_METADATA_KEYS
@@ -187,6 +203,11 @@ class DeliveryLedger:
             entry.dirty_at = entry.dirty_at or now
         event = wire_event(payload)
         if event is None or event not in STREAM_VISIBLE_EVENT_WHITELIST:
+            # 非白名单帧同样是活性信号（P7）：纯工具执行的长轮次零可见帧属
+            # 健康形态，帧流在推进即证明 worker 未中断——deadline 随任意
+            # 送达帧重置，占位卡只对「管线整体静默」报警。落盘仍走分级
+            # 批量（该链跑在 supervisor 事件循环线程上，禁逐帧 fsync）。
+            entry.deadline = now + self._idle_seconds
             self._flush_batched(entry, now)
             return
         entry.last_visible_output_ts = now
@@ -259,15 +280,22 @@ class DeliveryLedger:
 
     def due_entries(self, now: float | None = None) -> list[LedgerEntry]:
         now = time.time() if now is None else now
-        return [item for item in self._entries.values()
-                if item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
-                and item.deadline > 0 and item.deadline <= now]
+        due: list[LedgerEntry] = []
+        for item in self._entries.values():
+            if (item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
+                    and item.deadline > 0 and item.deadline <= now):
+                due.append(item)
+        return due
 
     def expired_entries(self, now: float | None = None) -> list[LedgerEntry]:
         now = time.time() if now is None else now
-        return [item for item in self._entries.values()
-                if item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
-                and item.registered_at > 0 and now - item.registered_at > self._expire_seconds]
+        expired: list[LedgerEntry] = []
+        for item in self._entries.values():
+            if (item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
+                    and item.registered_at > 0
+                    and now - item.registered_at > self._expire_seconds):
+                expired.append(item)
+        return expired
 
     def reap_terminal(self, now: float | None = None) -> int:
         """终态条目回收：超过保留窗的 sent/retracted/failed 删除内存与磁盘副本。
