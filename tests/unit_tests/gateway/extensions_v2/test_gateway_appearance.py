@@ -338,6 +338,32 @@ async def test_a_queued_request_of_a_released_package_without_provider_sends_not
         await runtime.shutdown()
 
 
+async def test_old_ops_called_from_the_new_activation_do_not_borrow_its_identity(tmp_path):
+    """The caller comes from the Ops that are used, not from whichever handler happens to run them."""
+    captured: dict = {}
+    first, second = Theme(THEME), Theme(THEME)
+
+    async def keep(ops, event):
+        captured["ops"] = ops
+
+    async def use_old(ops, event):
+        return await captured["ops"].appearance.apply({"accent": "#b45309"})
+
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(first.package(tmp_path / "theme"))
+        first.calls.append(keep)
+        await _ready(runtime, SimpleNamespace(closed=False), THEME)
+        runtime.publish(second.package(tmp_path / "theme"))  # reload: the first activation is released
+        second.calls.append(use_old)
+        await _ready(runtime, SimpleNamespace(closed=False), THEME)
+        [answer] = second.results
+        assert isinstance(answer, ValueError) and "inactive activation" in str(answer)
+        assert _frames(runtime) == []
+    finally:
+        await runtime.shutdown()
+
+
 async def test_closed_connection_forgets_its_provider(tmp_path):
     theme = Theme(THEME)
     runtime = await _start(tmp_path)
