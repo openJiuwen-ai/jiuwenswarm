@@ -781,17 +781,18 @@ function AppContent({
     useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
 
+  const mode = useSessionStore((s) => s.runtimes[sessionId]?.mode ?? 'agent');
+
   // 进入 team 会话时挂接实时事件订阅（attach_only）：mailbox / 后台触发的
   // 轮次输出才能实时到达前端。失败仅记录并静默降级（下次进入或重连重试），
   // 不打断会话使用。
   useEffect(() => {
     if (!sessionId || sessionId === 'new') return;
-    const sessionRuntime = useSessionStore.getState().getRuntime(sessionId);
-    if (sessionRuntime?.mode !== 'team') return;
-    attachTeamSession(sessionId, sessionRuntime.mode).catch((error) => {
+    if (mode !== 'team') return;
+    attachTeamSession(sessionId, mode).catch((error) => {
       console.warn('[teamAttach] failed to attach session:', sessionId, error);
     });
-  }, [sessionId]);
+  }, [sessionId, mode]);
 
   const {
     setCurrentSession,
@@ -836,7 +837,6 @@ function AppContent({
       || Boolean(project.project_dir && project.project_dir === session.project_dir)
     )) ?? null;
   }, [currentSession, projects, sessions, sessionId]);
-  const mode = useSessionStore((s) => s.runtimes[sessionId]?.mode ?? 'agent');
   const surfaceModeSupported = mode === 'agent' || mode === 'team';
   // The diagnosis view has its own switch: it needs an Agent or Team session that exists, but not the trajectory UI.
   const diagnosisEntryAvailable = trajectoryDiagnosisEnabled
