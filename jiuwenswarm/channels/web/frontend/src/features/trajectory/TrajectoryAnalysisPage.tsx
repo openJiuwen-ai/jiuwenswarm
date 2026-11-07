@@ -15,6 +15,7 @@ import {
   type DiagnosisSelectionState,
 } from './diagnosis/diagnosisSelection';
 import { canSubmitDiagnosis, highlightKeysOf } from './diagnosis/diagnosisState';
+import { unixNanoToMs } from './diagnosis/diagnosisView';
 import { DiagnosisRecordSelect } from './diagnosis/DiagnosisRecordSelect';
 import { DiagnosisSelectionBar } from './diagnosis/DiagnosisSelectionBar';
 import { DiagnosisSubpage } from './diagnosis/DiagnosisSubpage';
@@ -181,6 +182,26 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
     () => selectedNodeCount(selectionState, diagnosisLanes, fullScope),
     [diagnosisLanes, fullScope, selectionState],
   );
+  const diagnosedNodeCount = useMemo(() => {
+    const current = session.record;
+    if (current === null || diagnosisLanes.length === 0) return null;
+    if (current.scope_kind === 'full') {
+      return diagnosisLanes.reduce((sum, lane) => sum + lane.intervals.length, 0);
+    }
+    const laneRanges = new Map<string, { startMs: number; endMs: number }>();
+    for (const range of current.input.resolved_ranges ?? []) {
+      const startMs = unixNanoToMs(range.start_unix_nano);
+      const endMs = unixNanoToMs(range.end_unix_nano);
+      if (startMs === null || endMs === null || endMs < startMs) continue;
+      laneRanges.set(range.subject_id, { startMs, endMs });
+    }
+    return selectedNodeCount({
+      mode: 'lanes',
+      axisRange: null,
+      laneRanges,
+      excluded: new Set(),
+    }, diagnosisLanes, false);
+  }, [diagnosisLanes, session.record]);
   const nodeLimitExceeded = selectedNodes > DIAGNOSIS_NODE_LIMIT;
   if (emptyNodesHint && (selectedNodes > 0 || fullScope)) setEmptyNodesHint(false);
   const canStart = canSubmitDiagnosis({
@@ -252,6 +273,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
               ? t('trajectory.analysis.summary', {
                 agents: summary.agents,
                 spans: summary.spans,
+                nodes: summary.nodes,
               })
               : t('trajectory.analysis.teamSummary', {
                 members: summary.team.members,
@@ -259,6 +281,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
                 tasks: summary.team.tasks,
                 reviews: summary.team.reviewRuns,
                 spans: summary.spans,
+                nodes: summary.nodes,
               })}
           </span>
         )}
@@ -363,6 +386,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           focusedFindingId={focused?.causeId ?? null}
           onFocusFinding={focusCause}
           onComposerFilled={onComposerFilled ?? onBack}
+          nodeCount={diagnosedNodeCount}
         />
       </div>
       {selecting ? (

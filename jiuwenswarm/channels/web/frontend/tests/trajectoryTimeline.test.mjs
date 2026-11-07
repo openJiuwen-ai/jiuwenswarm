@@ -157,8 +157,8 @@ test('turn boundaries land on the cumulative spend where each turn opens', () =>
   ]);
 
   assert.deepEqual(model.turnBoundaries, [
-    { turn: 1, time: 0 },
-    { turn: 2, time: 600 },
+    { turn: 1, start: 0, end: 600 },
+    { turn: 2, start: 600, end: 850 },
   ]);
 });
 
