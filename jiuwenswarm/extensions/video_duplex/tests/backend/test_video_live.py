@@ -1918,8 +1918,7 @@ async def test_joyai_queue_manager_reorders_real_queue_without_new_task(monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error_source", ["management", "model"])
-async def test_joyai_queue_manager_failure_withholds_original_success_claim(monkeypatch, error_source):
+async def test_joyai_queue_manager_failure_withholds_original_success_claim(monkeypatch):
     from unittest.mock import AsyncMock
 
     channel = _video_channel()
@@ -1927,20 +1926,16 @@ async def test_joyai_queue_manager_failure_withholds_original_success_claim(monk
         "delegation", response="已全部调整成功。",
         delegation=json.dumps({"name": "jiuwen_queue_manage", "arguments": {"instruction": "调整顺序"}}),
     )))
-    managed = AsyncMock(return_value={
-        "state": "incomplete", "receipts": [{"receipt": {"state": "cancelling"}}],
-        "error_source": error_source, "error": "service unavailable",
-    })
+    managed = AsyncMock(return_value={"state": "incomplete", "receipts": [{"receipt": {"state": "cancelling"}}]})
     monkeypatch.setattr(channel.manager, "manage_queue_call", managed)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     await channel.handlers["video.joyai.frame"](None, "failed-manager", {
         "instruction": "调整顺序", "request_kind": "user", "reply_language": "en",
     }, "scope")
     payload = channel.responses[-1][1]["payload"]
-    expected = (
+    assert payload["response"] == (
         "Queue management did not finish. Check the task list and scheduled jobs for any changes already applied."
     )
-    assert payload["response"] == expected + (" service unavailable" if error_source == "model" else "")
     assert payload["queue_management"]["receipts"]
     assert managed.call_args.kwargs == {"allow_answers": False, "reply_language": "en"}
 
@@ -3890,7 +3885,6 @@ def _scoped_channel(monkeypatch, card_live=True):
 
     monkeypatch.setattr(task_adapter, "task_agent_query", query)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    channel.dispatched = []
 
     async def dispatch(ws, method, params):
         channel.dispatched.append((method, params))

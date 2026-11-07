@@ -16,6 +16,7 @@ import os
 import threading
 from pathlib import Path
 
+from jiuwenswarm.server.ipc.io_loop import ipc_io
 from jiuwenswarm.server.ipc.stream import (
     _PIPE_AUTHKEY,
     IpcConnection,
@@ -83,6 +84,7 @@ class IpcServer:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._owner_lease: object | None = None
 
+    @ipc_io
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
         from filelock import FileLock
@@ -165,9 +167,11 @@ class IpcServer:
             return
         await self._queue.put(StreamConnection(reader, writer))
 
+    @ipc_io
     async def accept(self) -> IpcConnection:
         return await self._queue.get()
 
+    @ipc_io
     async def stop_accepting(self) -> None:
         """Stop admission while accepted sessions finish their final replies."""
         if not self._closed:
@@ -184,6 +188,7 @@ class IpcServer:
         while not self._queue.empty():
             await self._queue.get_nowait().close()
 
+    @ipc_io
     async def close(self) -> None:
         """Release the listener after callers close their accepted sessions."""
         if self._released:

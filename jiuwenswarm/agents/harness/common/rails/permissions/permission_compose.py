@@ -103,17 +103,21 @@ def _merge_list_of_dicts(*layers: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
-# P1 product table. Later modes overlay action from a mode-specific map.
-# Catalog builtins already carry YAML default action; this only fills host rules.
-_P1_SEVERITY_TO_ACTION = {
-    "LOW": "allow",
-    "MEDIUM": "allow",
-    "HIGH": "ask",
-    "CRITICAL": "deny",
-}
+def _apply_product_p1_rule_actions(
+    rules: list[dict[str, Any]],
+    *,
+    permission_mode: Any = None,
+) -> list[dict[str, Any]]:
+    """Fill host rules missing ``action`` via severity + ``permission_mode``.
 
+    Catalog builtins already carry YAML default action; this only fills host
+    rules. Mapping lives in agent-core ``severity_to_action`` (required by the
+    openjiuwen pin); ImportError must surface rather than silently widen.
+    """
+    from openjiuwen.harness.security.permission_engine.toolguard.severity_mapping import (
+        severity_to_action,
+    )
 
-def _apply_product_p1_rule_actions(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
     filled: list[dict[str, Any]] = []
     for rule in rules:
         if not isinstance(rule, dict):
@@ -123,8 +127,7 @@ def _apply_product_p1_rule_actions(rules: list[dict[str, Any]]) -> list[dict[str
         if isinstance(action, str) and action.strip():
             filled.append(item)
             continue
-        sev = str(item.get("severity") or "").strip().upper()
-        mapped = _P1_SEVERITY_TO_ACTION.get(sev)
+        mapped = severity_to_action(item.get("severity"), permission_mode)
         if mapped:
             item["action"] = mapped
         filled.append(item)
@@ -301,7 +304,8 @@ def compose_host_effective_permissions(
         if "enabled" not in out:
             out["enabled"] = False
         out["rules"] = _apply_product_p1_rule_actions(
-            _merge_list_of_dicts(g.get("rules"), u.get("rules"), s.get("rules"))
+            _merge_list_of_dicts(g.get("rules"), u.get("rules"), s.get("rules")),
+            permission_mode=out.get("permission_mode"),
         )
         out["approval_overrides"] = _merge_list_of_dicts(
             g.get("approval_overrides"),

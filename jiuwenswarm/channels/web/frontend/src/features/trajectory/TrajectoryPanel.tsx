@@ -96,7 +96,6 @@ import {
   createTrajectorySubjectViewCache,
   groupTrajectorySubjects,
   MAIN_TRAJECTORY_SUBJECT_ID,
-  subjectAppearsOnTeamLanes,
 } from './trajectorySubjects';
 import {
   buildTeamControlModel,
@@ -123,7 +122,15 @@ import {
   type DiagnosisSelectionState,
   type WallRange,
 } from './diagnosis/diagnosisSelection';
-import { mainAgentLastNode, rawOtelSpanIntervals } from './diagnosis/diagnosisTimeSelection';
+import {
+  collectUserInteractionWallRanges,
+  mainAgentLastNode,
+  resolveSelectionWallMs,
+  trajectoryRecordCount,
+  trajectoryRecordIntervals,
+  userTurnGapHalfAxisMs,
+  type SharedTurnAxisRange,
+} from './diagnosis/diagnosisTimeSelection';
 import { useSharedTimeAxis } from './diagnosis/useSharedTimeAxis';
 import css from './TrajectoryPanel.module.css';
 import './client/theme.css';
@@ -187,7 +194,7 @@ export interface TrajectoryPanelProps {
    * main agent. `null` when that lane has no timed node.
    */
   onMainAgentLastNodeChange?: (node: TrajectoryMainAgentLastNode | null) => void;
-  /** Timed nodes on each lane, used to tell when a pick is too large to run. */
+  /** Trajectory records on each lane, used to tell when a pick is too large to run. */
   onDiagnosisNodesChange?: (lanes: ReadonlyArray<TrajectoryDiagnosisLaneNodes>) => void;
   /** Steps to emphasise on every lane, as `stepRefKey` values. */
   highlightStepKeys?: ReadonlySet<string>;
@@ -251,7 +258,7 @@ export interface TrajectoryMainAgentLastNode {
   endMs: number;
 }
 
-/** Timed nodes of one lane, in snapshot order. */
+/** Timed selectable nodes of one lane, in snapshot order. */
 export interface TrajectoryDiagnosisLaneNodes {
   subjectId: string;
   intervals: readonly { startMs: number; endMs: number }[];
@@ -264,11 +271,15 @@ export interface TrajectoryPanelSummary {
   /** Subject lanes on the page (same set diagnosis can pick from). */
   agents: number;
   /**
-   * Selectable OTel spans on the swimlanes (`rawOtelSpanIntervals`).
-   * Matches `selectedNodeCount(..., fullScope: true)` so the header and the
-   * "select all" summary stay in sync.
+   * Session-wide raw OTel records — same rule as the conversation trajectory
+   * header / lane `rawCount`: `allDisplayedRawRecords.length || allDisplayedRecords.length`.
    */
   spans: number;
+  /**
+   * Expanded trajectory records on the swimlanes (`trajectoryRecordCount`):
+   * user, assistant, and tool rows. Not the raw OTel span total.
+   */
+  nodes: number;
   /** Scheduled Team control facts, when `main` contains task events. */
   team?: {
     members: number;
@@ -282,24 +293,13 @@ export interface TrajectoryPanelSummary {
 function ignoreTimelineRange(): void {}
 
 interface InitialLoadProgress {
-  /** Timed OTel spans loaded so far (same rule as the analysis header). */
+  /** Raw OTel records loaded so far (same rule as the analysis header). */
   loaded: number;
   /**
-   * Timed spans known so far plus remaining raw records not yet fetched.
-   * Shrinks toward the final header count as untimed records are discovered.
+   * Raw records the subject list promised, floored by what is already held so
+   * the bar ends on the header OTel Span total.
    */
   total: number;
-}
-
-/** How many raw detail records carry a selectable OTel span. */
-function timedRawSpanCount(
-  buckets: Iterable<{ rawRecords: ReadonlyMap<string, TrajectoryDetailRecord> }>,
-): number {
-  let count = 0;
-  for (const bucket of buckets) {
-    count += rawOtelSpanIntervals([...bucket.rawRecords.values()]).length;
-  }
-  return count;
 }
 
 function recordLabel(record: OtlpExportTraceServiceRequest): string {
@@ -424,10 +424,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const deferredPublishRef = useRef(false);
   const initialLoadProgressRef = useRef<({
     generation: number;
-    /** Raw records the subject list promised for header-visible subjects. */
+    /** Raw records the subject list promised for the header OTel Span total. */
     recordTotal: number;
-    /** Subjects whose raw rows feed the analysis header OTel Span count. */
-    headerSubjectIds: ReadonlySet<string>;
   } & InitialLoadProgress) | null>(null);
   activeRef.current = active;
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -794,14 +792,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       if (staged.invalidRecordSeen) setInvalidRecordSeen(true);
       const loadProgress = initialLoadProgressRef.current;
       if (loadProgress !== null && loadProgress.generation === generation) {
-        const buckets = [...windowStateRef.current.buckets.entries()]
-          .filter(([subjectId]) => loadProgress.headerSubjectIds.has(subjectId))
-          .map(([, bucket]) => bucket);
-        const rawLoaded = buckets.reduce((count, bucket) => count + bucket.rawRecords.size, 0);
-        const loaded = timedRawSpanCount(buckets);
-        // Untimed raw rows never become header spans; drop them from the total
-        // as soon as they are seen so the fraction ends on the OTel Span count.
-        const total = loaded + Math.max(0, loadProgress.recordTotal - rawLoaded);
+        // Same units as the analysis header: every loaded raw record.
+        const loaded = [...windowStateRef.current.buckets.values()].reduce(
+          (count, bucket) => count + bucket.rawRecords.size,
+          0,
+        );
+        const total = loaded + Math.max(0, loadProgress.recordTotal - loaded);
         if (loaded !== loadProgress.loaded || total !== loadProgress.total) {
           const nextProgress = { ...loadProgress, loaded, total };
           initialLoadProgressRef.current = nextProgress;
@@ -903,19 +899,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         }
         checkpointsRef.current = seeded.checkpoints;
         trajectoryV2ReducerRef.current.seed(seeded.checkpoints.v2Seeds);
-        // Match the analysis header: team swimlanes omit main/unassigned rows.
-        const countForHeader = sessionTeamModeRef.current;
-        const headerItems = page.items.filter(summary => (
-          !countForHeader || subjectAppearsOnTeamLanes(summary.kind)
-        ));
-        const headerSubjectIds = new Set(headerItems.map(summary => summary.subject_id));
-        const recordTotal = headerItems.reduce((count, summary) => count + summary.record_count, 0);
+        // Same promise as the analysis header OTel Span total: every subject's
+        // raw records (`allDisplayedRawRecords.length` once the window is full).
+        const recordTotal = page.items.reduce((count, summary) => count + summary.record_count, 0);
         initialLoadProgressRef.current = {
           generation,
           loaded: 0,
           total: recordTotal,
           recordTotal,
-          headerSubjectIds,
         };
         setInitialLoadProgress({ loaded: 0, total: recordTotal });
         await loadSummaries(page.items, signal, generation);
@@ -1285,6 +1276,22 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const subjectSnapshots = subjectView.snapshots;
   const timeAxis = useSharedTimeAxis(sharedTimeAxis, sessionId, subjectSnapshots);
   const shareClock = sharedTimeAxis && laneScale === 'time';
+  const sharedAxisTurnMarkers = useMemo<readonly SharedTurnAxisRange[]>(() => {
+    if (!shareClock || timeAxis.mapSharedTime === undefined) return [];
+    const markerLane = subjectGroups.groups.find(group => group.subject.kind === 'main_agent')
+      ?? subjectGroups.groups.find(group => group.subject.kind === 'team_leader');
+    if (markerLane === undefined) return [];
+    const turns = subjectSnapshots.get(markerLane.subject.id)?.turns ?? [];
+    const mapTime = timeAxis.mapSharedTime;
+    // Gap marks follow user_turn (one chat prompt), not every model turn number.
+    return collectUserInteractionWallRanges(turns).map(range => ({
+      turn: range.userTurn,
+      startAxisMs: mapTime(range.startWallMs),
+      endAxisMs: mapTime(range.endWallMs),
+      startWallMs: range.startWallMs,
+      endWallMs: range.endWallMs,
+    }));
+  }, [shareClock, subjectGroups.groups, subjectSnapshots, timeAxis.mapSharedTime]);
   const analysisViewState = useMemo<TrajectoryViewState | undefined>(() => (
     sharedTimeAxis
       ? {
@@ -1321,7 +1328,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   onDiagnosisNodesChangeRef.current = onDiagnosisNodesChange;
   const diagnosisNodesKey = JSON.stringify(subjectGroups.groups.map(group => ({
     subjectId: group.subject.id,
-    intervals: rawOtelSpanIntervals(group.rawRecords),
+    intervals: trajectoryRecordIntervals(subjectSnapshots.get(group.subject.id)?.turns ?? []),
   })));
   useEffect(() => {
     onDiagnosisNodesChangeRef.current?.(
@@ -1339,9 +1346,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   useEffect(() => {
     if (!sharedTimeAxis) return;
     const lanes = JSON.parse(diagnosisNodesKey) as TrajectoryDiagnosisLaneNodes[];
+    // Same OTel Span total as the conversation trajectory panel header when the
+    // session is shown as lanes: every loaded raw record, not only timed nodes.
+    const spans = allDisplayedRawRecords.length || allDisplayedRecords.length;
+    const nodes = subjectGroups.groups.reduce((sum, group) => (
+      sum + trajectoryRecordCount(subjectSnapshots.get(group.subject.id)?.turns ?? [])
+    ), 0);
     onSummaryChangeRef.current?.({
       agents: lanes.length,
-      spans: lanes.reduce((sum, lane) => sum + lane.intervals.length, 0),
+      spans,
+      nodes,
       ...(scheduledTeamMode && scheduledTeamControlModel !== null
         ? {
           team: {
@@ -1355,8 +1369,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         : {}),
     });
   }, [
+    allDisplayedRawRecords.length,
+    allDisplayedRecords.length,
     diagnosisNodesKey,
     reviewRunCount,
+    subjectGroups.groups,
+    subjectSnapshots,
     scheduledTeamControlModel,
     scheduledTeamMode,
     sharedTimeAxis,
@@ -1438,8 +1456,32 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   };
   const toWallRange = (range: TrajectoryTimeRange | null): WallRange | null => {
     if (range === null || timeAxis.toWall === undefined) return null;
-    const startMs = timeAxis.toWall(range.start);
-    const endMs = timeAxis.toWall(range.end);
+    const domain = timeAxis.domain;
+    const viewport = timeAxis.viewport;
+    const gapHalfAxisMs = viewport !== null && viewport.end > viewport.start
+      ? userTurnGapHalfAxisMs(viewport.end - viewport.start)
+      : domain !== null && domain.endMs > domain.startMs
+        ? userTurnGapHalfAxisMs(domain.endMs - domain.startMs)
+        : 0;
+    const toWall = timeAxis.toWall;
+    const startMs = sharedAxisTurnMarkers.length === 0
+      ? toWall(range.start)
+      : resolveSelectionWallMs({
+        axisMs: range.start,
+        role: 'start',
+        turns: sharedAxisTurnMarkers,
+        toWall,
+        gapHalfAxisMs,
+      });
+    const endMs = sharedAxisTurnMarkers.length === 0
+      ? toWall(range.end)
+      : resolveSelectionWallMs({
+        axisMs: range.end,
+        role: 'end',
+        turns: sharedAxisTurnMarkers,
+        toWall,
+        gapHalfAxisMs,
+      });
     return endMs < startMs ? null : { startMs, endMs };
   };
   const fullWallRange = (): WallRange | null => {
@@ -1896,6 +1938,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                     range={axisVisualRange}
                     onRangeChange={selectOnAxisRange}
                     selectable={selecting}
+                    turnMarkers={sharedAxisTurnMarkers}
                   />
                 ),
               }
@@ -1927,8 +1970,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                     selection.onChange(current => toggleAgent(current, subjectId));
                   },
                   canSelectAll: (subjectId: string) => (
-                    unionWallRange(rawOtelSpanIntervals(
-                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
+                    unionWallRange(trajectoryRecordIntervals(
+                      subjectSnapshots.get(subjectId)?.turns ?? [],
                     )) !== null
                   ),
                   isSelectAllActive: (subjectId: string) => {
@@ -1936,14 +1979,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                     // "clear" — those buttons stay available to narrow the pick
                     // to one agent's whole span.
                     if (fullScopeSelection) return false;
-                    const intervals = rawOtelSpanIntervals(
-                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
+                    const intervals = trajectoryRecordIntervals(
+                      subjectSnapshots.get(subjectId)?.turns ?? [],
                     );
                     return isAgentFullySelected(selection.state, subjectId, intervals);
                   },
                   onSelectAll: (subjectId: string) => {
-                    const intervals = rawOtelSpanIntervals(
-                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
+                    const intervals = trajectoryRecordIntervals(
+                      subjectSnapshots.get(subjectId)?.turns ?? [],
                     );
                     if (fullScopeSelection) {
                       leaveFullScope();
@@ -2012,6 +2055,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                   ? {
                     sharedTimeDomain: timeAxis.sharedTimeDomain,
                     ...(timeAxis.mapSharedTime === undefined ? {} : { mapSharedTime: timeAxis.mapSharedTime }),
+                    userTurnGapRanges: sharedAxisTurnMarkers,
                     timelineRange: selecting ? laneVisualRange(subjectId) : null,
                     timelineRangeAppearance: 'region',
                     onTimelineRangeChange: selecting
