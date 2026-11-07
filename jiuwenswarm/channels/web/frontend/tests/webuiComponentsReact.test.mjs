@@ -3399,6 +3399,7 @@ test('splash queue plays providers in order, skips non-players and closes each p
 });
 
 test('splash time limits end preparation and playback without blocking the gate', async () => {
+  window.localStorage.removeItem('workswarm.splash.played');
   const app = splashSetup({
     answers: { 'pkg.hang': 'hang', 'pkg.slow': 'play', 'pkg.silent': 'play', 'pkg.long': 'play', 'pkg.cleared': 'play' },
     providers: providerList(['pkg.hang'], ['pkg.slow'], ['pkg.silent'], ['pkg.long', false, 4000], ['pkg.cleared']),
@@ -3428,6 +3429,7 @@ test('splash time limits end preparation and playback without blocking the gate'
   assert.deepEqual(app.closes().map(([packageId, reason]) => [packageId, reason]),
     [['pkg.slow', 'timeout'], ['pkg.silent', 'timeout'], ['pkg.long', 'timeout']]);
   assert.equal(app.controller.getState().phase, 'open');
+  assert.equal(window.localStorage.getItem('workswarm.splash.played'), null, 'no splash was watched to its end');
   app.runtime.dispose();
 });
 

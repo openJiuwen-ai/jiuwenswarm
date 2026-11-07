@@ -231,8 +231,9 @@ export function createSplashController(options: SplashControllerOptions): Splash
       const reason = await playback(provider, instanceKey);
       // Close locally first so sound and motion stop before the package hears about it.
       set({ phase: 'preparing', provider: null, instanceKey: null });
-      // Only startup playback counts towards the device's first-visit record.
-      if (!preview) writeItem(SPLASH_PLAYED_KEY, '1');
+      // A startup splash that was watched or skipped ends the device's first visit (Gateway S_09
+      // first_visit); one that timed out, failed or was taken back by its provider does not.
+      if (!preview && (reason === 'complete' || reason === 'skip')) writeItem(SPLASH_PLAYED_KEY, '1');
       if (reason && !disposed) void runtime.notifyClosed(instanceKey, reason);
     } finally {
       handle.release();
