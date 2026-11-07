@@ -169,7 +169,8 @@ export function WebUISplashGate({
     [controller],
   );
   const provider = state?.phase === 'playing' ? state.provider : null;
-  const look = neutralAtBoot || (state && state.phase !== 'deciding') ? 'neutral' : 'plain';
+  // Plain while it is unknown whether a splash plays, so a start without one does not flash the dark backdrop.
+  const look = neutralAtBoot || (state && (state.expected || state.phase !== 'deciding')) ? 'neutral' : 'plain';
 
   return (
     <SplashGateContext.Provider value={open}>

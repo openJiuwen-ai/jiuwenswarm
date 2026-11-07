@@ -192,6 +192,11 @@ F_12-V-10（2026-11-06，EXTV2-GW-14）：真实插件“主题背景”在两�
 
 隔离核对：已安装 WorkSwarm 的 `~/Library/Application Support/jiuwenswarm-electron` 与 `~/.jiuwenswarm` 在测试期间没有任何文件变化。
 
+2026-11-07（PR #10763 第六轮架构检视）：上次判定没有开场时首帧不显示中性层（例如刚安装开场插件后的第一次启动），
+本次提示为“有候选”，门控在等待连接与提供者期间（至多约 35 秒）仍显示页面底色，开始播放时才切到中性层。
+现在提示为“有候选”即切到中性层；提示未知时仍为页面底色（S_09 第 5 节）。回归用例 `WebUISplashGate shows the splash backdrop
+while it waits after a candidates hint` 修复前失败。
+
 ### 8.3 验证结论
 
 第 2.2 节场景在单元范围、Chromium、真实 Gateway 与 WebChannel 以及 Electron 开发模式中成立。

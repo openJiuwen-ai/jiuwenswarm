@@ -3557,6 +3557,31 @@ test('splash gate stops waiting for an unreachable Gateway', async () => {
   app.runtime.dispose();
 });
 
+test('WebUISplashGate shows the splash backdrop while it waits after a candidates hint', async () => {
+  // Without a first-paint layer (the last start expected no splash), the look follows the hint while deciding.
+  for (const [hint, look] of [['candidates', 'neutral'], ['unknown', 'plain']]) {
+    const transport = splashTransport({}, { connected: false });
+    const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+    runtime.start();
+    const rootElement = document.createElement('div'); rootElement.id = 'root'; document.body.append(rootElement);
+    const reactRoot = createRoot(rootElement);
+    const overlay = () => document.querySelector('[data-testid="webui-splash"]');
+    try {
+      await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+        createElement(WebUISplashGate, { launch: splashLaunch(), timers: fakeTimers(), hint: async () => hint,
+          requestProviders: async () => providerList(['pkg.theme']) }, createElement('main', null, 'Workspace')))));
+      await act(async () => settle());
+      assert.equal(overlay().dataset.variant, 'deciding', `${hint}: still waiting for the Gateway`);
+      assert.equal(overlay().dataset.look, look, `${hint}: look while deciding`);
+      assert.equal(!!overlay().querySelector('[data-testid="webui-splash-neutral"]'), look === 'neutral');
+    } finally {
+      await act(async () => reactRoot.unmount());
+      runtime.dispose();
+      rootElement.remove();
+    }
+  }
+});
+
 test('WebUISplashGate holds the workspace and entry until the queue ends and skips on a held Space', async () => {
   const transport = splashTransport({ 'pkg.theme': 'play' });
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });

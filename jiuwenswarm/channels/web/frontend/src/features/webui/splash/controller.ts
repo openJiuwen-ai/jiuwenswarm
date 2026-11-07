@@ -40,6 +40,8 @@ export interface SplashState {
   phase: SplashPhase;
   provider: SplashProvider | null;
   instanceKey: string | null;
+  /** The hint named splash candidates: while deciding, the gate already shows the neutral backdrop. */
+  expected: boolean;
 }
 
 export interface SplashTimers {
@@ -120,15 +122,16 @@ export function createSplashController(options: SplashControllerOptions): Splash
   const { runtime, launch } = options;
   const timers = options.timers ?? defaultTimers;
   const listeners = new Set<() => void>();
-  let state: SplashState = { phase: 'deciding', provider: null, instanceKey: null };
+  let expected = false;
+  let state: SplashState = { phase: 'deciding', provider: null, instanceKey: null, expected };
   let disposed = false;
   let started = false;
   let onSurface: ((event: MediaSurfaceEvent) => void) | null = null;
   let onSkip: (() => void) | null = null;
   let stopPlayback: (() => void) | null = null;
 
-  function set(next: SplashState): void {
-    state = next;
+  function set(next: Omit<SplashState, 'expected'>): void {
+    state = { ...next, expected };
     for (const listener of [...listeners]) listener();
   }
 
@@ -254,6 +257,11 @@ export function createSplashController(options: SplashControllerOptions): Splash
     const hint = await delay(Promise.resolve().then(options.hint), SPLASH_TIMEOUTS.hint, 'unknown' as SplashHint);
     if (disposed) return;
     if (hint !== 'unknown') writeItem(SPLASH_EXPECTED_KEY, hint === 'candidates' ? '1' : '0');
+    if (hint === 'candidates') {
+      // Waiting for the Gateway can take a while; show the splash backdrop rather than a blank page meanwhile.
+      expected = true;
+      set(state);
+    }
     if (hint === 'none') {
       // The gate opens at once and stays open; the Gateway's answer only corrects the hint for the next start.
       open();
