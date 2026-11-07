@@ -313,6 +313,21 @@ F_13-V-14（2026-11-07，PR #10763 第五轮检视，2 项均复现）：
 - 等待期间停机后，提交仍然成功，留下有激活记录、没有 Handler 的状态。现在准备项由运行时按运行周期登记，停机终止它们，之后的提交失败。
 - 回归用例：`test_a_cancelled_upgrade_finishes_once_the_running_splash_is_closing`（修复前取消后仍运行旧版本、旧开场已关、新副本留存）、
   `test_a_switch_prepared_before_shutdown_cannot_commit_after_it`（修复前报告成功）、`test_a_cancelled_uninstall_finishes_once_the_running_splash_is_closing`。
+- 本条的“按运行周期登记”与“不运行的新 Handler”已由 V-15 替代。
+
+F_13-V-15（2026-11-07，PR #10763 第六轮架构检视，2 项均复现）：
+- 收尾期间调用方被再次取消时，上一轮的等待被打断，切换脱离调用方继续运行：安装看到尚未提交就删除新副本，切换随后照样提交，
+  1.1.0 在运行而目录已不存在，管理锁也提前释放。现在沿用 agent-core `run_file_operation` 的算法，持续等待子任务真正结束，
+  再抛出第一次取消，并读取子任务结果写入日志；复用的是算法，切换仍在事件循环中运行。
+- 新版本不运行的 Handler 在关闭旧开场期间一直挂在总线上：旧 Handler 在提交前进入、提交后才传递事件时，事件链快照里的新 Handler 已经生效，
+  同一帧被两个版本处理（复现得到 `['old', 'new']`）。现在准备阶段只用不执行插件代码的占位 Handler 试注册并立即注销，
+  提交时在同一同步步骤中先注册新批次、后注销旧批次（agent-core `replace_published`）；准备中的生效开关删除，
+  已释放激活的 Handler 屏障保留。提交时注册失败也放弃准备项并释放模块，旧版本照常运行（S_01 第 3.2 节、不变量 14）。
+- 运行周期计数已被准备项登记完全覆盖，删除；停机后不再新建准备项。卸载“运行到结束”改写为保证收尾，并写明第二次忙检查仍可能拒绝；
+  取消结果与 AgentServer 的差异记入 S_01 第 3.2 节。
+- 回归用例：`test_an_upgrade_cancelled_twice_still_waits_for_its_switch`（修复前调用方提前返回）、
+  `test_a_chain_running_across_a_switch_reaches_one_version_only`（修复前 `['1.0.0', '1.1.0']`）、
+  `test_a_commit_whose_registration_fails_keeps_the_running_version`、`test_nothing_is_prepared_once_the_runtime_has_shut_down`，修复前均失败。
 
 ### 8.3 验证结论
 

@@ -192,6 +192,12 @@ HTML 页面未能在其中验证。当时据推测将就绪前的 iframe 由隐�
 此后重复同一流程 9 次均就绪（其中 6 次计时，均约 110 ms），未能复现，推测为冷启动时合成帧尚未就绪。15 秒就绪超时覆盖这一情况；
 内容页的写法建议见 [S_07 第 3.2 节](../specs/S_07_media-surface.md)。
 
+2026-11-07（PR #10763 第六轮架构检视）：背景跨帧保持挂载后，媒体的失败状态随实例一直保留，断线重连也不再重试；
+挂载即报告在场，主媒体失败且没有封面时文档根仍标记 `active`。现在失败的内容在连接恢复后重新加载一次（HTML 换新 iframe 与令牌），
+正常显示的内容不因重连重新加载；只有显示画面时才报告在场，画面的定义见 S_07 第 1 节，不变量 6 同步修改。
+回归用例为 `webuiComponentsReact.test.mjs` 中 `failed background media load again once the browser reconnects; healthy media stay mounted`
+与 `the background is active only while it shows a picture`，原背景宿主用例改为图片加载后才断言 `active`；三项修复前均失败。
+
 ### 8.3 验证结论
 
 单元范围内第 2.2 节场景全部成立。真实浏览器中，图片、视频、超时回退、清除与素材响应头在内置浏览器中成立，

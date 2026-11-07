@@ -22,8 +22,9 @@
 
 - 槽位由 Gateway 应用级 UI 包贡献，宿主挂载后按连接发送 `ui.ready`（S_06）。
 - 同一连接只显示版本最新的一个实例。
-- 有实例显示时，宿主在文档根元素上标记 `data-webui-background="active"`，实例清除后移除；
-  该标记供宿主外观使用，插件不能设置。
+- 实例显示画面时，宿主在文档根元素上标记 `data-webui-background="active"`，实例清除后移除；该标记供宿主外观使用，插件不能设置。
+  画面指已加载的图片、已解码首帧的视频（播放或暂停均可）、已就绪的 HTML 页面，或已加载的 `poster`（含就绪前覆盖在页面上的 `poster`）。
+  加载中，以及主媒体失败且没有可显示的 `poster` 时，不算显示；切换到新地址后，在新内容显示画面或失败之前，标记保持切换前的状态。
 
 ## 2. 宿主策略（背景）
 
@@ -91,7 +92,8 @@
 6. `application.background` 的实例在生命周期内跨帧保持挂载（前端槽位目录的 `rerender: 'keep-mounted'` 策略）：新帧的 `src` 与 `kind`
    不变时，正在运行的页面或视频不重新加载，`dim`、`blur`、`opacity`、`fit`、`position` 只改变样式，文档根上的 `data-webui-background`
    也不随之切换；`src` 或 `kind` 变化时按新内容创建。因此地址就是内容的身份：包替换了同一地址下的文件时，须换地址
-   （例如附加内容版本参数）才会显示新内容；同一地址加载失败后也不会自动重试。海报的失败状态只对失败的那个海报地址有效。
+   （例如附加内容版本参数）才会显示新内容。同一地址加载失败后，浏览器连接恢复前不自动重试；断线重连后失败的内容重新加载一次
+   （HTML 页面创建新的 iframe 与令牌），正常显示的内容不因重连重新加载；换到其他地址再换回时按新内容加载。海报的失败状态只对失败的那个海报地址有效。
    `application.splash` 与其他槽位仍按 WebUI 的整树重建契约处理每个合法帧。
 7. 调整 `blur` 不改变媒体的布局尺寸（HTML 页面不会因此收到 resize），模糊后的边缘不露出透明背景。
 
@@ -100,5 +102,5 @@
 | 契约 | 用例 |
 | --- | --- |
 | 字段、根节点与槽位 | `test_gateway_ui_render.py`、`webuiGatewayCases.json`；前端 `test:webui-protocol`、`test:webui-components` |
-| 宿主行为与消息协议 | 前端 `test:webui-components`（`MediaSurface` 与背景宿主用例；跨帧保持挂载见 `background updates with the same page keep it running and only restyle it`） |
+| 宿主行为与消息协议 | 前端 `test:webui-components`（`MediaSurface` 与背景宿主用例；跨帧保持挂载见 `background updates with the same page keep it running and only restyle it`；重连重试与画面判定见 `failed background media load again once the browser reconnects; healthy media stay mounted`、`the background is active only while it shows a picture`） |
 | 包参与与 `ui.ready` 分派 | `test_gateway_application_assets.py` |
