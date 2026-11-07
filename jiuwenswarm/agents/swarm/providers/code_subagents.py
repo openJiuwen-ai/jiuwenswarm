@@ -27,6 +27,8 @@ is present.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import Any
 
@@ -204,13 +206,17 @@ def _browser_key(session_id: str, member_name: str, role: str) -> str:
     ``member_name`` is unique per member (the leader/template specs carry only a
     role, so fall back to role when member_name is absent). The session id is
     folded in so members of different concurrent sessions that happen to share a
-    member_name never collide onto one browser. agent-core sanitizes the key to
-    id-safe chars; an empty key preserves legacy shared-browser behavior.
+    member_name never collide onto one browser. Hash a structured identity:
+    joining with a delimiter is ambiguous when either part contains it, and
+    SDK sanitization collapses distinct punctuation and Unicode names. The
+    digest is already id-safe and bounds the profile directory name length.
+    An empty discriminator preserves legacy shared-browser behavior.
     """
     disc = (member_name or "").strip() or (role or "").strip()
     if not disc:
         return ""
-    return f"{session_id}-{disc}" if session_id else disc
+    identity = json.dumps([session_id or "", disc], ensure_ascii=False)
+    return "swarm_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 @harness_element(
