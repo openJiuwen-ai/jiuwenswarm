@@ -95,33 +95,41 @@ def _is_obs_proxy_download_url(download_url: str) -> bool:
     return path.rstrip("/").endswith("/file-api/download") and "url=" in query
 
 
-def _normalize_host(host: str) -> str:
-    return (host or "").strip().lower().rstrip(".")
-
-
 def allowed_minio_hosts() -> set[str]:
     """Exact ``host`` / ``host:port`` values allowed for OBS proxy (SSRF).
 
     Does **not** add bare hostname aliases when the configured endpoint includes
     a port — otherwise ``minio:9000`` would also allow ``minio:8080``.
+
+    For Huawei OBS, also allows the virtual-hosted object URL host
+    ``{OBS_BUCKET}.{OBS_URL}`` when upload enables virtual-hosted style.
     """
+    from jiuwenswarm.channels.web.minio_upload import (
+        huawei_obs_virtual_hosted_bucket_host,
+        load_minio_upload_config,
+        normalize_minio_host,
+    )
+
     hosts: set[str] = set()
     try:
-        from jiuwenswarm.channels.web.minio_upload import load_minio_upload_config
-
         cfg = load_minio_upload_config()
     except Exception:
         logger.debug("[OutboundFile] load_minio_upload_config failed", exc_info=True)
         return hosts
 
-    endpoint = _normalize_host(str(getattr(cfg, "endpoint", "") or ""))
+    endpoint = normalize_minio_host(str(getattr(cfg, "endpoint", "") or ""))
     if endpoint:
         hosts.add(endpoint)
+
+    bucket = str(getattr(cfg, "bucket", "") or "").strip()
+    virtual_host = huawei_obs_virtual_hosted_bucket_host(endpoint, bucket)
+    if virtual_host:
+        hosts.add(virtual_host)
 
     public = str(getattr(cfg, "public_base_url", "") or "").strip()
     if public:
         parsed = urlparse(public if "://" in public else f"http://{public}")
-        netloc = _normalize_host(parsed.netloc or parsed.path)
+        netloc = normalize_minio_host(parsed.netloc or parsed.path)
         if netloc:
             hosts.add(netloc)
     return {h for h in hosts if h}
@@ -129,10 +137,12 @@ def allowed_minio_hosts() -> set[str]:
 
 def assert_minio_url_allowed(url: str) -> None:
     """Raise ValueError if url host is not a configured MinIO host (SSRF guard)."""
+    from jiuwenswarm.channels.web.minio_upload import normalize_minio_host
+
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"unsupported url scheme: {parsed.scheme!r}")
-    host = _normalize_host(parsed.netloc)
+    host = normalize_minio_host(parsed.netloc)
     if not host:
         raise ValueError("url missing host")
     allowed = allowed_minio_hosts()
