@@ -1,0 +1,23 @@
+# Swarm application settings for an existing ADX cluster.
+profile: standalone
+python: ${SWARM_PYTHON}
+tenant: ${ADX_TENANT}
+namespace: ${ADX_NAMESPACE}
+ingress_url: ${ADX_INGRESS_URL}
+node_ingress_url: ${ADX_NODE_INGRESS_URL}
+token_file: ${ADX_TOKEN_FILE}
+ca_file: ${ADX_CA_FILE}
+workspace_root: ${SWARM_WORKSPACE_ROOT}
+shared_workspace_sqlite: false
+gateway:
+  home: ${HOME}
+  host: 127.0.0.1
+  port: 19001
+  web_host: 127.0.0.1
+  web_port: 19000
+  static_port: 5173
+runtime:
+  agent_image: ${SWARM_AGENT_IMAGE}
+  tool_image: ${SWARM_TOOL_IMAGE}
+  agent_runtime: supervisor
+  tool_runtime: conch

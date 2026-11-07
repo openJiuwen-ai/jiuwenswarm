@@ -79,17 +79,19 @@ class ListFilesQuery(BaseModel):
 
 
 @router.post("/sandboxes", response_model=SandboxRef, status_code=201)
-async def create_sandbox(request: CreateSandboxRequest):
+async def create_sandbox(request: CreateSandboxRequest, response: Response):
     if request.sandbox_id is None or request.sandbox_id.strip() == "":
         sandbox_id = None
     else:
         sandbox_id = request.sandbox_id
     spec = SandboxSpec(env=request.env, sandbox_id=sandbox_id, sandbox_runtime=request.sandbox_runtime)
-    return await _mgr().create_sandbox(
+    sandbox = await _mgr().create_sandbox(
         spec,
         policy_data=request.policy,
         policy_mode=request.policy_mode,
     )
+    response.headers["X-Jiuwenbox-Public-Error"] = "true"
+    return sandbox
 
 
 @router.get("/sandboxes", response_model=list[SandboxRef])

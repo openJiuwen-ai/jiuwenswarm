@@ -30,6 +30,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from importlib.util import MAGIC_NUMBER
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +55,7 @@ from jiuwenbox.server.runtime.base import (
     RuntimeExecRequest,
     RuntimeFileOpResult,
 )
-from jiuwenbox.server.runtime.errors import BackgroundJobNotFoundError
+from jiuwenbox.server.runtime.errors import BackgroundJobNotFoundError, SandboxCreateError
 from jiuwenbox.server.workspace import SANDBOX_WORKSPACE
 from jiuwenbox.supervisor import cgroup as cgroup_module
 from jiuwenbox.supervisor import network as network_module
@@ -832,7 +833,7 @@ def _child_preexec(
 
 
 def _daemon_code_blob() -> bytes:
-    """Compile the daemon once per process and cache the marshal bytes."""
+    """Cache the daemon bytecode with its Python interpreter format."""
     global _cached_daemon_code
     with _daemon_code_lock:
         if _cached_daemon_code is None:
@@ -841,7 +842,7 @@ def _daemon_code_blob() -> bytes:
                 SANDBOX_DAEMON_SANDBOX_PATH,
                 "exec",
             )
-            _cached_daemon_code = marshal.dumps(code)
+            _cached_daemon_code = MAGIC_NUMBER + marshal.dumps(code)
         return _cached_daemon_code
 
 
@@ -1229,6 +1230,18 @@ class ProcessRuntime(RuntimeAdapter):
         scripts, seccomp BPF, landlock payload) keep the per-call cost low.
         """
         config = BwrapConfig.from_policy(policy, list(command))
+        daemon_python = PYTHON_EXECUTABLE
+        if command == SANDBOX_DAEMON_COMMAND:
+            daemon_python = sys.executable
+            config.command[0] = daemon_python
+            # Parked slots start with system paths only. Bind the server's
+            # venv and standard library before starting the daemon.
+            for prefix in dict.fromkeys((sys.base_prefix, sys.prefix)):
+                if prefix != "/" and not any(
+                    source == target and Path(prefix).is_relative_to(target)
+                    for source, target in config.ro_binds
+                ):
+                    config.ro_binds.append((prefix, prefix))
         process_uid = config.uid
         process_gid = config.gid
         if sandbox_env:
@@ -1301,7 +1314,7 @@ class ProcessRuntime(RuntimeAdapter):
             # keep ``/run`` outside the Landlock allowlist so user code
             # cannot read the launcher / daemon scripts at runtime.
             config.command = [
-                PYTHON_EXECUTABLE,
+                daemon_python,
                 "-S",
                 "-u",
                 SANDBOX_LAUNCHER_PATH,
@@ -2636,9 +2649,10 @@ class ProcessRuntime(RuntimeAdapter):
                 _close_identity_map_pipes(
                     info_r, info_w, block_r, block_w, install=False,
                 )
-                raise RuntimeError(
-                    f"Failed to apply cgroup limits for warm slot {slot_id}: {exc}"
-                ) from exc
+                public_message = "Failed to apply Supervisor cgroup limits"
+                if isinstance(exc, cgroup_module.CgroupBackendUnavailableError):
+                    public_message = str(exc)
+                raise SandboxCreateError(public_message, diagnostic=str(exc)) from exc
             cgroup_procs_paths = [
                 str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
             ]
@@ -2877,10 +2891,10 @@ class ProcessRuntime(RuntimeAdapter):
                     info_r, info_w, block_r, block_w, install=False,
                 )
                 self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
-                raise RuntimeError(
-                    f"Failed to apply cgroup limits for sandbox "
-                    f"{sandbox_id}: {exc}"
-                ) from exc
+                public_message = "Failed to apply Supervisor cgroup limits"
+                if isinstance(exc, cgroup_module.CgroupBackendUnavailableError):
+                    public_message = str(exc)
+                raise SandboxCreateError(public_message, diagnostic=str(exc)) from exc
             cgroup_procs_paths = [
                 str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
             ]
@@ -3075,7 +3089,10 @@ class ProcessRuntime(RuntimeAdapter):
                 f"{message} No stdout/stderr was captured before the "
                 f"daemon exited."
             )
-        raise RuntimeError(message)
+        public_message = f"Sandbox daemon exited during startup with code {proc.returncode}."
+        if proc.returncode == 126 and "landlock" in log_excerpt.lower():
+            public_message = "Sandbox daemon could not enforce the required Landlock policy."
+        raise SandboxCreateError(public_message, diagnostic=message)
 
     @staticmethod
     def _read_daemon_startup_log(startup_log_file: Any | None) -> str:

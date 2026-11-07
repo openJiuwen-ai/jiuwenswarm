@@ -627,6 +627,20 @@ def enrich_team_spec_for_swarm(
         teammate = spec.agents["teammate"]
         teammate.rails = [*(teammate.rails or []), RailSpec(type=GROUP_MEMBER_TEMPLATE,
             params={"initial_names": [member["member_name"] for member in group_members]})]
+    # This seam runs for new teams and Runner cold recovery alike. Explicitly
+    # carry the current deployment's tool backend; missing specs default to LOCAL.
+    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+        build_adx_team_sysop_spec,
+    )
+
+    for name, member in list(spec.agents.items()):
+        tool_spec = build_adx_team_sysop_spec(spec.team_name, name)
+        if tool_spec is not None:
+            spec.agents[name] = member.model_copy(update={"sys_operation": tool_spec})
+    if spec.reviewer_agent is not None:
+        tool_spec = build_adx_team_sysop_spec(spec.team_name, "reviewer")
+        if tool_spec is not None:
+            spec.reviewer_agent = spec.reviewer_agent.model_copy(update={"sys_operation": tool_spec})
     logger.info(
         "[swarm.assembly] enriched team spec '%s' "
         "(roles=%s, session=%s, mcps=%d, agent_group=%s)",
@@ -699,22 +713,32 @@ def assign_shared_sandbox_sys_operation(spec: Any, deep_agent: Any) -> None:
     already has one. Reusing the main agent's id makes ``SysOperationSpec.resolve``
     return that registered sandbox instead of creating a local one.
 
+    Explicit ADX Team specifications retain their own workspace mounts and
+    isolation scopes. Other backends continue sharing the main agent.
     No-op when the main agent has no sandbox SysOperation.
     """
     shared = _shared_sandbox_sys_operation_spec(deep_agent)
     if shared is None:
         return
+    def retain_adx_team_operation(member):
+        current = getattr(member, "sys_operation", None)
+        current_launcher = getattr(getattr(current, "gateway_config", None), "launcher_config", None)
+        shared_launcher = shared.gateway_config.launcher_config
+        return (shared_launcher.sandbox_type == "adx-environment"
+                and str(getattr(current, "id", "")).startswith("adx_team_")
+                and getattr(current_launcher, "sandbox_type", None) == "adx-environment")
+
     agents = getattr(spec, "agents", None)
     if isinstance(agents, dict):
         for name, agent_spec in list(agents.items()):
-            if not hasattr(agent_spec, "model_copy"):
+            if not hasattr(agent_spec, "model_copy") or retain_adx_team_operation(agent_spec):
                 continue
             agents[name] = agent_spec.model_copy(update={"sys_operation": shared})
     reviewer = getattr(spec, "reviewer_agent", None)
-    if hasattr(reviewer, "model_copy"):
+    if hasattr(reviewer, "model_copy") and not retain_adx_team_operation(reviewer):
         spec.reviewer_agent = reviewer.model_copy(update={"sys_operation": shared})
     logger.info(
-        "[swarm.assembly] team members share sandbox sys_operation %s",
+        "[swarm.assembly] applied parent sandbox fallback %s",
         shared.id,
     )
 

@@ -666,6 +666,7 @@ class CgroupPolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    backend: Literal["auto", "v1", "v2"] = "auto"
     memory_max: int | None = None
     cpu_max: tuple[int, int] | None = None
     pids_max: int | None = None

@@ -40,6 +40,10 @@ class CgroupSetupError(RuntimeError):
     """Raised when cgroup limits are requested but cannot be applied."""
 
 
+class CgroupBackendUnavailableError(CgroupSetupError):
+    """The explicitly selected controller layout is unavailable."""
+
+
 class CgroupBackend(str, enum.Enum):
     V2 = "v2"
     V1 = "v1"
@@ -406,7 +410,16 @@ def setup(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
             "cgroup.setup called with an empty policy; caller must "
             "check CgroupPolicy.is_empty() and skip cgroup entirely"
         )
-    backend = detect_backend()
+    if policy.backend == "auto":
+        backend = detect_backend()
+    else:
+        backend = CgroupBackend(policy.backend)
+        available = _v1_available() if backend is CgroupBackend.V1 else _v2_available()
+        if not available:
+            raise CgroupBackendUnavailableError(
+                f"requested cgroup {policy.backend} backend is unavailable; "
+                "required controllers: memory/cpu/pids"
+            )
     if backend is None:
         raise CgroupSetupError(
             "no writable cgroup backend available: cgroup v2 "

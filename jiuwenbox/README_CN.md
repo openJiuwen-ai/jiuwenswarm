@@ -380,6 +380,10 @@ ip netns exec jbx-<sandbox_id> iptables -L OUTPUT -n
 
 #### `cgroup`
 
+`backend` 默认 `auto`：所需 controller 可用时优先 v2，否则选择 v1。
+设置为 `v1` 或 `v2` 时只使用指定后端，不可用即创建失败，不静默回退。
+仅设置 backend 不会启用资源限制；已有沙箱的清理沿用创建时的 cgroup handle。
+
 可选的每沙箱 cgroup 资源限制。三个字段默认均为 `null`（不限）；全部为空或省略 `cgroup` 块时，jiuwenbox 跳过 cgroup 设置，便于在无可用 cgroup 树的宿主机上运行。
 
 | 字段 | 格式 | 说明 |
@@ -388,7 +392,7 @@ ip netns exec jbx-<sandbox_id> iptables -L OUTPUT -n
 | `cpu_max` | 小数核数（如 `0.5`）或 `"quota_us period_us"` 对（如 `"50000 100000"`） | CPU 配额。 |
 | `pids_max` | 正整数 | 进程/线程数上限。 |
 
-优先使用 cgroup v2；v2 不可写时回退 v1。至少一个字段非空且两种后端均不可写时，沙箱创建失败。
+auto 模式优先使用 cgroup v2；v2 所需 controller 不可用时回退 v1。至少一个限制字段非空且所选后端无法应用限制时，沙箱创建失败。
 
 #### `timeout`
 

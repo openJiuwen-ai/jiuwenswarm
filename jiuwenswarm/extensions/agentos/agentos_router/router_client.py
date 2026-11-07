@@ -303,6 +303,21 @@ _AGENT_NETWORK_ERROR_TEXT_TOKENS = (
     "connection reset",
 )
 
+def ws_connect_ready_timeout_seconds() -> float:
+    """Return the shared AgentServer WebSocket readiness deadline."""
+    return _WS_CONNECT_READY_TIMEOUT_SECONDS
+
+
+def ws_connect_retry_interval_seconds() -> float:
+    """Return the shared AgentServer WebSocket retry interval."""
+    return _WS_CONNECT_RETRY_INTERVAL_SECONDS
+
+
+def is_ws_connect_retryable(exc: BaseException) -> bool:
+    """Return whether an AgentServer WebSocket connection can be retried."""
+    return _is_ws_connect_retryable(exc)
+
+
 # 断连清理的有限重试：断连后先等 disconnect_cleanup_timeout_seconds，再按固定
 # 间隔最多重试几次，覆盖「chat 尾部 release / 延迟 cancel 的 interrupt 与
 # 「断连+timeout」同秒到期」等短暂竞态；超限后交回 600s idle reaper 兜底。
@@ -1187,7 +1202,7 @@ class AgentOSRouterClient(AgentServerClient):
             try:
                 existing = await self._agent_manager.get_agent(user_id, agent_type)
                 if existing is not None and existing.is_failed():
-                    await self._agent_manager.pop_agent(
+                    await self._agent_manager.discard_failed(
                         user_id, agent_type, expected_agent_id=existing.info.agent_id,
                     )
             except Exception:
@@ -3286,6 +3301,15 @@ class AgentOSRouterClient(AgentServerClient):
         lifecycle.attempt = None
         return sandbox
 
+    async def _create_sandbox_for_agent(
+        self, agent_info: AgentInfo, *, reuse_existing: bool, **kwargs: Any,
+    ) -> SandboxInfo:
+        """Allow backend-owned persistence without bypassing replacement fencing."""
+        return await self._yuanrong.create_sandbox(**kwargs)
+
+    def _sandbox_instance_id(self, namespace: str, name: str) -> str:
+        return deterministic_agent_instance_id(namespace, name)
+
     async def _create_agent(self, agent_info: AgentInfo) -> AgentInfo:
         operation = start_gateway_trace(
             "gw.agent.create", attributes={"agent_type": agent_info.agent_type, "user_id": agent_info.user_id},
@@ -3359,6 +3383,16 @@ class AgentOSRouterClient(AgentServerClient):
                     "type", "enabled", "startup_mode", "url", "template_name",
                     "user", "group",
                 ))
+                if sandbox_config.get("type") == "adx-environment":
+                    # The selected runtime node injects its tool ingress at launch.
+                    deployment.pop("url", None)
+                    deployment.pop("startup_mode", None)
+                    deployment.update(_pick_keys(sandbox_config, (
+                        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "network", "runtime_identity", "mounts", "env",
+                    )))
+                    if isinstance(deployment.get("env"), dict):
+                        deployment["env"] = {key: value for key, value in deployment["env"].items() if key not in (
+                            "ADX_TOKEN", "ADX_GATEWAY_TOKEN", "JIUWENSWARM_ADX_API_TOKEN", "JIUWENSWARM_ADX_NODE_CONTEXT_FILE", "JIUWENSWARM_ADX_NODE_INGRESS_URL")}
                 conch = sandbox_config.get("conch")
                 if isinstance(conch, dict):
                     deployment["conch"] = _pick_keys(conch, (
@@ -3410,7 +3444,8 @@ class AgentOSRouterClient(AgentServerClient):
         namespace = self._yuanrong.agent_namespace
 
         async def _create_sandbox_once() -> SandboxInfo:
-            return await self._yuanrong.create_sandbox(
+            return await self._create_sandbox_for_agent(
+                agent_info, reuse_existing=not (lifecycle.retired_instance or lifecycle.attempt),
                 namespace=namespace,
                 name=physical_name,
                 workspace=workspace,
@@ -3439,7 +3474,7 @@ class AgentOSRouterClient(AgentServerClient):
                     sandbox = candidate
                 else:
                     attempt = lifecycle.attempt or _SandboxAttempt(
-                        generation, deterministic_agent_instance_id(namespace, physical_name), _create_sandbox_once,
+                        generation, self._sandbox_instance_id(namespace, physical_name), _create_sandbox_once,
                     )
                     sandbox = await self._provision_sandbox(lifecycle, attempt)
                     lifecycle.shared_sandbox = sandbox if sandbox.sandbox_id == attempt.deterministic_id else None

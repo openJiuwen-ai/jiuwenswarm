@@ -6,6 +6,7 @@ import io
 import ipaddress
 import marshal
 import os
+from importlib.util import MAGIC_NUMBER
 
 _TEST_SANDBOX_IP = str(ipaddress.IPv4Address(bytes((100, 64, 0, 2))))
 
@@ -69,7 +70,7 @@ def test_privdrop_is_env_not_a_second_python(tmp_path, monkeypatch):
 
     args = _bwrap_args(runtime, policy)
     env = _setenv(args)
-    assert args.count("python3") == 1
+    assert args.count(process_mod.sys.executable) == 1
     assert "-c" not in args
     assert "netns" not in args
     assert env[process_mod.DROP_UID_ENV].isdigit()
@@ -163,7 +164,8 @@ def test_daemon_bytecode_round_trip():
             blob += chunk
     finally:
         os.close(fd)
-    code = marshal.loads(blob)
+    assert blob.startswith(MAGIC_NUMBER)
+    code = marshal.loads(blob[len(MAGIC_NUMBER):])
     assert isinstance(code, type(compile("x=1", "<t>", "exec")))
     assert code.co_filename.endswith("sandbox-daemon.py")
 
@@ -173,7 +175,7 @@ def test_launcher_loads_memfd_and_skips_disk(tmp_path, monkeypatch):
     source = "def main():\n    return 4\n"
     code = compile(source, "daemon.py", "exec")
     fd = os.memfd_create("test-daemon", os.MFD_CLOEXEC)
-    os.write(fd, marshal.dumps(code))
+    os.write(fd, MAGIC_NUMBER + marshal.dumps(code))
     os.lseek(fd, 0, os.SEEK_SET)
     monkeypatch.setenv(launcher.DAEMON_CODE_FD_ENV, str(fd))
     loaded = _call(launcher, "_load_daemon_code", str(missing))
@@ -181,6 +183,44 @@ def test_launcher_loads_memfd_and_skips_disk(tmp_path, monkeypatch):
     assert loaded.co_consts
     assert launcher.DAEMON_CODE_FD_ENV not in os.environ
     assert not missing.exists()
+
+
+def test_launcher_compiles_source_for_incompatible_bytecode(tmp_path, monkeypatch):
+    script = tmp_path / "daemon.py"
+    script.write_text("result = 'source'\n")
+    code = compile("result = 'memfd'", str(script), "exec")
+    fd = os.memfd_create("test-daemon", os.MFD_CLOEXEC)
+    os.write(fd, bytes(len(MAGIC_NUMBER)) + marshal.dumps(code))
+    os.lseek(fd, 0, os.SEEK_SET)
+    monkeypatch.setenv(launcher.DAEMON_CODE_FD_ENV, str(fd))
+
+    loaded = _call(launcher, "_load_daemon_code", str(script))
+    namespace = {}
+    exec(loaded, namespace)
+    assert namespace["result"] == "source"
+
+
+def test_daemon_uses_server_venv_before_workspace_mounts(tmp_path, monkeypatch):
+    base = tmp_path / "python"
+    venv = tmp_path / "venv"
+    base.mkdir()
+    venv.mkdir()
+    executable = str(venv / "bin/python")
+    monkeypatch.setattr(process_mod.sys, "executable", executable)
+    monkeypatch.setattr(process_mod.sys, "base_prefix", str(base))
+    monkeypatch.setattr(process_mod.sys, "prefix", str(venv))
+    monkeypatch.setattr(ProcessRuntime, "_sandbox_root", staticmethod(lambda: tmp_path))
+    runtime = ProcessRuntime()
+    policy = SecurityPolicy()
+
+    args = _bwrap_args(runtime, policy)
+    assert args[-7:-3] == [executable, "-S", "-u", "/jiuwenbox/landlock-launcher.py"]
+    for directory in (str(base), str(venv)):
+        assert any(args[i:i + 3] == ["--ro-bind", directory, directory] for i in range(len(args)))
+
+    policy.landlock.compatibility = "disabled"
+    args = _bwrap_args(runtime, policy)
+    assert args[-4:] == [executable, *SANDBOX_DAEMON_COMMAND[1:]]
 
 
 def test_launcher_drop_privileges_uses_env(monkeypatch):

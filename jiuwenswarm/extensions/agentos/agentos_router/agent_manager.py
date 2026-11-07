@@ -562,6 +562,15 @@ class AgentManager:
                 other.mark_deleted()
             return runtime.snapshot()
 
+    async def discard_failed(self, user_id: str, agent_type: str, *, expected_agent_id: str) -> None:
+        """Detach only this failed generation, retaining its result for waiters."""
+        key = self._make_key(user_id, agent_type)
+        async with self._runtimes_lock:
+            runtime = self._runtimes.get(key)
+            if (runtime is not None and runtime.is_failed()
+                    and runtime.info.agent_id == expected_agent_id):
+                self._runtimes.pop(key)
+
     async def release(
         self, key: AgentKey, *, expected_agent_id: str | None = None
     ) -> None:

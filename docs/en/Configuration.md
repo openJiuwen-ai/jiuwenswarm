@@ -560,3 +560,12 @@ A: No. Tool Security Guardrails corresponds to `permissions.enabled`, which defa
 A: The system automatically detects and hot-reloads the file after saving (most settings take effect immediately; a few require a process restart). If changes do not apply after a long time, check the YAML format or re-save via the Web configuration panel to trigger a refresh.
 
 ---
+
+
+## Remote ADX deployments
+
+For container-file uploads through ADX, new files and directories inherit the owner and group of the mounted `/home/agentos` workspace. Existing directories keep their ownership. The runtime must provide `chown --reference` for this operation; an ownership failure returns an upload error before the file is published. AgentServer's inherited workload user remains separate from Execd's control identity.
+
+AgentOS ADX tool environments also mount the current user's agent `sessions` directory read-only. Browser attachments stored under `sessions/<session-id>/uploads` remain available to file search and command tools after a tool environment is reclaimed. Explicit tool mounts cannot replace this deployment-owned target.
+
+When AgentOS selects `adx-environment`, Team assembly serializes the current deployment tool configuration for both leader and teammate specs, including cold recovery. Team tool environments use a team/role scope, with the current user's Team workspace tree mounted read-write and session attachments mounted read-only. Disabling ADX preserves the configured tool backend.

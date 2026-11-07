@@ -211,7 +211,7 @@ def _run_iptables_binary(
     check: bool = True,
     namespace: str | None = None,
 ) -> subprocess.CompletedProcess:
-    cmd = [binary] + args
+    cmd = [binary, "-w", "5"] + args
     if namespace:
         cmd = [IP_BINARY, "netns", "exec", namespace, *cmd]
     logger.debug("%s: %s", binary, " ".join(cmd))
@@ -428,7 +428,7 @@ def _run_iptables_restore(
     binary = _iptables_restore_binary(ip_version)
     if binary is None:
         raise NetworkSetupError(f"No iptables-restore binary for IPv{ip_version}")
-    cmd = [binary]
+    cmd = [binary, "-w", "5"]
     if noflush:
         cmd.append("--noflush")
     if namespace:
