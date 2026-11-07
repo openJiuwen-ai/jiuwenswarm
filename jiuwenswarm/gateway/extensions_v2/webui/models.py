@@ -164,11 +164,11 @@ class UiActionOutput:
 class UiAppearanceInput:
     """``ui.appearance``: submit, or revoke with ``None``, the caller's appearance on its connection (S_08).
 
-    ``package_id`` and ``generation`` identify the calling activation; the Ops method fills them in.
+    ``package_id`` names the calling package for USER handlers to match and inspect; the host takes
+    the caller itself from the operation, not from this input (S_01 section 4).
     """
 
     package_id: str
-    generation: str
     appearance: Mapping[str, Any] | None = None
 
 
@@ -177,7 +177,6 @@ class UiDownloadInput:
     """``ui.download``: offer one file of the caller's data directory to its connection (S_10 section 7)."""
 
     package_id: str
-    generation: str
     path: str = ""
     filename: str | None = None
 
@@ -187,7 +186,6 @@ class UiSplashPreviewInput:
     """``ui.splash.preview``: replay the caller's splash once on its connection (S_09 section 3.3)."""
 
     package_id: str
-    generation: str
 
 
 @dataclass(frozen=True, slots=True)

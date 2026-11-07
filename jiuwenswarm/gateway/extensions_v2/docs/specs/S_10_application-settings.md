@@ -202,7 +202,7 @@ S_09 第 3.1 节的返回改为：只含启用的提供者，按生效顺序，�
 | 返回 | `{"status": "offered"}`；帧未送达时 `{"status": "delivery_failed"}` |
 
 参数不合法、包失活或没有连接时抛出 `ValueError`；清理过期凭据需要等待，生成凭据前再次核对激活，期间被释放则同样抛出 `ValueError`，
-不向浏览器发送 `webui.download`。经事件链执行：Ops 只触发 `ui.download`（输入携带调用包与其激活代次），USER Handler 可以拒绝或接管（返回自己的 `HostActionOutput`，例如 `{"status": "denied", "code": …}`，Ops 原样返回），继续后由 CORE 默认动作核对激活与连接再执行；CORE 拒绝时 Ops 抛出 `ValueError`。
+不向浏览器发送 `webui.download`。经事件链执行：Ops 只触发 `ui.download`（输入携带调用包 `package_id` 供匹配与查看；调用方由宿主在事件之外传递，见 S_01 第 4 节），USER Handler 可以拒绝或接管（返回自己的 `HostActionOutput`，例如 `{"status": "denied", "code": …}`，Ops 原样返回），继续后由 CORE 默认动作核对激活与连接再执行；CORE 拒绝时 Ops 抛出 `ValueError`。
 
 ### 7.2 `GET /extension-downloads/<token>`
 

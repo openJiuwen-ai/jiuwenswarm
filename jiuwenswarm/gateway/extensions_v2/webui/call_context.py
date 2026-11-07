@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
@@ -19,25 +20,47 @@ from openjiuwen.core.events import EventHandlerOps
 from jiuwenswarm.gateway.extensions_v2.webui.models import RenderTarget
 
 _EMPTY: Mapping[str, Any] = MappingProxyType({})
-RenderCheck = Callable[[RenderTarget], bool]
-RenderCheckFactory = Callable[[EventHandlerOps], RenderCheck]
-_RENDER_CHECK: ContextVar[RenderCheck | None] = ContextVar("gateway_render_check", default=None)
+
+
+@dataclass(frozen=True, slots=True)
+class Caller:
+    """The package activation a host operation acts for, resolved from the operation's Ops.
+
+    Host operations (``ops.ui.render`` and the host actions) carry it through their event chain
+    out of band, so USER handlers of other packages cannot change who the call is for.
+    ``current(target)`` re-checks after any await that the activation is still the published one;
+    with a target it also checks that the target belongs to it and the connection is still open.
+    """
+
+    package_id: str
+    generation: str
+    connection_id: str
+    current: Callable[[RenderTarget | None], bool]
+
+
+CallerFactory = Callable[[EventHandlerOps], "Caller | None"]
+_CALLER: ContextVar[Caller | None] = ContextVar("gateway_extension_caller", default=None)
 
 
 @contextmanager
-def render_scope(check: RenderCheck | None) -> Iterator[None]:
-    """Carry the host's check of the original Ops through the render event chain."""
-    token = _RENDER_CHECK.set(check)
+def caller_scope(caller: Caller | None) -> Iterator[None]:
+    """Carry the host operation's caller through its event chain."""
+    token = _CALLER.set(caller)
     try:
         yield
     finally:
-        _RENDER_CHECK.reset(token)
+        _CALLER.reset(token)
+
+
+def current_caller() -> Caller | None:
+    """The caller of the host operation in progress, or None outside one."""
+    return _CALLER.get()
 
 
 def render_is_current(target: RenderTarget) -> bool:
-    """Recheck the captured caller at the commit boundary; standalone hosts have no lease."""
-    check = _RENDER_CHECK.get()
-    return check is None or check(target)
+    """Recheck the caller at a commit boundary; a host without callers has nothing to check."""
+    caller = _CALLER.get()
+    return caller is None or caller.current(target)
 
 
 def session_metadata(ops: EventHandlerOps | None) -> Mapping[str, Any]:

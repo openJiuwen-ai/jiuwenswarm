@@ -462,3 +462,24 @@ async def test_a_chain_collected_before_uninstall_skips_the_released_handler(tmp
     finally:
         gate.set()
         await runtime.shutdown()
+
+
+async def test_uninstall_is_busy_while_a_replaced_activation_still_runs(tmp_path):
+    gate, entered = asyncio.Event(), asyncio.Event()
+    runtime = await _runtime(tmp_path)
+    try:
+        runtime.publish(_gated_package("test.slow", tmp_path, gate, entered, {}))
+        manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+        # The old handler's own store write is refused after the reload; only its run time matters here.
+        call = asyncio.create_task(runtime.intercept(SimpleNamespace(closed=False), "slow", "slow", {}))
+        await entered.wait()
+        runtime.publish(_gated_package("test.slow", tmp_path, asyncio.Event(), asyncio.Event(), {}))  # reload
+
+        report = await manager.uninstall("test.slow")
+        assert report.status == "FAILED" and report.error.status is StatusCode.EXTENSION_PACKAGE_BUSY
+        gate.set()
+        await call
+        assert (await manager.uninstall("test.slow")).status == "SUCCESS"
+    finally:
+        gate.set()
+        await runtime.shutdown()

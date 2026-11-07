@@ -98,6 +98,10 @@ PR #10763 检视指出：卸载只注销 Handler，卸载前派生的任务仍�
 - `ops.data.root()` 复用 agent-core 的文件操作取消处理：调用被取消后仍等待后台目录创建线程真正结束，
   再释放数据调用计数并传播取消；期间卸载仍返回 `EXTENSION_PACKAGE_BUSY`，不会先删除目录再被线程重建。
 
+2026-11-07 第三轮修订（检视收敛）：Handler 调用与数据调用合并为一个按包计数（与 agent-core `Runtime._inflight` 相同的口径），
+重载后仍在运行的旧激活也计入，卸载因此同样返回忙；激活记录同时承载代次，成为激活身份的唯一来源（S_01 不变量 13），
+桥接层的 `generations` 由它派生，原先并行维护的上下文变量 `_CALLER`、渲染守卫与 `_RENDER_CHECK` 合并为一个带外传递的调用方。
+
 与 agent-core 的差别：agent-core 只接受仍在运行的 Handler 的 Ops（Handler 返回即失效）。Gateway 包在渲染“进行中”
 页面后把导入、恢复等长任务放到后台，任务里仍要读写存储，因此 Gateway 以激活为界，而不以单次 Handler 为界。
 

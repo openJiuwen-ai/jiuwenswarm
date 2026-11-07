@@ -74,7 +74,7 @@
 
 存储调用与 `ops.data.root()` 只接受包**当前激活**交给 Handler 的 Ops：Handler 运行中可用，Handler 返回后
 由它派生的后台任务也可继续使用；激活被释放（重载替换、卸载、停机）后，这些 Ops 的数据调用返回 `EVENTS_OPS_INVALID`。
-卸载在当前激活仍有 Handler 运行、或该包仍有存储、数据目录调用或宿主导入文件操作在途时返回 `EXTENSION_PACKAGE_BUSY`，
+卸载在该包任一激活仍有 Handler 运行（包括重载后仍在运行的旧激活）、或仍有存储、数据目录调用或宿主导入文件操作在途时返回 `EXTENSION_PACKAGE_BUSY`，
 不注销 Handler、不删除数据，可稍后重试；不等待在途调用结束。检查先于关闭开场，关闭开场期间新出现的在途调用
 在注销前还会再检查一次。包通过 `ops.data.root()` 得到的路径
 直接读写文件不经过上述计数，包须在自己的后台任务里自行收尾。设计与验证见 [F_09](../features/F_09_package-store-and-data.md)。
@@ -100,7 +100,7 @@
 | `ui.download` | `UiDownloadInput` | `HostActionOutput` | 核对激活与连接，签发一次性下载（[S_10](S_10_application-settings.md) 第 7 节） |
 | `ui.splash.preview` | `UiSplashPreviewInput` | `HostActionOutput` | 核对激活、开场声明与连接，请求预览（[S_09](S_09_startup-splash.md) 第 3.3 节） |
 
-后三项是宿主动作：包经 `ops.appearance.apply`、`ops.ui.download`、`ops.splash.preview` 触发新链，输入中的激活代次由 Ops 在调用方作用域内填写；CORE 拒绝时返回 `status="rejected"` 与 `INVALID_ACTION`，USER Handler 可以拒绝或接管。
+后三项是宿主动作：包经 `ops.appearance.apply`、`ops.ui.download`、`ops.splash.preview` 触发新链。调用方由 Ops 方法从调用的 Ops 解析（后台任务中同样有效），在事件之外传到 CORE；输入只携带 `package_id`，供 USER Handler 匹配与查看，与调用方不一致或链路没有调用方时 CORE 拒绝。CORE 拒绝时返回 `status="rejected"` 与 `INVALID_ACTION`，USER Handler 可以拒绝或接管。`ops.ui.render` 同样在事件之外携带调用方。
 
 所有事件名满足 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`；重复注册同名事件返回 `EVENTS_REGISTRATION_INVALID`。
 
@@ -166,11 +166,13 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
     释放、关闭与容量淘汰时发送的清除帧版本号不会被之后的渲染复用，发送失败也不能回退已退休实例的版本（S_02）。
 11. 每次加载包（启动、安装、重装、重载）都使用新的模块名：在同一路径重装同一版本也执行新的代码，不复用上一次加载缓存在
     `sys.modules` 中的同包子模块。本次加载创建的模块在激活释放（卸载、重载替换、停机）且该激活的在途 Handler 调用全部结束后
-    从 `sys.modules` 移除，包括入口导入的同包子模块；加载或发布失败时立即移除。重复发布同一次加载时模块随之转交新的激活。
+    从 `sys.modules` 移除，包括入口导入的同包子模块；加载或发布失败时立即移除。
     移除只解除 `sys.modules` 的引用，仍被其他对象引用的模块不会被强制回收。
 12. 卸载成功之后，该包已释放激活的 Ops 不能再写入存储或创建数据目录；数据调用取消后，其后台文件操作真正结束前仍计为在途。
     宿主导入的准备与接收同样计数，取消后仍等待文件线程、句柄关闭与临时文件清理；有调用在途时卸载返回 `EXTENSION_PACKAGE_BUSY`
     且不注销 Handler、不删除数据。已释放的激活不再开始新的 Handler 调用：释放前已收集该 Handler 的事件链会跳过它。
+13. 激活身份只有一个来源：每次发布创建的激活记录。浏览器声明、素材地址与下行帧中的 `activation_generation` 由它派生；
+    宿主操作的调用方从 Ops 解析并在事件之外传递，USER Handler 改写事件输入不能改变调用方。停机时激活记录清空，派生的代次随之失效。
 
 ## 10. 验证索引
 

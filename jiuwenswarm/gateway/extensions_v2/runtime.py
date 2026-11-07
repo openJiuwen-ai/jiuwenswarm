@@ -19,7 +19,7 @@ import inspect
 import logging
 import shutil
 import weakref
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from types import MappingProxyType
@@ -57,7 +57,7 @@ from jiuwenswarm.gateway.extensions_v2.models import (
 )
 from jiuwenswarm.gateway.extensions_v2.state import UiStateStore
 from jiuwenswarm.gateway.extensions_v2.webui.registry import ActiveRenderRegistry
-from jiuwenswarm.gateway.extensions_v2.webui.call_context import RenderCheck, trusted_connection
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import Caller, trusted_connection
 from jiuwenswarm.gateway.extensions_v2.webui.models import RenderTarget
 from jiuwenswarm.gateway.extensions_v2.webui.runtime import GatewayWebUIRuntime
 from jiuwenswarm.gateway.extensions_v2.webui.transport import GatewayTransport
@@ -85,7 +85,7 @@ class GatewayRuntime:
         self.webui = GatewayWebUIRuntime(
             bus=self.bus,
             transport=GatewayTransport(channel, generation=lambda package_id: self.browser.frame_generation(package_id)),
-            render_check=self._render_check,
+            caller_for=self.caller_for,
         )
         self._handler_ids: list[str] = []
         self._builtin_ids: list[str] = []
@@ -95,7 +95,8 @@ class GatewayRuntime:
         self._activations: dict[str, _Activation] = {}
         # Which activation each handler's Ops belongs to; detached tasks keep using them.
         self._ops_owner: weakref.WeakKeyDictionary[Any, _Activation] = weakref.WeakKeyDictionary()
-        self._data_calls: dict[str, int] = {}
+        # Handler and data calls in flight per package, across activations (S_01 invariant 12).
+        self._inflight: dict[str, int] = {}
         self._management: Any = None
         self._started = False
         self.browser = BrowserBridge(self)
@@ -159,7 +160,6 @@ class GatewayRuntime:
             unconfigure_store(self.bus)
             self._data_store_bound = False
         self.browser.connections.clear()
-        self.browser.generations.clear()
         self.browser.appearance.clear()
         self.browser.transfers.clear()
         self._started = False
@@ -206,10 +206,6 @@ class GatewayRuntime:
         except Exception:
             release_package_modules(package)
             raise
-        previous = self._activations.get(package.package_id)
-        if previous is not None:
-            # Republishing the same load hands its modules to the new activation.
-            previous.hand_over(package)
         self.unpublish(package.package_id)
         metadata = PackageMetadata(
             package_id=package.package_id,
@@ -217,19 +213,13 @@ class GatewayRuntime:
             root=package.root,
         )
         registered: list[tuple[str, str]] = []
-        generation = uuid4().hex
-        activation = _Activation(package, self._ops_owner)
+        activation = _Activation(package, uuid4().hex, application=self.browser.is_application_package(package),
+                                 ops_owner=self._ops_owner, inflight=self._inflight)
         for declaration in package.handlers:
             try:
                 handler_id = self.bus.register_event_handler(
                     declaration.event_type,
-                    _async_handler(
-                        declaration.handler,
-                        browser=self.browser if self.browser.is_application_package(package) else None,
-                        package_id=package.package_id,
-                        generation=generation,
-                        activation=activation,
-                    ),
+                    _async_handler(declaration.handler, activation),
                     declaration.match_pattern,
                     HandlerLevel.USER,
                     package_metadata=metadata,
@@ -252,7 +242,7 @@ class GatewayRuntime:
         self._package_handlers[package.package_id] = registered
         self._activations[package.package_id] = activation
         self._packages.append(package)
-        self.browser.published(package.package_id, generation)
+        self.browser.published(package.package_id)
 
     def unpublish(self, package_id: str) -> bool:
         """Release every handler of one package and drop its active record."""
@@ -286,21 +276,36 @@ class GatewayRuntime:
 
     # ── package store and data ────────────────────────────────────────────
 
-    def _render_check(self, ops: EventHandlerOps) -> RenderCheck:
-        """Capture the original Ops owner, independently of the surrounding handler context."""
-        owner = self._ops_owner.get(ops)
-        package_id = ops.package_metadata.package_id if ops.package_metadata else ""
+    def current_activation(self, package_id: str) -> _Activation | None:
+        """The published activation of ``package_id``, the one source of activation identity."""
+
+        return self._activations.get(package_id)
+
+    def current_activations(self) -> tuple[_Activation, ...]:
+        """Every published activation."""
+
+        return tuple(self._activations.values())
+
+    def caller_for(self, ops: EventHandlerOps | None) -> Caller | None:
+        """Resolve the activation that issued ``ops`` (also from a detached task) as a host caller."""
+
+        activation = self._ops_owner.get(ops) if ops is not None else None
+        if activation is None:
+            return None
         connection_id = trusted_connection(ops)
 
-        def current(target: RenderTarget) -> bool:
+        def current(target: RenderTarget | None = None) -> bool:
+            if self._activations.get(activation.package_id) is not activation:
+                return False
+            if target is None:
+                return True
             lookup = getattr(self.channel, "ws_by_id", None)
             ws = lookup(connection_id) if callable(lookup) else None
-            return (owner is not None and not owner.released and self._activations.get(package_id) is owner
-                    and target.package_id == package_id and bool(connection_id)
+            return (target.package_id == activation.package_id and bool(connection_id)
                     and (not target.connection_id or target.connection_id == connection_id)
                     and ws is not None and not getattr(ws, "closed", False))
 
-        return current
+        return Caller(activation.package_id, activation.generation, connection_id, current)
 
     def _bind_package_data(self) -> None:
         """Bind the package store before ``ops.build``.
@@ -324,22 +329,18 @@ class GatewayRuntime:
 
         owner = self._ops_owner.get(ops) if ops is not None else None
         for package_id in package_ids:
-            if owner is None or owner.released or self._activations.get(package_id) is not owner:
+            if owner is None or self._activations.get(package_id) is not owner:
                 raise ExtensionFailure(
                     StatusCode.EVENTS_OPS_INVALID, reason="the package activation that issued these ops has ended",
                 )
         for package_id in package_ids:
-            self._data_calls[package_id] = self._data_calls.get(package_id, 0) + 1
+            _count(self._inflight, package_id, 1)
 
     def _end_data_calls(self, package_ids: Sequence[str]) -> None:
         """Finish the data calls admitted by :meth:`_begin_data_calls`."""
 
         for package_id in package_ids:
-            remaining = self._data_calls.get(package_id, 0) - 1
-            if remaining > 0:
-                self._data_calls[package_id] = remaining
-            else:
-                self._data_calls.pop(package_id, None)
+            _count(self._inflight, package_id, -1)
 
     @contextmanager
     def package_data_call(self, package_id: str, ops: Any) -> Iterator[None]:
@@ -355,10 +356,9 @@ class GatewayRuntime:
     def package_io_call(self, package_id: str, generation: str) -> Iterator[None]:
         """Keep host-mediated file work busy through cleanup, using its validated activation."""
         activation = self._activations.get(package_id)
-        if (activation is None or activation.released
-                or self.browser.generations.get(package_id) != generation):
+        if activation is None or activation.generation != generation:
             raise ExtensionFailure(StatusCode.EVENTS_OPS_INVALID, reason="the file operation's activation has ended")
-        self._data_calls[package_id] = self._data_calls.get(package_id, 0) + 1
+        _count(self._inflight, package_id, 1)
         try:
             yield
         finally:
@@ -376,10 +376,12 @@ class GatewayRuntime:
         return self.unpublish(package_id)
 
     def require_idle(self, package_id: str) -> None:
-        """Raise ``EXTENSION_PACKAGE_BUSY`` while the package has calls in flight."""
+        """Raise ``EXTENSION_PACKAGE_BUSY`` while the package has calls in flight.
 
-        activation = self._activations.get(package_id)
-        if (activation is not None and activation.running) or self._data_calls.get(package_id, 0):
+        Handlers of an activation that a reload already replaced still count.
+        """
+
+        if self._inflight.get(package_id, 0):
             raise ExtensionFailure(
                 StatusCode.EXTENSION_PACKAGE_BUSY, package_id=package_id,
                 reason="in-flight calls remain; uninstall stops without unregistering",
@@ -638,17 +640,31 @@ def _normalized_headers(headers: Mapping[str, str] | None) -> Mapping[str, str]:
     return MappingProxyType(normalized)
 
 
-class _Activation:
-    """In-flight handler calls of one published package version.
+def _count(counter: dict[str, int], key: str, delta: int) -> None:
+    remaining = counter.get(key, 0) + delta
+    if remaining > 0:
+        counter[key] = remaining
+    else:
+        counter.pop(key, None)
 
-    The package's modules leave ``sys.modules`` once the activation is released
-    and no handler of it is still running (S_01 invariant 11). Ops handed to its
-    handlers stay tied to it, so data calls stop once it is released (invariant 12).
+
+class _Activation:
+    """One publication of a package: its generation, Ops and in-flight handler calls.
+
+    It is the only record of activation identity: the browser bridge reads generations
+    from it, and Ops handed to its handlers stay tied to it, so data and host calls stop
+    once it is released (S_01 invariant 12). Its modules leave ``sys.modules`` once it is
+    released and none of its handlers still runs (invariant 11).
     """
 
-    def __init__(self, package: LoadedPackage, ops_owner: weakref.WeakKeyDictionary[Any, _Activation]) -> None:
-        self._package = package
+    def __init__(self, package: LoadedPackage, generation: str, *, application: bool,
+                 ops_owner: weakref.WeakKeyDictionary[Any, _Activation], inflight: dict[str, int]) -> None:
+        self.package = package
+        self.package_id = package.package_id
+        self.generation = generation
+        self.application = application
         self._ops_owner = ops_owner
+        self._inflight = inflight
         self._running = 0
         self._released = False
         self._purged = False
@@ -657,59 +673,41 @@ class _Activation:
     def released(self) -> bool:
         return self._released
 
-    @property
-    def running(self) -> int:
-        return self._running
-
-    def enter(self, ops: Any = None) -> None:
-        if ops is not None:
-            self._ops_owner[ops] = self
+    def enter(self, ops: Any) -> None:
+        self._ops_owner[ops] = self
         self._running += 1
+        _count(self._inflight, self.package_id, 1)
 
     def leave(self) -> None:
         self._running -= 1
+        _count(self._inflight, self.package_id, -1)
         self._purge_when_idle()
 
     def release(self) -> None:
         self._released = True
         self._purge_when_idle()
 
-    def hand_over(self, package: LoadedPackage) -> None:
-        """Keep the modules when the next activation publishes the same load."""
-        if set(self._package.module_names) & set(package.module_names):
-            self._purged = True
-
     def _purge_when_idle(self) -> None:
         if self._released and self._running == 0 and not self._purged:
             self._purged = True
-            release_package_modules(self._package)
+            release_package_modules(self.package)
 
 
-def _async_handler(
-    handler: Callable[..., Any], *, browser: BrowserBridge | None = None,
-    package_id: str = "", generation: str = "", activation: _Activation | None = None,
-) -> Callable[..., Awaitable[Any]]:
-    """Return a handler the event bus can await (same adapter as Core)."""
-
-    if browser is None and activation is None and inspect.iscoroutinefunction(handler):
-        return handler
+def _async_handler(handler: Callable[..., Any], activation: _Activation) -> Callable[..., Awaitable[Any]]:
+    """Return a handler the event bus can await, counted against its activation."""
 
     @functools.wraps(handler)
     async def adapter(event: Any, ops: Any, event_next: Any) -> Any:
-        if activation is not None:
-            if activation.released:
-                # A chain collected before the release still reaches this handler; skip it.
-                return await event_next(event)
-            activation.enter(ops)
+        if activation.released:
+            # A chain collected before the release still reaches this handler; skip it.
+            return await event_next(event)
+        activation.enter(ops)
         try:
-            scope = browser.caller_scope(package_id, generation) if browser is not None else nullcontext()
-            with scope:
-                result = handler(event, ops, event_next)
-                if inspect.isawaitable(result):
-                    return await result
-                return result
+            result = handler(event, ops, event_next)
+            if inspect.isawaitable(result):
+                return await result
+            return result
         finally:
-            if activation is not None:
-                activation.leave()
+            activation.leave()
 
     return adapter

@@ -12,8 +12,6 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from contextlib import contextmanager
-from contextvars import ContextVar
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -27,12 +25,13 @@ from jiuwenswarm.gateway.extensions_v2.models import (
     GatewayRequestInput, GatewayRequestOutput, WEBUI_DISPATCH_METHOD, gateway_session_id,
 )
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
-    HostActionOutput, RenderNode, RenderTarget, RenderStatus, UiActionInput, UiActionOutput, UiAppearanceInput,
-    UiDownloadInput, UiRenderInput, UiRenderOutput, UiSplashPreviewInput, valid_instance_key,
+    HostActionOutput, RenderNode, RenderTarget, UiActionInput, UiActionOutput, UiAppearanceInput,
+    UiDownloadInput, UiSplashPreviewInput, valid_instance_key,
 )
 from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS, WebUIEvent
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
 from jiuwenswarm.gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import caller_scope, current_caller
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import SplashPreferences
 from jiuwenswarm.gateway.extensions_v2.webui.settings_contributions import SETTINGS_SLOT, package_settings
 from jiuwenswarm.gateway.extensions_v2.webui.transfers import TransferManager
@@ -56,7 +55,6 @@ ASSET_SOURCES = frozenset({"package", "data"})
 HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~\da-z-]+$", re.IGNORECASE | re.ASCII)
 FORBIDDEN = frozenset({"__proto__", "prototype", "constructor"})
 logger = logging.getLogger(__name__)
-_CALLER: ContextVar[tuple[str, str] | None] = ContextVar("gateway_browser_caller", default=None)
 
 
 def json_copy(value: Any, *, maximum: int = 96 * 1024, depth: int = 16) -> Any:
@@ -117,7 +115,6 @@ class BrowserBridge:
     def __init__(self, runtime) -> None:
         self.runtime = runtime
         self.connections: dict[str, BrowserConnection] = {}
-        self.generations: dict[str, str] = {}
         self.appearance = AppearanceProviders()
         self._appearance_locks: dict[str, asyncio.Lock] = {}
         # Browser notifications started from synchronous package release.
@@ -135,6 +132,15 @@ class BrowserBridge:
     def application_enabled(self) -> bool:
         """Whether any active package contributes to a Gateway application slot."""
         return any(self.is_application_package(package) for package in self.runtime.active_packages())
+
+    @property
+    def generations(self) -> Mapping[str, str]:
+        """Activation generation of each published application package (read-only).
+
+        Derived from the runtime's activations on every read, so it can never disagree with them.
+        """
+        return MappingProxyType({activation.package_id: activation.generation
+                                 for activation in self.runtime.current_activations() if activation.application})
 
     @staticmethod
     def is_application_package(package) -> bool:
@@ -343,12 +349,10 @@ class BrowserBridge:
         )), context)
         return UiActionOutput(accepted=True, status="closed")
 
-    def published(self, package_id: str, generation: str) -> None:
+    def published(self, package_id: str) -> None:
         package = self._active_application_package(package_id)
-        if package is not None:
-            self.generations[package_id] = generation
-            if self.splash_declaration(package) is not None:
-                self.splash_preferences.note_installed(package_id)
+        if package is not None and self.splash_declaration(package) is not None:
+            self.splash_preferences.note_installed(package_id)
 
     async def close_splashes(self, package_id: str, reason: str) -> int:
         """Close a package's live splash instances and tell it why (S_10 section 5).
@@ -384,34 +388,12 @@ class BrowserBridge:
         """
         if not any(package.package_id == package_id and package.client for package in self.runtime.active_packages()):
             return None
-        caller = _CALLER.get()
-        return caller[1] if caller is not None and caller[0] == package_id else self.generations.get(package_id)
-
-    def build_render_guard_handler(self):
-        """Reject inactive client calls before the authoritative render tree changes."""
-        async def guard(event, ops, next_handler):
-            del ops
-            request = event.event_input
-            caller = _CALLER.get()
-            if isinstance(request, UiRenderInput) and caller is not None and caller[0] == request.target.package_id:
-                package_id, generation = caller
-                if self.generations.get(package_id) != generation:
-                    return UiRenderOutput(status=RenderStatus.REJECTED)
-            return await next_handler(event)
-        return guard
-
-    @contextmanager
-    def caller_scope(self, package_id: str, generation: str):
-        """Keep delayed operations bound to the registration that started them."""
-        token = _CALLER.set((package_id, generation))
-        try:
-            yield
-        finally:
-            _CALLER.reset(token)
+        caller = current_caller()
+        return caller.generation if caller is not None and caller.package_id == package_id \
+            else self.generations.get(package_id)
 
     def released(self, package_id: str) -> None:
         """Retire a package's views and appearance, and tell the affected browsers."""
-        self.generations.pop(package_id, None)
         clears = self.runtime.registry.retire_package(package_id)
         revokes = self.appearance.release(package_id)
         if clears or revokes:
@@ -529,8 +511,8 @@ class BrowserBridge:
         async def asset_url(ops, path: str, *, source: str = "package"):
             if source not in ASSET_SOURCES:
                 raise ValueError("asset source must be 'package' or 'data'")
-            package = self._package_caller(ops)
-            generation = self.generations[package.package_id]
+            package, caller = self._package_caller(ops)
+            generation = caller.generation
             if source == "data":
                 generation += DATA_GENERATION_SUFFIX
             self.asset_file(package.package_id, generation, path)
@@ -543,11 +525,11 @@ class BrowserBridge:
             return await self.operation(ops, "page.reload", {})
         # Host actions start their own event chain; the CORE default does the work (S_01 section 4).
         async def appearance_apply(ops, appearance: Mapping[str, Any] | None = None):
-            return await self._run_action(ops, EVENT_UI_APPEARANCE, lambda package_id, generation:
-                                          UiAppearanceInput(package_id, generation, appearance))
+            return await self._run_action(ops, EVENT_UI_APPEARANCE,
+                                          lambda package_id: UiAppearanceInput(package_id, appearance))
         async def download(ops, path: str, *, filename: str | None = None):
-            return await self._run_action(ops, EVENT_UI_DOWNLOAD, lambda package_id, generation:
-                                          UiDownloadInput(package_id, generation, path, filename))
+            return await self._run_action(ops, EVENT_UI_DOWNLOAD,
+                                          lambda package_id: UiDownloadInput(package_id, path, filename))
         async def splash_preview(ops):
             return await self._run_action(ops, EVENT_UI_SPLASH_PREVIEW, UiSplashPreviewInput)
         async def build(event, ops, next_handler):
@@ -571,14 +553,15 @@ class BrowserBridge:
     async def _run_action(self, ops: EventHandlerOps, event_name: str, make_input) -> dict[str, Any]:
         """Trigger one host action chain for the calling activation and translate its answer.
 
-        The activation is read here, in the caller's own scope, and carried in the event input:
-        USER handlers of other packages may run between this call and the CORE default.
+        The caller is resolved from ``ops`` here and carried out of band to the CORE default, so
+        USER handlers that run in between can observe or take over the call but not change whose it is.
         """
-        package_id = ops.package_metadata.package_id if ops.package_metadata else ""
-        caller = _CALLER.get()
-        generation = caller[1] if caller is not None and caller[0] == package_id else ""
-        result = await self.runtime.bus.trigger(Event(event_name, make_input(package_id, generation)),
-                                                ops.session_context)
+        caller = self.runtime.caller_for(ops)
+        if caller is None:
+            raise ValueError("package call belongs to an inactive activation")
+        with caller_scope(caller):
+            result = await self.runtime.bus.trigger(Event(event_name, make_input(caller.package_id)),
+                                                    ops.session_context)
         if not isinstance(result, HostActionOutput):
             raise ValueError(f"{event_name} was not answered")
         if result.status == "rejected":
@@ -622,12 +605,12 @@ class BrowserBridge:
         return {"status": "requested" if delivered else "delivery_failed"}
 
     def _package_caller(self, ops: EventHandlerOps):
-        """Resolve an application package bound to its current activation."""
-        package_id = ops.package_metadata.package_id if ops.package_metadata else ""
-        package = self._active_application_package(package_id)
-        if package is None or _CALLER.get() != (package_id, self.generations.get(package_id)):
+        """Resolve the application package and caller of Ops from its current activation."""
+        caller = self.runtime.caller_for(ops)
+        package = self._active_application_package(caller.package_id) if caller is not None else None
+        if package is None or not caller.current():
             raise ValueError("package call belongs to an inactive activation")
-        return package
+        return package, caller
 
     def _caller(self, ops: EventHandlerOps):
         metadata = ops.session_context.metadata if ops.session_context else {}
@@ -636,7 +619,8 @@ class BrowserBridge:
         connection = self.connections.get(metadata.get("connection_id"))
         if package is None or connection is None or connection.ws.closed:
             raise ValueError("inactive package or browser connection")
-        if _CALLER.get() != (package_id, self.generations.get(package_id)):
+        caller = self.runtime.caller_for(ops)
+        if caller is None or caller.package_id != package_id or not caller.current():
             raise ValueError("package call belongs to an inactive activation")
         return package, connection
 

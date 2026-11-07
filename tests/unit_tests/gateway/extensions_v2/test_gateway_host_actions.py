@@ -2,6 +2,7 @@
 
 """Host actions run as event chains: ui.appearance, ui.download and ui.splash.preview (S_01 section 4)."""
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,7 +120,7 @@ async def test_a_user_policy_can_deny_a_host_action(tmp_path, event_name):
 
 @pytest.mark.parametrize("event_name", sorted(ACTIONS))
 async def test_a_host_action_passes_through_another_packages_handler(tmp_path, event_name):
-    """The CORE checks the activation carried in the input, not the scope of whichever handler forwarded it."""
+    """The CORE checks the caller of the Ops method, not the scope of whichever handler forwarded the call."""
     action, frame = ACTIONS[event_name]
     theme, seen = Theme(action), []
     runtime = await _start(tmp_path)
@@ -136,14 +137,38 @@ async def test_a_host_action_passes_through_another_packages_handler(tmp_path, e
         await runtime.shutdown()
 
 
-async def test_the_core_rejects_a_stale_activation(tmp_path):
+async def test_the_core_rejects_a_chain_started_without_a_caller(tmp_path):
     runtime = await _start(tmp_path)
     try:
         runtime.publish(Theme(ACTIONS["ui.appearance"][0]).package(tmp_path / "theme"))
         context = SessionContext("gateway:test", metadata={"connection_id": "browser-1"})
-        stale = await runtime.bus.trigger(Event(EVENT_UI_APPEARANCE, UiAppearanceInput(THEME, "old", {"accent": "#b45309"})),
-                                          context)
-        assert stale.status == "rejected" and stale.code == "INVALID_ACTION"
+        answer = await runtime.bus.trigger(Event(EVENT_UI_APPEARANCE, UiAppearanceInput(THEME, {"accent": "#b45309"})),
+                                           context)
+        assert answer.status == "rejected" and answer.code == "INVALID_ACTION"
         assert runtime.channel.events == []
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("event_name", sorted(ACTIONS))
+async def test_a_handler_cannot_rewrite_whose_action_it_is(tmp_path, event_name):
+    """A USER handler that renames the caller in the input is refused; the caller travels out of band."""
+    action, frame = ACTIONS[event_name]
+    theme = Theme(action)
+
+    async def rewrite(event, ops, next_handler):
+        return await next_handler(Event(event.event_type, replace(event.event_input, package_id="test.other")))
+
+    other = LoadedPackage(package_id="test.other", version="1.0.0", root=tmp_path, client={}, ui=UI,
+                          handlers=(HandlerDeclaration(event_name, rewrite, {}, "rewrite"),))
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        runtime.publish(other)
+        _prepare(runtime)
+        await _ready(runtime)
+        [answer] = theme.answers
+        assert isinstance(answer, ValueError) and "does not belong to its caller" in str(answer)
+        assert [name for name, _ in runtime.channel.events if name == frame] == []
     finally:
         await runtime.shutdown()

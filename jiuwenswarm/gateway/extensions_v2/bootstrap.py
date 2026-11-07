@@ -24,7 +24,7 @@ from jiuwenswarm.gateway.extensions_v2.event_types.gateway import register_gatew
 from jiuwenswarm.gateway.extensions_v2.handler_ops.gateway_ops import build_gateway_ops_build_handler
 from jiuwenswarm.gateway.extensions_v2.handler_ops.data_ops import build_data_ops_build_handler
 from jiuwenswarm.gateway.extensions_v2.handler_ops.http_ops import build_http_ops_build_handler
-from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, EVENT_GATEWAY_DISCONNECT, EVENT_UI_RENDER
+from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, EVENT_GATEWAY_DISCONNECT
 from jiuwenswarm.gateway.extensions_v2.event_types.matching import match_pattern_subset
 from jiuwenswarm.gateway.extensions_v2.event_types.webui import register_webui_action_events
 from jiuwenswarm.gateway.extensions_v2.webui.core_handlers.action_core import (
@@ -60,12 +60,6 @@ def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[s
     """Register BUILTIN handlers and return their ids for shutdown."""
 
     handler_ids = [
-        bus.register_event_handler(
-            EVENT_UI_RENDER,
-            runtime.browser.build_render_guard_handler(),
-            {},
-            HandlerLevel.BUILTIN,
-        ),
         bus.register_event_handler(
             OPS_BUILD_EVENT_TYPE,
             runtime.browser.build_ops_handler(),
