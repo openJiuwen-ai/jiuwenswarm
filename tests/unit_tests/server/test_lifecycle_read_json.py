@@ -59,7 +59,7 @@ def test_read_json_succeeds_on_final_retry_attempt(tmp_path, monkeypatch) -> Non
     path = _materialized_metadata(tmp_path)
     payload = json.dumps({"revision": 9})
     outcomes: list[BaseException | str] = [
-        PermissionError("lock") for _ in range(lifecycle._READ_RETRY_ATTEMPTS - 1)
+        PermissionError("lock") for _ in range(lifecycle._SHARING_RETRY_ATTEMPTS - 1)
     ]
     outcomes.append(payload)
     calls = _patch_read_text(monkeypatch, outcomes)
@@ -68,20 +68,20 @@ def test_read_json_succeeds_on_final_retry_attempt(tmp_path, monkeypatch) -> Non
     value = lifecycle.read_json(path)
 
     assert value == {"revision": 9}
-    assert len(calls) == lifecycle._READ_RETRY_ATTEMPTS
+    assert len(calls) == lifecycle._SHARING_RETRY_ATTEMPTS
 
 
 def test_read_json_raises_persistent_permission_error(tmp_path, monkeypatch) -> None:
     path = _materialized_metadata(tmp_path)
     calls = _patch_read_text(
-        monkeypatch, [PermissionError("denied")] * lifecycle._READ_RETRY_ATTEMPTS
+        monkeypatch, [PermissionError("denied")] * lifecycle._SHARING_RETRY_ATTEMPTS
     )
     monkeypatch.setattr(lifecycle.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(PermissionError):
         lifecycle.read_json(path)
 
-    assert len(calls) == lifecycle._READ_RETRY_ATTEMPTS
+    assert len(calls) == lifecycle._SHARING_RETRY_ATTEMPTS
 
 
 def test_read_json_does_not_swallow_json_errors(tmp_path, monkeypatch) -> None:
