@@ -28,15 +28,16 @@ from jiuwenswarm.server.runtime.designer.pipeline.wan_reference_binding import (
 def test_child_walk_away_is_finished_event_not_replayed() -> None:
     chars = [{"id": "char_child", "name": "Child"}, {"id": "char_dad", "name": "Dad"}]
     events = extract_finished_events(
-        "Dad sits by the window. Child walked away from the table.",
+        "",
         characters=chars,
         on_screen=["char_child", "char_dad"],
         clip_index=1,
+        source={"end_state": {"exited": ["char_child"]}},
     )
     kinds = {e["type"] for e in events}
     assert "exit" in kinds
     child_exit = next(e for e in events if e.get("character_id") == "char_child")
-    assert "walk" in child_exit["already_done"].lower() or "left" in child_exit["already_done"].lower()
+    assert "left" in child_exit["already_done"].lower()
     assert not any(e.get("character_id") == "char_dad" and e["type"] == "exit" for e in events)
 
 
@@ -45,6 +46,7 @@ def test_seat_hold_and_exit_stamp_onto_next_clip() -> None:
     src = {
         "setting_id": "set_1",
         "on_screen": ["char_dad", "char_child"],
+        "end_state": {"exited": ["char_child"], "pose": "dad at the window"},
         "blocking": {
             "landmark": "window",
             "positions": [

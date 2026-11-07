@@ -27,12 +27,13 @@ from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
 
 _PHRASES: dict[str, dict[str, str]] = {
     "en": {
-        "empty_room": "the empty room",
         "while": "{first}, while {second}.",
         "says": '{who} says: "{line}".',
         "says_offscreen": '{who}, heard offscreen, says: "{line}".',
         "voice_says": 'A voice says: "{line}".',
         "audio": "Audio: {bits}.",
+        "sound_cues": "Sound: {cues} — diegetic only, no music.",
+        "sound_natural": "Sound: natural diegetic sound of the place and action only — no music.",
         "dialogue_language": "Spoken dialogue is in {name}.",
         "tod_with_lighting": "It is {label}; {lighting}.",
         "tod": "It is {label}.",
@@ -41,6 +42,7 @@ _PHRASES: dict[str, dict[str, str]] = {
             "same setting and faces continue from that authored start_state."
         ),
         "scene_as_in": "The scene is as in {scene_word}: {place}.",
+    "scene_as_in_unnamed": "The scene is as shown in {scene_word}.",
         "scene_description": "Scene description: {desc}.",
         "props_in_view": "Props in view: {props}.",
         "connected_still": "{word} is the connected still {label}, and that subject is visible in this shot.",
@@ -61,17 +63,19 @@ _PHRASES: dict[str, dict[str, str]] = {
         "shot_brief_default_camera": "medium / eye-level",
     },
     "zh": {
-        "empty_room": "空房间",
         "while": "{first}，同时{second}。",
         "says": "{who}说：“{line}”。",
         "says_offscreen": "{who}在画外说：“{line}”。",
         "voice_says": "画外音说：“{line}”。",
         "audio": "音乐：{bits}。",
+        "sound_cues": "声音：{cues}，仅现场声，不要配乐。",
+        "sound_natural": "声音：仅保留场景与动作的现场环境声，不要配乐。",
         "dialogue_language": "对白使用{name}。",
         "tod_with_lighting": "时间是{label}；{lighting}。",
         "tod": "时间是{label}。",
         "continue": "本镜头开始时，分镜中此前已完成的情节不再重演，同一场景和人物从既定的起始状态继续。",
         "scene_as_in": "场景如 {scene_word} 所示：{place}。",
+    "scene_as_in_unnamed": "场景如 {scene_word} 所示。",
         "scene_description": "场景描述：{desc}。",
         "props_in_view": "画面中的道具：{props}。",
         "connected_still": "{word} 是相连的静帧「{label}」，该主体在本镜头中可见。",
@@ -186,16 +190,28 @@ def on_screen_names(cfg: dict[str, Any], graph: dict[str, Any] | None) -> list[s
 
 
 def _scene_name(cfg: dict[str, Any], lang: str = "en") -> str:
+    """Best available place label, or "" when the shot names no place.
+
+    Never asserts a place the storyboard did not provide: the former fallback
+    wrote "the empty room" onto outdoor and aerial shots. Omitting the noun is
+    always safer than naming the wrong one.
+    """
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
-    place = str(bible.get("scene_name") or bible.get("place") or "").strip()
-    if place:
+    for key in ("scene_name", "place", "description"):
+        place = str(bible.get(key) or "").strip()
+        if not place:
+            continue
         place = re.split(r"[.。]", place, maxsplit=1)[0].strip()[:80]
-        if len(place.split()) <= 6:
+        if not place:
+            continue
+        # A short label is a place name; a long clause is prose, not a name.
+        # CJK writes without spaces, so cap characters as well as words.
+        if len(place.split()) <= 8 and len(place) <= 40:
             return place
     setting = str(cfg.get("setting_id") or "").strip()
     if setting and not setting.lower().startswith("set_"):
         return setting
-    return phrase(_PHRASES, lang, "empty_room")
+    return ""
 
 
 def _style_phrase(cfg: dict[str, Any]) -> str:
@@ -272,19 +288,19 @@ def _speech_lines(
     return [phrase(_PHRASES, lang, "voice_says", line=line)]
 
 
-def _music_line(cfg: dict[str, Any], lang: str = "en") -> str:
-    """One positive score phrase. Lock rules and generic defaults stay off the call."""
-    bgm = cfg.get("bgm_lock") if isinstance(cfg.get("bgm_lock"), dict) else {}
-    generic = {"cinematic", "soft underscore", "tasteful non-vocal", "same bed across clips"}
-    bits: list[str] = []
-    for key in ("instruments", "style", "mood"):
-        value = str(bgm.get(key) or "").strip().rstrip(".")
-        if not value or value.casefold() in generic or _BAD_DIRECTIVE.search(value):
-            continue
-        bits.append(value)
-    if not bits:
+def _sound_line(cfg: dict[str, Any], lang: str = "en") -> str:
+    """Diegetic sound only — a clip never renders the film score."""
+    if str(cfg.get("audio_policy") or "") == "silent":
         return ""
-    return phrase(_PHRASES, lang, "audio", bits=list_separator(lang).join(bits[:3]))
+    cues = cfg.get("sfx") if isinstance(cfg.get("sfx"), list) else []
+    cues = [
+        str(c).strip()
+        for c in cues[:3]
+        if str(c).strip() and not _BAD_DIRECTIVE.search(str(c))
+    ]
+    if cues:
+        return phrase(_PHRASES, lang, "sound_cues", cues=list_separator(lang).join(cues))
+    return phrase(_PHRASES, lang, "sound_natural")
 
 
 def exited_ids(cfg: dict[str, Any] | None) -> list[str]:
@@ -459,17 +475,6 @@ def _tod_covered_in_text(text: str, cfg: dict[str, Any], lang: str = "en") -> bo
     return False
 
 
-_CROWD_EXIT_CUES = ("already left", "clear of", "empty of extras", "crowd gone", "人群已经离开")
-_CROWD_IN_FRAME_CUES = ("extras", "crowd", "colleagues", "background", "群众", "人群")
-_CROWD_COVER_CUES: dict[str, tuple[str, ...]] = {
-    "exited": _CROWD_EXIT_CUES,
-    "empty": ("empty", "没有群众"),
-    "in_frame": _CROWD_IN_FRAME_CUES,
-    "background_hold": _CROWD_IN_FRAME_CUES,
-    "off_camera": ("off-camera", "off camera", "不在镜头内"),
-}
-
-
 def ensure_story_lock_coverage(
     prompt: str,
     cfg: dict[str, Any] | None,
@@ -524,19 +529,13 @@ def ensure_story_lock_coverage(
             notes.append("story_cover_style")
 
     # Crowd disposition as positive prose (never CROWD LOCK banners).
+    # The agent's own hold text is authoritative; we only avoid repeating the
+    # exact same sentence, so nothing here classifies prose by keyword.
     crowd = _ensure_crowd_state(cfg)
     hold = _scrub_lock_phrase(str(crowd.get("hold") or ""))
     if hold and hold.lower() not in pl and not _BAD_DIRECTIVE.search(hold):
-        # Avoid restating if disposition words already present.
-        disp = str(crowd.get("disposition") or "").lower()
-        cues = _CROWD_COVER_CUES.get(disp, ())
-        covered = any(w in pl for w in cues)
-        # "crowd gone" / "人群已经离开" contain the in-frame cues but say the opposite.
-        if covered and disp in {"in_frame", "background_hold"}:
-            covered = not any(w in pl for w in _CROWD_EXIT_CUES)
-        if not covered:
-            additions.append(sentence(hold, content_lang))
-            notes.append("story_cover_crowd_state")
+        additions.append(sentence(hold, content_lang))
+        notes.append("story_cover_crowd_state")
 
     # Opening holds when prior shots exist but prose omitted them.
     for hold_line in (cfg.get("pose_holds") or [])[:3]:
@@ -927,7 +926,11 @@ def compose_practice_prompt(
     scene_word = _image_word(scene_index, family)
     sentences: list[str] = []
 
-    sentences.append(phrase(_PHRASES, lang, "scene_as_in", scene_word=scene_word, place=strip_phrase(place)))
+    if place:
+        sentences.append(phrase(_PHRASES, lang, "scene_as_in", scene_word=scene_word, place=strip_phrase(place)))
+    else:
+        # No place name in the storyboard: point at the image without inventing one.
+        sentences.append(phrase(_PHRASES, lang, "scene_as_in_unnamed", scene_word=scene_word))
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
     objects = bible.get("objects") if isinstance(bible.get("objects"), list) else []
     props = [
@@ -1027,9 +1030,7 @@ def compose_practice_prompt(
     lang_sent = _language_sentence(cfg, lang)
     if lang_sent:
         sentences.append(lang_sent)
-    music = _music_line(cfg, lang)
-    if music:
-        sentences.append(music)
+    sentences.append(_sound_line(cfg, lang))
     look = _style_phrase(cfg)
     if look and not _BAD_DIRECTIVE.search(look):
         sentences.append(sentence(look, lang))
