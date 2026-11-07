@@ -24,7 +24,7 @@ from openjiuwen.core.extension.errors import OperationError, operation_error
 from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.package_manager import PackageManager
 
-from jiuwenswarm.gateway.extensions_v2.loader import load_gateway_package
+from jiuwenswarm.gateway.extensions_v2.loader import load_gateway_package, release_package_modules
 from jiuwenswarm.gateway.extensions_v2.manifest import DOMAIN_GATEWAY
 
 if TYPE_CHECKING:
@@ -171,8 +171,12 @@ class GatewayPackageManager:
                 )
             try:
                 package = load_gateway_package(root)
-                await self._close_splashes(package_id)
-                self._runtime.publish(package)
+                try:
+                    await self._close_splashes(package_id)
+                    self._runtime.publish(package)
+                except Exception:
+                    release_package_modules(package)
+                    raise
             except Exception as exc:  # noqa: BLE001 - one bad package must surface as a report
                 logger.exception("[GatewayExtensions] cannot reload %s", package_id)
                 return _failure(
@@ -247,8 +251,12 @@ class GatewayPackageManager:
             )
         try:
             package = load_gateway_package(root)
-            await self._close_splashes(package_id)
-            self._runtime.publish(package)
+            try:
+                await self._close_splashes(package_id)
+                self._runtime.publish(package)
+            except Exception:
+                release_package_modules(package)
+                raise
         except Exception as exc:  # noqa: BLE001 - roll back the copy we just made
             logger.exception("[GatewayExtensions] cannot publish %s", package_id)
             try:

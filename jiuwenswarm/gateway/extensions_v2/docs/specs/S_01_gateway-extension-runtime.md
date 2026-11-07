@@ -151,7 +151,9 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 9. 包存储与数据目录只在卸载时删除；删除失败不删除安装副本。
 10. 包释放后，浏览器不再显示该包的应用级实例与外观；释放时发送的清除帧版本号不会被之后的渲染复用。
 11. 每次加载包（启动、安装、重装、重载）都使用新的模块名：在同一路径重装同一版本也执行新的代码，不复用上一次加载缓存在
-    `sys.modules` 中的同包子模块。已加载过的模块对象在进程结束前不移除。
+    `sys.modules` 中的同包子模块。本次加载创建的模块在激活释放（卸载、重载替换、停机）且该激活的在途 Handler 调用全部结束后
+    从 `sys.modules` 移除，包括入口导入的同包子模块；加载或发布失败时立即移除。重复发布同一次加载时模块随之转交新的激活。
+    移除只解除 `sys.modules` 的引用，仍被其他对象引用的模块不会被强制回收。
 
 ## 10. 验证索引
 
@@ -159,7 +161,7 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 | --- | --- |
 | 入口幂等与降级 | `test_gateway_request.py` |
 | 渠道断线钩子（WebChannel 与 GatewayServer 的调用方式）释放连接状态 | `test_gateway_request.py` |
-| 同版本重装加载新代码（不变量 11） | `test_gateway_package_management.py` |
+| 同版本重装加载新代码与释放后清理模块（不变量 11） | `test_gateway_package_management.py` |
 | 四路由 | `test_gateway_request.py` |
 | 扩展鉴权与匿名请求内传 | `test_gateway_request.py`、`test_gateway_package_management.py` |
 | application 槽位交互与请求策略 | `test_gateway_browser_bridge.py` |

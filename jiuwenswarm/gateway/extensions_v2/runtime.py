@@ -41,7 +41,7 @@ from openjiuwen.core.extension.data.json_values import valid_package_id
 from jiuwenswarm.gateway.extensions_v2 import bootstrap
 from jiuwenswarm.gateway.extensions_v2.builtin.router import GatewayLocalRouter, LocalRequest
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
-from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage, load_gateway_packages
+from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage, load_gateway_packages, release_package_modules
 from jiuwenswarm.gateway.extensions_v2.models import (
     EVENT_GATEWAY_REQUEST,
     EVENT_GATEWAY_DISCONNECT,
@@ -85,6 +85,7 @@ class GatewayRuntime:
         self._user_handlers: dict[str, int] = {}
         self._package_handlers: dict[str, list[tuple[str, str]]] = {}
         self._packages: list[LoadedPackage] = []
+        self._activations: dict[str, _Activation] = {}
         self._management: Any = None
         self._started = False
         self.browser = BrowserBridge(self)
@@ -138,6 +139,9 @@ class GatewayRuntime:
         self._user_handlers.clear()
         self._package_handlers.clear()
         self._packages.clear()
+        for activation in self._activations.values():
+            activation.release()
+        self._activations.clear()
         await self.browser.settle()
         await self.webui.shutdown()
         self.store.clear()
@@ -187,7 +191,15 @@ class GatewayRuntime:
         therefore never report success for a half-registered package.
         """
 
-        self.browser.validate_package(package)
+        try:
+            self.browser.validate_package(package)
+        except Exception:
+            release_package_modules(package)
+            raise
+        previous = self._activations.get(package.package_id)
+        if previous is not None:
+            # Republishing the same load hands its modules to the new activation.
+            previous.hand_over(package)
         self.unpublish(package.package_id)
         metadata = PackageMetadata(
             package_id=package.package_id,
@@ -196,6 +208,7 @@ class GatewayRuntime:
         )
         registered: list[tuple[str, str]] = []
         generation = uuid4().hex
+        activation = _Activation(package)
         for declaration in package.handlers:
             try:
                 handler_id = self.bus.register_event_handler(
@@ -205,6 +218,7 @@ class GatewayRuntime:
                         browser=self.browser if self.browser.is_application_package(package) else None,
                         package_id=package.package_id,
                         generation=generation,
+                        activation=activation,
                     ),
                     declaration.match_pattern,
                     HandlerLevel.USER,
@@ -218,6 +232,7 @@ class GatewayRuntime:
                     exc,
                 )
                 self._drop_handlers(registered)
+                activation.release()
                 raise
             self._handler_ids.append(handler_id)
             registered.append((handler_id, declaration.event_type))
@@ -225,6 +240,7 @@ class GatewayRuntime:
                 self._user_handlers.get(declaration.event_type, 0) + 1
             )
         self._package_handlers[package.package_id] = registered
+        self._activations[package.package_id] = activation
         self._packages.append(package)
         self.browser.published(package.package_id, generation)
 
@@ -236,6 +252,9 @@ class GatewayRuntime:
             return False
         self._drop_handlers(registered)
         self._packages = [package for package in self._packages if package.package_id != package_id]
+        activation = self._activations.pop(package_id, None)
+        if activation is not None:
+            activation.release()
         self.browser.released(package_id)
         return True
 
@@ -521,22 +540,63 @@ def _normalized_headers(headers: Mapping[str, str] | None) -> Mapping[str, str]:
     return MappingProxyType(normalized)
 
 
+class _Activation:
+    """In-flight handler calls of one published package version.
+
+    The package's modules leave ``sys.modules`` once the activation is released
+    and no handler of it is still running (S_01 invariant 11).
+    """
+
+    def __init__(self, package: LoadedPackage) -> None:
+        self._package = package
+        self._running = 0
+        self._released = False
+        self._purged = False
+
+    def enter(self) -> None:
+        self._running += 1
+
+    def leave(self) -> None:
+        self._running -= 1
+        self._purge_when_idle()
+
+    def release(self) -> None:
+        self._released = True
+        self._purge_when_idle()
+
+    def hand_over(self, package: LoadedPackage) -> None:
+        """Keep the modules when the next activation publishes the same load."""
+        if set(self._package.module_names) & set(package.module_names):
+            self._purged = True
+
+    def _purge_when_idle(self) -> None:
+        if self._released and self._running == 0 and not self._purged:
+            self._purged = True
+            release_package_modules(self._package)
+
+
 def _async_handler(
     handler: Callable[..., Any], *, browser: BrowserBridge | None = None,
-    package_id: str = "", generation: str = "",
+    package_id: str = "", generation: str = "", activation: _Activation | None = None,
 ) -> Callable[..., Awaitable[Any]]:
     """Return a handler the event bus can await (same adapter as Core)."""
 
-    if browser is None and inspect.iscoroutinefunction(handler):
+    if browser is None and activation is None and inspect.iscoroutinefunction(handler):
         return handler
 
     @functools.wraps(handler)
     async def adapter(event: Any, ops: Any, event_next: Any) -> Any:
-        scope = browser.caller_scope(package_id, generation) if browser is not None else nullcontext()
-        with scope:
-            result = handler(event, ops, event_next)
-            if inspect.isawaitable(result):
-                return await result
-            return result
+        if activation is not None:
+            activation.enter()
+        try:
+            scope = browser.caller_scope(package_id, generation) if browser is not None else nullcontext()
+            with scope:
+                result = handler(event, ops, event_next)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+        finally:
+            if activation is not None:
+                activation.leave()
 
     return adapter

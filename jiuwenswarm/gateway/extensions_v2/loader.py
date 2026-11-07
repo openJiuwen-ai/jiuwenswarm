@@ -51,6 +51,8 @@ class LoadedPackage:
     client: Mapping[str, Any] = field(default_factory=dict)
     #: ``display.name`` as ``{zh, en}`` (empty when absent); the host shows it in navigation, never as code.
     display_name: Mapping[str, str] = field(default_factory=dict)
+    #: Root module names created by this load; removed from ``sys.modules`` once the activation is released.
+    module_names: tuple[str, ...] = ()
 
 
 def load_gateway_packages(install_dir: Path) -> list[LoadedPackage]:
@@ -62,11 +64,11 @@ def load_gateway_packages(install_dir: Path) -> list[LoadedPackage]:
             manifest = _read_manifest(root)
             if manifest["domain"] != DOMAIN_GATEWAY:
                 continue
-            handlers = _load_handlers(root, manifest["modules"])
+            handlers, module_names = _load_handlers(root, manifest["modules"])
         except Exception as exc:  # noqa: BLE001 - one bad package must not block startup
             logger.warning("[GatewayExtensions] skipping package %s: %s", root, exc)
             continue
-        loaded.append(_package_from(root, manifest, handlers))
+        loaded.append(_package_from(root, manifest, handlers, module_names))
     return loaded
 
 
@@ -76,14 +78,21 @@ def load_gateway_package(root: Path) -> LoadedPackage:
     manifest = _read_manifest(Path(root))
     if manifest["domain"] != DOMAIN_GATEWAY:
         raise ValueError(f"{root} is not a gateway package")
-    handlers = _load_handlers(Path(root), manifest["modules"])
-    return _package_from(Path(root), manifest, handlers)
+    handlers, module_names = _load_handlers(Path(root), manifest["modules"])
+    return _package_from(Path(root), manifest, handlers, module_names)
+
+
+def release_package_modules(package: LoadedPackage) -> None:
+    """Drop the modules a load created; safe to call more than once."""
+
+    _release_modules(list(package.module_names))
 
 
 def _package_from(
     root: Path,
     manifest: Mapping[str, Any],
     handlers: list[HandlerDeclaration],
+    module_names: tuple[str, ...] = (),
 ) -> LoadedPackage:
     return LoadedPackage(
         package_id=manifest["package_id"],
@@ -93,6 +102,7 @@ def _package_from(
         ui=manifest["ui"],
         client=manifest["client"],
         display_name=manifest["display_name"],
+        module_names=module_names,
     )
 
 
@@ -215,21 +225,23 @@ def _next_load_serial() -> int:
         return next(_LOAD_SERIAL)
 
 
-def _load_handlers(root: Path, modules: tuple[str, ...]) -> list[HandlerDeclaration]:
+def _load_handlers(root: Path, modules: tuple[str, ...]) -> tuple[list[HandlerDeclaration], tuple[str, ...]]:
+    """Execute every entry and return its declarations with the root module names it created."""
+
     registrar = GatewayRegistrar()
     serial = f"{hashlib.sha256(str(root).encode('utf-8')).hexdigest()[:8]}-{_next_load_serial()}-"
-    for index, module in enumerate(modules):
-        entry_name, created = _load_entry(
-            _module_name(root.name, module, f"{serial}{index}"),
-            root,
-            _module_relative(module),
-        )
-        try:
+    roots: list[str] = []
+    try:
+        for index, module in enumerate(modules):
+            name = _module_name(root.name, module, f"{serial}{index}")
+            roots.append(name)
+            entry_name, _ = _load_entry(name, root, _module_relative(module))
             _call_register(entry_name, registrar)
-        except Exception:
-            _release_modules(created)
-            raise
-    return list(registrar.declarations)
+    except Exception:
+        # Earlier entries of the same package are released as well.
+        _release_modules(roots)
+        raise
+    return list(registrar.declarations), tuple(roots)
 
 
 def _module_name(version: str, module: str, serial: str) -> str:
