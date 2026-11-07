@@ -671,11 +671,13 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           </h3>
           {group.description && <p data-testid="group-chat-info-description">{group.description}</p>}
         </div>
-        <div className="group-chat-panel-heading"><h3 data-testid="group-chat-members-title">{t('groupChat.members')}</h3>
+        <div className="group-chat-panel-heading"><h3 data-testid="group-chat-members-title">
+          {t('groupChat.members')} ({agentCount + 1})
+        </h3>
           <span>
             <button type="button" className="group-chat-icon-button" onClick={() => setAddingMembers(true)}
               aria-label={t('groupChat.addMembers')} title={t('groupChat.addMembers')}
-              disabled={group.members.length >= 10} data-testid="group-chat-add-members"><Plus size={18} /></button>
+              data-testid="group-chat-add-members"><Plus size={18} /></button>
             <button type="button" className="group-chat-icon-button" aria-label={t('groupChat.searchMembers')}
               title={t('groupChat.searchMembers')} aria-pressed={memberSearch} onClick={() => {
                 setMemberSearch(!memberSearch); setMemberQuery('');
