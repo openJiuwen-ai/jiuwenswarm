@@ -786,7 +786,13 @@
     "saved": "Configuration saved and applied.",
     "disconnected": "Gateway is disconnected, so the A2A service cannot be read or changed.",
     "saveBeforeLifecycleAction": "Configuration has unsaved changes. Save or cancel them before enabling, disabling, or restarting the service.",
-    "states": { "disabled": "Disabled", "starting": "Starting", "running": "Running", "stopping": "Stopping", "error": "Error" },
+    "states": {
+      "disabled": "Disabled",
+      "starting": "Starting",
+      "running": "Running",
+      "stopping": "Stopping",
+      "error": "Error"
+    },
     "status": {
       "title": "Service status",
       "configRevision": "Configuration revision: {{revision}}",
@@ -858,7 +864,12 @@
         "syncWait": "Sync wait timeout (seconds)",
         "replaceCredential": "Replace credential (leave blank to keep)"
       },
-      "availability": { "available": "Available", "unreachable": "Unreachable", "incompatible": "Incompatible", "review_required": "Review required" },
+      "availability": {
+        "available": "Available",
+        "unreachable": "Unreachable",
+        "incompatible": "Incompatible",
+        "review_required": "Review required"
+      },
       "register": "Register",
       "registering": "Registering...",
       "registered": "The third-party Agent is registered and can now participate in outbound calls when enabled and available.",
@@ -885,7 +896,11 @@
       }
     },
     "history": {
-      "tabs": { "ariaLabel": "A2A request history direction", "ingress": "Ingress", "outbound": "Outbound" },
+      "tabs": {
+        "ariaLabel": "A2A request history direction",
+        "ingress": "Ingress",
+        "outbound": "Outbound"
+      },
       "copy": "Click to copy",
       "copied": "Copied",
       "copyFailed": "Copy failed. Select the text and copy it manually.",
@@ -900,7 +915,10 @@
         "description": "Shows the latest 200 A2A outbound dispatches without request or response bodies.",
         "empty": "No outbound history",
         "emptyDescription": "Dispatch statuses will appear after requests are sent to third-party Agents.",
-        "modes": { "sync": "Sync", "async": "Async" },
+        "modes": {
+          "sync": "Sync",
+          "async": "Async"
+        },
         "statuses": {
           "created": "Created",
           "submitting": "Submitting",
@@ -918,8 +936,15 @@
         }
       },
       "processing": "Processing",
-      "statuses": { "processing": "Processing", "completed": "Completed", "failed": "Failed", "canceled": "Canceled" },
-      "operations": { "message": "Message" },
+      "statuses": {
+        "processing": "Processing",
+        "completed": "Completed",
+        "failed": "Failed",
+        "canceled": "Canceled"
+      },
+      "operations": {
+        "message": "Message"
+      },
       "columns": {
         "status": "Status",
         "operation": "Request type",
@@ -1594,7 +1619,11 @@
     "enable": "Enable",
     "disable": "Disable",
     "loading": "Loading scheduled tasks...",
-    "empty": "No scheduled tasks",
+    "empty": {
+      "createButton": "Create scheduled task",
+      "templateSectionTitle": "Templates",
+      "templateMore": "More"
+    },
     "deleteConfirm": "Are you sure you want to delete this task?",
     "autoManaged": "Auto-managed",
     "autoManagedHint": "This task is auto-created/deleted by the proactive recommendation toggle (Settings → Proactive Recommendation). Only the cron expression and timezone can be edited here; other fields (name/status/description/offset/channel) are read-only. To remove it, turn off the toggle in Settings.",
@@ -1649,11 +1678,6 @@
       "history": "Run history",
       "triggeredSessions": "Run history",
       "noTriggeredSessions": "No trigger records"
-    },
-    "empty": {
-      "createButton": "Create scheduled task",
-      "templateSectionTitle": "Templates",
-      "templateMore": "More"
     },
     "history": {
       "comingSoon": "Coming soon"
@@ -2941,9 +2965,17 @@
       "cancel": "Cancel",
       "confirm": "Confirm"
     },
-    "runtime": { "processing": "Processing" },
-    "deleteDialog": { "title": "Delete", "description": "Delete “<name>{{title}}</name>”? This action cannot be undone." },
-    "notFound": { "title": "Conversation not found or deleted", "newConversation": "New conversation" },
+    "runtime": {
+      "processing": "Processing"
+    },
+    "deleteDialog": {
+      "title": "Delete",
+      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone."
+    },
+    "notFound": {
+      "title": "Conversation not found or deleted",
+      "newConversation": "New conversation"
+    },
     "errors": {
       "delete": "Failed to delete conversation",
       "create": "Failed to create conversation",
@@ -3155,15 +3187,15 @@
       "autoCollectLabel": "Auto fetch",
       "autoCollectHint": "Fetch automatically at the chosen frequency",
       "timeRangeLabel": "Time Range",
-    "timeRangeWeek": "Last Week",
-    "timeRangeMonth": "Last Month",
-    "timeRangeQuarter": "Last Quarter",
-    "timeRangeCustom": "Custom",
-    "dateRangeTitle": "Select Date Range",
-    "dateRangePlaceholder": "Select a date range",
-    "dateRangeRequired": "Select a custom date range",
-    "addUrl": "+ Add",
-    "frequencyLabel": "Auto fetch frequency",
+      "timeRangeWeek": "Last Week",
+      "timeRangeMonth": "Last Month",
+      "timeRangeQuarter": "Last Quarter",
+      "timeRangeCustom": "Custom",
+      "dateRangeTitle": "Select Date Range",
+      "dateRangePlaceholder": "Select a date range",
+      "dateRangeRequired": "Select a custom date range",
+      "addUrl": "+ Add",
+      "frequencyLabel": "Auto fetch frequency",
       "frequencyHour": "Every {{n}} hour(s)",
       "frequencyDay": "Every {{n}} day(s)",
       "frequencyEvery": "Every",
@@ -3174,7 +3206,7 @@
       "advancedConfig": "Advanced Settings",
       "maxItemsRangeError": "Max items must be 1-10000, or empty for default",
       "previousStep": "Previous",
-    "submit": "Add",
+      "submit": "Add",
       "save": "Save",
       "notConfigured": "Personal context is not configured. Enable it in Settings first.",
       "providerUnauthorized": "Not authorized. Authorize it in Settings first.",
@@ -3502,10 +3534,21 @@
       "expired": "Expired"
     },
     "schedule": {
-      "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
-      "interval": { "label": "Every", "unit": "minutes, return to this session" },
-      "cron": { "hint": "Standard 5-field format: minute hour day month weekday (e.g. 0 9 * * 1-5 = weekdays at 9am)" },
-      "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed" },
+      "tab": {
+        "interval": "Interval",
+        "cron": "Cron expression",
+        "once": "Once"
+      },
+      "interval": {
+        "label": "Every",
+        "unit": "minutes, return to this session"
+      },
+      "cron": {
+        "hint": "Standard 5-field format: minute hour day month weekday (e.g. 0 9 * * 1-5 = weekdays at 9am)"
+      },
+      "once": {
+        "hint": "Pick a date and time; the job fires once at that moment and is then marked completed"
+      },
       "summary": {
         "interval": "Return to this session every {{minutes}} min",
         "cron": "{{expr}} ({{timezone}}), return to this session",
@@ -3537,8 +3580,15 @@
       "titleEdit": "Edit heartbeat job",
       "back": "Back"
     },
-    "concurrencyPolicy": { "skip": "Skip", "queue": "Queue", "replace": "Replace" },
-    "sessionDeletedPolicy": { "disable": "Disable job", "completed": "Mark completed" },
+    "concurrencyPolicy": {
+      "skip": "Skip",
+      "queue": "Queue",
+      "replace": "Replace"
+    },
+    "sessionDeletedPolicy": {
+      "disable": "Disable job",
+      "completed": "Mark completed"
+    },
     "panel": {
       "title": "Heartbeat Jobs",
       "loading": "Loading…",
@@ -3797,5 +3847,77 @@
       "candidateError": "Candidate {{index}}/{{total}} generation failed",
       "scoreSuffix": " · {{score}}"
     }
-    }
+    },
+  "swarmflow": {
+    "statusPlanned": "Planned",
+    "statusPending": "Pending",
+    "statusRunning": "Running",
+    "statusPaused": "Paused",
+    "statusCompleted": "Completed",
+    "statusFailed": "Failed",
+    "statusStopped": "Stopped",
+    "statusWaitingForHuman": "Waiting for input",
+    "subWorkflow": "Sub-workflow",
+    "clickToReply": "Click to reply",
+    "waitingForHuman": "Waiting for {{count}}",
+    "noWorkflow": "No workflow",
+    "layoutIndented": "Indented Tree",
+    "layoutOrgChart": "Org Chart",
+    "layoutGraph": "Flow Graph",
+    "pauseResumeHint": "Pause / Resume",
+    "stopHint": "Stop",
+    "controlAlreadyCompleted": "Workflow already completed",
+    "controlAlreadyStopped": "Workflow already stopped",
+    "controlAlreadyFailed": "Workflow already failed",
+    "controlAlreadyPaused": "Workflow already paused",
+    "controlUnavailable": "Workflow is running; control unavailable",
+    "controlNotFound": "Workflow run not found",
+    "controlTimeout": "Workflow control timed out; please retry",
+    "controlsDisabledHint": "The team is paused. Send a message to wake it up, then resume or stop the workflow here.",
+    "sessionBudget": "Session budget (team-wide, never resets)",
+    "runBudget": "Run budget (META.workflow_token_limit)",
+    "sessionBudgetShort": "Session",
+    "runBudgetShort": "Run",
+    "budgetUnlimited": "unbounded",
+    "budgetExhaustedSession": "Session budget exhausted",
+    "budgetExhaustedWorkflow": "Run budget exhausted",
+    "toggleLabel": "SwarmFlow",
+    "tagHint": "SwarmFlow is active for this session",
+    "closeTag": "Close SwarmFlow",
+    "closeTagDisabled": "Cannot close while processing",
+    "configTitle": "SwarmFlow Configuration",
+    "configReadonlyHint": "Session is active, config is read-only",
+    "budgetPanelTitle": "SwarmFlow Budget",
+    "budgetPanelHint": "Set the Token limit for this session.",
+    "budgetPlaceholder": "Enter number",
+    "budgetActualHint": "Configured limit: {{count}} tokens",
+    "workflowList": "Workflow List",
+    "verifyReviewing": "Reviewing…",
+    "verifyReviewingShort": "Reviewing",
+    "verifyPass": "✓ Pass",
+    "expertIdentity": "Expert: {{name}} ({{template}})",
+    "turnDetailHint": "Click to view this turn's input / output",
+    "verifyFail": "✗ Fail",
+    "verifyUndecided": "? Undecided",
+    "verifyThreshold": "Threshold {{count}}",
+    "verifyUndecidedHint": "Some reviewer(s) did not vote (undecided); retry recommended",
+    "verifyVotesMissing": "{{count}} vote(s) missing · retry recommended",
+    "verifyVoteUndecided": "? No vote",
+    "verifyScore": "{{score}} pts",
+    "verifyRound": "Round {{count}} · {{verdict}}",
+    "verifyGroupTitle": "verify · {{label}}",
+    "verifyReviewersPending": "{{names}} reviewing…",
+    "sectionCallRecords": "Activity",
+    "sectionToolCalls": "Tool calls",
+    "sectionInput": "Input",
+    "sectionOutput": "Output",
+    "sectionHumanPrompt": "Human question",
+    "sectionHumanReply": "Human reply",
+    "sectionError": "Error",
+    "charUnit": "chars",
+    "clickToViewDetail": "Click to view details",
+    "runIdTooltip": "Run ID: {{id}}",
+    "forkFromSession": "Forked from {{name}}",
+    "forkChildSession": "Forked child session"
+  }
 }

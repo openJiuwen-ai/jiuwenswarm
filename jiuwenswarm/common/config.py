@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 _CONFIG_MODULE_DIR = Path(__file__).parent
 CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
+SWARMFLOW_BUDGET_CONFIG_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 DEFAULT_SWARMFLOW_ENABLED = False
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
@@ -2598,6 +2599,41 @@ def update_swarmflow_enabled_in_config(enabled: bool) -> None:
         current = _ensure_config_object(current, segment, ".".join(path_so_far))
     current[SWARMFLOW_ENABLED_CONFIG_PATH[-1]] = bool(enabled)
     dump_yaml_round_trip(_current_config_yaml_path(), data)
+
+
+def update_swarmflow_budget_in_config(budget: str) -> None:
+    """Update ``modes.team.jiuwen_team.swarmflow_budget`` in config.yaml.
+
+    Pass an empty string or ``"none"`` to remove the budget ceiling.
+    """
+    config_path = _current_config_yaml_path()
+    clear_budget = not budget or budget.strip().lower() in ("none", "null")
+    if clear_budget:
+        data = load_yaml_round_trip(config_path)
+        current = data
+        for segment in SWARMFLOW_BUDGET_CONFIG_PATH[:-1]:
+            if segment not in current or not isinstance(current, dict):
+                return
+            current = current[segment]
+        if isinstance(current, dict):
+            current.pop(SWARMFLOW_BUDGET_CONFIG_PATH[-1], None)
+            dump_yaml_round_trip(config_path, data)
+        return
+
+    try:
+        value = int(budget)
+    except (ValueError, TypeError):
+        raise ValueError(f"swarmflow_budget must be a positive integer, got {budget!r}") from None
+    if value <= 0:
+        raise ValueError(f"swarmflow_budget must be a positive integer, got {value}")
+    data = load_yaml_round_trip(config_path)
+    current = data
+    path_so_far: list[str] = []
+    for segment in SWARMFLOW_BUDGET_CONFIG_PATH[:-1]:
+        path_so_far.append(segment)
+        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    current[SWARMFLOW_BUDGET_CONFIG_PATH[-1]] = value
+    dump_yaml_round_trip(config_path, data)
 
 
 def get_mcp_servers() -> list[dict[str, Any]]:

@@ -67,6 +67,15 @@ class _InactiveTeamRuntimeManagerMixin:
         self._workflow_completed: dict[str, bool] = {}
         self._round_complete_emitted: dict[str, bool] = {}
 
+    def get_background_task_controller(self, session_id: str):
+        # Real TeamManager owns the per-session controller; the helpers reach it
+        # through get_team_manager(), so a patched manager must serve one too.
+        from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+
+        return self.__dict__.setdefault("_test_controllers", {}).setdefault(
+            session_id, BackgroundTaskController()
+        )
+
     @staticmethod
     def owns_stream_task(session_id: str, task: asyncio.Task | None) -> bool:
         return True
@@ -4572,6 +4581,22 @@ async def test_ensure_monitor_handlers_skips_workflow_handler_when_swarmflow_dis
     assert registered_wf_handlers.get(session_id) is None
 
 
+class _FakeWorkflowConsumeHandler:
+    """Minimal WorkflowMonitorHandler stand-in with session-scoped dedup tables."""
+
+    is_running = True
+
+    def __init__(self, *events: dict[str, object]) -> None:
+        self._events = list(events)
+        self.seen_phase: dict[str, str] = {}
+        self.seen_agent: dict[str, str] = {}
+        self.spawned_members: set[str] = set()
+
+    async def events(self):
+        for event in self._events:
+            yield event
+
+
 @pytest.mark.anyio
 async def test_consume_workflow_events_broadcasts_raw_for_tui(monkeypatch):
     """On the TUI channel _consume_workflow_events broadcasts workflow.updated as-is."""
@@ -4582,15 +4607,9 @@ async def test_consume_workflow_events_broadcasts_raw_for_tui(monkeypatch):
         "workflow": {"name": "test-flow", "status": "running"},
     }
 
-    class _FakeWorkflowHandler:
-        is_running = True
-
-        async def events(self):
-            yield event
-
     monkeypatch.setattr(team_helpers, "_broadcast_event", lambda *args: broadcasted.append(args[2]))
 
-    handler = _FakeWorkflowHandler()
+    handler = _FakeWorkflowConsumeHandler(event)
     await _TeamHelpersTestApi.consume_workflow_events(
         "tui", "sess-wf-consume", handler,
     )
@@ -4622,15 +4641,9 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
         },
     }
 
-    class _FakeWorkflowHandler:
-        is_running = True
-
-        async def events(self):
-            yield event
-
     monkeypatch.setattr(team_helpers, "_broadcast_event", lambda *args: broadcasted.append(args[2]))
 
-    handler = _FakeWorkflowHandler()
+    handler = _FakeWorkflowConsumeHandler(event)
     await _TeamHelpersTestApi.consume_workflow_events(
         "web", "sess-wf-web", handler,
     )
@@ -4641,6 +4654,45 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
     types = [e["event"]["type"] for e in broadcasted]
     assert "team.task.claimed" in types
     assert "team.member.spawned" in types
+
+
+@pytest.mark.anyio
+async def test_consume_workflow_events_dedup_survives_consumer_restart(monkeypatch):
+    """Handler-scoped seen_* must suppress replay after the consume loop remounts."""
+    broadcasted: list[dict[str, object]] = []
+    event = {
+        "event_type": "workflow.updated",
+        "session_id": "sess-wf-dedup",
+        "workflow": {
+            "id": "run-dedup",
+            "name": "test-flow",
+            "status": "running",
+            "phases": [
+                {
+                    "id": "planning-1",
+                    "name": "planning",
+                    "status": "running",
+                    "agents": [
+                        {"id": "researcher-1", "name": "researcher", "status": "running"}
+                    ],
+                }
+            ],
+        },
+    }
+
+    monkeypatch.setattr(team_helpers, "_broadcast_event", lambda *args: broadcasted.append(args[2]))
+    monkeypatch.setattr(team_helpers, "_persist_team_history_event", lambda *args: None)
+
+    handler = _FakeWorkflowConsumeHandler(event)
+    await _TeamHelpersTestApi.consume_workflow_events("web", "sess-wf-dedup", handler)
+    first_count = len(broadcasted)
+    assert first_count > 0
+    assert handler.seen_phase.get("run-dedup:planning-1") == "running"
+    assert "run-dedup:researcher-1" in handler.spawned_members
+
+    # Simulate pause/wake: same handler tables, new consume loop, replayed delta.
+    await _TeamHelpersTestApi.consume_workflow_events("web", "sess-wf-dedup", handler)
+    assert len(broadcasted) == first_count
 
 
 @pytest.mark.anyio

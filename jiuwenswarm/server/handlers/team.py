@@ -14,6 +14,7 @@ from typing import Any
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
@@ -41,6 +42,12 @@ from jiuwenswarm.server.wire_truncate import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SWARMFLOW_ACTIONS = {
+    ReqMethod.SWARMFLOW_PAUSE: "pause",
+    ReqMethod.SWARMFLOW_RESUME: "resume",
+    ReqMethod.SWARMFLOW_STOP: "stop",
+}
 
 
 def _team_binding_payload(binding: Any) -> dict[str, Any]:
@@ -1422,4 +1429,125 @@ async def handle_team_members_get(ctx: RequestContext) -> None:
     wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
     await ctx.sink.send_wire(wire)
 
+
+async def handle_swarmflow_control(ctx: RequestContext) -> None:
+    """Shared pause/resume/stop control-path handler for a swarmflow run.
+
+    Looks up the session's BackgroundTaskController and applies the requested
+    control to the run identified by ``run_id`` (accepting ``run_id`` or the
+    ``workflow_run_id`` alias). Returns ok=False with a reason when run_id is
+    missing, the team is asleep (no leader harness to host the run — the
+    tree-view buttons are greyed then), or no matching run
+    is registered on the controller.
+    """
+    request = ctx.request
+    action = _SWARMFLOW_ACTIONS[request.req_method]
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+        classify_swarmflow_control_miss,
+        get_background_task_controller,
+    )
+    from jiuwenswarm.agents.harness.team.swarmflow_btc import (
+        pause_background_tasks,
+        resume_background_tasks,
+        stop_background_tasks,
+    )
+
+    session_id = request.session_id or ""
+    channel_id = request.channel_id or "web"
+    params = request.params if isinstance(request.params, dict) else {}
+    run_id = params.get("run_id") or params.get("workflow_run_id")
+
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+    from openjiuwen.core.runner import Runner
+
+    from jiuwenswarm.agents.harness.team import get_team_manager
+
+    tm = get_team_manager(channel_id)
+    active_teams = await Runner.list_active_teams()
+    team_runtime_running = any(
+        str(info.current_session_id or "") == session_id
+        and info.state == RuntimeState.RUNNING
+        for info in active_teams
+    )
+    if not isinstance(run_id, str) or not run_id.strip():
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=False,
+            payload={"error": "run_id is required"},
+        )
+    elif not team_runtime_running:
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=False,
+            payload={"error": "工作流控制不可用，发送一条消息唤醒团队后即可使用。"},
+        )
+    else:
+        run_id = run_id.strip()
+        controller = get_background_task_controller(session_id)
+        status = {"pause": "paused", "resume": "resumed", "stop": "stopped"}.get(action, "")
+        wf_handler = tm.get_workflow_handler(session_id)
+        if action == "pause":
+            acted = await pause_background_tasks(controller, run_id)
+            # 与 stop 对称：RPC 已回 {status: paused}，但仍合成 workflow.updated，
+            # 避免引擎事件丢失/滞后时树卡在 running、前端 pending 等事件解锁。
+            if acted and wf_handler is not None:
+                await wf_handler.pause_run(run_id)
+        elif action == "resume":
+            acted = await resume_background_tasks(controller, run_id)
+            # 引擎没有 workflow_resumed 进度事件；controller 重启后必须由 handler
+            # 把快照从 paused 推回 running，否则树状态滞后、控制按钮易锁死。
+            if acted and wf_handler is not None:
+                await wf_handler.resume_run(run_id)
+        elif action == "stop":
+            acted = await stop_background_tasks(controller, run_id)
+            # 已解栈的 paused run 没有引擎回发的 WORKFLOW_STOPPED，快照会永远停在
+            # paused；由 handler 合成终态 delta（树刷新 + 落盘），不写 journal seal
+            # （丢票不 seal，手动 resume_id 仍可续）。active run 由引擎事件路径更新，
+            # stop_run 对非 paused run 是 no-op。
+            if wf_handler is not None and await wf_handler.stop_run(run_id):
+                acted = True
+        else:  # pragma: no cover - internal dispatch only
+            acted = False
+        if not acted:
+            # controller 注册表 miss ≠ run 不存在：run 可能已经自然终态
+            # （用户点的是一张停在 running/paused 的陈旧卡片），也可能是
+            # 进程重启后注册表清空而状态快照还在。由 team 层找回权威
+            # status 一并返回，前端据此纠正卡片并明确提示，而不是
+            # 一句 not found。
+            miss = classify_swarmflow_control_miss(channel_id, session_id, run_id)
+            if miss is not None:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload=miss,
+                )
+            else:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload={"error": "workflow run not found"},
+                )
+        else:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=True,
+                payload={"run_id": run_id, "status": status},
+            )
+
+    logger.info(
+        "[SWARMFLOW] %s req channel_id=%s session_id=%s request_id=%s run_id=%s ok=%s",
+        action,
+        channel_id,
+        session_id,
+        request.request_id,
+        run_id,
+        resp.ok,
+    )
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)
 
