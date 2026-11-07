@@ -37,13 +37,25 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
   const requestSeqRef = useRef(0);
   const hostOAuthStartedRef = useRef(false);
   const [retrySeq, setRetrySeq] = useState(0);
+  const mountedRef = useRef(false);
+  const finishedRef = useRef(false);
+  const remoteSessionRef = useRef(step.oauthSession);
+  remoteSessionRef.current = step.oauthSession;
 
   // Host OAuth connectors (Canva) return an explicit backend sentinel; only then
   // do we call mcp.oauth.start to fetch the real authorize URL.
   const isHostOAuth = initial.hostOAuth === true;
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      // Defer one microtask so StrictMode's setup/cleanup/setup is not a cancel.
+      queueMicrotask(() => {
+        if (!mountedRef.current && !finishedRef.current && remoteSessionRef.current) {
+          void useConnectorStore.getState().cancelOAuth(name, remoteSessionRef.current);
+        }
+      });
       // 组件卸载后让 in-flight 的 waitAuth 结果失效，避免用户关掉弹窗后过很久收到的
       // connected/失败还去 setStep/setStatus（这个 promise 本身取消不了，只能靠序号丢弃结果）。
       requestSeqRef.current += 1;
@@ -89,7 +101,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
     const seq = ++requestSeqRef.current;
     setStatus('waiting');
     setErrorMessage(null);
-    waitAuth(name, step.stepIndex ?? 0).then((response) => {
+    waitAuth(name, step.stepIndex ?? 0, step.oauthSession).then((response) => {
       if (seq !== requestSeqRef.current) return; // 已卸载/已发起新一轮，丢弃过期结果
       if (!response) {
         setStatus('error');
@@ -97,6 +109,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
         return;
       }
       if (response.type === 'connected') {
+        finishedRef.current = true;
         onConnected();
         return;
       }
@@ -117,16 +130,26 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
     if (step.authUrl) window.open(step.authUrl, '_blank', 'noopener,noreferrer');
   }
 
-  function handleRetry() {
-    hostOAuthStartedRef.current = false;
-    setJustAdvanced(false);
-    setRetrySeq((v) => v + 1);
+  async function handleCancel() {
+    requestSeqRef.current += 1;
+    if (step.oauthSession) {
+      await useConnectorStore.getState().cancelOAuth(name, step.oauthSession);
+    } else {
+      void useConnectorStore.getState().cancelConnectAction(name);
+    }
+    finishedRef.current = true;
+    onCancel();
   }
 
-  // 用户中途放弃连接/授权
-  function handleCancel() {
-    void useConnectorStore.getState().cancelConnectAction(name);
-    onCancel();
+  async function handleRetry() {
+    hostOAuthStartedRef.current = false;
+    if (step.oauthSession) {
+      const response = await useConnectorStore.getState().connect(name, 'oauth');
+      if (response?.type === 'auth_required') setStep(response);
+      return;
+    }
+    setJustAdvanced(false);
+    setRetrySeq((v) => v + 1);
   }
 
   const stepsTotal = step.stepsTotal ?? 1;
