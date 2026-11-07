@@ -31,7 +31,6 @@ from jiuwenswarm.gateway.extensions_v2.webui.models import (
 from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS, WebUIEvent
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
 from jiuwenswarm.gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
-from jiuwenswarm.gateway.extensions_v2.webui.call_context import caller_scope, current_caller
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import SplashPreferences
 from jiuwenswarm.gateway.extensions_v2.webui.settings_contributions import SETTINGS_SLOT, package_settings
 from jiuwenswarm.gateway.extensions_v2.webui.transfers import TransferManager
@@ -380,17 +379,16 @@ class BrowserBridge:
             closed += 1
         return closed
 
-    def frame_generation(self, package_id: str) -> str | None:
-        """Keep client frames attributed to the activation that initiated them.
+    def frame_generation(self, package_id: str, generation: str | None = None) -> str | None:
+        """The generation a frame carries: the calling activation's, else the current one.
 
-        Only client-capability packages are declared to the browser, so frames of
-        other application packages carry no generation.
+        Frames a package's render caused stay attributed to the activation that called it; frames the
+        host sends on its own (release, eviction, shutdown) carry the current one. Only client-capability
+        packages are declared to the browser, so frames of other application packages carry none.
         """
         if not any(package.package_id == package_id and package.client for package in self.runtime.active_packages()):
             return None
-        caller = current_caller()
-        return caller.generation if caller is not None and caller.package_id == package_id \
-            else self.generations.get(package_id)
+        return generation or self.generations.get(package_id)
 
     def released(self, package_id: str) -> None:
         """Retire a package's views and appearance, and tell the affected browsers."""
@@ -556,15 +554,15 @@ class BrowserBridge:
     async def _run_action(self, ops: EventHandlerOps, event_name: str, make_input) -> dict[str, Any]:
         """Trigger one host action chain for the calling activation and translate its answer.
 
-        The caller is resolved from ``ops`` here and carried out of band to the CORE default, so
-        USER handlers that run in between can observe or take over the call but not change whose it is.
+        The caller is resolved from ``ops`` here and passed as the chain's ``trigger_context``, which only
+        the CORE default receives: USER handlers that run in between can observe or take over the call
+        but not change whose it is.
         """
         caller = self.runtime.caller_for(ops)
         if caller is None:
             raise ValueError("package call belongs to an inactive activation")
-        with caller_scope(caller):
-            result = await self.runtime.bus.trigger(Event(event_name, make_input(caller.package_id)),
-                                                    ops.session_context)
+        result = await self.runtime.bus.trigger(Event(event_name, make_input(caller.package_id)),
+                                                ops.session_context, trigger_context=caller)
         if not isinstance(result, HostActionOutput):
             raise ValueError(f"{event_name} was not answered")
         if result.status == "rejected":

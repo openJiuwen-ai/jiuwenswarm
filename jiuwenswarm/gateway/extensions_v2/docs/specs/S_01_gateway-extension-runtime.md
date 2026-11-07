@@ -119,7 +119,7 @@ Gateway 过了提交点会先完成收尾再抛出取消，调用方收到的仍
 | `ui.download` | `UiDownloadInput` | `HostActionOutput` | 核对激活与连接，签发一次性下载（[S_10](S_10_application-settings.md) 第 7 节） |
 | `ui.splash.preview` | `UiSplashPreviewInput` | `HostActionOutput` | 核对激活、开场声明与连接，请求预览（[S_09](S_09_startup-splash.md) 第 3.3 节） |
 
-后三项是宿主动作：包经 `ops.appearance.apply`、`ops.ui.download`、`ops.splash.preview` 触发新链。调用方由 Ops 方法从调用的 Ops 解析（后台任务中同样有效），在事件之外传到 CORE；输入只携带 `package_id`，供 USER Handler 匹配与查看，与调用方不一致或链路没有调用方时 CORE 拒绝。CORE 拒绝时返回 `status="rejected"` 与 `INVALID_ACTION`，USER Handler 可以拒绝或接管。`ops.ui.render` 同样在事件之外携带调用方。
+后三项是宿主动作：包经 `ops.appearance.apply`、`ops.ui.download`、`ops.splash.preview` 触发新链。调用方由 Ops 方法从调用的 Ops 解析（后台任务中同样有效），作为该链的 `trigger_context` 传给 `bus.trigger`，只有 CORE 能读取；输入只携带 `package_id`，供 USER Handler 匹配与查看，与调用方不一致或链路没有调用方时 CORE 拒绝。CORE 拒绝时返回 `status="rejected"` 与 `INVALID_ACTION`，USER Handler 可以拒绝或接管。`ops.ui.render` 同样以 `trigger_context` 携带调用方；它引起的渲染、错误与清除帧标注调用方的激活代次，宿主自行发送的帧（释放、淘汰、停机）标注当前代次。
 
 所有事件名满足 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`；重复注册同名事件返回 `EVENTS_REGISTRATION_INVALID`。
 
@@ -192,7 +192,8 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
     宿主导入的准备与接收同样计数，取消后仍等待文件线程、句柄关闭与临时文件清理；有调用在途时卸载返回 `EXTENSION_PACKAGE_BUSY`
     且不注销 Handler、不删除数据。已释放的激活不再开始新的 Handler 调用：释放前已收集该 Handler 的事件链会跳过它。
 13. 激活身份只有一个来源：每次发布创建的激活记录。浏览器声明、素材地址与下行帧中的 `activation_generation` 由它派生；
-    宿主操作的调用方从 Ops 解析并在事件之外传递，USER Handler 改写事件输入不能改变调用方。停机时激活记录清空，派生的代次随之失效。
+    宿主操作的调用方从 Ops 解析，作为事件链的 `trigger_context` 只交给 CORE：USER Handler 改写事件输入不能改变调用方，
+    链内启动的嵌套事件链与后台任务也不继承调用方。停机时激活记录清空，派生的代次随之失效。
 14. 重载或安装新版本失败（校验、Handler 试注册或切换前的任一步）时，正在运行的版本保持不变：不关闭它的开场、不撤销它的外观与界面、
     不作废它的凭据；提交时注册失败也保持旧版本运行，只是旧开场已经关闭。一条事件链只经过同一包的一个版本。
     过了提交点（开始关闭旧开场）的安装、重载与卸载即使被取消（包括重复取消）也保证收尾，收尾结束后调用方才收到取消；

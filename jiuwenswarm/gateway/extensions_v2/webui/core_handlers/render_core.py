@@ -14,7 +14,7 @@ from dataclasses import replace
 
 from openjiuwen.core.events import Event, EventHandler, EventHandlerOps, EventNext
 
-from jiuwenswarm.gateway.extensions_v2.webui.call_context import render_is_current, trusted_connection
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import caller_generation, caller_of, trusted_connection
 from jiuwenswarm.gateway.extensions_v2.webui.constants import CODE_SCHEMA_ERROR, SlotScope, slot_spec
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
     ClearFrame,
@@ -57,23 +57,34 @@ def build_render_core_handler(
             raise TypeError("ui.render requires UiRenderInput")
 
         trusted = trusted_connection(ops)
+        # The activation that called ops.ui.render (None when the host renders): it is re-checked at each
+        # commit boundary, and the frames it causes carry its generation rather than the current one.
+        caller = caller_of(ops)
+
+        def is_current(target: RenderTarget) -> bool:
+            return caller is None or caller.current(target)
+
         bound, report = apply_slot_scope(request.target, trusted)
         if not report.ok:
+            error_target = _error_target(bound, trusted)
             await transport.send_error(
-                _error_target(bound, trusted),
+                error_target,
                 report.code or CODE_SCHEMA_ERROR,
                 report.message,
+                generation=caller_generation(caller, error_target),
             )
             return UiRenderOutput(status=RenderStatus.REJECTED)
         request = replace(request, target=bound)
+        generation = caller_generation(caller, request.target)
 
         report = validate_request(request)
         if not report.ok:
-            await transport.send_error(request.target, report.code or CODE_SCHEMA_ERROR, report.message)
+            await transport.send_error(request.target, report.code or CODE_SCHEMA_ERROR, report.message,
+                                       generation=generation)
             return UiRenderOutput(status=RenderStatus.REJECTED)
 
         async with registry.claim(request.target) as claim:
-            if not render_is_current(request.target):
+            if not is_current(request.target):
                 if claim.created:
                     registry.drop_instance(request.target)
                 return UiRenderOutput(status=RenderStatus.REJECTED)
@@ -94,20 +105,22 @@ def build_render_core_handler(
                     report.code or CODE_SCHEMA_ERROR,
                     report.message,
                     revision=preview.revision,
+                    generation=generation,
                 )
                 return UiRenderOutput(status=RenderStatus.REJECTED)
 
             frame = registry.commit(claim.instance, request)
             if request.mode is RenderMode.CLEAR:
                 delivered = await transport.send_clear(
-                    ClearFrame(target=request.target, revision=frame.revision, reason="requested")
+                    ClearFrame(target=request.target, revision=frame.revision, reason="requested"),
+                    generation=generation,
                 )
             else:
-                delivered = await transport.send_frame(frame)
+                delivered = await transport.send_frame(frame, generation=generation)
 
             # A release or disconnect may retire this instance while the send awaits.
             # Never restore its snapshot or revision over the reserved clear.
-            if not render_is_current(request.target) or registry.get(request.target) is not claim.instance:
+            if not is_current(request.target) or registry.get(request.target) is not claim.instance:
                 return UiRenderOutput(status=RenderStatus.REJECTED)
 
             if not delivered:

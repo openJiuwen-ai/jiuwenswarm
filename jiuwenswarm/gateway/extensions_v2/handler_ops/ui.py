@@ -16,7 +16,7 @@ from openjiuwen.core.events import (
 )
 
 from jiuwenswarm.gateway.extensions_v2.models import EVENT_UI_RENDER
-from jiuwenswarm.gateway.extensions_v2.webui.call_context import CallerFactory, caller_scope
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import CallerFactory
 from jiuwenswarm.gateway.extensions_v2.webui.models import RenderStatus, UiRenderInput, UiRenderOutput
 
 
@@ -35,8 +35,7 @@ def build_ui_ops_build_handler(
         caller = caller_for(ops_view) if caller_for is not None else None
         if caller_for is not None and (caller is None or not caller.current(request.target)):
             return UiRenderOutput(status=RenderStatus.REJECTED)
-        with caller_scope(caller):
-            return await bus.trigger(Event(EVENT_UI_RENDER, request), ops_view.session_context)
+        return await bus.trigger(Event(EVENT_UI_RENDER, request), ops_view.session_context, trigger_context=caller)
 
     async def ui_ops_build(
         event: Event,

@@ -172,3 +172,28 @@ async def test_a_handler_cannot_rewrite_whose_action_it_is(tmp_path, event_name)
         assert [name for name, _ in runtime.channel.events if name == frame] == []
     finally:
         await runtime.shutdown()
+
+
+async def test_a_chain_started_inside_a_host_action_does_not_inherit_its_caller(tmp_path):
+    """The caller is the chain's trigger_context: a nested chain started without one acts for nobody."""
+    theme, nested = Theme(ACTIONS["ui.appearance"][0]), []
+    runtime = await _start(tmp_path)
+
+    async def nest(event, ops, next_handler):
+        nested.append(await runtime.bus.trigger(Event(EVENT_UI_APPEARANCE, UiAppearanceInput(
+            THEME, {"accent": "#0f766e"})), ops.session_context))
+        return await next_handler(event)
+
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        runtime.publish(LoadedPackage(package_id="test.policy", version="1.0.0", root=Path("."), client={}, ui={},
+                                      handlers=(HandlerDeclaration(EVENT_UI_APPEARANCE, nest, {}, "nest"),)))
+        await _ready(runtime)
+        [outer] = theme.answers
+        assert outer["status"] == "applied", "the outer call still acts for its caller"
+        [inner] = nested
+        assert inner.status == "rejected" and inner.code == "INVALID_ACTION"
+        frames = [payload for name, payload in runtime.channel.events if name == "webui.appearance"]
+        assert [frame["appearance"]["accent"] for frame in frames] == ["#b45309"]
+    finally:
+        await runtime.shutdown()

@@ -8,9 +8,7 @@ facts from the ``SessionContext`` metadata set by the trigger point.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -26,8 +24,9 @@ _EMPTY: Mapping[str, Any] = MappingProxyType({})
 class Caller:
     """The package activation a host operation acts for, resolved from the operation's Ops.
 
-    Host operations (``ops.ui.render`` and the host actions) carry it through their event chain
-    out of band, so USER handlers of other packages cannot change who the call is for.
+    Host operations (``ops.ui.render`` and the host actions) pass it to ``bus.trigger`` as the
+    chain's ``trigger_context``, which only the CORE handler receives: USER handlers cannot read or
+    change who the call is for, and nested triggers or tasks they start do not inherit it.
     ``current(target)`` re-checks after any await that the activation is still the published one;
     with a target it also checks that the target belongs to it and the connection is still open.
     """
@@ -39,28 +38,19 @@ class Caller:
 
 
 CallerFactory = Callable[[EventHandlerOps], "Caller | None"]
-_CALLER: ContextVar[Caller | None] = ContextVar("gateway_extension_caller", default=None)
 
 
-@contextmanager
-def caller_scope(caller: Caller | None) -> Iterator[None]:
-    """Carry the host operation's caller through its event chain."""
-    token = _CALLER.set(caller)
-    try:
-        yield
-    finally:
-        _CALLER.reset(token)
+def caller_of(ops: EventHandlerOps | None) -> Caller | None:
+    """The caller a CORE handler received as ``trigger_context``; None for a chain the host started."""
+
+    context = getattr(ops, "trigger_context", None) if ops is not None else None
+    return context if isinstance(context, Caller) else None
 
 
-def current_caller() -> Caller | None:
-    """The caller of the host operation in progress, or None outside one."""
-    return _CALLER.get()
+def caller_generation(caller: Caller | None, target: RenderTarget) -> str | None:
+    """The generation a frame for ``target`` carries when the caller sent it; None for the host's own frames."""
 
-
-def render_is_current(target: RenderTarget) -> bool:
-    """Recheck the caller at a commit boundary; a host without callers has nothing to check."""
-    caller = _CALLER.get()
-    return caller is None or caller.current(target)
+    return caller.generation if caller is not None and caller.package_id == target.package_id else None
 
 
 def session_metadata(ops: EventHandlerOps | None) -> Mapping[str, Any]:

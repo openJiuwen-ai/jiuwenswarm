@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 class GatewayTransport:
     """Send frames to one browser connection; failure is returned, not raised."""
 
-    def __init__(self, channel: Any | None = None, *, generation: Callable[[str], str | None] | None = None) -> None:
+    def __init__(
+        self, channel: Any | None = None, *, generation: Callable[[str, str | None], str | None] | None = None,
+    ) -> None:
         self._channel = channel
         self._generation = generation
 
@@ -41,11 +43,11 @@ class GatewayTransport:
 
         self._channel = channel
 
-    async def send_frame(self, frame: RenderFrame) -> bool:
-        return await self._send(frame.target.connection_id, FRAME_RENDER, frame.to_payload())
+    async def send_frame(self, frame: RenderFrame, *, generation: str | None = None) -> bool:
+        return await self._send(frame.target.connection_id, FRAME_RENDER, frame.to_payload(), generation)
 
-    async def send_clear(self, frame: ClearFrame) -> bool:
-        return await self._send(frame.target.connection_id, FRAME_CLEAR, frame.to_payload())
+    async def send_clear(self, frame: ClearFrame, *, generation: str | None = None) -> bool:
+        return await self._send(frame.target.connection_id, FRAME_CLEAR, frame.to_payload(), generation)
 
     async def send_appearance(self, connection_id: str, payload: Mapping[str, Any]) -> bool:
         """Send one appearance contribution or revocation (S_08)."""
@@ -69,14 +71,18 @@ class GatewayTransport:
         message: str = "",
         *,
         revision: int = 0,
+        generation: str | None = None,
     ) -> bool:
         return await self._send(
             target.connection_id,
             FRAME_RENDER_ERROR,
             {"target": target.to_payload(), "revision": revision, "code": code, "message": message},
+            generation,
         )
 
-    async def _send(self, connection_id: str, event: str, payload: Mapping[str, Any]) -> bool:
+    async def _send(self, connection_id: str, event: str, payload: Mapping[str, Any],
+                    generation: str | None = None) -> bool:
+        """Deliver one frame; ``generation`` is the calling activation's, or None for the host's own frames."""
         channel = self._channel
         if channel is None or not connection_id:
             return False
@@ -87,9 +93,9 @@ class GatewayTransport:
         body = dict(payload)
         if self._generation is not None:
             package_id = body.get("target", {}).get("package_id", "")
-            generation = self._generation(package_id)
-            if generation:
-                body["activation_generation"] = generation
+            stamped = self._generation(package_id, generation)
+            if stamped:
+                body["activation_generation"] = stamped
         try:
             await channel.send_event(ws, event, body)
         except Exception as exc:  # noqa: BLE001 - a delivery failure must not break the chain

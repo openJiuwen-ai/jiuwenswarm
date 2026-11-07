@@ -3,8 +3,8 @@
 """CORE handlers of the host actions ``ui.appearance``, ``ui.download`` and ``ui.splash.preview``.
 
 Each is the default action at the end of its chain. The caller comes out of band from the Ops method
-that started the chain (``current_caller()``); an input naming another package, or a chain started
-without a caller, is refused. The owning service then checks that the activation is still current.
+that started the chain, as the chain's ``trigger_context``; an input naming another package, or a chain
+started without a caller, is refused. The owning service then checks that the activation is still current.
 Refusals are answers with ``status="rejected"``, never exceptions.
 """
 
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from openjiuwen.core.events import Event, EventHandler, EventHandlerOps, EventNext
 
-from jiuwenswarm.gateway.extensions_v2.webui.call_context import Caller, current_caller
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import Caller, caller_of
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
     HostActionOutput,
     UiAppearanceInput,
@@ -32,11 +32,10 @@ CODE_INVALID_ACTION = "INVALID_ACTION"
 def _core(event_name: str, input_type: type, act: Callable[..., Awaitable[dict]]) -> EventHandler:
     async def core(event: Event, ops: EventHandlerOps | None, next_handler: EventNext) -> HostActionOutput:
         del next_handler
-        del ops
         request = event.event_input
         if not isinstance(request, input_type):
             raise TypeError(f"{event_name} requires {input_type.__name__}")
-        caller = current_caller()
+        caller = caller_of(ops)
         if caller is None or request.package_id != caller.package_id:
             return HostActionOutput(status="rejected", code=CODE_INVALID_ACTION,
                                     message="the action input does not belong to its caller")

@@ -102,6 +102,12 @@ PR #10763 检视指出：卸载只注销 Handler，卸载前派生的任务仍�
 重载后仍在运行的旧激活也计入，卸载因此同样返回忙；激活记录同时承载代次，成为激活身份的唯一来源（S_01 不变量 13），
 桥接层的 `generations` 由它派生，原先并行维护的上下文变量 `_CALLER`、渲染守卫与 `_RENDER_CHECK` 合并为一个带外传递的调用方。
 
+2026-11-07 第六轮修订（架构检视）：调用方不再经上下文变量传递，改为事件链的 `trigger_context`（agent-core 为“只交给 CORE 的私有调用数据”
+设计的通道）。上下文变量对链上每个 USER Handler、链内嵌套触发和它们启动的后台任务都可见，正确性依赖每个入口重置；
+现在嵌套链没有调用方，宿主动作被拒绝（回归用例 `test_a_chain_started_inside_a_host_action_does_not_inherit_its_caller` 修复前失败）。
+传输层不再读取上下文：渲染 CORE 把调用方的代次显式交给渲染、错误与清除帧，宿主自行发送的帧取当前代次
+（`test_frames_a_render_causes_carry_the_activation_that_rendered`）。等待之后的激活核对保持不变。
+
 2026-11-07 第四轮修订（PR 检视）：上一轮让删除包数据前等待宿主全部后台任务（`browser.settle()`），检视复现：另一个包的外观撤销
 卡在不读消息的浏览器上时，卸载会一直等待，而被卸载的包已经停用。现在导入目录的后台删除按包登记，删除数据前只等待本包的删除任务
 （S_01 不变量 14）；回归用例 `test_uninstall_does_not_wait_for_another_packages_browser_notifications` 修复前超时、修复后通过。

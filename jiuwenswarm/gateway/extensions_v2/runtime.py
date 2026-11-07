@@ -86,7 +86,8 @@ class GatewayRuntime:
         self.router = GatewayLocalRouter()
         self.webui = GatewayWebUIRuntime(
             bus=self.bus,
-            transport=GatewayTransport(channel, generation=lambda package_id: self.browser.frame_generation(package_id)),
+            transport=GatewayTransport(channel, generation=lambda package_id, generation: self.browser.frame_generation(
+                package_id, generation)),
             caller_for=self.caller_for,
         )
         self._handler_ids: list[str] = []
