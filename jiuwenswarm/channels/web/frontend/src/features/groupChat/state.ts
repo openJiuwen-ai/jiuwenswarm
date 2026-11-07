@@ -189,6 +189,14 @@ export function safeAttachmentUrl(value: unknown): string | undefined {
   }
 }
 
+/**
+ * 群聊一旦开始执行就锁定模型：成员实例在首次执行时按当时的模型创建并持续复用，
+ * 中途切换不会生效，只在空群（无消息、无执行、无更早历史）时允许选择。
+ */
+export function groupModelLocked(messages: GroupMessage[], executions: GroupExecution[], hasOlderHistory: boolean): boolean {
+  return hasOlderHistory || messages.length > 0 || executions.length > 0;
+}
+
 export function executionResult(execution: GroupExecution, messages: GroupMessage[]): GroupMessage | undefined {
   return messages.find((message) => {
     const sameMessage = Boolean(execution.message_id) && message.message_id === execution.message_id;
