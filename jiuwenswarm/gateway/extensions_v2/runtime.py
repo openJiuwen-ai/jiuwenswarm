@@ -20,6 +20,7 @@ import logging
 import shutil
 import weakref
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from types import MappingProxyType
@@ -194,11 +195,20 @@ class GatewayRuntime:
     # ── package publication ───────────────────────────────────────────────
 
     def publish(self, package: LoadedPackage) -> None:
-        """Publish every declaration of one loaded package as a USER handler.
+        """Publish one loaded package, replacing its running version.
 
-        Registration is all-or-nothing: when any declaration fails, the handlers
-        registered so far are released and the failure is re-raised. Callers can
-        therefore never report success for a half-registered package.
+        Equivalent to :meth:`prepare` followed by :meth:`commit`; callers that must
+        act between the two (management closes the running splash) use them directly.
+        """
+
+        self.commit(self.prepare(package))
+
+    def prepare(self, package: LoadedPackage) -> PreparedPackage:
+        """Validate a package and register all its handlers without letting them run.
+
+        Nothing that is running changes: the handlers stay inert until :meth:`commit`.
+        Registration is all-or-nothing; on failure the handlers registered so far are
+        dropped, the package's modules are released and the failure is re-raised.
         """
 
         try:
@@ -206,7 +216,6 @@ class GatewayRuntime:
         except Exception:
             release_package_modules(package)
             raise
-        self.unpublish(package.package_id)
         metadata = PackageMetadata(
             package_id=package.package_id,
             package_version=package.version,
@@ -239,10 +248,24 @@ class GatewayRuntime:
             self._user_handlers[declaration.event_type] = (
                 self._user_handlers.get(declaration.event_type, 0) + 1
             )
-        self._package_handlers[package.package_id] = registered
-        self._activations[package.package_id] = activation
+        return PreparedPackage(package, activation, registered)
+
+    def commit(self, prepared: PreparedPackage) -> None:
+        """Replace the running version by a prepared one in one synchronous step."""
+
+        package = prepared.package
+        self.unpublish(package.package_id)
+        prepared.activation.go_live()
+        self._package_handlers[package.package_id] = prepared.registered
+        self._activations[package.package_id] = prepared.activation
         self._packages.append(package)
         self.browser.published(package.package_id)
+
+    def abort(self, prepared: PreparedPackage) -> None:
+        """Drop a prepared package that will not be committed; the running version is untouched."""
+
+        self._drop_handlers(prepared.registered)
+        prepared.activation.release()
 
     def unpublish(self, package_id: str) -> bool:
         """Release every handler of one package and drop its active record."""
@@ -639,6 +662,15 @@ def _normalized_headers(headers: Mapping[str, str] | None) -> Mapping[str, str]:
     return MappingProxyType(normalized)
 
 
+@dataclass(frozen=True)
+class PreparedPackage:
+    """A validated package whose handlers are registered but inert (see :meth:`GatewayRuntime.prepare`)."""
+
+    package: LoadedPackage
+    activation: _Activation
+    registered: list[tuple[str, str]]
+
+
 def _count(counter: dict[str, int], key: str, delta: int) -> None:
     remaining = counter.get(key, 0) + delta
     if remaining > 0:
@@ -665,12 +697,21 @@ class _Activation:
         self._ops_owner = ops_owner
         self._inflight = inflight
         self._running = 0
+        self._live = False
         self._released = False
         self._purged = False
 
     @property
     def released(self) -> bool:
         return self._released
+
+    @property
+    def live(self) -> bool:
+        """True from commit until release; prepared and released handlers do not run."""
+        return self._live
+
+    def go_live(self) -> None:
+        self._live = True
 
     def enter(self, ops: Any) -> None:
         self._ops_owner[ops] = self
@@ -683,6 +724,7 @@ class _Activation:
         self._purge_when_idle()
 
     def release(self) -> None:
+        self._live = False
         self._released = True
         self._purge_when_idle()
 
@@ -697,8 +739,8 @@ def _async_handler(handler: Callable[..., Any], activation: _Activation) -> Call
 
     @functools.wraps(handler)
     async def adapter(event: Any, ops: Any, event_next: Any) -> Any:
-        if activation.released:
-            # A chain collected before the release still reaches this handler; skip it.
+        if not activation.live:
+            # Prepared but not committed, or released after a chain collected this handler: skip it.
             return await event_next(event)
         activation.enter(ops)
         try:

@@ -24,7 +24,7 @@ from openjiuwen.core.extension.errors import OperationError, operation_error
 from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.package_manager import PackageManager
 
-from jiuwenswarm.gateway.extensions_v2.loader import load_gateway_package, release_package_modules
+from jiuwenswarm.gateway.extensions_v2.loader import load_gateway_package
 from jiuwenswarm.gateway.extensions_v2.manifest import DOMAIN_GATEWAY
 
 if TYPE_CHECKING:
@@ -170,15 +170,7 @@ class GatewayPackageManager:
                     operation_error(StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED, package_id=package_id),
                 )
             try:
-                package = load_gateway_package(root)
-                try:
-                    # A version that cannot be published must not end the running version's splash.
-                    self._runtime.browser.validate_package(package)
-                    await self._close_splashes(package_id)
-                    self._runtime.publish(package)
-                except Exception:
-                    release_package_modules(package)
-                    raise
+                await self._switch(load_gateway_package(root))
             except Exception as exc:  # noqa: BLE001 - one bad package must surface as a report
                 logger.exception("[GatewayExtensions] cannot reload %s", package_id)
                 return _failure(
@@ -241,6 +233,22 @@ class GatewayPackageManager:
 
     # ── internals ─────────────────────────────────────────────────────────
 
+    async def _switch(self, package) -> None:
+        """Replace the running version by ``package``, or leave it running (S_01 section 3.2).
+
+        The new version is validated and its handlers registered inert first; only then
+        is the running version's splash closed and the two swapped in one step. Any
+        failure before the swap drops the new handlers and keeps the running version.
+        """
+
+        prepared = self._runtime.prepare(package)
+        try:
+            await self._close_splashes(package.package_id)
+        except BaseException:
+            self._runtime.abort(prepared)
+            raise
+        self._runtime.commit(prepared)
+
     async def _close_splashes(self, package_id: str) -> None:
         """Tell a package its playing splash ends before its handlers go away (S_10 section 5)."""
 
@@ -263,14 +271,7 @@ class GatewayPackageManager:
                 operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
             )
         try:
-            package = load_gateway_package(root)
-            try:
-                self._runtime.browser.validate_package(package)
-                await self._close_splashes(package_id)
-                self._runtime.publish(package)
-            except Exception:
-                release_package_modules(package)
-                raise
+            await self._switch(load_gateway_package(root))
         except Exception as exc:  # noqa: BLE001 - roll back the copy we just made
             logger.exception("[GatewayExtensions] cannot publish %s", package_id)
             try:

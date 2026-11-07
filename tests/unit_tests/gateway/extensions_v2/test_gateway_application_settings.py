@@ -389,7 +389,18 @@ def create_extension():
 """
 
 
-def _splash_zip(tmp_path: Path, log: Path, version: str, splash: dict | None = None) -> Path:
+def _splash_entry(log: Path, *, unpublishable: bool = False) -> str:
+    entry = SPLASH_ENTRY.format(log=str(log))
+    if unpublishable:
+        # Loads fine, but registering a handler for an event type nobody declared fails at publish.
+        entry = entry.replace('registrar.register_event_handler("ui.closed", closed, match, "user")',
+                              'registrar.register_event_handler("ui.closed", closed, match, "user")\n'
+                              '        registrar.register_event_handler("not.a.gateway.event", ready, {}, "user")')
+    return entry
+
+
+def _splash_zip(tmp_path: Path, log: Path, version: str, splash: dict | None = None, *,
+                unpublishable: bool = False) -> Path:
     source = tmp_path / "src" / version
     (source / "demo_splash").mkdir(parents=True)
     (source / "manifest.json").write_text(json.dumps({
@@ -401,7 +412,8 @@ def _splash_zip(tmp_path: Path, log: Path, version: str, splash: dict | None = N
              **({"splash": splash} if splash is not None else {})},
         ]},
     }), encoding="utf-8")
-    (source / "demo_splash" / "extension.py").write_text(SPLASH_ENTRY.format(log=str(log)), encoding="utf-8")
+    (source / "demo_splash" / "extension.py").write_text(_splash_entry(log, unpublishable=unpublishable),
+                                                          encoding="utf-8")
     archive = tmp_path / f"demo-{version}.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
         for path in source.rglob("*"):
@@ -453,5 +465,48 @@ async def test_a_version_that_cannot_be_published_leaves_the_playing_splash_alon
         await runtime.browser.settle()
         assert not log.exists(), "the running version hears no ui.closed"
         assert runtime.registry.get(target) is not None
+    finally:
+        await runtime.shutdown()
+
+
+def _running(runtime, target) -> tuple[str, bool]:
+    package = next(package for package in runtime.active_packages() if package.package_id == "demo.splash")
+    return package.version, runtime.registry.get(target) is not None
+
+
+async def test_an_upgrade_whose_handlers_cannot_register_keeps_the_running_version(tmp_path):
+    log = tmp_path / "closed.log"
+    runtime = await _start(tmp_path, install_dir=tmp_path / "pkgs")
+    manager = GatewayPackageManager(runtime, tmp_path / "pkgs")
+    try:
+        assert (await manager.install([_splash_zip(tmp_path, log, "1.0.0")]))[0].status == "SUCCESS"
+        target = await _play(runtime)
+        broken = _splash_zip(tmp_path, log, "1.1.0", unpublishable=True)
+        assert (await manager.install([broken]))[0].status != "SUCCESS"
+        await runtime.browser.settle()
+        assert not log.exists(), "the running version keeps its splash and hears no ui.closed"
+        assert _running(runtime, target) == ("1.0.0", True)
+        assert [path.name for path in (tmp_path / "pkgs" / "demo.splash").iterdir()] == ["1.0.0"]
+        # The running version still answers its own frames.
+        _, response = await _call(runtime, "webui.dispatch", _dispatch(
+            "application.splash", "ui.closed", "demo.splash", {"reason": "skip", "revision": runtime.registry.get(target).revision}))
+        assert response["payload"]["accepted"] is True and log.read_text(encoding="utf-8").split() == ["skip"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_a_reload_whose_handlers_cannot_register_keeps_the_running_version(tmp_path):
+    log = tmp_path / "closed.log"
+    runtime = await _start(tmp_path, install_dir=tmp_path / "pkgs")
+    manager = GatewayPackageManager(runtime, tmp_path / "pkgs")
+    try:
+        assert (await manager.install([_splash_zip(tmp_path, log, "1.0.0")]))[0].status == "SUCCESS"
+        target = await _play(runtime)
+        entry = next((tmp_path / "pkgs" / "demo.splash").glob("*/demo_splash/extension.py"))
+        entry.write_text(_splash_entry(log, unpublishable=True), encoding="utf-8")
+        assert (await manager.reload("demo.splash")).status != "SUCCESS"
+        await runtime.browser.settle()
+        assert not log.exists()
+        assert _running(runtime, target) == ("1.0.0", True)
     finally:
         await runtime.shutdown()
