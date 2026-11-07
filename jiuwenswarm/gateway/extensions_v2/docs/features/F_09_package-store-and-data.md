@@ -102,6 +102,10 @@ PR #10763 检视指出：卸载只注销 Handler，卸载前派生的任务仍�
 重载后仍在运行的旧激活也计入，卸载因此同样返回忙；激活记录同时承载代次，成为激活身份的唯一来源（S_01 不变量 13），
 桥接层的 `generations` 由它派生，原先并行维护的上下文变量 `_CALLER`、渲染守卫与 `_RENDER_CHECK` 合并为一个带外传递的调用方。
 
+2026-11-07 第四轮修订（PR 检视）：上一轮让删除包数据前等待宿主全部后台任务（`browser.settle()`），检视复现：另一个包的外观撤销
+卡在不读消息的浏览器上时，卸载会一直等待，而被卸载的包已经停用。现在导入目录的后台删除按包登记，删除数据前只等待本包的删除任务
+（S_01 不变量 14）；回归用例 `test_uninstall_does_not_wait_for_another_packages_browser_notifications` 修复前超时、修复后通过。
+
 与 agent-core 的差别：agent-core 只接受仍在运行的 Handler 的 Ops（Handler 返回即失效）。Gateway 包在渲染“进行中”
 页面后把导入、恢复等长任务放到后台，任务里仍要读写存储，因此 Gateway 以激活为界，而不以单次 Handler 为界。
 

@@ -301,6 +301,11 @@ F_13-V-13（2026-11-07，上传取消与卸载的资源边界）：
 单次取消的旧实现可复现句柄泄漏。最终相关后端 913 通过、1 跳过，前端相关 6 个套件共 605 项通过；
 命令和环境见开发计划本轮台账，未重做真实桌面或跨机器传输验证。
 
+F_13-V-13（2026-11-07，PR #10763 第四轮检视）：上一轮在关闭开场前只调用 `validate_package()`，它只检查浏览器声明；新版本若注册不存在的事件，
+仍会先关闭旧开场、注销旧版本，随后注册失败，旧版本不再运行。现在切换分为准备（校验并注册不运行的新 Handler）与提交两步，
+准备成功后才关闭旧开场（S_01 第 3.2 节、不变量 14）。回归用例 `test_an_upgrade_whose_handlers_cannot_register_keeps_the_running_version`、
+`test_a_reload_whose_handlers_cannot_register_keeps_the_running_version` 修复前失败（旧开场已以 `removed` 关闭），修复后旧版本继续运行并照常应答。
+
 ### 8.3 验证结论
 
 第 2.2 节场景在单元范围与 Chromium 中成立。浏览器验证中 Gateway 运行时与路由是真实的，WebChannel 以验证服务中的最小实现代替；
