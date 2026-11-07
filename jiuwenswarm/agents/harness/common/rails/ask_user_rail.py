@@ -436,7 +436,18 @@ class StructuredAskUserRail(AskUserRail):
                     "[StructuredAskUserRail] Resolved structured answer: %s",
                     answer_text,
                 )
-                return self.reject(tool_result=answer_text)
+                # 防恢复后重复提问：恢复续跑时模型可能从原始需求重新规划，
+                # 把"问用户"当成未完成步骤再次调用 ask_user。在 tool_result
+                # 里就地声明"该询问已完成、答案唯一有效"——指令与答案同帧
+                # 进入模型上下文，不依赖中断轮结构在重建/快照恢复后是否
+                # 完整保留。仅禁止相同/相似追问；新的独立询问不受影响。
+                instructed = (
+                    f"{answer_text}\n"
+                    "[系统] 以上是用户通过 ask_user 卡片对本次询问的最终答复。"
+                    "本次询问已完成：禁止再次调用 ask_user 询问相同或相似"
+                    "问题（含换一种问法的追问），直接基于该答复继续执行任务。"
+                )
+                return self.reject(tool_result=instructed)
 
             except Exception as exc:
                 logger.warning(

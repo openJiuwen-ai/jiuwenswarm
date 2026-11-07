@@ -918,6 +918,35 @@ class TestStructuredAskUserRailResolveInterrupt:
 
     @staticmethod
     @pytest.mark.asyncio
+    async def test_structured_answer_tool_result_carries_anti_re_ask_instruction():
+        """恢复续跑的 tool_result 须自带防重复提问指令。
+
+        ask_user 中断恢复后模型可能从原始需求重新规划、把"问用户"当成未
+        完成步骤再次调用 ask_user（恢复轮 reasoning 未引用已获得的答案，
+        二次弹卡）。指令与答案同帧注入 tool_result，不依赖中断轮结构在
+        上下文重建/快照恢复后是否完整保留；仅禁止相同/相似追问，新的
+        独立询问不受影响。
+        """
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments={
+            "query": "Update?",
+            "questions": [{"question": "Apply update?", "header": "Update",
+                          "options": [{"label": "Apply update"}, {"label": "Skip"}]}],
+        })
+        ctx = MagicMock()
+
+        user_input = {"answers": {"Apply update?": "Apply update"}}
+        decision = await rail.resolve_interrupt(ctx, tc, user_input)
+
+        from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
+        assert isinstance(decision, RejectResult)
+        assert decision.tool_result.startswith("Apply update?: Apply update")
+        assert "最终答复" in decision.tool_result
+        assert "禁止再次调用 ask_user" in decision.tool_result
+        assert "继续执行任务" in decision.tool_result
+
+    @staticmethod
+    @pytest.mark.asyncio
     async def test_structured_answer_string_fallback():
         """String answer for a structured question should be handled as free-text."""
         rail = StructuredAskUserRail()
