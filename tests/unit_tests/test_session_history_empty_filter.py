@@ -506,7 +506,9 @@ def test_subagent_history_mode_does_not_replace_parent_session_mode(
             break
         time.sleep(0.05)
     assert records[0]["mode"] == "subagent"
-    assert metadata_updates[0]["mode"] is None
+    # ``mode`` is a transcript label, never a routing decision: no history
+    # write may carry it into session metadata (routing is owned by mode.set).
+    assert "mode" not in metadata_updates[0]
 
 
 def test_request_completion_is_persisted_after_prior_history(tmp_path, monkeypatch):

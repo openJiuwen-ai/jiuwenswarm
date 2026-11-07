@@ -147,26 +147,23 @@ const normalClient = new DeferredNormalCreationClient();
 const normalState = new CliPiAppState(normalClient);
 normalState.connectionStatus = "connected";
 
-// Requests issued after the socket opens but before connection.ack must wait
-// behind the boot barrier instead of leaking the local "new" placeholder.
+// Requests issued before connection.ack wait behind the boot barrier.
 const earlyCommand = normalState.request("skills.list", {});
 await new Promise((resolve) => setTimeout(resolve, 0));
-assert.equal(normalClient.requests.length, 0, "pre-ack RPCs must wait for boot session creation");
+assert.equal(normalClient.requests.length, 0, "pre-ack RPCs must wait for boot initialization");
 
 normalState.initializeBootSession();
-for (let attempt = 0; attempt < 20; attempt += 1) {
-  if (normalClient.requests.some((request) => request.method === "session.create")) break;
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
-const bootCreate = normalClient.requests.find((request) => request.method === "session.create");
-assert.ok(bootCreate, "normal TUI startup must request an AgentServer-allocated session");
-assert.equal(Object.hasOwn(bootCreate.params, "session_id"), false);
-assert.equal(typeof bootCreate.params.create_token, "string");
-assert.ok(bootCreate.params.create_token.length > 0);
+await normalState.bootSessionCreation;
+await earlyCommand;
+assert.equal(normalClient.requests.some((request) => request.method === "session.create"), false);
 
 const immediateRequestId = normalState.sendMessage("hello");
 assert.ok(immediateRequestId);
-assert.equal(normalClient.frames.length, 0, "immediate chat.send must wait for session.create");
+await new Promise((resolve) => setTimeout(resolve, 0));
+const firstCreate = normalClient.requests.find((request) => request.method === "session.create");
+assert.ok(firstCreate, "first chat.send must create the draft session");
+assert.equal(Object.hasOwn(firstCreate.params, "session_id"), false);
+assert.equal(normalClient.frames.length, 0, "chat.send must wait for session.create");
 
 normalClient.releaseCreation();
 for (let attempt = 0; attempt < 20 && normalClient.frames.length === 0; attempt += 1) {
@@ -182,10 +179,7 @@ assert.equal(
   "tui_agentserver_allocated",
   "optimistic user entries must be rebound from the placeholder to the allocated session",
 );
-assert.equal(
-  normalClient.requests.find((request) => request.method === "skills.list")?.params.session_id,
-  "tui_agentserver_allocated",
-);
+assert.ok(normalClient.requests.some((request) => request.method === "skills.list"));
 
 class TransientSessionInUseClient extends FakeWsClient {
   createAttempts = 0;
