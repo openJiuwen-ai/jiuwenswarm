@@ -11,7 +11,10 @@ import uuid
 
 from jiuwenswarm.extensions.video_duplex.backend.video_files import normalize_file_items
 
-from .tasks.prompts import build_brief_prompt, build_execution_prompt
+from .core_receipts import (
+    MAX_REALTIME_BRIEF_CHARS, core_agent_brief_protocol, full_answer_language_rule, present_core_agent_result,
+)
+from .tasks.prompts import build_execution_prompt
 
 logger = logging.getLogger(__name__)
 VIDEO_TOOL_CHANNEL_ID = "video_tool"
@@ -26,116 +29,6 @@ MAX_FRAME_CHARS = 4_000_000
 MAX_DELEGATION_CONTEXT_ITEMS = 6
 MAX_DELEGATION_CONTEXT_CHARS = 8_000
 MAX_DELEGATION_RESULT_CHARS = 2_400
-MAX_REALTIME_BRIEF_CHARS = 180
-
-
-def _brief_markers(nonce: str) -> tuple[str, str]:
-    return (
-        f"[[JIUWEN_BRIEF_BEGIN:{nonce}]]",
-        f"[[JIUWEN_BRIEF_END:{nonce}]]",
-    )
-
-
-def core_agent_brief_protocol(nonce: str) -> str:
-    from . import settings, joyai_provider
-    begin, end = _brief_markers(nonce)
-    language_rule = joyai_provider.response_language_instruction(settings.reply_language())
-    return f"\n\n{language_rule}" + build_brief_prompt(begin, end, language_rule)
-
-
-def _result_kind(question: str, answer: str, tools_used: list[str]) -> str:
-    combined_tools = " ".join(tools_used).casefold()
-    combined_text = f"{question}\n{answer}".casefold()
-    if re.search(r"search|fetch|browser|网页|搜索", combined_tools):
-        return "research"
-    if "```" in answer or re.search(
-        r"\b(?:python|typescript|javascript|java|c\+\+|sql)\b|代码|程序|函数",
-        combined_text,
-    ):
-        return "code"
-    if re.search(r"计算|求解|等于|方程|积分|概率|\d+\s*[-+*/^]\s*\d+", combined_text):
-        return "calculation"
-    if re.search(r"file|glob|grep|document|pdf|文件|文档", combined_tools):
-        return "file"
-    if re.search(r"bash|powershell|write|edit|computer|执行|写入", combined_tools):
-        return "action"
-    return "generic"
-
-
-def _safe_brief(value: str) -> str:
-    brief = value.strip()
-    if not brief or len(brief) > MAX_REALTIME_BRIEF_CHARS:
-        return ""
-    if "\n" in brief or "\r" in brief:
-        return ""
-    if re.search(r"https?://|www\.|```|`[^`]+`|\[\[JIUWEN_", brief, re.IGNORECASE):
-        return ""
-    if brief.startswith(("{", "[")) or re.search(
-        r'"(?:status|result|answer|code)"\s*:', brief
-    ):
-        return ""
-    return brief
-
-
-def _fallback_realtime_brief(
-    *,
-    display_result: str,
-    result_kind: str,
-) -> tuple[str, str]:
-    derived = _safe_brief(display_result)
-    if derived and len(derived) <= 100:
-        return derived, "derived"
-    messages = {
-        "research": "资料已核实，完整结论和必要来源已经显示在界面中。",
-        "code": "代码已经生成，完整内容已经显示在界面中。",
-        "calculation": "计算已经完成，完整结果和过程已经显示在界面中。",
-        "file": "文件任务已经完成，完整结果已经显示在界面中。",
-        "action": "任务已经执行完成，详细结果已经显示在界面中。",
-        "generic": "任务已经完成，完整结果已经显示在界面中。",
-    }
-    message = messages.get(result_kind)
-    if message is None:
-        message = messages.get("generic", "")
-    return message, "fallback"
-
-
-def present_core_agent_result(
-    raw_answer: str,
-    *,
-    nonce: str,
-    question: str,
-    tools_used: list[str] | None = None,
-) -> dict[str, Any]:
-    """Split Core Agent output into authoritative UI content and a safe spoken brief."""
-    begin, end = _brief_markers(nonce)
-    pattern = re.compile(
-        rf"(?:\r?\n)*{re.escape(begin)}\s*(.*?)\s*{re.escape(end)}(?:\r?\n)*",
-        re.DOTALL,
-    )
-    match = pattern.search(raw_answer)
-    display_result = pattern.sub("\n", raw_answer, count=1).strip()
-    if not display_result:
-        display_result = raw_answer.strip()
-    kind = _result_kind(question, display_result, tools_used or [])
-    model_brief = _safe_brief(match.group(1)) if match else ""
-    if model_brief:
-        summary, source = model_brief, "core_agent"
-    else:
-        summary, source = _fallback_realtime_brief(
-            display_result=display_result,
-            result_kind=kind,
-        )
-    return {
-        "display_result": display_result,
-        "realtime_brief": {
-            "status": "completed",
-            "result_kind": kind,
-            "summary": summary,
-            "displayed_in_ui": True,
-            "response_mode": "brief",
-            "source": source,
-        },
-    }
 
 
 def _normalized_task(value: str) -> str:
@@ -235,6 +128,7 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
         detail = core_agent_text(tool.get("formatted_args") or tool.get("arguments"))
         return {
             "stage": "tool_call",
+            "tool_payload": payload,
             "title": f"调用工具：{name}",
             "detail": detail,
             "status": "running",
@@ -297,6 +191,7 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
             raw_result = result.get("error") or result.get("summary")
         return {
             "stage": "tool_result",
+            "tool_payload": payload,
             "title": f"{name}{'执行失败' if failed else '执行完成'}",
             "detail": detail,
             "status": "failed" if failed else "completed",
@@ -358,12 +253,12 @@ async def execute_core_agent(
     user_id: str | None = None,
     delegation_context: list[dict[str, Any]] | None = None,
     frame_data_url: str = "",
-    normalize_media_attachments: Callable[[dict[str, Any], str | None], None]
+    normalize_media_attachments: Callable[[dict[str, Any], str | None], Awaitable[None]]
     | None = None,
     on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     interaction_answer: Any = None,
-    brief_nonce: str = "",
     managed_task_binding: dict[str, str] | None = None,
+    execution_target: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one delegated video task through the standard, full Core Agent API."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
@@ -375,11 +270,10 @@ async def execute_core_agent(
     if client is None:
         raise RuntimeError("AgentServer client is unavailable")
     request_id = request_id or f"video-core-{uuid.uuid4().hex}"
-    brief_nonce = brief_nonce or uuid.uuid4().hex
     core_session_id = core_session_id or f"video-tool-{uuid.uuid4().hex}"
     context_text = _delegation_context_text(delegation_context or [])
     prompt = build_execution_prompt(
-        question, query, visual_context, context_text, core_agent_brief_protocol(brief_nonce)
+        question, query, visual_context, context_text
     )
     params: dict[str, Any] = {
         "query": prompt,
@@ -396,12 +290,20 @@ async def execute_core_agent(
         "video_core_session_id": core_session_id,
         "video_delegation_context": delegation_context or [],
     }
+    if execution_target:
+        params.update(execution_target)
+    if params["mode"] == "team.design":
+        params["query"] = params["content"] = prompt + (
+            "\nThis is a Design assistant turn in the existing project. Use its design tools. "
+            "Finishing this reply does not mean canvas rendering has completed. "
+            "Report generation state only from current tool results."
+        )
     media_item = _frame_media_item(frame_data_url)
     if media_item is not None:
         params["media_items"] = [media_item]
         if normalize_media_attachments is None:
             raise RuntimeError("Core media attachment service is unavailable")
-        normalize_media_attachments(params, core_session_id)
+        await normalize_media_attachments(params, core_session_id)
     if interaction_answer is not None:
         answer_request = interaction_answer.to_agent_request()
         params = {**answer_request.params, "log_as_user": False}
@@ -433,7 +335,6 @@ async def execute_core_agent(
             raise RuntimeError("Jiuwen Core Agent returned empty output")
         presented = present_core_agent_result(
             raw_answer,
-            nonce=brief_nonce,
             question=question or query,
             tools_used=[],
         )
@@ -521,7 +422,6 @@ async def execute_core_agent(
         raise RuntimeError("Jiuwen Core Agent returned empty output")
     presented = present_core_agent_result(
         raw_answer,
-        nonce=brief_nonce,
         question=question or query,
         tools_used=tools_used,
     )

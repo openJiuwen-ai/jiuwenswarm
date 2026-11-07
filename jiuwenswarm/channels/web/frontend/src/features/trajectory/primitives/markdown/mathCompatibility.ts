@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Extend upstream dollar-only math syntax with TeX delimiters while reusing its token vocabulary. */
 
 import { factorySpace } from 'micromark-factory-space'

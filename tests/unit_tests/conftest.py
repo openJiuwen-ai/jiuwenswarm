@@ -19,12 +19,21 @@ functions, hence this hook.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
 import pytest
 
 import jiuwenswarm.common.utils as _utils
+
+
+@pytest.fixture
+def ttse_plugin_source(tmp_path: Path) -> Path:
+    """Copy the versioned contract fixture without requiring local plugin assets."""
+    source = Path(__file__).resolve().parents[1] / "fixtures/ttse_plugin"
+    return Path(shutil.copytree(source, tmp_path / "ttse-source"))
+
 
 _REAL_GET_CONFIG_FILE = _utils.get_config_file
 _REAL_GET_AGENT_WORKSPACE_DIR = _utils.get_agent_workspace_dir
@@ -41,15 +50,37 @@ _EXTERNAL_MEMORY_BASENAMES = frozenset(
 )
 
 
-@pytest.fixture
-def internal_auto_mode(monkeypatch):
-    """Opt in retained Smart internals; product-entry tests keep real mode support."""
-    from jiuwenswarm.agents.harness.common.rails.permissions import auto_config
+@pytest.fixture(autouse=True)
+def _isolate_user_workspace(tmp_path_factory):
+    """Keep data written by unit tests (sessions, etc.) out of the real ~/.jiuwenswarm."""
+    from jiuwenswarm.server.runtime.session import session_metadata
 
-    monkeypatch.setattr(
-        auto_config, "_VALID_RUNTIME_MODES",
-        auto_config._VALID_RUNTIME_MODES | {auto_config.AUTO_PERMISSION_MODE},
-    )
+    # Own MonkeyPatch: this teardown then runs after the test's monkeypatch is undone,
+    # so the drain below uses the real queue/clock instead of a test's stubs.
+    flush_pending_writes = session_metadata.flush_pending_writes
+    with pytest.MonkeyPatch.context() as mp:
+        data = tmp_path_factory.mktemp("unit_workspace") / ".jiuwenswarm"
+        config_dir = data / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(
+            Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml",
+            config_dir / "config.yaml",
+        )
+        mp.setattr(_utils, "_workspace_base_dir", data)
+        mp.setattr(_utils, "_initialized", False)
+        mp.setenv("JIUWENSWARM_CONFIG_DIR", str(config_dir))
+        # A Gateway operation can resolve either package's cached config path.
+        for name in ("agent_gateway.common.config", "jiuwenswarm.common.config"):
+            module = sys.modules.get(name)
+            if module:
+                for attr in ("CONFIG_YAML_PATH", "_CONFIG_YAML_PATH"):
+                    if hasattr(module, attr):
+                        mp.setattr(module, attr, config_dir / "config.yaml")
+        # Subprocesses spawned by tests resolve the workspace from the environment.
+        mp.setenv("JIUWENSWARM_DATA_DIR", str(data))
+        yield
+        # Metadata is written by a background thread; drain it before the patch is undone.
+        flush_pending_writes()
 
 
 @pytest.fixture
@@ -72,6 +103,19 @@ def allow_macos_pytest_temp_sources(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _offline_hot_lists(request, monkeypatch):
+    """Topic Starter generations in unit tests never reach Weibo or Baidu: both lists read as down."""
+    if not os.path.basename(str(request.node.path)).startswith("test_topic_"):
+        return
+    from jiuwenswarm.agents.harness.common.recommendation import topic_news as topic_hot_list
+
+    async def unreachable(_url, _timeout, _headers):
+        raise ConnectionError("hot lists are not reachable from unit tests")
+
+    monkeypatch.setattr(topic_hot_list, "fetch_feed_text", unreachable)
+
+
 def _stub_get_config_file() -> Path:
     return _STUB_CONFIG
 
@@ -83,6 +127,36 @@ def _stub_get_agent_workspace_dir() -> Path:
 def _is_external_memory_patched_module(node_path) -> bool:
     base = os.path.basename(str(node_path or ""))
     return base in _EXTERNAL_MEMORY_BASENAMES
+
+
+def _ensure_agent_checkpointer() -> None:
+    """Put back a checkpointer that implements the agent and team hooks.
+
+    ``CheckpointerFactory`` is process-wide. A test can leave its default as a
+    bare ``object()``. The next session then dies in ``pre_run`` with
+    ``'object' object has no attribute 'pre_agent_execute'`` or
+    ``'pre_agent_team_execute'``, and ``Runner.release`` fails the same way on
+    ``release``.
+    """
+    from openjiuwen.core.session.checkpointer import CheckpointerFactory
+    from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
+
+    try:
+        current = CheckpointerFactory.get_checkpointer()
+    except Exception:
+        current = None
+    if current is not None and all(
+        hasattr(current, name)
+        for name in ("pre_agent_execute", "pre_agent_team_execute", "release")
+    ):
+        return
+    CheckpointerFactory.set_default_checkpointer(InMemoryCheckpointer())
+
+
+@pytest.fixture(autouse=True)
+def _restore_inmemory_checkpointer():
+    _ensure_agent_checkpointer()
+    yield
 
 
 def pytest_runtest_setup(item) -> None:

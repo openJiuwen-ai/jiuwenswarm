@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs
 from openjiuwen.harness.rails.base import DeepAgentRail
 
@@ -406,6 +407,12 @@ class CircuitBreakerRail(DeepAgentRail):
         tool_result = ctx.inputs.tool_result
 
         if not tool_name:
+            return
+        # A paused call (a permission approval, ask_user) has no outcome yet:
+        # its result is recorded when the turn resumes. Counting the pause as
+        # an error trips unknown_tool_repeat when one turn pauses ten calls of
+        # the same tool.
+        if isinstance(ctx.exception, ToolInterruptException):
             return
 
         sid = self._resolve_sid(ctx)

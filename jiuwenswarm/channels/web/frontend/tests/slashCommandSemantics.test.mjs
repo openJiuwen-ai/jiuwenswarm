@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  canUseSlashCommand,
   getWebSlashCommandsForMode,
   hasUnfinishedGoal,
   isSlashCommandDisabledByGoal,
@@ -10,6 +11,17 @@ import {
   shouldExecuteRegisteredSlashCommand,
   supportsWebSlashCommands,
 } from '../node_modules/.cache/slash-command-semantics/components/ChatPanel/slashCommands/semantics.js';
+
+test('commands require a real session unless explicitly opted out', () => {
+  for (const command of [{}, { requiresSession: true }]) {
+    assert.equal(canUseSlashCommand(command, false), false);
+    assert.equal(canUseSlashCommand(command, true), true);
+  }
+  assert.equal(canUseSlashCommand({ requiresSession: false }, false), true);
+  assert.equal(canUseSlashCommand({ requiresSession: false }, true), true);
+  assert.equal(canUseSlashCommand(undefined, false), false);
+  assert.equal(canUseSlashCommand(undefined, true), false);
+});
 
 test('cached command metadata switches language without changing the source description', () => {
   const command = {

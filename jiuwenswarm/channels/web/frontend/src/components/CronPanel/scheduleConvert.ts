@@ -222,6 +222,37 @@ export function cronExprToSchedule(expr: string): CronSchedule | null {
   return null;
 }
 
+type WallClockParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+};
+
+function readZonedWallClockParts(ms: number, timezone: string): WallClockParts {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(ms));
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? '0');
+  return {
+    year: get('year'),
+    month: get('month'),
+    day: get('day'),
+    hour: get('hour'),
+    minute: get('minute'),
+    second: get('second'),
+  };
+}
+
 /**
  * 给定时区当前的墙钟时间，格式为 "YYYY-MM-DDTHH:mm"（零填充）。
  * 用来跟"单次"排班的 date+time 做字符串比较——两者都是零填充的 ISO 前缀，
@@ -229,13 +260,54 @@ export function cronExprToSchedule(expr: string): CronSchedule | null {
  * 用 hourCycle: 'h23' 而不是 hour12: false，避免个别引擎在午夜把小时格式化成 "24" 而不是 "00"。
  */
 export function nowWallClock(timezone: string): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(new Date());
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
-  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}`;
+  const parts = readZonedWallClockParts(Date.now(), timezone);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}`;
+}
+
+/**
+ * Convert a wall-clock date/time in ``timezone`` to Unix seconds.
+ * Host timezone must not affect the result (GitCode #5610).
+ */
+export function wallClockToEpochSeconds(date: string, time: string, timezone: string): number {
+  if (!date || !time) return 0;
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.trim());
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(time.trim());
+  if (!dateMatch || !timeMatch) return 0;
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  if (![year, month, day, hour, minute].every((n) => Number.isFinite(n))) return 0;
+
+  // Guess the instant as if the wall clock were UTC, then correct by the
+  // difference between that guess's zoned wall clock and the desired one.
+  let instant = Date.UTC(year, month - 1, day, hour, minute, 0);
+  for (let i = 0; i < 3; i += 1) {
+    const parts = readZonedWallClockParts(instant, timezone);
+    const asUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+    const wanted = Date.UTC(year, month - 1, day, hour, minute, 0);
+    const delta = wanted - asUtc;
+    if (delta === 0) break;
+    instant += delta;
+  }
+  return Math.floor(instant / 1000);
+}
+
+/** Format Unix seconds as YYYY-MM-DD / HH:mm wall clock in ``timezone``. */
+export function epochSecondsToWallClock(
+  epochSeconds: number | null | undefined,
+  timezone: string,
+): { date: string; time: string } {
+  if (!epochSeconds || !Number.isFinite(epochSeconds)) return { date: '', time: '' };
+  const parts = readZonedWallClockParts(epochSeconds * 1000, timezone);
+  if (!Number.isFinite(parts.year) || parts.year <= 0) return { date: '', time: '' };
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return {
+    date: `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`,
+    time: `${pad(parts.hour)}:${pad(parts.minute)}`,
+  };
 }
 
 /** "单次"排班的日期+时间是否已经过去（按 schedule 所在时区的当前墙钟时间比较）。 */

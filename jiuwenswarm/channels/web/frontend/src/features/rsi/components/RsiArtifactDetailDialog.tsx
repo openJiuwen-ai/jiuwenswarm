@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronRight, Copy, Download, File as FileIcon, Folder, LoaderCircle, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { FilePreview } from '../../../components/ArtifactsPanel/FilePreview';
-import { previewKind } from '../../../components/ArtifactsPanel/filePreviewModel';
+import { getArtifactCopyText, previewKind } from '../../../components/ArtifactsPanel/filePreviewModel';
+import { writeClipboard } from '../../../utils/writeClipboard';
 import { RsiLatexPreview } from './RsiLatexPreview';
 import {
   artifactMimeType,
@@ -110,10 +111,12 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [preview, setPreview] = useState<{ path: string; url: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
   const [fileContent, setFileContent] = useState('');
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const sourceTaskId = source?.taskId ?? '';
   const sourcePath = source?.path ?? '';
+  const sourceArtifactId = source?.artifactId ?? '';
   const sourceInitialPath = source?.initialFilePath ?? '';
 
   useEffect(() => {
@@ -124,6 +127,7 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
     setSelectedPath('');
     setPreview(null);
     setPreviewLoading(false);
+    setPreviewError('');
     setFileContent('');
 
     if (!source) {
@@ -160,7 +164,7 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
     return () => {
       cancelled = true;
     };
-  }, [sourceTaskId, sourcePath, sourceInitialPath, t]);
+  }, [sourceTaskId, sourcePath, sourceArtifactId, sourceInitialPath, t]);
 
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.path === selectedPath && isPreviewableEntry(entry)) ?? null,
@@ -177,6 +181,7 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
     if (!source || !selectedEntry) {
       setPreview(null);
       setPreviewLoading(false);
+      setPreviewError('');
       setFileContent('');
       return;
     }
@@ -185,24 +190,27 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
     let objectUrl = '';
     setPreview(null);
     setPreviewLoading(true);
+    setPreviewError('');
     setFileContent('');
 
     void readRsiArtifactFile(source, selectedEntry.path)
       .then((file) => {
         if (cancelled) return;
+        const mimeType = artifactMimeType({ ...selectedEntry, mimeType: file.type });
         const blob = file.encoding === 'text'
-          ? new Blob([file.content], { type: file.type })
-          : new Blob([decodeBase64(file.content)], { type: file.type });
+          ? new Blob([file.content], { type: mimeType })
+          : new Blob([decodeBase64(file.content)], { type: mimeType });
         objectUrl = URL.createObjectURL(blob);
         setPreview({ path: selectedEntry.path, url: objectUrl });
         setPreviewLoading(false);
         setFileContent(file.encoding === 'text' ? file.content : selectedEntry.path);
       })
-      .catch(() => {
+      .catch((readError: unknown) => {
         if (!cancelled) {
           setPreview(null);
           setPreviewLoading(false);
-          setFileContent(selectedEntry.path);
+          setPreviewError(readError instanceof Error ? readError.message : t('rsi.artifact.loadFailed'));
+          setFileContent('');
         }
       });
 
@@ -210,7 +218,7 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [selectedEntry, sourceTaskId, sourcePath]);
+  }, [selectedEntry, sourceTaskId, sourcePath, sourceArtifactId, t]);
 
   useEffect(() => {
     setCopyState('idle');
@@ -238,16 +246,10 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
 
   const handleCopy = useCallback(async () => {
     if (!selectedEntry) return;
-    try {
-      const kind = previewKind({ name: selectedEntry.name, mimeType: artifactMimeType(selectedEntry) });
-      const text = kind === 'markdown' || kind === 'text' || kind === 'code' || kind === 'json' || kind === 'jsonl'
-        ? fileContent
-        : selectedEntry.path;
-      await navigator.clipboard.writeText(text);
-      setCopyState('copied');
-    } catch {
-      setCopyState('failed');
-    }
+    const kind = previewKind({ name: selectedEntry.name, mimeType: artifactMimeType(selectedEntry) });
+    const text = getArtifactCopyText(kind, fileContent, selectedEntry.path);
+    const ok = await writeClipboard(text);
+    setCopyState(ok ? 'copied' : 'failed');
   }, [fileContent, selectedEntry]);
 
   const handleDownload = useCallback(() => {
@@ -325,7 +327,7 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
             ) : error ? (
               <div className="rsi-artifact-dialog__error">{error}</div>
             ) : fileTree.children.length === 0 ? (
-              <div className="rsi-artifact-dialog__empty"></div>
+              <div className="rsi-artifact-dialog__empty">{t('rsi.artifact.empty')}</div>
             ) : (
               <div>{fileTree.children.map((child) => renderTreeNode(child, 0))}</div>
             )}
@@ -345,6 +347,8 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
                 <LoaderCircle size={18} className="animate-spin" />
                 <span>{t('common.loading')}</span>
               </div>
+            ) : previewError ? (
+              <div className="rsi-artifact-dialog__error" role="alert">{previewError}</div>
             ) : selectedEntry && previewArtifact ? (
               <>
                 <div className="rsi-artifact-dialog__preview-header">

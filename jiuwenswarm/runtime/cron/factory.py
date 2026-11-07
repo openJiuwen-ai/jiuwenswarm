@@ -1,54 +1,23 @@
-"""Factory: personal edition file store vs HA etcd store."""
+"""Factory: personal edition file store vs HA etcd store.
+
+配置解析（CronStoreSettings / load_cron_store_settings）已下沉
+``jiuwenswarm.common.cron_settings``，此处 re-export 保持兼容。
+"""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import get_cron_jobs_path
+from jiuwenswarm.common.cron_settings import (  # noqa: F401
+    CronStoreSettings,
+    load_cron_store_settings,
+)
 from jiuwenswarm.runtime.cron.etcd_store import EtcdCronJobStore
 from jiuwenswarm.runtime.cron.store import FileCronJobStore
 from jiuwenswarm.runtime.cron.store_base import CronJobStoreBackend
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_PREFIX = "/jiuwenswarm/cron/jobs/"
-
-
-@dataclass(frozen=True)
-class CronStoreSettings:
-    backend: str = "file"
-    endpoints: tuple[str, ...] = ()
-    prefix: str = _DEFAULT_PREFIX
-    file_path: Path | None = None
-
-
-def _as_mapping(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _parse_endpoints(raw: Any) -> tuple[str, ...]:
-    if isinstance(raw, (list, tuple)):
-        return tuple(str(item).strip() for item in raw if str(item).strip())
-    text = str(raw or "").strip()
-    if not text:
-        return ()
-    return tuple(part.strip() for part in text.split(",") if part.strip())
-
-
-def load_cron_store_settings(config: dict[str, Any] | None = None) -> CronStoreSettings:
-    cfg = config if isinstance(config, dict) else {}
-    cron = _as_mapping(_as_mapping(cfg.get("gateway")).get("cron"))
-    backend = str(cron.get("store_backend") or "file").strip().lower() or "file"
-    prefix = str(cron.get("etcd_prefix") or _DEFAULT_PREFIX).strip() or _DEFAULT_PREFIX
-    return CronStoreSettings(
-        backend=backend,
-        endpoints=_parse_endpoints(cron.get("etcd_endpoints")),
-        prefix=prefix,
-        file_path=get_cron_jobs_path(),
-    )
 
 
 async def create_gateway_cron_store(
@@ -68,7 +37,7 @@ async def create_gateway_cron_store(
         except Exception:
             config = {}
     settings = load_cron_store_settings(config)
-    path = settings.file_path or get_cron_jobs_path()
+    path = settings.file_path
     if settings.backend != "etcd":
         return FileCronJobStore(path=path)
 

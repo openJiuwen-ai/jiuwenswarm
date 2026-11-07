@@ -51,6 +51,14 @@ export function getSessionIndicator(
   return 'time';
 }
 
+export function getViewedSessionId(
+  designCanvasOpen: boolean,
+  activeSessionId: string | null,
+  activeDesignSessionId: string | undefined,
+): string | null {
+  return designCanvasOpen ? activeDesignSessionId || null : activeSessionId;
+}
+
 export function getTaskStatusLabel(indicator: SessionIndicator, translate: Translate): string {
   if (indicator === 'waiting') return translate('multiSession.status.waiting');
   if (indicator === 'processing') return translate('multiSession.status.processing');

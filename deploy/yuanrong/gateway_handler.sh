@@ -51,14 +51,17 @@ gateway_compute_extension_dirs() {
     master_host=$(get_local_ip)   # gateway 在本机（ingress master）运行，EXTENSION_DIRS 取本机 jiuwenswarm 安装位置
     local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
 
-    local jiuwenswarm_location
-    jiuwenswarm_location=$(exec_on_host "${master_host}" "python${python_version} -m pip show jiuwenswarm 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
+    local dist_name jiuwenswarm_location=""
+    dist_name=$(jiuwenswarm_dist_name "${master_host}")
+    if [ -n "${dist_name}" ]; then
+        jiuwenswarm_location=$(exec_on_host "${master_host}" "python${python_version} -m pip show ${dist_name} 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
+    fi
 
     if [ -n "${jiuwenswarm_location}" ]; then
         DEPLOY_VARS["EXTENSION_DIRS"]="${jiuwenswarm_location}/jiuwenswarm/extensions"
-        info "EXTENSION_DIRS inferred from jiuwenswarm install on ${master_host}: ${DEPLOY_VARS["EXTENSION_DIRS"]}"
+        info "EXTENSION_DIRS inferred from jiuwenswarm (${dist_name}) install on ${master_host}: ${DEPLOY_VARS["EXTENSION_DIRS"]}"
     else
-        warning "Could not infer EXTENSION_DIRS: jiuwenswarm not found on ${master_host}. You may set EXTENSION_DIRS in .env.custom manually."
+        warning "Could not infer EXTENSION_DIRS: jiuwenswarm/workswarm not found on ${master_host}. You may set EXTENSION_DIRS in .env.custom manually."
     fi
 }
 
@@ -177,6 +180,8 @@ Environment=GATEWAY_HOST=${gw_host}
 Environment=GATEWAY_PORT=${gw_port}
 Environment=WEB_PORT=${web_port}
 Environment=AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir}"
+    dropin_content="${dropin_content}
+Environment=JIUWENSWARM_RUNTIME_PROFILE=agentos"
     if [ "${force_root_home}" = "1" ]; then
         dropin_content="${dropin_content}
 Environment=JIUWENSWARM_HOME=/root"
@@ -251,7 +256,7 @@ gateway_start_nohup() {
     # gateway 日志独立目录（与 systemd 模式一致），通过环境变量传给进程
     local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
     exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
-    local log_dir_prefix="AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
+    local log_dir_prefix="JIUWENSWARM_RUNTIME_PROFILE=agentos AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
 
     local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     if [ -n "${instance_name}" ]; then

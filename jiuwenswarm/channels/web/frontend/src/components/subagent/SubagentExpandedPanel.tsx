@@ -659,11 +659,16 @@ export function SubagentExpandedPanel({
                   <span
                     className="block truncate text-sm font-semibold text-text"
                     data-testid="subagent-expanded-row-name"
+                    title={subagent.display_name}
                   >
                     {subagent.display_name}
                   </span>
                   {subagent.role || subagent.task_description ? (
-                    <span className="block truncate text-xs text-text-muted" data-testid="subagent-expanded-row-role">
+                    <span
+                      className="block truncate text-xs text-text-muted"
+                      data-testid="subagent-expanded-row-role"
+                      title={subagent.role || subagent.task_description}
+                    >
                       {subagent.role || subagent.task_description}
                     </span>
                   ) : null}

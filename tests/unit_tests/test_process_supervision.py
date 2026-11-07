@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 import signal
 import time
 from types import SimpleNamespace
@@ -21,6 +22,28 @@ from jiuwenswarm.common.process_supervision import (
 _COMMANDS = {"agentserver": ["agentserver"], "gateway": ["gateway"]}
 
 
+@pytest.mark.parametrize("keep_worker,worker_ok,expected", [(False, True, 0), (False, False, 1), (True, False, 0)])
+def test_application_final_exit_owns_worker_unless_launcher_delegates(monkeypatch, keep_worker, worker_ok, expected):
+    import sys
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.supervisor import shutdown
+
+    monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: None)
+    monkeypatch.setattr(utils, "prepare_runtime_workspace", lambda **kwargs: None)
+    monkeypatch.setattr(sys, "argv", ["jiuwenswarm-app"] + (["--keep-worker"] if keep_worker else []))
+    app = importlib.import_module("jiuwenswarm.app")
+    order = []
+    monkeypatch.setattr(app, "supervise", lambda *args: order.append("fronts-stopped") or 0)
+    monkeypatch.setattr(app.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(app, "install_async_dump_handler", lambda *args: None)
+    monkeypatch.setattr(shutdown, "shutdown_application_worker",
+                        lambda **kwargs: order.append("worker-stopped") or worker_ok, raising=False)
+    with pytest.raises(SystemExit) as result:
+        app.main()
+    assert result.value.code == expected
+    assert order == (["fronts-stopped"] if keep_worker else ["fronts-stopped", "worker-stopped"])
+
+
 class _Clock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -37,10 +60,12 @@ class _Clock:
 
 class _FakeProc:
     _next_pid = 1000
+    _instances = {}
 
     def __init__(self, clock: _Clock, exit_at: float | None, code: int) -> None:
         _FakeProc._next_pid += 1
         self.pid = _FakeProc._next_pid
+        _FakeProc._instances[self.pid] = self
         self._clock = clock
         self._exit_at = exit_at
         self._code = code
@@ -80,6 +105,13 @@ def breadcrumb_file(monkeypatch, tmp_path):
     """Keep exit breadcrumbs out of the real logs dir."""
     path = tmp_path / "service_exits.jsonl"
     monkeypatch.setattr(process_supervision, "_breadcrumb_path", lambda: path)
+    _FakeProc._instances.clear()
+
+    def stop_fake_tree(pid, *, timeout):
+        assert pid in _FakeProc._instances, "Unit tests must never signal a real PID"
+        _FakeProc._instances[pid].terminate()
+
+    monkeypatch.setattr(process_supervision, "terminate_service_tree", stop_fake_tree)
     return path
 
 
@@ -125,7 +157,7 @@ def test_crashed_child_is_respawned_until_the_budget_runs_out(monkeypatch, clock
     assert gateway.terminated
 
 
-@pytest.mark.parametrize("stop_code", [0, -15, -9, -2])
+@pytest.mark.parametrize("stop_code", [0, -15, -2])
 def test_stop_path_exits_tear_the_service_down(monkeypatch, clock, stop_code):
     spawned = _script_children(
         monkeypatch,
@@ -137,6 +169,37 @@ def test_stop_path_exits_tear_the_service_down(monkeypatch, clock, stop_code):
 
     assert [name for name, _ in spawned] == ["agentserver", "gateway"]
     assert spawned[0][1].terminated
+
+
+def test_sigkilled_child_is_respawned(monkeypatch, clock):
+    # A SIGKILL is ambiguous (stop paths escalate to it after SIGTERM), but the
+    # OOM killer / infra hard kills read the same way; treating it as a stop
+    # path tore the whole service down (issue #4946). It must respawn like a
+    # crash, under the same uptime/budget gates.
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {"agentserver": [(100, 0)], "gateway": [(60, -9), (None, 0)]},
+    )
+
+    assert supervise(_COMMANDS, {}) == 0
+
+    assert [name for name, _ in spawned] == ["agentserver", "gateway", "gateway"]
+    assert spawned[2][1].terminated  # the respawned gateway, on final teardown
+
+
+def test_sigkilled_child_below_min_uptime_is_not_respawned(monkeypatch, clock):
+    # A hard kill during startup (port taken, lock held) would only repeat; the
+    # uptime gate keeps it a one-shot teardown.
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {"agentserver": [(None, 0)], "gateway": [(5, -9)]},
+    )
+
+    assert supervise(_COMMANDS, {}) == -9
+
+    assert len(spawned) == 2
 
 
 def test_startup_failures_are_not_respawned(monkeypatch, clock):

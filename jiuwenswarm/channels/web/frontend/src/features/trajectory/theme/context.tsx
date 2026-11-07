@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 import { createContext, type ReactNode, useContext } from 'react'
 
 /** Theme variants retained by the migrated trajectory presentation layer. */

@@ -1,6 +1,6 @@
 from openjiuwen.symphony import CapabilityDescriptor, CapabilityFingerprint
 
-from jiuwenswarm.symphony.graph_state import (
+from jiuwenswarm.runtime.symphony.graph_state import (
     GraphState,
     GraphStateBuilder,
     GraphStateEntry,

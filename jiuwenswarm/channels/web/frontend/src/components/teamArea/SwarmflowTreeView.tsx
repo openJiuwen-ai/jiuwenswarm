@@ -11,7 +11,7 @@
  * - 点击 waiting_for_human agent 重新打开 ask-user 对话框
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactElement } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -46,6 +46,10 @@ import {
   computeLoopStatus,
   computeSessionStatus,
   findActiveIterationIndex,
+  isWorkflowRunEnded,
+  orderRunsForTreeView,
+  workflowAgentIdentity,
+  workflowAgentAvatarName,
   isForkSessionNode,
   forkParentDisplay,
   parseVerifyOutcome,
@@ -68,6 +72,7 @@ import {
   type AgentModalState,
   type DetailSection,
 } from './AgentDetailModal';
+import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { Toast } from '../ConnectorMarket/Toast';
 
 // ── 状态图标映射 ──────────────────────────────────────────
@@ -226,7 +231,7 @@ function AgentLoopNode({
           <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
         )}
         <RefreshCw className={`w-4 h-4 shrink-0 text-purple-500 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
-        <span className="text-sm font-medium text-text break-words">{name}</span>
+        <span className="text-sm font-medium text-text break-words" title={name}>{name}</span>
         <span className="text-xs text-text-muted shrink-0">×{members.length}轮</span>
         <span className="text-xs text-text-muted shrink-0">
           {completedCount}/{members.length}
@@ -321,7 +326,7 @@ function PhaseLoopNode({
           <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
         )}
         <RefreshCw className={`w-4 h-4 shrink-0 text-purple-500 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
-        <span className="text-sm font-medium text-text break-words">{baseName}</span>
+        <span className="text-sm font-medium text-text break-words" title={baseName}>{baseName}</span>
         <span className="text-xs text-text-muted shrink-0">×{members.length}轮</span>
         <span className="text-xs text-text-muted shrink-0">
           {completedCount}/{members.length}
@@ -403,6 +408,10 @@ function detailChipBadge(
     const n = agent.output_token_count;
     return { value: n != null && n > 0 ? compactTokenLabel(n) : '', unit: 'tok', cache: null };
   }
+  if (sec.key === 'activity') {
+    // 工具活动对没有文本内容——徽章显示条目数。
+    return { value: String(sec.activity?.length ?? 0), unit: '', cache: null };
+  }
   return { value: formatCharCount(sec.content), unit: '', cache: null };
 }
 
@@ -433,6 +442,7 @@ function AgentNode({
   roleTag,
   voteBadge,
   workflow,
+  avatarName,
 }: {
   agent: WorkflowAgent;
   phaseAgents: WorkflowAgent[];
@@ -446,14 +456,30 @@ function AgentNode({
   /** 整个 run（跨 phase）：session 节点的跨轮聚合按 member_name 在全 run 收集，
    *  否则 analyst 分属基线/综合/裁决三个 phase 时每张卡只聚到本 phase 的轮次。 */
   workflow?: WorkflowRun;
+  /** 头像键：展示名可被调用方裁剪（verify 面板剥前缀），但头像哈希必须用
+   *  原名才能与成员列表同源，缺省即 workflowAgentAvatarName(agent)。 */
+  avatarName?: string;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(agent.status === 'running');
   const [showDetail, setShowDetail] = useState(false);
   const [modalState, setModalState] = useState<AgentModalState | null>(null);
+  // 弹窗当前展示的 agent（行 agent 或某个轮次 member）：决定弹窗标题与调用记录的
+  // 过滤身份（member_id = run_id:agent_id）。null = 行 agent（详情 chip 入口）。
+  const [modalTarget, setModalTarget] = useState<{ id: string; label: string } | null>(null);
 
   // 汇总当前 agent 可用的详情 section（标签与弹窗共用同一数据源）
   const detailSections = useMemo(() => buildDetailSections(t, agent), [t, agent]);
+
+  // 行内工具提示：运行中的节点显示最近一条工具活动名；无活动的运行中节点保持原样。
+  const latestToolName = useMemo(() => {
+    if (agent.status !== 'running') return null;
+    const acts = agent.activity ?? [];
+    for (let i = acts.length - 1; i >= 0; i--) {
+      if (acts[i].tool_name) return acts[i].tool_name;
+    }
+    return null;
+  }, [agent.status, agent.activity]);
 
   const isSession = agent.node_type === 'agent_session'
     || agent.node_type === 'agent_session_fork'
@@ -517,21 +543,40 @@ function AgentNode({
 
   // detail_pending=true 表示该 agent 仅含摘要（get_phase 下发），prompt/outcome 等
   // 大文本字段尚未拉取——展开详情或弹窗时按需调 get_agent 补全完整体（通用，不限 human）。
-  const agentDetailPending = agent.detail_pending === true;
-  const ensureAgentDetail = useCallback(async () => {
-    if (!agentDetailPending) return;
+  // 按 agentId 参数化：行 agent 与 session 节点的各轮 member 共用同一条懒拉路径。
+  const ensureAgentDetailFor = useCallback(async (agentId: string) => {
     const store = useSessionStore.getState();
     const lookup = findWorkflowAgent(
       store.runtimes[sessionId]?.workflowRuns ?? [],
       runId,
-      agent.id,
+      agentId,
     );
-    if (lookup) {
-      await store
-        .loadAgentDetail(sessionId, runId, lookup.phase.id, agent.id)
-        .catch(() => undefined);
-    }
-  }, [agentDetailPending, agent.id, runId, sessionId]);
+    if (!lookup || lookup.agent.detail_pending !== true) return;
+    await store
+      .loadAgentDetail(sessionId, runId, lookup.phase.id, agentId)
+      .catch(() => undefined);
+  }, [runId, sessionId]);
+  const agentDetailPending = agent.detail_pending === true;
+  const ensureAgentDetail = useCallback(
+    () => ensureAgentDetailFor(agent.id),
+    [ensureAgentDetailFor, agent.id],
+  );
+
+  // 点开某一轮（agent_session / human_session / fork 的 Turn 行）：懒拉该轮完整体，
+  // 弹窗身份切到该轮 member——弹窗的 liveAgent 按 run_id:agent_id 从 store 实时重建
+  // sections，输入/输出/调用记录都按该轮过滤。
+  const openTurnDetail = useCallback(
+    (member: WorkflowAgent, turn: number | null) => {
+      void ensureAgentDetailFor(member.id);
+      setModalTarget({
+        id: member.id,
+        label: turn === null ? agent.name : `${agent.name} · Turn ${turn}`,
+      });
+      const sections = buildDetailSections(t, member);
+      setModalState({ sections, activeKey: sections[0]?.key ?? 'prompt' });
+    },
+    [agent.name, ensureAgentDetailFor, t],
+  );
 
   // 详情展开时懒拉完整 agent 主体（get_agent）。
   useEffect(() => {
@@ -554,6 +599,12 @@ function AgentNode({
         question = refreshed?.agent.human_prompt?.trim();
       }
       const corr = agent.correlation_id ?? agent.id;
+      // Look up attribution and run name from the store (same pattern as
+      // ensureAgentDetail): only the session-aggregation call site passes the
+      // workflow prop down to AgentNode, relying on it would miss the others.
+      const run = useSessionStore
+        .getState()
+        .runtimes[sessionId]?.workflowRuns.find((item) => item.id === runId);
       const payload: AskUserQuestionPayload = {
         request_id: `swarmflow:${runId}:${corr}`,
         source: 'swarmflow_human',
@@ -570,6 +621,10 @@ function AgentNode({
           correlation_id: corr,
           agent_id: agent.id,
           agent_name: agent.name,
+          // The attribution prefix is composed from meta at render time in
+          // InteractionPrompt (i18n); pass the data through, keep the header plain.
+          executor: run?.executor ?? null,
+          workflow_name: run?.name ?? null,
         },
       };
       useChatStore.getState().enqueuePendingQuestion(sessionId, payload);
@@ -621,6 +676,13 @@ function AgentNode({
             >
               fork{agent.parent_session_id ? `(${forkParentDisplay(agent.parent_session_id)})` : ''}
             </span>
+            <TeamMemberAvatar
+              member={avatarName ?? workflowAgentAvatarName(agent)}
+              identity={workflowAgentIdentity(agent)}
+              className="w-5 h-5 shrink-0 rounded-full"
+              imageClassName="rounded-full"
+              alt={avatarName ?? workflowAgentAvatarName(agent)}
+            />
           </>
         ) : (
           <>
@@ -635,9 +697,30 @@ function AgentNode({
                 {roleTag}
               </span>
             )}
+            <TeamMemberAvatar
+              member={avatarName ?? workflowAgentAvatarName(agent)}
+              identity={workflowAgentIdentity(agent)}
+              className="w-5 h-5 shrink-0 rounded-full"
+              imageClassName="rounded-full"
+              alt={avatarName ?? workflowAgentAvatarName(agent)}
+            />
           </>
         )}
-        <span className="text-sm text-text break-words flex-1" data-testid="team-area-swarmflow-agent-name" data-variant={agent.id}>{agent.name}</span>
+        {/* 主文字永远是脚本给节点的 label（同一专家被多次调用时唯一可区分）；
+            专家身份靠头像 ★ 与悬浮提示"专家：展示名（成员名）"，不占行内空间。 */}
+        <span
+          className="text-sm text-text break-words flex-1 inline-flex items-baseline gap-1.5 min-w-0"
+          data-testid="team-area-swarmflow-agent-name"
+          data-variant={agent.id}
+          title={agent.agent_template
+            ? `${agent.name}\n${t('swarmflow.expertIdentity', {
+                name: agent.display_name ?? agent.agent_template,
+                template: agent.agent_template,
+              })}`
+            : agent.name}
+        >
+          {agent.name}
+        </span>
         {verdict && (
           <span className={`shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded-full ${
             verdict.type === 'pass'
@@ -651,6 +734,16 @@ function AgentNode({
         )}
         {agent.model && (
           <span className="text-xs text-text-muted shrink-0">{agent.model}</span>
+        )}
+        {latestToolName && (
+          <span
+            className="text-[10px] text-text-muted/60 shrink-0 max-w-[14ch] truncate"
+            title={latestToolName}
+            data-testid="team-area-swarmflow-agent-tool-hint"
+            data-variant={agent.id}
+          >
+            {latestToolName}
+          </span>
         )}
         {/* 展开 input/output 详情：完整体已就绪（有 prompt/outcome/error）或仅为摘要待拉取时均显示 */}
         {(agent.prompt || agent.outcome || agent.error || agentDetailPending) && (
@@ -707,6 +800,7 @@ function AgentNode({
                 data-variant={sec.key}
                 onClick={(e) => {
                   e.stopPropagation();
+                  setModalTarget(null);
                   setModalState({ sections: detailSections, activeKey: sec.key });
                 }}
                 className={`shrink-0 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${accentChipClass[sec.accent]}`}
@@ -731,9 +825,13 @@ function AgentNode({
       {/* 内容弹窗：标题含 Agent 名 + Tab 切换不同 section（共享组件） */}
       <AgentDetailModal
         state={modalState}
-        agentName={agent.name}
-        onClose={() => setModalState(null)}
+        agentName={modalTarget?.label ?? agent.name}
+        onClose={() => {
+          setModalState(null);
+          setModalTarget(null);
+        }}
         onTabChange={(key) => setModalState((prev) => (prev ? { ...prev, activeKey: key } : prev))}
+        callRecordsSource={{ sessionId, memberId: `${runId}:${modalTarget?.id ?? agent.id}` }}
       />
 
       {/* Outcome 副文本（详情展开时隐藏） */}
@@ -772,7 +870,14 @@ function AgentNode({
             return (
               <div key={member.id} className="relative pl-4">
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-3 border-t border-border/30" />
-                <div className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-secondary/50" data-testid="team-area-swarmflow-agent-turn" data-variant={member.id}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-2 py-1 rounded-md hover:bg-secondary/50 text-left"
+                  title={t('swarmflow.turnDetailHint')}
+                  data-testid="team-area-swarmflow-agent-turn"
+                  data-variant={member.id}
+                  onClick={() => openTurnDetail(member, turn)}
+                >
                   <StatusIcon status={member.status} className="w-3.5 h-3.5" />
                   <span className="text-xs text-text-muted">
                     Turn {turn ?? '?'}
@@ -782,7 +887,7 @@ function AgentNode({
                       {member.outcome ?? member.outcome_preview}
                     </span>
                   )}
-                </div>
+                </button>
               </div>
             );
           })}
@@ -966,7 +1071,7 @@ function VerifyPanel({
           <ChevronRight className="w-3.5 h-3.5 text-text-muted shrink-0" />
         )}
         <span className="text-sm text-cyan-600 dark:text-cyan-300 shrink-0">▦</span>
-        <span className="text-sm font-medium text-text">{group.label}</span>
+        <span className="text-sm font-medium text-text" title={group.label}>{group.label}</span>
         {group.threshold != null && (
           <span className="text-xs text-text-muted shrink-0">{t('swarmflow.verifyThreshold', { count: group.threshold })}</span>
         )}
@@ -1060,6 +1165,7 @@ function VerifyPanel({
                 <AgentNode
                   key={agent.id}
                   agent={shortName === agent.name ? agent : { ...agent, name: shortName }}
+                  avatarName={workflowAgentAvatarName(agent)}
                   phaseAgents={phaseAgents}
                   depth={0}
                   runId={runId}
@@ -1269,7 +1375,7 @@ function PhaseNode({
           <div className="w-4 shrink-0" />
         )}
         <StatusIcon status={phase.status} />
-        <span className="text-sm font-medium text-text break-words flex-1" data-testid="team-area-swarmflow-phase-name" data-variant={phase.id}>
+        <span className="text-sm font-medium text-text break-words flex-1" title={phase.name} data-testid="team-area-swarmflow-phase-name" data-variant={phase.id}>
           {phase.name}
         </span>
         {phase.phase_type === 'child' && (
@@ -1316,8 +1422,22 @@ function RunNode({
   sessionId: string;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(!isWorkflowRunEnded(run.status));
   const [runDetail, setRunDetail] = useState<AgentModalState | null>(null);
+  // Terminal runs default to folded; live ones default to expanded. The card
+  // also folds the moment a watched run finishes, and a script relaunch
+  // (same run_id, back to running) re-opens it. Layout effect so the fold
+  // lands in the same paint as the status flip — no full-card flash at the
+  // card's new position below the divider. The dependency is the terminality
+  // boolean only, so ordinary progress merges never re-run it and manual
+  // expand/collapse in between is preserved.
+  const ended = isWorkflowRunEnded(run.status);
+  useLayoutEffect(() => {
+    setExpanded(!ended);
+  }, [ended]);
+  // Folded terminal runs compress to a single header row: the summary and the
+  // result / error detail rows stay hidden until the card is expanded again.
+  const compressed = ended && !expanded;
   // Control request in-flight flag: clicking pause/resume/stop immediately
   // spins and disables all three buttons until run.status flips to the target
   // state (progress event arrives). Backend abort can take seconds; a blocked
@@ -1434,7 +1554,7 @@ function RunNode({
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-card/50" data-testid="team-area-swarmflow-run" data-variant={run.id}>
       <div
-        className="flex items-center gap-2 px-3 py-2.5 bg-secondary/30 cursor-pointer hover:bg-secondary/50 transition-colors"
+        className={`flex items-center gap-2 px-3 ${compressed ? 'py-1' : 'py-2.5'} bg-secondary/30 cursor-pointer hover:bg-secondary/50 transition-colors`}
         onClick={() => setExpanded((v) => !v)}
         data-testid="team-area-swarmflow-run-header"
         data-variant={run.id}
@@ -1447,14 +1567,30 @@ function RunNode({
         <StatusIcon status={run.status} className="w-4 h-4 shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-text-strong truncate" data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
+            <span className="text-sm font-semibold text-text-strong truncate" title={run.name} data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
               {run.name}
             </span>
             <span className="text-xs text-text-muted shrink-0" data-testid="team-area-swarmflow-run-status" data-variant={run.id}>
               {statusText(run.status, t)}
             </span>
+            {run.executor && (
+              <span
+                className="flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-text-muted"
+                title={t('swarmflow.executorTooltip', { name: run.executor })}
+                data-testid="team-area-swarmflow-run-executor"
+                data-variant={run.id}
+              >
+                <TeamMemberAvatar
+                  member={run.executor}
+                  className="h-3.5 w-3.5 rounded-full"
+                  imageClassName="rounded-full"
+                  alt={run.executor}
+                />
+                <span className="max-w-24 truncate">{run.executor}</span>
+              </span>
+            )}
           </div>
-          {run.summary && (
+          {!compressed && run.summary && (
             <p className="text-xs text-text-muted truncate mt-0.5" data-testid="team-area-swarmflow-run-summary" data-variant={run.id}>{run.summary}</p>
           )}
         </div>
@@ -1575,7 +1711,7 @@ function RunNode({
       {controlError && (
         <Toast message={controlError} onClose={() => setControlError(null)} variant="error" />
       )}
-      {run.error && (
+      {!compressed && run.error && (
         <button
           type="button"
           onClick={() =>
@@ -1593,7 +1729,7 @@ function RunNode({
           <span className="flex-1 min-w-0 truncate">{run.error}</span>
         </button>
       )}
-      {run.result && (
+      {!compressed && run.result && (
         <button
           type="button"
           onClick={() =>
@@ -1663,6 +1799,15 @@ export interface SwarmflowTreeViewProps {
 
 export function SwarmflowTreeView({ runs, sessionId }: SwarmflowTreeViewProps) {
   const { t } = useTranslation();
+  // Active runs pin to the top, ended ones fold below a divider, both sections
+  // keep the store's newest-first order. Rendered as ONE keyed list with the
+  // divider as a keyed item: React preserves component state only among
+  // siblings of the same list, so a run crossing the boundary keeps its
+  // toast, agent-detail modal and phase-tree expand state.
+  const { items, activeCount, endedCount } = useMemo(
+    () => orderRunsForTreeView(runs),
+    [runs],
+  );
 
   if (runs.length === 0) {
     return (
@@ -1676,9 +1821,23 @@ export function SwarmflowTreeView({ runs, sessionId }: SwarmflowTreeViewProps) {
     <div className="flex flex-col flex-1 min-h-0" data-testid="team-area-swarmflow-tree-view">
       <div className="flex-1 min-h-0 overflow-auto">
         <div className="flex flex-col gap-2 p-2">
-          {runs.map((run) => (
-            <RunNode key={run.id} run={run} sessionId={sessionId} />
-          ))}
+          {items.map((item) =>
+            item === 'divider' ? (
+              <div
+                key="run-fold-divider"
+                className="flex items-center gap-2 px-1 select-none"
+                data-testid="team-area-swarmflow-run-fold-divider"
+              >
+                <span className="h-px flex-1 bg-border" />
+                <span className="whitespace-nowrap text-[10px] uppercase tracking-wide text-text-muted">
+                  {t('swarmflow.runFoldDivider', { active: activeCount, ended: endedCount })}
+                </span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            ) : (
+              <RunNode key={item.id} run={item} sessionId={sessionId} />
+            ),
+          )}
         </div>
       </div>
     </div>

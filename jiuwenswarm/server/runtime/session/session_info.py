@@ -10,9 +10,19 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
+
+
+def session_type_from_metadata(meta: dict[str, Any]) -> str:
+    """Keep conversation type independent of the agent/team execution mode."""
+    if meta.get("type") == "group_chat":
+        return "group_chat"
+    if isinstance(meta.get("group_members"), list):
+        return "group_chat"
+    return "chat"
 
 
 def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
@@ -29,6 +39,7 @@ def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
         "last_message_at": meta.get("last_message_at", 0),
         "message_count": int(meta.get("message_count", 0)),
         "mode": str(meta.get("mode", "unknown")),
+        "type": session_type_from_metadata(meta),
         "team_name": str(meta.get("team_name", "")),
         "agent_group_name": str(meta.get("agent_group_name", "")),
         "pinned": bool(meta.get("pinned", False)),
@@ -42,7 +53,10 @@ def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "model": str(meta.get("model", "")),
+        "model_selection": deepcopy(meta.get("model_selection")),
+        "moa_enabled": meta.get("moa_enabled") is True,
         "work_mode": str(meta.get("work_mode") or DEFAULT_WEB_WORK_MODE),
+        "history_path": str(meta.get("history_path", "")),
         "lifecycle_operation": meta.get("lifecycle_operation"),
         "execution_blocked": bool(meta.get("execution_blocked", False)),
         "stop_pending": bool(meta.get("stop_pending", False)),

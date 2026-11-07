@@ -95,6 +95,8 @@ minute hour day month weekday
 
 > **Timeout Note**: Both normal modes like `agent.fast` and Team modes like `team`/`team.plan`/`code.team` default to 3600 seconds (1 hour). If you need a longer execution time, you can set it when creating.
 
+> **Session Activity**: Web metadata combines the current user's active cron execution on this Gateway with Web interaction activity and returns consistent `is_processing` and `status` fields. Waiting for a scheduled trigger, finished executions, and result delivery do not count as active execution. Stopping a task closes its cron receive stream after the backend confirms cancellation. Set `timeout_seconds=600` explicitly when testing a ten-minute timeout.
+
 5. Click **Create**, the task will take effect automatically
 
 **Project归属:**
@@ -107,6 +109,10 @@ Scheduled task configurations are saved at:
 ```
 ~/.jiuwenswarm/agent/home/cron_jobs.json
 ```
+
+### Execution Session Status
+
+Scheduled tasks use independent execution sessions. When the same user, app, and agent query a session through different channels with `session.get_metadata`, warming, queued, and running work returns `is_processing=true` and `status=processing`. Completed work and Teams waiting for new input return `is_processing=false` and `status=idle`. Passive subscriptions and history queries do not make a session busy.
 
 ### Create via Chat
 

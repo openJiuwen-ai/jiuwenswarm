@@ -4,6 +4,7 @@ import { dirname, join, parse, relative } from "node:path";
 import { addError, addInfo, makeItem } from "../helpers.js";
 import { CommandKind, type SlashCommand } from "../types.js";
 import { getEditorEnvironmentHint } from "../../utils/editor.js";
+import { isTeamMode } from "../../modes.js";
 import {
   findGitRoot,
   formatMemoryPathForDisplay,
@@ -245,6 +246,21 @@ function modeToShort(mode: string): string {
   return mode;
 }
 
+/** team 模式不支持 memory，拦截所有 /memory 入口并给出统一提示。
+ *  返回 true 表示已拦截（调用方应立即 return，不发起任何 RPC）。 */
+function rejectUnsupportedMemoryMode(
+  ctx: import("../types.js").CommandContext,
+): boolean {
+  if (!isTeamMode(ctx.mode)) return false;
+  ctx.addItem(
+    addError(
+      ctx.sessionId,
+      "Memory management is not supported in Team mode. Please switch to Agent or Code mode.",
+    ),
+  );
+  return true;
+}
+
 /** 收集并排序可编辑规则文件（合并后端 list + 前端发现，含占位条目）。
  *  供 list / edit 页签复用。 */
 export async function collectOrderedMemoryFiles(
@@ -401,6 +417,7 @@ async function showMemoryConsole(
   ctx: import("../types.js").CommandContext,
   initialTab?: MemoryTab,
 ): Promise<void> {
+  if (rejectUnsupportedMemoryMode(ctx)) return;
   if (initialTab === "edit") return editMemorySelector(ctx);
   if (initialTab === "status") return showMemoryStatus(ctx);
   if (initialTab === "toggle") return showToggleList(ctx);
@@ -433,6 +450,7 @@ async function editMemory(
   ctx: import("../types.js").CommandContext,
   args: string,
 ): Promise<void> {
+  if (rejectUnsupportedMemoryMode(ctx)) return;
   const targetPath = args.trim();
 
   if (!targetPath) {
@@ -604,6 +622,7 @@ async function editMemoryByPath(
 async function showMemoryStatus(
   ctx: import("../types.js").CommandContext,
 ): Promise<void> {
+  if (rejectUnsupportedMemoryMode(ctx)) return;
   const mode = modeToShort(ctx.mode);
   try {
     const payload = await ctx.request<MemoryStatusResult>("memory.status", {
@@ -783,6 +802,7 @@ async function toggleMemory(
   ctx: import("../types.js").CommandContext,
   args: string,
 ): Promise<void> {
+  if (rejectUnsupportedMemoryMode(ctx)) return;
   const key = args.trim();
 
   if (!key) {
@@ -871,6 +891,7 @@ async function toggleByKey(
 async function openMemoryDir(
   ctx: import("../types.js").CommandContext,
 ): Promise<void> {
+  if (rejectUnsupportedMemoryMode(ctx)) return;
   const mode = modeToShort(ctx.mode);
   const cat = modeCategory(mode);
   try {

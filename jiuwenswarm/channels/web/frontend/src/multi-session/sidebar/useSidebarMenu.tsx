@@ -1,5 +1,5 @@
 import { createElement, useRef, useState, type ReactNode } from 'react';
-import { flushSync } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { Archive } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '../../components/ui';
@@ -20,6 +20,7 @@ import {
   useSessionStore,
   useSubagentStore,
   useTodoStore,
+  useTeamSelectorStore,
   useWorkspaceStore,
 } from '../../stores';
 import type { ProjectInfo, Session } from '../../types';
@@ -48,6 +49,8 @@ export type SidebarMenuOptions =
       type: 'project';
       project: ProjectInfo;
       archiveSessionsDisabled?: boolean;
+      /** 项目移除成功后回调（如 Design 页需要离开已移除项目的路由） */
+      onRemoved?: (projectId: string) => void;
     };
 
 type RenameTarget =
@@ -71,6 +74,9 @@ function getSessionTitle(session: Session, fallback: string): string {
 
 function archiveErrorKey(error: unknown): string {
   const code = getArchiveErrorCode(error);
+  if (code === 'OPERATION_IN_PROGRESS') {
+    return 'multiSession.project.errors.archiveSessionFinalizing';
+  }
   if (code === 'SESSION_BUSY') {
     // 会话会自行结束，引导稍后重试，而不是让用户先手动停止一个已经停过的
     // 会话。成因不同文案不同：subagent 退出与 Team 回合收尾是两件事。
@@ -130,6 +136,9 @@ function projectActionErrorText(error: unknown, translate: Translate): string {
   }
   if (code === 'CRON_STOP_FAILED') {
     return translate('multiSession.project.errors.cronStopFailed');
+  }
+  if (code === 'OPERATION_IN_PROGRESS') {
+    return translate('multiSession.project.errors.removeSessionFinalizing');
   }
   if (code === 'SESSION_BUSY') {
     return translate('multiSession.project.errors.removeSessionBusy');
@@ -295,6 +304,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     removeProject,
     archiveSession,
     removeSessionLocally,
+    workMode,
   } = useWorkspaceStore();
   const loadCronJobs = useCronStore((s) => s.loadJobs);
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
@@ -310,6 +320,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     forgetCreatedConversation(sessionId);
     useSessionStore.getState().removeSession(sessionId);
     useSessionStore.getState().removeRuntime(sessionId);
+    useTeamSelectorStore.getState().removeRuntime(sessionId);
     useChatStore.getState().removeRuntime(sessionId);
     useSubagentStore.getState().removeRuntime(sessionId);
     useTodoStore.getState().removeRuntime(sessionId);
@@ -353,10 +364,6 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
   }
 
   async function deleteSession(session: Session) {
-    const runtime = useChatStore.getState().getRuntime(session.session_id);
-    if (runtime?.isProcessing || runtime?.pendingQuestions[0]) {
-      throw Object.assign(new Error(t('multiSession.deleteRunningDisabled')), { code: 'SESSION_BUSY' });
-    }
     await archivedTaskClient.deleteSession(session.session_id);
     purgeSessionRuntimes(session.session_id);
     removeSessionLocally(session.session_id);
@@ -408,6 +415,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
       if (projectAction === 'delete') {
         const removed = await removeProject(projectId);
         await loadCronJobs();
+        if (options.type === 'project') options.onRemoved?.(projectId);
         // 项目下没有定时任务时只提示“项目已移除”；字段缺失（旧网关）沿用原文案。
         toast.open({
           content: removed.stopped_cron_jobs === 0
@@ -505,7 +513,10 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     }
   }
 
-  const dialogs: ReactNode = (
+  // 弹窗内联在行元素里时，:focus-within 触发的 z-index:10 会把 fixed 弹窗
+  // 封顶在行的堆叠上下文内，开启轨迹后被 z-index:19 的视图切换工具栏盖住；
+  // 挂到 body 才能真正全屏遮罩
+  const dialogs: ReactNode = createPortal(
     <>
       {renameTarget ? (
         <RenameDialog
@@ -565,7 +576,8 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
           onDelete={() => { void submitDeleteSession(); }}
         />
       ) : null}
-    </>
+    </>,
+    document.body,
   );
 
   let items: SidebarMenuItem[] = [];
@@ -592,7 +604,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     };
     items = getSessionMenuItems(pinned, t, {
       scope,
-      archivable: !cron,
+      archivable: !cron && workMode !== 'design',
     }).map((def) => ({
       ...def,
       icon: menuIcon(def.key, pinned),
@@ -632,6 +644,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
   items = getProjectMenuItems(pinned, t, {
     isDefault: isDefaultProject(project),
     archiveSessionsDisabled,
+    archivable: workMode !== 'design',
   }).map((def) => ({
     ...def,
     icon: menuIcon(def.key, pinned),

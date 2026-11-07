@@ -1,3 +1,4 @@
+import './fixtures/browserEnvironment.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build } from 'esbuild';
@@ -68,4 +69,14 @@ test('expert and expert team detail requests use the same 90 second timeout', as
     ['agent_templates.show', { id: 'expert-id' }, { timeoutMs: 90_000 }],
     ['agent_groups.show', { id: 'team-id' }, { timeoutMs: 90_000 }],
   ]);
+});
+
+test('connector list preserves the visible display name', async () => {
+  webClient.request = async () => ({ items: [{
+    name: 'hidden-6', display_name: '回归连接器',
+    display_name_i18n: { zh: '回归连接器', en: 'Regression Connector' },
+    source: 'customize', description: 'description-only', category: '',
+  }] });
+  const items = await connectorApi.list('local');
+  assert.equal(items[0].displayName, '回归连接器');
 });

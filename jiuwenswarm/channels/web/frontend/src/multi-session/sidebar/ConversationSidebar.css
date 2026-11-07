@@ -1,5 +1,5 @@
 .conversation-sidebar {
-  --conversation-sidebar-width: 240px;
+  --conversation-sidebar-width: 320px;
 
   display: flex;
   width: var(--conversation-sidebar-width);
@@ -62,6 +62,10 @@
 .conversation-sidebar.is-collapsed:not(.is-floating) {
   width: 0;
   min-width: 0;
+}
+
+.conversation-sidebar.is-collapsed {
+  visibility: hidden;
 }
 
 .conversation-sidebar__title {

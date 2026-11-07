@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
+import { yieldBrowserTask } from '../../utils/yieldBrowserTask';
 import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Message, ToolExecution } from '../../types';
@@ -8,10 +9,14 @@ import { ToolGroupDisplay } from './ToolGroupDisplay';
 import { useNow, formatDurationPrecise } from './chatTimelineClock';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import WaitingStatusIcon from '../../assets/work-mode/status-waiting.svg?react';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useConversationLeaderIdentity } from '../../features/teamOrganization/leaderIdentity';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import type { TeamLeaderIdentity } from '../../features/teamLeaderIdentity';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import { filterPublishedHistoryBatch } from '../../features/historyPagination';
 import { projectTimelineItems, type TimelineDisplayItem } from '../../features/chatTimeline/projectTimelineItems';
@@ -45,6 +50,8 @@ interface MessageListProps {
   teamLeaderIdentityOverride?: TeamLeaderIdentity | null;
   teamGroupIdentityOverride?: AgentGroupIdentity | null;
   onForkFromMessage?: (message: Message) => Promise<void>;
+  /** The designer dock is narrow; render in normal flow so expanding content reflows. */
+  virtualized?: boolean;
 }
 
 interface ChatTimelineListProps {
@@ -148,12 +155,13 @@ function TeamGroupDisplay({
   leaderIdentity?: TeamLeaderIdentity | null;
   className?: string;
 }) {
+  const { i18n } = useTranslation();
   if (identity) {
     return (
       <AgentAvatar
         identityOverride={{
           agentTemplateId: identity.id,
-          displayName: identity.displayName,
+          displayName: resolveTeamGroupDisplayName(identity, i18n.language),
           ...(identity.avatarUrl ? { avatar: identity.avatarUrl } : {}),
         }}
         alt=""
@@ -181,6 +189,7 @@ const MAX_PLAUSIBLE_TURN_MS = 24 * 60 * 60 * 1000;
 export function TurnElapsed({
   startMs,
   endMs,
+  isStarting = false,
   isLastTurn,
   isProcessing,
   showAvatar,
@@ -191,6 +200,7 @@ export function TurnElapsed({
 }: {
   startMs: number;
   endMs: number;
+  isStarting?: boolean;
   isLastTurn: boolean;
   isProcessing: boolean;
   showAvatar?: boolean;
@@ -216,18 +226,32 @@ export function TurnElapsed({
     return null;
   }
   // 不带头像的独立时间行（如成员消息轮次）：team 模式下与 920px 栅格对齐。
+  // 与 CompletedWorkChip 同构（is-success 时钟图标），只是不可展开、无 disclosure 箭头。
   const timeLine = (
     <div
-      className={clsx('turn-elapsed', !showAvatar && teamLayout && 'turn-elapsed--team', showActive && 'is-active')}
+      className={clsx('completed-work-chip', showActive && 'is-active', !showAvatar && teamLayout && 'turn-elapsed--team')}
       data-testid="chat-panel-turn-elapsed"
-      data-variant={showActive ? 'active' : 'finished'}
+      data-variant={showActive ? (isStarting ? 'starting' : 'active') : 'finished'}
     >
-      {showActive && <LoaderCircle className="turn-elapsed__spinner" size={12} strokeWidth={2.2} aria-hidden="true" />}
-      <span className="turn-elapsed__label" data-testid="chat-panel-turn-elapsed-label">
-        {showActive ? t('chatUi.turnRunning') : t('chatUi.turnElapsed')}
+      <span
+        className={clsx('completed-work-chip__icon', showActive ? 'is-active' : 'is-success')}
+        aria-hidden="true"
+      >
+        {showActive ? (
+          <LoaderCircle className="animate-spin" size={12} strokeWidth={2.2} />
+        ) : (
+          <WaitingStatusIcon />
+        )}
       </span>
-      <span className="turn-elapsed__value" data-testid="chat-panel-turn-elapsed-value">
-        {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
+      <span className="completed-work-chip__label">
+        <span data-testid="chat-panel-turn-elapsed-label">
+          {showActive ? t(isStarting ? 'chatUi.turnStarting' : 'chatUi.turnRunning') : t('chatUi.turnElapsed')}
+        </span>{' '}
+        {!(showActive && isStarting) && (
+          <span data-testid="chat-panel-turn-elapsed-value">
+            {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
+          </span>
+        )}
       </span>
     </div>
   );
@@ -287,7 +311,7 @@ function CompletedWorkChip({
         ? `${t('chatUi.turnElapsed')} ${formatDurationPrecise(elapsedMs)}`
         : t('chatUi.workCompletedFallback')
       : formatStreakSummaryLabel(t, thinkingCount, toolCount, outcomeTone);
-  // 图标统一用 status-waiting 时钟资源，状态色仍由 is-success/is-partial/is-error 通过 currentColor 区分。
+  // 图标统一用 frame-time 时钟资源，状态色仍由 is-success/is-partial/is-error 通过 currentColor 区分。
   const applyOutcome = variant === 'streak';
   const toneClass = !applyOutcome
     ? 'is-success'
@@ -316,7 +340,7 @@ function CompletedWorkChip({
         aria-hidden="true"
         data-testid="chat-panel-completed-work-chip-icon"
       >
-        <WaitingStatusIcon />
+        <FrameTimeIcon />
       </span>
       <span className="completed-work-chip__label" data-testid="chat-panel-completed-work-chip-label">
         {label}
@@ -534,16 +558,15 @@ export function ChatTimelineList({
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const runtimeTeamLeaderIdentity = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null,
-  );
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const runtimeTeamLeaderIdentity = useConversationLeaderIdentity(activeSessionId);
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? runtimeTeamLeaderIdentity;
   const teamGroupIdentity = teamGroupIdentityOverride;
-  const storeIsProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
+  const storeIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
   const isLoadingHistory = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isLoadingHistory ?? false);
   const historyPagerMeta = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.historyPagerMeta ?? null);
   const storeReasoningSegments = useChatStore(
-    (s) => s.runtimes[s.activeSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING,
+    (s) => s.runtimes[conversationId]?.reasoningSegments ?? EMPTY_REASONING,
   );
   const isProcessing = staticTimeline ? false : storeIsProcessing;
   const allReasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
@@ -650,10 +673,12 @@ export function ChatTimelineList({
 
   useEffect(() => {
     if (!incrementallyRenderItems || staticRenderComplete) return;
-    const timer = window.setTimeout(() => {
+    let cancelled = false;
+    void yieldBrowserTask().then(() => {
+      if (cancelled) return;
       setStaticRenderItemCount((count) => Math.min(count + 1, displayItems.length));
-    }, 0);
-    return () => window.clearTimeout(timer);
+    });
+    return () => { cancelled = true; };
   }, [incrementallyRenderItems, displayItems.length, staticRenderComplete, visibleRenderItemCount]);
 
   useEffect(() => {
@@ -790,6 +815,7 @@ export function ChatTimelineList({
             <ToolGroupDisplay
               key={`${timelineScope}/${item.key}-deliverable`}
               executions={deliverables}
+              sessionId={sessionId}
               notices={[]}
               showAvatar={false}
               teamLayout={isTeamMode}
@@ -819,6 +845,7 @@ export function ChatTimelineList({
         ) : (
           <ToolGroupDisplay
             executions={item.executions}
+            sessionId={sessionId}
             notices={item.notices}
             showAvatar={hideAvatar ? false : item.showAvatar}
             teamLayout={isTeamMode}
@@ -862,6 +889,7 @@ export function ChatTimelineList({
           key={`${timelineScope}/${item.key}`}
           startMs={range.startMs}
           endMs={range.endMs}
+          isStarting={item.isStarting}
           isLastTurn={item.isLastTurn}
           isProcessing={isProcessing}
           showAvatar={item.showAvatar}
@@ -917,10 +945,12 @@ export function MessageList({
   teamLeaderIdentityOverride,
   teamGroupIdentityOverride,
   onForkFromMessage,
+  virtualized,
 }: MessageListProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const toolExecutions = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutions ?? new Map());
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const toolExecutions = useChatStore((s) => s.runtimes[conversationId]?.toolExecutions ?? new Map());
+  const toolExecutionOrder = useChatStore((s) => s.runtimes[conversationId]?.toolExecutionOrder ?? []);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const executions = useMemo(
     () => getExecutionList(toolExecutions, toolExecutionOrder),
@@ -939,6 +969,7 @@ export function MessageList({
       teamLeaderIdentityOverride={teamLeaderIdentityOverride}
       teamGroupIdentityOverride={teamGroupIdentityOverride}
       onForkFromMessage={onForkFromMessage}
+      virtualized={virtualized}
     />
   );
 }

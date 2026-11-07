@@ -5,30 +5,9 @@
 // 见 state-model-rectification-v2-remove-global-toggle.md。
 // 2026-09-11：CapabilityGrid（能力卡片网格）已删除——技能/工具/Rail/MCP 卡片统一改用
 // 共享组件 ui/PageCard（与列表页卡片同款），不再保留本模块的私有网格实现。
-
-export function PillButton({
-  icon,
-  label,
-  onClick,
-  disabled,
-}: {
-  icon?: React.ReactNode;
-  label: string;
-  onClick?: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="flex h-8 items-center justify-center gap-1 rounded-full border border-[color:var(--color-chat-supporting-text)] bg-card px-4 text-[13px] text-text disabled:opacity-60"
-    >
-      {icon}
-      {label}
-    </button>
-  );
-}
+// 2026-10-08：PillButton 已删除——MCP 详情页操作区收敛到共享类 .detail-actions/.detail-action
+// （与 PluginDetailPage 同款，见 index.css），最后一个消费者消失，药丸态由 .detail-action--use /
+// .detail-action--install 承接。
 
 export function DetailLinkButton({
   icon,

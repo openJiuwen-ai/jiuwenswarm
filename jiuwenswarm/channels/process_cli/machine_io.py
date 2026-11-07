@@ -54,9 +54,16 @@ class MachineInputError(ValueError):
 
     code = "INVALID_INPUT"
 
-    def __init__(self, message: str, *, request_id: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.request_id = request_id
+        self.details = details or {}
 
 
 def _read_limited(stream: BinaryIO | TextIO) -> str:
@@ -157,8 +164,12 @@ def read_run_input(
     try:
         return OneShotRunInput.from_dict(value)
     except (TypeError, ValueError, OverflowError, RecursionError) as error:
+        from jiuwenswarm.channels.process_cli.protocol.schema import input_error_details
+
         raise MachineInputError(
-            _safe_schema_reason(error), request_id=_request_id(value)
+            _safe_schema_reason(error),
+            request_id=_request_id(value),
+            details=input_error_details(value, "run"),
         ) from None
 
 
@@ -226,12 +237,18 @@ class OneShotWriter:
         """Render one observation without changing Runtime-owned data."""
 
         self._check_writable()
+        from jiuwenswarm.channels.process_cli.protocol.contracts import (
+            public_event_payload,
+        )
+
         record = OneShotEvent(
             sequence=self.sequence,
             request_id=self.request_id,
             session_id=self.session_id,
             event_type=event.event_type or "runtime.event",
-            payload=event.payload,
+            payload=public_event_payload(
+                event.event_type or "runtime.event", event.payload
+            ),
         )
         self._write(record)
 

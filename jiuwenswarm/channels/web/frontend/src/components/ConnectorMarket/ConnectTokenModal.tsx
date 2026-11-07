@@ -5,6 +5,7 @@ import { X, Loader2, ExternalLink } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
 import type { ConnectorConnectResponse } from '../../types/connector';
 import { getSkillAvatar } from '../../utils/skillAvatar';
+import { Input } from '../ui/Input/Input';
 import { EntityAvatar } from './EntityAvatar';
 import logoIcon from '/logo.svg';
 
@@ -29,6 +30,7 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
   const { t } = useTranslation();
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [connecting, setConnecting] = useState(false);
+  const [authorizing, setAuthorizing] = useState(false);
   const saveCredentialsAndConnect = useConnectorStore((s) => s.saveCredentialsAndConnect);
 
   const requiredTokens = response.requiredTokens ?? [];
@@ -36,10 +38,28 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
   const allFilled = requiredTokens.length > 0 && requiredTokens.every((key) => (tokens[key] ?? '').trim());
   const avatar = getSkillAvatar(displayName);
 
-  async function handleSubmit() {
-    if (!allFilled || connecting) return;
+  // 一键授权（仅桌面端）：连接器声明了隐式授权能力（oauthDocUrl 指向含当前授权链接的
+  // 官方文档页）且桌面桥提供截取能力时可用——桌面端实时抓取文档页提取授权直链（跟随
+  // 官方密钥轮换，不硬编码），开授权窗截取 login_success 跳转 URL 片段里的 access_token。
+  // 两种桌面壳各自实现：Electron 走 window.jiuwenDesktop.captureOAuthToken（主进程
+  // 导航事件截取），pywebview 走 window.pywebview.api.capture_oauth_token（子窗轮询
+  // 地址栏）。Web 端受同源策略限制读不到跨域跳转，不渲染此按钮。
+  type CaptureOAuthToken = (options: {
+    docPageUrl: string;
+    successUrlPrefix: string;
+    title?: string;
+  }) => Promise<{ accessToken?: string } | null>;
+  const captureOAuthToken: CaptureOAuthToken | undefined =
+    window.jiuwenDesktop?.captureOAuthToken
+    ?? (window.pywebview?.api?.capture_oauth_token
+      ? (options) => Promise.resolve(window.pywebview?.api?.capture_oauth_token?.(options) ?? null)
+      : undefined);
+  const canQuickAuthorize = Boolean(response.oauthDocUrl && response.oauthSuccessPrefix
+    && captureOAuthToken && requiredTokens.length > 0);
+
+  async function submitTokens(nextTokens: Record<string, string>) {
     setConnecting(true);
-    const result = await saveCredentialsAndConnect(name, tokens);
+    const result = await saveCredentialsAndConnect(name, nextTokens);
     setConnecting(false);
     if (result?.type === 'connected') {
       onConnected();
@@ -49,6 +69,35 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
       // 失败原因已经由 connectorStore 写进 store.error，顶层 index.tsx 会弹红色 Toast 告知，
       // 这里直接关闭弹窗即可，不需要重复展示错误（2026-08-11 用户实测发现：提交后弹窗不关闭）。
       onCancel();
+    }
+  }
+
+  async function handleSubmit() {
+    if (!allFilled || connecting) return;
+    await submitTokens(tokens);
+  }
+
+  // 授权窗口回来拿到 token 后填入首个必填字段；全部必填项齐全则直接提交连接，
+  // 不齐（多 token 场景）则留给用户补填其余字段后手动提交。
+  async function handleQuickAuthorize() {
+    if (!canQuickAuthorize || authorizing || connecting) return;
+    setAuthorizing(true);
+    try {
+      const result = await captureOAuthToken!({
+        docPageUrl: response.oauthDocUrl!,
+        successUrlPrefix: response.oauthSuccessPrefix!,
+        title: displayName,
+      });
+      const token = result?.accessToken?.trim();
+      // 抓取文档页失败或用户直接关掉授权窗口（result 为 null）：静默回到弹窗，继续手动填写。
+      if (!token) return;
+      const nextTokens = { ...tokens, [requiredTokens[0]]: token };
+      setTokens(nextTokens);
+      if (requiredTokens.every((key) => (nextTokens[key] ?? '').trim())) {
+        await submitTokens(nextTokens);
+      }
+    } finally {
+      setAuthorizing(false);
     }
   }
 
@@ -107,14 +156,13 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
           return (
             <div key={key} className="mb-4">
               <label className="mb-1.5 block text-[13px] font-medium text-text">{field?.label ?? key}</label>
-              <input
+              <Input
                 type={field?.type === 'password' ? 'password' : 'text'}
                 name={`connector-token-${key}`}
                 autoComplete={field?.type === 'password' ? 'new-password' : 'off'}
                 value={tokens[key] ?? ''}
-                onChange={(event) => setTokens((prev) => ({ ...prev, [key]: event.target.value }))}
+                onChange={(next) => setTokens((prev) => ({ ...prev, [key]: next }))}
                 placeholder={field?.placeholder ?? t('connectorMarket.tokenModal.placeholder', { name: displayName })}
-                className="h-9 w-full rounded-lg border border-border bg-bg px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
                 data-testid="connector-market-token-modal-field"
                 data-variant={key}
               />
@@ -138,9 +186,23 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
           response.docLabel && <p className="mb-4 text-[12px] leading-[18px] text-text-muted">{response.docLabel}</p>
         )}
 
+        {canQuickAuthorize && (
+          <button
+            type="button"
+            disabled={authorizing || connecting}
+            onClick={handleQuickAuthorize}
+            className="mb-3 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-text text-[13px] text-text-inverse disabled:opacity-40"
+            data-testid="connector-market-token-modal-oauth-authorize"
+            data-variant={authorizing ? 'authorizing' : 'idle'}
+          >
+            {authorizing && <Loader2 size={14} className="animate-spin" />}
+            {t('connectorMarket.tokenModal.oauthAuthorize')}
+          </button>
+        )}
+
         <button
           type="button"
-          disabled={!allFilled || connecting}
+          disabled={!allFilled || connecting || authorizing}
           onClick={handleSubmit}
           className="flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-text text-[13px] text-text-inverse disabled:opacity-40"
           data-testid="connector-market-token-modal-submit"

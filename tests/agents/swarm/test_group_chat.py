@@ -1,0 +1,439 @@
+"""Group proxies use real specs/tools, with no network or model calls."""
+
+import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
+from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
+from jiuwenswarm.agents.swarm import group_chat as gc
+from tests.agents.swarm.agent_group_fixtures import _minimal_group
+
+
+def spec():
+    return TeamAgentSpec(
+        agents={"leader": DeepAgentSpec(), "teammate": DeepAgentSpec()},
+        team_name="public-group",
+        leader=LeaderSpec(member_name="host"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_attached", [False, True])
+async def test_completion_attaches_final_outputs_and_excludes_outside_links(tmp_path, monkeypatch, already_attached):
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    guide = outputs / "guide.md"
+    guide.write_text("Full guide", encoding="utf-8")
+    secret = tmp_path / "outside.txt"
+    secret.write_text("Not a deliverable", encoding="utf-8")
+    (outputs / "outside-link.txt").symlink_to(secret)
+    future = asyncio.get_running_loop().create_future()
+    monkeypatch.setitem(gc._results, "outputs-test", future)
+    monkeypatch.setitem(gc._private_runs, "outputs-test", {"outputs_dir": str(outputs)})
+    attachment = {"name": "guide.md", "path": str(guide)}
+    attachments = [attachment] if already_attached else []
+    result = await gc.CompleteTeamRun("outputs-test").invoke({"result": "Summary", "attachments": attachments})
+    assert result.success
+    assert future.result() == {"result": "Summary", "attachments": [attachment]}
+
+
+@pytest.mark.asyncio
+async def test_private_policy_preserves_normal_team_collaboration(monkeypatch):
+    monkeypatch.setitem(gc._private_runs, "policy-test", {"execution_id": "execution-one"})
+    builder = Mock()
+    ctx = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder))
+    await gc.PrivateTaskPolicy(SimpleNamespace(), "policy-test").before_invoke(ctx)
+
+    section = builder.add_section.call_args.args[0]
+    for content in section.content.values():
+        assert "execution-one" in content
+        assert "start_group_task" in content
+        assert "complete_team_run" in content
+        assert "normal team collaboration rules" in content
+        assert "build_team is optional" not in content
+        assert "do a task yourself" not in content
+
+    from jiuwenswarm.agents.swarm.group_execution import TASK_RULES
+
+    assert "do the work directly" not in TASK_RULES
+
+
+def test_proxy_roster_is_lazy_and_survives_serialization(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime import extension_package_manager as packages
+
+    monkeypatch.setattr(
+        packages, "resolve_agent_group_dir", lambda _: _minimal_group(tmp_path)
+    )
+    outer = spec()
+    from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+    import threading
+
+    outer.build_context = SwarmBuildContext(trajectory_span_processor=threading.Lock())
+    gc.assemble_group_members(
+        outer,
+        [{"kind": "agent_group", "id": "group", "member_name": "research"}],
+    )
+    assert [m.member_name for m in outer.predefined_members] == ["research"]
+    restored = TeamAgentSpec.model_validate_json(
+        outer.model_dump_json(exclude={"build_context"})
+    )
+    tool = next(t for t in restored.agents["research"].tools if t.type == gc.RUN_TEAM)
+    child = TeamAgentSpec.model_validate(tool.params["child_spec"])
+    assert [m.member_name for m in child.predefined_members] == ["member1"]
+    assert child.spawn_mode == "inprocess"
+    assert not getattr(child, "enable_organization", False)
+    assert "run_team" in restored.predefined_members[0].prompt
+
+
+def test_invalid_roster_does_not_partially_modify_spec(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime import extension_package_manager as packages
+
+    monkeypatch.setattr(
+        packages, "resolve_agent_group_dir", lambda _: _minimal_group(tmp_path)
+    )
+    outer = spec()
+    before = outer.model_dump()
+    with pytest.raises(ValueError, match="unique"):
+        gc.assemble_group_members(
+            outer,
+            [
+                {
+                    "kind": "agent_group",
+                    "id": "group",
+                    "member_name": "research",
+                },
+                {
+                    "kind": "agent_group",
+                    "id": "group",
+                    "member_name": "research",
+                },
+            ],
+        )
+    assert outer.model_dump() == before
+
+
+def test_existing_expert_capabilities_are_kept(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime import extension_package_manager as packages
+
+    group = _minimal_group(tmp_path)
+    monkeypatch.setattr(
+        packages, "resolve_agent_template_dir", lambda _: group / "agents" / "leader"
+    )
+    outer = spec()
+    gc.assemble_group_members(
+        outer, [{"kind": "agent_template", "id": "one", "member_name": "advisor"}]
+    )
+    assert outer.agents["advisor"].agent_template_spec
+    assert "Leader rules" in outer.predefined_members[0].prompt
+    assert not any(
+        getattr(t, "type", None) == gc.RUN_TEAM
+        for t in (outer.agents["advisor"].tools or [])
+    )
+
+
+@pytest.fixture
+def proxy(tmp_path, monkeypatch):
+    from openjiuwen.agent_teams.paths import reset_task_openjiuwen_home, set_task_openjiuwen_home
+    from jiuwenswarm.agents.swarm import assembly
+
+    home = set_task_openjiuwen_home(tmp_path / "core")
+    monkeypatch.setattr(assembly, "enrich_team_spec_for_swarm", lambda *a, **kw: None)
+    backend = SimpleNamespace(
+        conversation_mode="group_chat",
+        team_name="public-group",
+        member_name="research",
+        group_conversation=AsyncMock(
+            return_value=SimpleNamespace(history_path=tmp_path / "history.jsonl")
+        ),
+        append_group_message=AsyncMock(
+            return_value=SimpleNamespace(
+                message=SimpleNamespace(message_id="result-message")
+            )
+        ),
+    )
+    context = SimpleNamespace(
+        session_id="outer-session",
+        mode="team",
+        project_dir=None,
+        trusted_dirs=None,
+        user_id="user",
+        channel_id="web",
+    )
+    pause = AsyncMock()
+    monkeypatch.setattr(gc.Runner, "pause_agent_team", pause)
+    yield gc.RunTeam(
+        backend, context, spec().model_dump(mode="json", exclude={"build_context"})
+    )
+    reset_task_openjiuwen_home(home)
+
+
+@pytest.mark.asyncio
+async def test_run_submit_publish_and_retry_without_reexecution(proxy, monkeypatch):
+    calls = []
+
+    async def stream(child, inputs, *, session):
+        calls.append((child, session))
+        submit = next(
+            t for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN
+        )
+        assert (
+            await gc.CompleteTeamRun(submit.params["key"]).invoke(
+                {"result": "final report"}
+            )
+        ).success
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    output = await proxy.invoke({"run_id": "job-1", "task": "research"})
+    assert output.success and output.data["posted_to_group"]
+    assert calls[0][0].team_name != proxy.backend.team_name
+    assert calls[0][1] != proxy.context.session_id
+    assert proxy.backend.append_group_message.call_args.args == (
+        "research",
+        "final report",
+    )
+    repeat = await proxy.invoke({"run_id": "job-1", "task": "research"})
+    assert repeat.success and len(calls) == 1
+    assert not gc._results
+    conflict = await proxy.invoke({"run_id": "job-1", "task": "another task"})
+    assert not conflict.success
+
+
+@pytest.mark.asyncio
+async def test_publish_failure_retries_saved_result(proxy, monkeypatch):
+    async def stream(child, inputs, *, session):
+        key = next(
+            t.params["key"]
+            for t in child.agents["leader"].tools
+            if t.type == gc.COMPLETE_RUN
+        )
+        await gc.CompleteTeamRun(key).invoke({"result": "saved result"})
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    proxy.backend.append_group_message.side_effect = [
+        OSError("offline"),
+        SimpleNamespace(message=SimpleNamespace(message_id="fixed")),
+    ]
+    assert not (await proxy.invoke({"run_id": "one", "task": "task"})).success
+    assert (await proxy.invoke({"run_id": "one", "task": "task"})).success
+
+
+@pytest.mark.asyncio
+async def test_stream_without_submission_fails_and_can_retry(proxy, monkeypatch):
+    async def stream(*args, **kwargs):
+        yield SimpleNamespace(payload={"event_type": "team.completed"})
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    result = await proxy.invoke({"run_id": "one", "task": "task"})
+    assert not result.success and "without submitting" in result.error
+    proxy.backend.append_group_message.assert_not_awaited()
+    state = json.loads(next(gc.group_runs_dir("public-group").glob("*.json")).read_text())
+    assert state["status"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_stops_private_worker(proxy, monkeypatch):
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def stream(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    task = asyncio.create_task(proxy.invoke({"run_id": "one", "task": "task"}))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped.is_set() and not gc._results
+    proxy.backend.append_group_message.assert_not_awaited()
+
+
+def test_roster_restore_rejects_replacement(monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    members = [{"kind": "agent_template", "id": "one", "member_name": "advisor"}]
+    monkeypatch.setattr(
+        session_metadata,
+        "get_session_metadata",
+        lambda *a, **kw: {"group_members": members},
+    )
+    assert gc.resolve_group_members("session", None, is_first_request=True) == members
+    with pytest.raises(ValueError, match="replaced"):
+        gc.resolve_group_members("session", [], is_first_request=False)
+
+
+def test_roster_is_persisted_in_session_metadata(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+    monkeypatch.setattr(sm, "get_agent_sessions_dir", lambda: tmp_path)
+    members = [
+        {"kind": "agent_group", "id": "team", "member_name": "research"}
+    ]
+    sm.update_session_metadata(
+        session_id="group-roster-test",
+        group_members=members,
+        touch_last_message_at=False,
+        sync_write=True,
+    )
+    sm.remove_session_metadata_cache("group-roster-test")
+    assert (
+        sm.get_session_metadata("group-roster-test", enable_writeback=False)[
+            "group_members"
+        ]
+        == members
+    )
+
+
+def test_proxy_tool_provider_is_registered_with_serializable_binding(proxy):
+    from jiuwenswarm.agents.swarm.registry import register_swarm_providers
+    from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+    from openjiuwen.agent_teams.rails.team_context import inject_team_handles
+    from openjiuwen.harness.schema.deep_agent_spec import BuiltinToolSpec
+
+    register_swarm_providers()
+    context = SwarmBuildContext(session_id="outer-session")
+    inject_team_handles(context.extras, team_backend=proxy.backend)
+    tool = BuiltinToolSpec(
+        type=gc.RUN_TEAM, params={"child_spec": proxy.child_spec}
+    ).build(language="cn", context=context)
+    assert isinstance(tool, gc.RunTeam)
+    assert tool.backend is proxy.backend
+
+
+@pytest.mark.asyncio
+async def test_result_reaches_real_group_database_and_history(tmp_path, monkeypatch):
+    from openjiuwen.agent_teams.context import set_session_id, reset_session_id
+    from openjiuwen.agent_teams.paths import (
+        set_task_openjiuwen_home,
+        reset_task_openjiuwen_home,
+    )
+    from openjiuwen.agent_teams.tools.database import DatabaseConfig, TeamDatabase
+    from openjiuwen.agent_teams.tools.team import TeamBackend
+    from jiuwenswarm.agents.swarm import assembly
+
+    home = set_task_openjiuwen_home(tmp_path / "home")
+    token = set_session_id("outer-session")
+    db = TeamDatabase(DatabaseConfig(connection_string=":memory:"))
+    try:
+        await db.initialize()
+        await db.team.create_team("public-group", "Public group", "host")
+        await db.member.create_member(
+            "research", "public-group", "Research", "{}", "ready", role="teammate"
+        )
+        backend = TeamBackend("public-group", "research", False, db, AsyncMock())
+        backend.conversation_mode = "group_chat"
+        backend.group_chat_spec = spec()
+        backend.bind_group_session("outer-session")
+        context = SimpleNamespace(
+            session_id="outer-session",
+            mode="team",
+            project_dir=None,
+            trusted_dirs=None,
+            user_id="user",
+            channel_id="web",
+        )
+        proxy = gc.RunTeam(
+            backend, context, spec().model_dump(mode="json", exclude={"build_context"})
+        )
+        monkeypatch.setattr(
+            assembly, "enrich_team_spec_for_swarm", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(gc.Runner, "pause_agent_team", AsyncMock())
+
+        async def stream(child, inputs, *, session):
+            key = next(
+                t.params["key"]
+                for t in child.agents["leader"].tools
+                if t.type == gc.COMPLETE_RUN
+            )
+            await gc.CompleteTeamRun(key).invoke({"result": "expert report"})
+            await asyncio.Event().wait()
+            yield None
+
+        monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+        for _ in range(2):
+            assert (
+                await proxy.invoke({"run_id": "stable", "task": "research"})
+            ).success
+        rows = await db.message.get_team_messages("public-group", broadcast=True)
+        assert len(rows) == 1
+        assert (
+            rows[0].from_member_name == "research"
+            and rows[0].content == "expert report"
+        )
+        history = (await backend.group_conversation()).history_path
+        assert [
+            json.loads(line)["content"] for line in history.read_text().splitlines()
+        ] == ["expert report"]
+    finally:
+        await db.close()
+        reset_session_id(token)
+        reset_task_openjiuwen_home(home)
+
+
+@pytest.mark.parametrize("kind,new_kind", [("expert", "agent_template"), ("expert_team", "agent_group")])
+def test_legacy_metadata_roster_restores_and_compiles(tmp_path, monkeypatch, kind, new_kind):
+    from jiuwenswarm.server.runtime import extension_package_manager as packages
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    package = _minimal_group(tmp_path)
+    monkeypatch.setattr(packages, "resolve_agent_group_dir", lambda _: package)
+    monkeypatch.setattr(packages, "resolve_agent_template_dir", lambda _: package / "agents" / "leader")
+    legacy = [{"kind": kind, "definition_id": "one", "member_name": "advisor"}]
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *a, **kw: {"group_members": legacy})
+    canonical = [{"kind": new_kind, "id": "one", "member_name": "advisor"}]
+    restored = gc.resolve_group_members("legacy-session", canonical, is_first_request=False)
+    assert restored == canonical
+    assert gc.resolve_group_members("legacy-session", legacy, is_first_request=False) == canonical
+    assert legacy[0] == {"kind": kind, "definition_id": "one", "member_name": "advisor"}
+    outer = spec()
+    gc.assemble_group_members(outer, restored)
+    assert outer.predefined_members[0].member_name == "advisor"
+    with pytest.raises(ValueError, match="replaced"):
+        gc.resolve_group_members("legacy-session", [], is_first_request=False)
+
+
+def test_private_completion_tool_exposes_new_name():
+    tool = gc.CompleteTeamRun("tool-name-test")
+    assert tool.card.name == "complete_team_run"
+    assert gc.COMPLETE_RUN == "swarm.group_complete_team_run"
+
+
+def test_new_run_files_sit_under_the_outer_team_home(tmp_path):
+    key = "a" * 64
+    runs, legacy = tmp_path / "runs", tmp_path / "team-runs"
+    assert gc.run_ticket_path(runs, legacy, key) == runs / f"{key[:12]}.json"
+    assert gc.run_workspace_path(runs, legacy, key) == runs / key[:12]
+
+
+@pytest.mark.parametrize("name", ["b" * 64, "b" * 12])
+def test_run_files_of_older_layouts_stay_in_place(tmp_path, name):
+    key = "b" * 64
+    runs, legacy = tmp_path / "runs", tmp_path / "team-runs"
+    (legacy / name / "workspace").mkdir(parents=True)
+    (legacy / f"{name}.json").write_text("{}", encoding="utf-8")
+    assert gc.run_ticket_path(runs, legacy, key) == legacy / f"{name}.json"
+    # A recovered private team still points at the workspace saved in its first spec.
+    assert gc.run_workspace_path(runs, legacy, key) == legacy / name / "workspace"
+
+
+def test_run_paths_leave_room_under_the_windows_limits():
+    assert gc.RUN_PATH_HASH_LENGTH == 12
+    team = "jiuwen_team_web_1a18bde044a_f1ea2469dbcf"
+    # A real reported home; the directory limit is 247 and the file limit 259.
+    runs = rf"C:\Users\75797\.jiuwenswarm\.agent_teams\{team}\runs"
+    assert len(rf"{runs}\{'c' * gc.RUN_PATH_HASH_LENGTH}") <= 110
+    assert len(rf"{runs}\org-{'d' * gc.RUN_PATH_HASH_LENGTH}.json") <= 120

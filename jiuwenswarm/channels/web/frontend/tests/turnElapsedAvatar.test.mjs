@@ -1,10 +1,35 @@
+import './fixtures/browserEnvironment.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { build } from 'esbuild';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { A2UIProvider } from '@a2ui/react';
 
-import { ChatTimelineList, TurnElapsed } from '../node_modules/.cache/chat-timeline-list/MessageList.mjs';
+await build({
+  entryPoints: ['src/components/ChatPanel/MessageList.tsx'],
+  bundle: true,
+  packages: 'external',
+  platform: 'node',
+  format: 'esm',
+  outfile: 'node_modules/.cache/chat-timeline-list/MessageList.mjs',
+  define: { 'import.meta.env': '{}' },
+  loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
+  plugins: [
+    {
+      name: 'ui-test-svg-components',
+      setup(builder) {
+        builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'svg-react-stub' }));
+        builder.onLoad({ filter: /.*/, namespace: 'svg-react-stub' }, () => ({
+          contents: 'export default function SvgStub() { return null; }',
+          loader: 'js',
+        }));
+      },
+    },
+  ],
+});
+
+const { ChatTimelineList, TurnElapsed } = await import('../node_modules/.cache/chat-timeline-list/MessageList.mjs');
 
 test('in-progress timeline summary uses the selected Agent identity', () => {
   const markup = renderToStaticMarkup(
@@ -103,8 +128,15 @@ test('expert group identity is preserved in bounded history and complete static 
     })));
 
     assert.match(markup, /History Expert Group/);
-    assert.match(markup, /history-content-199-end/);
-    assert.equal(markup.includes('history-content-0-end'), !virtualized);
+    const renderedMessages = [...markup.matchAll(/history-content-\d+-end/g)];
+    if (virtualized) {
+      // SSR has no laid-out viewport; bottom scrolling happens after mount.
+      assert.ok(renderedMessages.length > 0 && renderedMessages.length < messages.length);
+    } else {
+      assert.equal(renderedMessages.length, messages.length);
+      assert.match(markup, /history-content-0-end/);
+      assert.match(markup, /history-content-199-end/);
+    }
     assert.equal(markup.includes('data-virtualized="true"'), virtualized);
   }
 });

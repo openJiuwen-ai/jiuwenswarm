@@ -13,6 +13,17 @@ def test_default_model_config_does_not_set_context_window():
     assert "context_window" not in model_config
 
 
+def test_default_model_group_routing_timeout_matches_single_model():
+    repo_root = Path(__file__).resolve().parents[2]
+    config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"
+    models = yaml.safe_load(config_file.read_text(encoding="utf-8"))["models"]
+
+    assert models["group_routing_timeout_seconds"] == "${JIUWENSWARM_MODEL_GROUP_TIMEOUT_SECONDS:-360}"
+    assert models["defaults"][0]["model_client_config"]["timeout"] == 360
+    assert models["group_stream_first_chunk_timeout_seconds"] == "${JIUWENSWARM_MODEL_GROUP_STREAM_FIRST_CHUNK_TIMEOUT_SECONDS:-300}"
+    assert models["group_stream_idle_timeout_seconds"] == "${JIUWENSWARM_MODEL_GROUP_STREAM_IDLE_TIMEOUT_SECONDS:-120}"
+
+
 def test_default_team_config_enables_managed_worktrees():
     repo_root = Path(__file__).resolve().parents[2]
     config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"
@@ -20,6 +31,33 @@ def test_default_team_config_enables_managed_worktrees():
     data = yaml.safe_load(config_file.read_text(encoding="utf-8"))
 
     assert data["modes"]["team"]["jiuwen_team"]["worktree"] == {"enabled": True}
+
+
+def test_default_code_configs_do_not_duplicate_model_enabled_multimodal_tools():
+    repo_root = Path(__file__).resolve().parents[2]
+    config_files = [
+        repo_root / "jiuwenswarm" / "resources" / "config.yaml",
+        repo_root / "jiuwenswarm" / "resources" / "config.team.distributed.leader.yaml",
+        repo_root
+        / "jiuwenswarm"
+        / "resources"
+        / "config.team.distributed.teammate.yaml",
+        repo_root
+        / "deploy"
+        / "yuanrong"
+        / "conf"
+        / "gateway-config-yuanrong.template.yaml",
+    ]
+    multimodal_tools = {
+        "visual_question_answering",
+        "image_ocr",
+        "video_understanding",
+        "audio_transcription",
+    }
+
+    for config_file in config_files:
+        data = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        assert multimodal_tools.isdisjoint(data["modes"]["code"]["tools"])
 
 
 def test_default_round_level_compressor_config_uses_context_ratio():

@@ -1,7 +1,13 @@
 # 包含 package resources 目录
 recursive-include jiuwenswarm/resources *
+# Keep generated local configuration and advisory locks out of distributions.
+exclude jiuwenswarm/resources/.env
+exclude jiuwenswarm/resources/*.lock
 include jiuwenswarm/agents/harness/common/rsi/harness_config.yaml
+include jiuwenswarm/agents/harness/common/auto_harness/issue_fix/code_rule.txt
+include jiuwenswarm/server/runtime/agent_adapter/browser_runtime_network_guard.js
 include OPEN_SOURCE_SOFTWARE_NOTICE.md
+include scripts/build_config.py
 include third_party/playwright-mcp/package.json
 include third_party/playwright-mcp/package-lock.json
 prune jiuwenswarm/resources/agent/workspace/skills/project-maintainer
@@ -9,6 +15,9 @@ prune jiuwenswarm/resources/agent/workspace/skills/project-maintainer
 # DesignRail 内嵌声明式状态机 config.yaml + 内嵌 skills 方法论（wave-1 SDD）
 recursive-include jiuwenswarm/agents/harness/code/rails/sdd/design_rail *.yaml
 recursive-include jiuwenswarm/agents/harness/code/rails/sdd/design_rail/skills *
+
+# Designer 内嵌 skills（scenarios / agents / orchestration / subjects / styles + index.json）
+recursive-include jiuwenswarm/server/runtime/designer/skills *
 
 # 排除 node_modules，避免打包进 wheel
 prune jiuwenswarm/channels/web/frontend/node_modules

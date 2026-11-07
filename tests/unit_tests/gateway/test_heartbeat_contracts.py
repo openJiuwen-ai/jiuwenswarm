@@ -9,21 +9,21 @@ from types import SimpleNamespace
 
 import pytest
 from websockets.legacy.server import serve as websocket_serve
+from openjiuwen_protocol.message import EventType, ReqMethod
+from agent_gateway.heartbeat import (
+    HeartbeatControllerProxy,
+    HeartbeatServiceUnavailableError,
+)
+from agent_gateway.health_check import (
+    GatewayHealthCheckService,
+    HealthCheckConfig,
+)
+from agent_gateway.message_handler import MessageHandler
+from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (
     HeartbeatRuntimeBridge,
 )
-from jiuwenswarm.common.schema.message import EventType, ReqMethod
-from jiuwenswarm.gateway.heartbeat import (
-    HeartbeatControllerProxy,
-    HeartbeatServiceUnavailableError,
-)
-from jiuwenswarm.gateway.health_check import (
-    GatewayHealthCheckService,
-    HealthCheckConfig,
-)
-from jiuwenswarm.gateway.message_handler import MessageHandler
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
 

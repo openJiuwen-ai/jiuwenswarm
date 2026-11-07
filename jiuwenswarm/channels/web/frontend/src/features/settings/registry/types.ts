@@ -27,7 +27,10 @@ export type SettingsAccessBinding = {
 };
 type SettingItemBase = {
   id: string;
+  rowClassName?: string;
   replaceable?: boolean;
+  /** Override the module source when a settings group contains multiple persistence services. */
+  source?: SettingsSource;
 };
 export type SettingSelectOption = {
   value: SettingValue;
@@ -36,16 +39,22 @@ export type SettingSelectOption = {
 export type SettingSubItems = {
   show: 'always' | 'when-parent-checked';
   disabled: 'never' | 'when-parent-unchecked';
+  /** Turning the parent switch off also turns off every sub-item switch in the same save. */
+  uncheckWithParent?: boolean;
   items: readonly SettingItemDefinition[];
 };
 export type SettingsCustomItemProps = {
   disabled: boolean;
+  /** Report an active editor so a parent switch cannot unmount its unsaved draft. */
+  onEditingChange?: (editing: boolean) => void;
 };
 export type SettingItemDefinition =
   | (SettingItemBase & {
       component: 'switch';
       key: string;
+      errorDisplay?: 'inline';
       subItems?: SettingSubItems;
+      configure?: ComponentType<{ onSave: () => Promise<void>; onClose: () => void }>;
     })
   | (SettingItemBase & {
       component: 'select';
@@ -63,6 +72,8 @@ export type SettingItemDefinition =
     });
 export interface SettingsSectionDefinition {
   id: string;
+  /** A read-only boolean from the module source; absent/unknown means hidden. */
+  visibleWhen?: string;
   titleKey?: I18nKey;
   descriptionKey?: I18nKey;
   separatedRows?: boolean;

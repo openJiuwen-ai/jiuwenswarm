@@ -19,6 +19,9 @@ Step 4 records the background PID in a small JSON state file so that
 ``jiuwenswarm-stop`` can terminate exactly that service later. The service is
 spawned into its own process group / session, and stopping signals the whole
 group - see ``_stop_process_tree`` for why the leader PID alone is not enough.
+The resident Runtime Worker deliberately leaves that group so it survives Front
+restarts; ``jiuwenswarm-stop`` shuts it down over IPC afterwards, otherwise the
+next start would reattach to a Worker still running the old code.
 
 The background child is ``python -m jiuwenswarm.start_services all`` rather
 than a nested ``uv run``: it keeps the service a single direct child, so no
@@ -32,6 +35,7 @@ syncs the project dependencies, neither of which exists in a package install.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -768,9 +772,14 @@ def _stop_process_tree(
         True when nothing from the tree is left running.
     """
     if platform.system().lower() == "windows":
-        # taskkill /T /F (used by stop_process_by_pid) already walks the tree
-        # the OS records for this PID, so no separate group handling is needed.
-        return stop_process_by_pid(pid, timeout=timeout)
+        from jiuwenswarm.common.process_supervision import terminate_service_tree
+
+        try:
+            terminate_service_tree(pid, timeout=timeout)
+        except (OSError, RuntimeError) as exc:
+            logging.error("[debug] Service tree cleanup incomplete: %s", exc)
+            return False
+        return True
 
     import signal
 
@@ -822,7 +831,32 @@ def _stop_process_tree(
     return not _process_group_alive(pgid)
 
 
-def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
+def _stop_resident_worker(timeout: float = DEFAULT_STOP_TIMEOUT, *, legacy_worker_pid: int | None = None) -> bool:
+    """Shut down the resident Runtime Worker left behind by the service.
+
+    The Worker is spawned in its own session so it outlives Front restarts,
+    which also puts it outside the process group ``_stop_process_tree``
+    signals. Call this only after the service tree is gone: a live Front
+    would respawn the Worker as soon as it disconnects.
+
+    Args:
+        timeout: Seconds to wait for a graceful exit before force-killing.
+
+    Returns:
+        True when this deployment's Worker shutdown is complete.
+    """
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
+
+    try:
+        result = asyncio.run(shutdown_resident_worker(timeout=timeout, include_legacy=True,
+            legacy_worker_pid=legacy_worker_pid))
+    except (OSError, RuntimeError, asyncio.TimeoutError) as exc:
+        logging.info(f"[debug] WARNING: resident Worker shutdown incomplete: {exc}")
+        return False
+    return result.get("ok") is True
+
+
+def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT, *, legacy_worker_pid: int | None = None) -> int:
     """Stop the background service recorded by ``jiuwenswarm-start debug``.
 
     Args:
@@ -831,8 +865,15 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
     Returns:
         Exit code: 0 when nothing is left running, 1 on failure.
     """
+    def stop_worker() -> bool:
+        if legacy_worker_pid is not None:
+            return _stop_resident_worker(timeout=timeout, legacy_worker_pid=legacy_worker_pid)
+        return _stop_resident_worker(timeout=timeout)
+
     state = read_debug_state()
     if state is None:
+        if legacy_worker_pid is not None:
+            return 0 if stop_worker() else 1
         logging.info("[debug] No debug service recorded; nothing to stop.")
         logging.info(
             "[debug] To stop a regular instance use "
@@ -843,8 +884,11 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
     if not is_debug_service_alive(state):
         logging.info(
             f"[debug] Debug service (PID={state.pid}) is no longer running; "
-            "clearing state."
+            "stopping its remaining Worker."
         )
+        if not stop_worker():
+            logging.info("[debug] ERROR: failed to stop the resident runtime worker.")
+            return 1
         clear_debug_state()
         return 0
 
@@ -855,6 +899,9 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
         logging.info("[debug] Kill it manually, then rerun 'jiuwenswarm-stop'.")
         return 1
 
+    if not stop_worker():
+        logging.info("[debug] ERROR: failed to stop the resident runtime worker.")
+        return 1
     clear_debug_state()
     logging.info("[debug] Debug service stopped.")
     if state.log_file:
@@ -862,7 +909,7 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
     return 0
 
 
-def _parse_stop_args(argv: list[str] | None = None) -> float:
+def _parse_stop_options(argv: list[str] | None = None):
     """Parse ``jiuwenswarm-stop`` arguments.
 
     Args:
@@ -887,8 +934,17 @@ def _parse_stop_args(argv: list[str] | None = None) -> float:
         metavar="<seconds>",
         help=f"Seconds to wait for graceful shutdown (default: {DEFAULT_STOP_TIMEOUT}).",
     )
+    parser.add_argument("--legacy-worker-pid", type=int,
+        help="Stop this specific legacy Python Worker after verifying its installation")
     args = parser.parse_args(argv)
-    return args.timeout
+    if args.legacy_worker_pid is not None and args.legacy_worker_pid <= 0:
+        parser.error("--legacy-worker-pid must be positive")
+    return args
+
+
+def _parse_stop_args(argv: list[str] | None = None) -> float:
+    """Keep the timeout parser compatible with existing callers."""
+    return _parse_stop_options(argv).timeout
 
 
 def main() -> None:
@@ -898,8 +954,10 @@ def main() -> None:
     # imposing import-time side effects on the root logger.
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 
-    timeout = _parse_stop_args()
-    raise SystemExit(stop_debug_service(timeout))
+    args = _parse_stop_options()
+    if args.legacy_worker_pid is not None:
+        raise SystemExit(stop_debug_service(args.timeout, legacy_worker_pid=args.legacy_worker_pid))
+    raise SystemExit(stop_debug_service(args.timeout))
 
 
 if __name__ == "__main__":

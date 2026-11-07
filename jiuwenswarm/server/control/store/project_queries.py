@@ -7,14 +7,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.cron_session import cron_session_matches_job
-from jiuwenswarm.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
+    DESIGN_WORK_MODE,
+    SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
+
+from jiuwenswarm.common.cron_session import cron_session_matches_job
 from jiuwenswarm.server.runtime.session import project_store
 from jiuwenswarm.server.runtime.session.lifecycle import projection as lifecycle_projection
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
@@ -32,7 +35,7 @@ def attribute_session_project(
     visible_project_ids: set[str],
     removed_project_ids: set[str] = frozenset(),
 ) -> str:
-    """Return the owning project ID, ``""`` for a removed project, or the default.
+    """Return the owning project ID, ``""`` for a removed project or a client app's conversation, or the default.
 
     Removed (hidden) projects keep their sessions on disk, but those sessions
     must not surface: returning ``""`` makes every caller skip them instead of
@@ -40,6 +43,10 @@ def attribute_session_project(
     record is missing entirely, or that carry no ``project_id`` at all, still
     fall back to the default project so legacy metadata stays readable.
     """
+    from jiuwenswarm.server.client_attachments.registry import conversation_app
+
+    if conversation_app(metadata) is not None:
+        return ""
     project_id = str(metadata.get("project_id") or "")
     if project_id:
         if project_id in visible_project_ids:
@@ -50,6 +57,36 @@ def attribute_session_project(
         DEFAULT_PROJECT_ID_CODE
         if str(metadata.get("work_mode") or "") == DEFAULT_TUI_WORK_MODE
         else DEFAULT_PROJECT_ID_WORK
+    )
+
+
+def cron_session_project_matches(
+    session: dict[str, Any],
+    project_id: str,
+    visible_project_ids: set[str],
+    removed_project_ids: set[str],
+    *,
+    cron_id: str,
+) -> bool:
+    """Match one cron session against the project the task list queried.
+
+    A task created without a project keeps ``project_id=""`` (documented as
+    "default project"), while its execution session is materialized as
+    ``default`` or ``default_code`` by work_mode.  The Web panel therefore
+    queries the work default (``default``) even for code-mode runs.  With a
+    ``cron_id`` present the job identity is already unique, so both virtual
+    default projects are treated as the same bucket.  Removed projects keep
+    returning ``""`` and stay excluded.
+    """
+    actual = attribute_session_project(
+        session, visible_project_ids, removed_project_ids,
+    )
+    if actual == project_id:
+        return True
+    return (
+        bool(cron_id)
+        and is_default_project_id(project_id)
+        and actual in {DEFAULT_PROJECT_ID_WORK, DEFAULT_PROJECT_ID_CODE}
     )
 
 
@@ -199,9 +236,15 @@ def resolve_cron_binding(
     work_mode, error = resolve_request_work_mode(params, channel_id=channel_id or "web")
     if error is not None:
         return None, f"invalid work_mode: {params.get('work_mode')!r}", "BAD_REQUEST"
-    binding = project_store.resolve_cron_project_binding(
-        params.get("project_id"), params.get("project_dir"), work_mode,
-    )
+    try:
+        binding = project_store.resolve_cron_project_binding(
+            params.get("project_id"), params.get("project_dir"), work_mode,
+        )
+    except ValueError as exc:
+        # resolve_cron_project_id 对相对路径等非法入参抛 ValueError。这是参数
+        # 校验失败，必须在这里转成 BAD_REQUEST；否则会冒到 ProjectAdapter /
+        # project_repository 的通用异常兜底，被统一映射成 INTERNAL_ERROR。
+        return None, str(exc), "BAD_REQUEST"
     if binding.error is not None:
         return None, binding.error, binding.code or "BAD_REQUEST"
     return {
@@ -239,6 +282,21 @@ def _last_user_message_ts(session: dict[str, Any]) -> float:
     return 0.0
 
 
+def _session_matches_requested_work_mode(session: dict[str, Any], raw_work_mode: Any) -> bool:
+    """Keep project session lists inside the caller's work mode.
+
+    The default project is shared. Design canvases and work conversations both
+    use its id, so a list that does not filter would mix them.
+    """
+    if not isinstance(raw_work_mode, str) or not raw_work_mode.strip():
+        return True
+    requested = raw_work_mode.strip().lower()
+    if requested not in SUPPORTED_WORK_MODES:
+        return True
+    actual = str(session.get("work_mode") or DEFAULT_WEB_WORK_MODE).strip().lower()
+    return actual == requested
+
+
 def load_project_sessions(
     params: dict[str, Any], _user_id: str
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
@@ -260,6 +318,8 @@ def load_project_sessions(
         if attribute_session_project(
             session, visible_project_ids, removed_project_ids
         ) != project_id:
+            continue
+        if not _session_matches_requested_work_mode(session, params.get("work_mode")):
             continue
         matched.append(session)
     matched.sort(key=_last_user_message_ts, reverse=True)
@@ -310,9 +370,10 @@ def load_project_cron_sessions(
         if name_matched:
             # 已有项目归属必须继续参与过滤；回写只补空值，不能将其他项目
             # 的会话临时列出后又在下一次查询中隐藏。只有未绑定项目才迁移。
-            if str(session.get("project_id") or "").strip() and attribute_session_project(
-                session, visible_project_ids, removed_project_ids
-            ) != project_id:
+            if str(session.get("project_id") or "").strip() and not cron_session_project_matches(
+                session, project_id, visible_project_ids, removed_project_ids,
+                cron_id=cron_id,
+            ):
                 continue
             try:
                 sync_session_request_metadata(
@@ -333,9 +394,10 @@ def load_project_cron_sessions(
             continue
         if cron_id and session.get("cron_id") != cron_id:
             continue
-        if not name_matched and attribute_session_project(
-            session, visible_project_ids, removed_project_ids
-        ) != project_id:
+        if not name_matched and not cron_session_project_matches(
+            session, project_id, visible_project_ids, removed_project_ids,
+            cron_id=cron_id,
+        ):
             continue
         matched.append(session)
     matched.sort(key=_last_user_message_ts, reverse=True)
@@ -359,12 +421,18 @@ def load_project_list(
     work_mode: str | None = None
     if isinstance(raw_work_mode, str) and raw_work_mode.strip():
         candidate = raw_work_mode.strip().lower()
-        if candidate not in {DEFAULT_WEB_WORK_MODE, DEFAULT_TUI_WORK_MODE}:
-            return None, f"invalid work_mode: {candidate!r}, must be 'code' or 'work'", "BAD_REQUEST"
+        if candidate not in SUPPORTED_WORK_MODES:
+            return None, f"invalid work_mode: {candidate!r}", "BAD_REQUEST"
         work_mode = candidate
 
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
     projects = [p for p in all_projects if work_mode is None or (p.work_mode or DEFAULT_WEB_WORK_MODE) == work_mode]
+    if work_mode == DESIGN_WORK_MODE:
+        from jiuwenswarm.server.runtime.gateway_adapter.designer_adapter import (
+            sync_design_display_names,
+        )
+
+        projects = sync_design_display_names(projects)
     visible_project_ids, removed_project_ids = split_project_ids(all_projects)
     stats: dict[str, dict[str, Any]] = {}
 
@@ -401,7 +469,7 @@ def load_project_list(
         )
 
     default_ids: list[str] = []
-    if work_mode in (None, DEFAULT_WEB_WORK_MODE):
+    if work_mode in (None, DEFAULT_WEB_WORK_MODE, DESIGN_WORK_MODE):
         default_ids.append(DEFAULT_PROJECT_ID_WORK)
     if work_mode in (None, DEFAULT_TUI_WORK_MODE):
         default_ids.append(DEFAULT_PROJECT_ID_CODE)

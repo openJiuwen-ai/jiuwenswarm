@@ -28,9 +28,9 @@
     <img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="License" />
   </a>
   <a href="https://github.com/openJiuwen-ai/jiuwenswarm/releases">
-    <img src="https://img.shields.io/pypi/v/jiuwenswarm.svg" alt="Release" />
+    <img src="https://img.shields.io/pypi/v/workswarm.svg" alt="Release" />
   </a>
-  <img src="https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg" alt="Python Version" />
+  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg" alt="Python 3.11, 3.12, 3.13, 3.14" />
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20HarmonyOS-lightgrey.svg" alt="OS Support" />
 </p>
 
@@ -44,7 +44,7 @@
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Multi-Agent Collaboration       | The Leader decomposes a complex task and assembles teams, multi agents specialize and negotiate dynamically.                                              |
 | Distributed Agent Swarm         | Leader and Teammates deploy across processes and machines, coordinating at scale.                                                                         |
-| Swarmflow                       | Deterministic multi-stage workflows via Python scripts: the Leader hands off between stage agents; supports **HITL** (`human` / `human_session`), **team token budget**, and TUI **`/swarmflows`** run-tree monitoring. |
+| Swarmflow                       | Deterministic multi-stage workflows via Python scripts: the Leader hands off between stage agents; supports **HITL** (`human` / `human_session`), **team token budget**, TUI **`/swarmflows`** run-tree monitoring, opt-in **progressive tool exposure** for workers (`swarmflow_progressive_tool`), and **AgentGroup expert workers** (`agent_template`). |
 | Skill Self-Evolution            | Automatically detects error signals and user dissatisfaction, then optimizes Skill definitions                                                            |
 | Skill Hub Sharing               | Capability assets are built once and reused everywhere, search, install, remix, and publish Skills through the Swarm Skills Hub                           |
 | Auto Harness                    | Evaluation drive end-to-end optimization of the Harness itself, which learns and improves in practice with no model-weight training                       |
@@ -60,7 +60,7 @@ One-click install, no environment setup — the quickest way to try JiuwenSwarm.
 | Platform  | Download                                                          | Notes                                         |
 | --------- | ----------------------------------------------------------------- | --------------------------------------------- |
 | Windows   | [Download Windows Version](https://openjiuwen.com/en/jiuwenswarm) | For Windows 10 / 11                           |
-| macOS     | [Download macOS Version](https://openjiuwen.com/en/jiuwenswarm)   | For Intel / Apple Silicon                     |
+| macOS     | [Download macOS Version](https://openjiuwen.com/en/jiuwenswarm)   | Apple Silicon (ARM64) only; Intel not supported                     |
 | HarmonyOS | [Try now](https://openjiuwen.com/en/jiuwenswarm)                  | HarmonyOS PC, installed via the official site |
 
 Download and follow the installer prompts to get started.
@@ -69,12 +69,14 @@ On Linux, install via [Command Line](#pip) or [from source](#from-source) below.
 
 ### Command Line
 
+Requires Python `>=3.11,<3.15`.
+
 ```bash
 # Install JiuwenSwarm
-pip install jiuwenswarm
+pip install workswarm
 
 # Use China mirror (recommended)
-pip install jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Initialize JiuwenSwarm (first-time setup)
 jiuwenswarm-init
@@ -84,19 +86,6 @@ jiuwenswarm-start
 ```
 
 After launching, visit http://localhost:5173 to open the frontend.
-
-To use TUI (terminal interface), open a new terminal after starting JiuwenSwarm:
-
-```bash
-# Install JiuwenSwarm-tui
-pip install jiuwenswarm-tui
-
-# Use China mirror (recommended)
-pip install jiuwenswarm-tui -i https://pypi.tuna.tsinghua.edu.cn/simple
-
-# Start JiuwenSwarm-tui
-jiuwenswarm-tui
-```
 
 ### From Source
 
@@ -180,7 +169,7 @@ Full index: [Documentation](docs/README_EN.md)
 - The Web UI layout: [Page Overview](docs/en/Page-Overview.md)
 - Configure providers: [Configuration](docs/en/Configuration.md)
 - Build and evolve capabilities: [Skills](docs/en/Skills.md) · [Skill Self-Evolution](docs/en/SkillSelfEvolution.md)
-- Multi-agent and cluster: [Agent Team](docs/en/AgentTeam.md) · [Distributed Team](docs/en/DistributedTeam.md)
+- Multi-agent and cluster: [Agent Team](docs/en/AgentTeam.md) · [Team Organization](docs/en/TeamOrganization.md) · [Distributed Team](docs/en/DistributedTeam.md)
 - Memory: [Memory](docs/en/Memory.md) · [Task Memory](docs/en/TaskMemory.md) · [Coding Memory](docs/en/CodingMemory.md)
 - Automation: [Scheduled Tasks](docs/en/ScheduledTasks.md)
 - Terminal: [Quick Start (TUI)](docs/en/Quickstart_tui.md) · [Slash Commands](docs/en/SlashCommands.md) · [SwarmFlow (TUI)](docs/en/TUISwarmFlowGuide.md)
@@ -226,3 +215,4 @@ Thanks to all developers who have contributed to JiuwenSwarm: [View Contributor 
 This project is licensed under [Apache License 2.0](LICENSE).
 
 This product serves solely as a workflow orchestration tool and does not embed any AI model capabilities. When users integrate AI models for specific business scenarios, they shall bear full responsibility for compliance obligations under the EU AI Act and other relevant regulatory frameworks.
+

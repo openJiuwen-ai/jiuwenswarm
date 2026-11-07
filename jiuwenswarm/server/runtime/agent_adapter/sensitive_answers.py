@@ -36,8 +36,7 @@ def redact_sensitive_answers(value: Any) -> Any:
     for answer in redacted:
         if not isinstance(answer, dict) or not _is_sensitive_question(answer.get("question")):
             continue
-        if isinstance(answer.get("selected_options"), list) and answer["selected_options"]:
-            answer["selected_options"] = [_MASK]
+        # Preset choices describe an action; only typed credential input is redacted.
         if isinstance(answer.get("custom_input"), str) and answer["custom_input"]:
             answer["custom_input"] = _MASK
     return redacted

@@ -12,3 +12,21 @@
 .login-dialog__body {
   padding: 1.5rem;
 }
+
+.login-dialog__logout-btn.btn.primary {
+  background: #191919;
+  border-color: #191919;
+  box-shadow: none;
+}
+
+.login-dialog__logout-btn.btn.primary:hover:not(:disabled) {
+  background: #1f2937;
+  border-color: #1f2937;
+  box-shadow: none;
+}
+
+.login-dialog__logout-btn.btn.primary:focus,
+.login-dialog__logout-btn.btn.primary:focus-visible,
+.login-dialog__logout-btn.btn.primary:active {
+  box-shadow: none;
+}

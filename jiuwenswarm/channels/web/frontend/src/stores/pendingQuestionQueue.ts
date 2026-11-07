@@ -16,7 +16,7 @@ export function pendingQuestionIdentity(payload: AskUserQuestionPayload): string
     const kind = permissionQuestionKind(payload.questions);
     if (!kind) return undefined;
     if (kind === 'smart') {
-      return `permission\u0000${boundedIdentity(payload.questions[0].card_id, 128)}`;
+      return `permission\u0000${boundedIdentity(payload.questions[0].card_id, 512)}`;
     }
   }
   const requestId = boundedIdentity(payload.request_id, 512);
@@ -34,7 +34,7 @@ export function permissionQuestionKind(
   if (questions.every((question) => !Object.prototype.hasOwnProperty.call(question, 'card_id'))) {
     return 'legacy';
   }
-  return questions.length === 1 && boundedIdentity(questions[0].card_id, 128) ? 'smart' : undefined;
+  return questions.length === 1 && boundedIdentity(questions[0].card_id, 512) ? 'smart' : undefined;
 }
 
 export function enqueuePendingQuestions(
@@ -74,6 +74,48 @@ export function consumePendingQuestion(
   return [...queue.slice(0, index), ...queue.slice(index + 1)];
 }
 
+// ask_user 答完后，后端 runtime 快照仍可能带着这道题（例如 Team 作答未清理
+// 根执行的等待状态），webClient 恢复执行时会把它当实时事件重新派发。按会话
+// 记住已答的 request_id，入队前过滤，避免同一道题反复弹出。
+const ASK_USER_SOURCE = 'ask_user_interrupt';
+const ANSWERED_QUESTION_LIMIT = 512;
+const answeredQuestionKeys = new Set<string>();
+
+function answeredQuestionKey(sessionId: string, requestId: string): string {
+  return `${sessionId}\u0000${requestId}`;
+}
+
+export function markQuestionsAnswered(sessionId: string, requestIds: Iterable<string>): void {
+  for (const raw of requestIds) {
+    const requestId = boundedIdentity(raw, 512);
+    if (!sessionId || !requestId) continue;
+    const key = answeredQuestionKey(sessionId, requestId);
+    answeredQuestionKeys.delete(key);
+    answeredQuestionKeys.add(key);
+  }
+  while (answeredQuestionKeys.size > ANSWERED_QUESTION_LIMIT) {
+    const oldest = answeredQuestionKeys.values().next().value;
+    if (oldest === undefined) break;
+    answeredQuestionKeys.delete(oldest);
+  }
+}
+
+export function isAnsweredAskUserQuestion(
+  sessionId: string,
+  payload: AskUserQuestionPayload,
+): boolean {
+  if (payload.source !== ASK_USER_SOURCE) return false;
+  const requestId = boundedIdentity(payload.request_id, 512);
+  return Boolean(requestId && answeredQuestionKeys.has(answeredQuestionKey(sessionId, requestId)));
+}
+
+export function dropAnsweredAskUserQuestions(
+  sessionId: string,
+  queue: readonly AskUserQuestionPayload[],
+): AskUserQuestionPayload[] {
+  return queue.filter((item) => !isAnsweredAskUserQuestion(sessionId, item));
+}
+
 export function bindPendingPermissionCard(
   answers: UserAnswer[],
   questions: AskUserQuestionPayload['questions'],
@@ -87,7 +129,7 @@ export function bindPendingPermissionCard(
       return bound;
     });
   }
-  const cardId = boundedIdentity(questions[0]?.card_id, 128);
+  const cardId = boundedIdentity(questions[0]?.card_id, 512);
   if (!cardId) return [];
   const answer = { ...answers[0] };
   delete answer.card_id;

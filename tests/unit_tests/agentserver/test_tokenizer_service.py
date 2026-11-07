@@ -352,6 +352,30 @@ def test_configured_known_models_get_default_tokenizer_specs():
     }
 
 
+def test_deepseek_flash_api_name_uses_the_v4_flash_tokenizer():
+    profiles = tokenizer_service_module.configured_tokenizer_profiles(
+        _config(
+            "/tmp/tokenizers",
+            models=[
+                {
+                    "model_client_config": {
+                        "client_provider": "OpenAI",
+                        "model_name": "deepseek-flash",
+                    }
+                }
+            ],
+        )
+    )
+
+    assert profiles[0].spec == {
+        "provider": "OpenAI",
+        "model": "deepseek-flash",
+        "id": "deepseek-ai/DeepSeek-V4-Flash",
+        "source": "huggingface",
+        "engine": "tokenizers",
+    }
+
+
 def test_deepseek_v4_pro_uses_v4_flash_as_its_only_family_fallback():
     profiles = tokenizer_service_module.configured_tokenizer_profiles(
         _config(

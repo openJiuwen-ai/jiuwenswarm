@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.im_platforms.telegram.telegram_connect import (
+from openjiuwen_protocol.message import Message
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.im_platforms.telegram.telegram_connect import (
     TelegramChannel,
     TelegramChannelConfig,
 )

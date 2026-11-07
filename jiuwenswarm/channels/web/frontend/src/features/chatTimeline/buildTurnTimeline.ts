@@ -89,6 +89,7 @@ export type RenderItem =
       /** 工作活动跨度（工具/思考/助手气泡），不含用户消息，供「已完成」耗时 */
       workStartMs: number;
       workEndMs: number;
+      isStarting: boolean;
       isLastTurn: boolean;
       hasWork: boolean;
       /** 时间行插在本轮内容顶部，接管了本轮顶部头像时为 true */
@@ -339,7 +340,10 @@ export function buildRenderItems(items: TimelineItem[], isTeamMode: boolean, isP
       continue;
     }
 
+    // 群广播和成员之间的回复要留在主会话里。收进活动卡片后，刷新页面就只剩用户提示词。
     if (isTeamMemberCollaborationMessage(item.message)) {
+      flushToolGroup(true);
+      pushMessage(item);
       continue;
     }
 
@@ -481,6 +485,7 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
   let hasWork = false;
   let turnId = 0;
   let executionTurnId = 0;
+  let isStarting = false;
   // 已完成轮次锚定该轮最后一个业务项：历史页从半轮开始时，后续只会在它前面
   // 补数据，末项不会变化。进行中轮次仍锚定 user，避免流式追加时反复换 key。
   let summaryAnchorKey: string | null = null;
@@ -522,6 +527,7 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
         endMs,
         workStartMs: Number.isFinite(workStartMs) ? workStartMs : startMs,
         workEndMs: Number.isFinite(workEndMs) ? workEndMs : endMs,
+        isStarting,
         isLastTurn,
         hasWork,
         showAvatar: false,
@@ -561,6 +567,7 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
       flush(false);
       turnId += 1;
       if (!item.message.supplementalInput) executionTurnId = turnId;
+      if (!item.message.supplementalInput) isStarting = item.message.isTimestampPending === true;
       // 空窗起点仅并入「设目标」消息开启的轮次：goal 插队时上一提问与设目标同属一次
       // 交互流程，本轮耗时从上一提问算起；普通新提问（哪怕只隔几分钟）与上一条空窗
       // 提问无关，不继承起点，避免把无关/跨会话等待算进本轮「已完成」耗时。
@@ -594,6 +601,7 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
     ) {
       flush(false);
       turnId += 1;
+      isStarting = false;
       startsOwnBlock = true;
     }
     // 记录本轮当前末项。历史前插不会改变它，因此已完成轮次身份保持稳定。
@@ -711,7 +719,10 @@ export function messageHasDeliverable(message: Message): boolean {
 }
 
 export function filterDeliverableExecutions(executions: ToolExecution[]): ToolExecution[] {
-  return executions.filter((execution) => isDeliverableToolName(execution.toolCall.name));
+  // MCP App views stay visible when the turn is folded, like sent files.
+  return executions.filter(
+    (execution) => isDeliverableToolName(execution.toolCall.name) || Boolean(execution.result?.mcpApp)
+  );
 }
 
 function isExecutionRunning(execution: ToolExecution): boolean {

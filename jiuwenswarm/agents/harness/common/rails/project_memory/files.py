@@ -856,6 +856,8 @@ def _git_path(cwd: Path, *args: str) -> Path | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=2,
         )
     except (OSError, subprocess.SubprocessError, ValueError):

@@ -1,24 +1,52 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { buildConfigSavePayload } from './settingsContract';
+import {
+  applyMultiModelCollaborationSnapshot,
+  getMultiModelCollaborationRevision,
+  isMultiModelCollaborationEnabled,
+  setMultiModelCollaborationEnabled,
+} from '../../multiModelCollaboration/featureConfig';
+import { setTeamScheduledDispatchEnabled } from '../../teamDispatch/featureConfig';
+import { setComfyuiWorkflowEnabled } from '../../designer/comfyuiFeatureConfig';
+import { setTeamOrganizationUiEnabled } from '../../teamOrganization/featureConfig';
+import { buildConfigSavePayload, parseConfigBoolean, SETTINGS_CONFIG_CHANGED_EVENT } from './settingsContract';
 import { useSettingsServices } from './SettingsServicesProvider';
 
 export function useSettingsConfig() {
-  const { isConnected, request, saveQueue } = useSettingsServices();
+  const { isConnected, request, saveQueue, onRecommendationEnabledChange } = useSettingsServices();
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const requestId = useRef(0);
-  const reload = useCallback(async () => {
+  const saveRevision = useRef(0);
+  const confirmedUpdates = useRef(new Map<string, { revision: number; value: unknown }>());
+  const reload = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     if (!isConnected) {
       setLoading(false);
       return;
     }
     const id = ++requestId.current;
-    setLoading(true);
+    const revisionAtLoad = saveRevision.current;
+    const featureRevisionAtLoad = getMultiModelCollaborationRevision();
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const next = await request<Record<string, unknown>>('config.get');
-      if (id === requestId.current) setConfig(next ?? {});
+      if (id === requestId.current) {
+        const visible = { ...(next ?? {}) };
+        delete visible.moa_jev_api_key;
+        delete visible.moa_jev_api_key_clear;
+        // A reconnect read that began before a save must not overwrite the confirmed write.
+        for (const [key, update] of confirmedUpdates.current) {
+          if (update.revision > revisionAtLoad) visible[key] = update.value;
+        }
+        if (!applyMultiModelCollaborationSnapshot(visible.multi_model_collaboration_enabled, featureRevisionAtLoad)) {
+          visible.multi_model_collaboration_enabled = isMultiModelCollaborationEnabled();
+        }
+        setConfig(visible);
+        setTeamOrganizationUiEnabled(visible.team_organization_ui_enabled);
+        setComfyuiWorkflowEnabled(visible.comfyui_workflow_enabled);
+        setTeamScheduledDispatchEnabled(visible.team_scheduled_dispatch_enabled);
+      }
     } catch (loadError) {
       if (id === requestId.current) setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
@@ -31,16 +59,49 @@ export function useSettingsConfig() {
       requestId.current += 1;
     };
   }, [reload]);
+  useEffect(() => {
+    const handleConfigChanged = () => {
+      void reload({ silent: true });
+    };
+    window.addEventListener(SETTINGS_CONFIG_CHANGED_EVENT, handleConfigChanged);
+    return () => window.removeEventListener(SETTINGS_CONFIG_CHANGED_EVENT, handleConfigChanged);
+  }, [reload]);
   const save = useCallback(
     async (updates: Record<string, string>, operation: string) => {
       const payload = buildConfigSavePayload(updates);
       const result = await saveQueue.enqueue(operation, () =>
         request('config.save_all', payload, { timeoutMs: 600_000 }),
       );
-      setConfig((current) => ({ ...current, ...payload.config }));
+      if ('team_organization_ui_enabled' in payload.config) {
+        setTeamOrganizationUiEnabled(payload.config.team_organization_ui_enabled);
+      }
+      if ('comfyui_workflow_enabled' in payload.config) {
+        setComfyuiWorkflowEnabled(payload.config.comfyui_workflow_enabled);
+      }
+      if ('team_scheduled_dispatch_enabled' in payload.config) {
+        setTeamScheduledDispatchEnabled(payload.config.team_scheduled_dispatch_enabled);
+      }
+      if ('multi_model_collaboration_enabled' in payload.config) {
+        setMultiModelCollaborationEnabled(payload.config.multi_model_collaboration_enabled);
+      }
+      if ('prompt_suggestion_enabled' in payload.config) {
+        onRecommendationEnabledChange?.(parseConfigBoolean(payload.config.prompt_suggestion_enabled));
+      }
+      // Do not retain write-only credentials or one-shot clear actions in settings state.
+      const { moa_jev_api_key: newJevKey, moa_jev_api_key_clear: clearJevKey, ...visibleUpdates } = payload.config;
+      if (newJevKey) visibleUpdates.moa_jev_api_key_configured = 'true';
+      if (clearJevKey === 'true') {
+        visibleUpdates.moa_jev_api_key_configured = 'false';
+        visibleUpdates.moa_jev_enabled = 'false';
+      }
+      const revision = ++saveRevision.current;
+      for (const [key, value] of Object.entries(visibleUpdates)) {
+        confirmedUpdates.current.set(key, { revision, value });
+      }
+      setConfig((current) => ({ ...current, ...visibleUpdates }));
       return result;
     },
-    [request, saveQueue],
+    [onRecommendationEnabledChange, request, saveQueue],
   );
   return { config, setConfig, loading, error, reload, save };
 }

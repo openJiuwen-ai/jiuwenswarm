@@ -26,7 +26,7 @@ endif
 # Target that is not a file -> always considered out of date.
 .PHONY: help install sync lock update-deps update-openjiuwen test test-unit test-integration \
 		test-cov lint lint-fix format typecheck clean build \
-		init start-debug start-debug-rebuild restart-debug stop \
+		init start-debug start-debug-rebuild restart-debug restart-debug-fast stop \
 		genai-semconv check-genai-semconv openjiuwen-semconv check-openjiuwen-semconv
 
 # The generator updates this repository's TypeScript constants and the sibling
@@ -113,6 +113,11 @@ restart-debug: ## Stop the debug service, then start it again with a frontend re
 	@printf "$(C_INFO)Restarting debug service (stop + full build)...$(C_RESET)\n"
 	$(UV) run jiuwenswarm-stop
 	$(UV) run jiuwenswarm-start debug
+
+restart-debug-fast: ## Stop the debug service, then start it again reusing the existing frontend build
+	@printf "$(C_INFO)Restarting debug service (stop + skip build)...$(C_RESET)\n"
+	$(UV) run jiuwenswarm-stop
+	$(UV) run jiuwenswarm-start debug --skip-build
 
 stop: ## Stop the background debug service started by start-debug
 	@printf "$(C_INFO)Stopping debug service...$(C_RESET)\n"

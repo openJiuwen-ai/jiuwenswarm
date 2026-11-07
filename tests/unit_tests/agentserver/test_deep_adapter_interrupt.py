@@ -9,11 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 from openjiuwen.harness.schema.task import TodoItem, TodoStatus
 
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, ToolInterruptEntry, ToolInterruptionState
 from openjiuwen.harness.schema.interaction import SendInputRequest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -170,15 +171,17 @@ def _nonpermission_core_state(
     tool_call_id: str = "call-control",
     metadata: dict | None = None,
 ) -> SimpleNamespace:
-    tool_call = SimpleNamespace(id=tool_call_id, name=tool_name)
-    request = InterruptRequest(metadata=metadata or {})
-    state = SimpleNamespace(
+    tool_call = ToolCall(id=tool_call_id, type="function", name=tool_name, arguments="{}")
+    request = InterruptRequest(interrupt_id=f"intr_{tool_call_id}", metadata=metadata or {})
+    state = ToolInterruptionState(
+        ai_message=AssistantMessage(content="", tool_calls=[tool_call]),
+        iteration=0,
         interrupted_tools={
-            tool_call_id: SimpleNamespace(
+            tool_call_id: ToolInterruptEntry(
                 tool_call=tool_call,
                 interrupt_requests={tool_call_id: request},
             )
-        }
+        },
     )
     return SimpleNamespace(
         get_session_id=MagicMock(return_value=session_id),
@@ -582,7 +585,7 @@ async def test_unconfirmed_interaction_cancel_quarantines_inflight_permission() 
     )
     answer = InteractiveInput()
     answer.update(
-        card.key.invocation_id,
+        card.key.tool_call_id,
         {
             "approved": True,
             "auto_confirm": False,
@@ -698,7 +701,7 @@ async def test_fresh_cutover_consumes_admitted_answer_before_late_callback() -> 
     )
     incoming = InteractiveInput()
     incoming.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("sess-race", incoming)
@@ -848,7 +851,7 @@ async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
     )
     resume_input = InteractiveInput()
     resume_input.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     resume_request = AgentRequest(
@@ -860,6 +863,7 @@ async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
             "query": "resume",
             "mode": "agent",
             "source": "permission_interrupt",
+            "answers": [{"selected_options": ["allow_once"]}],
         },
     )
 
@@ -879,17 +883,24 @@ async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
     resume_task = asyncio.create_task(prepare_resume())
     await resume_started.wait()
 
-    assert adapter._permission_dispatch.lock.locked() is True
-    assert resume_task.done() is False
-    allow_cutover.set()
-    fresh = await fresh_task
-    loop_session.get_state.return_value = None
-    adapter._permission_dispatch.release(fresh)
-    with pytest.raises(
-        RootPermissionQueueError,
-        match="interaction_resume_state_missing",
-    ):
-        await resume_task
+    try:
+        assert adapter._permission_dispatch.lock.locked() is True
+        assert resume_task.done() is False
+        allow_cutover.set()
+        fresh = await fresh_task
+        loop_session.get_state.return_value = None
+        adapter._permission_dispatch.release(fresh)
+        with pytest.raises(
+            RootPermissionQueueError,
+            match="interaction_resume_state_missing",
+        ):
+            await resume_task
+    finally:
+        allow_cutover.set()
+        for task in (fresh_task, resume_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(fresh_task, resume_task, return_exceptions=True)
 
 
 def test_callback_claim_retires_accepted_handoff_after_request_finalizes() -> None:
@@ -910,7 +921,7 @@ def test_callback_claim_retires_accepted_handoff_after_request_finalizes() -> No
     )
     incoming = InteractiveInput()
     incoming.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("sess-claimed-handoff", incoming)
@@ -969,7 +980,7 @@ async def test_permission_resume_preaccept_failure_restores_exact_pending_card(
     )
     incoming = InteractiveInput()
     incoming.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("sess-preaccept", incoming)
@@ -1206,23 +1217,43 @@ async def test_interaction_cancel_skips_pause_when_no_goal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_interaction_cancel_stops_scheduler_task_before_cancel_round() -> None:
+@pytest.mark.parametrize("channel,managed_cua,resumed", [
+    ("tui", False, False), ("video_tool", False, False),
+    ("video_tool", True, False), ("video_tool", True, True),
+])
+async def test_interaction_cancel_stops_scheduler_task_before_cancel_round(channel, managed_cua, resumed, monkeypatch) -> None:
     """A synchronous task_tool subagent must not block the interrupt response."""
+    from jiuwenswarm.server.runtime.video_task import execution
+    monkeypatch.setattr(execution, "close_task_output", AsyncMock())
     child_started = asyncio.Event()
     child_cancelled = asyncio.Event()
 
     async def _run_child() -> None:
+        from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
+            bind_managed_task_request,
+            register_cua_execution,
+            reset_managed_task_request,
+            unregister_cua_execution,
+        )
+
+        token = bind_managed_task_request("managed-cancel-test")
+        execution = register_cua_execution(
+            parent_session_id="sess-task-tool", sub_session_id="cua-child"
+        ) if managed_cua else None
         child_started.set()
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
             child_cancelled.set()
             raise
+        finally:
+            unregister_cua_execution(execution)
+            reset_managed_task_request(token)
 
     child_task = asyncio.create_task(_run_child())
     await child_started.wait()
 
-    scheduler = SimpleNamespace(_running_tasks={"round-task": (None, child_task)})
+    scheduler = SimpleNamespace(_running_tasks={} if resumed else {"round-task": (None, child_task)})
     instance = MagicMock()
     instance._interaction_started = True
     instance._loop_controller = SimpleNamespace(_task_scheduler=scheduler)
@@ -1241,15 +1272,25 @@ async def test_interaction_cancel_stops_scheduler_task_before_cancel_round() -> 
         _active_session_ids={"sess-task-tool": 1},
         _stream_event_rail=rail,
         _instance=instance,
+        _voice_agent_task_rail=SimpleNamespace(managed_tasks={
+            "sess-task-tool": SimpleNamespace(request_id="managed-cancel-test", native_executions=set()),
+        }),
     )
     adapter._cancel_pending_todos = AsyncMock(return_value=None)
     adapter._cancel_session_agent_tasks = AsyncMock(return_value=0)
 
     try:
+        request = _build_cancel_request("sess-task-tool")
+        request.channel_id = channel
+        if channel == "video_tool":
+            request.params["managed_task_request"] = "managed-cancel-test"
         response = await asyncio.wait_for(
-            adapter.process_interrupt(_build_cancel_request("sess-task-tool")),
+            adapter.process_interrupt(request),
             timeout=0.5,
         )
+        assert child_cancelled.is_set(), "Cancellation must reach execution before test cleanup"
+        repeated = await adapter.process_interrupt(request)
+        assert repeated.payload["success"] is True
     finally:
         if not child_task.done():
             child_task.cancel()
@@ -1257,7 +1298,8 @@ async def test_interaction_cancel_stops_scheduler_task_before_cancel_round() -> 
 
     assert child_task.cancelled()
     adapter._cancel_session_agent_tasks.assert_not_awaited()
-    instance.cancel_round.assert_awaited_once_with(reason="user_cancel")
+    assert instance.cancel_round.await_count == 2
+    instance.cancel_round.assert_awaited_with(reason="user_cancel")
     assert response.payload["event_type"] == "chat.interrupt_result"
     assert response.payload["success"] is True
 
@@ -1334,7 +1376,7 @@ async def test_unmark_cleans_rail_on_normal_completion() -> None:
 
     getattr(adapter, "_unmark_session_active")("sess_a")
 
-    rail.cleanup_session.assert_called_once_with("sess_a")
+    rail.cleanup_session.assert_called_once_with("sess_a", preserve_tool_call_ids=False)
     assert "sess_a" not in getattr(adapter, "_active_session_ids")
 
 
@@ -1531,7 +1573,7 @@ def test_permission_resume_dispatch_reuses_frozen_root_context() -> None:
     )
     incoming = InteractiveInput()
     incoming.update(
-        card.key.invocation_id,
+        card.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("root-session", incoming)

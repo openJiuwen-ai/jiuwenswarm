@@ -14,7 +14,7 @@ from openjiuwen.harness.tools.browser_move.playwright_runtime.config import (
     RuntimeSettings,
 )
 
-from jiuwenswarm.agents.harness.common.browser_config import resolve_chrome_path
+from jiuwenswarm.common.browser_config import resolve_chrome_path
 from jiuwenswarm.agents.harness.common.electron_sideview import (
     apply_session_sideview_target,
     electron_browser_selected,

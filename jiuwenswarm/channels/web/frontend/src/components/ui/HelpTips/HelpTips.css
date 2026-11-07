@@ -11,9 +11,14 @@
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-full);
   background: var(--color-surface-card);
-  cursor: help;
 }
 .ui-help-tips:focus-visible {
   outline: none;
   box-shadow: var(--effect-focus-ring);
+}
+
+.ui-help-tips--large {
+  width: 20px;
+  height: 20px;
+  font-size: var(--font-size-sm);
 }

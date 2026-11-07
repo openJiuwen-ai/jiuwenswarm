@@ -9,12 +9,17 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
+import os
+import re
 import shutil
+import signal
 import socket
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from jiuwenbox import perf_trace
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.policy import (
     NetworkMode,
@@ -61,6 +66,32 @@ class ResolvedNetworkRules:
     default_deny: bool = True
 
 
+_domain_ip_cache: dict[str, tuple[str, ...]] = {}
+
+
+def _resolve_one_domain(domain: str) -> tuple[str, ...]:
+    """Resolve one domain, reusing answers for later sandboxes."""
+    clean = domain.lstrip("*.")
+    cached = _domain_ip_cache.get(clean)
+    if cached is not None:
+        return cached
+    found: list[str] = []
+    try:
+        results = socket.getaddrinfo(clean, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        logger.warning("Failed to resolve domain: %s", domain)
+        _domain_ip_cache[clean] = ()
+        return ()
+    for _family, _, _, _, sockaddr in results:
+        ip = sockaddr[0]
+        if ip not in found:
+            found.append(ip)
+    resolved = tuple(found)
+    _domain_ip_cache[clean] = resolved
+    logger.debug("Resolved %s -> %s", domain, resolved)
+    return resolved
+
+
 def resolve_domains(domains: list[str]) -> list[str]:
     """Resolve domain names to IP addresses.
 
@@ -69,17 +100,9 @@ def resolve_domains(domains: list[str]) -> list[str]:
     """
     ips: list[str] = []
     for domain in domains:
-        # Strip wildcard prefix for resolution
-        clean = domain.lstrip("*.")
-        try:
-            results = socket.getaddrinfo(clean, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-            for family, _, _, _, sockaddr in results:
-                ip = sockaddr[0]
-                if ip not in ips:
-                    ips.append(ip)
-            logger.debug("Resolved %s -> %s", domain, ips[-len(results):])
-        except socket.gaierror:
-            logger.warning("Failed to resolve domain: %s", domain)
+        for ip in _resolve_one_domain(domain):
+            if ip not in ips:
+                ips.append(ip)
     return ips
 
 
@@ -137,14 +160,15 @@ def build_network_rules(policy: NetworkRulePolicy) -> ResolvedNetworkRules:
         *normalize_ips(policy.blocked_ips),
         *resolve_domains(policy.blocked_domains),
     ]
-    rules.allowed_ips = [
-        *normalize_ips(policy.allowed_ips),
-        *resolve_domains(policy.allowed_domains),
-    ]
-
-    # Remove entries that appear in both allowed and blocked (blocked wins).
-    blocked_set = set(rules.blocked_ips)
-    rules.allowed_ips = [ip for ip in rules.allowed_ips if ip not in blocked_set]
+    # ``default: allow`` never installs allowed_* entries. Skip that DNS
+    # work so sandbox create does not block on unused domain lookups.
+    if rules.default_deny:
+        rules.allowed_ips = [
+            *normalize_ips(policy.allowed_ips),
+            *resolve_domains(policy.allowed_domains),
+        ]
+        blocked_set = set(rules.blocked_ips)
+        rules.allowed_ips = [ip for ip in rules.allowed_ips if ip not in blocked_set]
 
     return rules
 
@@ -207,17 +231,12 @@ def _run_iptables_binary(
     return result
 
 
-@lru_cache(maxsize=128)
-def _select_iptables_binary(
-    ip_version: int,
-    namespace: str | None = None,
-    table: str = "filter",
-) -> str:
-    """Return a working iptables backend for the target namespace.
+@lru_cache(maxsize=8)
+def _cached_iptables_binary(ip_version: int, table: str) -> str:
+    """Probe iptables once per process on the host.
 
-    Some distributions default iptables to the nf_tables backend,
-    while older or constrained kernels only support legacy xtables. Probe both
-    and keep the sandbox creation failure explicit if neither backend works.
+    The selected binary is a PATH entry. Re-probing inside every new
+    netns repeats ``ip netns exec`` without changing the answer.
     """
     failures: list[str] = []
     probe_args = (
@@ -230,21 +249,32 @@ def _select_iptables_binary(
             binary,
             probe_args,
             check=False,
-            namespace=namespace,
+            namespace=None,
         )
         if result.returncode == 0:
             return binary
-        failures.append(_format_command_error(
-            [IP_BINARY, "netns", "exec", namespace, binary, *probe_args]
-            if namespace
-            else [binary, *probe_args],
-            result,
-        ))
+        failures.append(_format_command_error([binary, *probe_args], result))
 
     family = "IPv6" if ip_version == 6 else "IPv4"
-    target = f" in netns {namespace}" if namespace else ""
     detail = " ".join(failures) if failures else "No iptables binary found."
-    raise NetworkSetupError(f"No working {family} iptables {table} backend{target}. {detail}")
+    raise NetworkSetupError(f"No working {family} iptables {table} backend. {detail}")
+
+
+def _select_iptables_binary(
+    ip_version: int,
+    namespace: str | None = None,
+    table: str = "filter",
+) -> str:
+    """Return a working iptables backend.
+
+    ``namespace`` is accepted for existing callers. Selection itself runs
+    on the host and is cached for the process.
+    """
+    del namespace
+    return _cached_iptables_binary(ip_version, table)
+
+
+_select_iptables_binary.cache_clear = _cached_iptables_binary.cache_clear  # type: ignore[attr-defined]
 
 
 def run_iptables(
@@ -293,14 +323,20 @@ def _run_iptables_both(
         run_iptables(args, check=check, namespace=namespace, ip_version=6)
 
 
-@lru_cache(maxsize=128)
 def _ip6tables_available(namespace: str | None = None) -> bool:
-    """Return whether ip6tables can manage rules in the target namespace."""
+    """Return whether ip6tables works. Probed once on the host."""
+    del namespace
+    return _ip6tables_available_on_host()
+
+
+@lru_cache(maxsize=1)
+def _ip6tables_available_on_host() -> bool:
+    """Return whether the host ip6tables backend can list the filter table."""
     try:
         result = run_iptables(
             ["-L", "OUTPUT", "-n"],
             check=False,
-            namespace=namespace,
+            namespace=None,
             ip_version=6,
         )
     except (OSError, NetworkSetupError) as exc:
@@ -310,9 +346,8 @@ def _ip6tables_available(namespace: str | None = None) -> bool:
     if result.returncode == 0:
         return True
 
-    target = f" in netns {namespace}" if namespace else ""
     stderr = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-    logger.warning("Skipping IPv6 firewall rules%s because ip6tables is unavailable: %s", target, stderr)
+    logger.warning("Skipping IPv6 firewall rules because ip6tables is unavailable: %s", stderr)
     return False
 
 
@@ -329,7 +364,98 @@ def _run_ip(
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
 
+def _run_ip_batch(lines: list[str], *, namespace: str | None = None) -> None:
+    """Apply several ``ip`` commands in one process."""
+    if not lines:
+        return
+    cmd = [IP_BINARY]
+    if namespace:
+        cmd.extend(["-n", namespace])
+    cmd.extend(["-batch", "-"])
+    script = "\n".join(lines) + "\n"
+    logger.debug("ip batch namespace=%s: %s", namespace or "host", " ; ".join(lines))
+    try:
+        result = subprocess.run(
+            cmd,
+            input=script,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise NetworkSetupError(
+            f"Required binary '{exc.filename or IP_BINARY}' is not installed."
+        ) from exc
+    if result.returncode != 0:
+        raise NetworkSetupError(_format_command_error(cmd, result))
+
+
+def _iptables_restore_binary(ip_version: int) -> str | None:
+    binary = _select_iptables_binary(ip_version, table="filter")
+    return shutil.which(f"{os.path.basename(binary)}-restore")
+
+
+def _can_iptables_restore(ip_version: int) -> bool:
+    try:
+        return _iptables_restore_binary(ip_version) is not None
+    except NetworkSetupError:
+        return False
+
+
+def _restore_script(tables: dict[str, list[str]]) -> str:
+    parts: list[str] = []
+    for table, lines in tables.items():
+        if not lines:
+            continue
+        parts.append(f"*{table}")
+        parts.extend(lines)
+        parts.append("COMMIT")
+    if not parts:
+        return ""
+    return "\n".join(parts) + "\n"
+
+
+def _run_iptables_restore(
+    script: str,
+    *,
+    ip_version: int,
+    namespace: str | None,
+    noflush: bool = False,
+) -> None:
+    """Program a ruleset with one iptables-restore process."""
+    if not script:
+        return
+    binary = _iptables_restore_binary(ip_version)
+    if binary is None:
+        raise NetworkSetupError(f"No iptables-restore binary for IPv{ip_version}")
+    cmd = [binary]
+    if noflush:
+        cmd.append("--noflush")
+    if namespace:
+        cmd = [IP_BINARY, "netns", "exec", namespace, *cmd]
+    logger.debug("iptables-restore ipv%s namespace=%s", ip_version, namespace or "host")
+    try:
+        result = subprocess.run(
+            cmd,
+            input=script,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise NetworkSetupError(
+            f"Required binary '{exc.filename or cmd[0]}' is not installed."
+        ) from exc
+    if result.returncode != 0:
+        raise NetworkSetupError(_format_command_error(cmd, result))
+
+
 NETNS_NAME_PREFIX = "jbx-"
+# Host/sandbox veth names are ``jwbH`` / ``jwbS`` plus sha256(sandbox_id)[:8].
+_JWB_VETH_RE = re.compile(r"^jwb[HS][0-9a-f]{8}$")
+# Set to a non-empty value to skip the startup/shutdown orphan sweep. Intended
+# for tests that must not touch the host network namespace.
+ENV_SKIP_ORPHAN_NET_CLEANUP = "JIUWENBOX_SKIP_ORPHAN_NET_CLEANUP"
 
 
 def netns_name_for_sandbox(sandbox_id: str) -> str:
@@ -338,17 +464,15 @@ def netns_name_for_sandbox(sandbox_id: str) -> str:
 
 
 def namespace_exists(namespace: str) -> bool:
-    """Check whether a named network namespace already exists."""
-    result = subprocess.run(
-        [IP_BINARY, "netns", "list"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return False
+    """Check whether a named network namespace already exists.
 
-    return any(line.split(maxsplit=1)[0] == namespace for line in result.stdout.splitlines())
+    ``ip netns`` keeps one file per namespace under ``/run/netns``. A stat
+    avoids listing every namespace on each sandbox create.
+    """
+    for root in ("/run/netns", "/var/run/netns"):
+        if os.path.exists(os.path.join(root, namespace)):
+            return True
+    return False
 
 
 def create_named_namespace(namespace: str) -> None:
@@ -364,6 +488,51 @@ def delete_named_namespace(namespace: str) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def rename_named_namespace(old: str, new: str) -> None:
+    """Point ``new`` at the live namespace currently named ``old``.
+
+    Processes already joined to the namespace keep their network. ``ip netns``
+    tracks names as bind mounts under ``/run/netns``, so the rename bind-mounts
+    that file onto the new name and drops the old mount.
+    """
+    if old == new:
+        return
+    old_path = ""
+    for root in ("/run/netns", "/var/run/netns"):
+        candidate = os.path.join(root, old)
+        if os.path.exists(candidate):
+            old_path = candidate
+            break
+    if not old_path:
+        raise NetworkSetupError(f"network namespace {old!r} does not exist")
+    new_path = os.path.join(os.path.dirname(old_path), new)
+    if os.path.exists(new_path):
+        delete_named_namespace(new)
+    descriptor = os.open(new_path, os.O_CREAT | os.O_RDWR, 0o644)
+    os.close(descriptor)
+    try:
+        subprocess.run(
+            ["/bin/mount", "--bind", old_path, new_path],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["/bin/umount", old_path],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise NetworkSetupError(
+            f"failed to rename network namespace {old!r} to {new!r}: {exc.stderr}"
+        ) from exc
+    try:
+        os.remove(old_path)
+    except OSError:
+        logger.debug("Leftover netns name %s after rename", old_path, exc_info=True)
 
 
 def setup_loopback(namespace: str | None = None) -> None:
@@ -422,7 +591,29 @@ def _interface_names(sandbox_id: str) -> tuple[str, str]:
     return f"jwbH{digest}", f"jwbS{digest}"
 
 
-def _route_networks() -> list[ipaddress.IPv4Network]:
+_cached_routes: list[ipaddress.IPv4Network] | None = None
+_route_lock = threading.Lock()
+
+
+def _invalidate_route_cache() -> None:
+    global _cached_routes
+    with _route_lock:
+        _cached_routes = None
+
+
+def _remember_route(subnet: str) -> None:
+    network = ipaddress.ip_network(subnet, strict=False)
+    with _route_lock:
+        routes = _load_route_cache()
+        if network not in routes:
+            routes.append(network)
+
+
+def _load_route_cache() -> list[ipaddress.IPv4Network]:
+    """Return the process-local route cache. Caller holds ``_route_lock``."""
+    global _cached_routes
+    if _cached_routes is not None:
+        return _cached_routes
     result = subprocess.run(
         [IP_BINARY, "-4", "route", "show", "table", "all"],
         capture_output=True,
@@ -441,7 +632,13 @@ def _route_networks() -> list[ipaddress.IPv4Network]:
             networks.append(ipaddress.ip_network(parts[0], strict=False))
         except ValueError:
             continue
+    _cached_routes = networks
     return networks
+
+
+def _route_networks() -> list[ipaddress.IPv4Network]:
+    with _route_lock:
+        return list(_load_route_cache())
 
 
 def _resolve_uplink_pools(subnet: str) -> list[ipaddress.IPv4Network]:
@@ -495,15 +692,23 @@ def _allocate_uplink_block(
 
     for pool in pools:
         region = _uplink_search_region(pool, sandbox_id, slot)
-        blocks = list(region.subnets(new_prefix=_UPLINK_BLOCK_PREFIX))
-        if not blocks:
+        if region.prefixlen > _UPLINK_BLOCK_PREFIX:
+            continue
+        block_count = 1 << (_UPLINK_BLOCK_PREFIX - region.prefixlen)
+        if block_count <= 0:
             continue
 
         hash_val = int(hashlib.sha256(f"{sandbox_id}:{slot}".encode()).hexdigest(), 16)
-        start_idx = hash_val % len(blocks)
-        scan_limit = min(len(blocks), _MAX_UPLINK_BLOCK_SCAN)
+        start_idx = hash_val % block_count
+        scan_limit = min(block_count, _MAX_UPLINK_BLOCK_SCAN)
+        host_bits = 32 - _UPLINK_BLOCK_PREFIX
+        region_base = int(region.network_address)
         for offset in range(scan_limit):
-            block = blocks[(start_idx + offset) % len(blocks)]
+            index = (start_idx + offset) % block_count
+            block = ipaddress.IPv4Network((
+                region_base + (index << host_bits),
+                _UPLINK_BLOCK_PREFIX,
+            ))
             if not _is_usable_uplink_block(block, pool, routes):
                 continue
             gateway = block.network_address + 1
@@ -521,9 +726,15 @@ def resolve_uplink_subnet(subnet: str) -> str:
     return str(_resolve_uplink_pools(subnet)[0])
 
 
+_cached_uplink_interface: str | None = None
+
+
 def resolve_uplink_interface(interface: str) -> str:
     if interface.strip():
         return interface.strip()
+    global _cached_uplink_interface
+    if _cached_uplink_interface:
+        return _cached_uplink_interface
     result = subprocess.run(
         [IP_BINARY, "route", "show", "default"],
         capture_output=True,
@@ -535,7 +746,8 @@ def resolve_uplink_interface(interface: str) -> str:
     for line in result.stdout.splitlines():
         parts = line.split()
         if "dev" in parts:
-            return parts[parts.index("dev") + 1]
+            _cached_uplink_interface = parts[parts.index("dev") + 1]
+            return _cached_uplink_interface
     raise NetworkSetupError("No default route interface found for uplink")
 
 
@@ -719,12 +931,59 @@ def _release_management_port_block(subnet: str, port: int) -> None:
     _mgmt_refcounts[key] = count - 1
 
 
+_host_firewall_lock = threading.Lock()
+
+
+def _insert_line(args: list[str]) -> str:
+    return "-I " + " ".join(args)
+
+
+def apply_uplink_firewall(handle: UplinkHandle) -> None:
+    """Install host FORWARD, NAT, and management-port rules for one uplink.
+
+    New rules go in through one ``iptables-restore --noflush`` when that
+    binary exists. Refcounts match the previous per-rule insert path.
+    """
+    ports = list(handle.management_ports)
+    with _host_firewall_lock:
+        if not _can_iptables_restore(4):
+            for rule in handle.forward_rules:
+                _ensure_iptables_rule(rule)
+            if handle.nat:
+                _acquire_nat(handle.subnet, handle.uplink_if)
+            for port in ports:
+                _acquire_management_port_block(handle.subnet, port)
+            return
+
+        filter_lines = [_insert_line(rule) for rule in handle.forward_rules]
+        nat_lines: list[str] = []
+        nat_key = (handle.subnet, handle.uplink_if)
+        if handle.nat and _nat_refcounts.get(nat_key, 0) == 0:
+            nat_lines.append(
+                f"-I POSTROUTING -s {handle.subnet} -o {handle.uplink_if} -j MASQUERADE"
+            )
+        for port in ports:
+            if _mgmt_refcounts.get((handle.subnet, port), 0) == 0:
+                filter_lines.append(
+                    f"-I INPUT -s {handle.subnet} -p tcp --dport {port} -j REJECT"
+                )
+        script = _restore_script({"filter": filter_lines, "nat": nat_lines})
+        if script:
+            _run_iptables_restore(script, ip_version=4, namespace=None, noflush=True)
+        if handle.nat:
+            _nat_refcounts[nat_key] = _nat_refcounts.get(nat_key, 0) + 1
+        for port in ports:
+            key = (handle.subnet, port)
+            _mgmt_refcounts[key] = _mgmt_refcounts.get(key, 0) + 1
+
+
 def setup_network_uplink(
     namespace: str,
     sandbox_id: str,
     uplink: NetworkUplinkPolicy,
     *,
     management_ports: list[int] | None = None,
+    apply_firewall: bool = True,
 ) -> UplinkHandle:
     """Attach a veth uplink and optional NAT for an isolated sandbox netns."""
     ensure_ip_forward()
@@ -732,31 +991,36 @@ def setup_network_uplink(
     host_if, sandbox_if = _interface_names(sandbox_id)
     last_error: Exception | None = None
     subnet = ""
+    gateway: ipaddress.IPv4Address | None = None
+    sandbox_ip: ipaddress.IPv4Address | None = None
 
     for slot in range(64):
-        gateway, sandbox_ip, prefix_len, subnet = _allocate_uplink_block(
-            sandbox_id,
-            uplink.subnet,
-            slot,
-        )
+        with perf_trace.span("uplink.allocate", sandbox_id):
+            gateway, sandbox_ip, prefix_len, subnet = _allocate_uplink_block(
+                sandbox_id,
+                uplink.subnet,
+                slot,
+            )
         host_addr = f"{gateway}/{prefix_len}"
         sandbox_addr = f"{sandbox_ip}/{prefix_len}"
         try:
-            _run_ip(["link", "del", host_if], check=False)
-            _run_ip([
-                "link", "add", host_if, "type", "veth",
-                "peer", "name", sandbox_if, "netns", namespace,
-            ])
-            _run_ip(["addr", "add", host_addr, "dev", host_if])
-            _run_ip(["link", "set", host_if, "up"])
-            _run_ip(["addr", "add", sandbox_addr, "dev", sandbox_if], namespace=namespace)
-            _run_ip(["link", "set", sandbox_if, "up"], namespace=namespace)
-            _run_ip([
-                "route", "add", "default", "via", str(gateway), "dev", sandbox_if,
-            ], namespace=namespace)
+            with perf_trace.span("uplink.veth_host", sandbox_id):
+                _run_ip_batch([
+                    f"link add {host_if} type veth peer name {sandbox_if} netns {namespace}",
+                    f"addr add {host_addr} dev {host_if}",
+                    f"link set {host_if} up",
+                ])
+            with perf_trace.span("uplink.veth_netns", sandbox_id):
+                _run_ip_batch([
+                    "link set lo up",
+                    f"addr add {sandbox_addr} dev {sandbox_if}",
+                    f"link set {sandbox_if} up",
+                    f"route add default via {gateway} dev {sandbox_if}",
+                ], namespace=namespace)
             break
         except (subprocess.CalledProcessError, NetworkSetupError) as exc:
             last_error = exc
+            _invalidate_route_cache()
             _run_ip(["link", "del", host_if], check=False)
             continue
     else:
@@ -764,6 +1028,7 @@ def setup_network_uplink(
             f"Failed to allocate uplink addresses for sandbox {sandbox_id}: {last_error}"
         ) from last_error
 
+    _remember_route(subnet)
     forward_rules = [
         ["FORWARD", "-i", host_if, "-j", "ACCEPT"],
         [
@@ -771,30 +1036,22 @@ def setup_network_uplink(
             "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT",
         ],
     ]
-    applied_forward_rules: list[list[str]] = []
-    nat_acquired = False
-    protected_ports: list[int] = []
-    try:
-        for rule in forward_rules:
-            _ensure_iptables_rule(rule)
-            applied_forward_rules.append(rule)
-
-        if uplink.nat:
-            _acquire_nat(subnet, uplink_if)
-            nat_acquired = True
-
-        for port in management_ports or []:
-            _acquire_management_port_block(subnet, port)
-            protected_ports.append(port)
-    except Exception:
-        for port in reversed(protected_ports):
-            _release_management_port_block(subnet, port)
-        if nat_acquired:
-            _release_nat(subnet, uplink_if)
-        for rule in reversed(applied_forward_rules):
-            _remove_iptables_rule(rule)
-        _run_ip(["link", "del", host_if], check=False)
-        raise
+    handle = UplinkHandle(
+        host_if=host_if,
+        sandbox_if=sandbox_if,
+        subnet=subnet,
+        uplink_if=uplink_if,
+        nat=uplink.nat,
+        sandbox_ip=str(sandbox_ip),
+        management_ports=list(management_ports or []),
+        forward_rules=forward_rules,
+    )
+    if apply_firewall:
+        try:
+            apply_uplink_firewall(handle)
+        except Exception:
+            _run_ip(["link", "del", host_if], check=False)
+            raise
 
     logger.info(
         "Network uplink applied for sandbox %s: host_if=%s sandbox_if=%s "
@@ -807,16 +1064,7 @@ def setup_network_uplink(
         uplink_if,
         uplink.nat,
     )
-    return UplinkHandle(
-        host_if=host_if,
-        sandbox_if=sandbox_if,
-        subnet=subnet,
-        uplink_if=uplink_if,
-        nat=uplink.nat,
-        sandbox_ip=str(sandbox_ip),
-        management_ports=protected_ports,
-        forward_rules=applied_forward_rules,
-    )
+    return handle
 
 
 def teardown_network_uplink(handle: UplinkHandle) -> None:
@@ -827,6 +1075,248 @@ def teardown_network_uplink(handle: UplinkHandle) -> None:
     for port in handle.management_ports:
         _release_management_port_block(handle.subnet, port)
     _run_ip(["link", "del", handle.host_if], check=False)
+
+
+def is_jiuwenbox_veth_name(name: str) -> bool:
+    """Return True for host-side ``jwbH********`` / ``jwbS********`` veth names."""
+    return bool(_JWB_VETH_RE.fullmatch(name))
+
+
+def parse_ip_o_link_names(stdout: str) -> list[str]:
+    """Parse ``ip -o link show`` names, stripping the ``@ifN`` veth peer suffix."""
+    names: list[str] = []
+    for line in stdout.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 2:
+            continue
+        raw = parts[1].strip()
+        if not raw:
+            continue
+        names.append(raw.split("@", 1)[0])
+    return names
+
+
+def parse_netns_list_names(stdout: str) -> list[str]:
+    """Parse ``ip netns list`` names (first token; ignores ``(id: N)``)."""
+    names: list[str] = []
+    for line in stdout.splitlines():
+        token = line.split(maxsplit=1)[0] if line.strip() else ""
+        if token:
+            names.append(token)
+    return names
+
+
+def parse_netns_pids(stdout: str) -> list[int]:
+    """Parse ``ip netns pids`` output into PIDs."""
+    pids: list[int] = []
+    for line in stdout.splitlines():
+        token = line.strip()
+        if token.isdigit():
+            pids.append(int(token))
+    return pids
+
+
+def parse_forward_rule_args(stdout: str, interfaces: set[str]) -> list[list[str]]:
+    """Extract ``iptables -S FORWARD`` rules that reference ``interfaces``."""
+    rules: list[list[str]] = []
+    if not interfaces:
+        return rules
+    for line in stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[0] != "-A" or parts[1] != "FORWARD":
+            continue
+        if any(token in interfaces for token in parts[2:]):
+            rules.append(parts[1:])
+    return rules
+
+
+@dataclass
+class OrphanNetworkCleanupResult:
+    """Counts from a best-effort sweep of leftover jiuwenbox host network state."""
+
+    namespaces: list[str] = field(default_factory=list)
+    interfaces: list[str] = field(default_factory=list)
+    killed_pids: int = 0
+    deleted_namespaces: int = 0
+    deleted_interfaces: int = 0
+    deleted_forward_rules: int = 0
+    skipped: bool = False
+
+
+def cleanup_orphaned_uplinks(*, reason: str = "manual") -> OrphanNetworkCleanupResult:
+    """Remove leftover jiuwenbox veths / netns after a crash or SIGKILL.
+
+    Isolated sandboxes create kernel objects (``jwbH*`` / ``jwbS*`` veths and
+    ``jbx-*`` named netns) that survive the jiuwenbox-server process. Per-sandbox
+    ``teardown_network_uplink`` only runs if lifespan shutdown completes; this
+    sweep is the recovery path for ungraceful stops.
+
+    Assumes a single jiuwenbox instance per host network namespace. Safe to
+    call when nothing is leftover. Never raises: every step is best-effort.
+    """
+    result = OrphanNetworkCleanupResult()
+    if os.environ.get(ENV_SKIP_ORPHAN_NET_CLEANUP, "").strip():
+        result.skipped = True
+        logger.debug("Skipping orphan network cleanup (%s): %s is set", reason, ENV_SKIP_ORPHAN_NET_CLEANUP)
+        return result
+
+    try:
+        result.namespaces = [
+            name
+            for name in _list_named_namespace_names()
+            if name.startswith(NETNS_NAME_PREFIX)
+        ]
+        result.interfaces = [
+            name
+            for name in _list_host_link_names()
+            if is_jiuwenbox_veth_name(name)
+        ]
+    except FileNotFoundError:
+        logger.debug("Skipping orphan network cleanup (%s): ip binary is missing", reason)
+        return result
+    except Exception:
+        logger.warning("Failed to list leftover jiuwenbox network objects (%s)", reason, exc_info=True)
+        return result
+
+    if not result.namespaces and not result.interfaces:
+        logger.debug("Orphan network cleanup (%s): nothing leftover", reason)
+        return result
+
+    logger.info(
+        "Orphan network cleanup (%s): leftover netns=%s veth=%s",
+        reason,
+        result.namespaces,
+        result.interfaces,
+    )
+
+    for namespace in result.namespaces:
+        result.killed_pids += _kill_namespace_processes(namespace)
+
+    # Deleting the host veth removes both ends and is what clears ``ifconfig``.
+    for iface in result.interfaces:
+        if _delete_host_link(iface):
+            result.deleted_interfaces += 1
+
+    result.deleted_forward_rules = _delete_stale_forward_rules(set(result.interfaces))
+
+    for namespace in result.namespaces:
+        if _delete_named_namespace_best_effort(namespace):
+            result.deleted_namespaces += 1
+
+    leftover = [
+        name
+        for name in _list_host_link_names_best_effort()
+        if is_jiuwenbox_veth_name(name)
+    ]
+    for iface in leftover:
+        if _delete_host_link(iface):
+            result.deleted_interfaces += 1
+
+    logger.info(
+        "Orphan network cleanup (%s) finished: deleted_veth=%d deleted_netns=%d "
+        "killed_pids=%d deleted_forward_rules=%d",
+        reason,
+        result.deleted_interfaces,
+        result.deleted_namespaces,
+        result.killed_pids,
+        result.deleted_forward_rules,
+    )
+    return result
+
+
+def _list_named_namespace_names() -> list[str]:
+    result = subprocess.run(
+        [IP_BINARY, "netns", "list"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return parse_netns_list_names(result.stdout)
+
+
+def _list_host_link_names() -> list[str]:
+    result = _run_ip(["-o", "link", "show"], check=False)
+    if result.returncode != 0:
+        return []
+    return parse_ip_o_link_names(result.stdout)
+
+
+def _list_host_link_names_best_effort() -> list[str]:
+    try:
+        return _list_host_link_names()
+    except Exception:
+        return []
+
+
+def _kill_namespace_processes(namespace: str) -> int:
+    try:
+        result = subprocess.run(
+            [IP_BINARY, "netns", "pids", namespace],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return 0
+    if result.returncode != 0:
+        return 0
+    killed = 0
+    for pid in parse_netns_pids(result.stdout):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed += 1
+        except OSError:
+            continue
+    return killed
+
+
+def _delete_host_link(name: str) -> bool:
+    try:
+        result = _run_ip(["link", "del", name], check=False)
+    except FileNotFoundError:
+        return False
+    except Exception:
+        logger.debug("Failed to delete leftover veth %s", name, exc_info=True)
+        return False
+    return result.returncode == 0
+
+
+def _delete_named_namespace_best_effort(namespace: str) -> bool:
+    try:
+        result = subprocess.run(
+            [IP_BINARY, "netns", "delete", namespace],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    except Exception:
+        logger.debug("Failed to delete leftover netns %s", namespace, exc_info=True)
+        return False
+    return result.returncode == 0
+
+
+def _delete_stale_forward_rules(interfaces: set[str]) -> int:
+    if not interfaces:
+        return 0
+    deleted = 0
+    try:
+        listed = run_iptables(["-S", "FORWARD"], check=False)
+    except Exception:
+        logger.debug("Failed to list FORWARD rules during orphan cleanup", exc_info=True)
+        return 0
+    if listed.returncode != 0:
+        return 0
+    for rule in parse_forward_rule_args(listed.stdout, interfaces):
+        try:
+            _remove_iptables_rule(rule)
+            deleted += 1
+        except Exception:
+            logger.debug("Failed to drop stale FORWARD rule %s", rule, exc_info=True)
+    return deleted
 
 
 def _apply_egress_rules(rules: ResolvedNetworkRules, namespace: str | None = None) -> None:
@@ -920,15 +1410,159 @@ def _apply_ingress_rules(rules: ResolvedNetworkRules, namespace: str | None = No
     )
 
 
+def _append_family(
+    v4: list[str],
+    v6: list[str],
+    args: list[str],
+    ip_value: str | None = None,
+) -> None:
+    line = "-A " + " ".join(args)
+    if ip_value is None:
+        v4.append(line)
+        v6.append(line)
+        return
+    if _ip_version(ip_value) == 6:
+        v6.append(line)
+    else:
+        v4.append(line)
+
+
+def _render_direction_rules(
+    v4: list[str],
+    v6: list[str],
+    egress: ResolvedNetworkRules,
+    ingress: ResolvedNetworkRules,
+) -> None:
+    """Build the same filter rules the per-command path used to append."""
+    _append_family(v4, v6, ["OUTPUT", "-o", "lo", "-j", "ACCEPT"])
+    _append_family(
+        v4, v6,
+        ["OUTPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+    )
+    for port in egress.blocked_ports:
+        _append_family(
+            v4, v6,
+            ["OUTPUT", "-p", "tcp", "--dport", str(port), "-j", "DROP"],
+        )
+    if not egress.default_deny:
+        for ip in egress.blocked_ips:
+            _append_family(v4, v6, ["OUTPUT", "-d", ip, "-j", "DROP"], ip)
+    else:
+        _append_family(v4, v6, ["OUTPUT", "-p", "udp", "--dport", "53", "-j", "ACCEPT"])
+        _append_family(v4, v6, ["OUTPUT", "-p", "tcp", "--dport", "53", "-j", "ACCEPT"])
+        for ip in egress.blocked_ips:
+            _append_family(v4, v6, ["OUTPUT", "-d", ip, "-j", "DROP"], ip)
+        for ip in egress.allowed_ips:
+            if egress.allowed_ports:
+                for port in egress.allowed_ports:
+                    _append_family(
+                        v4, v6,
+                        [
+                            "OUTPUT", "-d", ip, "-p", "tcp",
+                            "--dport", str(port), "-j", "ACCEPT",
+                        ],
+                        ip,
+                    )
+            else:
+                _append_family(v4, v6, ["OUTPUT", "-d", ip, "-j", "ACCEPT"], ip)
+        _append_family(v4, v6, ["OUTPUT", "-j", "DROP"])
+
+    _append_family(
+        v4, v6,
+        ["INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+    )
+    for ip in ingress.blocked_ips:
+        _append_family(v4, v6, ["INPUT", "-s", ip, "-j", "DROP"], ip)
+    for port in ingress.blocked_ports:
+        _append_family(
+            v4, v6,
+            ["INPUT", "-p", "tcp", "--dport", str(port), "-j", "DROP"],
+        )
+    if not ingress.default_deny:
+        _append_family(v4, v6, ["INPUT", "-j", "ACCEPT"])
+        return
+
+    if ingress.allowed_ips and ingress.allowed_ports:
+        for ip in ingress.allowed_ips:
+            for port in ingress.allowed_ports:
+                _append_family(
+                    v4, v6,
+                    [
+                        "INPUT", "-s", ip, "-p", "tcp",
+                        "--dport", str(port), "-j", "ACCEPT",
+                    ],
+                    ip,
+                )
+    elif ingress.allowed_ips:
+        for ip in ingress.allowed_ips:
+            _append_family(v4, v6, ["INPUT", "-s", ip, "-j", "ACCEPT"], ip)
+    elif ingress.allowed_ports:
+        for port in ingress.allowed_ports:
+            _append_family(
+                v4, v6,
+                ["INPUT", "-p", "tcp", "--dport", str(port), "-j", "ACCEPT"],
+            )
+    _append_family(v4, v6, ["INPUT", "-j", "DROP"])
+
+
+def _ipv6_restore_required(
+    egress_rules: ResolvedNetworkRules,
+    ingress_rules: ResolvedNetworkRules,
+) -> bool:
+    """Return whether the IPv6 filter table would differ from default ACCEPT.
+
+    ``default: allow`` with no blocked ports and no IPv6 destinations only
+    emits ACCEPT rules. The chain policy is already ACCEPT, so running
+    ip6tables-restore does not change what the sandbox can reach.
+    """
+    for rules in (egress_rules, ingress_rules):
+        if rules.default_deny or rules.blocked_ports:
+            return True
+        for ip in rules.blocked_ips:
+            if _ip_version(ip) == 6:
+                return True
+    return False
+
+
 def apply_iptables_rules(
     egress_rules: ResolvedNetworkRules,
     ingress_rules: ResolvedNetworkRules,
     namespace: str | None = None,
+    *,
+    bring_up_loopback: bool = True,
 ) -> None:
     """Apply iptables rules inside the current (unshared) network namespace."""
-    setup_loopback(namespace=namespace)
-    _apply_egress_rules(egress_rules, namespace=namespace)
-    _apply_ingress_rules(ingress_rules, namespace=namespace)
+    if bring_up_loopback:
+        setup_loopback(namespace=namespace)
+    use_restore = _can_iptables_restore(4) and (
+        not _ip6tables_available(None) or _can_iptables_restore(6)
+    )
+    if not use_restore:
+        _apply_egress_rules(egress_rules, namespace=namespace)
+        _apply_ingress_rules(ingress_rules, namespace=namespace)
+        return
+
+    v4: list[str] = []
+    v6: list[str] = []
+    _render_direction_rules(v4, v6, egress_rules, ingress_rules)
+    _run_iptables_restore(
+        _restore_script({"filter": v4}),
+        ip_version=4,
+        namespace=namespace,
+    )
+    restore_v6 = _ipv6_restore_required(egress_rules, ingress_rules)
+    if v6 and restore_v6 and _ip6tables_available(None):
+        _run_iptables_restore(
+            _restore_script({"filter": v6}),
+            ip_version=6,
+            namespace=namespace,
+        )
+    logger.info(
+        "Network filter rules restored in %s: egress blocked=%d ingress blocked=%d",
+        namespace or "current",
+        len(egress_rules.blocked_ips),
+        len(ingress_rules.blocked_ips),
+    )
 
 
 def flush_filter_rules(namespace: str | None = None) -> None:
@@ -944,7 +1578,13 @@ def flush_filter_rules(namespace: str | None = None) -> None:
     logger.info("Flushed filter INPUT/OUTPUT rules in namespace %s", namespace or "current")
 
 
-def setup_network_isolation(policy: NetworkPolicy, namespace: str | None = None) -> None:
+def setup_network_isolation(
+    policy: NetworkPolicy,
+    namespace: str | None = None,
+    *,
+    bring_up_loopback: bool = True,
+    perf_id: str | None = None,
+) -> None:
     """Top-level entry point for network isolation setup.
 
     Called from within the sandbox namespace after bwrap --unshare-net or
@@ -954,9 +1594,17 @@ def setup_network_isolation(policy: NetworkPolicy, namespace: str | None = None)
         logger.info("Network mode is 'host', skipping isolation")
         return
 
-    egress_rules = build_network_rules(policy.egress)
-    ingress_rules = build_network_rules(policy.ingress)
-    apply_iptables_rules(egress_rules, ingress_rules, namespace=namespace)
+    label = perf_id or namespace or "-"
+    with perf_trace.span("firewall.resolve", label):
+        egress_rules = build_network_rules(policy.egress)
+        ingress_rules = build_network_rules(policy.ingress)
+    with perf_trace.span("firewall.restore", label):
+        apply_iptables_rules(
+            egress_rules,
+            ingress_rules,
+            namespace=namespace,
+            bring_up_loopback=bring_up_loopback,
+        )
 
 
 def replace_network_isolation(policy: NetworkPolicy, namespace: str | None = None) -> None:

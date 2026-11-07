@@ -57,6 +57,13 @@ ArchitecturesInstallIn64BitMode=x64compatible
 AppMutex=JiuwenSwarm.App,Global\JiuwenSwarm.App,{#MyAppName}.App,Global\{#MyAppName}.App
 CloseApplications=yes
 RestartApplications=no
+ChangesEnvironment=yes
+#ifdef BuildSignToolName
+  ; The compiler-provided Sign Tool signs Setup itself. Enabling the signed
+  ; uninstaller also signs temporary self-copies executed from {tmp}.
+  SignTool={#BuildSignToolName}
+  SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -65,6 +72,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
+Source: "preserve-windows-cli.ps1"; Flags: dontcopy
 Source: "..\dist\{#BuildDistDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\jiuwenswarm\channels\web\frontend\public\logo.ico"; DestDir: "{app}"; DestName: "logo-{#MyAppVersion}.ico"; Flags: ignoreversion
 
@@ -96,6 +104,7 @@ Type: dirifempty; Name: "{app}"
 Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall
 
 [Code]
+#include "windows-cli-preservation.iss"
 function HasDescriptionStemInTree(const Directory, Stem: String): Boolean;
 var
   FindRec: TFindRec;
@@ -222,6 +231,11 @@ begin
 
   { The current per-user installation directory is writable by Setup. }
   CleanupStaleOpenJiuwenDescriptions();
+  if not PreserveWindowsCli(ExpandConstant('{app}'), 'Initialize') then
+    RaiseException('External CLI initialization failed. Preserved files remain in the user data directory.');
+  if not RestoreWindowsCliConfiguration(ExpandConstant('{app}\{#MyAppExeName}')) then
+    RaiseException('External CLI configuration recovery failed.');
+  FinishCliProgress;
 end;
 
 const
@@ -237,15 +251,22 @@ const
 var
   WebView2DownloadPage: TDownloadWizardPage;
 
+function WebView2DownloadProgress(const Url, FileName: String;
+  const Progress, ProgressMax: Int64): Boolean;
+begin
+  UpdateCliPrerequisiteProgress(Progress, ProgressMax);
+  Result := True;
+end;
+
 procedure InitializeWizard;
 begin
   WebView2DownloadPage := CreateDownloadPage(
-    '正在下载 Microsoft Edge WebView2 Runtime',
-    '桌面 App 需要此运行环境。下载期间可以取消，WorkSwarm 主体安装仍可继续。',
-    nil
+    'Downloading Microsoft Edge WebView2 Runtime',
+    'You can cancel the download. WorkSwarm installation can still continue.',
+    @WebView2DownloadProgress
   );
   WebView2DownloadPage.ShowBaseNameInsteadOfUrl := True;
-  WebView2DownloadPage.AbortButton.Caption := '取消下载';
+  WebView2DownloadPage.AbortButton.Caption := 'Cancel download';
 end;
 
 function GetWebView2RuntimeVersion(var Version: String): Boolean;
@@ -295,6 +316,8 @@ begin
     ''
   );
   WebView2DownloadPage.Show;
+  ShowCliPrerequisiteStatus('Downloading Microsoft Edge WebView2 Runtime...',
+    'You can cancel the download using the button below.');
   try
     try
       WebView2DownloadPage.Download;
@@ -365,6 +388,8 @@ begin
     Log('Downloaded WebView2 installer failed Microsoft Authenticode verification.');
 end;
 
+function MigrateLegacyAdminInstall(): Boolean; forward;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   RuntimeVersion: String;
@@ -376,6 +401,18 @@ var
   DownloadFailureReason: String;
 begin
   Result := '';
+  if not PreserveWindowsCli(ExpandConstant('{app}'), 'Preserve') then
+  begin
+    Result := 'External CLI preservation failed; installation stopped before cleanup.';
+    AbortCliProgress;
+    exit;
+  end;
+  if not MigrateLegacyAdminInstall() then
+  begin
+    Result := 'Legacy administrator installation migration failed.';
+    AbortCliProgress;
+    exit;
+  end;
 
   if GetWebView2RuntimeVersion(RuntimeVersion) then
   begin
@@ -402,8 +439,10 @@ begin
   end;
 
   WebView2DownloadPage.AbortButton.Enabled := False;
-  WebView2DownloadPage.Caption := '正在验证 Microsoft Edge WebView2 Runtime';
-  WebView2DownloadPage.Description := '正在校验微软数字签名，请稍候…';
+  WebView2DownloadPage.Caption := 'Verifying Microsoft Edge WebView2 Runtime';
+  WebView2DownloadPage.Description := 'Checking the Microsoft digital signature. Please wait...';
+  ShowCliPrerequisiteStatus('Verifying Microsoft Edge WebView2 Runtime...',
+    'Checking the Microsoft digital signature. Please wait...');
   try
     if not VerifyDownloadedWebView2Installer(RuntimeInstaller) then
     begin
@@ -414,9 +453,11 @@ begin
       exit;
     end;
 
-    WebView2DownloadPage.Caption := '正在打开 Microsoft Edge WebView2 Runtime 安装程序';
+    WebView2DownloadPage.Caption := 'Starting Microsoft Edge WebView2 Runtime setup';
     WebView2DownloadPage.Description :=
-      '请在即将弹出的微软安装窗口中查看进度或取消安装。';
+      'Use the Microsoft setup window to view progress or cancel setup.';
+    ShowCliPrerequisiteStatus('Installing Microsoft Edge WebView2 Runtime...',
+      'Use the Microsoft setup window to view progress or cancel setup.');
     ResultCode := -1;
     if WizardSilent then
     begin
@@ -530,10 +571,11 @@ begin
   end;
 end;
 
-function InitializeSetup: Boolean;
+function MigrateLegacyAdminInstall(): Boolean;
 var
   LegacyUninstaller: String;
   ErrorCode: Integer;
+  Attempt: Integer;
 begin
   Result := True;
   // No old admin install: clean per-user install, no UAC at all.
@@ -550,6 +592,16 @@ begin
     Result := False;
     Exit;
   end;
+  if not PreserveWindowsCli(ExtractFileDir(LegacyUninstaller), 'Preserve') then
+  begin
+    Result := False;
+    Exit;
+  end;
+  if not PreserveWindowsCli(ExtractFileDir(LegacyUninstaller), 'PreserveConfig') then
+  begin
+    Result := False;
+    Exit;
+  end;
   // The old unins000.exe carries an admin manifest; runas lets it remove its
   // own Program Files tree + HKLM entry. /VERYSILENT keeps it headless.
   if not ShellExec('runas', LegacyUninstaller,
@@ -561,10 +613,17 @@ begin
     Result := False;
     Exit;
   end;
-  // Inno's uninstaller copies itself to TEMP and finishes asynchronously, so a
-  // completion check here would false-positive: the registry entry is removed
-  // near the end of the temp copy, after this call returns. The new per-user
-  // install targets {localappdata}\Programs and is independent of the old
-  // Program Files tree, so installation proceeds regardless. If the app was
-  // still running the new setup's own AppMutex guard will have blocked startup.
+  // Wait for the TEMP copy to finish before restoring agent configuration.
+  for Attempt := 1 to 480 do
+  begin
+    if (not FileExists(LegacyUninstaller)) and
+       (not RegKeyExists(HKLM, LegacyUninstallNativeSubkey)) and
+       (not RegKeyExists(HKLM, LegacyUninstallWowSubkey)) then
+    begin
+      Result := True;
+      Exit;
+    end;
+    Sleep(250);
+  end;
+  Result := False;
 end;

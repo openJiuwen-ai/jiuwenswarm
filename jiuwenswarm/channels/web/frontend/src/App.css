@@ -18,9 +18,44 @@
   display: none;
 }
 
+.app-section--peek-only {
+  display: contents;
+}
+
 .chat-layout {
   position: relative;
   background: var(--color-surface-shell);
+}
+
+/* 全局会话栏 peek 宿主（非会话/定时任务页 hover chat 图标时挂载）：
+   fixed 对齐内容区左缘（跟随 shell 导航列宽，icon-rail 形态为 72px），
+   容器不拦截指针（页面可正常交互），仅侧栏本身可交互 */
+.chat-layout--peek-host {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: var(--shell-nav-width);
+  right: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.shell--icon-rail .chat-layout--peek-host,
+.shell--agent-management .chat-layout--peek-host {
+  left: 72px;
+}
+
+.chat-layout--peek-host .conversation-sidebar,
+.chat-layout--peek-host .rsi-rail,
+.chat-layout--peek-host .settings-page__nav {
+  pointer-events: auto;
+}
+
+/* Hide the duplicate inline sidebar during preview so pinning restores its
+   full width immediately instead of replaying the collapsed-to-open transition. */
+.content:has(> .chat-layout--peek-host > .conversation-sidebar) > .chat-layout > .conversation-sidebar.is-collapsed,
+.content:has(> .chat-layout--peek-host > .rsi-rail) > .app-section > .rsi-page > .rsi-rail.is-collapsed {
+  display: none;
 }
 
 .chat-workspace {
@@ -29,7 +64,7 @@
 }
 
 .chat-layout__surface {
-  min-width: 512px;
+  min-width: 0;
   background: var(--color-surface-card);
 }
 
@@ -70,21 +105,26 @@
   margin-bottom: 40px;
 }
 
-.single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-chat-view'] {
+/* The diagnosis view shares every rule below with the trajectory view. */
+.single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-chat-view'],
+.single-agent-surface--diagnosis .chat-surface-view[data-testid='single-agent-chat-view'] {
   display: flex;
   position: absolute;
   inset: 0;
 }
 
-.single-agent-surface--trajectory .chat-panel-shell {
+.single-agent-surface--trajectory .chat-panel-shell,
+.single-agent-surface--diagnosis .chat-panel-shell {
   height: 100%;
 }
 
-.single-agent-surface--trajectory .chat-panel-header {
+.single-agent-surface--trajectory .chat-panel-header,
+.single-agent-surface--diagnosis .chat-panel-header {
   height: 48px;
 }
 
-.single-agent-surface--trajectory .chat-panel-shell > :not(.chat-panel-header) {
+.single-agent-surface--trajectory .chat-panel-shell> :not(.chat-panel-header),
+.single-agent-surface--diagnosis .chat-panel-shell> :not(.chat-panel-header) {
   visibility: hidden;
   pointer-events: none;
 }
@@ -94,9 +134,8 @@
  * an approval or send a message without switching back to the chat. Its own
  * padding is the gap between the trajectory's bottom edge and the input frame.
  */
-.single-agent-surface--trajectory
-  .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)
-  > .chat-compose {
+.single-agent-surface--trajectory .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)>.chat-compose,
+.single-agent-surface--diagnosis .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)>.chat-compose {
   visibility: visible;
   pointer-events: auto;
   z-index: 11;
@@ -106,9 +145,8 @@
 
 /* The docked composer sits at the bottom; the chat disclaimer belongs to the
    reading surface behind it and gives its space back. */
-.single-agent-surface--trajectory
-  .chat-panel-shell--composer-docked
-  > .chat-ai-disclaimer {
+.single-agent-surface--trajectory .chat-panel-shell--composer-docked>.chat-ai-disclaimer,
+.single-agent-surface--diagnosis .chat-panel-shell--composer-docked>.chat-ai-disclaimer {
   display: none;
 }
 
@@ -123,7 +161,8 @@
    under it, so its footer and raw-record panel stay inside the visible area.
    `--trajectory-composer-clearance` is the composer's measured height, or 0
    when it is collapsed or absent. */
-.single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-trajectory-view'] {
+.single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-trajectory-view'],
+.single-agent-surface--diagnosis .chat-surface-view[data-testid='single-agent-diagnosis-view'] {
   position: absolute;
   z-index: 10;
   top: 88px;
@@ -133,9 +172,13 @@
   background: var(--color-surface-card);
 }
 
-.chat-workspace--trajectory-floating-tools
-  .single-agent-surface--trajectory
-  .chat-surface-view[data-testid='single-agent-trajectory-view'] {
+/* The diagnosis view has no 对话/轨迹 tab bar, so it starts right under the header. */
+.single-agent-surface--diagnosis .chat-surface-view[data-testid='single-agent-diagnosis-view'] {
+  top: 48px;
+}
+
+.chat-workspace--trajectory-floating-tools .single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-trajectory-view'],
+.chat-workspace--trajectory-floating-tools .single-agent-surface--diagnosis .chat-surface-view[data-testid='single-agent-diagnosis-view'] {
   right: 364px;
 }
 
@@ -219,14 +262,13 @@
   transform: none;
   display: flex;
   justify-content: center;
+  pointer-events: none;
 }
 
-.app-connection-toast {
-  border-radius: 0.5rem;
-  background: var(--color-feedback-danger);
-  padding: 0.5rem 1rem;
-  color: var(--color-text-inverse);
-  box-shadow: var(--effect-shadow-lg);
+.app-toast-wrapper--top-center > * {
+  pointer-events: auto;
+  min-width: 0;
+  max-width: min(88vw, 32rem);
 }
 
 .app-session-toast {
@@ -310,4 +352,15 @@
 
 input[type="password"]::-ms-reveal {
   display: none;
+}
+
+@media (max-width: 640px) {
+  .chat-workspace {
+    min-width: 0;
+  }
+
+  .chat-input-toolbar,
+  .chat-input-toolbar-left {
+    flex-wrap: wrap;
+  }
 }

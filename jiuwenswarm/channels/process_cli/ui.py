@@ -314,12 +314,15 @@ class HumanRunUI:
         self._spinner_task: asyncio.Task[None] | None = None
         self._frame_index = 0
         self._assistant_visible = False
+        self._reasoning_open = False
+        self._reasoning_line_start = True
 
     @staticmethod
     def start() -> None:
         """Keep Runtime initialization silent until request processing begins."""
 
     def working(self) -> None:
+        self.end_reasoning()
         if not self.enhanced:
             return
         self._set_status("正在处理……")
@@ -334,6 +337,7 @@ class HumanRunUI:
 
     def skills(self, items: list[Any]) -> None:
         """Render a skills list after clearing transient progress output."""
+        self.end_reasoning()
         self.clear_status()
         ProcessCliUI(self.stdout).skills(items)
 
@@ -347,6 +351,7 @@ class HumanRunUI:
         self._status_text = ""
 
     def completed(self, session_id: str) -> None:
+        self.end_reasoning()
         if not self.enhanced:
             return
         self.clear_status()
@@ -359,6 +364,7 @@ class HumanRunUI:
 
     def session_event(self, event_type: str, payload: dict[str, Any]) -> None:
         """Render one successful Runtime Session lifecycle result."""
+        self.end_reasoning()
         self.clear_status()
         session_id = str(payload.get("session_id") or "")
         if event_type == "session.created":
@@ -378,6 +384,7 @@ class HumanRunUI:
         self.stdout.flush()
 
     def failed(self, message: str) -> None:
+        self.end_reasoning()
         self.clear_status()
         marker = "×" if self.unicode else "x"
         self.stderr.write(self._styled(f"\n{marker} 执行失败\n\n", _ANSI_RED))
@@ -385,15 +392,18 @@ class HumanRunUI:
         self.stderr.flush()
 
     def interrupted(self) -> None:
+        self.end_reasoning()
         self.clear_status()
         self.stderr.write(self._styled("\n! 已中断\n", _ANSI_YELLOW))
         self.stderr.flush()
 
     def live_input_ready(self, request_text: str) -> None:
+        self.end_reasoning()
         self.clear_status()
         ProcessCliUI(self.stderr).live_execution_layout(request_text)
 
     def live_input_receipt(self, *, status: str, message: str) -> None:
+        self.end_reasoning()
         marker = {
             "accepted": "✓" if self.unicode else "+",
             "rejected": "×" if self.unicode else "x",
@@ -408,13 +418,38 @@ class HumanRunUI:
         self.stderr.flush()
 
     def reasoning(self, text: str) -> None:
+        if not text:
+            return
         self.clear_status()
-        branch = "├─" if self.unicode else "+-"
-        self.stderr.write(self._styled(f"\n  {branch} 思考\n", _ANSI_DIM))
-        self.stderr.write(f"  │  {text}\n" if self.unicode else f"     {text}\n")
+        if not self._reasoning_open:
+            branch = "├─" if self.unicode else "+-"
+            self.stderr.write(self._styled(f"\n  {branch} 思考\n", _ANSI_DIM))
+            self._reasoning_open = True
+            self._reasoning_line_start = True
+        prefix = "  │  " if self.unicode else "     "
+        for index, line in enumerate(text.split("\n")):
+            if index:
+                self.stderr.write("\n")
+                self._reasoning_line_start = True
+            if line:
+                if self._reasoning_line_start:
+                    self.stderr.write(prefix)
+                    self._reasoning_line_start = False
+                self.stderr.write(line)
         self.stderr.flush()
 
+    def end_reasoning(self) -> None:
+        """Close the current streamed block before another output owns the line."""
+        if not self._reasoning_open:
+            return
+        if not self._reasoning_line_start:
+            self.stderr.write("\n")
+        self.stderr.flush()
+        self._reasoning_open = False
+        self._reasoning_line_start = True
+
     def tool(self, label: str, text: str) -> None:
+        self.end_reasoning()
         self.clear_status()
         branch = "├─" if self.unicode else "+-"
         self.stderr.write(self._styled(f"\n  {branch} {label}\n", _ANSI_DIM))

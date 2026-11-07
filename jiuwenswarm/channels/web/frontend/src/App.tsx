@@ -1,4 +1,13 @@
+import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
+import { HistoryRefreshQueue } from './features/historyRefreshQueue';
+import {
+  applyMultiModelCollaborationSnapshot,
+  getMultiModelCollaborationRevision,
+  isMultiModelCollaborationEnabled,
+} from './features/multiModelCollaboration/featureConfig';
+import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
+import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS } from './edition';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 /**
@@ -9,11 +18,19 @@ import { AssetPublishHost } from './components/AssetPublishDrawer';
 
 import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { ChatPanel } from './components/ChatPanel';
+import { usePromptSuggestionBox } from './hooks/usePromptSuggestionBox';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
 import { SessionSidebar } from './components/SessionSidebar';
+import { JiuwenMateApp } from './features/jiuwenmate/JiuwenMateApp';
+import { reenterJiuwenMate } from './features/jiuwenmate/publicNav';
+import type { JiuwenMateExistingPage } from './features/jiuwenmate/types';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
 import { RsiPage } from './features/rsi/RsiPage';
+import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
+import { useRsiStore } from './features/rsi/rsiStore';
+import { useMediaQuery } from './hooks/useResponsive';
+import { useSecondarySidebarPeek, useSecondarySidebarPreference, type SecondarySidebar } from './hooks/useSecondarySidebar';
 import {
   normalizeRSIEnabled,
   setRSIFeatureEnabled,
@@ -21,13 +38,14 @@ import {
 } from './features/rsi/featureConfig';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
+import { watchCronExecutionSessions, watchCronRunUpdates } from './features/cron/cronSessionLive';
+import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
-import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
+import type { ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
-import { ToastStack } from './components/ui';
-import { toast } from './components/ui/Toast/toastStore';
+import { LoadingSpinner, ToastStack, toast } from './components/ui';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
 import type { SettingsRequest } from './features/settings/services/settingsContract';
@@ -38,6 +56,8 @@ import {
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
+import { DesignerPage } from './features/designer/components/DesignerPage';
+import { createDesignerConversation, submitDesignComposer } from './features/designer/designerEntry';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -66,22 +86,35 @@ import {
 } from './features/tool-events/toolEventNormalizer';
 import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from './features/teamGroupIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
-import { webRequest } from './services/webClient';
+import { webClient, webRequest } from './services/webClient';
+import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
+import { useDesktopBrowserAutoOpen } from './features/desktopBrowserFile';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
+import {
+  applyBrowserDisplaySettings,
+  browserDisplayRevision,
+  useDesktopBrowserHeadless,
+} from './features/desktopBrowserDisplay';
 import {
   AgentMode,
   MediaItem,
+  type ChatInputProvenance,
   type ChatSendOptions,
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
+  type ModelSelection,
   type Session,
 } from './types';
-import type { WorkMode } from './features/workspace/projectTypes';
+import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
+import { isModelCatalogPending, resolveAvailableModelSelection } from './stores/sessionStore';
+import type { ProjectInfo, WorkMode } from './features/workspace/projectTypes';
+import { isDefaultInputProject } from './components/ChatPanel/projectSelection';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
   type ExternalCliAgentKind,
@@ -92,7 +125,7 @@ import {
 import {
   loadExternalCliPendingChoices,
   persistExternalCliPendingChoices,
-} from './features/settings/modules/experimental/externalCliInstallState';
+} from './features/settings/modules/agent/externalCliInstallState';
 import {
   ensureSessionRuntimes,
   useSessionStore,
@@ -107,6 +140,7 @@ import {
   usePersonalContextStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
+import { chatRoutePath } from './multi-session/routing/route';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import {
   NEW_CONVERSATION_ID,
@@ -117,6 +151,7 @@ import {
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
 import { resolveNewConversationProjectDir } from './multi-session/state/newConversationProject';
+import { clearAttachmentDrafts } from './features/sessionAssets/attachmentDraftRegistry';
 import { toDisplaySessionTitle } from './utils/documentMessage';
 import {
   getHiddenNavItemsForPlatform,
@@ -145,6 +180,7 @@ import {
   buildA2UIClientEventContent,
   setA2UIActionHandler,
 } from './features/a2ui/actionBridge';
+import { setMcpAppMessageHandler } from './features/mcpApps/mcpAppContext';
 import { executeDesktopSave } from './utils/desktopSave';
 import { restoreSessionEquipment } from './utils/enabledExtensions';
 import { generateUuidV4 } from './utils/uuid';
@@ -154,12 +190,17 @@ import { useApplicationPlugins } from './applicationPlugins/useApplicationPlugin
 import type { ApplicationPluginNavKey } from './applicationPlugins/types';
 import {
   findShareImageJobForSession,
+  fetchShareImageJobStatus,
   forgetPendingShareImageJob,
   readPendingShareImageJobId,
   readShareImageJobResponse,
   rememberPendingShareImageJob,
+  resumeBrowserShareImageJob,
+  waitForShareImageJobTransfer,
+  startShareImageJobDownload,
   type ShareImageExportJobStatus,
 } from './features/shareImageJob';
+import { cancelShareImageJobForClosedTab, openShareImageExportTab } from './features/shareImageBrowserExport';
 import {
   ModelSetupGuide,
   type ModelSetupGuideStep,
@@ -173,17 +214,33 @@ import {
 import {
   shouldInsetTrajectoryForFloatingTasks,
   trajectoryComposerClearance,
+  type TrajectoryComposerPolicy,
 } from './features/trajectory/trajectoryLayout';
 import {
-  normalizeTrajectoryUiEnabled,
-  setTrajectoryUiEnabled,
-  useTrajectoryUiEnabled,
-} from './features/trajectory/featureConfig';
+  normalizeTrajectoryDiagnosisEnabled,
+  setTrajectoryDiagnosisEnabled,
+  useTrajectoryDiagnosisEnabled,
+} from './features/trajectory/diagnosis/diagnosisFeatureConfig';
 import './App.css';
+import { setComfyuiWorkflowEnabled } from './features/designer/comfyuiFeatureConfig';
+import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
+import { organizationOwnerStopTarget } from './features/teamOrganization/conversation';
+import {
+  isOrganizationOwnerStopped,
+  organizationOwnerStateRevision,
+  setOrganizationOwnerStopped,
+} from './features/teamOrganization/processing';
+import {
+  normalizeTeamBootstrapMode,
+  resolveNewSessionBootstrapMode,
+  resolveNewSessionDispatchMode,
+  resolveRestoredTeamDispatchMode,
+  setTeamScheduledDispatchEnabled,
+} from './features/teamDispatch/featureConfig';
 
-const LazyTrajectoryPanel = lazy(async () => {
-  const module = await import('./features/trajectory/TrajectoryPanel');
-  return { default: module.TrajectoryPanel };
+const LazyTrajectoryAnalysisPage = lazy(async () => {
+  const module = await import('./features/trajectory/TrajectoryAnalysisPage');
+  return { default: module.TrajectoryAnalysisPage };
 });
 const CHAT_PANEL_DEFAULT_WIDTH_PCT = 33.33;
 const CHAT_PANEL_MIN_WIDTH_PCT = 20;
@@ -222,6 +279,52 @@ type LoadedHistoryBatch = {
   result: FetchHistoryCursorBatchResult;
 };
 
+function isSameModelSelection(left: ModelSelection, right: ModelSelection): boolean {
+  return left.type === right.type
+    && left.id === right.id
+    && (left.type !== 'model_group' || left.route_id === right.route_id);
+}
+
+/** Restore session model_selection; replace deleted groups with the catalog fallback (#5424). */
+function restoreSessionModelSelection(
+  sessionId: string,
+  modelSelection: unknown,
+  modelName?: string | null,
+): void {
+  const store = useSessionStore.getState();
+  const restoredSelection = parseModelSelection(modelSelection);
+  if (restoredSelection) {
+    // Catalog often arrives after session.get_metadata on refresh (#5860). Keep the
+    // server selection until models.list is ready; do not clear or write back yet.
+    if (isModelCatalogPending(store.chatAvailableModels, store.availableModelGroups)) {
+      store.setSelectedModelSelection(sessionId, restoredSelection);
+      return;
+    }
+    const resolved = resolveAvailableModelSelection(
+      restoredSelection,
+      store.chatAvailableModels,
+      store.availableModelGroups,
+    );
+    if (!resolved) {
+      store.setSelectedModelSelection(sessionId, null);
+      return;
+    }
+    store.setSelectedModelSelection(sessionId, resolved);
+    if (!isSameModelSelection(restoredSelection, resolved)) {
+      void webRequest('session.selection.set', {
+        session_id: sessionId,
+        model_selection: resolved,
+      }).catch(() => {
+        // ChatModelSelector will retry when the session is active.
+      });
+    }
+    return;
+  }
+  if (modelName) {
+    store.setSelectedModelName(sessionId, modelName);
+  }
+}
+
 function getWorkContextForSession(sessionId: string): {
   project_id?: string;
   project_dir?: string;
@@ -254,15 +357,27 @@ function getWorkContextForSession(sessionId: string): {
   };
 }
 
+/** The project a new conversation's cards come from: the selected one, with the default project as the global page. */
+function newConversationTopicProjectId(selectedProject: ProjectInfo | null): string | null {
+  return selectedProject && !isDefaultInputProject(selectedProject) ? selectedProject.project_id : null;
+}
+
 function clearTeamRuntimeState(sessionId: string): void {
   const sessionStore = useSessionStore.getState();
   sessionStore.setTeamMembers(sessionId, []);
+  sessionStore.setTeamDepartedMembers(sessionId, []);
   sessionStore.setTeamTaskEvents(sessionId, []);
   sessionStore.setTeamTasks(sessionId, []);
   sessionStore.setTeamMemberExecutionEvents(sessionId, []);
   sessionStore.clearAllTeamMemberContextCompressionStatus(sessionId);
   sessionStore.setTeamHistoryMessages(sessionId, []);
   sessionStore.setTeamHumanShareCommands(sessionId, []);
+}
+
+// An unsent message goes back into the composer, which shows it only when told.
+function restoreUnsentInput(sessionId: string, content: string): void {
+  useChatStore.getState().setInputValue(sessionId, content);
+  window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId, value: content } }));
 }
 
 function waitForNextPaint(): Promise<void> {
@@ -329,6 +444,20 @@ function ErrorFallback({ error }: { error: Error | null }) {
 }
 
 const SHARE_IMAGE_EXPORT_POLL_MS = 500;
+const SHARE_IMAGE_EXPORT_MAX_QUERY_FAILURES = 3;
+const SHARE_IMAGE_EXPORT_ERROR_KEYS: Record<string, string> = {
+  share_export_popup_blocked: 'share.popupBlocked',
+  share_export_tab_closed: 'share.browserTabClosed',
+  share_export_download_start_timeout: 'share.downloadStartFailed',
+  share_export_download_interrupted: 'share.downloadInterrupted',
+  share_export_status_timeout: 'share.statusTimeout',
+};
+
+function shareImageExportErrorKey(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  const key = SHARE_IMAGE_EXPORT_ERROR_KEYS[message];
+  return typeof key === 'string' ? key : 'share.exportFailed';
+}
 
 async function saveShareImageJob(jobId: string, filename: string): Promise<boolean> {
   const downloadUrl = `/share-api/jobs/${encodeURIComponent(jobId)}/download`;
@@ -358,15 +487,24 @@ async function saveShareImageJob(jobId: string, filename: string): Promise<boole
 async function waitForShareImageJob(
   initialStatus: ShareImageExportJobStatus,
   isCurrentMonitor: () => boolean,
+  onStatus: (status: ShareImageExportJobStatus) => Promise<ShareImageExportJobStatus>,
+  onQueryInterrupted: () => void,
 ): Promise<ShareImageExportJobStatus | null> {
-  let status = initialStatus;
+  let status = await onStatus(initialStatus);
+  let queryFailures = 0;
   while (status.state === 'queued' || status.state === 'running') {
     if (!isCurrentMonitor()) return null;
     await new Promise(resolve => window.setTimeout(resolve, SHARE_IMAGE_EXPORT_POLL_MS));
-    status = await readShareImageJobResponse(await fetch(
-      `/share-api/jobs/${encodeURIComponent(status.job_id)}`,
-      { cache: 'no-store' },
-    ));
+    try {
+      status = await fetchShareImageJobStatus(status.job_id);
+      status = await onStatus(status);
+      queryFailures = 0;
+    } catch (error) {
+      if (!(error instanceof TypeError) && !(error instanceof Error && error.message === 'share_export_status_timeout')) throw error;
+      if (++queryFailures >= SHARE_IMAGE_EXPORT_MAX_QUERY_FAILURES) throw new Error('share_export_status_timeout');
+      onQueryInterrupted();
+      continue;
+    }
   }
   return isCurrentMonitor() ? status : null;
 }
@@ -391,21 +529,41 @@ function AppContent({
   // watch-only, per session, alongside which view that session last showed.
   const [trajectoryComposerCollapsed, setTrajectoryComposerCollapsed] = useState<Record<string, boolean>>({});
   const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
+  const [diagnosisComposerPolicy, setDiagnosisComposerPolicy] = useState<TrajectoryComposerPolicy>('available');
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
-  const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
+  const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  const [isJiuwenMate, setIsJiuwenMate] = useState(() => {
+    try {
+      return window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('jiuwenswarm:jiuwenmate-mode', String(isJiuwenMate));
+    } catch {
+      // Keep the mode switch usable when browser storage is unavailable.
+    }
+  }, [isJiuwenMate]);
+  const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
-  const trajectoryUiEnabled = useTrajectoryUiEnabled();
+  const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [restartModalOpen, setRestartModalOpen] = useState(false);
   const [restartSuccess, setRestartSuccess] = useState(false);
   const [exportingShareSessionIds, setExportingShareSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [shareExportProgress, setShareExportProgress] = useState<Record<string, string>>({});
+  const [waitingShareExportSessionIds, setWaitingShareExportSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const waitingBrowserExportsRef = useRef(new Map<string, { status: ShareImageExportJobStatus; locale: string }>());
+  const browserExportTabsRef = useRef(new Map<string, Window>());
   const [restartSeenDisconnect, setRestartSeenDisconnect] = useState(false);
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
@@ -414,7 +572,6 @@ function AppContent({
   const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
-  const [externalCliInstallDialogOpen, setExternalCliInstallDialogOpen] = useState(false);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedAgents, setHasVisitedAgents] = useState(false);
   const [agentManagementNavigationRequest, setAgentManagementNavigationRequest] = useState<{
@@ -435,14 +592,27 @@ function AppContent({
   const {
     isMobile,
     isToolPanelAutoHideViewport,
-    conversationSidebarCollapsed,
-    setConversationSidebarCollapsed,
-    conversationSidebarFloating,
     toolPanelHidden,
     setToolPanelHidden,
   } = useResponsiveLayout();
 
+  const [secondarySidebarCollapsed, setSecondarySidebarCollapsed] = useSecondarySidebarPreference();
+  const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(true);
+  const {
+    target: sidebarPeek,
+    open: openSidebarPeek,
+    hover: hoverSidebarPeek,
+    close: closeSidebarPeek,
+    surfaceProps: peekSurfaceProps,
+  } = useSecondarySidebarPeek();
+  const isSettingsNarrowViewport = useMediaQuery('(max-width: 640px)');
+  const isRsiNarrowViewport = useMediaQuery('(max-width: 1250px)');
+  const rsiHasExperiments = useRsiStore((s) => s.list.length > 0);
+  const rsiListKnownEmpty = useRsiStore((s) => s.listLoadedOnce && s.list.length === 0);
+
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
+  // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
+  const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
   const [composerFocusNonce, setComposerFocusNonce] = useState(0);
   const [missingSessionId, setMissingSessionId] = useState<string | null>(null);
   const startupUpdateCheckRef = useRef(false);
@@ -512,13 +682,44 @@ function AppContent({
   );
   /** 仅用于强制重跑「首屏 history」effect：从会话列表恢复时若 sessionId 未变，也要重新拉 history 并恢复 historyPagerMeta */
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
+  const historyRefreshQueueRef = useRef(new HistoryRefreshQueue());
+  const forcedHistoryRefreshRef = useRef(new Set<string>());
+  const [historyRecoveryRevision, setHistoryRecoveryRevision] = useState(0);
+  // 延迟绑定到后文定义的 loadSessionMetadata，供 runtime.history_required 回查权威运行态。
+  const loadSessionMetadataRef = useRef<((id: string) => Promise<Session | null>) | null>(null);
   const sessionIdRef = useRef(sessionId);
+  useEffect(() => webClient.on('runtime.history_required', (event) => {
+    const targetSessionId = event.payload.session_id;
+    if (typeof targetSessionId !== 'string' || !targetSessionId) return;
+    historyRefreshQueueRef.current.request(targetSessionId);
+    setHistoryRecoveryRevision((revision) => revision + 1);
+    // 该恢复 turn 的终态被当孤儿丢弃，本地 isProcessing 可能停在刷新前的 true
+    // （不会再有 processing_status(false) 到达），从而阻塞下方 effect 的 take()。
+    // 回查网关权威运行态，用实时 is_processing 覆盖本地状态解除阻塞；若确有新 turn
+    // 在跑则保持 busy、延后刷新，不会清掉新轮的流式缓冲。
+    void loadSessionMetadataRef.current?.(targetSessionId);
+  }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
   const sessionViewIdRef = useRef(generateUuidV4());
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
   const historyRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
+  const pendingSessionEventReleasesRef = useRef(new Map<string, () => void>());
+  const pendingCronUserSeedsRef = useRef(new Map<string, string>());
+  const releasePendingSessionEvents = useCallback((sid: string) => {
+    const release = pendingSessionEventReleasesRef.current.get(sid);
+    pendingSessionEventReleasesRef.current.delete(sid);
+    release?.();
+  }, []);
+  useEffect(() => () => {
+    for (const release of pendingSessionEventReleasesRef.current.values()) release();
+    pendingSessionEventReleasesRef.current.clear();
+  }, []);
+  useEffect(() => webClient.onStateChange((state) => {
+    if (state === 'ready') return;
+    for (const sid of pendingSessionEventReleasesRef.current.keys()) releasePendingSessionEvents(sid);
+  }), [releasePendingSessionEvents]);
   const subagentHistoryRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
   const subagentHistoryRestoreRevisionRef = useRef(new Map<string, string>());
   const subagentToolReplayBySessionRef = useRef(new Map<string, HistoryToolReplayItem[]>());
@@ -534,11 +735,12 @@ function AppContent({
   const sessionIdsCreatedInThisPageRef = useRef(new Set<string>());
   const shareExportMonitorTokensRef = useRef(new Map<string, symbol>());
   const preserveSelectedProjectOnChatNewRef = useRef(false);
-  const newConversationProjectRef = useRef<Pick<Session, 'project_id' | 'project_dir'> | null>(null);
   const newConversationPreviousSessionRef = useRef<PendingPreviousSession | null>(null);
   /** 为 true 表示刚从「会话列表」恢复；history 为空时在 useEffect 的 onEmpty 中提示一次 */
   const historyRestoreFromPanelHintRef = useRef(false);
   const { loadProjects, setSelectedProject } = useWorkspaceStore();
+  const workspaceWorkMode = useWorkspaceStore((state) => state.workMode);
+  const designCanvasOpen = workspaceWorkMode === 'design' && route.kind === 'design-project';
 
   const setHistoryRetryAvailable = useCallback((sid: string, available: boolean) => {
     setHistoryRetrySessions((current) => {
@@ -619,14 +821,39 @@ function AppContent({
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
       setActiveNav('chat');
+    } else if (route.kind === 'group-chat') {
+      // Group chats live in the JiuwenMate chat view.
+      sessionIdRef.current = NEW_CONVERSATION_ID;
+      setSessionId(NEW_CONVERSATION_ID);
+      setIsJiuwenMate(true);
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+    } else if (route.kind === 'design-project' && !isEnterprise()) {
+      let cancelled = false;
+      const nextSessionId = route.sessionId ?? NEW_CONVERSATION_ID;
+      sessionIdRef.current = nextSessionId;
+      setSessionId(nextSessionId);
+      setActiveNav('chat');
+      void useWorkspaceStore.getState().setWorkMode('design').then(() => {
+        if (cancelled) return;
+        const project = useWorkspaceStore.getState().projects.find(
+          (item) => item.project_id === route.projectId,
+        );
+        useWorkspaceStore.getState().setSelectedProject(project ?? null);
+      });
+      setDesignSidebarCollapsed(true);
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+      setToolPanelHidden(true);
+      return () => { cancelled = true; };
     } else if (route.kind === 'chat-new') {
-      if (window.location.pathname !== '/chat/new') {
+      if (window.location.pathname !== chatRoutePath({ kind: 'chat-new' })) {
         navigate({ kind: 'chat-new' }, { replace: true });
       }
       pendingNewConversationRef.current = true;
-      if (preserveSelectedProjectOnChatNewRef.current) {
-        preserveSelectedProjectOnChatNewRef.current = false;
-      } else {
+      const preserveProject = preserveSelectedProjectOnChatNewRef.current;
+      preserveSelectedProjectOnChatNewRef.current = false;
+      if (!preserveProject) {
         useWorkspaceStore.getState().setSelectedProject(null);
       }
       sessionIdRef.current = 'new';
@@ -635,7 +862,7 @@ function AppContent({
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
+  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -643,16 +870,41 @@ function AppContent({
     useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
 
+  // 企业版 cron 结果不走长连接，改订 /sessions/{id}/live。
+  // 当前打开的会话要盯（含带 cron_id 的统一会话）；切走后也要后台盯到结束，
+  // 否则 isProcessing 停不掉（一直转圈）、也收不到终稿标蓝点。
+  const activeCronId = useSessionStore((state) =>
+    state.currentSession?.session_id === sessionId
+      ? state.currentSession.cron_id
+      : state.sessions.find((session) => session.session_id === sessionId)?.cron_id,
+  );
+  const cronLastRunSessionId = useCronStore((s) => s.lastRunSessionId);
+  useEffect(() => {
+    const ids = [sessionId, ...Object.values(cronLastRunSessionId)];
+    return watchCronExecutionSessions(ids, sessionId, Boolean(activeCronId));
+  }, [sessionId, cronLastRunSessionId, activeCronId]);
+
   const {
     setCurrentSession,
     setAvailableModels,
+    setAvailableModelGroups,
     setMode,
     setTeamLeaderMemberIds,
   } = useSessionStore.getState();
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = useSessionStore((s) => s.currentSession);
   const routeSessionId = route.kind === 'chat-session' ? route.sessionId : null;
+  useEffect(() => {
+    if (!routeSessionId) return;
+    const session = currentSession?.session_id === routeSessionId
+      ? currentSession : sessions.find((item) => item.session_id === routeSessionId);
+    if (session?.type === 'group_chat') {
+      navigate({ kind: 'group-chat', groupId: routeSessionId }, { replace: true });
+    }
+  }, [currentSession, navigate, routeSessionId, sessions]);
   const projects = useWorkspaceStore((s) => s.projects);
+  // A new conversation belongs to the selected project: its message is sent there and its cards come from there.
+  const newConversationProjectId = useWorkspaceStore((s) => newConversationTopicProjectId(s.selectedProject));
   const sessionTitle = useMemo(() => {
     const session = currentSession?.session_id === sessionId
       ? currentSession
@@ -685,31 +937,65 @@ function AppContent({
       || Boolean(project.project_dir && project.project_dir === session.project_dir)
     )) ?? null;
   }, [currentSession, projects, sessions, sessionId]);
+  const topicStarterProjectId =
+    sessionId === NEW_CONVERSATION_ID ? newConversationProjectId : (sessionProject?.project_id ?? null);
   const mode = useSessionStore((s) => s.runtimes[sessionId]?.mode ?? 'agent');
-  const chatSurfaceView: ChatSurfaceView = trajectoryUiEnabled
-    && (mode === 'agent' || mode === 'team')
+  const surfaceModeSupported = mode === 'agent' || mode === 'team';
+  // The diagnosis view has its own switch: it needs an Agent or Team session that exists, but not the trajectory UI.
+  const diagnosisEntryAvailable = trajectoryDiagnosisEnabled
+    && surfaceModeSupported
+    && sessionId !== NEW_CONVERSATION_ID;
+  const requestedChatSurfaceView: ChatSurfaceView = surfaceModeSupported
     ? (chatSurfaceViews[sessionId] ?? 'chat')
     : 'chat';
+  // The standalone chat/trajectory tabs were removed; only the diagnosis entry remains.
+  const chatSurfaceView: ChatSurfaceView = (
+    requestedChatSurfaceView === 'trajectory'
+    || (requestedChatSurfaceView === 'diagnosis' && !diagnosisEntryAvailable)
+  )
+    ? 'chat'
+    : requestedChatSurfaceView;
   const selectChatSurfaceView = useCallback((nextView: ChatSurfaceView) => {
-    if (nextView === 'trajectory') setTrajectoryUiRequested(true);
+    if (nextView === 'trajectory') return;
+    if (nextView === 'diagnosis') setDiagnosisUiRequested(true);
     setChatSurfaceViews((current) => (
       current[sessionId] === nextView
         ? current
         : { ...current, [sessionId]: nextView }
     ));
   }, [sessionId]);
-  const composerDocked = chatSurfaceView === 'trajectory';
+  // The chat header entry opens the diagnosis view, and leaves it for the chat.
+  const toggleDiagnosisView = useCallback(() => {
+    selectChatSurfaceView(chatSurfaceView === 'diagnosis' ? 'chat' : 'diagnosis');
+  }, [chatSurfaceView, selectChatSurfaceView]);
+  const leaveDiagnosisView = useCallback(() => {
+    selectChatSurfaceView('chat');
+  }, [selectChatSurfaceView]);
+  const returnToChatAfterFill = useCallback(() => {
+    selectChatSurfaceView('chat');
+    setComposerFocusNonce((nonce) => nonce + 1);
+  }, [selectChatSurfaceView]);
+  const composerDocked = chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
+  const composerHeldClosed = composerDocked && diagnosisComposerPolicy !== 'available';
   const toggleTrajectoryComposer = useCallback(() => {
+    if (composerHeldClosed) return;
     setTrajectoryComposerCollapsed((current) => ({
       ...current,
       [sessionId]: !(current[sessionId] ?? false),
     }));
-  }, [sessionId]);
+  }, [composerHeldClosed, sessionId]);
+  useEffect(() => {
+    if (diagnosisComposerPolicy === 'available') return;
+    setTrajectoryComposerCollapsed((current) => (
+      current[sessionId] === true ? current : { ...current, [sessionId]: true }
+    ));
+  }, [diagnosisComposerPolicy, sessionId]);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
   const browserAgentActive = useBrowserAgentActivity(sessionId);
+  const browserHeadless = useDesktopBrowserHeadless();
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
@@ -725,7 +1011,7 @@ function AppContent({
   }, [sessionId]);
 
   const handleToggleHeartbeatPanel = useCallback(() => {
-    setHeartbeatPanelOpen((v) => !v);
+    if (!isEnterprise()) setHeartbeatPanelOpen((v) => !v);
   }, []);
 
   const handleToggleDetailPanel = useCallback((expanded: boolean | null) => {
@@ -756,6 +1042,10 @@ function AppContent({
 
   const browserAutoExpandedSessionRef = useRef<string | null>(null);
   useEffect(() => {
+    if (browserHeadless) {
+      browserAutoExpandedSessionRef.current = null;
+      return;
+    }
     if (!window.jiuwenDesktop?.isElectron || !browserAgentActive) return;
     // Electron 内置浏览器页签只在浏览器 Agent 真正被调用后出现；每个会话只自动
     // 展开一次，之后尊重用户手动收起的选择。team 模式不抢 tab，等回到单 agent
@@ -766,7 +1056,34 @@ function AppContent({
     setToolPanelHidden(false);
     setSingleAgentPanelActiveTab('browser');
     setSingleAgentPanelExpanded(true);
-  }, [browserAgentActive, mode, sessionId, setSingleAgentPanelActiveTab, setSingleAgentPanelExpanded, setToolPanelHidden]);
+  }, [
+    browserAgentActive,
+    browserHeadless,
+    mode,
+    sessionId,
+    setSingleAgentPanelActiveTab,
+    setSingleAgentPanelExpanded,
+    setToolPanelHidden,
+  ]);
+  const handleBrowserTaskOpen = useCallback(() => {
+    setHeartbeatPanelOpen(false);
+    setToolPanelHidden(false);
+    if (mode === 'team') {
+      setTeamAreaActiveTab('browser');
+      setTeamAreaExpanded(true);
+    } else {
+      setSingleAgentPanelActiveTab('browser');
+      setSingleAgentPanelExpanded(true);
+    }
+  }, [
+    mode,
+    setSingleAgentPanelActiveTab,
+    setSingleAgentPanelExpanded,
+    setTeamAreaActiveTab,
+    setTeamAreaExpanded,
+    setToolPanelHidden,
+  ]);
+  useDesktopBrowserAutoOpen(sessionId, handleBrowserTaskOpen);
 
   const handleOpenCodeReview = useCallback((target: CodeReviewTarget) => {
     setHeartbeatPanelOpen(false);
@@ -856,7 +1173,10 @@ function AppContent({
   );
   const rsiFeatureEnabled = useRSIFeatureEnabled();
   const hiddenNavItems = useMemo<MainNavKey[]>(() => {
-    const base = getHiddenNavItemsForPlatform(frontendPlatform);
+    const base: MainNavKey[] = [
+      ...getHiddenNavItemsForPlatform(frontendPlatform),
+      ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : []),
+    ];
     const rsiFiltered: MainNavKey[] = rsiFeatureEnabled
       ? base
       : [...base, 'experiments'];
@@ -868,6 +1188,12 @@ function AppContent({
     if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
     return rsiFiltered;
   }, [frontendPlatform, masterEnabled, rsiFeatureEnabled]);
+
+  useEffect(() => {
+    if (isEnterprise() && (ENTERPRISE_HIDDEN_NAV_ITEMS as readonly string[]).includes(activeNav)) {
+      setActiveNav('chat');
+    }
+  }, [activeNav]);
 
   useEffect(() => {
     if (!rsiFeatureEnabled && activeNav === 'experiments') {
@@ -939,6 +1265,7 @@ function AppContent({
   }, [setHistoryRetryAvailable, setLoadingHistory]);
 
   useEffect(() => () => disposeInFlightHistoryHandles(), [disposeInFlightHistoryHandles]);
+
   const todos = useTodoStore((s) => s.runtimes[sessionId]?.todos ?? []);
   const subagentCount = useSubagentStore((s) => Object.keys(s.runtimes[sessionId]?.subagentsById ?? {}).length);
   const subagentStatusSignature = useSubagentStore((s) => Object.values(s.runtimes[sessionId]?.subagentsById ?? {})
@@ -982,14 +1309,28 @@ function AppContent({
     }
   }, [panelExpanded, toolPanelHidden, setToolPanelHidden]);
 
-  const { shouldFullscreen } = useResponsivePanelResize({
+  const { shouldFullscreen, sidebarAutoCollapsed } = useResponsivePanelResize({
     isTeamAreaExpanded,
-    conversationSidebarCollapsed,
-    setConversationSidebarCollapsed,
+    conversationSidebarCollapsed: designCanvasOpen ? designSidebarCollapsed : secondarySidebarCollapsed,
     setSingleAgentPanelExpanded,
     setTeamAreaExpanded,
     mode,
   });
+  const conversationSidebarCollapsed = (designCanvasOpen ? designSidebarCollapsed : secondarySidebarCollapsed) || isMobile || sidebarAutoCollapsed;
+  const toggleConversationSidebar = useCallback(() => {
+    closeSidebarPeek();
+    if (designCanvasOpen) setDesignSidebarCollapsed(value => !value);
+    else setSecondarySidebarCollapsed(value => !value);
+  }, [closeSidebarPeek, designCanvasOpen, setSecondarySidebarCollapsed]);
+  const rsiSidebarCollapsed = secondarySidebarCollapsed || isRsiNarrowViewport;
+  const hasFixedSecondarySidebar =
+    ((activeNav === 'chat' || activeNav === 'cron') && !conversationSidebarCollapsed) ||
+    (activeNav === 'experiments' && rsiHasExperiments && !rsiSidebarCollapsed);
+
+  useEffect(() => {
+    if (hasFixedSecondarySidebar || (sidebarPeek === 'settings' && !isSettingsNarrowViewport)) closeSidebarPeek();
+  }, [hasFixedSecondarySidebar, sidebarPeek, isSettingsNarrowViewport, closeSidebarPeek]);
+
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
   const insetTrajectoryFloatingTasks = shouldInsetTrajectoryForFloatingTasks(
@@ -1022,13 +1363,19 @@ function AppContent({
     drainTaskQueueIfIdle,
   } = useWebSocket({
     activeSessionId: sessionId,
+    isActiveSessionVisible: activeNav === 'chat',
     onConnect: () => {
       console.log('Connected');
-      // 连接建立/断线重连后重拉侧边栏定时任务列表（useCronStore）：web 先行
-      // 导航时首屏挂载早于 gateway 就绪，挂载期的 cron.job.list 会失败并被
-      // store 静默清空，且无其它重试入口，导致 project 页签定时任务空白直到
-      // 侧边栏重新挂载。这里在每次连接可用后补齐拉取。
-      void useCronStore.getState().loadJobs();
+      resetTeamAttachments();
+      // 连接建立/断线重连后重拉侧边栏定时任务：首屏常早于 Gateway/Agent Pod 就绪。
+      // 失败时 store 不再清空已有列表；这里再按间隔重试，避免「会话已出、定时任务仍空」。
+      void (async () => {
+        if (await useCronStore.getState().loadJobs()) return;
+        for (const delayMs of [2000, 5000, 10000, 15000, 30000]) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          if (await useCronStore.getState().loadJobs()) return;
+        }
+      })();
     },
     onDisconnect: () => {
       console.log('Disconnected');
@@ -1043,24 +1390,67 @@ function AppContent({
       handleModelsRefresh();
     },
     onCronResultArrived: (cronSessionId: string, cronJobId: string) => {
-      // 仅当用户当前停留在该任务的"立即执行"页面时才自动跳转：
-      // - 多个任务同时返回结果时，不会互相跳转覆盖
-      // - 用户已手动切走时不打扰
-      // - 定时调度（非"立即执行"）不自动跳转
-      // lastRunSessionId[jobId] 是点击"立即执行"时存入的会话 ID，
-      // sessionIdRef.current 是当前会话，两者一致说明用户还在等这个任务的结果。
-      if (cronJobId) {
-        const lastSid = useCronStore.getState().lastRunSessionId[cronJobId] ?? '';
-        if (lastSid && sessionIdRef.current === lastSid) {
-          void handleRestoreSession(cronSessionId);
-        }
+      // 人还停在这次执行的会话上时，把已经写好的回复读回来。
+      // 多个任务同时返回、或人已经切走时不跳。
+      // 点「立即执行」时记下的会话，和结果里的执行会话，对上当前页面都算还在等。
+      //
+      // 执行过程中页面可能已经拉过一次「半截」历史，historyPagerMeta 会让后续
+      // 恢复直接跳过。结果到了必须清掉这个标记，并取消还在飞的旧历史请求，
+      // 否则会出现：推送其实到了，但不刷新就一直看不到完整回复。
+      if (!cronSessionId) return;
+      const current = sessionIdRef.current;
+      const lastSid = cronJobId
+        ? (useCronStore.getState().lastRunSessionId[cronJobId] ?? '')
+        : '';
+      if (current === cronSessionId || (lastSid !== '' && current === lastSid)) {
+        disposeInFlightHistoryHandles(cronSessionId);
+        useChatStore.getState().setHistoryPagerMeta(cronSessionId, null);
+        void handleRestoreSession(cronSessionId);
       }
     },
   });
+  useEffect(() => {
+    if (!isConnected || !isTeamAgentMode(mode)) return;
+    void attachTeamSession(sessionId, mode).catch((error) => {
+      console.warn('[teamAttach] failed to attach session:', sessionId, error);
+    });
+  }, [isConnected, mode, sessionId]);
+
   const applicationPluginState = useApplicationPlugins(isConnected);
+  useEffect(() => {
+    if (!isConnected) return;
+    return watchCronRunUpdates(() => useCronStore.getState().clearUnconfirmedRuns());
+  }, [isConnected]);
   const applicationPlugins = applicationPluginState.plugins;
   const visibleApplicationPlugins = enabledApplicationPlugins(applicationPlugins);
   const settingsRequest = useMemo(() => resolveSettingsRequest(request), [request, resolveSettingsRequest]);
+
+  useEffect(() => {
+    if (!isConnected || !window.jiuwenDesktop?.isElectron) return;
+    let active = true;
+    let requestId = 0;
+    const refresh = () => {
+      const id = ++requestId;
+      const revision = browserDisplayRevision();
+      void settingsRequest<{ headless?: unknown }>('path.get')
+        .then((settings) => {
+          if (active && id === requestId) return applyBrowserDisplaySettings(settings, revision);
+        })
+        .catch((error) => console.warn('[desktop.browser] display setting load failed:', error));
+    };
+    refresh();
+    const unsubscribe = webClient.on('config.changed', ({ payload }) => {
+      const keys = payload.updated_keys;
+      const browserChanged = !Array.isArray(keys) || keys.length === 0 || keys.some(
+        (key) => typeof key === 'string' && (key.startsWith('browser') || key === 'headless'),
+      );
+      if (browserChanged) refresh();
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [isConnected, settingsRequest]);
 
   const applySubagentHistoryReplay = useCallback((sid: string, items: HistorySubagentReplayItem[]) => {
     const subagentStore = useSubagentStore.getState();
@@ -1245,6 +1635,35 @@ function AppContent({
     }
   }, [applySubagentHistoryReplay, request]);
 
+  const seedDiscoveredSubagents = useCallback((sid: string, ids: string[]) => {
+    // Cold refresh has no in-memory roster; parent history.done lists on-disk
+    // subagent buckets so we can seed ids and then pull per-subagent history
+    // (GitCode #4887). Placeholder status is replaced by roster frames.
+    if (!ids.length) return;
+    const subagentStore = useSubagentStore.getState();
+    let seeded = false;
+    for (const subagentId of ids) {
+      if (subagentStore.getRuntime(sid)?.subagentsById[subagentId]) continue;
+      const event = normalizeSubagentStatusEvent({
+        event_type: 'chat.subtask_update',
+        session_id: sid,
+        parent_session_id: sid,
+        subagent_id: subagentId,
+        display_name: subagentId,
+        status: 'completed',
+        revision: 0,
+        created_at: 0,
+        updated_at: 0,
+      });
+      if (!event || event.subagent.parent_session_id !== sid) continue;
+      subagentStore.applyHistoryEvent(sid, event);
+      seeded = true;
+    }
+    if (seeded) {
+      restoreSubagentHistory(sid);
+    }
+  }, [restoreSubagentHistory]);
+
   const applyRecoveredSubagentToolHistory = useCallback((sid: string, items: HistoryToolReplayItem[]) => {
     const subagentStore = useSubagentStore.getState();
     const mergedToolReplay = mergeHistoryToolReplayItems(
@@ -1308,6 +1727,9 @@ function AppContent({
     if (result.contextUsageSnapshot) {
       useSessionStore.getState().receiveContextUsage(result.contextUsageSnapshot);
     }
+    if (result.tokenUsageSnapshot) {
+      useSessionStore.getState().receiveSessionTokenUsage(result.tokenUsageSnapshot);
+    }
     for (const item of result.toolReplay) {
       if (item.kind === 'tool_call') {
         const n = normalizeToolCallPayload(item.payload);
@@ -1344,6 +1766,7 @@ function AppContent({
             summary: n.summary,
             skillTree: n.skillTree,
             ...(n.mermaid ? { mermaid: n.mermaid } : {}),
+            ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
             ...(n.timedOut ? { timedOut: true } : {}),
             ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
             reviewer: n.reviewer,
@@ -1351,6 +1774,9 @@ function AppContent({
           { updatedAt: item.at }
         );
       }
+    }
+    if (result.discoveredSubagentIds.length > 0) {
+      seedDiscoveredSubagents(sid, result.discoveredSubagentIds);
     }
     if (result.subagentReplay.length > 0) {
       applySubagentHistoryReplay(sid, result.subagentReplay);
@@ -1417,7 +1843,7 @@ function AppContent({
         ...currentItems,
       ]);
     }
-  }, [addToolCall, addToolResult, applyRecoveredSubagentToolHistory, applySubagentHistoryReplay, prependMessages, settleHistoricalToolExecutions]);
+  }, [addToolCall, addToolResult, applyRecoveredSubagentToolHistory, applySubagentHistoryReplay, prependMessages, seedDiscoveredSubagents, settleHistoricalToolExecutions]);
 
   const fetchHistoryBatch = useCallback(async (
     sid: string,
@@ -1592,12 +2018,13 @@ function AppContent({
   }, []);
 
   const fetchSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
+    const ownerStateRevision = organizationOwnerStateRevision(targetSessionId);
     const queueSnapshot = useChatStore.getState().beginQueuedSessionMessageSnapshot(targetSessionId);
     try {
       const response = await request<Session>('session.get_metadata', {
         session_id: targetSessionId,
       });
-      const { queued_session_messages: queuedMessages, ...session } = response;
+      const { queued_session_messages: queuedMessages, can_continue_queued_session_messages: canContinueQueuedMessages, ...session } = response;
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
           navigate({ kind: 'chat-new' }, { replace: true });
@@ -1617,6 +2044,22 @@ function AppContent({
               content: message.content,
             }))
         );
+      }
+      useChatStore.getState().setCanContinueQueuedSessionMessages(
+        targetSessionId,
+        canContinueQueuedMessages === true,
+      );
+      // Metadata can report aggregate child activity after the Owner has stopped.
+      // Only restore a persisted stop if no newer organization action raced this query.
+      if (
+        session.organization_owner_stopped === true && !isOrganizationOwnerStopped(targetSessionId) &&
+        organizationOwnerStateRevision(targetSessionId) === ownerStateRevision
+      ) {
+        setOrganizationOwnerStopped(targetSessionId, true);
+      }
+      if (isOrganizationOwnerStopped(targetSessionId)) {
+        session.is_processing = false;
+        session.status = 'interrupted';
       }
       upsertSessionMetadata(session, { setCurrent: sessionIdRef.current === targetSessionId });
       useWorkspaceStore.getState().upsertSession(session);
@@ -1664,17 +2107,25 @@ function AppContent({
             ? normalizeTeamLeaderIdentity(session.team_leader_identity)
             : null,
         );
+        useSessionStore.getState().setTeamGroupIdentity(
+          targetSessionId,
+          sessionGroupId && Object.prototype.hasOwnProperty.call(session, 'team_group_identity')
+            ? normalizeTeamGroupIdentity(session.team_group_identity)
+            : null,
+        );
         // 同 handleRestoreSession：拿到后端 metadata 里的 model 后还原 selectedModelName，
         // 覆盖"targetSession 为空、走 loadSessionMetadata"这条恢复路径（如从 cron 触发
         // 会话列表点进来的占位 session 之后补全元数据的场景，bug002）。
-        if (session?.model) {
-          useSessionStore.getState().setSelectedModelName(targetSessionId, session.model);
-        }
+        // Prefer stable model_selection when present; never restore a group from active_model/model name.
+        restoreSessionModelSelection(targetSessionId, session?.model_selection, session?.model);
         // 恢复会话时同步 swarmflow 开关 + budget：后端 metadata 里的
         // session_swarmflow_config 是上次会话持久化的配置，刷新/重进后读回。
         const sfConfig = (session as unknown as Record<string, unknown> | null)?.session_swarmflow_config;
         if (sfConfig && typeof sfConfig === 'object') {
-          const cfg = sfConfig as { enable_swarmflow?: boolean; swarmflow_budget?: number | null };
+          const cfg = sfConfig as {
+            enable_swarmflow?: boolean;
+            swarmflow_budget?: number | null;
+          };
           if (cfg.enable_swarmflow) {
             useSessionStore.getState().setSwarmflowActive(
               targetSessionId,
@@ -1682,6 +2133,21 @@ function AppContent({
               cfg.swarmflow_budget ?? undefined,
             );
           }
+        }
+        // 恢复会话时同步团队调度模式：团队建好后不可再改，前端只读展示。
+        const sessionRecord = session as unknown as Record<string, unknown> | null;
+        const restoredBootstrapMode = normalizeTeamBootstrapMode(
+          sessionRecord?.session_team_bootstrap_mode,
+        );
+        const restoredDispatchMode = resolveRestoredTeamDispatchMode(
+          sessionRecord?.session_team_dispatch_mode,
+          restoredBootstrapMode,
+        );
+        if (restoredDispatchMode) {
+          useSessionStore.getState().setTeamDispatchMode(targetSessionId, restoredDispatchMode);
+        }
+        if (restoredBootstrapMode) {
+          useSessionStore.getState().setTeamBootstrapMode(targetSessionId, restoredBootstrapMode);
         }
       }
       return session;
@@ -1714,18 +2180,35 @@ function AppContent({
     return pending;
   }, [fetchSessionMetadata]);
 
+  useEffect(() => {
+    loadSessionMetadataRef.current = loadSessionMetadata;
+  }, [loadSessionMetadata]);
+
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
     try {
+      const collaborationRevision = getMultiModelCollaborationRevision();
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
-      setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
-      setServerConfig(config);
+      setTrajectoryDiagnosisEnabled(
+        normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled),
+      );
+      setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
+      setComfyuiWorkflowEnabled(config.comfyui_workflow_enabled);
+      setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
+      const collaborationSnapshotApplied = applyMultiModelCollaborationSnapshot(
+        config.multi_model_collaboration_enabled,
+        collaborationRevision,
+      );
+      setServerConfig(collaborationSnapshotApplied ? config : {
+        ...config,
+        multi_model_collaboration_enabled: isMultiModelCollaborationEnabled(),
+      });
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
         modelSetupGuideEvaluatedRef.current = true;
-        if (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled)) {
+        if (!isEnterprise() && (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled))) {
           setActiveNav('chat');
           setModelSetupGuideStep(1);
         }
@@ -1735,19 +2218,20 @@ function AppContent({
       setServerConfig(null);
       setConfigError(t('app.configError'));
     }
-    // 同步获取多模型列表
+    // 同步获取多模型列表与模型组目录
     try {
-      const resp = await request<{ models: ModelEntry[]; active_model: string }>('models.list');
+      const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
       if (resp?.models) {
         setAvailableModels(resp.models, resp.active_model);
       }
+      setAvailableModelGroups(parseModelGroups(resp?.model_groups));
     } catch (error) {
       console.warn('Failed to fetch models list:', error);
     }
-  }, [request, t, setAvailableModels]);
+  }, [request, t, setAvailableModelGroups, setAvailableModels]);
 
   useEffect(() => {
-    if (!FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
+    if (isEnterprise() || !FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
       return;
     }
     startupUpdateCheckRef.current = true;
@@ -1834,14 +2318,15 @@ function AppContent({
 
   const handleModelsRefresh = useCallback(async () => {
     try {
-      const resp = await request<{ models: ModelEntry[]; active_model: string }>('models.list');
+      const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
       if (resp?.models) {
         setAvailableModels(resp.models, resp.active_model);
       }
+      setAvailableModelGroups(parseModelGroups(resp?.model_groups));
     } catch (error) {
       console.warn('Failed to refresh models list:', error);
     }
-  }, [request, setAvailableModels]);
+  }, [request, setAvailableModelGroups, setAvailableModels]);
 
   useEffect(() => {
     const onAuthChanged = (event: Event) => {
@@ -1861,7 +2346,11 @@ function AppContent({
     };
   }, [handleModelsRefresh]);
 
-  const detectExternalCli = useCallback(async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
+  const detectExternalCli = useCallback(async (
+    cliAgent: ExternalCliAgentKind,
+    cliPath?: string,
+    useBuiltin?: boolean,
+  ) => {
     return request<{
       cli_agent: ExternalCliAgentKind;
       status: "ok" | "warning" | "missing" | "unsupported" | "unavailable";
@@ -1872,7 +2361,23 @@ function AppContent({
     }>("external_cli.detect", {
       cli_agent: cliAgent,
       cli_path: cliPath || "",
+      use_builtin: useBuiltin ? "true" : "false",
     });
+  }, [request]);
+
+  const validateExternalCliPaths = useCallback(async (paths: string[]) => {
+    const payload = await request<{ results: Record<string, boolean | null> }>('external_cli.validate_paths', {
+      paths,
+    });
+    return payload?.results ?? {};
+  }, [request]);
+
+  const pruneExternalCliPathHistories = useCallback(async (cliAgent: ExternalCliAgentKind, removePaths: string[]) => {
+    const payload = await request<{ histories: string[] }>('external_cli.prune_path_histories', {
+      cli_agent: cliAgent,
+      remove_paths: removePaths,
+    });
+    return payload?.histories ?? [];
   }, [request]);
 
   const selectExternalCliPath = useCallback(async (cliAgent: ExternalCliAgentKind, initialPath?: string) => {
@@ -1936,13 +2441,12 @@ function AppContent({
     };
   }, [getExternalCliDependencyInstallStatus, isConnected]);
 
-  const trackExternalCliDependencyInstalls = useCallback(
-    (statuses: ExternalCliInstallStatuses) => {
-      setExternalCliInstallStatuses(statuses);
-      setExternalCliInstallDialogOpen(true);
-    },
-    [],
-  );
+  const trackExternalCliDependencyInstalls = useCallback((statuses: ExternalCliInstallStatuses) => {
+    // Merge, not replace: a save response may only carry a subset of agents
+    // (e.g. the one just committed), and replacing would drop another agent's
+    // in-flight install state and stop its progress updates.
+    setExternalCliInstallStatuses((current) => ({ ...current, ...statuses }));
+  }, []);
 
   const updateExternalCliInstallStatus = useCallback(
     (cliAgent: ExternalCliAgentKind, status: ExternalCliDependencyInstallStatus) => {
@@ -2022,6 +2526,36 @@ function AppContent({
     restartSuccess,
   ]);
 
+  // 连接状态提示：断连期间在右上角挂一条常驻 toast（不自动消失），重连后收起；
+  // 携带业务 id，配置加载/语言切换导致文案变化时原地更新，始终只有一条。
+  const connectionToastKeyRef = useRef<number | null>(null);
+  const connectionStatusText = serverConfig ? t('connection.connecting') : t('connection.loadingConfig');
+  useEffect(() => {
+    if (isConnected) {
+      if (connectionToastKeyRef.current !== null) {
+        toast.close(connectionToastKeyRef.current);
+        connectionToastKeyRef.current = null;
+      }
+      return;
+    }
+    connectionToastKeyRef.current = toast.open({
+      // 保留旧 DOM 契约：外层 app-connection-toast 定位，内层 message 元素带
+      // data-variant="connecting|loadingConfig"；id 仅作业务去重键，不进 DOM
+      id: 'app-connection-toast-message',
+      content: (
+        <span data-testid="app-connection-toast-message" data-variant={serverConfig ? 'connecting' : 'loadingConfig'}>
+          {connectionStatusText}
+        </span>
+      ),
+      duration: 0,
+      position: 'right',
+      variant: 'info',
+      icon: <LoadingSpinner size={14} />,
+      closable: false,
+      testId: 'app-connection-toast',
+    });
+  }, [isConnected, connectionStatusText]);
+
   useEffect(() => {
     return () => {
       clearRestartAutoCloseTimer();
@@ -2061,9 +2595,21 @@ function AppContent({
     }
     let cancelled = false;
     const retryDelaysMs = [2000, 5000, 10000, 15000, 30000];
+    const reloadCronJobs = async () => {
+      // 项目列表重试成功 ≈ 路由/Agent 侧已可用；顺带补拉定时任务，
+      // 覆盖「WS 已连上但 Agent Pod 更晚就绪」时 onConnect 那一次失败的情况。
+      if (cancelled) return;
+      if (await useCronStore.getState().loadJobs()) return;
+      for (const delayMs of retryDelaysMs) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (cancelled) return;
+        if (await useCronStore.getState().loadJobs()) return;
+      }
+    };
     const run = async () => {
       if (await loadProjects()) {
         if (!cancelled) initialProjectsLoadedRef.current = true;
+        await reloadCronJobs();
         return;
       }
       for (const delayMs of retryDelaysMs) {
@@ -2071,6 +2617,7 @@ function AppContent({
         if (cancelled) return;
         if (await loadProjects()) {
           if (!cancelled) initialProjectsLoadedRef.current = true;
+          await reloadCronJobs();
           return;
         }
       }
@@ -2088,6 +2635,24 @@ function AppContent({
     }
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
+
+  useEffect(() => {
+    if (!isConnected || !sessionId) return;
+    // A recovered old request must not clear a newer turn's stream buffers.
+    if (!historyRefreshQueueRef.current.take(sessionId, isProcessing || isLoadingHistory)) return;
+    disposeInFlightHistoryHandles(sessionId);
+    setHistoryPagerMeta(sessionId, null);
+    forcedHistoryRefreshRef.current.add(sessionId);
+    setHistoryBootstrapKey((key) => key + 1);
+  }, [
+    disposeInFlightHistoryHandles,
+    historyRecoveryRevision,
+    isConnected,
+    isLoadingHistory,
+    isProcessing,
+    sessionId,
+    setHistoryPagerMeta,
+  ]);
 
   // 聊天处理完成后更新本地会话元数据，以便拾取自动生成的标题等更新。
   const prevProcessingBySessionRef = useRef(new Map<string, boolean>());
@@ -2134,9 +2699,13 @@ function AppContent({
 
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
+    // The canvas restores its own director history through DesignerPage.
+    if (route.kind === 'design-project') return;
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     
-    if (sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
+    if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
+      releasePendingSessionEvents(sessionId);
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -2145,7 +2714,8 @@ function AppContent({
 
     // 新建会话时跳过历史加载
     const isNew = useChatStore.getState().runtimes[sessionId]?.isNewSession ?? false;
-    if (isNew) {
+    if (isNew && !forceRefresh) {
+      releasePendingSessionEvents(sessionId);
       useChatStore.getState().setNewSession(sessionId, false);
       setHistoryPagerMeta(sessionId, null);  // 新会话无历史，不显示分页栏
       setLoadingHistory(sessionId, false);
@@ -2157,12 +2727,13 @@ function AppContent({
     const existingRuntime = useChatStore.getState().getRuntime(sessionId);
     const subagentRuntime = useSubagentStore.getState().getRuntime(sessionId);
     const hasStorageOnlySubagentCache = Object.keys(subagentRuntime?.cacheOnlySubagentIds ?? {}).length > 0;
-    if (existingRuntime && existingRuntime.historyPagerMeta) {
+    if (!forceRefresh && existingRuntime && existingRuntime.historyPagerMeta) {
       if (hasStorageOnlySubagentCache) {
         useSubagentStore.getState().removeRuntime(sessionId);
       } else {
         setLoadingHistory(sessionId, false);
         startBackgroundHistoryPrefetch(sessionId);
+        releasePendingSessionEvents(sessionId);
         return;
       }
     }
@@ -2226,7 +2797,14 @@ function AppContent({
     // 开始历史会话加载
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
+      requestNextBatch: (cursor) => request(HISTORY_GET_METHOD, {
+        session_id: sessionId,
+        cursor,
+        limit: 50,
+      }),
       onReady: (messages, cursorMeta) => {
+        const seed = pendingCronUserSeedsRef.current.get(sessionId);
+        pendingCronUserSeedsRef.current.delete(sessionId);
         historyRestoreFromPanelHintRef.current = false;
         // "目标完成"回显消息纯前端合成，从未写进后端 session 历史，history.get 拉回来的
         // messages 里不会有它——按时间戳把本地持久化的记录补回去，见
@@ -2239,7 +2817,7 @@ function AppContent({
             sessionId,
             mergePersistedGoalCompletionMessages(
               sessionId,
-              messages.map((message) => ({ ...message, historyBatchSeq: 1 })),
+              mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
             ),
           )
         );
@@ -2264,8 +2842,15 @@ function AppContent({
       onContextUsage: (payload) => {
         useSessionStore.getState().receiveContextUsage(payload);
       },
+      onSessionTokenUsage: (payload) => {
+        useSessionStore.getState().receiveSessionTokenUsage(payload);
+      },
       onEmpty: (cursorMeta) => {
-        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(sessionId, []));
+        const seed = pendingCronUserSeedsRef.current.get(sessionId);
+        pendingCronUserSeedsRef.current.delete(sessionId);
+        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(
+          sessionId, mergeCronRunUserSeed([], sessionId, seed),
+        ));
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
           hasMore: cursorMeta.hasMore,
@@ -2331,6 +2916,7 @@ function AppContent({
                 summary: n.summary,
                 skillTree: n.skillTree,
                 ...(n.mermaid ? { mermaid: n.mermaid } : {}),
+                ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
                 ...(n.timedOut ? { timedOut: true } : {}),
                 ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
                 reviewer: n.reviewer,
@@ -2386,6 +2972,9 @@ function AppContent({
       onSubagentReplay: (items) => {
         applySubagentHistoryReplay(sessionId, items);
       },
+      onDiscoveredSubagentIds: (ids) => {
+        seedDiscoveredSubagents(sessionId, ids);
+      },
       onReasoningReplay: (items) => {
         restoreReasoningSegments(
           sessionId,
@@ -2414,6 +3003,12 @@ function AppContent({
           chatStore.enqueuePendingQuestion(sessionId, item.payload);
         }
       },
+      onAnsweredQuestionReplay: (items) => {
+        // 运行中的会话可能先从 runtime 快照收到已答问题，历史到达后再清理。
+        const chatStore = useChatStore.getState();
+        chatStore.ensureRuntime(sessionId);
+        chatStore.markQuestionsAnswered(sessionId, items.map((item) => item.payload.request_id));
+      },
       onError: (message) => {
         console.warn('[history.restore]', message);
       },
@@ -2437,6 +3032,8 @@ function AppContent({
       },
     });
     historyRestoreHandlesRef.current.set(sessionId, restoreHandle);
+    // beginHistoryRestore now owns the gate until history has been merged.
+    releasePendingSessionEvents(sessionId);
 
     // 调用历史会话接口
     void (async () => {
@@ -2471,15 +3068,18 @@ function AppContent({
     isConnected,
     sessionId,
     historyBootstrapKey,
+    route.kind,
     request,
     addMessage,
     addToolCall,
     addToolResult,
     applyRecoveredSubagentToolHistory,
     applySubagentHistoryReplay,
+    seedDiscoveredSubagents,
     settleHistoricalToolExecutions,
     clearMessages,
     disposeInFlightHistoryHandles,
+    releasePendingSessionEvents,
     setLoadingHistory,
     setHistoryPagerMeta,
     replaceHistoryMessages,
@@ -2585,6 +3185,15 @@ function AppContent({
       currentSessionId !== NEW_CONVERSATION_ID
       && pendingNewConversationRef.current
       && Boolean(pendingNewRuntime);
+    // 草稿会话（'new'）的未发送附件和它的输入框文字、专家选择一样只在内存里存着，
+    // 但没有跟着 resetNewConversationRuntime 走同一套"要不要带到这次新对话"的判断
+    // （附件草稿存在 InputArea.tsx 模块作用域里，resetNewConversationRuntime 够不着）。
+    // 不是回到刚才那个还没发出去的草稿时，上一次遗留的附件就清掉，不然用户随手上传、
+    // 没发送就切到别的会话，再点"新建对话"时那个文件会悄悄带进这个新对话，并在它第一次
+    // 真正发消息时被当成这个新会话自己的素材注册上去。
+    if (!shouldRestorePendingNewConversation) {
+      clearAttachmentDrafts(NEW_CONVERSATION_ID);
+    }
     newConversationPreviousSessionRef.current = resolvePendingPreviousSession({
       currentSessionId,
       currentMode: currentRuntime?.mode ?? mode,
@@ -2605,7 +3214,7 @@ function AppContent({
     // 模式，无论当前会话是什么模式、也无论有没有未发送的集群模式草稿，跳转会话都要回到单
     // agent 模式（bug003）。
     const nextMode = options.forceMode ?? resolvedEntrySettings.mode;
-    const { selectedModelName } = resolvedEntrySettings;
+    const { selectedModelName, selectedModelSelection } = resolvedEntrySettings;
     setChatWelcomeVariant(options.welcomeVariant ?? null);
     const selectedProject = options.project ?? useWorkspaceStore.getState().selectedProject;
     const projectDir = resolveNewConversationProjectDir(
@@ -2627,7 +3236,7 @@ function AppContent({
       && pendingNewRuntime?.agentGroupSelectionIntent.kind === 'select'
       ? pendingNewRuntime.agentGroupSelectionIntent
       : null;
-    resetNewConversationRuntime({ mode: nextMode, selectedModelName, projectDir });
+    resetNewConversationRuntime({ mode: nextMode, selectedModelName, selectedModelSelection, projectDir });
     if (pendingAgentSelection) {
       useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, pendingAgentSelection);
     }
@@ -2648,14 +3257,7 @@ function AppContent({
     }
     if (options.preserveProject) {
       preserveSelectedProjectOnChatNewRef.current = true;
-      newConversationProjectRef.current = selectedProject
-        ? {
-          project_id: selectedProject.project_id,
-          project_dir: selectedProject.project_dir,
-        }
-        : null;
     } else {
-      newConversationProjectRef.current = null;
       setSelectedProject(null);
     }
     sessionIdRef.current = NEW_CONVERSATION_ID;
@@ -2675,8 +3277,21 @@ function AppContent({
   // 监听从 SkillPanel 发来的"新建会话并插入技能"事件
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { skillName: string; prefixText?: string; suffixText?: string; secondSkillName?: string; metadata?: Record<string, unknown>; mode?: AgentMode };
-      enterNewConversation(detail.mode);
+      const detail = (e as CustomEvent).detail as {
+        skillName: string;
+        prefixText?: string;
+        suffixText?: string;
+        secondSkillName?: string;
+        preserveDraft?: boolean;
+        metadata?: Record<string, unknown>;
+        mode?: AgentMode;
+      };
+      // 事件显式带了 mode 时用 forceMode，避免未发送的草稿会话把模式改回去
+      // （例如「通过聊天创建技能」要求单 Agent，不能停在集群模式）。
+      enterNewConversation(
+        detail.mode,
+        detail.mode ? { forceMode: detail.mode } : {},
+      );
       // 存储 metadata，sendMessage 时随 chat.send 发送后清除（skill-creator 统一入口等场景）
       if (detail.metadata) {
         useSessionStore.getState().ensureRuntime(NEW_CONVERSATION_ID);
@@ -2685,7 +3300,13 @@ function AppContent({
       // 延迟派发，确保 ChatPanel/InputArea 已挂载并注册了事件监听器
       setTimeout(() => {
         window.dispatchEvent(new CustomEvent('chat-input-insert-skill', {
-          detail: { skillName: detail.skillName, prefixText: detail.prefixText, suffixText: detail.suffixText, secondSkillName: detail.secondSkillName }
+          detail: {
+            skillName: detail.skillName,
+            prefixText: detail.prefixText,
+            suffixText: detail.suffixText,
+            secondSkillName: detail.secondSkillName,
+            preserveDraft: detail.preserveDraft,
+          }
         }));
       }, 0);
     };
@@ -2767,18 +3388,23 @@ function AppContent({
     const runtimeSettings = {
       mode: pendingRuntime?.mode ?? mode,
       selectedModelName: sessionStore.getEffectiveModelName(NEW_CONVERSATION_ID),
+      selectedModelSelection: pendingRuntime?.selectedModelSelection ?? null,
       projectDir: pendingRuntime?.projectDirectory ?? null,
       persistSession: false,
     };
-    const baseWorkContext = getWorkContextForSession(NEW_CONVERSATION_ID);
-    const preservedProject = newConversationProjectRef.current;
-    const workContext = {
-      project_id: baseWorkContext.project_id || preservedProject?.project_id,
-      project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
-      work_mode: baseWorkContext.work_mode,
-    };
+    const workContext = getWorkContextForSession(NEW_CONVERSATION_ID);
 
     try {
+      if (workContext.work_mode === 'design') {
+        const created = await createDesignerConversation(initialTitle);
+        pendingNewConversationRef.current = false;
+        newConversationPreviousSessionRef.current = null;
+        sessionIdRef.current = created.sessionId;
+        setSessionId(created.sessionId);
+        useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+        navigate({ kind: 'design-project', projectId: created.projectId, sessionId: created.sessionId });
+        return created.sessionId;
+      }
       const createParams: Record<string, unknown> = {
         create_token: generateUuidV4(),
         mode: resolvePlanWireMode(
@@ -2820,12 +3446,35 @@ function AppContent({
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
       (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
       if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
+      if (pendingRuntime?.teamGroupIdentity) {
+        sessionStore.setTeamGroupIdentity(newSid, pendingRuntime.teamGroupIdentity);
+      }
+      if (pendingRuntime?.selectedModelSelection) {
+        sessionStore.setSelectedModelSelection(newSid, pendingRuntime.selectedModelSelection);
+        void request('session.selection.set', {
+          session_id: newSid,
+          model_selection: pendingRuntime.selectedModelSelection,
+        }).catch((error) => {
+          console.warn('Failed to persist model selection for new session:', error);
+        });
+      }
       sessionStore.setAgentSelectionIntent(
         newSid,
         pendingRuntime?.agentSelectionIntent ?? { kind: 'keep' as const },
       );
       if (pendingRuntime?.enableSwarmflow) {
         sessionStore.setSwarmflowActive(newSid, true, pendingRuntime.swarmflowBudget);
+      }
+      const pendingDispatchMode = resolveNewSessionDispatchMode(pendingRuntime?.teamDispatchMode);
+      if (pendingDispatchMode) {
+        sessionStore.setTeamDispatchMode(newSid, pendingDispatchMode);
+      }
+      const pendingBootstrapMode = resolveNewSessionBootstrapMode(
+        pendingDispatchMode,
+        pendingRuntime?.teamBootstrapMode,
+      );
+      if (pendingBootstrapMode) {
+        sessionStore.setTeamBootstrapMode(newSid, pendingBootstrapMode);
       }
       if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
         usePlanStore.getState().setActive(newSid, true, {
@@ -2846,7 +3495,6 @@ function AppContent({
       sessionIdRef.current = newSid;
       setSessionId(newSid);
       navigate({ kind: 'chat-session', sessionId: newSid }, { replace: true });
-      newConversationProjectRef.current = null;
       newConversationPreviousSessionRef.current = null;
       return newSid;
     } catch (error) {
@@ -2870,11 +3518,36 @@ function AppContent({
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: groupId });
   }, [enterNewConversation]);
 
-  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
+  const handleSendMessage = useCallback(async (
+    content: string,
+    mediaItems?: MediaItem[],
+    options?: ChatSendOptions | ChatInputProvenance,
+  ) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
-    if (options?.queuedTaskId) {
+    if (options && 'queuedTaskId' in options) {
       await sendMessage(content, currentSessionId, mediaItems, options);
+      return;
+    }
+    const provenance = options && !('queuedTaskId' in options) ? options : undefined;
+    const currentState = useSessionStore.getState();
+    const currentRuntime = currentState.getRuntime(currentSessionId);
+    const currentMetadata = currentState.currentSession?.session_id === currentSessionId
+      ? currentState.currentSession
+      : currentState.sessions.find((session) => session.session_id === currentSessionId);
+    const isDesignLanding = !isEnterprise() && route.kind === 'chat-new' && currentSessionId === NEW_CONVERSATION_ID
+      && useWorkspaceStore.getState().workMode === 'design';
+    if (
+      !isDesignLanding &&
+      !useChatStore.getState().getRuntime(currentSessionId)?.isProcessing &&
+      isConversationModelGroupBlocked({
+        mode: currentRuntime?.mode,
+        cronId: currentMetadata?.cron_id,
+        selectedModelSelection: currentRuntime?.selectedModelSelection,
+        collaborationEnabled: isMultiModelCollaborationEnabled(),
+      })
+    ) {
+      toast.open({ content: t('chat.modelSelector.collaborationDisabled'), variant: 'error' });
       return;
     }
     if (currentSessionId === NEW_CONVERSATION_ID) {
@@ -2887,10 +3560,55 @@ function AppContent({
       if (creatingSessionRef.current) return;
       creatingSessionRef.current = true;
       useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, true);
+      if (isDesignLanding) {
+        try {
+          const created = await submitDesignComposer({
+            prompt: messageContent,
+            mediaItems,
+          });
+          const store = useWorkspaceStore.getState();
+          const project = store.projects.find(
+            (item) => item.project_id === created.projectId,
+          );
+          if (project && !project.is_default) store.setSelectedProject(project);
+          navigate({
+            kind: 'design-project',
+            projectId: created.projectId,
+            sessionId: created.sessionId,
+          });
+          if (!store.expandedProjectIds[created.projectId]) {
+            store.toggleProjectExpanded(created.projectId);
+          }
+          await store.loadProjects();
+          await store.loadProjectSessions(created.projectId);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : '';
+          const referenceError = code === 'image_limit'
+            ? t('designer.chat.limitImages')
+            : code === 'video_limit'
+              ? t('designer.chat.limitVideo')
+              : code === 'audio_limit'
+                ? t('designer.chat.limitAudio')
+                : code === 'too_large'
+                  ? t('designer.chat.tooLarge')
+                  : code === 'unsupported'
+                    ? t('designer.chat.unsupported')
+                    : '';
+          toast.open({
+            content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
+            variant: 'error',
+          });
+        } finally {
+          creatingSessionRef.current = false;
+          useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+        }
+        return;
+      }
       const newRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
       const runtimeSettings = {
         mode: newRuntime?.mode ?? mode,
         selectedModelName: useSessionStore.getState().getEffectiveModelName(NEW_CONVERSATION_ID),
+        selectedModelSelection: newRuntime?.selectedModelSelection ?? null,
         projectDir: newRuntime?.projectDirectory ?? null,
         persistSession: persistCommand.persistSession,
       };
@@ -2906,13 +3624,7 @@ function AppContent({
           pendingNewAgentGroupBinding,
         );
       }
-      const baseWorkContext = getWorkContextForSession(NEW_CONVERSATION_ID);
-      const preservedProject = newConversationProjectRef.current;
-      const workContext = {
-        project_id: baseWorkContext.project_id || preservedProject?.project_id,
-        project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
-        work_mode: baseWorkContext.work_mode,
-      };
+      const workContext = getWorkContextForSession(NEW_CONVERSATION_ID);
       try {
         const createParams: Record<string, unknown> = {
           create_token: generateUuidV4(),
@@ -2966,6 +3678,15 @@ function AppContent({
           useSessionStore.getState().setSessionMetadata(newSid, pendingMetadata);
           useSessionStore.getState().setSessionMetadata(NEW_CONVERSATION_ID, null);
         }
+        if (newRuntime?.selectedModelSelection) {
+          useSessionStore.getState().setSelectedModelSelection(newSid, newRuntime.selectedModelSelection);
+          void request('session.selection.set', {
+            session_id: newSid,
+            model_selection: newRuntime.selectedModelSelection,
+          }).catch((error) => {
+            console.warn('Failed to persist model selection for new session:', error);
+          });
+        }
         // 同样搬家：欢迎页（'new'）上如果已经通过"+"菜单"扩展"面板开了某些插件/MCP 的会话内
         // 开关（或者是"使用"按钮带过来的 initialEnabledPlugins/initialEnabledMcps），真实
         // session_id 创建后要跟着过去，否则下面 removeRuntime('new') 会把这些选择直接冲掉。
@@ -2984,12 +3705,29 @@ function AppContent({
         if (pendingAgentGroupBinding) {
           useSessionStore.getState().setAgentGroupBindingPending(newSid, pendingAgentGroupBinding);
         }
+        const pendingTeamGroupIdentity = useSessionStore.getState()
+          .getRuntime(NEW_CONVERSATION_ID)?.teamGroupIdentity;
+        if (pendingTeamGroupIdentity) {
+          useSessionStore.getState().setTeamGroupIdentity(newSid, pendingTeamGroupIdentity);
+        }
         useSessionStore.getState().clearAgentGroupSelectionIntent(NEW_CONVERSATION_ID);
         // Swarmflow 开关同样按 session 存，必须在 removeRuntime('new') 之前搬到真实会话，
         // 否则 NEW_CONVERSATION_ID 的 runtime 被删后读到 undefined，chat.send 不带 enable_swarmflow=true。
         const newConvSwarmflow = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
         if (newConvSwarmflow?.enableSwarmflow) {
           useSessionStore.getState().setSwarmflowActive(newSid, true, newConvSwarmflow.swarmflowBudget);
+        }
+        // 调度模式同理，且在这里落成显式值：团队按首条消息建好后就不能再改。
+        const newConvDispatchMode = resolveNewSessionDispatchMode(newConvSwarmflow?.teamDispatchMode);
+        if (newConvDispatchMode) {
+          useSessionStore.getState().setTeamDispatchMode(newSid, newConvDispatchMode);
+        }
+        const newConvBootstrapMode = resolveNewSessionBootstrapMode(
+          newConvDispatchMode,
+          newConvSwarmflow?.teamBootstrapMode,
+        );
+        if (newConvBootstrapMode) {
+          useSessionStore.getState().setTeamBootstrapMode(newSid, newConvBootstrapMode);
         }
         pendingNewConversationRef.current = false;
         useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
@@ -3016,26 +3754,28 @@ function AppContent({
         navigate({ kind: 'chat-session', sessionId: newSid }, { replace: true });
         const goalArmedOnNew = useGoalStore.getState().runtimes[NEW_CONVERSATION_ID]?.armed ?? false;
         useGoalStore.getState().setArmed(NEW_CONVERSATION_ID, false);
+        let chatSent = false;
         if (goalArmedOnNew) {
           // 欢迎页 "+" 选了「目标」：这条内容不走普通 chat.send，
           // 本地落一条 user 消息（供徽章匹配）后改调 command.goal（见 InputArea.tsx 的同款分流逻辑）
           queueOrAddGoalObjectiveMessage(newSid, messageContent);
           setGoalObjective(newSid, messageContent);
         } else {
-          const sent = await sendMessage(messageContent, newSid, mediaItems);
-          if (!sent) {
-            useChatStore.getState().setInputValue(newSid, messageContent);
+          chatSent = await sendMessage(messageContent, newSid, mediaItems, undefined, provenance);
+          if (chatSent !== true) {
+            restoreUnsentInput(newSid, messageContent);
           }
         }
-        newConversationProjectRef.current = null;
         newConversationPreviousSessionRef.current = null;
+        // A goal objective is handed over once its conversation exists.
+        return chatSent === true || goalArmedOnNew ? newSid : undefined;
       } catch (error) {
         if (pendingNewAgentGroupBinding) {
           useSessionStore.getState().setAgentGroupBindingPending(NEW_CONVERSATION_ID, null);
         }
         useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
         useChatStore.getState().setThinking(NEW_CONVERSATION_ID, false);
-        useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, content);
+        restoreUnsentInput(NEW_CONVERSATION_ID, content);
         console.error('Failed to create conversation:', error);
         window.alert(t('multiSession.errors.create'));
       } finally {
@@ -3044,8 +3784,8 @@ function AppContent({
       return;
     }
     disposeInFlightHistoryHandles(currentSessionId);
-    const sent = await sendMessage(content, currentSessionId, mediaItems);
-    if (sent) {
+    const sent = await sendMessage(content, currentSessionId, mediaItems, undefined, provenance);
+    if (sent === true) {
       const sessionState = useSessionStore.getState();
       const session =
         sessionState.currentSession?.session_id === currentSessionId
@@ -3053,9 +3793,10 @@ function AppContent({
           : sessionState.sessions.find((item) => item.session_id === currentSessionId);
       await useWorkspaceStore.getState().refreshSessionWorkspace(session);
     } else {
-      useChatStore.getState().setInputValue(currentSessionId, content);
+      restoreUnsentInput(currentSessionId, content);
     }
-  }, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
+    return sent === true ? currentSessionId : undefined;
+  }, [disposeInFlightHistoryHandles, mode, navigate, request, route.kind, sendMessage, setGoalObjective, t]);
 
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -3091,6 +3832,13 @@ function AppContent({
     });
   }, [sendStructuredChatContent]);
 
+  useEffect(() => setMcpAppMessageHandler(async (targetSessionId, content) => {
+    if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return false;
+    const runtime = useChatStore.getState().getRuntime(targetSessionId);
+    if (runtime?.isProcessing || runtime?.queuePaused) return false;
+    return sendMessage(content, targetSessionId);
+  }), [sendMessage]);
+
   const handleInterrupt = useCallback((newInput?: string) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) return;
@@ -3106,7 +3854,11 @@ function AppContent({
     // （paused/blocked/completed/无目标）下，停止只结束会话，不碰目标本身。
     const isGoalActive = useGoalStore.getState().runtimes[currentSessionId]?.goal?.status === 'active';
     if (mode === 'team') {
-      void pause(currentSessionId);
+      if (organizationOwnerStopTarget(currentSessionId)) {
+        void cancel(currentSessionId);
+      } else {
+        void pause(currentSessionId);
+      }
       if (isGoalActive) void pauseGoal(currentSessionId);
       return;
     }
@@ -3200,7 +3952,26 @@ function AppContent({
   ]);
 
   const performSessionRestore = useCallback(
-    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean }) => {
+    async (targetSessionId: string, targetMode?: string, targetSession?: Session, seedUserMessage?: string) => {
+      for (const sid of pendingSessionEventReleasesRef.current.keys()) {
+        if (sid !== targetSessionId) releasePendingSessionEvents(sid);
+      }
+      const release = webClient.suspendSessionEvents(targetSessionId);
+      releasePendingSessionEvents(targetSessionId);
+      pendingSessionEventReleasesRef.current.set(targetSessionId, release);
+      if (!targetSession) {
+        try {
+          targetSession = await loadSessionMetadata(targetSessionId) ?? undefined;
+        } catch (error) {
+          releasePendingSessionEvents(targetSessionId);
+          throw error;
+        }
+        if (!targetSession) {
+          releasePendingSessionEvents(targetSessionId);
+          throw new Error(t('sessions.errors.restoreFailed', { sessionId: targetSessionId }));
+        }
+        targetMode = targetSession.mode;
+      }
       setChatWelcomeVariant(null);
       const previousSessionId = sessionIdRef.current;
       const previousMode =
@@ -3221,6 +3992,7 @@ function AppContent({
           });
         } catch (error) {
           if (isTeamAgentMode(resolvedMode)) {
+            releasePendingSessionEvents(targetSessionId);
             console.error('Failed to switch team session:', error);
             window.alert(t('sessions.errors.switchSession'));
             return;
@@ -3229,6 +4001,10 @@ function AppContent({
         }
       }
 
+      if (seedUserMessage?.trim()) {
+        pendingCronUserSeedsRef.current.set(targetSessionId, seedUserMessage);
+        forcedHistoryRefreshRef.current.add(targetSessionId);
+      }
       setHistoryLoadingMore(false);
       const existingRuntime = useChatStore.getState().getRuntime(targetSessionId);
       if (!existingRuntime) {
@@ -3240,13 +4016,7 @@ function AppContent({
         clearMessages(targetSessionId);
         clearTodos(targetSessionId);
         resetHarnessStore(targetSessionId);
-        historyRestoreFromPanelHintRef.current = true;
-      }
-      if (options?.skipHistoryLoad) {
-        // The session returned by cron.run_now can precede its first persisted
-        // message. The sessionId effect must skip its initial history request too.
-        useChatStore.getState().setNewSession(targetSessionId, true);
-        historyRestoreFromPanelHintRef.current = false;
+        historyRestoreFromPanelHintRef.current = !targetSession?.cron_id;
       }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
@@ -3255,12 +4025,10 @@ function AppContent({
       setSessionId(targetSessionId);
       if (targetSession) {
         upsertSessionMetadata(targetSession, { setCurrent: true });
-        // 会话打开时若后端 metadata 带 model（首条 chat.send 显式携带 model_name 时
-        // 由后端落盘），写进 runtime.selectedModelName——单 Agent 与集群（team）会话
-        // 同样恢复，保证刷新页面后模型选择不回退到默认模型。
-        if (targetSession.model) {
-          useSessionStore.getState().setSelectedModelName(targetSessionId, targetSession.model);
-        }
+        // 会话打开时还原模型选择——单 Agent 与集群（team）会话同样恢复，
+        // 保证刷新页面后模型选择不回退到默认模型。
+        // Prefer stable model_selection when present; never restore a group from active_model/model name.
+        restoreSessionModelSelection(targetSessionId, targetSession.model_selection, targetSession.model);
       } else {
         setCurrentSession(null);
       }
@@ -3279,21 +4047,21 @@ function AppContent({
       }
       setActiveNav('chat');
       navigate({ kind: 'chat-session', sessionId: targetSessionId });
-      if (!options?.skipHistoryLoad) {
-        setHistoryBootstrapKey((k) => k + 1);
-      }
+      setHistoryBootstrapKey((k) => k + 1);
       requestComposerFocus();
       // 始终拉一次 metadata——targetSession 从会话列表来（summary，无 swarmflow config），
       // 需要完整 metadata 才能恢复 session_swarmflow_config。
       void loadSessionMetadata(targetSessionId);
     },
     [
+      addMessage,
       clearMessages,
       clearTodos,
       disposeInFlightHistoryHandles,
       mode,
       navigate,
       loadSessionMetadata,
+      releasePendingSessionEvents,
       request,
       requestComposerFocus,
       resetHarnessStore,
@@ -3315,7 +4083,7 @@ function AppContent({
       targetSessionId: string,
       targetMode?: string,
       targetSession?: Session,
-      options?: { skipHistoryLoad?: boolean },
+      seedUserMessage?: string,
     ): Promise<void> => {
       // WebSocket requests are processed concurrently by AgentServer. Queue
       // navigation here so rapid A -> B -> C clicks cannot race and let an
@@ -3326,7 +4094,7 @@ function AppContent({
           targetSessionId,
           targetMode,
           targetSession,
-          options,
+          seedUserMessage,
         ));
       sessionRestoreQueueRef.current = queuedRestore.catch(() => undefined);
       return queuedRestore;
@@ -3400,9 +4168,15 @@ function AppContent({
     [handleRestoreSession, mode, request],
   );
 
-  const requestSessionNavigation = useCallback((target: Session | 'new', options?: NewConversationOptions) => {
-    if (target === 'new') {
-      enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
+  const confirmLeaveSettings = useCallback((): boolean => {
+    if (activeNav !== 'settings' || !settingsHasChangesRef.current) {
+      return true;
+    }
+    return window.confirm(t('settingsPanel.dialog.discardConfirm'));
+  }, [activeNav, t]);
+
+  const handleSelectDesignSession = useCallback((project: ProjectInfo, nextSessionId: string) => {
+    if (!confirmLeaveSettings()) {
       return;
     }
     if (isToolPanelAutoHideViewport) {
@@ -3410,23 +4184,88 @@ function AppContent({
       setSingleAgentPanelExpanded(false);
       setToolPanelHidden(true);
     }
-    void handleRestoreSession(target.session_id, target.mode, target);
-  }, [enterNewConversation, handleRestoreSession, isToolPanelAutoHideViewport, mode, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
+    setSelectedProject(project.is_default ? null : project);
+    setActiveNav('chat');
+    navigate({
+      kind: 'design-project',
+      projectId: project.project_id,
+      sessionId: nextSessionId,
+    });
+  }, [
+    confirmLeaveSettings,
+    isToolPanelAutoHideViewport,
+    navigate,
+    setSelectedProject,
+    setSingleAgentPanelExpanded,
+    setTeamAreaExpanded,
+    setToolPanelHidden,
+  ]);
 
-  const handleNavigate = useCallback(
-    (nav: MainNavKey) => {
-      if (
-        activeNav === 'settings' &&
-        nav !== 'settings' &&
-        settingsHasChangesRef.current &&
-        !window.confirm(t('settingsPanel.dialog.discardConfirm'))
-      ) {
+  const handleProjectRemoved = useCallback((projectId: string, removedWorkMode: WorkMode) => {
+    const selected = useWorkspaceStore.getState().selectedProject;
+    if (selected?.project_id === projectId) {
+      setSelectedProject(null);
+    }
+    // 目前 Design 功能页是唯一需要处理项目软删除的场景
+    if (
+      removedWorkMode === 'design'
+      && route.kind === 'design-project'
+      && route.projectId === projectId
+    ) {
+      navigate({ kind: 'chat-new' });
+      enterNewConversation(mode, undefined, { clearPreviousSession: true });
+    }
+  }, [enterNewConversation, mode, navigate, route, setSelectedProject]);
+
+  const requestSessionNavigation = useCallback(
+    (target: Session | 'new', options?: NewConversationOptions) => {
+      // 会话切换同样尊重未保存守卫：非设置页恒放行，设置页（仅 peek 入口可达）弹确认框
+      if (!confirmLeaveSettings()) {
         return;
       }
+      closeSidebarPeek();
+      if (target !== 'new' && target.type === 'group_chat') {
+        navigate({ kind: 'group-chat', groupId: target.session_id });
+        return;
+      }
+      if (target === 'new') {
+        enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
+        return;
+      }
+      if (isToolPanelAutoHideViewport) {
+        setTeamAreaExpanded(false);
+        setSingleAgentPanelExpanded(false);
+        setToolPanelHidden(true);
+      }
+      void handleRestoreSession(target.session_id, target.mode, target);
+    },
+    [
+      confirmLeaveSettings,
+      closeSidebarPeek,
+      navigate,
+      enterNewConversation,
+      handleRestoreSession,
+      isToolPanelAutoHideViewport,
+      mode,
+      setSingleAgentPanelExpanded,
+      setTeamAreaExpanded,
+      setToolPanelHidden,
+    ],
+  );
+
+  const handleNavigate = useCallback(
+    (nav: MainNavKey, peekTarget: SecondarySidebar | null = null): boolean => {
+      if (nav !== 'settings' && !confirmLeaveSettings()) {
+        return false;
+      }
+      if (peekTarget) openSidebarPeek(peekTarget);
+      else closeSidebarPeek();
+      // 创建对话框信号一次性消费：归零避免携带旧 nonce 重进实验页时误开对话框
+      setRsiOpenCreateNonce(0);
       if (nav !== 'settings') setRequestedSettingsModuleId(null);
       setActiveNav(nav);
       if (nav === 'chat') {
-        setConversationSidebarCollapsed(false);
+        if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
         if (isMobile) {
           setTeamAreaExpanded(false);
           setSingleAgentPanelExpanded(false);
@@ -3440,9 +4279,46 @@ function AppContent({
       if (nav === 'agents') setHasVisitedAgents(true);
       if (nav === 'skills') setHasVisitedSkills(true);
       if (nav === 'personalContext') setHasVisitedPersonalContext(true);
+      if (nav === 'design') {
+        setTeamAreaExpanded(false);
+        setToolPanelHidden(true);
+      }
+      return true;
     },
-    [activeNav, isMobile, modelSetupGuideStep, setSingleAgentPanelExpanded, setHasVisitedPersonalContext, setRequestedSettingsModuleId, setTeamAreaExpanded, setToolPanelHidden, t],
+    [
+      closeSidebarPeek,
+      openSidebarPeek,
+      navigate,
+      route.kind,
+      confirmLeaveSettings,
+      isMobile,
+      modelSetupGuideStep,
+      setSingleAgentPanelExpanded,
+      setHasVisitedPersonalContext,
+      setRequestedSettingsModuleId,
+      setTeamAreaExpanded,
+      setToolPanelHidden,
+    ],
   );
+
+  const handleNavItemClick = (nav: MainNavKey) => {
+    const peekTarget = (
+      (nav === 'chat' && conversationSidebarCollapsed) ||
+      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed) ||
+      (nav === 'settings' && isSettingsNarrowViewport)
+    ) ? nav : null;
+    handleNavigate(nav, peekTarget);
+  };
+
+  const pinSecondarySidebar = (target: SecondarySidebar) => {
+    if (!handleNavigate(target === 'chat' && activeNav === 'cron' ? 'cron' : target)) return;
+    if (target === 'chat' && designCanvasOpen) setDesignSidebarCollapsed(false);
+    else setSecondarySidebarCollapsed(false);
+    if (target === 'chat' && sidebarAutoCollapsed) {
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+    }
+  };
 
   const handleNavigateToAgentManagement = useCallback(
     (target: 'agent' | 'group' = 'agent') => {
@@ -3486,6 +4362,19 @@ function AppContent({
   }, [request]);
 
   const setShareExportSessionActive = useCallback((targetSessionId: string, active: boolean) => {
+    if (!active) {
+      waitingBrowserExportsRef.current.delete(targetSessionId);
+      setWaitingShareExportSessionIds(current => {
+        const next = new Set(current);
+        next.delete(targetSessionId);
+        return next;
+      });
+    }
+    if (!active) setShareExportProgress(current => {
+      const next = { ...current };
+      delete next[targetSessionId];
+      return next;
+    });
     setExportingShareSessionIds(current => {
       const next = new Set(current);
       if (active) next.add(targetSessionId);
@@ -3494,28 +4383,114 @@ function AppContent({
     });
   }, []);
 
+  const closeShareExportTab = useCallback((targetSessionId: string) => {
+    browserExportTabsRef.current.get(targetSessionId)?.close();
+    browserExportTabsRef.current.delete(targetSessionId);
+  }, []);
+
+  const shareExportPhaseText = useCallback((phase?: string, progress?: number | null) => (
+    phase === 'rendering' && progress != null
+      ? t('share.renderingProgress', { percent: progress })
+      : phase === 'download_started' ? t('share.downloading')
+        : phase === 'saving' || phase === 'completed' || phase === 'download_sent'
+        ? t(window.jiuwenDesktop?.isElectron ? 'share.savingDesktop' : 'share.saving')
+        : phase === 'rendering' ? t('share.preparingDocument')
+          : phase === 'loading_snapshot' ? t('share.loadingHistory') : t('share.preparing')
+  ), [t]);
+
+  useEffect(() => {
+    if (!window.jiuwenDesktop?.isElectron || typeof window.jiuwenDesktop.onShareImageExportProgress !== 'function') return;
+    return window.jiuwenDesktop.onShareImageExportProgress(({ sessionId: targetSessionId, phase, progress }) => {
+      if (!shareExportMonitorTokensRef.current.has(targetSessionId)) return;
+      setShareExportProgress(previous => ({ ...previous, [targetSessionId]: shareExportPhaseText(phase, progress) }));
+    });
+  }, [shareExportPhaseText]);
+
   const monitorAndSaveShareImageJob = useCallback(async (
     initialStatus: ShareImageExportJobStatus,
     targetSessionId: string,
     token: symbol,
+    startBrowser = false,
   ) => {
-    const status = await waitForShareImageJob(
-      initialStatus,
+    const resumedStatus = await resumeBrowserShareImageJob(initialStatus, targetSessionId, window.sessionStorage);
+    let startedBrowser = false;
+    let status = await waitForShareImageJob(
+      resumedStatus,
       () => shareExportMonitorTokensRef.current.get(targetSessionId) === token,
+      async snapshot => {
+        const current = await cancelShareImageJobForClosedTab(
+          { ...snapshot, client_token: resumedStatus.client_token },
+          browserExportTabsRef.current.get(targetSessionId),
+        );
+        const text = shareExportPhaseText(current.phase, current.progress);
+        setShareExportProgress(previous => ({ ...previous, [targetSessionId]: text }));
+        if (current.state !== 'queued') {
+          waitingBrowserExportsRef.current.delete(targetSessionId);
+          setWaitingShareExportSessionIds(previous => {
+            if (!previous.has(targetSessionId)) return previous;
+            const next = new Set(previous); next.delete(targetSessionId); return next;
+          });
+        }
+        if (current.renderer === 'browser' && current.state === 'queued' && !startedBrowser) {
+          startedBrowser = true;
+          const browserJob = { status: { ...current, client_token: resumedStatus.client_token }, locale: resumedStatus.locale ?? i18n.resolvedLanguage ?? i18n.language };
+          rememberPendingShareImageJob(window.sessionStorage, targetSessionId, browserJob.status, browserJob.locale);
+          const tab = startBrowser ? openShareImageExportTab(browserJob.status, browserJob.locale) : null;
+          if (tab) browserExportTabsRef.current.set(targetSessionId, tab);
+          else {
+            waitingBrowserExportsRef.current.set(targetSessionId, browserJob);
+            setWaitingShareExportSessionIds(previous => new Set(previous).add(targetSessionId));
+          }
+        }
+        return current;
+      },
+      () => setShareExportProgress(previous => ({ ...previous, [targetSessionId]: tRef.current('share.statusReconnecting') })),
     );
     if (status === null) return;
     if (status.state === 'failed') {
+      closeShareExportTab(targetSessionId);
       forgetPendingShareImageJob(window.sessionStorage, targetSessionId, status.job_id);
+      if (status.error === 'share_export_tab_closed') {
+        const sessionState = useSessionStore.getState();
+        const exportedSession = sessionState.currentSession?.session_id === targetSessionId
+          ? sessionState.currentSession
+          : sessionState.sessions.find(session => session.session_id === targetSessionId);
+        const exportedSessionTitle = toDisplaySessionTitle(exportedSession?.title ?? '') || targetSessionId;
+        toast.open({
+          id: `share-export-stopped:${status.job_id}`,
+          content: tRef.current('share.exportStopped', { sessionTitle: exportedSessionTitle }),
+          duration: 5,
+          wide: true,
+          testId: 'app-share-export-stopped-toast',
+          dataVariant: targetSessionId,
+        });
+        return;
+      }
       throw new Error(status.error || 'share_export_job_failed');
     }
 
-    const saved = await saveShareImageJob(status.job_id, status.filename.trim());
+    if (status.renderer === 'browser' && resumedStatus.state === 'completed' && status.phase !== 'download_started' && status.phase !== 'download_sent') {
+      // A reloaded chat can resume a published artifact after its renderer has gone.
+      status = await startShareImageJobDownload({ ...status, client_token: resumedStatus.client_token });
+    }
+    let saved: boolean;
+    try {
+      saved = status.renderer === 'browser'
+        ? await waitForShareImageJobTransfer(status, () => shareExportMonitorTokensRef.current.get(targetSessionId) === token,
+          current => setShareExportProgress(previous => ({ ...previous, [targetSessionId]: shareExportPhaseText(current.phase, current.progress) }))) !== null
+        : await saveShareImageJob(status.job_id, status.filename.trim());
+    } catch (error) {
+      if (error instanceof Error && ['share_export_download_start_timeout', 'share_export_download_interrupted'].includes(error.message)) closeShareExportTab(targetSessionId);
+      throw error;
+    }
+    if (saved) closeShareExportTab(targetSessionId);
     forgetPendingShareImageJob(window.sessionStorage, targetSessionId, status.job_id);
     if (saved) showSaveToast();
-  }, [showSaveToast]);
+  }, [closeShareExportTab, showSaveToast, shareExportPhaseText, i18n.language, i18n.resolvedLanguage]);
 
   useEffect(() => {
     const targetSessionId = sessionId;
+    if (isEnterprise() || window.jiuwenDesktop?.isElectron) return;
     if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return;
     if (shareExportMonitorTokensRef.current.has(targetSessionId)) return;
 
@@ -3530,6 +4505,9 @@ function AppContent({
         return;
       }
       if (status === null) return;
+      // A failed transfer is retried by the user's next export click. Reloading
+      // preserves its artifact without repeating the failure dialog or download.
+      if (status.renderer === 'browser' && status.state === 'completed' && status.phase === 'download_failed') return;
       if (shareExportMonitorTokensRef.current.has(targetSessionId)) return;
 
       const token = Symbol(targetSessionId);
@@ -3543,7 +4521,7 @@ function AppContent({
         );
       } catch (error) {
         console.error('Failed to monitor share image export:', error);
-        window.alert(tRef.current('share.exportFailed'));
+        window.alert(tRef.current(shareImageExportErrorKey(error)));
       } finally {
         if (shareExportMonitorTokensRef.current.get(targetSessionId) === token) {
           shareExportMonitorTokensRef.current.delete(targetSessionId);
@@ -3554,7 +4532,25 @@ function AppContent({
   }, [monitorAndSaveShareImageJob, sessionId, setShareExportSessionActive]);
 
   const handleExportShare = useCallback(async () => {
+    if (isEnterprise()) return;
     const currentSessionId = sessionIdRef.current;
+    if (window.jiuwenDesktop?.isElectron && typeof window.jiuwenDesktop.onShareImageExportProgress !== 'function') {
+      window.alert(t('share.desktopRestartRequired'));
+      return;
+    }
+    const waitingJob = waitingBrowserExportsRef.current.get(currentSessionId);
+    if (waitingJob) {
+      const tab = openShareImageExportTab(waitingJob.status, waitingJob.locale);
+      if (!tab) { window.alert(t('share.popupBlocked')); return; }
+      browserExportTabsRef.current.set(currentSessionId, tab);
+      waitingBrowserExportsRef.current.delete(currentSessionId);
+      setWaitingShareExportSessionIds(previous => {
+        const next = new Set(previous);
+        next.delete(currentSessionId);
+        return next;
+      });
+      return;
+    }
     if (
       !currentSessionId
       || currentSessionId === NEW_CONVERSATION_ID
@@ -3564,9 +4560,24 @@ function AppContent({
       return;
     }
     const token = Symbol(currentSessionId);
+    const plainWeb = !window.jiuwenDesktop?.isElectron && !window.pywebview;
     shareExportMonitorTokensRef.current.set(currentSessionId, token);
     setShareExportSessionActive(currentSessionId, true);
+    setShareExportProgress(current => ({ ...current, [currentSessionId]: t('share.preparing') }));
     try {
+      if (window.jiuwenDesktop?.isElectron) {
+        const saved = await window.jiuwenDesktop.exportShareImage(
+          currentSessionId,
+          i18n.resolvedLanguage ?? i18n.language,
+        );
+        if (saved) showSaveToast();
+        return;
+      }
+      const pending = await findShareImageJobForSession(currentSessionId, window.sessionStorage);
+      if (pending && pending.state === 'completed') {
+        await monitorAndSaveShareImageJob(pending, currentSessionId, token);
+        return;
+      }
       const createResponse = await fetch('/share-api/jobs', {
         method: 'POST',
         cache: 'no-store',
@@ -3574,25 +4585,36 @@ function AppContent({
         body: JSON.stringify({
           session_id: currentSessionId,
           locale: i18n.resolvedLanguage ?? i18n.language,
+          allow_browser_render: plainWeb,
         }),
       });
       const created = await readShareImageJobResponse(createResponse);
-      rememberPendingShareImageJob(window.sessionStorage, currentSessionId, created.job_id);
+      rememberPendingShareImageJob(window.sessionStorage, currentSessionId, created, i18n.resolvedLanguage ?? i18n.language);
       await monitorAndSaveShareImageJob(
         created,
         currentSessionId,
         token,
+        plainWeb,
       );
     } catch (error) {
       console.error('Failed to export share image:', error);
-      window.alert(t('share.exportFailed'));
+      window.alert(t(shareImageExportErrorKey(error)));
     } finally {
       if (shareExportMonitorTokensRef.current.get(currentSessionId) === token) {
         shareExportMonitorTokensRef.current.delete(currentSessionId);
         setShareExportSessionActive(currentSessionId, false);
       }
     }
-  }, [i18n.language, i18n.resolvedLanguage, isPaused, isProcessing, monitorAndSaveShareImageJob, setShareExportSessionActive, t]);
+  }, [
+    i18n.language,
+    i18n.resolvedLanguage,
+    isPaused,
+    isProcessing,
+    monitorAndSaveShareImageJob,
+    setShareExportSessionActive,
+    showSaveToast,
+    t,
+  ]);
 
   const routeSessionMissing = routeSessionId !== null
     && initialDataLoaded
@@ -3614,20 +4636,184 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     };
   }, [clearChatPanelResize, showWorkspaceDivider]);
 
+  const promptSuggestionSessionId = useChatStore((s) => s.activeSessionId);
+  const hasSuggestionConversation = useChatStore((s) => {
+    const runtime = s.runtimes[s.activeSessionId ?? ''];
+    return Boolean(runtime && (runtime.isLoadingHistory || runtime.historyPagerMeta
+      || runtime.messages.length || runtime.toolExecutionOrder.length));
+  });
+  const promptSuggestionBox = usePromptSuggestionBox(promptSuggestionSessionId, hasSuggestionConversation, activeNav === 'chat');
+  useEffect(() => {
+    promptSuggestionBox.setEnabled(normalizeConfigBoolean(serverConfig?.prompt_suggestion_enabled));
+  }, [promptSuggestionBox.setEnabled, serverConfig?.prompt_suggestion_enabled]);
+  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage) => {
+    if (nav === 'agents') {
+      return (
+        <div className="app-section min-h-0">
+          <AgentManagementPanel
+            isActive
+            onUseAgent={(packageName) => openInstalledExpertRef.current(packageName)}
+            onUsePrompt={handleUseAgentPrompt}
+            onUseAgentGroup={(groupId) => {
+              setIsJiuwenMate(false);
+              handleUseAgentGroup(groupId);
+            }}
+            onUseGroupPrompt={(groupId, prompt) => {
+              setIsJiuwenMate(false);
+              handleUseGroupPrompt(groupId, prompt);
+            }}
+            onCreateViaChat={() => {
+              setIsJiuwenMate(false);
+              requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-creator'],
+              });
+            }}
+            onCreateGroupViaChat={() => {
+              setIsJiuwenMate(false);
+              requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-group-creator'],
+                forceMode: 'agent',
+              });
+            }}
+            navigationRequest={agentManagementNavigationRequest}
+          />
+        </div>
+      );
+    }
+    if (nav === 'personalContext') {
+      if (!FEATURE_PERSONAL_CONTEXT_UI) return null;
+      return (
+        <div className="app-section">
+          <PersonalContextPanel isConnected={isConnected} isActive />
+        </div>
+      );
+    }
+    if (nav === 'skills') {
+      return (
+        <div className="app-section">
+          <SkillPanel
+            sessionId={sessionId}
+            isConnected={isConnected}
+            isActive
+            symphonyEnabled={normalizeConfigBoolean(serverConfig?.symphony_enabled)}
+            onSymphonyEnabledChange={saveSymphonyEnabled}
+            onNavigateToSettings={() => requestSettingsModule('agent')}
+          />
+        </div>
+      );
+    }
+    if (nav === 'connectorMarket') {
+      return (
+        <div className="app-page-body">
+          <div className="page-content">
+            <ConnectorMarketPanel
+              onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
+                detail: {
+                  skillName: 'plugin-creator',
+                  suffixText: t('connectorMarket.chatPrompts.createPlugin'),
+                  metadata: { scene: 'create_plugin' },
+                },
+              }))}
+              onUseExample={(initialInputValue, mcpName, displayName) =>
+                requestSessionNavigation('new', {
+                  initialInputValue,
+                  initialEnabledMcps: [mcpName],
+                  forceMode: 'agent',
+                  metadata: { prefer_mcp: { id: mcpName, display_name: displayName ?? mcpName } },
+                })
+              }
+              onUsePluginExample={(initialInputValue, pluginId) =>
+                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
+              }
+              onUseExtension={({ kind, id }) =>
+                requestSessionNavigation(
+                  'new',
+                  kind === 'plugin'
+                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
+                    : { initialEnabledMcps: [id], forceMode: 'agent' },
+                )
+              }
+            />
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="app-section">
+        <SettingsPage
+          definition={settingsPageDefinition}
+          isConnected={isConnected}
+          connectionState={connectionState}
+          request={settingsRequest}
+          onHasChangesChange={handleSettingsHasChangesChange}
+          onDetectExternalCli={detectExternalCli}
+          onSelectExternalCliPath={selectExternalCliPath}
+          onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
+          externalCliInstallStatuses={externalCliInstallStatuses}
+          onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
+          onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
+          externalCliPendingChoices={externalCliPendingChoices}
+          onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
+          externalCliDetectResults={externalCliDetectResults}
+          onExternalCliDetectResultsChange={setExternalCliDetectResults}
+          initialModuleId={requestedSettingsModuleId ?? undefined}
+        />
+      </div>
+    );
+  };
+
+  if (isJiuwenMate) {
+    return (
+      <JiuwenMateApp
+        onExit={() => {
+          setIsJiuwenMate(false);
+          if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
+        }}
+        groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+        onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
+        renderExistingPage={renderJiuwenMateExistingPage}
+        useInstalledExpertRef={openInstalledExpertRef}
+        confirmDiscardSettings={() => {
+          if (!settingsHasChangesRef.current) return true;
+          if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
+          setRequestedSettingsModuleId(null);
+          return true;
+        }}
+      />
+    );
+  }
+
   return (
     <div
       className={`shell shell--icon-rail ${activeNav === 'agents' ? 'shell--agent-management' : ''}`}
       data-testid="app-shell"
       data-session-id={sessionId}
     >
+      <ApplicationConversationRuntimes sessionId={sessionId} />
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}
-        onNavigate={handleNavigate}
+        onNavigate={handleNavItemClick}
         onNewSession={handleNewSession}
         showNewSession={false}
         hiddenNavItems={hiddenNavItems}
-        applicationPlugins={visibleApplicationPlugins}
+        applicationPlugins={isEnterprise() ? [] : visibleApplicationPlugins}
+        onNavItemHover={(key) => {
+          const target = (
+            key === 'chat' ||
+            (key === 'settings' && isSettingsNarrowViewport) ||
+            (key === 'experiments' && !rsiListKnownEmpty)
+          ) ? key : null;
+          hoverSidebarPeek(!hasFixedSecondarySidebar ? target : null);
+        }}
+        onNavItemPointerDownCapture={(key) => {
+          if (key === sidebarPeek) peekSurfaceProps.onPointerDownCapture();
+        }}
+        onToggleJiuwenMate={() => {
+          setIsJiuwenMate(reenterJiuwenMate({ isJiuwenMate, activeNav }).isJiuwenMate);
+        }}
       />
 
       {modelSetupGuideStep !== null ? (
@@ -3652,19 +4838,78 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
 
+        {sidebarPeek && sidebarPeek !== 'settings' && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
+          <div className="chat-layout--peek-host" {...peekSurfaceProps}>
+            {sidebarPeek === 'chat' ? (
+              <ConversationSidebar
+                activeSessionId={route.kind === 'group-chat'
+                  ? route.groupId ?? null
+                  : activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                onNew={(options) => requestSessionNavigation('new', options)}
+                onSelect={requestSessionNavigation}
+                onSelectDesignSession={handleSelectDesignSession}
+                activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+                designCanvasOpen={activeNav !== 'cron' && designCanvasOpen}
+                onProjectRemoved={handleProjectRemoved}
+                onOpenCron={() => handleNavigate('cron')}
+                isCronActive={activeNav === 'cron'}
+                collapsed={false}
+                floating
+                peek
+                onToggleCollapse={isMobile ? undefined : () => pinSecondarySidebar('chat')}
+              />
+            ) : (
+              <RsiRailPeek
+                onOpenExperiments={() => handleNavigate('experiments')}
+                onCreate={() => {
+                  if (handleNavigate('experiments')) setRsiOpenCreateNonce((n) => n + 1);
+                }}
+                onPin={isRsiNarrowViewport ? undefined : () => pinSecondarySidebar('experiments')}
+              />
+            )}
+          </div>
+        )}
+
         {activeNav === 'chat' && (
           <>
             <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
               <ConversationSidebar
-                activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                activeSessionId={route.kind === 'group-chat'
+                  ? route.groupId ?? null
+                  : sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
+                onSelectDesignSession={handleSelectDesignSession}
+                activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+                designCanvasOpen={designCanvasOpen}
+                onProjectRemoved={handleProjectRemoved}
                 onOpenCron={() => handleNavigate('cron')}
                 isCronActive={false}
                 collapsed={conversationSidebarCollapsed}
-                floating={conversationSidebarFloating}
-                onToggleCollapse={() => setConversationSidebarCollapsed((v) => !v)}
+                onToggleCollapse={toggleConversationSidebar}
+                hideCollapseButton={designCanvasOpen}
               />
+              {!isEnterprise() && workspaceWorkMode === 'design' && route.kind === 'design-project' ? (
+                  <DesignerPage
+                    projectId={route.projectId}
+                    sessionId={route.sessionId}
+                    sidebarCollapsed={conversationSidebarCollapsed}
+                    onToggleSidebarCollapse={() => {
+                      if (isMobile) {
+                        if (sidebarPeek === 'chat') closeSidebarPeek();
+                        else openSidebarPeek('chat');
+                        return;
+                      }
+                      toggleConversationSidebar();
+                    }}
+                    onOpenSession={(nextProjectId, nextSessionId, options) => {
+                      navigate(
+                        { kind: 'design-project', projectId: nextProjectId, sessionId: nextSessionId },
+                        options,
+                      );
+                    }}
+                  />
+              ) : (
               <div
                 className={`chat-workspace flex-1 flex min-h-0 overflow-hidden ${insetTrajectoryFloatingTasks ? 'chat-workspace--trajectory-floating-tools' : ''}`}
               >
@@ -3685,7 +4930,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     ...(effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : {}),
                     '--trajectory-composer-clearance': `${trajectoryComposerClearance(
                       composerDocked,
-                      composerCollapsed,
+                      composerCollapsed || composerHeldClosed,
                       trajectoryComposerHeight,
                     )}px`,
                   } as CSSProperties}
@@ -3695,6 +4940,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     activeView={chatSurfaceView}
                     chat={(
                       <ChatPanel
+                        promptSuggestionBox={promptSuggestionBox}
+                        onOpenGeneralSettings={() => requestSettingsModule('general')}
                         onSendMessage={handleSendMessage}
                         onEnsureSession={ensureApplicationPluginSession}
                         onForkSession={handleForkSession}
@@ -3708,13 +4955,17 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onCancel={handleCancel}
                         onSwitchMode={handleSwitchMode}
                         isProcessing={isProcessing}
+                        isConnected={isConnected}
                         onUserAnswer={handleUserAnswer}
                         onExportShare={handleExportShare}
                         isExportingShare={isExportingShare}
+                        shareExportProgress={shareExportProgress[sessionId]}
+                        isWaitingShareExportTab={waitingShareExportSessionIds.has(sessionId)}
                         canExportShare={Boolean(sessionId && sessionId !== NEW_CONVERSATION_ID && (!isProcessing || isPaused))}
                         sessionTitle={sessionTitle}
                         sessionProjectName={sessionProjectName}
                         sessionProject={sessionProject}
+                        topicStarterProjectId={topicStarterProjectId}
                         welcomeVariant={sessionId === NEW_CONVERSATION_ID ? chatWelcomeVariant : null}
                         teamAreaExpanded={toolPanelHidden ? null : isTeamAreaExpanded}
                         autoFocusKey={composerFocusKey}
@@ -3741,17 +4992,18 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onClearGoal={handleClearGoal}
                         onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
                         composerDocked={composerDocked}
-                        composerCollapsed={composerCollapsed}
+                        composerCollapsed={composerCollapsed || composerHeldClosed}
+                        composerToggleDisabled={composerHeldClosed}
                         onToggleComposerCollapsed={toggleTrajectoryComposer}
                         onComposerHeightChange={setTrajectoryComposerHeight}
                         onContinueQueuedSessionMessages={handleContinueQueuedSessionMessages}
+                        diagnosisEntryAvailable={diagnosisEntryAvailable}
+                        diagnosisActive={chatSurfaceView === 'diagnosis'}
+                        onToggleDiagnosis={toggleDiagnosisView}
                       />
                     )}
                     chatLabel={t('nav.chat')}
-                    mode={mode}
-                    onViewChange={selectChatSurfaceView}
-                    tabListLabel={t('trajectory.tabs.aria')}
-                    trajectory={(
+                    diagnosis={(
                       <Suspense
                         fallback={(
                           <div className="trajectory-view-loading">
@@ -3759,17 +5011,26 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           </div>
                         )}
                       >
-                        <LazyTrajectoryPanel
-                          active={chatSurfaceView === 'trajectory'}
+                        <LazyTrajectoryAnalysisPage
+                          active={chatSurfaceView === 'diagnosis'}
                           mode={mode}
                           sessionId={sessionId}
+                          onBack={leaveDiagnosisView}
+                          onComposerPolicyChange={setDiagnosisComposerPolicy}
+                          onComposerFilled={returnToChatAfterFill}
                         />
                       </Suspense>
                     )}
-                    trajectoryEnabled={trajectoryUiEnabled}
+                    diagnosisEnabled={diagnosisEntryAvailable}
+                    diagnosisRequested={diagnosisUiRequested}
+                    mode={mode}
+                    onViewChange={selectChatSurfaceView}
+                    tabListLabel={t('trajectory.tabs.aria')}
+                    trajectory={null}
+                    trajectoryEnabled={false}
                     trajectoryLabel={t('trajectory.tabs.trajectory')}
                     showNavigation={sessionId !== NEW_CONVERSATION_ID}
-                    trajectoryRequested={trajectoryUiRequested}
+                    trajectoryRequested={false}
                   />
                 </div>
 
@@ -3822,16 +5083,21 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 )}
 
                 {/* 心跳面板：跟 ToolPanel 一样占用右侧工作区一栏，而不是浮在页面上方的浮层 */}
-                {heartbeatPanelOpen && sessionId && sessionId !== NEW_CONVERSATION_ID && !showConversationNotFound && (
+                {!isEnterprise() && heartbeatPanelOpen && sessionId && sessionId !== NEW_CONVERSATION_ID && !showConversationNotFound && (
                   <HeartbeatPanel sessionId={sessionId} onClose={() => setHeartbeatPanelOpen(false)} />
                 )}
               </div>
+              )}
             </div>
           </>
         )}
         {activeNav === 'experiments' && (
           <div className="app-section">
-            <RsiPage />
+            <RsiPage
+              collapsed={rsiSidebarCollapsed}
+              onCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
+              openCreateNonce={rsiOpenCreateNonce}
+            />
           </div>
         )}
         {hasVisitedAgents && (
@@ -3878,33 +5144,15 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onOpenCron={() => handleNavigate('cron')}
               isCronActive
               collapsed={conversationSidebarCollapsed}
-              floating={conversationSidebarFloating}
-              onToggleCollapse={() => setConversationSidebarCollapsed((v) => !v)}
+              onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
             />
             <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
               <CronPanel
                   sessionId={sessionId}
                   onCreateViaChat={(initialInputValue) => requestSessionNavigation('new', { initialInputValue })}
-                  onSelectSession={(session) => {
+                  onSelectSession={(session, seedUserMessage) => {
                   if (typeof session === 'string') {
-                    // 立即执行返回的 session_id 可能还未在后端创建（agent 刚开始执行），
-                    // 构造最小 Session 占位对象，让 upsertSessionMetadata 直接加入会话列表，
-                    // 避免 loadSessionMetadata 立即失败导致"对话不存在或已删除"。
-                    // 后续 cron 广播到达时会刷新会话列表补全完整元数据。
-                    // 跳过初始历史加载：session 是全新的，空响应的 replaceHistoryMessages
-                    // 会覆盖后续到达的广播消息。
-                    void handleRestoreSession(session, undefined, {
-                      session_id: session,
-                      title: '',
-                      project_id: '',
-                      project_dir: '',
-                      mode: 'agent',
-                      status: 'active',
-                      message_count: 0,
-                      created_at: new Date().toISOString(),
-                      updated_at: new Date().toISOString(),
-                    }, { skipHistoryLoad: true });
-                    return;
+                    return handleRestoreSession(session, undefined, undefined, seedUserMessage);
                   }
                   requestSessionNavigation(session);
                   }}
@@ -3912,27 +5160,36 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             </div>
           </div>
         )}
-        {activeNav === 'settings' && (
-          <div className="app-section">
+        {(activeNav === 'settings' || (isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar)) && (
+          <div className={activeNav === 'settings' ? 'app-section' : 'app-section--peek-only'}>
             <SettingsPage
               definition={settingsPageDefinition}
+              appVersion={typeof serverConfig?.app_version === 'string' ? serverConfig.app_version : undefined}
+              onRecommendationEnabledChange={promptSuggestionBox.setEnabled}
               isConnected={isConnected}
               connectionState={connectionState}
               request={settingsRequest}
               onHasChangesChange={handleSettingsHasChangesChange}
               onDetectExternalCli={detectExternalCli}
+              onValidateExternalCliPaths={validateExternalCliPaths}
+              onPruneExternalCliPathHistories={pruneExternalCliPathHistories}
               onSelectExternalCliPath={selectExternalCliPath}
               onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
               externalCliInstallStatuses={externalCliInstallStatuses}
-              externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
-                (status) => status?.status === 'running',
-              )}
-              onOpenExternalCliInstallDialog={() => setExternalCliInstallDialogOpen(true)}
+              onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
+              onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
               externalCliPendingChoices={externalCliPendingChoices}
               onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
               externalCliDetectResults={externalCliDetectResults}
               onExternalCliDetectResultsChange={setExternalCliDetectResults}
               initialModuleId={requestedSettingsModuleId ?? undefined}
+              sidebar={{
+                isActive: activeNav === 'settings',
+                collapsed: isSettingsNarrowViewport,
+                peek: isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar,
+                surfaceProps: peekSurfaceProps,
+                onNavigate: () => { handleNavigate('settings'); },
+              }}
             />
           </div>
         )}
@@ -4003,15 +5260,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
 
       {/* 全局命令式 toast 渲染出口（toast.open） */}
       <ToastStack />
-
-      {/* 连接状态提示 */}
-      {!isConnected && (
-        <div className="app-toast-wrapper app-toast-wrapper--top" data-testid="app-connection-toast">
-          <div className="app-connection-toast animate-rise" data-testid="app-connection-toast-message" data-variant={serverConfig ? 'connecting' : 'loadingConfig'}>
-            {serverConfig ? t('connection.connecting') : t('connection.loadingConfig')}
-          </div>
-        </div>
-      )}
 
       {saveToastVisible && (
         <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-save-toast">
@@ -4116,14 +5364,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         </div>
       )}
-
-      <ExternalCliInstallDialog
-        open={externalCliInstallDialogOpen}
-        statuses={externalCliInstallStatuses}
-        onClose={() => setExternalCliInstallDialogOpen(false)}
-        onGetStatus={getExternalCliDependencyInstallStatus}
-        onStatusChange={updateExternalCliInstallStatus}
-      />
 
       {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
       <LoginDialog />

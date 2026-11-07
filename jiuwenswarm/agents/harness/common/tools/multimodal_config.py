@@ -11,6 +11,19 @@ import os
 from typing import Any
 
 
+MULTIMODAL_TOOL_GROUPS = {
+    "vision tools": ("image_ocr", "visual_question_answering"),
+    "audio tools": ("audio_transcription", "audio_question_answering", "audio_metadata"),
+    "video tool": ("video_understanding",),
+    "generate_image tool": ("generate_image",),
+    "generate_video tools": ("generate_video", "check_video_status"),
+    "generate_visual tool": ("generate_visual",),
+}
+MULTIMODAL_TOOL_NAMES = frozenset(
+    name for names in MULTIMODAL_TOOL_GROUPS.values() for name in names
+)
+
+
 def _parse_bool(val: Any, default: bool = False) -> bool:
     if val is None:
         return default

@@ -47,4 +47,13 @@ for (const cronExpr of ["0 0 9 ? * 7 *", "0 9 * * 7"]) {
   assert.match(items[0].content, /dow\(0-6; 0=Sun\) 字段无效/);
 }
 
+{
+  const { ctx, items, requests } = makeContext();
+  await command.action(ctx, 'add name=xiaoyi cron_expr="0 9 * * *" description="reminder" targets=xiaoyi');
+  assert.equal(requests.length, 0);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, "error");
+  assert.match(items[0].content, /Invalid target channel: "xiaoyi"/);
+}
+
 console.log("cron-command tests passed");

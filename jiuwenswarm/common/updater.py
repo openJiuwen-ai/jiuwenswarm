@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 
 from jiuwenswarm.common._build_config import PACKAGE_NAME
 from jiuwenswarm.common.config import get_config_raw
-from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.version import __version__, get_runtime_build_date, get_runtime_version
 from jiuwenswarm.common.upgrade_executor import create_executor
 from jiuwenswarm.common.version_source import (
     GitHubReleasesSource,
@@ -93,6 +93,7 @@ def _platform_asset_key() -> str:
 @dataclass
 class UpdateStatus:
     current_version: str
+    current_build_date: str = ""
     latest_version: str = ""
     state: str = "idle"
     has_update: bool = False
@@ -117,7 +118,8 @@ class UpdaterService:
         self._lock = threading.Lock()
         self._download_thread: threading.Thread | None = None
         self._status = UpdateStatus(
-            current_version=__version__,
+            current_version=get_runtime_version(),
+            current_build_date=get_runtime_build_date(),
             install_mode=_detect_install_mode(),
         )
 
@@ -163,12 +165,12 @@ class UpdaterService:
         try:
             self._check(config)
         except Exception as exc:
+            # Preserve the last-known release metadata so the UI can still
+            # show what version / timestamp we saw on the previous successful
+            # check. Invalidate action fields so a stale download URL cannot be
+            # used after the current run failed.
             self._update_status(
-                latest_version="",
                 has_update=False,
-                release_notes="",
-                published_at="",
-                source_type="",
                 asset_name="",
                 matched_asset="",
                 download_url="",

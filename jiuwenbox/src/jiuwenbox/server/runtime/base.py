@@ -63,7 +63,7 @@ class RuntimeAdapter(abc.ABC):
         sandbox_id: str,
         policy_path: Path,
         env: dict[str, str] | None = None,
-    ) -> int:
+    ) -> int | None:
         """Create and start a sandboxed process.  Returns the OS pid."""
         ...
 
@@ -183,4 +183,19 @@ class RuntimeAdapter(abc.ABC):
             ok=False,
             error="unsupported",
             detail="runtime adapter does not implement list_dir fast path",
+        )
+
+    async def search_files(
+        self,
+        sandbox_id: str,
+        sandbox_path: str,
+        patterns: list[str],
+        *,
+        exclude_patterns: list[str] | None = None,
+    ) -> RuntimeFileOpResult:
+        """Search files under ``sandbox_path``. Default is unsupported."""
+        return RuntimeFileOpResult(
+            ok=False,
+            error="unsupported",
+            detail="runtime adapter does not implement search_files fast path",
         )

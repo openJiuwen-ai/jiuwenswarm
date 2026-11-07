@@ -17,10 +17,31 @@ from scripts.build_config import (
     render_runtime_python,
     render_shell,
     write_expected,
+    write_build_metadata,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_build_metadata_uses_reproducible_release_date(monkeypatch, tmp_path: Path) -> None:
+    # 2026-10-25 17:00 UTC is already October 26 on the release calendar.
+    from datetime import datetime, timezone
+
+    epoch = int(datetime(2026, 10, 25, 17, tzinfo=timezone.utc).timestamp())
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
+    path = tmp_path / "staging" / "build-metadata.json"
+    write_build_metadata(path, "0.2.8.dev20261026")
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "version": "0.2.8.dev20261026", "build_date": "2026-10-26",
+    }
+
+
+def test_build_metadata_rejects_invalid_reproducible_timestamp(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "invalid")
+    with pytest.raises(ValueError):
+        write_build_metadata(tmp_path / "build-metadata.json", "0.2.8")
 
 
 def _create_project_fixture(root: Path, version: str = "1.2.3.beta4") -> None:
@@ -128,11 +149,13 @@ def test_shell_and_batch_values_are_emitted_directly_from_pyproject(tmp_path: Pa
     assert render_runtime_python(config).count("1.2.3.beta4") >= 4
 
 
-def test_seven_packaging_consumers_use_the_central_build_config() -> None:
+def test_packaging_consumers_use_the_central_build_config() -> None:
     consumers = {
         "scripts/build-macos.sh": 'build_config.py" --sync --emit-shell',
         "scripts/build-exe.ps1": 'build_config.py" --sync --emit-json',
         "scripts/build-exe.bat": "build_config.py --sync --emit-batch",
+        "scripts/build-electron-exe.sh": 'build_config.py" --sync --emit-shell',
+        "scripts/build-electron-exe.ps1": 'build_config.py" --sync --emit-json',
         "scripts/jiuwenswarm.spec": '"scripts", "build_config.py"',
     }
     for relative_path, expected in consumers.items():
@@ -155,6 +178,8 @@ def test_seven_packaging_consumers_use_the_central_build_config() -> None:
         ("scripts/build-macos.sh", "uv sync --extra dev"),
         ("scripts/build-exe.ps1", "uv sync --extra dev"),
         ("scripts/build-exe.bat", "uv sync --extra dev"),
+        ("scripts/build-electron-exe.sh", "uv sync --locked --extra dev"),
+        ("scripts/build-electron-exe.ps1", "uv sync --locked --extra dev"),
     ],
 )
 def test_official_build_wrappers_auto_sync_before_uv(
@@ -162,19 +187,64 @@ def test_official_build_wrappers_auto_sync_before_uv(
     sync_command: str,
 ) -> None:
     script = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+    lines = script.splitlines()
+    config_line = next(
+        index
+        for index, line in enumerate(lines)
+        if "build_config.py" in line
+        and "--sync" in line
+        and not line.lstrip().startswith(("#", "REM"))
+    )
+    dependency_line = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip().startswith((sync_command, f"call {sync_command}"))
+    )
 
-    assert "build_config.py" in script
-    assert "--sync" in script
-    assert script.index("--sync") < script.index(sync_command)
+    assert config_line < dependency_line
     assert "scripts/sync_version.py" not in script
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "scripts/build-electron-exe.sh",
+        "scripts/build-electron-exe.ps1",
+    ],
+)
+def test_electron_build_config_sync_precedes_dependency_installation(
+    relative_path: str,
+) -> None:
+    lines = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8").splitlines()
+    config_line = next(
+        index
+        for index, line in enumerate(lines)
+        if "build_config.py" in line and "--sync" in line
+    )
+    dependency_lines = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip().startswith(("uv sync ", "npm install", "npm ci", "bun install"))
+    ]
+
+    assert dependency_lines
+    assert all(config_line < dependency_line for dependency_line in dependency_lines)
+
+
 def test_desktop_release_builds_exclude_optional_cli_dependencies() -> None:
-    for relative_path in (
-        "scripts/build-macos.sh",
-        "scripts/build-exe.ps1",
-        "scripts/build-exe.bat",
-    ):
+    # The Windows builds bundle the cua extra: unlike the CLI runtimes there is
+    # no on-demand installer for it, so a bundle without it cannot drive the
+    # desktop at all. The macOS builds leave it out: cua has no macOS backend.
+    expected_sync_commands = {
+        "scripts/build-macos.sh": "uv sync --extra dev",
+        "scripts/build-exe.ps1": "uv sync --extra dev --extra cua",
+        "scripts/build-exe.bat": "uv sync --extra dev --extra cua",
+        "scripts/build-electron-exe.sh": "uv sync --locked --extra dev",
+        "scripts/build-electron-exe.ps1": (
+            "uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc"
+        ),
+    }
+    for relative_path, expected_sync_command in expected_sync_commands.items():
         script = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         sync_commands = [
             line.strip().removeprefix("call ")
@@ -182,7 +252,7 @@ def test_desktop_release_builds_exclude_optional_cli_dependencies() -> None:
             if line.strip().removeprefix("call ").startswith("uv sync")
         ]
 
-        assert sync_commands == ["uv sync --extra dev"]
+        assert sync_commands == [expected_sync_command]
         assert "--extra claude" not in script
         assert "--extra codex" not in script
 
@@ -238,6 +308,22 @@ def test_desktop_release_builds_exclude_optional_cli_dependencies() -> None:
         assert excludes_keyword.value.id == "excludes"
 
 
+def test_electron_release_artifact_names_come_from_build_config() -> None:
+    windows = (PROJECT_ROOT / "scripts/build-electron-exe.ps1").read_text(encoding="utf-8")
+    installer = (PROJECT_ROOT / "scripts/installer-electron.iss").read_text(encoding="utf-8")
+    macos = (PROJECT_ROOT / "scripts/build-electron-exe.sh").read_text(encoding="utf-8")
+
+    assert "$BuildSetupBaseName = [string]$BuildConfig.setup_base_name" in windows
+    assert "$BuildSetupFilename = [string]$BuildConfig.setup_filename" in windows
+    assert "$InstallerFileName = $BuildSetupFilename" in windows
+    assert '"/DBuildSetupBaseName=$BuildSetupBaseName"' in windows
+    assert "OutputBaseFilename={#BuildSetupBaseName}" in installer
+    assert "BUILD_APP_BUNDLE_NAME=" in macos
+    assert "BUILD_DMG_FILENAME=" in macos
+    assert 'APP_BUNDLE="$ELECTRON_APP_DIR/$BUILD_APP_BUNDLE_NAME"' in macos
+    assert 'DMG_NAME="$BUILD_DMG_FILENAME"' in macos
+
+
 def test_windows_installer_uses_workswarm_upgrade_identity() -> None:
     installer = (PROJECT_ROOT / "scripts/installer.iss").read_text(encoding="utf-8")
 
@@ -253,6 +339,9 @@ def test_packaging_consumers_do_not_duplicate_canonical_version() -> None:
         "scripts/build-exe.ps1",
         "scripts/build-exe.bat",
         "scripts/installer.iss",
+        "scripts/build-electron-exe.sh",
+        "scripts/build-electron-exe.ps1",
+        "scripts/installer-electron.iss",
         "scripts/jiuwenswarm.spec",
         "scripts/jiuwenswarm_exe_entry.py",
         "jiuwenswarm/channels/desktop/desktop_app.py",
@@ -324,7 +413,7 @@ def test_cli_sync_status_uses_stderr_without_log_prefix(tmp_path: Path) -> None:
     )
 
     assert result.stdout == "1.2.3.beta4\n"
-    assert result.stderr.splitlines() == [
+    assert result.stderr.replace("\\", "/").splitlines() == [
         "updated pyproject.toml",
         "updated packages/jiuwenswarm-tui/pyproject.toml",
         "updated jiuwenswarm/common/_build_config.py",

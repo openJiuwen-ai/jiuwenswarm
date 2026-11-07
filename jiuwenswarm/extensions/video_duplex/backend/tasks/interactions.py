@@ -26,6 +26,7 @@ def information_question(payload):
             raise ValueError(error)
     return dict(
         request_id=payload["request_id"],
+        interrupt_id=str(payload.get("interrupt_id") or ""),
         source=source,
         questions=deepcopy(questions),
         state="pending",
@@ -33,6 +34,7 @@ def information_question(payload):
 
 
 NATIVE_APPROVAL_SOURCES = {"permission_interrupt", "confirm_interrupt"}
+VOICE_APPROVAL_SOURCES = {"confirm_interrupt"}
 
 
 def native_approval_question(payload):
@@ -49,11 +51,67 @@ def native_approval_question(payload):
         raise ValueError("Invalid approval questions")
     return dict(
         request_id=request_id,
+        interrupt_id=str(payload.get("interrupt_id") or ""),
         source=payload["source"],
         questions=deepcopy(questions),
         approval_schema=payload.get("approval_schema"),
         state="pending",
     )
+
+
+def approval_cards(interaction):
+    """Summarize a pending approval card for voice; None for voice-answerable questions."""
+    interaction = interaction or {}
+    if interaction.get("source") not in VOICE_APPROVAL_SOURCES or interaction.get("state") != "pending":
+        return None
+    return [
+        dict(header=str(q.get("header") or "")[:200], message=str(q.get("question") or "")[:500])
+        for q in (interaction.get("questions") or [])[:3]
+        if isinstance(q, dict)
+    ]
+
+
+def approval_option_labels(question):
+    """The labels a card offers; a spoken answer must be exactly one of them."""
+    labels = []
+    for option in question.get("options") or []:
+        label = option.get("label") if isinstance(option, dict) else option
+        if isinstance(label, str) and label.strip():
+            labels.append(label.strip())
+    return labels
+
+
+def voice_approval_answers(interaction, answers):
+    """Map spoken answers onto the card's own options; anything else is refused.
+
+    Whether the user clearly said yes or no is the voice prompt's job; this only
+    guarantees that what reaches Core is an option the card itself offered.
+    """
+    native_approval_question(interaction)
+    if interaction.get("source") not in VOICE_APPROVAL_SOURCES:
+        raise ValueError(
+            "Permission requests require a manual click on the on-screen card; voice answers are not allowed"
+        )
+    questions = interaction["questions"]
+    if not isinstance(answers, list) or len(answers) != len(questions):
+        raise ValueError("Answer every approval question exactly once")
+    result = []
+    for question, answer in zip(questions, answers):
+        labels = approval_option_labels(question)
+        if isinstance(answer, dict):
+            picked = answer.get("selected_options") or []
+            if answer.get("custom_input") or answer.get("answer"):
+                raise ValueError("Approval answer must be one of the card options: " + " / ".join(labels))
+        else:
+            picked = [answer]
+        picked = [str(p).strip() for p in picked if isinstance(p, str)]
+        if len(picked) != 1 or picked[0] not in labels:
+            raise ValueError("Approval answer must be one of the card options: " + " / ".join(labels))
+        item = dict(question=question["question"], selected_options=picked)
+        if isinstance(question.get("card_id"), str) and question["card_id"]:
+            item["card_id"] = question["card_id"]
+        result.append(item)
+    return result
 
 
 def validate_native_approval_answers(interaction, answers):
@@ -62,7 +120,12 @@ def validate_native_approval_answers(interaction, answers):
         raise ValueError("Answer every approval question exactly once")
     result = []
     for question, answer in zip(interaction["questions"], answers):
-        if not isinstance(answer, dict) or answer.get("question") != question["question"]:
+        if not isinstance(answer, dict):
+            raise ValueError("Approval answer does not match the pending question")
+        answer_question = answer.get("question")
+        if answer_question is None:
+            answer_question = question["question"]
+        elif answer_question != question["question"]:
             raise ValueError("Approval answer does not match the pending question")
         text = answer.get("custom_input", answer.get("answer", ""))
         options = answer.get("selected_options", [])
@@ -75,7 +138,17 @@ def validate_native_approval_answers(interaction, answers):
             raise ValueError("Invalid approval answer")
         if not text.strip() and not options:
             raise ValueError("Approval answer is empty")
-        result.append(dict(question=question["question"], answer=text, selected_options=options))
+        item = dict(
+            question=question["question"], answer=text, selected_options=options
+        )
+        if "card_id" in answer:
+            raw_card_id = answer["card_id"]
+            card_id = raw_card_id.strip() if isinstance(raw_card_id, str) else ""
+            if card_id and len(card_id) <= 512:
+                item["card_id"] = card_id
+            elif interaction["source"] == "permission_interrupt" and "card_id" in question:
+                raise ValueError("Invalid approval card ID")
+        result.append(item)
     return result
 
 

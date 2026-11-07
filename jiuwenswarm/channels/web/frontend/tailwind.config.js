@@ -110,6 +110,7 @@ export default {
           'tool-icon-surface': color('--color-connector-tool-icon-surface'),
           'tool-icon-border': color('--color-connector-tool-icon-border'),
           'add-hover-surface': color('--color-connector-add-hover-surface'),
+          'json-paste-surface': color('--color-connector-json-paste-surface'),
         },
         overlay: {
           'cron-dialog': color('--color-overlay-cron-dialog'),

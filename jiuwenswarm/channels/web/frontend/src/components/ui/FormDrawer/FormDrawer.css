@@ -45,6 +45,32 @@
   overflow-wrap: anywhere;
 }
 
+/* body 修饰类：纵向 flex 且左右 padding 归零，供"主体内容是滚动区"的抽屉使用——
+   滚动区（.form-drawer__scroll-area）作为 flex 子项填满剩余高度，并通栏到抽屉右缘，
+   滚动条才能贴住抽屉最右侧；24px 横向留白改由 body 的各子元素自担
+   （固定子元素用 px-6/mx-6，滚动区自带，见下） */
+.form-drawer__body--flush {
+  display: flex;
+  flex-direction: column;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+/* 抽屉主滚动区：配合 form-drawer__body--flush 使用。
+   填充 body 剩余高度并自身滚动；scrollbar-gutter: stable 恒定预留 8px 槽位（与全局滚动条同宽），
+   滚动条出现/消失只是往固定槽位里填/抽滑块，内容零抖动；
+   左 padding 24px、右 padding = 视觉总留白 24px - 槽位 8px = 16px，内容右缘与其它 24px 留白子元素恒对齐。
+   滚动条皮肤沿用全局 ::-webkit-scrollbar（8px、滑块常显、hover 加深），此处不要再声明
+   scrollbar-width/scrollbar-color，Chrome 121+ 会因此禁用全局 webkit 皮肤 */
+.form-drawer__scroll-area {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-left: 24px;
+  padding-right: 16px;
+}
+
 .form-drawer__footer {
   display: flex;
   align-items: center;
@@ -58,6 +84,10 @@
 
 .form-drawer__footer--slot {
   justify-content: flex-end;
+}
+
+.form-drawer__footer-leading {
+  margin-right: auto;
 }
 
 .form-drawer__btn {

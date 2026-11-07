@@ -5,7 +5,13 @@ import type { ProcessItem } from './shared';
 
 type MemberOverviewCardProps = {
   memberId: string;
+  /** 头像 hash key（镜像 worker 传 agent.name，真实队友缺省用 memberId）。 */
+  avatarKey?: string;
+  /** 头像身份（CLI 品牌 / 人类 / 专家）：avatarKey 非成员 id 时名册查不到，需显式传入。 */
+  avatarIdentity?: { cliAgent?: string; role?: string; mode?: string; agentTemplate?: string };
   displayName: string;
+  /** 专家辅助行："展示名（成员名）"，普通成员为空。 */
+  expertHint?: string | null;
   sequence: number;
   statusIcon?: ReactNode;
   onClick?: () => void;
@@ -15,7 +21,10 @@ type MemberOverviewCardProps = {
 
 export function MemberOverviewCard({
   memberId,
+  avatarKey,
+  avatarIdentity,
   displayName,
+  expertHint,
   sequence,
   statusIcon,
   onClick,
@@ -53,19 +62,29 @@ export function MemberOverviewCard({
         </span>
         <div className="relative shrink-0">
           <TeamMemberAvatar
-            member={memberId}
+            member={avatarKey ?? memberId}
+            identity={avatarIdentity}
             alt={displayName}
             className="h-8 w-8 rounded-full"
             imageClassName="rounded-full"
           />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-normal text-text" data-testid="team-area-member-overview-card-name">
+          <div
+            className="truncate text-sm font-normal text-text"
+            title={displayName}
+            data-testid="team-area-member-overview-card-name"
+          >
             {displayName}
           </div>
           <div className="mt-0.5 truncate text-xs text-text-muted" data-testid="team-area-member-overview-card-id">
             @{memberId}
           </div>
+          {expertHint && (
+            <div className="mt-0.5 truncate text-xs text-text-muted" data-testid="team-area-member-overview-card-expert">
+              ★ {expertHint}
+            </div>
+          )}
         </div>
         {statusIcon}
       </button>

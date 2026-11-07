@@ -8,6 +8,7 @@ import ast
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -191,10 +192,33 @@ def read_text(path: Path) -> tuple[str | None, str | None]:
         return None, str(exc)
 
 
+def _which(tool: str, *fallbacks: str) -> str | None:
+    """Absolute path of an external tool, or None when it is unavailable.
+
+    External programs are invoked through this resolved path rather than a bare
+    name left to PATH lookup. `fallbacks` covers the usual install locations for
+    when PATH is minimal (CI sandboxes, service contexts).
+    """
+    found = shutil.which(tool)
+    if found:
+        return os.path.abspath(found)
+    for candidate in fallbacks:
+        if os.path.isabs(candidate) and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+GIT = _which("git", "/usr/bin/git", "/usr/local/bin/git", "/bin/git",
+             r"C:\Program Files\Git\cmd\git.exe")
+CTAGS = _which("ctags", "/usr/bin/ctags", "/usr/local/bin/ctags")
+
+
 def git_ls_files(root: Path) -> list[Path] | None:
+    if GIT is None:
+        return None
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
+            [GIT, "-C", str(root), "ls-files", "-z"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -210,13 +234,18 @@ def git_ls_files(root: Path) -> list[Path] | None:
 
 
 def run_git(root: Path, *args: str) -> str | None:
+    if GIT is None:
+        return None
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), *args],
+            [GIT, "-C", str(root), *args],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # git always writes UTF-8 (branch names, commits, file names).
+            encoding="utf-8",
+            errors="replace",
         )
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -474,7 +503,7 @@ def extract_python(path: Path, text: str) -> tuple[list[dict[str, Any]], list[st
 
 
 def extract_ctags(path: Path) -> tuple[list[dict[str, Any]], list[str], bool] | None:
-    ctags = shutil.which("ctags")
+    ctags = CTAGS
     if not ctags:
         return None
     try:
@@ -491,6 +520,10 @@ def extract_ctags(path: Path) -> tuple[list[dict[str, Any]], list[str], bool] | 
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # ctags emits UTF-8 for --output-format=json; the output is parsed,
+            # so a non-UTF-8 locale must not turn it into replacement garbage.
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1767,7 +1800,7 @@ def main() -> int:
         "extractor_priority": ["python_ast", "ctags", "heuristic"],
         "available_extractors": {
             "python_ast": True,
-            "ctags": shutil.which("ctags") is not None,
+            "ctags": CTAGS is not None,
             "heuristic": True,
         },
         "summary": summary,

@@ -137,6 +137,13 @@ def test_execution_id_requires_non_empty_runtime_payload() -> None:
     assert execution_id_from_event(event("chat.delta")) is None
 
 
+def test_steer_preserves_noninteractive_permission_policy() -> None:
+    root = root_request()
+    root.params["supports_permission_approval"] = False
+    request = build_steer_request(root, text="continue", execution_id="execution-1")
+    assert request.params["supports_permission_approval"] is False
+
+
 @pytest.mark.asyncio
 async def test_pipe_line_reader_accepts_parent_forwarded_input() -> None:
     reader = PipeLineReader(io.BytesIO("启动前补充\n".encode()))
@@ -346,6 +353,24 @@ async def test_pause_cancels_only_prompt_and_resume_waits_for_runtime_event() ->
     controller.observe(event("chat.delta", execution_id="execution-1"))
     await asyncio.wait_for(reader.prompted.wait(), timeout=1)
     assert len(reader.prompts) == 2
+    await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_interaction_reader_distinguishes_eof_from_blank_answer() -> None:
+    reader = QueueLineReader()
+    controller = LiveSessionInputController(
+        client=BlockingClient(),  # type: ignore[arg-type]
+        root_request=root_request(),
+        read_line=reader,
+        on_ready=lambda: None,
+        on_receipt=lambda _receipt: None,
+    )
+    reader.values.put_nowait("\n")
+    assert await controller.read_interaction_line() == ""
+    reader.values.put_nowait(None)
+    with pytest.raises(EOFError):
+        await controller.read_interaction_line()
     await controller.close()
 
 

@@ -16,7 +16,7 @@ const DEFAULT_CODE_PROJECT_ID = 'default_code';
 function normalizeProject(project: ProjectInfo, fallbackWorkMode: WorkMode): ProjectInfo {
   return {
     ...project,
-    work_mode: project.work_mode === 'code' || project.work_mode === 'work'
+    work_mode: project.work_mode === 'code' || project.work_mode === 'work' || project.work_mode === 'design'
       ? project.work_mode
       : fallbackWorkMode,
     git: project.git ?? {
@@ -95,6 +95,33 @@ function isDefaultProject(project: ProjectInfo): boolean {
 // 因此按当前 UI 语言在展示层替换即可，不存在覆盖用户自定义名称的风险。
 export function getProjectDisplayName(project: ProjectInfo): string {
   return isDefaultProject(project) ? i18n.t('multiSession.project.defaultProjectName') : project.name;
+}
+
+function designDefaultProject(): ProjectInfo {
+  return {
+    project_id: DEFAULT_PROJECT_ID,
+    name: i18n.t('multiSession.project.defaultProjectName'),
+    project_dir: '',
+    pinned: false,
+    pin_order: 0,
+    is_default: true,
+    hidden: false,
+    work_mode: 'design',
+    git: {
+      enabled: false,
+      repo_root: '',
+      initialized_by_jiuwenswarm: false,
+      detected_at: 0,
+      status: 'disabled',
+      branch: '',
+      error: '',
+      is_dirty: false,
+    },
+    session_count: 0,
+    last_message_at: null,
+    last_user_message_at: null,
+    created_at: 0,
+  };
 }
 
 function findDefaultProjectId(projects: ProjectInfo[]): string {
@@ -287,6 +314,8 @@ function getProjectSessionListsAfterPin(
 
 /** 工作区全量刷新代数：新刷新开始时递增，过期请求在写回前丢弃，避免归档/撤销竞态导致列表闪烁。 */
 let workspaceRefreshEpoch = 0;
+let projectListRequestId = 0;
+let appliedProjectListRequestId = 0;
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workMode: readStoredWorkMode(),
@@ -302,6 +331,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setWorkMode: async (workMode) => {
     if (get().workMode === workMode) return;
+    // Invalidate pending lists even when switching back to a previously used mode.
+    appliedProjectListRequestId = ++projectListRequestId;
     persistWorkMode(workMode);
     set({
       workMode,
@@ -318,15 +349,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   loadProjects: async (refreshEpoch?: number) => {
+    const requestId = ++projectListRequestId;
     const requestedWorkMode = get().workMode;
     set({ isLoadingProjects: true, error: null });
     try {
       const payload = await projectRegistryClient.list('all', requestedWorkMode);
       if (get().workMode !== requestedWorkMode) return true;
       if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return true;
+      // Apply results in request order, without making createProject wait for later pending lists.
+      if (requestId < appliedProjectListRequestId) return true;
       const projects = (payload.projects || []).map((project) => (
         normalizeProject(project, requestedWorkMode)
       ));
+      if (requestedWorkMode === 'design' && !projects.some(isDefaultProject)) {
+        projects.push(designDefaultProject());
+      }
+      appliedProjectListRequestId = requestId;
       set((state) => {
         // 项目会话需要经过 Gateway → AgentServer，并且后端每次查询都会扫描
         // 当前用户的会话元数据。首屏若把所有历史项目默认展开，会同时触发 N 次
@@ -343,12 +381,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           selectedProject: state.selectedProject
             ? findProject(projects, state.selectedProject.project_id)
             : null,
-          isLoadingProjects: false,
+          isLoadingProjects: requestId === projectListRequestId ? false : state.isLoadingProjects,
         };
       });
       await get().loadPinnedSessions(refreshEpoch);
       return true;
     } catch (error) {
+      if (requestId !== projectListRequestId) return true;
+      if (get().workMode !== requestedWorkMode) return true;
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return true;
       set({ isLoadingProjects: false, error: error instanceof Error ? error.message : String(error) });
       return false;
     }
@@ -357,10 +398,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   loadProjectSessions: async (projectId, limit, refreshEpoch) => {
     const requestedLimit = limit ?? getVisibleCount(get(), projectId);
     try {
-      const payload = await projectRegistryClient.getSessions(projectId, requestedLimit);
+      const mode = get().workMode;
+      const payload = await projectRegistryClient.getSessions(projectId, requestedLimit, mode);
       if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
       const sessions = reconcileVisibleProjectSessions(
-        payload.sessions || [],
+        (payload.sessions || []).filter((session) => (session.work_mode || 'work') === mode),
         get().projectSessions[projectId] || [],
       );
       const total = getReconciledTotal(payload.total, sessions);
@@ -380,7 +422,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }));
     } catch (error) {
       console.error('Failed to load project sessions', error);
-      set({ error: error instanceof Error ? error.message : String(error) });
+      set((state) => ({
+        error: error instanceof Error ? error.message : String(error),
+        projectSessions: Object.prototype.hasOwnProperty.call(state.projectSessions, projectId)
+          ? state.projectSessions
+          : { ...state.projectSessions, [projectId]: [] },
+      }));
     }
   },
 
@@ -450,11 +497,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   hideProjectLocally: (projectId) => {
     const ids = collectProjectSessionIds(get(), projectId);
-    const route = parseChatRoute(window.location.pathname);
-    if (route?.kind === 'chat-session' && ids.includes(route.sessionId)) {
-      window.history.replaceState(null, '', '/chat/new');
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    }
     get().removeSessions(ids);
     set((state) => ({
       projects: state.projects.filter((project) => project.project_id !== projectId),
@@ -543,6 +585,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   removeSessions: (sessionIds) => {
     const ids = new Set(sessionIds);
+    // 项目菜单没有单会话菜单的当前路由回调，批量归档也必须退出已移除的会话。
+    const route = parseChatRoute(window.location.pathname);
+    if (route?.kind === 'chat-session' && ids.has(route.sessionId)) {
+      window.history.replaceState(null, '', '/chat/new');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
     for (const id of ids) useSessionStore.getState().removeSession(id);
     set((state) => ({
       projectSessions: Object.fromEntries(Object.entries(state.projectSessions).map(([id, sessions]) => [

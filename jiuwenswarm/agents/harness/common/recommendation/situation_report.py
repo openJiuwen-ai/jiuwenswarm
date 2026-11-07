@@ -6,15 +6,27 @@ recommendation history, and pending commitments into a single LLM-ready context.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import threading
+import time
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir
+from jiuwenswarm.common.background_work import BackgroundWorkBusy, BoundedBackgroundWork
 
 logger = logging.getLogger(__name__)
+
+_LOCAL_READ_TIMEOUT = 5.0
+_SESSION_SCAN_BUDGET = 4.0
+_local_reads = BoundedBackgroundWork(max_workers=1, name="proactive-session-read")
+_read_lock = threading.Lock()
+_read_future: Future | None = None
+_read_key: tuple | None = None
 
 # ── Data structures ──────────────────────────────────────────────
 
@@ -154,12 +166,15 @@ def _scan_sessions(
     只扫 agent 类会话（含 agent-plan 等）。传 ``None`` 扫全部会话。
     """
     sessions_dir = get_agent_sessions_dir()
-    if not sessions_dir.exists():
+    if max_sessions <= 0 or not sessions_dir.exists():
         return []
 
     summaries: list[SessionSummary] = []
+    deadline = time.monotonic() + _SESSION_SCAN_BUDGET
 
     for session_dir in sessions_dir.iterdir():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("proactive session scan exceeded its time budget")
         if not session_dir.is_dir() or session_dir.name.startswith(
             ("health_check_", "heartbeat")
         ):
@@ -208,12 +223,6 @@ def _scan_sessions(
         if last_ts <= 0:
             continue
 
-        # 历史压缩用于 LLM 决策素材（render_for_llm / is_empty）。推送目标选择不再
-        # 要求它非空——刚发消息、assistant 还没回完时历史为空，但该会话仍应作为
-        # "最活跃会话"推送候选（推送本身只需 session_id）。故不再因 compressed 空
-        # 而 continue。
-        compressed = _compress_history_for_profile(session_id, max_rounds=max_rounds)
-
         delivery_ctx = meta.get("delivery_context")
         if isinstance(delivery_ctx, dict):
             # Only keep routing-relevant fields
@@ -231,13 +240,20 @@ def _scan_sessions(
             title=meta.get("title", ""),
             last_message_at=last_ts,
             message_count=meta.get("message_count", 0),
-            compressed_history=compressed,
             delivery_context=delivery_ctx,
         ))
 
-    # Sort by most recent activity, keep top N
+    # Rank metadata before reading histories: only the selected sessions need
+    # compression. Empty history still permits delivery to an active session.
     summaries.sort(key=lambda s: s.last_message_at, reverse=True)
-    return summaries[:max_sessions]
+    selected = summaries[:max_sessions]
+    for summary in selected:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("proactive history read exceeded its time budget")
+        summary.compressed_history = _compress_history_for_profile(
+            summary.session_id, max_rounds=max_rounds,
+        )
+    return selected
 
 
 # ── History compression ──────────────────────────────────────────
@@ -367,6 +383,54 @@ def _format_recommendation_history(history: list[dict[str, Any]]) -> str:
 # ── Build ───────────────────────────────────────────────────────
 
 
+def _read_local_report(max_rounds: int, mode_prefix: str | None) -> SituationReport:
+    """Read local state on one isolated background thread, never the loop."""
+    from jiuwenswarm.agents.harness.common.recommendation.profile_extractor import (
+        load_recommendation_state,
+    )
+
+    sessions = _scan_sessions(max_sessions=10, max_rounds=max_rounds, mode_prefix=mode_prefix)
+    state = load_recommendation_state()
+    return SituationReport(
+        sessions=sessions,
+        recommendation_history_summary=_format_recommendation_history(state.recommendation_history),
+    )
+
+
+async def _read_local_report_with_deadline(
+    max_rounds: int, mode_prefix: str | None,
+) -> SituationReport | None:
+    """Share an in-flight read; timed-out/cancelled waiters cannot multiply IO."""
+    global _read_future, _read_key
+    key = (str(get_agent_sessions_dir()), max_rounds, mode_prefix)
+    with _read_lock:
+        if _read_future is not None and _read_future.done():
+            # A previous tick may have timed out. Never deliver its stale data.
+            _read_future = None
+        if _read_future is not None and _read_key != key:
+            return None
+        if _read_future is None:
+            try:
+                _read_future = _local_reads.submit(lambda: _read_local_report(max_rounds, mode_prefix))
+            except BackgroundWorkBusy:
+                return None
+            _read_key = key
+        future = _read_future
+    try:
+        # Poll the shared concurrent Future without attaching a new callback
+        # for every waiter. Hung IO must not retain expired ticks or loops.
+        async with asyncio.timeout(_LOCAL_READ_TIMEOUT):
+            while not future.done():
+                await asyncio.sleep(0.02)
+            return future.result()
+    except TimeoutError:
+        logger.warning("[SituationReport] local read timed out; skipping this recommendation tick")
+    except Exception as exc:
+        logger.warning("[SituationReport] local read failed (%s); skipping this recommendation tick",
+                       type(exc).__name__)
+    return None
+
+
 async def build_situation_report(
     max_rounds: int = 20,
     skills: list[dict[str, Any]] | None = None,
@@ -383,30 +447,23 @@ async def build_situation_report(
     默认 ``"agent"`` 只扫 agent 类会话，避免 code/team 会话的技术语境污染
     推荐决策。传 ``None`` 扫全部会话。
     """
-    from jiuwenswarm.agents.harness.common.recommendation.profile_extractor import (
-        load_recommendation_state,
-    )
     from jiuwenswarm.agents.harness.common.recommendation.calendar_source import (
         fetch_calendar_events,
     )
 
-    # 1. Scan sessions
-    sessions = _scan_sessions(max_sessions=10, max_rounds=max_rounds, mode_prefix=mode_prefix)
-
-    # 2. Recommendation history (from state, not profile)
-    state = load_recommendation_state()
-    rec_history = state.recommendation_history
-    rec_summary = _format_recommendation_history(rec_history)
+    report = await _read_local_report_with_deadline(max_rounds, mode_prefix)
+    if report is None:
+        # Optional recommendations must never hold up active chat sessions.
+        return SituationReport()
 
     # 3. Skills
     skills_summary = _format_skills_for_llm(skills) if skills else ""
 
     # 4. Calendar events (MCP calendar server; [] if unconfigured/unreachable)
     calendar_events = await fetch_calendar_events()
-
     return SituationReport(
-        sessions=sessions,
-        recommendation_history_summary=rec_summary,
+        sessions=report.sessions,
+        recommendation_history_summary=report.recommendation_history_summary,
         skills_summary=skills_summary,
         calendar_events=calendar_events,
     )

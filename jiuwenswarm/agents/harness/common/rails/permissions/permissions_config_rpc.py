@@ -19,6 +19,7 @@ _PERMISSIONS_CFG_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.PERMISSIONS_TOOLS_GET,
         ReqMethod.PERMISSIONS_TOOLS_SET,
         ReqMethod.PERMISSIONS_TOOLS_UPDATE,
+        ReqMethod.PERMISSIONS_TOOLS_UPDATE_USER,
         ReqMethod.PERMISSIONS_TOOLS_DELETE,
         ReqMethod.PERMISSIONS_RULES_GET,
         ReqMethod.PERMISSIONS_RULES_CREATE,
@@ -134,6 +135,23 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
             if "level" not in params:
                 return _err(request, "level is required")
             payload = update_permissions_tool_in_config(tool, params.get("level"))
+            return _ok(request, dict(payload))
+
+        if m == ReqMethod.PERMISSIONS_TOOLS_UPDATE_USER:
+            if not isinstance(params, dict):
+                return _err(request, "params must be object")
+            tool = str(params.get("tool") or params.get("name") or "").strip()
+            if not tool:
+                return _err(request, "tool is required")
+            if "level" not in params:
+                return _err(request, "level is required")
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                update_user_tool_level,
+            )
+
+            payload = update_user_tool_level(tool, params.get("level"))
+            if not payload:
+                return _err(request, "failed to save user permissions")
             return _ok(request, dict(payload))
 
         if m == ReqMethod.PERMISSIONS_TOOLS_DELETE:

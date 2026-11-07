@@ -1,100 +1,92 @@
 import { useEffect, useState } from 'react';
+import { CheckCircle2, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import qwenLogo from '../../../../assets/providers/qwen.svg';
 import { settingsActionIcons } from '../../../../assets/settings';
-import { Button, Select } from '../../../../components/ui';
+import { Button, Select, Switch } from '../../../../components/ui';
 import { FormDialog } from '../../../../components/form';
 import { SettingRow, SettingsConfirmDialog } from '../../components';
 import { webRequest } from '../../../../services/webClient';
+import {
+  isConfigured,
+  type SettingsValues,
+  type ReplyLanguage,
+} from './videoDuplexSettingsValidation';
 import './VideoDuplexModelSettings.css';
 
-type Provider = 'joyai' | 'qwen_omni';
-type VoiceProtocol = 'native_ws' | 'openai_http';
-type ReplyLanguage = 'match' | 'zh-CN' | 'en';
-
-type SettingsValues = {
-  video_live_provider: Provider;
-  joyai_api_base: string;
-  joyai_api_key: string;
-  joyai_model: string;
-  qwen_omni_realtime_url: string;
-  qwen_omni_api_key: string;
-  qwen_omni_model: string;
-  qwen_omni_voice: string;
-  reply_language: ReplyLanguage;
-  voice_protocol: VoiceProtocol;
-  voice_asr_endpoint: string;
-  voice_tts_endpoint: string;
-  voice_api_key: string;
-  voice_asr_model: string;
-  voice_tts_model: string;
-  voice_tts_voice: string;
-};
-
 const DEFAULTS: SettingsValues = {
-  video_live_provider: 'joyai',
+  video_live_provider: 'qwen_omni',
   joyai_api_base: '',
   joyai_api_key: '',
-  joyai_model: 'jdopensource/JoyAI-VL-Interaction',
+  joyai_model: '',
   qwen_omni_realtime_url: '',
   qwen_omni_api_key: '',
-  qwen_omni_model: 'qwen3.5-omni-flash-realtime',
-  qwen_omni_voice: 'Cherry',
+  qwen_omni_model: '',
+  qwen_omni_voice: '',
   reply_language: 'match',
-  voice_protocol: 'native_ws',
-  voice_asr_endpoint: 'ws://127.0.0.1:8994/ws/asr',
-  voice_tts_endpoint: 'ws://127.0.0.1:8992/ws/tts',
+  voice_protocol: 'openai_http',
+  voice_asr_endpoint: '',
+  voice_tts_endpoint: '',
   voice_api_key: '',
   voice_asr_model: '',
   voice_tts_model: '',
-  voice_tts_voice: 'vivian',
+  voice_tts_voice: '',
 };
 
-const SECRET_KEYS = ['joyai_api_key', 'qwen_omni_api_key', 'voice_api_key'] as const;
+const SECRET_KEYS = ['qwen_omni_api_key'] as const;
 type Payload = { values: SettingsValues; configured_secret_lengths: Record<string, number> };
 
 function secretPlaceholder(length?: number): string {
   return Number.isSafeInteger(length) && Number(length) > 0 ? '*'.repeat(Number(length)) : '';
 }
 
-function isConfigured(values: SettingsValues, secretLengths: Record<string, number>): boolean {
-  if (values.video_live_provider === 'qwen_omni') {
-    return Boolean(values.qwen_omni_realtime_url.trim() && values.qwen_omni_model.trim());
-  }
-  return Boolean(
-    values.joyai_api_base.trim() &&
-      values.joyai_model.trim() &&
-      (values.joyai_api_key.trim() || secretLengths.joyai_api_key),
-  );
-}
-
 function ConfigField({
+  field,
   value,
   label,
   secret,
+  required = true,
   placeholder,
   onChange,
 }: {
+  field: keyof SettingsValues;
   value: string;
   label: string;
   secret?: boolean;
+  required?: boolean;
   placeholder?: string;
   onChange: (value: string) => void;
 }) {
   return (
     <label className="video-duplex-model-settings__field">
-      <span>{label}</span>
+      <span>
+        {label}{required ? ' *' : ''}
+      </span>
       <input
         type={secret ? 'password' : 'text'}
         value={value}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
+        aria-required={required}
+        data-testid="settings-video-duplex-config-field"
+        data-variant={field}
         autoComplete="off"
       />
     </label>
   );
 }
 
-export function VideoDuplexModelSettings() {
+export function VideoDuplexModelSettings({
+  disabled = false,
+  enabled,
+  onEnabledChange,
+  onConfigured,
+}: {
+  disabled?: boolean;
+  enabled: boolean;
+  onEnabledChange: (enabled: boolean) => Promise<void>;
+  onConfigured?: () => Promise<void>;
+}) {
   const { t } = useTranslation();
   const [values, setValues] = useState<SettingsValues>(DEFAULTS);
   const [secretLengths, setSecretLengths] = useState<Record<string, number>>({});
@@ -105,6 +97,8 @@ export function VideoDuplexModelSettings() {
   const [deleteError, setDeleteError] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
+  const [connection, setConnection] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [connectionError, setConnectionError] = useState('');
 
   const applyPayload = (payload: Payload) => {
     setValues({ ...DEFAULTS, ...payload.values });
@@ -126,27 +120,38 @@ export function VideoDuplexModelSettings() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [t]);
 
   const configured = isConfigured(values, secretLengths);
-  const modelName = values.video_live_provider === 'qwen_omni' ? values.qwen_omni_model : values.joyai_model;
-  const providerName = values.video_live_provider === 'qwen_omni' ? 'Qwen Omni Realtime' : 'JoyAI';
+  const modelName = values.qwen_omni_model;
+  const providerName = 'Qwen Omni Realtime';
   const updateDraft = <K extends keyof SettingsValues>(key: K, value: SettingsValues[K]) => {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   };
 
   const openEditor = () => {
     setError('');
-    setDraft({ ...values });
+    setDraft({ ...values, video_live_provider: 'qwen_omni' });
   };
 
   const saveDraft = async () => {
-    if (!draft) return;
+    if (!draft || disabled || saving || deleting) return;
+    if (!isConfigured(draft, secretLengths)) {
+      setError(t('settingsPanel.videoDuplex.requiredFields'));
+      return;
+    }
     setSaving(true);
     setError('');
-    const outgoing: Record<string, string> = { ...draft };
+    const outgoing: Record<string, string> = {
+      video_live_provider: 'qwen_omni',
+      qwen_omni_realtime_url: draft.qwen_omni_realtime_url,
+      qwen_omni_api_key: draft.qwen_omni_api_key,
+      qwen_omni_model: draft.qwen_omni_model,
+      qwen_omni_voice: draft.qwen_omni_voice,
+      reply_language: draft.reply_language,
+    };
     SECRET_KEYS.forEach((key) => {
-      if (!draft[key]) delete outgoing[key];
+      if (!draft[key].trim()) delete outgoing[key];
     });
     try {
       const payload = await webRequest<Payload>(
@@ -155,6 +160,9 @@ export function VideoDuplexModelSettings() {
         { timeoutMs: 10_000 },
       );
       applyPayload(payload);
+      setConnection('idle');
+      setConnectionError('');
+      await onConfigured?.();
       setDraft(null);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : t('settingsPanel.videoDuplex.saveError'));
@@ -168,19 +176,35 @@ export function VideoDuplexModelSettings() {
     setDeleteError('');
     try {
       const emptyValues = Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, ''])) as Record<string, string>;
-      emptyValues.video_live_provider = 'joyai';
+      emptyValues.video_live_provider = DEFAULTS.video_live_provider;
       emptyValues.reply_language = DEFAULTS.reply_language;
+      emptyValues.voice_protocol = DEFAULTS.voice_protocol;
       const payload = await webRequest<Payload>(
         'video.duplex.settings.update',
         { values: emptyValues, clear_secrets: true },
         { timeoutMs: 10_000 },
       );
       applyPayload(payload);
+      setConnection('idle');
+      setConnectionError('');
+      if (enabled) await onEnabledChange(false);
       setDeleteOpen(false);
     } catch (clearError) {
       setDeleteError(clearError instanceof Error ? clearError.message : t('settingsPanel.feedback.saveFailed'));
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const testConnection = async () => {
+    setConnection('testing');
+    setConnectionError('');
+    try {
+      await webRequest('video.duplex.settings.test', {}, { timeoutMs: 20_000 });
+      setConnection('success');
+    } catch {
+      setConnection('error');
+      setConnectionError(t('settingsPanel.voice.connectionFailed'));
     }
   };
 
@@ -227,71 +251,146 @@ export function VideoDuplexModelSettings() {
   );
 
   if (loading) {
-    return <div className="video-duplex-model-settings__status">{t('settingsPanel.videoDuplex.loading')}</div>;
+    return (
+      <SettingRow
+        title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+        description={t('settingsPanel.videoDuplex.loading')}
+      />
+    );
   }
 
   return (
     <>
-      {error ? <div className="video-duplex-model-settings__error" role="alert">{error}</div> : null}
-      {configured ? (
-        <div className="settings-agent-media__model-card">
-          <div className="video-duplex-model-settings__model-copy">
-            <strong className="settings-agent-media__model-name">{modelName}</strong>
-            <small>{providerName}</small>
-          </div>
-          <div className="settings-agent-media__actions">
-            <Button
-              variant="quiet"
-              size="sm"
-              icon={<settingsActionIcons.edit aria-hidden />}
-              title={t('common.modify')}
-              aria-label={`${t('common.modify')} ${providerName}`}
-              disabled={saving || deleting}
-              onClick={openEditor}
-              data-testid="settings-task-full-duplex-edit-btn"
-            />
-            <Button
-              variant="quiet"
-              size="sm"
-              icon={<settingsActionIcons.delete aria-hidden />}
-              title={t('common.delete')}
-              aria-label={`${t('common.delete')} ${providerName}`}
-              disabled={saving || deleting}
-              onClick={() => {
-                setDeleteError('');
-                setDeleteOpen(true);
-              }}
-              data-testid="settings-task-full-duplex-delete-btn"
-            />
-          </div>
-        </div>
-      ) : (
-        <div className="settings-agent-media__model-card">
-          <span className="settings-agent-media__model-name">{t('settingsPanel.videoDuplex.notConfigured')}</span>
-          <Button size="sm" variant="primary" disabled={saving || deleting} onClick={openEditor}>
+      <SettingRow
+        className="settings-agent-media__row"
+        title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+        description={t('settingsPanel.fields.task_full_duplex_enabled.description')}
+        subSettings={
+          configured ? (
+            <>
+              <div className="settings-agent-media__model-card">
+                <img
+                  src={qwenLogo}
+                  alt=""
+                  className="video-duplex-model-settings__model-icon"
+                  aria-hidden="true"
+                  data-testid="settings-video-duplex-model-icon"
+                />
+                <div className="video-duplex-model-settings__model-copy">
+                  <strong className="settings-agent-media__model-name">{modelName}</strong>
+                  <small>{providerName}</small>
+                </div>
+                {connection === 'success' ? (
+                  <CheckCircle2
+                    className="video-duplex-model-settings__connected"
+                    aria-label={t('settingsPanel.voice.connectionSuccess')}
+                    data-testid="settings-voice-connection-success"
+                  />
+                ) : null}
+                <div className="settings-agent-media__actions">
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    icon={
+                      connection === 'testing' ? (
+                        <LoaderCircle className="chat-input-btn-icon--spin" aria-hidden />
+                      ) : (
+                        <settingsActionIcons.test aria-hidden />
+                      )
+                    }
+                    title={t('settingsPanel.voice.testConnection')}
+                    aria-label={t('settingsPanel.voice.testConnection')}
+                    disabled={disabled || saving || deleting || connection === 'testing'}
+                    onClick={() => void testConnection()}
+                    data-testid="settings-voice-test-connection"
+                  />
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    icon={<settingsActionIcons.edit aria-hidden />}
+                    title={t('common.modify')}
+                    aria-label={`${t('common.modify')} ${providerName}`}
+                    disabled={disabled || saving || deleting || connection === 'testing'}
+                    onClick={openEditor}
+                    data-testid="settings-task-full-duplex-edit-btn"
+                  />
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    icon={<settingsActionIcons.delete aria-hidden />}
+                    title={t('common.delete')}
+                    aria-label={`${t('common.delete')} ${providerName}`}
+                    disabled={disabled || saving || deleting || connection === 'testing'}
+                    onClick={() => {
+                      setDeleteError('');
+                      setDeleteOpen(true);
+                    }}
+                    data-testid="settings-task-full-duplex-delete-btn"
+                  />
+                </div>
+              </div>
+              {connectionError ? (
+                <div
+                  className="video-duplex-model-settings__error"
+                  role="alert"
+                  data-testid="settings-voice-connection-error"
+                >
+                  {connectionError}
+                </div>
+              ) : null}
+
+              <div className="video-duplex-model-settings__reply-language">
+                {replyLanguageSelect(values.reply_language, (value) => void saveReplyLanguage(value), {
+                  disabled: saving || deleting,
+                })}
+              </div>
+            </>
+          ) : undefined
+        }
+      >
+        {configured || enabled ? (
+          <Switch
+            checked={enabled}
+            aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+            disabled={disabled || saving || deleting || connection === 'testing'}
+            onChange={(next) => void onEnabledChange(next).catch(() => undefined)}
+            data-testid="settings-task-full-duplex-switch"
+          />
+        ) : (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={disabled || saving || deleting}
+            onClick={openEditor}
+            data-testid="settings-voice-configure"
+          >
             {t('settingsPanel.common.configure')}
           </Button>
+        )}
+      </SettingRow>
+      {error && !draft ? (
+        <div className="video-duplex-model-settings__error" role="alert" data-testid="settings-voice-error">
+          {error}
         </div>
-      )}
-
-      <div className="video-duplex-model-settings__reply-language">
-        {replyLanguageSelect(values.reply_language, (value) => void saveReplyLanguage(value), {
-          disabled: saving || deleting,
-        })}
-      </div>
+      ) : null}
 
       {draft ? (
         <FormDialog
           open
           title={t('settingsPanel.videoDuplex.dialogTitle')}
           submitting={saving}
+          confirmDisabled={disabled || deleting || !isConfigured(draft, secretLengths)}
+          description={t('settingsPanel.videoDuplex.requiredFields')}
           confirmLabel={t('common.save')}
           cancelLabel={t('common.cancel')}
           dialogClassName="settings-model-dialog"
           testIdPrefix="settings-task-full-duplex-config-dialog"
           onConfirm={() => void saveDraft()}
           onCancel={() => {
-            if (!saving) setDraft(null);
+            if (!saving) {
+              setDraft(null);
+              setError('');
+            }
           }}
         >
           <div className="video-duplex-model-settings__dialog-fields">
@@ -300,48 +399,45 @@ export function VideoDuplexModelSettings() {
             })}
             <label className="video-duplex-model-settings__field">
               <span>{t('settingsPanel.videoDuplex.providerLabel')}</span>
-              <select
-                value={draft.video_live_provider}
-                onChange={(event) => updateDraft('video_live_provider', event.target.value as Provider)}
-              >
-                <option value="joyai">JoyAI</option>
-                <option value="qwen_omni">Qwen Omni Realtime</option>
-              </select>
+              <input
+                value="Qwen Omni Realtime"
+                readOnly
+                data-testid="settings-video-duplex-provider"
+              />
             </label>
-            {draft.video_live_provider === 'joyai' ? (
-              <>
-                <ConfigField value={draft.joyai_api_base} label="JoyAI API Base" placeholder="http://127.0.0.1:8070/v1" onChange={(value) => updateDraft('joyai_api_base', value)} />
-                <ConfigField value={draft.joyai_api_key} label="JoyAI API Key" secret placeholder={secretPlaceholder(secretLengths.joyai_api_key)} onChange={(value) => updateDraft('joyai_api_key', value)} />
-                <ConfigField value={draft.joyai_model} label={t('settingsPanel.videoDuplex.joyaiModelLabel')} onChange={(value) => updateDraft('joyai_model', value)} />
-                <h3>{t('settingsPanel.videoDuplex.voiceSectionTitle')}</h3>
-                <label className="video-duplex-model-settings__field">
-                  <span>{t('settingsPanel.videoDuplex.voiceProtocolLabel')}</span>
-                  <select value={draft.voice_protocol} onChange={(event) => updateDraft('voice_protocol', event.target.value as VoiceProtocol)}>
-                    <option value="native_ws">JoyAI WebSocket</option>
-                    <option value="openai_http">OpenAI HTTP</option>
-                  </select>
-                </label>
-                <ConfigField value={draft.voice_asr_endpoint} label={t('settingsPanel.videoDuplex.asrEndpointLabel')} onChange={(value) => updateDraft('voice_asr_endpoint', value)} />
-                <ConfigField value={draft.voice_tts_endpoint} label={t('settingsPanel.videoDuplex.ttsEndpointLabel')} onChange={(value) => updateDraft('voice_tts_endpoint', value)} />
-                {draft.voice_protocol === 'openai_http' ? (
-                  <>
-                    <ConfigField value={draft.voice_api_key} label={t('settingsPanel.videoDuplex.voiceApiKeyLabel')} secret placeholder={secretPlaceholder(secretLengths.voice_api_key)} onChange={(value) => updateDraft('voice_api_key', value)} />
-                    <ConfigField value={draft.voice_asr_model} label={t('settingsPanel.videoDuplex.asrModelLabel')} onChange={(value) => updateDraft('voice_asr_model', value)} />
-                    <ConfigField value={draft.voice_tts_model} label={t('settingsPanel.videoDuplex.ttsModelLabel')} onChange={(value) => updateDraft('voice_tts_model', value)} />
-                    <ConfigField value={draft.voice_tts_voice} label={t('settingsPanel.videoDuplex.ttsVoiceLabel')} onChange={(value) => updateDraft('voice_tts_voice', value)} />
-                  </>
-                ) : null}
-              </>
-            ) : (
-              <>
-                <ConfigField value={draft.qwen_omni_realtime_url} label="Qwen Realtime WebSocket" onChange={(value) => updateDraft('qwen_omni_realtime_url', value)} />
-                <ConfigField value={draft.qwen_omni_api_key} label="Qwen API Key" secret placeholder={secretPlaceholder(secretLengths.qwen_omni_api_key)} onChange={(value) => updateDraft('qwen_omni_api_key', value)} />
-                <ConfigField value={draft.qwen_omni_model} label={t('settingsPanel.videoDuplex.qwenModelLabel')} onChange={(value) => updateDraft('qwen_omni_model', value)} />
-                <ConfigField value={draft.qwen_omni_voice} label={t('settingsPanel.videoDuplex.qwenVoiceLabel')} onChange={(value) => updateDraft('qwen_omni_voice', value)} />
-              </>
-            )}
+            <ConfigField
+              field="qwen_omni_realtime_url"
+              value={draft.qwen_omni_realtime_url}
+              label="Qwen Realtime WebSocket"
+              onChange={(value) => updateDraft('qwen_omni_realtime_url', value)}
+            />
+            <ConfigField
+              field="qwen_omni_api_key"
+              value={draft.qwen_omni_api_key}
+              label="Qwen API Key"
+              secret
+              placeholder={secretPlaceholder(secretLengths.qwen_omni_api_key)}
+              onChange={(value) => updateDraft('qwen_omni_api_key', value)}
+            />
+            <ConfigField
+              field="qwen_omni_model"
+              value={draft.qwen_omni_model}
+              label={t('settingsPanel.videoDuplex.qwenModelLabel')}
+              onChange={(value) => updateDraft('qwen_omni_model', value)}
+            />
+            <ConfigField
+              field="qwen_omni_voice"
+              value={draft.qwen_omni_voice}
+              required={false}
+              label={t('settingsPanel.videoDuplex.qwenVoiceLabel')}
+              onChange={(value) => updateDraft('qwen_omni_voice', value)}
+            />
           </div>
-          {error ? <div className="settings-page__error" role="alert">{error}</div> : null}
+          {error ? (
+            <div className="settings-page__error" role="alert">
+              {error}
+            </div>
+          ) : null}
         </FormDialog>
       ) : null}
       <SettingsConfirmDialog

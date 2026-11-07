@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from agent_gateway.common.work_mode import SUPPORTED_WORK_MODES
 from jiuwenswarm.server.runtime.session.project_store import file_lock
 
 _HELD_LOCKS = threading.local()
@@ -72,38 +73,13 @@ def resource_path(kind: str, resource_id: str) -> Path:
     )
 
 
-_READ_RETRY_ATTEMPTS = 3
-_READ_RETRY_DELAY_SECONDS = 0.02
 
-
-def _read_text_with_retry(path: Path) -> str:
-    """Read ``path`` as text, retrying transient ``PermissionError``.
-
-    Atomic writers in this module replace the destination via ``os.replace``.
-    On Windows that swap briefly holds the file with an exclusive handle, so a
-    concurrent reader (e.g. request admission parsing ``metadata.json`` while a
-    pause is finalizing) can hit a sharing violation surfaced as
-    ``PermissionError``. The retry budget only needs to cover that sub-second
-    rename window, so it is deliberately small: this helper also runs on the
-    event loop inside synchronous request admission, and long blocking retries
-    (e.g. the multi-second antivirus holds handled by the archive workers in
-    ``session_archive``) are out of scope here. Genuinely denied files keep
-    raising once the attempts are exhausted.
-    """
-    for attempt in range(_READ_RETRY_ATTEMPTS):
-        try:
-            return path.read_text(encoding="utf-8")
-        except PermissionError:
-            if attempt == _READ_RETRY_ATTEMPTS - 1:
-                raise
-            time.sleep(_READ_RETRY_DELAY_SECONDS)
-    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def read_json(path: Path) -> dict:
     if not path.exists():
         return {}
-    value = json.loads(_read_text_with_retry(path))
+
     if not isinstance(value, dict):
         raise LifecycleError("CONFLICT", f"invalid lifecycle data: {path.name}")
     return value
@@ -141,6 +117,17 @@ def resource_lock(kind: str, resource_id: str) -> Iterator[None]:
 
 def state(kind: str, resource_id: str) -> dict:
     return read_json(resource_path(kind, resource_id)) if resource_id else {}
+
+
+def session_delete_pending(session_id: str) -> bool:
+    """Whether an unfinished delete owns the Session execution barrier."""
+    value = state("session", session_id)
+    operation = value.get("operation") or {}
+    return bool(
+        value.get("blocked")
+        and operation.get("kind") == "delete"
+        and operation.get("status") != "completed"
+    )
 
 
 def save_locked(kind: str, resource_id: str, value: dict) -> None:
@@ -278,6 +265,112 @@ def complete(
         save_locked(kind, resource_id, value)
 
 
+def logically_deleted(value: dict) -> bool:
+    """Whether a Session was accepted for deletion and is only awaiting cleanup."""
+    return bool(value.get("deleted"))
+
+
+def logically_archived(value: dict) -> bool:
+    """Whether a Session leaves the active area even before its directory moves.
+
+    Archive is accepted synchronously and finalized in the background, so the
+    listing must hide it while the directory is still under ``sessions/``.
+    Failed and abandoned archives keep the same logical result: the user asked
+    for the Session to be archived, and cleanup only decides where the bytes
+    live.
+    """
+    operation = value.get("operation") or {}
+    return bool(
+        operation
+        and operation.get("kind") == "archive"
+        and operation.get("status") != "completed"
+    )
+
+
+def mark_finalizing(
+    kind: str,
+    resource_id: str,
+    *,
+    deleted: bool = False,
+    **changes: Any,
+) -> dict:
+    """Record the logical result and hand physical cleanup to a background task.
+
+    ``write_blocked`` is deliberately untouched: writes already accepted by the
+    metadata/history queues still have to drain.  The background finalizer
+    fences writes after it flushes them.
+    """
+    with resource_lock(kind, resource_id):
+        value = state(kind, resource_id)
+        operation = value.get("operation")
+        if not operation or operation.get("status") == "completed":
+            return operation or {}
+        if deleted:
+            value["deleted"] = True
+        value["blocked"] = True
+        operation.update(
+            status="running",
+            phase="finalizing",
+            stop_pending=True,
+            retryable=True,
+            cleanup_attempts=0,
+            cleanup_next_at=0,
+            cleanup_exhausted=False,
+            **changes,
+        )
+        save_locked(kind, resource_id, value)
+        return operation
+
+
+def abandon_failed_operation(kind: str, resource_id: str, expected_kind: str) -> bool:
+    """Close a failed/abandoned operation so the reverse action can take over.
+
+    A failed archive leaves the Session logically archived with its directory
+    still active.  Unarchiving must be able to recover from that state instead
+    of being blocked forever by the leftover operation.
+    """
+    with resource_lock(kind, resource_id):
+        value = state(kind, resource_id)
+        operation = value.get("operation")
+        if not operation or operation.get("status") == "completed":
+            return False
+        if (
+            operation.get("kind") != expected_kind
+            or operation.get("status") not in {"failed", "abandoned"}
+        ):
+            return False
+        archived = (
+            session_paths(resource_id)[1].exists() if kind == "session" else False
+        )
+        value.update(blocked=archived, write_blocked=archived, deleted=False)
+        operation.update(status="completed", stop_pending=False, result={})
+        save_locked(kind, resource_id, value)
+        return True
+
+
+def set_visibility(
+    kind: str,
+    resource_id: str,
+    *,
+    blocked: bool,
+    write_blocked: bool | None = None,
+    deleted: bool = False,
+) -> None:
+    """Rewrite the logical visibility flags without touching the operation.
+
+    Restore paths use this after a physical move succeeded or failed: an
+    unarchived Session must be visible whenever its directory is back in the
+    active area, even if a later cleanup step failed.
+    """
+    with resource_lock(kind, resource_id):
+        value = state(kind, resource_id)
+        value["blocked"] = blocked
+        value["write_blocked"] = blocked if write_blocked is None else write_blocked
+        if not blocked:
+            value["deleted"] = deleted
+        save_locked(kind, resource_id, value)
+
+
 def session_paths(
     session_id: str, *, sessions_root: Path | None = None
 ) -> tuple[Path, Path]:
@@ -308,8 +401,12 @@ def resolve_session(
 
 
 def raw_metadata(session_id: str) -> dict:
-    path = resolve_session(session_id, must_exist=False)
-    return read_json(path / "metadata.json")
+    # Match the metadata writer's existing lifecycle lock across processes.
+    # An unlocked Windows reader can race an atomic replacement and receive a
+    # sharing violation during admission even though the Session is healthy.
+    with resource_lock("session", session_id):
+        path = resolve_session(session_id, must_exist=False)
+        return read_json(path / "metadata.json")
 
 
 def build_project_lookup() -> tuple[
@@ -365,6 +462,23 @@ def project_id_for(
         meta.get("project_id")
         or ("default_code" if meta.get("work_mode") == "code" else "default")
     )
+
+
+def project_admission_snapshot(project_id: str) -> dict:
+    """定时任务准入要的项目快照：还在不在、有没有被隐藏、现在能不能跑。
+
+    读的是当前租户工作区里的项目名单和生命周期文件。调用方要先绑好租户。
+    """
+    project_id = validate_id(project_id)
+    value = state("project", project_id)
+    from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+
+    project = get_project_by_id(project_id, cache_bust=True)
+    payload = projection("project", project_id, value=value)
+    payload["exists"] = project is not None
+    payload["hidden"] = bool(project is not None and project.hidden)
+    payload["operation"] = value.get("operation")
+    return payload
 
 
 def projection(
@@ -492,38 +606,41 @@ def write_guard(session_id: str, generation: int | None = None) -> None:
         raise LifecycleError("OPERATION_IN_PROGRESS", "project writes are isolated")
 
 
-def assert_runtime_owner(session_id: str) -> None:
-    """Never move files while another live process owns untracked writers."""
+def current_runtime_owner() -> dict:
+    """Return a PID and process start time, distinguishing PID reuse after restart."""
     import psutil
 
+    return dict(pid=os.getpid(), started_at=psutil.Process().create_time())
+
+
+def runtime_owner_alive(owner: dict) -> bool:
+    """Check process identity conservatively when its state cannot be inspected."""
+    import psutil
+
+    try:
+        process = psutil.Process(owner["pid"])
+        return abs(process.create_time() - owner["started_at"]) < 0.01
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.AccessDenied as exc:
+        raise LifecycleError("OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner") from exc
+
+
+def assert_runtime_owner(session_id: str) -> None:
+    """Never move files while another live process owns untracked writers."""
     owner = state("session", session_id).get("runtime_owner")
     if not owner or owner["pid"] == os.getpid():
         return
-    try:
-        process = psutil.Process(owner["pid"])
-        if abs(process.create_time() - owner["started_at"]) < 0.01:
-            raise LifecycleError(
-                "OPERATION_IN_PROGRESS",
-                "another live AgentServer owns the session runtime",
-            )
-    except psutil.NoSuchProcess:
-        return
-    except psutil.AccessDenied as exc:
-        raise LifecycleError(
-            "OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner"
-        ) from exc
+    if runtime_owner_alive(owner):
+        raise LifecycleError("OPERATION_IN_PROGRESS", "another live AgentServer owns the session runtime")
 
 
 def claim_runtime(session_id: str) -> None:
-    import psutil
-
     with resource_lock("session", session_id):
         guard(session_id)
         assert_runtime_owner(session_id)
         value = state("session", session_id)
-        value["runtime_owner"] = dict(
-            pid=os.getpid(), started_at=psutil.Process().create_time()
-        )
+        value["runtime_owner"] = current_runtime_owner()
         save_locked("session", session_id, value)
 
 
@@ -557,16 +674,35 @@ def parse_ids(params: dict, *, delete: bool = False) -> list[str]:
     return result
 
 
+def _as_page_int(value: object, *, default: int) -> int | None:
+    """HTTP GET 查询串常把数字变成字符串；WS/JSON 则已是 int。"""
+    if value is None:
+        return default
+    if type(value) is int and not isinstance(value, bool):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+            try:
+                return int(text)
+            except ValueError:
+                return None
+    return None
+
+
 def page(items: list[dict], params: dict, key: str, maximum: int) -> dict:
-    limit, offset = params.get("limit", 20), params.get("offset", 0)
-    if type(limit) is not int or not 1 <= limit <= maximum:
+    limit = _as_page_int(params.get("limit", 20), default=20)
+    offset = _as_page_int(params.get("offset", 0), default=0)
+    if limit is None or not 1 <= limit <= maximum:
         raise LifecycleError("BAD_REQUEST", "invalid pagination")
-    if type(offset) is not int or offset < 0:
+    if offset is None or offset < 0:
         raise LifecycleError("BAD_REQUEST", "invalid pagination")
     work_mode, keyword = params.get("work_mode"), params.get("keyword", "")
     if (
         work_mode is not None
-        and work_mode not in ("work", "code")
+        and work_mode not in SUPPORTED_WORK_MODES
         or not isinstance(keyword, str)
     ):
         raise LifecycleError("BAD_REQUEST", "invalid filter")

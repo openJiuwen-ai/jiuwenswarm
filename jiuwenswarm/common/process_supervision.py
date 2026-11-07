@@ -7,6 +7,11 @@ down: ``jiuwenswarm-start --stop`` kills one port owner (SIGTERM/SIGKILL, or
 ``taskkill /F`` on Windows), and the pip upgrade makes the Gateway SIGTERM
 itself. So only exits that cannot come from a stop path are respawned; anything
 else keeps the historical "one child exits => everything stops" behaviour.
+
+SIGKILL is the one exception (issue #4946): it is also what the OOM killer and
+infrastructure send, and reading it as a stop path turned every external hard
+kill into a full-stack teardown. A SIGKILLed child is respawned under the same
+uptime/budget gates as a crash; see ``_Child.should_respawn``.
 """
 
 from __future__ import annotations
@@ -61,6 +66,9 @@ _POSIX_CRASH_SIGNALS = frozenset(
     for name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE")
     if hasattr(signal, name)
 )
+# POSIX reserves 9 for SIGKILL; Windows lacks the constant (a hard kill reads
+# as exit code 1 there), so the literal keeps the gate testable everywhere.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
 
 
 def is_crash_exit(returncode: int) -> bool:
@@ -189,7 +197,16 @@ class _Child:
                 return True
             logger.error("[app] %s requested too many restarts; shutting down", self.name)
             return False
-        if not is_crash_exit(returncode) or uptime < _MIN_UPTIME_FOR_RESTART:
+        if not is_crash_exit(returncode):
+            # SIGKILL cannot be classified as a crash (stop paths escalate to it
+            # after a SIGTERM that did not take effect), but reading it as a stop
+            # path tore the whole service down on every external hard kill — OOM
+            # killer, infra (issue #4946). Respawn it under the same gates as a
+            # crash; the restart budget bounds the churn a stop-path SIGKILL can
+            # cause.
+            if returncode >= 0 or -returncode != _SIGKILL:
+                return False
+        if uptime < _MIN_UPTIME_FOR_RESTART:
             return False
         if self.proc is not None and _upgrade_pending_for(self.proc.pid):
             return False
@@ -204,18 +221,122 @@ class _Child:
         return False
 
 
+@contextlib.contextmanager
+def application_shutdown():
+    """Keep repeated console signals from interrupting bounded final cleanup."""
+    import threading
+
+    previous = {}
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.signal(signum, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def signal_service_tree(pid: int, *, force: bool = False, expected_created: float | None = None) -> list[Any]:
+    """Signal an owned launcher and proven services, retaining Worker branches."""
+    import psutil
+
+    invalid_pid_type = not isinstance(pid, int) or isinstance(pid, bool)
+    if invalid_pid_type or pid <= 0 or pid == os.getpid():
+        raise RuntimeError("Service tree cleanup refused an invalid launcher PID")
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return []
+    except psutil.Error as exc:
+        raise RuntimeError("Service launcher identity could not be inspected") from exc
+    if expected_created is not None and parent.create_time() != expected_created:
+        raise RuntimeError("Service launcher PID identity changed")
+    try:
+        children = parent.children(recursive=True)
+    except psutil.NoSuchProcess:
+        return []
+    except psutil.Error as exc:
+        # The root is a caller-owned launcher; its uninspectable children
+        # cannot be signalled, but failure must not skip the trusted root.
+        children = []
+        errors = [exc]
+    else:
+        errors = []
+    retained = set()
+    parents = {}
+    by_pid = {child.pid: child for child in children}
+    for child in children:
+        try:
+            argv = child.cmdline()
+            if "-m" in argv[:-1] and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
+                retained.add(child.pid)
+            parents[child.pid] = child.ppid()
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error as exc:
+            retained.add(child.pid)
+            errors.append(exc)
+    for child in children:
+        ancestor = parents.get(child.pid)
+        visited = {child.pid}
+        while ancestor in by_pid and ancestor not in retained:
+            if ancestor in visited:
+                retained.add(child.pid)
+                errors.append(RuntimeError("Service process ancestry contains a cycle"))
+                break
+            visited.add(ancestor)
+            ancestor = parents.get(ancestor)
+        if ancestor in retained:
+            retained.add(child.pid)
+    targets = [child for child in reversed(children) if child.pid not in retained] + [parent]
+    for process in targets:
+        try:
+            process.kill() if force else process.terminate()
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.Error as exc:
+            errors.append(exc)
+    if errors:
+        raise RuntimeError(
+            "Service process tree cleanup incomplete; ownership or termination checks failed"
+        ) from errors[0]
+    return targets
+
+
+def terminate_service_tree(pid: int, *, timeout: float = 10.0, expected_created: float | None = None) -> None:
+    """Observe service exit before the application retires its detached Worker."""
+    import psutil
+
+    deadline = time.monotonic() + max(.001, timeout)
+    targets = signal_service_tree(pid, expected_created=expected_created)
+    _, alive = psutil.wait_procs(targets, timeout=max(0.0, deadline - time.monotonic() - .5))
+    errors = []
+    for process in alive:
+        try:
+            process.kill()
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.Error as exc:
+            errors.append(exc)
+    _, alive = psutil.wait_procs(alive, timeout=max(0.0, deadline - time.monotonic()))
+    if errors:
+        raise RuntimeError("Service process termination failed") from errors[0]
+    if alive:
+        raise RuntimeError("Service process exit could not be observed before the shutdown deadline")
+
+
 def _terminate_all(procs: list[subprocess.Popen]) -> None:
-    for proc in procs:
-        if proc.poll() is None:
-            proc.terminate()
-    deadline = time.monotonic() + _TERMINATE_GRACE
-    while time.monotonic() < deadline:
-        if all(proc.poll() is not None for proc in procs):
-            break
-        time.sleep(0.1)
-    for proc in procs:
-        if proc.poll() is None:
-            proc.kill()
+    errors = []
+    with application_shutdown():
+        for proc in procs:
+            if proc.poll() is None:
+                try:
+                    terminate_service_tree(proc.pid, timeout=_TERMINATE_GRACE)
+                except (OSError, RuntimeError) as exc:
+                    errors.append(exc)
+    if errors:
+        raise RuntimeError("Application services did not completely stop") from errors[0]
 
 
 def _reap_lingering_tree(child: _Child) -> None:
