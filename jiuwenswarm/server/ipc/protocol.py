@@ -24,6 +24,7 @@ MAX_FRAME_BYTES = 32 * 1024 * 1024
 KIND_HELLO = "hello"
 KIND_REQUEST = "request"
 KIND_REQUEST_DONE = "request.done"
+KIND_REQUEST_DETACH = "request.detach"
 KIND_WIRE = "wire"
 KIND_READINESS = "readiness"
 KIND_CANCEL = "cancel"
