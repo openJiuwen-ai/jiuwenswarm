@@ -151,32 +151,44 @@ async def get_search_mcp_context(adapter, *, registry_provider, owner_policy_pro
                         if _resolve_owner_scope_level(scope, name, arguments) not in {None, "allow"}:
                             return False
             from openjiuwen.harness.security.skill_authorization import (
-                get_skill_authorization_context, get_skill_grant_store,
+                get_skill_authorization_context,
             )
             authorization = get_skill_authorization_context()
-            if authorization is not None:
-                from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
-                    _compose_active_skill_permissions,
-                )
-                policy = _compose_active_skill_permissions(
-                    policy, authorization.session_id, authorization.agent_scope_id, get_skill_grant_store())
             enabled = policy.get("enabled") if isinstance(policy, dict) else None
             if enabled is False:
                 return True
-            engine = getattr(getattr(adapter, "_permission_rail", None), "_engine", None)
-            if enabled is not True or engine is None:
+            rail = getattr(adapter, "_permission_rail", None)
+            base_key = getattr(rail, "permission_key", None)
+            if enabled is not True or not base_key:
                 return False
             from openjiuwen.harness.security.models import PermissionLevel
-            from openjiuwen.harness.security.core import PermissionEngine
-            fresh = PermissionEngine(config=copy.deepcopy(policy),
-                                     workspace_root=getattr(engine, "_workspace_root", None),
-                                     trusted_dirs=getattr(engine, "_trusted_dirs", None))
-            if fresh.check_tool_permission_directly(name, arguments)[0] != PermissionLevel.ALLOW:
+            from agent_shield.tool_permission import get_permission_manager
+
+            manager = get_permission_manager()
+            if authorization is not None:
+                # The active Skill overlay is published under a scoped key;
+                # evaluate that key so the overlay participates.
+                from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import (
+                    find_published_scopes,
+                )
+
+                try:
+                    publisher = find_published_scopes(base_key, authorization.session_id)
+                    key = publisher.key_for(
+                        authorization.session_id, authorization.agent_scope_id
+                    )
+                    result = await manager.check_permission(name, arguments, key)
+                except Exception:
+                    return False
+                return result.permission == PermissionLevel.ALLOW
+
+            result = await manager.check_permission(name, arguments, config=policy)
+            if result.permission != PermissionLevel.ALLOW:
                 return False
             # Without an explicit scope retain any tightening already applied
-            # by the host's active Skill; never mutate its shared engine.
-            return (authorization is not None
-                    or engine.check_tool_permission_directly(name, arguments)[0] == PermissionLevel.ALLOW)
+            # by the host's active Skill; never mutate its shared config.
+            host_result = await manager.check_permission(name, arguments, base_key)
+            return host_result.permission == PermissionLevel.ALLOW
         except Exception:
             return False
 

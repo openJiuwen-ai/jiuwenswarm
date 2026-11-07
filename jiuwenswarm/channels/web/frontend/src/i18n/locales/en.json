@@ -1454,6 +1454,19 @@
       "memberNameFormatInvalid": "Member name must start with a lowercase letter, followed by lowercase letters, digits, or hyphens",
       "referencedByTeams": "Referenced by {{count}} Team(s)"
     },
+    "sensitiveMask": {
+      "title": "Web answer masking",
+      "hint": "When off, text is shown as-is. When on, a match keeps its first 3 and last 4 characters, with four stars in the middle, and at least 4 characters stay hidden. This only changes what the web page shows.",
+      "enabled": "Enable masking",
+      "name": "Name",
+      "pattern": "Regex",
+      "add": "Add rule",
+      "remove": "Remove",
+      "save": "Save",
+      "saved": "Saved",
+      "loadFailed": "Failed to load masking settings",
+      "saveFailed": "Failed to save masking settings"
+    },
     "groups": {
       "modelDefault": { "label": "Default Model (Main Chat)", "hint": "Primary chat model service and auth" },
       "modelVideo": { "label": "Video Model", "hint": "Video understanding/generation model (optional)" },
@@ -1469,6 +1482,7 @@
       "contextEngine": { "label": "Context Compression", "hint": "Enable or disable dialogue context compression" },
       "kvCacheAffinity": { "label": "Compute Affinity", "hint": "Control Ascend KV Cache affinity" },
       "permissions": { "label": "Tool Safety Guardrail", "hint": "Enable or disable permission checks for tool calls" },
+      "sandbox": { "label": "Sandbox", "hint": "Run commands inside the sandbox when enabled. Off by default." },
       "a2ui": { "label": "A2UI", "hint": "Enable or disable generated UI rendering and A2UI runtime prompts." },
       "trajectoryUi": { "label": "Trajectory UI", "hint": "Show the chat/trajectory switch in single-agent and team modes and enable trajectory observation." },
       "diagnosis": { "label": "Trajectory Diagnosis", "hint": "When enabled, auto-analyze session issues in \"Diagnose\". Online mode requires Trajectory UI enabled; offline mode only needs uploaded/imported logs." },

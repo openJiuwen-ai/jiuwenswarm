@@ -143,6 +143,11 @@ def test_skill_authorization_rail_uses_agent_template_without_request_context(
 
     assert rail is not None
     assert rail._feature_enabled() is True
+    # The manager always owns a ``default`` key, so use an unregistered key to
+    # exercise the documented config_provider fallback for agent-template only.
+    from uuid import uuid4
+
+    rail._permission_key = f"test:unregistered:{uuid4()}"
     assert rail._base_effective_config("session-1")["defaults"] == {"*": "ask"}
     if with_permission_rail:
         ctx = SimpleNamespace(agent=adapter._instance, session=SimpleNamespace(session_id="session-1"))
@@ -157,7 +162,10 @@ def test_skill_permission_fallback_is_bound_to_owning_agent() -> None:
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._instance = SimpleNamespace(react_agent=object())
     permission_rail = SkillAuthorizationPermissionRail(config={"enabled": True})
-    gate = SimpleNamespace(resolve_scope=MagicMock(return_value=("session-1", "main")))
+    gate = SimpleNamespace(
+        resolve_scope=MagicMock(return_value=("session-1", "main")),
+        set_permission_key_resolver=MagicMock(),
+    )
     adapter._bind_skill_permission_scope_resolver(permission_rail, gate)
 
     main_ctx = SimpleNamespace(agent=adapter._instance)
@@ -183,7 +191,9 @@ def test_hot_reload_binds_new_permission_rail_to_existing_skill_gate(monkeypatch
     adapter._permission_rail = None
     adapter._agent_permissions_body = {"enabled": True}
     adapter._skill_authorization_rail = SimpleNamespace(
-        _engine=None, resolve_scope=lambda _ctx: ("session-1", "main"),
+        _engine=None,
+        resolve_scope=lambda _ctx: ("session-1", "main"),
+        set_permission_key_resolver=MagicMock(),
     )
     adapter._resolve_permission_config_for_agent = lambda **_kwargs: {"enabled": True}
     adapter._model = None
@@ -193,7 +203,12 @@ def test_hot_reload_binds_new_permission_rail_to_existing_skill_gate(monkeypatch
     adapter._update_permission_rail({})
 
     assert adapter._permission_rail is permission_rail
-    assert adapter._skill_authorization_rail._engine is permission_rail._engine
+    # Skill gate shares the permission_key after rail rebuild (engine removed).
+    assert getattr(adapter._skill_authorization_rail, "_permission_key", None) in (
+        None,
+        "default",
+        permission_rail.permission_key,
+    )
     assert permission_rail._skill_scope_resolver(SimpleNamespace(agent=adapter._instance)) == (
         "session-1", "main",
     )

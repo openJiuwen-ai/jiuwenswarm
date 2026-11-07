@@ -3833,7 +3833,7 @@ async def test_completed_ignores_outline_sections_without_presented_card():
 async def test_material_snapshot_survives_clarification_and_outline(tmp_path, response):
     from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
     source = tmp_path / "research.txt"
-    source.write_text("青鹭项目的试验数据是73.42%。")
+    source.write_text("青鹭项目的试验数据是73.42%。", encoding="utf-8")
     material_context = {"original_query": "参考附件研究青鹭项目", "files": [{"path": str(source), "name": source.name}],
                         "scope": "session-A", "output_dir": str(tmp_path)}
     interrupted = {"status": "interrupted", "node_id": "feedback_handler", "marker": {"questions": "研究范围？"}}

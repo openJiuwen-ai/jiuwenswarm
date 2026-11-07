@@ -36,17 +36,24 @@ async def test_stopped_resume_only_restores_original_mcp_sources(originally_auth
 
 
 def adapter_for(policy=None, disabled=(), *, registry=False):
+    from uuid import uuid4
+
+    from agent_shield.tool_permission import get_permission_manager
+
     tool = SimpleNamespace(server_name='search', card=SimpleNamespace(name='search', description='Search',
                                                                      input_params={'type': 'object'}),
                            invoke=AsyncMock(return_value={'result': '{}'}))
     registration = SimpleNamespace(request_id='req', session_id='session', tool_instances=(tool,), tool_ids=('search-tool',))
+    # Authorization goes through PermissionManager; register the host policy
+    # under a unique key so parallel tests cannot shadow each other.
+    key = f'test:deepresearch:{uuid4()}'
+    get_permission_manager().update_config(policy or {'enabled': False}, key)
     return SimpleNamespace(
         _deepresearch_mcp_snapshot=(registration, [SERVER], frozenset({'search'}) if registry else frozenset()),
         _active_office_claw_mcp=registration,
         _current_request_route={'request_id': 'req', 'session_id': 'session'},
         _resolve_permission_config_for_agent=lambda **kw: policy or {'enabled': False},
-        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(
-            check_tool_permission_directly=lambda *args: ('allow', None))),
+        _permission_rail=SimpleNamespace(permission_key=key),
         _disabled_tools_rail=SimpleNamespace(_disabled_tools=set(disabled)),
     )
 

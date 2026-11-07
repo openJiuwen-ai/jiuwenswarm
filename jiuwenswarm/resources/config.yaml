@@ -9,6 +9,23 @@ config:
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
+# 网页回答脱敏。enabled 默认关闭，关闭时 rules 不生效，原文直出。
+# 只替换网页上看到的回答、思考、工具结果和历史回放，不改历史文件。
+# pattern 要能匹配敏感内容本身。命中的那一段换成等长星号。
+sensitive_mask:
+  enabled: false
+  rules:
+    - title: 邮箱
+      pattern: '\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b'
+    - title: 手机号
+      pattern: '(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)'
+    - title: 身份证号
+      pattern: '(?<!\d)\d{17}[\dXx](?!\d)'
+    - title: API Key
+      pattern: '(?:sk|rk|pk|ak)-[A-Za-z0-9]{8,}'
+    - title: Token
+      pattern: 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
   enabled: true
@@ -1312,10 +1329,31 @@ permissions:
   enabled: false
   schema: tiered_policy
   permission_mode: normal
+  # 包内命令 builtin 规则开关；缺键时引擎默认开启。必须出现在模板里，
+  # 用户 override 的 false 才会在 merge 后保留（模板无键会丢掉用户独有键）。
+  package_builtin_rules: true
+  # 结构底线应对；缺键时引擎五键均按 ask。必须出现在模板里，
+  # 用户 override（如 compound_chain: allow）才会在 merge 后保留。
+  guard_actions:
+    too_complex: ask
+    parse_unavailable: ask
+    structure_guard: ask
+    interpreter_sink: ask
+    compound_chain: ask
   # 技能级动态授权（Skill overlay）：默认关闭；开启后根 SKILL.md 加载经
   # SkillAuthorizationRail 门禁审批，ACTIVE Grant 参与权限合成。
   skill_authorization:
     enabled: false
+  # W3：网页/搜索出站防护；在权限系统开启后独立启用。
+  # 当前受保护传输固定 DNS 校验后的连接 IP，不支持代理，禁止自动直连降级。
+  net_guard:
+    enabled: false
+    defaults: allow
+    urls: {}
+    connection:
+      allow_http: false
+      allow_loopback: false
+      allow_private_network: false
   defaults:
     '*': allow
   tools:
@@ -1517,6 +1555,10 @@ permissions:
       severity: HIGH
   owner_scopes: {}
   deny_guidance_message: ''
+  soft_delete:
+    enabled: false
+    archive_dir: ""
+    batch_delete_threshold: 100
   file_guard:
     enabled: true
     defaults:

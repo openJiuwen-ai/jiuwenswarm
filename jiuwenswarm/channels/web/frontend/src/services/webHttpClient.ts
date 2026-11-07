@@ -86,6 +86,8 @@ const ROUTES: Record<string, RouteRow> = {
   'a2a.outbound.dispatch.list': { verb: 'GET', path: '/a2a/outbound/dispatches', kind: 'unary' },
   'locale.get_conf': { verb: 'GET', path: '/locale', kind: 'unary' },
   'locale.set_conf': { verb: 'PUT', path: '/locale', kind: 'unary' },
+  'sensitive_mask.get_conf': { verb: 'GET', path: '/sensitive-mask', kind: 'unary' },
+  'sensitive_mask.set_conf': { verb: 'PUT', path: '/sensitive-mask', kind: 'unary' },
   'cron.job.list': { verb: 'GET', path: '/cron/jobs', kind: 'unary' },
   'cron.job.create': { verb: 'POST', path: '/cron/jobs', kind: 'unary' },
   'cron.job.meta': { verb: 'GET', path: '/cron/jobs/meta', kind: 'unary' },

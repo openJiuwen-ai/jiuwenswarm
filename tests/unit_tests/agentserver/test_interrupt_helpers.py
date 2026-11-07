@@ -123,7 +123,7 @@ def _scene_hook_input(normalized_tool_name: str, user_input):
         user_input=user_input,
         normalized_tool_name=normalized_tool_name,
         tool_args={},
-        engine=None,
+        permission_key="default",
     )
 
 

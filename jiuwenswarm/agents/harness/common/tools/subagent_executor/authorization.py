@@ -130,8 +130,8 @@ def _find_child_skill_use_rail(child: Any) -> Any | None:
     return None
 
 
-def _find_child_permission_engine(child: Any) -> Any | None:
-    """取子 Agent 继承的 PermissionInterruptRail 引擎（门禁 fail-closed 判定用）。"""
+def _find_child_permission_rail(child: Any) -> Any | None:
+    """Find the inherited owner rail without creating another publisher."""
     try:
         from openjiuwen.harness.rails.security.tool_security_rail import (
             PermissionInterruptRail,
@@ -157,10 +157,73 @@ def _find_child_permission_engine(child: Any) -> Any | None:
             except Exception:  # noqa: BLE001
                 candidates = []
     for rail in candidates:
-        engine = getattr(rail, "_engine", None)
-        if engine is not None:
-            return engine
+        key = getattr(rail, "permission_key", None)
+        if isinstance(key, str) and key.strip():
+            return rail
     return None
+
+
+def _find_child_permission_key(child: Any) -> str | None:
+    rail = _find_child_permission_rail(child)
+    return rail.permission_key if rail is not None else None
+
+
+def _retain_child_permission_session(child: Any) -> None:
+    """A detached child keeps its parent's policy until invoke/stream finishes."""
+    import weakref
+    from functools import partial
+    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import get_permissions_session_id
+    from openjiuwen.harness.security.skill_authorization import get_skill_authorization_context
+
+    rail = _find_child_permission_rail(child)
+    retain_method = getattr(rail, "retain_permission_session", None)
+    if not callable(retain_method) or not rail.enabled:
+        return
+    retain = partial(retain_method)
+    authorization = get_skill_authorization_context()
+    sid = get_permissions_session_id() or (authorization.session_id if authorization is not None else None)
+    if not sid:
+        return
+    identity = rail.permission_key, sid
+    previous = getattr(child, "_permission_session_owner", None)
+    if previous is not None:
+        if previous != identity:
+            raise ValueError("Child permission session owner changed")
+        return
+    initial_release = retain(sid)
+    try:
+        finish_initial = weakref.finalize(child, initial_release)
+    except BaseException:
+        initial_release()
+        raise
+    original_invoke = getattr(child, "invoke", None)
+    if callable(original_invoke):
+        async def invoke_with_permission_session(*args, **kwargs):
+            release = None
+            try:
+                release = retain(sid)
+                finish_initial()
+                return await original_invoke(*args, **kwargs)
+            finally:
+                finish_initial()
+                if release is not None:
+                    release()
+        child.invoke = invoke_with_permission_session
+    original_stream = getattr(child, "stream", None)
+    if callable(original_stream):
+        async def stream_with_permission_session(*args, **kwargs):
+            release = None
+            try:
+                release = retain(sid)
+                finish_initial()
+                async for item in original_stream(*args, **kwargs):
+                    yield item
+            finally:
+                finish_initial()
+                if release is not None:
+                    release()
+        child.stream = stream_with_permission_session
+    setattr(child, "_permission_session_owner", identity)
 
 
 def _child_workspace_root(child: Any) -> str | None:
@@ -181,6 +244,7 @@ def build_subagent_authorization_rails(
     session_id: str,
     *,
     skill_use_rail: Any | None = None,
+    permission_key: str | None = None,
     engine: Any | None = None,
     workspace_root: Any | None = None,
     config_provider: PermissionConfigProvider | None = None,
@@ -191,7 +255,11 @@ def build_subagent_authorization_rails(
     开关关闭、参数缺失或任一 rail 构建失败时返回空元组（0708：rail 对
     不完整则整体回退 legacy 路径）。委托下发 sender 走移植版默认实现
     （``build_context_approval_sender``，发送时取父 session ContextVar）。
+
+    ``engine`` 保留兼容，已忽略；门禁与工具裁决走 ``permission_key`` /
+    ``get_permission_manager``（使用已发布的会话/Skill key）。
     """
+    del engine  # call-site compat; adjudication uses permission_key / manager
     scope = str(agent_scope_id or "").strip()
     main_session_id = str(session_id or "").strip()
     if not scope or not main_session_id:
@@ -230,19 +298,24 @@ def build_subagent_authorization_rails(
                 lambda: skill_use_rail.skills_meta,
                 skill_dirs_provider=lambda: skill_use_rail.skills_dir,
             )
-        # engine 未注入时门禁按策略评估失败处理（fail-closed），与主 Agent 一致。
         gate_rail = SubagentSkillAuthorizationRail(
             agent_scope_id=scope,
             session_id=main_session_id,
-            engine=engine,
+            permission_key=permission_key,
             skill_resolver=skill_resolver,
             config_provider=effective_config_provider,
             session_config_merger=merge_session_permissions_overlay,
         )
+        if main_session_id:
+            from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import find_published_scopes
+
+            gate_rail.set_permission_key_resolver(lambda _ctx: find_published_scopes(
+                permission_key or "default", main_session_id,
+            ).baseline_key_for(main_session_id))
         permission_rail = SubagentPermissionRail(
             agent_scope_id=scope,
             session_id=main_session_id,
-            engine=engine,
+            permission_key=permission_key,
             workspace_root=workspace_root,
             config_provider=effective_config_provider,
         )
@@ -358,12 +431,12 @@ def attach_subagent_authorization(
     add_rail = getattr(child, "add_rail", None)
     if not callable(add_rail):
         return False
-    engine = _find_child_permission_engine(child)
+    permission_key = _find_child_permission_key(child)
     rails = build_subagent_authorization_rails(
         scope,
         main_session_id,
         skill_use_rail=_find_child_skill_use_rail(child),
-        engine=engine,
+        permission_key=permission_key,
         workspace_root=_child_workspace_root(child),
         config_provider=config_provider,
     )
@@ -375,10 +448,10 @@ def attach_subagent_authorization(
     setattr(child, _CHILD_ASSEMBLED_ATTR, scope)
     logger.info(
         "[skill_authorization] subagent authorization rails attached "
-        "session=%s scope=%s engine=%s",
+        "session=%s scope=%s permission_key=%s",
         main_session_id,
         scope,
-        engine is not None,
+        permission_key,
     )
     return True
 
@@ -409,6 +482,9 @@ def install_subagent_authorization_wiring(
         **kwargs: Any,
     ) -> Any:
         child = original_create(subagent_type, subsession_id, *args, **kwargs)
+        # Lifetime retention is independent of the optional Skill feature. Do
+        # not swallow failure: the child must not run with a missing policy.
+        _retain_child_permission_session(child)
         try:
             main_session_id = resolve_main_authorization_session(config_provider)
         except Exception:  # noqa: BLE001

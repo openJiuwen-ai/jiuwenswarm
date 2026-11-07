@@ -55,6 +55,19 @@ wheels = [
 ]
 
 [[package]]
+name = "agent-shield"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=develop#86e8d62e33e24ddd327639bdd32017dda0a1c1cb" }
+
+[[package]]
+name = "agent-ssas"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_ssas&rev=develop#86e8d62e33e24ddd327639bdd32017dda0a1c1cb" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2152,11 +2165,27 @@ wheels = [
 ]
 
 [[package]]
+name = "jiuwenbox"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwenbox&rev=develop#b04c024963111ed55eb50d10bf6a5eba61d8dabe" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "mcp" },
+    { name = "pydantic" },
+    { name = "python-multipart" },
+    { name = "pyyaml" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[[package]]
 name = "jiuwenswarm"
 version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "a2ui-agent-sdk" },
+    { name = "agent-shield" },
+    { name = "agent-ssas" },
     { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "asyncpg" },
@@ -2171,6 +2200,7 @@ dependencies = [
     { name = "google-genai" },
     { name = "greenlet" },
     { name = "httpx", extra = ["socks"] },
+    { name = "jiuwenbox" },
     { name = "json-repair" },
     { name = "lark-oapi" },
     { name = "loguru" },
@@ -2200,6 +2230,7 @@ dependencies = [
     { name = "python-telegram-bot" },
     { name = "pyyaml" },
     { name = "ruamel-yaml" },
+    { name = "security-mask" },
     { name = "skillnet-ai" },
     { name = "slack-bolt" },
     { name = "sqlite-vec" },
@@ -2326,6 +2357,8 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
+    { name = "agent-shield", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=develop" },
+    { name = "agent-ssas", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_ssas&rev=develop" },
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -2352,6 +2385,7 @@ requires-dist = [
     { name = "httptools", marker = "extra == 'harmony'", specifier = ">=0.6.3" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'harmony'", specifier = ">=0.27" },
+    { name = "jiuwenbox", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwenbox&rev=develop" },
     { name = "jiuwenswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
     { name = "json-repair", specifier = ">=0.58.0" },
     { name = "json-repair", marker = "extra == 'harmony'", specifier = ">=0.58.0" },
@@ -2412,6 +2446,7 @@ requires-dist = [
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.0" },
     { name = "ruamel-yaml", marker = "extra == 'harmony'", specifier = ">=0.18.0" },
+    { name = "security-mask", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=develop" },
     { name = "skillnet-ai", specifier = "==0.0.16" },
     { name = "skillnet-ai", marker = "extra == 'harmony'", specifier = "==0.0.16" },
     { name = "slack-bolt", specifier = ">=1.30.0" },
@@ -3510,7 +3545,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#6db33ad057345421b6648b63fa8b2a96a6e8ecf0" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#77a00c7eea377d4fba02c74726d46f1ad8c4670d" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
@@ -5416,6 +5451,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/46/f5af3402b579fd5e11573ce652019a67074317e18c1935cc0b4ba9b35552/secretstorage-3.5.0-py3-none-any.whl", hash = "sha256:0ce65888c0725fcb2c5bc0fdb8e5438eece02c523557ea40ce0703c266248137", size = 15554, upload-time = "2025-11-23T19:02:51.545Z" },
 ]
+
+[[package]]
+name = "security-mask"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=develop#86e8d62e33e24ddd327639bdd32017dda0a1c1cb" }
 
 [[package]]
 name = "setuptools"

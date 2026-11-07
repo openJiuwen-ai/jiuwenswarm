@@ -35,6 +35,23 @@
 
 ## 不变量
 
+- PermissionManager 的 Agent 基线 key 不承载会话 overlay。请求准备阶段发布独立会话
+  完整配置；Skill 激活/撤销的存储写入完成后发布/移除派生 key，工具读侧只选择 key。
+  未发布的会话或 Skill key 必须失败，禁止回退 default 或补登记空配置。取消/工具异常
+  也必须恢复出站 ContextVar。会话删除和 Agent 释放时移除所拥有的派生配置。
+  个人版和企业版均按 Agent 实例显式拥有独立注册 key；原租户业务 key 保留为路由维度，
+  不同实例不能覆盖/删除对方配置。SDK 不传 key 时的 default 语义不变。
+  权限 before_tool_call 的配置/路由/存储异常必须在回调边界转成无 cause 的 AbortError；
+  AsyncCallbackFramework 会吞掉普通异常，故 KeyError 本身不构成执行拒绝。已有 HITL
+  AbortError 继续按原协议传播；scene hook 异常同样中止，不能忽略 owner 限制后继续。
+  请求和后台子 Agent 使用引用计数保留会话 key，最后一个使用者在 finally 中释放；
+  仅空闲会话可按全局上限/LRU 回收。在途 key 不参与容量淘汰；发布失败中止请求，不能
+  记日志后使用旧策略。会话结束仅回收编译配置，overlay/Grant 在下次请求写入阶段重建。
+  同一会话在释放后再次发布使用新代次，旧 key/旧释放回调不能影响新一轮；遗漏 uninit
+  的实例在垃圾回收时只清理自身拥有的 key。发布发生在 pending reload 后，绑定当前实例。
+  企业版持久化从审批上下文绑定会话，使用所属实例基线合成并定向刷新会话 key；
+  缺会话时返回失败并记录日志，禁止回退为覆盖租户基线或 default。
+
 1. **AgentWarmPool 排除 acp/a2a**：WarmKey.channel ∈ {acp, a2a} 的请求不走预热池，每次按需创建（外部 agent control plane 自身管理生命周期）。
 2. **prewarm 阶段 3 独立 fire-and-forget**：阶段 3（临时 DeepAgent + query mock 默认 True）不被阶段 1/2 的兜底 await 阻塞，避免首请求被 LLM 真实调用阻塞。
 3. **TenantAgentPool 仅企业版启用**：非 enterprise 进程内 `AgentWebSocketServer._agent_manager` 是裸 AgentManager，workspace_key="default"；tenant_pool 属性为 None。

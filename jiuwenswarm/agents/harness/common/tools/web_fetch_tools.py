@@ -441,9 +441,17 @@ async def _fetch_single_url(
         }
 
     # 模式 1：查缓存
+    from openjiuwen.core.common.security.outbound import outbound_permission_key
+    from openjiuwen.core.common.security.outbound_http import check_connection
+
+    if outbound_permission_key() is not None:
+        # Normalization and cache hits must obey the same current policy as I/O.
+        await check_connection(url)
     if cache is not None and use_cache:
         cached = await cache.get(url)
         if cached is not None:
+            if outbound_permission_key() is not None and cached.url != url:
+                await check_connection(cached.url)
             now = time.time()
             cache_age_days = round((now - float(cached.cached_at or 0)) / 86400, 1)
             update_time = cached.update_time

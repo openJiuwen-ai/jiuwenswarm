@@ -4,7 +4,7 @@
 - model_routing / instance config 补缺 / context_engine / kv_cache_affinity
 - agent_ras / enable_subagent_runtime 可选 kwargs
 - session adapter idle TTL 与 skill lazy refresh 环境开关
-- prompt cache_control 标记、permission shim、evolution trigger 赋值
+- prompt cache_control 标记、evolution trigger 赋值
 
 只做配置到结构的转换，不持有 adapter 实例。
 """
@@ -42,15 +42,6 @@ def _set_skill_evolution_triggers(
 ) -> None:
     rail.review_trigger = review_trigger
     rail.signal_trigger = signal_trigger
-
-
-def init_permission_engine(*_args: Any, **_kwargs: Any) -> None:
-    """Legacy shim for tests/older call sites.
-
-    The project now relies on openjiuwen's PermissionInterruptRail and does not
-    require a standalone permission engine initialization step.
-    """
-    return None
 
 
 def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
