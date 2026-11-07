@@ -23,7 +23,7 @@ def test_personal_edition_ignores_identity(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
-def test_enterprise_edition_requires_triad(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_enterprise_edition_complete_triad(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.permissions.permission_key.is_enterprise",
         lambda: True,
@@ -32,7 +32,15 @@ def test_enterprise_edition_requires_triad(monkeypatch: pytest.MonkeyPatch) -> N
         resolve_permission_key(group_id="g1", bot_id="b1", user_id="u1")
         == "group:g1/bot:b1/user:u1"
     )
-    with pytest.raises(ValueError):
-        resolve_permission_key(group_id="g1", bot_id="b1")
-    with pytest.raises(ValueError):
-        resolve_permission_key()
+
+
+def test_enterprise_incomplete_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permission_key.is_enterprise",
+        lambda: True,
+    )
+    assert resolve_permission_key(group_id="g1", bot_id="b1") == DEFAULT_KEY
+    assert resolve_permission_key() == DEFAULT_KEY
+    assert resolve_permission_key(bot_id="only-bot") == DEFAULT_KEY

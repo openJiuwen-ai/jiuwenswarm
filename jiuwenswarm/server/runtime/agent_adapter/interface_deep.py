@@ -8601,7 +8601,16 @@ class JiuWenSwarmDeepAdapter:
         permission_config = self._resolve_permission_config_for_agent(
             session_id=""
         )
-        wanted_key = resolve_permission_key(**self._permission_key_dims())
+        # 组 key 只走 resolve_permission_key；权限未启用且尚无 rail 时不必解析。
+        need_key = (
+            self._permission_rail is not None
+            or bool(permission_config.get("enabled", False))
+        )
+        wanted_key = (
+            resolve_permission_key(**self._permission_key_dims())
+            if need_key
+            else None
+        )
         if self._permission_rail is not None:
             current_key = getattr(self._permission_rail, "permission_key", None)
             if getattr(self._permission_rail, "routing_key", current_key) != wanted_key:
