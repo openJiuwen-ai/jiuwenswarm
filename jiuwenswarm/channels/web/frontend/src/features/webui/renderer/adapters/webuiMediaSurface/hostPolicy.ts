@@ -6,7 +6,7 @@ export type MediaSurfaceEvent = 'ready' | 'heartbeat' | 'complete' | 'error';
 /** Host-owned media behaviour; plugin props cannot change any of it. */
 export interface MediaSurfaceHostPolicy {
   role: MediaSurfaceRole;
-  /** Play silently whatever the plugin's muted prop says. */
+  /** Play silently whatever the plugin's muted prop says; HTML pages get no autoplay delegation either. */
   forceMuted: boolean;
   /** How long an HTML document may take to report ready before the poster replaces it. */
   readyTimeoutMs: number;

@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | `S_07 / media-surface` |
 | 所属模块 | Gateway `webui/`（校验）；Web 前端 `features/webui/`（宿主与渲染） |
-| 最近一次修订日期 | 2026-11-05 |
+| 最近一次修订日期 | 2026-11-07 |
 | 契约状态 | 已实现（背景槽位）；开场槽位的策略在 EXTV2-GW-11 补充 |
 | 关联文档 | [F_10](../features/F_10_media-surface-and-background.md)、[S_17 组件 Props](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)（`MediaSurface` 字段的唯一维护位置）、[S_02 渲染](S_02_ui-render.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md) |
 
@@ -30,14 +30,14 @@
 | 项 | 行为 |
 | --- | --- |
 | 输入与焦点 | 容器不接收点击，不可获得焦点，对辅助技术隐藏 |
-| 声音 | 一律静音，忽略 `muted` |
+| 声音 | 一律静音，忽略 `muted`；HTML 页面不获得 autoplay 委派，见下行 |
 | 图片 | 加载失败时显示 `poster`，没有 `poster` 时不显示 |
 | 视频 | 自动播放、内联、按 `loop` 循环；窗口隐藏时暂停，显示时恢复；失败时显示 `poster` |
-| HTML | 在 `sandbox="allow-scripts"`、`allow="autoplay"` 的 iframe 中加载；就绪前 iframe 保持渲染但完全透明，其上显示 `poster`；15 秒内未就绪或报告错误时卸载 iframe 并显示 `poster` |
+| HTML | 在 `sandbox="allow-scripts"`、`allow=""`（不委派 autoplay）的 iframe 中加载，页面无法开始有声播放或运行 WebAudio，静音视频照常播放；切换或清除时立即移除旧 iframe；就绪前 iframe 保持渲染但完全透明，其上显示 `poster`；15 秒内未就绪或报告错误时卸载 iframe 并显示 `poster` |
 | 减少动态 | 用户开启减少动态时：有 `poster` 的视频与 HTML 只显示 `poster`；没有 `poster` 的视频不自动播放，HTML 照常加载并在上下文中收到 `reducedMotion: true` |
 | 视觉参数 | `fit`、`position`、`dim`、`blur`、`opacity` 由宿主映射为样式 |
 
-开场槽位中：遵循插件的 `muted`（有声自动播放被拒绝时静音重试），视频不循环，不做减少动态替换；
+开场槽位中：HTML 页面委派 `allow="autoplay"`；遵循插件的 `muted`（有声自动播放被拒绝时静音重试），视频不循环，不做减少动态替换；
 媒体就绪、心跳、完成与错误交给启动门控计时（[S_09](S_09_startup-splash.md) 第 5 节），容器不接收输入，只有跳过提示可按住。
 
 ## 3. 消息协议（HTML 内容）

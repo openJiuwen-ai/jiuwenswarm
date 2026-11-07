@@ -2367,7 +2367,7 @@ test('MediaSurface renders image, video and sandboxed pages with the host media 
       poster: surfaceAsset('poster.jpg') }), 3);
     const iframe = app.container.querySelector('[data-testid="webui-media-surface-frame"]');
     assert.equal(iframe.getAttribute('sandbox'), 'allow-scripts');
-    assert.equal(iframe.getAttribute('allow'), 'autoplay');
+    assert.equal(iframe.getAttribute('allow'), '', 'a background page gets no autoplay delegation, so it cannot start sound');
     assert.equal(iframe.getAttribute('referrerpolicy'), 'no-referrer');
     assert.equal(iframe.getAttribute('tabindex'), '-1');
     assert.equal(iframe.getAttribute('title'), 'Theme');
@@ -2416,6 +2416,7 @@ test('MediaSurface accepts only messages from its frame that carry the current t
     await app.replace(surface({ kind: 'html', src: surfaceAsset('next.html') }), 2);
     const next = app.container.querySelector('[data-testid="webui-media-surface-frame"]');
     assert.notEqual(surfaceToken(next), token, 'each iframe receives a fresh token');
+    assert.equal(iframe.isConnected, false, 'switching removes the previous page right away, so its audio stops');
     await postSurface(next.contentWindow, surfaceMessage(token, 'ready'));
     assert.equal(next.dataset.variant, 'loading');
     await postSurface(next.contentWindow, surfaceMessage(surfaceToken(next), 'ready'));
@@ -3404,6 +3405,7 @@ test('WebUISplashGate holds the workspace and entry until the queue ends and ski
     assert.equal(document.querySelector('[data-testid="webui-entry-host"]').open, false);
     const frame = overlay().querySelector('[data-testid="webui-media-surface-frame"]');
     assert.ok(frame, 'the splash surface plays inside the overlay');
+    assert.equal(frame.getAttribute('allow'), 'autoplay', 'a splash may play its sound');
     const token = surfaceToken(frame);
     await postSurface(frame.contentWindow, surfaceMessage(token, 'ready'));
     assert.ok(overlay().querySelector('[data-testid="webui-splash-skip"]'));

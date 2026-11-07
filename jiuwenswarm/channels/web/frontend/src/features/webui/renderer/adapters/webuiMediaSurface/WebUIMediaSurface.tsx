@@ -120,10 +120,12 @@ interface SurfaceFrameProps {
   posterStyle: CSSProperties;
   context: SurfaceContext;
   readyTimeoutMs: number;
+  /** Delegate autoplay with sound; withheld for silent surfaces so the page cannot start audio. */
+  allowAudio: boolean;
   emit: Emit;
 }
 
-function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs, emit }: SurfaceFrameProps) {
+function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs, allowAudio, emit }: SurfaceFrameProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const token = useMemo(() => createSurfaceToken(), [src]);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'failed'>('loading');
@@ -174,7 +176,7 @@ function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs
     <>
       <iframe ref={frame} className="webui-media-surface__media" data-testid="webui-media-surface-frame"
         data-variant={phase} src={withSurfaceToken(src, token)} title={title} sandbox="allow-scripts"
-        allow="autoplay" referrerPolicy="no-referrer" tabIndex={-1}
+        allow={allowAudio ? 'autoplay' : ''} referrerPolicy="no-referrer" tabIndex={-1}
         style={{ opacity: phase === 'ready' ? 1 : 0 }} onLoad={() => post('start')} />
       {phase === 'loading' ? <Poster src={poster} style={posterStyle} /> : null}
     </>
@@ -215,7 +217,7 @@ export function WebUIMediaSurface({ node }: WebUIAdapterProps) {
       emit={emit} />;
   } else {
     content = <SurfaceFrame key={p.src} src={p.src} title={p.title} poster={p.poster} posterStyle={mediaStyle}
-      readyTimeoutMs={policy.readyTimeoutMs} emit={emit}
+      readyTimeoutMs={policy.readyTimeoutMs} allowAudio={!policy.forceMuted} emit={emit}
       context={{ role: policy.role, visible, reducedMotion, locale: i18n.language }} />;
   }
 
