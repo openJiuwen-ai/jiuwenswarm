@@ -9,7 +9,7 @@
   border: 1px solid var(--color-border-input-strong);
   border-radius: var(--radius-sm);
   outline: none;
-  background: var(--color-surface-card);
+  background-color: var(--color-surface-card);
   /* data-URI 无法引用 CSS 变量，色值对应 --color-border-input-strong (#c2c2c2) */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%23c2c2c2' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
@@ -27,6 +27,8 @@
 .ui-select[data-state='open'] {
   /* 对应 --color-control-emphasis (#191919) */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%23191919' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
 }
 .ui-select:disabled {
   color: var(--color-text-tertiary);
