@@ -65,6 +65,9 @@ def test_apply_agent_group_full_assembly(group_cache: Path) -> None:
     assert spec.enable_task_verification is False
     assert spec.stale_claim_idle_timeout == 120
     assert spec.stale_pending_idle_timeout == 120
+    # 催收双旋钮桌面尺度：沉默 240s / 长寿 600s
+    assert spec.stale_inprogress_silence_timeout == 240
+    assert spec.stale_inprogress_age_timeout == 600
 
     # 4. leader prompt = 模板原 prompt + switch notice + AGENT.md + persona + instruction
     assert "原有主理人规则" in spec.leader.prompt

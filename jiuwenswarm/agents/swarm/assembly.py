@@ -266,7 +266,8 @@ def _apply_agent_group(spec: Any, agent_group_name: str, package_dir: Path | Non
     5. leader 快照；
     6. 成员覆写 + predefined_members 替换（TeamMemberSpec.prompt = persona+instruction，不含 AGENT.md）；
     7. 显式写 team_mode/dispatch_mode/enable_task_verification（不依赖版本默认值）
-       + 停滞自愈时钟 stale_claim/stale_pending_idle_timeout=120s（桌面交互尺度）。
+       + 停滞自愈时钟 stale_claim/stale_pending_idle_timeout=120s（桌面交互尺度）
+       + 催收双旋钮 stale_inprogress silence=240s/age=600s。
     """
     _check_agent_template_spec_support()
 
@@ -369,6 +370,10 @@ def _apply_agent_group(spec: Any, agent_group_name: str, package_dir: Path | Non
     # 成员（回合中 idle_seconds() 为 None），短窗只多花少量 nudge 轮次。
     spec.stale_claim_idle_timeout = 120
     spec.stale_pending_idle_timeout = 120
+    # 催收（stale-inprogress）双旋钮：沉默 240s（2 个自愈窗，专注执行的正常
+    # 编码任务不会被一窗催到）、长寿 600s（10 分钟不收尾即复核）；档后静默闸保证每任务最多提醒两次。
+    spec.stale_inprogress_silence_timeout = 240
+    spec.stale_inprogress_age_timeout = 600
 
 
 def enrich_team_spec_for_swarm(
