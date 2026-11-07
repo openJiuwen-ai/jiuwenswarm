@@ -3999,12 +3999,13 @@ class XiaoyiChannel(BaseChannel):
                     task_id,
                     len(seed_text),
                 )
-            # 播种后累积器清零：每个 ask_user 应答只续"上一次暂停之后"新
-            # 流出的正文（用户规则：只在 ask_user 这一个对话中续上前一个
-            # ask_user 暂停的对话）。链式 ask_user 时第二张卡的种子=应答一
-            # 之后的续写文本，不再重复整轮开头（否则"你好"等段首文本会在
-            # 消息里出现两次）。端侧整轮完整性由各次应答消息顺序拼接保证。
-            self._streamed_chain_texts[(session_id, task_id)] = ""
+            # 链式 ask_user 轮内累积（用户规则：输出 B → ask_user → B+C →
+            # ask_user → B+C+D）：每次应答的端侧消息 = 此前全部正文 + 新段。
+            # 卡片帧 append=false 已重置端侧缓冲，种子整段重放不会重复；
+            # 累积器=种子（B+C），续写 D 追加其上，下一次种子=B+C+D。
+            # 作用域=本轮（按链键控）：跨轮不带入（上一轮内容在上一轮消息里，
+            # 其累积器随轮次终态 finalize / 顶替收口清理）。
+            self._streamed_chain_texts[(session_id, task_id)] = seed_text
             if task_id != pending_task_id:
                 # 链迁移：原链累积清理（已迁到新链）
                 self._streamed_chain_texts.pop((session_id, pending_task_id), None)

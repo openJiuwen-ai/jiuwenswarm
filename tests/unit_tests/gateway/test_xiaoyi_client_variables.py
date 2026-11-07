@@ -1117,8 +1117,8 @@ async def test_ask_user_resume_seeds_streamed_text_to_follow_chain(cfg_file):
         }, task="task-9"))
         # 播种挂起（不立即发帧）；尾片已被吸收；新链累积=种子；原链清理
         assert ch._pending_resume_seeds.get(("conv-1", "task-9")) == seg1
-        # 播种后累积器清零（下次种子只含本次应答之后的续写）
-        assert ch._streamed_chain_texts.get(("conv-1", "task-9")) == ""
+        # 链式累积：新链累积器=种子（B+C），续写 D 追加其上
+        assert ch._streamed_chain_texts.get(("conv-1", "task-9")) == seg1
         assert ("conv-1", "task-2") not in ch._streamed_chain_texts
         assert ("conv-1", "task-2") not in ch._text_stream_pending
         # 未随应答立即发正文帧——仅"已收到您的回复"回执状态帧
@@ -1147,7 +1147,7 @@ async def test_ask_user_resume_seeds_streamed_text_to_follow_chain(cfg_file):
         # 后续续写正常追加到新链累积（扣片：首片扣住未发）
         delta.payload = {"content": "选择已收到。", "is_complete": False}
         await ch._send_legacy(delta)
-        assert ch._streamed_chain_texts.get(("conv-1", "task-9")) == "你的"
+        assert ch._streamed_chain_texts.get(("conv-1", "task-9")) == seg1 + "你的"
 
         # 链式 ask_user：第二张卡挂 task-9 链，第二次应答播种=段1+续写
         ch._pending_approvals["conv-1"] = {
@@ -1167,10 +1167,10 @@ async def test_ask_user_resume_seeds_streamed_text_to_follow_chain(cfg_file):
                 "custom_text": None,
             }],
         }, task="task-10"))
-        # 第二次播种=段1+续写（含此时扣住的"选择已收到。"+\n，格式对齐）
-        seg2 = "你的选择已收到。\n"  # 仅含应答一之后的续写（扣片吸收+换行）
+        # 第二次播种=链式累积（B+C+\n：段1+续写，含此时扣住的"选择已收到。"）
+        seg2 = seg1 + "你的选择已收到。\n"
         assert ch._pending_resume_seeds.get(("conv-1", "task-10")) == seg2
-        assert ch._streamed_chain_texts.get(("conv-1", "task-10")) == ""
+        assert ch._streamed_chain_texts.get(("conv-1", "task-10")) == seg2
         assert ("conv-1", "task-9") not in ch._streamed_chain_texts
 
         # 形态二：同链（PC 端点选，应答帧带回原任务 id）——尾片并入种子
@@ -1195,8 +1195,8 @@ async def test_ask_user_resume_seeds_streamed_text_to_follow_chain(cfg_file):
         }, task=""))
         # 同链：种子挂起（含尾片+换行），累积对齐到种子（续写在种子上追加）
         assert ch._pending_resume_seeds.get(("conv-1", "task-2")) == seg1
-        # 播种后累积器清零（同链形态：续写从空累积，下次种子不含段1）
-        assert ch._streamed_chain_texts.get(("conv-1", "task-2")) == ""
+        # 同链形态：累积器=种子（含尾片+换行），续写追加其上
+        assert ch._streamed_chain_texts.get(("conv-1", "task-2")) == seg1
         assert ("conv-1", "task-2") not in ch._text_stream_pending
         # 确认后首个正文事件=tool_phase flush：种子发出，尾片已被吸收不再重发
         await ch._flush_text_stream_segment(

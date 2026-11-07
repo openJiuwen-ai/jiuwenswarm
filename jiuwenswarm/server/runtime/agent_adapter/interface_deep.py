@@ -1801,10 +1801,26 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         refresh_session_context_if_stale,
                     )
 
+                    # refresh 的历史/上下文按键 = 运行实例的真实会话 id
+                    # （DeepAgent._interaction_session），不是渠道会话键——
+                    # 用渠道键读历史会拿到陈旧/错位文件，重建出残缺上下文
+                    # （2026-11-07 a.py 轮：续跑输出深圳天气复述且不执行删除）。
+                    _agent_sid = sid
+                    try:
+                        _interaction = getattr(
+                            getattr(existing, "_instance", None),
+                            "_interaction_session",
+                            None,
+                        )
+                        _get_sid = getattr(_interaction, "get_session_id", None)
+                        if callable(_get_sid):
+                            _agent_sid = str(_get_sid()) or sid
+                    except Exception:
+                        pass
                     existing._synced_history_tail_request_id = (
                         await refresh_session_context_if_stale(
                             deep_agent=getattr(existing, "_instance", None),
-                            session_id=sid,
+                            session_id=_agent_sid,
                             exclude_request_id=warmup_exclude_request_id,
                             synced_tail_request_id=getattr(
                                 existing, "_synced_history_tail_request_id", None
@@ -1878,10 +1894,22 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         session_id=sid,
                         exclude_request_id=warmup_exclude_request_id,
                     )
+                    _agent_sid = sid
+                    try:
+                        _interaction = getattr(
+                            getattr(adapter, "_instance", None),
+                            "_interaction_session",
+                            None,
+                        )
+                        _get_sid = getattr(_interaction, "get_session_id", None)
+                        if callable(_get_sid):
+                            _agent_sid = str(_get_sid()) or sid
+                    except Exception:
+                        pass
                     adapter._synced_history_tail_request_id = (
                         await refresh_session_context_if_stale(
                             deep_agent=getattr(adapter, "_instance", None),
-                            session_id=sid,
+                            session_id=_agent_sid,
                             exclude_request_id=warmup_exclude_request_id,
                             synced_tail_request_id=adapter._synced_history_tail_request_id,
                         )

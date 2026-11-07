@@ -1485,6 +1485,51 @@ async def refresh_session_context_if_stale(
             disk_tail,
             synced,
         )
+        # 保留挂起运行的在途轮次（重建保留修复）：活窗 = 磁盘已完成轮 +
+        # 挂起运行未落盘的在途轮次（HITL 挂起时本轮 query/段1/工具调用都在
+        # 内存）。清窗前快照活窗消息，磁盘重建后把"磁盘未覆盖的在途尾部"
+        # 按序并回——不并回则模型上下文只剩磁盘已完成轮（问候轮），续跑
+        # 输出退化为问候复述（2026-11-07 a.py 轮实测）。
+        _live_msgs: list = []
+        _live_key_used = ""
+        try:
+            _live_ctx = context_engine.get_context(session_id=session_id)
+            if _live_ctx is not None:
+                _live_msgs = list(_live_ctx.get_messages() or [])
+                _live_key_used = "{}_default_context_id".format(session_id)
+            if not _live_msgs:
+                # 上下文池兜底：运行期活窗可能挂在同会话的非默认 context_id
+                # 下（react_agent 按 context_id 分池），扫描同会话全部键取
+                # 消息数最多的一个；池键诊断日志用于定位键不一致问题。
+                _pool = getattr(context_engine, "_context_pool", None) or {}
+                for _k, _v in _pool.items():
+                    if not str(_k).startswith("{}_".format(session_id)):
+                        continue
+                    _msgs = list(_v.get_messages() or []) if _v is not None else []
+                    logger.info(
+                        "%s: context pool scan session=%s key=%s msgs=%d",
+                        log_label,
+                        session_id,
+                        _k,
+                        len(_msgs),
+                    )
+                    if len(_msgs) > len(_live_msgs):
+                        _live_msgs = _msgs
+                        _live_key_used = str(_k)
+            logger.info(
+                "%s: in-flight snapshot session=%s key=%s msgs=%d",
+                log_label,
+                session_id,
+                _live_key_used or "-",
+                len(_live_msgs),
+            )
+        except Exception as exc:
+            logger.warning(
+                "%s: snapshot live context failed session=%s: %s",
+                log_label,
+                session_id,
+                exc,
+            )
         try:
             await context_engine.clear_context(session_id=session_id)
         except Exception as exc:
@@ -1504,6 +1549,74 @@ async def refresh_session_context_if_stale(
         )
         if not rebuilt:
             return synced
+        # 在途尾部并回：前向对齐 restored 与活窗（role+content），活窗游标
+        # 之后的剩余消息即在途轮次，add_messages 按序回填。至少匹配到一条
+        # 才并回（全不匹配说明对齐失败，宁缺勿错）；无在途则记日志跳过。
+        if _live_msgs:
+            try:
+                _rebuilt_ctx = context_engine.get_context(session_id=session_id)
+                _restored_msgs = (
+                    list(_rebuilt_ctx.get_messages() or []) if _rebuilt_ctx else []
+                )
+
+                def _msg_key(m: Any) -> str:
+                    # 防御式取值：活窗可能含工具记录等非标准消息对象，
+                    # 缺 role/content 属性时给占位键，不让单条异常中止并回
+                    try:
+                        content = getattr(m, "content", None)
+                        if isinstance(content, list):
+                            content = json.dumps(content, ensure_ascii=False)
+                        return "{}|{}".format(getattr(m, "role", ""), content)
+                    except Exception:
+                        return "<unkeyable>"
+
+                # 严格位置对齐（同索引逐条比较）：磁盘重建是同一批轮次的
+                # 重放，前缀应逐条一致；首处失配即在途边界。禁止跳跃扫描——
+                # 子序列式跳过会把在途尾部当"不匹配"消费掉（16:21 轮实测：
+                # restored 8 条对齐后游标越过活窗末尾，在途 6 条全部丢失，
+                # 模型复读上一轮"北京天气已查询完毕"）。
+                _boundary = 0
+                for _i, _r in enumerate(_restored_msgs):
+                    if _i >= len(_live_msgs):
+                        break
+                    if _msg_key(_r) != _msg_key(_live_msgs[_i]):
+                        break
+                    _boundary = _i + 1
+                logger.info(
+                    "DBG alignment restored=%d live=%d boundary=%d "
+                    "restored_keys=%r live_keys=%r",
+                    len(_restored_msgs),
+                    len(_live_msgs),
+                    _boundary,
+                    [_msg_key(_r) for _r in _restored_msgs],
+                    [_msg_key(_m) for _m in _live_msgs],
+                )
+                _in_flight = _live_msgs[_boundary:]
+                if _in_flight:
+                    if _boundary == 0 and _restored_msgs:
+                        # 零匹配：活窗与磁盘重建无重叠（分池/分轮上下文）——
+                        # 整窗并回（端侧缓冲已由卡片 append=false 重置，不重复）
+                        logger.warning(
+                            "%s: in-flight alignment found no overlap session=%s, "
+                            "re-append whole live window (%d messages)",
+                            log_label,
+                            session_id,
+                            len(_in_flight),
+                        )
+                    await _rebuilt_ctx.add_messages(_in_flight)
+                    logger.info(
+                        "%s: re-appended %d in-flight message(s) session=%s",
+                        log_label,
+                        len(_in_flight),
+                        session_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "%s: re-append in-flight messages failed session=%s: %s",
+                    log_label,
+                    session_id,
+                    exc,
+                )
         session = resolve_live_agent_session(deep_agent, session_id)
         if session is None:
             logger.warning(
