@@ -6657,6 +6657,7 @@
     "viewResult": "View task result",
     "sendFailed": "Unable to process this message. Please retry.",
     "sending": "Sending…",
+    "modelLocked": "The model cannot be changed after the group chat starts",
     "processing": "Processing…",
     "mentionPhase": {
       "dispatching": "Received, processing…",
