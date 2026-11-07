@@ -570,12 +570,16 @@ def build_permission_rail(
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
+    Single factory for Deep/Code/Flash adapters and Team swarm members.
+    Returns ``None`` when permissions are disabled, or when construction fails
+    (warning + None — same fail-open assembly as pre-security-migration).
+
     Args:
         config: Agent config dict containing permissions section
         options: Optional LLM / permission-body / workspace persist inputs.
 
     Returns:
-        PermissionInterruptRail instance or None if disabled
+        PermissionInterruptRail instance, or None if disabled / create failed.
     """
     opts = options or PermissionRailBuildOptions()
     llm = opts.llm
@@ -735,7 +739,11 @@ def build_permission_rail(
                         mutate, persist_scope="base", persist_target_agent_id=persist_target,
                         source="persist_allow_rule",
                     )
-                    rail.update_config(permissions)
+                    from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                        update_permission_config,
+                    )
+
+                    update_permission_config(rail, permissions)
                 return True
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
@@ -1035,13 +1043,6 @@ def build_permission_rail(
             permission_key,
         )
     except Exception as exc:
-        if permission_config.get("enabled", False):
-            logger.error(
-                "[InterruptHelpers] PermissionInterruptRail create failed with "
-                "permissions enabled; failing closed: %s",
-                exc,
-            )
-            raise
         logger.warning("[InterruptHelpers] PermissionInterruptRail create failed: %s", exc)
         permission_rail = None
     return permission_rail

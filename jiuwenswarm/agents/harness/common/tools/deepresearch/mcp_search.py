@@ -157,20 +157,23 @@ async def get_search_mcp_context(adapter, *, registry_provider, owner_policy_pro
                 return False
             # Manager only holds triad / default keys; Skill overlay and
             # digital-avatar scene stay outside this path.
-            from agent_shield.tool_permission import PermissionLevel, get_permission_manager
             from jiuwenswarm.agents.harness.common.rails.permissions.permission_key import (
                 resolve_permission_key,
+            )
+            from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                PermissionLevel,
+                check_permission_by_key,
             )
             dims_reader = getattr(adapter, "permission_key_dims", None)
             dims = dims_reader() if callable(dims_reader) else {
                 "group_id": None, "bot_id": None, "user_id": None,
             }
             key = resolve_permission_key(**dims)
-            manager = get_permission_manager()
-            if not manager.has_config(key):
-                return False
-            result = await manager.check_permission(name, arguments, key)
-            return result.permission == PermissionLevel.ALLOW
+            result = await check_permission_by_key(name, arguments, key)
+            return (
+                result is not None
+                and result.permission == PermissionLevel.ALLOW
+            )
         except Exception:
             return False
 

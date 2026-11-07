@@ -6,7 +6,8 @@ dev-stable 适配说明（相对 0708
 ``jiuwenclaw...deep_agent/rails/subagent_permission_rail.py``）：
 
 - 基类为 agent-core ``openjiuwen.harness.rails.interrupt.confirm_rail.ConfirmInterruptRail``；
-- ACTIVE Grant 的 overlay 在生命周期写入侧发布，本 rail 只传已发布的 key；
+- Check：父已登记的 ``permission_key``，或 ``assemble_temp_permission_config``
+  一次性 ``config=``（会话 / Skill overlay）；不 new 嵌套 PermissionInterruptRail；
 - agent-core ``PermissionResult`` 无 ``risk`` 字段：审批卡不再展示风险等级；
 - ``EXCLUDED_TOOLS_SPAWN``（见 ``leader_exclusive_tools``）由装配期
   ``excluded_spawn_tools`` 在 GP inject 的 ``tools=`` 参数剔除；本 rail
@@ -36,7 +37,7 @@ from openjiuwen.harness.rails.skills.skill_lifecycle_events import (
     is_skill_complete,
     parse_tool_call_arguments,
 )
-from openjiuwen.harness.security.models import PermissionLevel
+from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
 from openjiuwen.harness.security.permission_checks import fail_closed_permission_callback
 from openjiuwen.harness.security.skill_authorization import (
     is_skill_authorization_enabled,
@@ -86,6 +87,22 @@ _REJECTED_RETRY_TOOL_RESULT = (
 )
 
 _APPROVAL_PREVIEW_MAX_CHARS = 2000
+
+
+class _GrantStorePublishedView:
+    """Adapt SkillGrantStore to assemble_temp_permission_config's scopes protocol."""
+
+    def __init__(self, store: SkillGrantStore) -> None:
+        self._store = store
+
+    def get_active(self, session_id: str, scope: str) -> Any:
+        read = getattr(self._store, "get_active_for_permission", None)
+        if read is None:
+            read = self._store.get_active
+        return read(session_id, scope)
+
+    def has_active_grant(self, session_id: str, scope: str) -> bool:
+        return self.get_active(session_id, scope) is not None
 
 
 def _format_tool_args_preview(tool_name: str, tool_args: Any) -> str:
@@ -171,7 +188,9 @@ def _tighten_permission_level(
 class SubagentPermissionRail(ConfirmInterruptRail):
     """Apply normal tool permission semantics during a subagent Skill window.
 
-    选择父 Agent 已发布的会话/Skill key，不在工具调用时构造或补登记配置。
+    Check uses the inherited parent Manager key (or one-shot temp config with
+    session/Skill overlays). ASK is delegated to the parent session via Future —
+    never by constructing a nested PermissionInterruptRail.
     """
 
     priority: int = 90
@@ -189,7 +208,6 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         config_provider: Callable[[], dict[str, Any]] | None = None,
         session_id: str | None = None,
         workspace_root: Any = None,
-        tool_check_rail: Any | None = None,
     ) -> None:
         super().__init__(tool_names=[])
         self._agent_scope_id = (agent_scope_id or "").strip()
@@ -218,8 +236,6 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         self._sessions_root: Path | None = None
         self._workspace_root = Path(workspace_root) if workspace_root else None
         self._rejected_call_fingerprints: set[str] = set()
-        # Skill/会话临时 config 只在 SkillAuthorizationPermissionRail._check_tool_permission 生成。
-        self._tool_check_rail = tool_check_rail
 
     def set_sessions_root(self, sessions_root: Path) -> None:
         """Keep only trusted parent identity across child callback tasks."""
@@ -242,6 +258,51 @@ class SubagentPermissionRail(ConfirmInterruptRail):
                 exc_info=True,
             )
             raise
+
+    def _base_permission_config(self) -> dict[str, Any]:
+        config = self._config_provider() if callable(self._config_provider) else {}
+        return dict(config) if isinstance(config, dict) else {}
+
+    async def _adjudicate_tool_call(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        *,
+        session_id: str,
+        agent_scope_id: str,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Same check rules as the parent rail; no nested PermissionInterruptRail."""
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+            check_permission_by_key,
+            check_permission_by_temp_config,
+        )
+        from jiuwenswarm.agents.harness.common.rails.permissions.temp_permission_config import (
+            assemble_temp_permission_config,
+        )
+
+        base = self._base_permission_config()
+        temp = assemble_temp_permission_config(
+            base,
+            session_id=session_id,
+            agent_scope_id=agent_scope_id,
+            published_scopes=_GrantStorePublishedView(self._grant_store),
+        )
+        if temp is not None:
+            return await check_permission_by_temp_config(tool_name, tool_args, temp), temp
+
+        keyed = await check_permission_by_key(
+            tool_name, tool_args, self._permission_key or "default",
+        )
+        if keyed is None:
+            return (
+                PermissionResult(
+                    PermissionLevel.DENY,
+                    "permission_key:unregistered",
+                    "Permission key is not registered",
+                ),
+                base,
+            )
+        return keyed, base
 
     @staticmethod
     def _approved(answer: Any) -> bool:
@@ -355,21 +416,11 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         ):
             return
 
-        from openjiuwen.harness.security.permission_checks import check_tool_permission
-
         key = self._permission_key or "default"
         normalized = TOOL_NAME_ALIASES.get(tool_name, tool_name)
-        # 判定委托给 SkillAuthorizationPermissionRail，避免在此生成 Skill 临时 config。
-        if self._tool_check_rail is not None:
-            result = await self._tool_check_rail.evaluate_tool_call_permission(
-                normalized, tool_args, ctx
-            )
-            config = self._tool_check_rail.projection_config_for(ctx)
-        else:
-            result = await check_tool_permission(normalized, tool_args, key)
-            config = self._config_provider() if callable(self._config_provider) else {}
-            if not isinstance(config, dict):
-                config = {}
+        result, config = await self._adjudicate_tool_call(
+            normalized, tool_args, session_id=session_id, agent_scope_id=agent_scope_id,
+        )
 
         # 与主 Agent 一致：owner_scopes 只能在引擎（含 Skill overlay）之后收紧。
         try:
