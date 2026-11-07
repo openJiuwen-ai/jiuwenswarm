@@ -8,7 +8,6 @@ patch_uvicorn_logging 在导入期无条件被 configure_logging 调用; 若硬 
 
 from __future__ import annotations
 
-import inspect
 import sys
 
 import pytest
@@ -19,21 +18,19 @@ from jiuwenbox.logging_config import LOG_FORMAT, patch_uvicorn_logging
 def test_patch_uvicorn_logging_noop_when_uvicorn_missing(monkeypatch):
     """uvicorn 不可导入时 (裸系统 python runner) 调用应静默返回, 不抛."""
     import builtins
+    import inspect
 
-    # CI 安装的 agent-security jiuwenbox 若尚未合入 ImportError 兜底, 跳过本断言;
-    # 仓库内 tracked 副本与后续 pin 有兜底后再回归。
-    if "except ImportError" not in inspect.getsource(patch_uvicorn_logging):
-        pytest.skip("installed jiuwenbox.patch_uvicorn_logging lacks ImportError guard")
+    assert "except ImportError" in inspect.getsource(patch_uvicorn_logging)
 
     for key in list(sys.modules):
         if key == "uvicorn" or key.startswith("uvicorn."):
             monkeypatch.delitem(sys.modules, key, raising=False)
     real_import = builtins.__import__
 
-    def block_uvicorn(name, globals=None, locals=None, fromlist=(), level=0):
+    def block_uvicorn(name, *args, **kwargs):
         if name == "uvicorn" or name.startswith("uvicorn."):
             raise ImportError("No module named 'uvicorn'")
-        return real_import(name, globals, locals, fromlist, level)
+        return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", block_uvicorn)
     patch_uvicorn_logging()  # no raise
