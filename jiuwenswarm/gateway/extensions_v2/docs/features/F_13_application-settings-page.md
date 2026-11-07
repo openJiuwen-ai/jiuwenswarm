@@ -286,6 +286,7 @@ F_13-V-12（2026-11-07，PR #10763 第二轮检视）：
 | 并发清理过期导入时 `KeyError`：先取过期列表，等待删除目录后才逐个移除记录 | 先同步移除记录，再删除目录；开始导入时作废最早凭据也改为先移除记录 | `test_concurrent_expiry_removes_each_ticket_once` |
 | 同一连接并发开始导入可越过 4 个凭据的上限：新凭据在创建目录之后才登记 | 凭据在任何等待之前登记；准备期间被挤出或包被释放时返回 `TARGET_INACTIVE` 并删除目录 | `test_concurrent_imports_of_one_connection_respect_the_open_ticket_limit`（修复前留下 7 个） |
 | 下载准备期间包被释放，仍向浏览器发送无法取回的 `webui.download` | 清理过期凭据之后、生成凭据之前再次核对激活 | `test_a_release_while_the_download_is_prepared_sends_no_offer` |
+| 开始上传在清理过期凭据期间遇到重载，按旧节点校验的文件取得新代次凭据；同代次重渲染也可能更改文件规则 | 始终绑定最初的激活代次、实例与渲染版本，在清理之后和目录创建之后分别核对；变化时返回 `TARGET_INACTIVE` 并清除准备中的目录 | `test_import_preparation_refuses_a_target_changed_while_waiting`（两个等待点 × 重载、重渲染、断线共 6 项；修复前 4 项失败） |
 
 ### 8.3 验证结论
 

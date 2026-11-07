@@ -95,6 +95,8 @@ PR #10763 检视指出：卸载只注销 Handler，卸载前派生的任务仍�
 - 卸载先检查当前激活的在途 Handler 与该包的在途数据调用，非零即返回 `EXTENSION_PACKAGE_BUSY`，什么都不改；
   关闭开场需要等待，因此注销前再检查一次。检查与注销之间没有等待，释放之后不会再有该激活的数据调用被接受。
 - 已释放的激活不再开始新的 Handler 调用：释放前已收集该 Handler 的事件链直接交给下一个 Handler。
+- `ops.data.root()` 复用 agent-core 的文件操作取消处理：调用被取消后仍等待后台目录创建线程真正结束，
+  再释放数据调用计数并传播取消；期间卸载仍返回 `EXTENSION_PACKAGE_BUSY`，不会先删除目录再被线程重建。
 
 与 agent-core 的差别：agent-core 只接受仍在运行的 Handler 的 Ops（Handler 返回即失效）。Gateway 包在渲染“进行中”
 页面后把导入、恢复等长任务放到后台，任务里仍要读写存储，因此 Gateway 以激活为界，而不以单次 Handler 为界。
@@ -196,6 +198,7 @@ await ops.ui.asset_url(path, *, source="package") -> str   # source: "package" |
 | --- | --- | --- |
 | F_09-V-09 | `test_uninstall_is_busy_while_a_handler_of_the_package_runs`、`test_uninstall_is_busy_while_a_detached_data_call_runs` | 通过 |
 | F_09-V-10 | `test_ops_of_a_finished_handler_cannot_write_data_after_uninstall`、`test_detached_ops_work_until_their_activation_is_replaced`、`test_a_chain_collected_before_uninstall_skips_the_released_handler` | 通过 |
+| F_09-V-09（取消边界） | `test_cancelled_data_root_keeps_uninstall_busy_until_the_worker_finishes`：取消真实目录创建线程对应的调用，线程结束前卸载仍忙；取消传播后卸载成功且目录不再出现 | 通过；修复前卸载提前返回 SUCCESS |
 
 修改前前两类场景可以复现：Handler 在途时卸载返回 SUCCESS，之后旧 Ops 写入成功并重新建出存储文件。
 

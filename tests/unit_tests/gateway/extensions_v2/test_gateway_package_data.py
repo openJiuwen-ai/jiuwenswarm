@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -371,6 +372,59 @@ async def test_uninstall_is_busy_while_a_detached_data_call_runs(tmp_path):
             assert report.error.status is StatusCode.EXTENSION_PACKAGE_BUSY
         assert (await manager.uninstall("test.keep")).status == "SUCCESS"
     finally:
+        await runtime.shutdown()
+
+
+async def test_cancelled_data_root_keeps_uninstall_busy_until_the_worker_finishes(tmp_path, monkeypatch):
+    captured: dict = {}
+    runtime = await _runtime(tmp_path)
+    package_id = "test.cancel-root"
+    started, finished = asyncio.Event(), asyncio.Event()
+    resume = threading.Event()
+    loop = asyncio.get_running_loop()
+    mkdir = Path.mkdir
+    data_dir = runtime.package_data_dir(package_id)
+    call = None
+
+    def slow_mkdir(path, *args, **kwargs):
+        if path != data_dir:
+            return mkdir(path, *args, **kwargs)
+        loop.call_soon_threadsafe(started.set)
+        try:
+            if not resume.wait(5):
+                raise TimeoutError("data-root test worker was not released")
+            return mkdir(path, *args, **kwargs)
+        finally:
+            loop.call_soon_threadsafe(finished.set)
+
+    try:
+        runtime.publish(_gated_package(package_id, tmp_path, asyncio.Event(), asyncio.Event(), captured))
+        assert await _run(runtime, "keep") is True
+        monkeypatch.setattr(Path, "mkdir", slow_mkdir)
+        manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+        call = asyncio.create_task(captured["ops"].data.root())
+        await asyncio.wait_for(started.wait(), 2)
+        call.cancel()
+        await asyncio.sleep(0)
+
+        report = await manager.uninstall(package_id)
+        assert report.status == "FAILED", "a cancelled await must still count its live file worker"
+        assert report.error.status is StatusCode.EXTENSION_PACKAGE_BUSY
+        assert runtime.is_active_package(package_id)
+
+        resume.set()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        await asyncio.wait_for(finished.wait(), 2)
+        assert data_dir.is_dir()
+        assert (await manager.uninstall(package_id)).status == "SUCCESS"
+        assert not data_dir.exists()
+    finally:
+        resume.set()
+        if call is not None:
+            await asyncio.gather(call, return_exceptions=True)
+        if started.is_set():
+            await asyncio.wait_for(finished.wait(), 2)
         await runtime.shutdown()
 
 

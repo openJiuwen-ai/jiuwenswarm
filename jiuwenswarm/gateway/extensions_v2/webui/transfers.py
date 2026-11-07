@@ -170,13 +170,21 @@ class TransferManager:
                               connection_id=request.connection_id)
         record = self.runtime.registry.get(scoped)
         node = tree_nodes(record.root).get(params["node_key"]) if record and record.root is not None else None
-        if (browser.active_application_package(package_id) is None or node is None
+        generation = browser.generations.get(package_id)
+        if (browser.active_application_package(package_id) is None or generation is None or node is None
                 or type(params["revision"]) is not int or params["revision"] != record.revision
                 or node.component != "FileImport" or node.props.get("disabled") is True
                 or "ui.change" not in (node.events or {})):
             raise HostRequestError(CODE_TARGET_INACTIVE, "the import control is not current")
         files = validate_manifest(node.props, params["files"], self.runtime.config.upload_max_bytes)
+
+        def target_is_current() -> bool:
+            return (browser.generations.get(package_id) == generation
+                    and self.runtime.registry.get(scoped) is record and record.revision == params["revision"])
+
         await self.expire()
+        if not target_is_current():
+            raise HostRequestError(CODE_TARGET_INACTIVE, "the import control changed while preparing the import")
         # Records change synchronously and the new ticket is counted before any
         # await, so concurrent requests of one connection cannot exceed the limit.
         own = sorted((item for item in self.uploads.values() if item.connection_id == request.connection_id),
@@ -189,7 +197,7 @@ class TransferManager:
         directory = data_dir / UPLOAD_DIR / upload_id
         upload = Upload(
             upload_id=upload_id, connection_id=request.connection_id, package_id=package_id,
-            generation=browser.generations[package_id], target=scoped, node_key=params["node_key"],
+            generation=generation, target=scoped, node_key=params["node_key"],
             files=files, directory=directory, created=self._clock(),
         )
         self.uploads[upload_id] = upload
@@ -201,8 +209,8 @@ class TransferManager:
             self._forget(upload)
             raise
         unusable = (data_dir / UPLOAD_DIR).is_symlink() or not directory.resolve().is_relative_to(data_dir.resolve())
-        if unusable or self.uploads.get(upload_id) is not upload:
-            # Released, closed or replaced by newer imports of this connection while the directory was made.
+        if unusable or self.uploads.get(upload_id) is not upload or not target_is_current():
+            # The original target may change while directories are prepared; never adopt its replacement.
             self._forget(upload)
             await asyncio.to_thread(shutil.rmtree, directory, True)
             if unusable:

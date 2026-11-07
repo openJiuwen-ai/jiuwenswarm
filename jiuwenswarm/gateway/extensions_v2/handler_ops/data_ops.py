@@ -10,11 +10,12 @@ Files a package places under ``public/`` can be addressed with
 
 from __future__ import annotations
 
-import asyncio
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventHandlerOpsBuilder, EventNext
+from openjiuwen.core.extension.data.files import run_file_operation
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
@@ -34,7 +35,8 @@ def build_data_ops_build_handler(runtime: GatewayRuntime):
             raise ValueError("ops.data requires an active Gateway package")
         with runtime.package_data_call(package_id, ops):
             directory = runtime.package_data_dir(package_id)
-            await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
+            # Keep the data-call lease until the worker exits, even if its caller is cancelled.
+            await run_file_operation(partial(directory.mkdir, parents=True, exist_ok=True))
             # Re-check after creation so a concurrent swap to a symlink is refused.
             return runtime.package_data_dir(package_id)
 

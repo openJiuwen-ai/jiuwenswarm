@@ -388,6 +388,69 @@ async def test_concurrent_expiry_removes_each_ticket_once(tmp_path):
         await runtime.shutdown()
 
 
+@pytest.mark.parametrize("phase", ["expiry", "directory"])
+@pytest.mark.parametrize("change", ["reload", "rerender", "disconnect"])
+async def test_import_preparation_refuses_a_target_changed_while_waiting(tmp_path, monkeypatch, phase, change):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    transfers = runtime.browser.transfers
+    ws = SimpleNamespace(closed=False)
+    expire, to_thread = transfers.expire, asyncio.to_thread
+
+    async def change_target():
+        if change == "reload":
+            await _mount(runtime, ThemePackage({"label": "Images only", "accept": [".png"]}), tmp_path, ws)
+        elif change == "rerender":
+            package.picker = {"label": "Images only", "accept": [".png"]}
+            await _call(runtime, "webui.dispatch", {"event": "ui.ready", "payload": {}, "target": {
+                "scope": "application", "slot_id": SLOT, "package_id": PACKAGE, "instance_key": "main"}}, ws)
+        else:
+            await runtime.on_disconnect(ws)
+
+    async def expire_then_change():
+        transfers.expire = expire
+        await expire()
+        await change_target()
+
+    async def make_directory_then_change(operation, *args, **kwargs):
+        result = await to_thread(operation, *args, **kwargs)
+        path = getattr(operation, "__self__", None)
+        if getattr(operation, "__name__", "") == "mkdir" and isinstance(path, Path) and path.parent.name == ".uploads":
+            await change_target()
+        return result
+
+    try:
+        revision = await _mount(runtime, package, tmp_path, ws)
+        if phase == "expiry":
+            monkeypatch.setattr(transfers, "expire", expire_then_change)
+        else:
+            monkeypatch.setattr(asyncio, "to_thread", make_directory_then_change)
+        with pytest.raises(transfers_module.HostRequestError) as caught:
+            await transfers.begin_upload(SimpleNamespace(
+                params=_begin(revision, [{"path": "old.zip", "size": 1}]), connection_id="browser-1"))
+        assert caught.value.code == "TARGET_INACTIVE"
+        assert transfers.uploads == {}
+        await runtime.browser.settle()
+        directory = runtime.package_data_dir(PACKAGE) / ".uploads"
+        assert not directory.exists() or list(directory.iterdir()) == []
+        if change != "disconnect":
+            monkeypatch.setattr(transfers, "expire", expire)
+            monkeypatch.setattr(asyncio, "to_thread", to_thread)
+            current = runtime.registry.get(TARGET)
+            fresh = await transfers.begin_upload(SimpleNamespace(
+                params=_begin(current.revision, [{"path": "new.png", "size": 1}]), connection_id="browser-1"))
+
+            async def content():
+                yield b"x"
+
+            assert await transfers.receive(fresh["upload_id"], "new.png", content()) == 204
+            accepted = await _call(runtime, "webui.dispatch", _event(
+                "ui.change", current.revision, "0.0", "import", {"upload_id": fresh["upload_id"]}), ws)
+            assert accepted["payload"] == {"accepted": True, "status": "imported"}
+    finally:
+        await runtime.shutdown()
+
+
 async def test_concurrent_imports_of_one_connection_respect_the_open_ticket_limit(tmp_path):
     package = ThemePackage()
     runtime = await _start(tmp_path)
