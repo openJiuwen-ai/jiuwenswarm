@@ -2501,6 +2501,9 @@ test('WebUIBackgroundHost mounts application.background below the UI and marks t
     await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'image', src: surfaceAsset('bg.png') }), 1,
       backgroundScope)));
     assert.ok(host.querySelector('[data-testid="webui-media-surface"]'));
+    assert.equal(marker(), null, 'nothing is shown while the image loads');
+    await act(async () => host.querySelector('[data-testid="webui-media-surface-image"]')
+      .dispatchEvent(new window.Event('load')));
     assert.equal(marker(), 'active');
 
     await act(async () => transport.injectRenderFrame(frame({ component: 'Box', props: {} }, 2, backgroundScope)));
@@ -2568,6 +2571,102 @@ test('background updates with the same page keep it running and only restyle it'
     await act(async () => root.unmount());
     runtime.dispose();
     container.remove();
+  }
+});
+
+async function mountBackground() {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(createElement(WebUIBackgroundHost, { runtime, registry: componentRendererRegistry })));
+  let revision = 0;
+  return {
+    container,
+    find: (part) => container.querySelector(`[data-testid="webui-media-surface-${part}"]`),
+    show: (props) => act(async () => transport.injectRenderFrame(frame(surface(props), ++revision, backgroundScope))),
+    async reconnect() {
+      await act(async () => transport.setConnectionState('disconnected'));
+      await act(async () => transport.setConnectionState('connected'));
+    },
+    async close() {
+      await act(async () => root.unmount());
+      runtime.dispose();
+      container.remove();
+    },
+  };
+}
+
+const fire = (element, type) => act(async () => element.dispatchEvent(new window.Event(type)));
+
+test('failed background media load again once the browser reconnects; healthy media stay mounted', async () => {
+  const app = await mountBackground();
+  try {
+    const video = { kind: 'video', src: surfaceAsset('a.mp4'), poster: surfaceAsset('p.png') };
+    await app.show(video);
+    await fire(app.find('video'), 'error');
+    assert.equal(app.find('video'), null);
+    assert.ok(app.find('poster'), 'the poster replaces the failed video');
+    await app.show({ ...video, dim: 0.3 });
+    assert.equal(app.find('video'), null, 'a frame with the same address does not retry it');
+    await app.reconnect();
+    await app.show(video);
+    assert.ok(app.find('video'), 'the failed video loads again after a reconnect');
+
+    const page = { kind: 'html', src: surfaceAsset('scene/index.html') };
+    await app.show(page);
+    const first = app.find('frame');
+    const token = surfaceToken(first);
+    await postSurface(first.contentWindow, surfaceMessage(token, 'error'));
+    assert.equal(app.find('frame'), null);
+    await app.show({ ...page, blur: 4 });
+    assert.equal(app.find('frame'), null);
+    await app.reconnect();
+    await app.show(page);
+    const retried = app.find('frame');
+    assert.ok(retried, 'the failed page loads again after a reconnect');
+    assert.notEqual(surfaceToken(retried), token, 'the new iframe gets a fresh token');
+
+    await postSurface(retried.contentWindow, surfaceMessage(surfaceToken(retried), 'ready'));
+    await app.reconnect();
+    await app.show({ ...page, dim: 0.2 });
+    assert.equal(app.find('frame') === retried, true, 'a reconnect does not reload a page that works');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the background is active only while it shows a picture', async () => {
+  const marker = () => document.documentElement.getAttribute('data-webui-background');
+  const app = await mountBackground();
+  try {
+    await app.show({ kind: 'image', src: surfaceAsset('a.png') });
+    assert.equal(marker(), null, 'a loading image shows nothing yet');
+    await fire(app.find('image'), 'error');
+    assert.equal(marker(), null, 'a failed image without a poster shows nothing');
+
+    await app.show({ kind: 'image', src: surfaceAsset('b.png'), poster: surfaceAsset('p.png') });
+    await fire(app.find('image'), 'error');
+    assert.equal(marker(), null);
+    await fire(app.find('poster'), 'load');
+    assert.equal(marker(), 'active', 'the poster that replaces a failed image is a picture');
+
+    await app.show({ kind: 'video', src: surfaceAsset('c.mp4') });
+    assert.equal(marker(), 'active', 'content loading after a switch keeps the previous state');
+    await fire(app.find('video'), 'loadeddata');
+    assert.equal(marker(), 'active', 'a decoded first frame is a picture, playing or paused');
+    await fire(app.find('video'), 'error');
+    assert.equal(marker(), null, 'a failed video without a poster shows nothing');
+
+    await app.show({ kind: 'html', src: surfaceAsset('scene.html') });
+    const page = app.find('frame');
+    assert.equal(marker(), null, 'a page that is not ready shows nothing');
+    await postSurface(page.contentWindow, surfaceMessage(surfaceToken(page), 'ready'));
+    assert.equal(marker(), 'active');
+  } finally {
+    await app.close();
+    assert.equal(marker(), null);
   }
 });
 
