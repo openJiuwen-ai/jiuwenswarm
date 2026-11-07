@@ -851,6 +851,71 @@ class TestPhaseReuseAndJump:
         state.apply(_make_progress("agent_started", phase="Q", label="c", agent_id="c:3"))  # switch seals P
         assert state.phases[0].status == "completed"
 
+    @staticmethod
+    def test_same_name_next_iteration_seals_previous_card():
+        """Round 2 of a same-name phase seals round 1's card instead of leaving it running."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="iter"))
+        state.apply(_make_progress(
+            "agent_started", phase="生成", label="a", agent_id="c:1", phase_iteration=1,
+        ))
+        state.apply(_make_progress(
+            "agent_completed", phase="生成", label="a", agent_id="c:1",
+            outcome="o1", phase_iteration=1,
+        ))
+        round1 = state.phases[0]
+        assert round1.status == "running"  # active phase: not sealed yet
+        # Round 2 of the same phase name -> a new card; round 1 must seal.
+        delta = state.apply(_make_progress(
+            "agent_started", phase="生成", label="a", agent_id="c:2", phase_iteration=2,
+        ))
+        assert len(state.phases) == 2
+        round1, round2 = state.phases
+        assert (round1.iteration, round2.iteration) == (1, 2)
+        assert round1.status == "completed"       # regression: stayed "running"
+        assert round1.completed_agent_count == 1
+        assert round2.status == "running"
+        assert [a.id for a in round2.agents] == ["c:2"]
+        # The sealed card must ride this delta: the team.task mirror only closes
+        # the round-1 task when the completed card is pushed.
+        pushed = {p["id"]: p for p in delta["phases"]}
+        assert set(pushed) == {round1.id, round2.id}
+        assert pushed[round1.id]["status"] == "completed"
+
+    @staticmethod
+    def test_same_name_next_iteration_defers_seal_while_prev_agent_live():
+        """A live agent on round 1 defers the seal; its terminal event closes the card."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="iter"))
+        state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="c:1", phase_iteration=1))
+        state.apply(_make_progress("agent_started", phase="P", label="b", agent_id="c:2", phase_iteration=1))
+        state.apply(_make_progress("agent_completed", phase="P", label="a", agent_id="c:1",
+                                   outcome="o", phase_iteration=1))
+        state.apply(_make_progress("agent_started", phase="P", label="c", agent_id="c:3", phase_iteration=2))
+        p1 = state.phases[0]
+        assert p1.status == "running"            # must not be stamped completed
+        assert p1.agents[1].status == "running"
+        state.apply(_make_progress("agent_completed", phase="P", label="b", agent_id="c:2",
+                                   outcome="o", phase_iteration=1))
+        assert p1.status == "completed"          # sealed by its own last terminal event
+
+    @staticmethod
+    def test_relaunch_does_not_seal_card_from_previous_attempt():
+        """A script-edit relaunch starts a fresh tree; the discarded card must not resurface."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="iter"))
+        state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="c:1", phase_iteration=1))
+        state.apply(_make_progress("agent_completed", phase="P", label="a", agent_id="c:1",
+                                   outcome="o", phase_iteration=1))
+        stale = state.phases[0]
+        state.apply(_make_progress("workflow_started", workflow_name="iter", relaunch_kind="relaunch"))
+        assert state.phases == []
+        delta = state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="c:2",
+                                           phase_iteration=1))
+        assert [p["id"] for p in delta["phases"]] == [state.phases[0].id]
+        assert stale not in state.phases
+        assert stale.status == "running"   # no longer part of this run: never sealed
+
 
 class TestAgentOutcomeBackfill:
     """Outcome persistence when phase seal or agent_id mismatch occurs."""
