@@ -65,10 +65,9 @@ export function describePickedFiles(files: Iterable<File>): WebUIUploadFile[] {
 
 function readTicket(value: unknown): { uploadId: string; url: string } | null {
   if (!isRecord(value)) return null;
-  const record = value;
-  const uploadId = record.upload_id;
-  if (typeof uploadId !== 'string' || !UPLOAD_ID.test(uploadId) || record.url !== `${UPLOAD_PREFIX}${uploadId}/`) return null;
-  return { uploadId, url: record.url };
+  const uploadId = value.upload_id;
+  if (typeof uploadId !== 'string' || !UPLOAD_ID.test(uploadId) || value.url !== `${UPLOAD_PREFIX}${uploadId}/`) return null;
+  return { uploadId, url: value.url };
 }
 
 export function createUploadService(options: WebUIUploadServiceOptions): WebUIUploadService {

@@ -3434,6 +3434,8 @@ test('splash provider lists are validated and the appearance provider plays firs
   ]);
   assert.deepEqual(orderProviders(providers, 'pkg.b').map((provider) => provider.packageId), ['pkg.b', 'pkg.a']);
   assert.deepEqual(orderProviders(providers, 'pkg.z').map((provider) => provider.packageId), ['pkg.a', 'pkg.b']);
+  assert.deepEqual(orderProviders(providers, 'pkg.b', true).map((provider) => provider.packageId), ['pkg.a', 'pkg.b'],
+    'a saved order is final');
   assert.deepEqual(parseProviders(null), []);
 });
 

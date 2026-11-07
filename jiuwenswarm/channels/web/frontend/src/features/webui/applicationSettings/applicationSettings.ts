@@ -6,6 +6,7 @@
 
 import type { LocalizedText } from '../catalog/components/localizedText.ts';
 import { isRecord } from '../protocol/utils.ts';
+import { orderProviders } from '../splash/controller.ts';
 
 export const SPLASH_SETTINGS_METHOD = 'webui.splash.settings';
 export const SPLASH_SETTINGS_UPDATE_METHOD = 'webui.splash.settings.update';
@@ -59,9 +60,7 @@ export function parseSplashSettings(value: unknown): SplashSettings | null {
 
 /** The order the splash gate will use: without a saved order the appearance provider goes first. */
 export function displayedProviders(settings: SplashSettings, preferred?: string | null): SplashProviderSetting[] {
-  if (settings.customized || !preferred) return settings.providers;
-  const first = settings.providers.filter((provider) => provider.packageId === preferred);
-  return [...first, ...settings.providers.filter((provider) => provider.packageId !== preferred)];
+  return orderProviders(settings.providers, preferred, settings.customized);
 }
 
 /** Move one provider up (-1) or down (+1); returns the package ids in the new order, or null at an edge. */

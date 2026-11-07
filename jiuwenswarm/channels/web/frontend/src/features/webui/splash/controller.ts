@@ -104,7 +104,14 @@ export function parseCustomized(value: unknown): boolean {
   return isRecord(value) && value.customized === true;
 }
 
-export function orderProviders(providers: readonly SplashProvider[], preferred?: string | null): SplashProvider[] {
+/**
+ * The splash order (Gateway S_10 section 4): a saved order is final; otherwise the appearance provider goes first.
+ * The settings page lists providers in this same order.
+ */
+export function orderProviders<T extends { packageId: string }>(
+  providers: readonly T[], preferred?: string | null, customized = false,
+): T[] {
+  if (customized || !preferred) return [...providers];
   const first = providers.filter((provider) => provider.packageId === preferred);
   return [...first, ...providers.filter((provider) => provider.packageId !== preferred)];
 }
@@ -201,7 +208,6 @@ export function createSplashController(options: SplashControllerOptions): Splash
       onSkip = () => { if (provider.skippable) finish('skip'); };
       stopPlayback = () => finish(null);
       arm('ready', SPLASH_TIMEOUTS.mediaReady, 'timeout');
-      if (!runtime.getInstance(instanceKey)) finish(null);
     });
   }
 
@@ -269,8 +275,7 @@ export function createSplashController(options: SplashControllerOptions): Splash
 
   async function askProviders(): Promise<SplashProvider[]> {
     const answer = await delay(Promise.resolve().then(options.requestProviders), SPLASH_TIMEOUTS.answer, null);
-    // A saved order is final; otherwise the appearance provider goes first (Gateway S_10 section 4).
-    const providers = orderProviders(parseProviders(answer), parseCustomized(answer) ? null : options.preferredProvider);
+    const providers = orderProviders(parseProviders(answer), options.preferredProvider, parseCustomized(answer));
     if (answer !== null) writeItem(SPLASH_EXPECTED_KEY, providers.length ? '1' : '0');
     return providers;
   }

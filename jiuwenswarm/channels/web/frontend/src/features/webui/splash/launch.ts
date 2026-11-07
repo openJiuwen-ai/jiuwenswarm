@@ -3,7 +3,7 @@
  * 存储不可用时按“未完成、首次访问”处理，门控仍有时限保证进入界面。
  */
 
-import { randomHex } from '../protocol/utils.ts';
+import { isRecord, randomHex } from '../protocol/utils.ts';
 
 export const LAUNCH_SESSION_KEY = 'workswarm.launch';
 export const COMPLETED_LAUNCH_KEY = 'workswarm.splash.completedLaunch';
@@ -78,9 +78,7 @@ export async function fetchSplashHint(fetcher: typeof fetch = globalThis.fetch):
     const response = await fetcher(SPLASH_HINT_PATH, { cache: 'no-store' });
     if (!response.ok) return 'unknown';
     const body: unknown = await response.json();
-    if (typeof body === 'object' && body !== null && typeof (body as { candidates?: unknown }).candidates === 'boolean') {
-      return (body as { candidates: boolean }).candidates ? 'candidates' : 'none';
-    }
+    if (isRecord(body) && typeof body.candidates === 'boolean') return body.candidates ? 'candidates' : 'none';
     return 'unknown';
   } catch {
     return 'unknown';

@@ -159,7 +159,8 @@ function SurfaceFrame({
   src, title, poster, posterStyle, context, readyTimeoutMs, allowAudio, emit, onShown, onFailed,
 }: SurfaceFrameProps) {
   const frame = useRef<HTMLIFrameElement>(null);
-  const token = useMemo(() => createSurfaceToken(), [src]);
+  // One iframe per instance: a new address or a retry mounts a new instance, and with it a new token (S_07 invariant 5).
+  const [token] = useState(createSurfaceToken);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'failed'>('loading');
   const latest = useRef(context);
   latest.current = context;
