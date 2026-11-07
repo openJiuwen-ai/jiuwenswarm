@@ -453,7 +453,8 @@ class BrowserBridge:
                 still_owned = self.appearance.finish_send(connection_id, package.package_id)
             if not delivered:
                 return {"status": "delivery_failed", "revision": revision}
-            # A release during delivery queued a later revoke; keep it authoritative.
+            # A release during delivery queued a later revoke; keep it authoritative. Shutdown ends
+            # activations without releasing in-flight records, so the generation is checked as well.
             if still_owned and self.generations.get(package.package_id) == generation:
                 self.appearance.set(connection_id, package.package_id if normalized else None)
             return {"status": "applied" if normalized else "revoked", "revision": revision}

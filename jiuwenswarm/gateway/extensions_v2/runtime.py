@@ -37,7 +37,7 @@ from openjiuwen.core.events import (
 )
 
 from openjiuwen.core.common.exception.codes import StatusCode
-from openjiuwen.core.events.ops_impl.store import configure_store, unconfigure_store
+from openjiuwen.core.events.ops_impl.store import configure_store, store_call, unconfigure_store
 from openjiuwen.core.extension import ExtensionFailure
 from openjiuwen.core.extension.data import JsonStore
 from openjiuwen.core.extension.data.json_values import valid_package_id
@@ -346,11 +346,8 @@ class GatewayRuntime:
     def package_data_call(self, package_id: str, ops: Any) -> Iterator[None]:
         """Count a Gateway data operation such as ``ops.data.root()`` like a store call."""
 
-        self._begin_data_calls((package_id,), ops)
-        try:
+        with store_call(self.bus, package_id, ops):
             yield
-        finally:
-            self._end_data_calls((package_id,))
 
     @contextmanager
     def package_io_call(self, package_id: str, generation: str) -> Iterator[None]:
