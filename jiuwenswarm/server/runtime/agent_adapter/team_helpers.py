@@ -2520,6 +2520,7 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool |
 
     try:
         from jiuwenswarm.server.runtime.agent_adapter.team_stall_watchdog import (
+            team_leader_in_flight,
             team_progress_snapshot,
             team_progress_snapshot_db,
         )
@@ -2534,11 +2535,29 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool |
         in_flight, pending, _recent = progress
         if in_flight > 0 or pending > 0:
             return False
+        # leader 在途。两份快照都刻意剔除 leader
+        # （成员面板语义），settle 看不见 leader 的排空轮/追问轮——终态会
+        # 抢跑（已完成→跳变正在思考）。leader 行 execution_status 经
+        # execution_changed 事件写穿 DB、随回合翻转。
+        leader_busy = await team_leader_in_flight(channel_id, session_id)
+        if leader_busy is None:
+            return None
+        if leader_busy:
+            return False
         unread = await _team_has_unread_messages(channel_id, session_id)
         if unread is None:
             return None
         if unread:
             return False
+        logger.info(
+            "[TeamHelpers] settle check settled: in_flight=%d pending=%d "
+            "leader_in_flight=%s unread=%s -> True, session_id=%s",
+            in_flight,
+            pending,
+            leader_busy,
+            unread,
+            session_id,
+        )
         return True
     except TeamNotEstablishedError:
         raise
@@ -3334,6 +3353,25 @@ async def _consume_stream_with_query(
                     content_chunks += 1
                     if tm_.is_stream_round_terminal(session_id):
                         tm_.clear_stream_round_terminal(session_id)
+                        # 发射层再武装只认 leader 内容帧：「leader 先答、成员
+                        # 后报」的常态形态下，成员迟到 delta/tool_call 若也复位
+                        # completion_signals，流末零终态兜底会对这个已收
+                        # 到干净终态的回合再发一条带 error 的终态帧（settle 复核
+                        # 因成员在途/未读非 True），前端「已完成」翻「失败」。
+                        # leader 帧才证明「新一轮 leader 回合在跑」，其 final 的
+                        # settle 需要再发终态的资格；成员尾随产出本身不产生终态
+                        # 需求（settle 复核对成员在途本就 False）。
+                        # 复位同时天然拆除在途的延迟终态窗（窗口 abort 判据是
+                        # completion_signals != baseline）。chat.final 不在
+                        # 复位面——同轮晚到 final 不得清刚发的终态。
+                        if is_leader:
+                            completion_signals = 0
+                            settle_terminal_fired = False
+                            logger.info(
+                                "[TeamHelpers] settle terminal re-armed: new leader "
+                                "content after terminal, session_id=%s",
+                                session_id,
+                            )
                 # HITL 答案到达后的恢复产出 = 挂起已解除——清除本轮挂起
                 # 标记（它是轮级语义：本轮暂停待恢复；流级粘性会把一次
                 # HITL 拦死同流后续所有轮的 settle 补终态）。

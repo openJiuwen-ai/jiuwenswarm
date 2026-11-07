@@ -41,10 +41,23 @@ def _patch_unread(monkeypatch: pytest.MonkeyPatch, value):
     monkeypatch.setattr(team_helpers, "_team_has_unread_messages", _unread)
 
 
+def _patch_leader_in_flight(monkeypatch: pytest.MonkeyPatch, value):
+    """leader 成员行执行态点查。
+
+    与 team_progress_snapshot 同为函数体内惰性 import，打模块属性即可。
+    """
+
+    async def _leader(_cid, _sid):
+        return value
+
+    monkeypatch.setattr(team_stall_watchdog, "team_leader_in_flight", _leader)
+
+
 @pytest.mark.asyncio
 async def test_settled_when_no_inflight_no_pending_no_unread(monkeypatch) -> None:
-    """零在途 + 零非终态任务 + 零未读 → 落定。"""
+    """零在途 + 零非终态任务 + leader 空闲 + 零未读 → 落定。"""
     _patch_progress(monkeypatch, (0, 0, False))
+    _patch_leader_in_flight(monkeypatch, False)
     _patch_unread(monkeypatch, False)
     assert await team_helpers._team_round_settled("desktop", "s1") is True
 
@@ -53,6 +66,7 @@ async def test_settled_when_no_inflight_no_pending_no_unread(monkeypatch) -> Non
 async def test_not_settled_when_member_in_flight(monkeypatch) -> None:
     """成员在途（leader 先答、成员后报的回合）→ 未落定，不补终态。"""
     _patch_progress(monkeypatch, (1, 0, False))
+    _patch_leader_in_flight(monkeypatch, False)
     _patch_unread(monkeypatch, False)
     assert await team_helpers._team_round_settled("desktop", "s1") is False
 
@@ -61,14 +75,35 @@ async def test_not_settled_when_member_in_flight(monkeypatch) -> None:
 async def test_not_settled_when_tasks_pending(monkeypatch) -> None:
     """有非终态任务 → 未落定（走 team.completed 旧路径）。"""
     _patch_progress(monkeypatch, (0, 2, False))
+    _patch_leader_in_flight(monkeypatch, False)
     _patch_unread(monkeypatch, False)
     assert await team_helpers._team_round_settled("desktop", "s1") is False
+
+
+@pytest.mark.asyncio
+async def test_not_settled_when_leader_in_flight(monkeypatch) -> None:
+    """leader 在途（排空轮/追问轮）→ 未落定——两份快照都剔除 leader，
+    没有第四读数时此形态被判落定、终态抢跑（PM-64 主症）。"""
+    _patch_progress(monkeypatch, (0, 0, False))
+    _patch_leader_in_flight(monkeypatch, True)
+    _patch_unread(monkeypatch, False)
+    assert await team_helpers._team_round_settled("desktop", "s1") is False
+
+
+@pytest.mark.asyncio
+async def test_unknown_when_leader_reading_unavailable(monkeypatch) -> None:
+    """leader 读数不可得 → 返回 None（未知）：续窗重试而非抢跑。"""
+    _patch_progress(monkeypatch, (0, 0, False))
+    _patch_leader_in_flight(monkeypatch, None)
+    _patch_unread(monkeypatch, False)
+    assert await team_helpers._team_round_settled("desktop", "s1") is None
 
 
 @pytest.mark.asyncio
 async def test_not_settled_when_unread_messages(monkeypatch) -> None:
     """有未读消息（成员回报未消化）→ 未落定。"""
     _patch_progress(monkeypatch, (0, 0, False))
+    _patch_leader_in_flight(monkeypatch, False)
     _patch_unread(monkeypatch, True)
     assert await team_helpers._team_round_settled("desktop", "s1") is False
 
@@ -77,6 +112,7 @@ async def test_not_settled_when_unread_messages(monkeypatch) -> None:
 async def test_unknown_when_progress_unavailable(monkeypatch) -> None:
     """快照不可得 → 返回 None（未知）：调用方续窗重试而非一次性放弃。"""
     _patch_progress(monkeypatch, None)
+    _patch_leader_in_flight(monkeypatch, False)
     _patch_unread(monkeypatch, False)
     assert await team_helpers._team_round_settled("desktop", "s1") is None
 
@@ -85,6 +121,7 @@ async def test_unknown_when_progress_unavailable(monkeypatch) -> None:
 async def test_unknown_when_unread_unavailable(monkeypatch) -> None:
     """未读消息读数不可得 → 返回 None（未知）：调用方续窗重试。"""
     _patch_progress(monkeypatch, (0, 0, False))
+    _patch_leader_in_flight(monkeypatch, False)
     _patch_unread(monkeypatch, None)
     assert await team_helpers._team_round_settled("desktop", "s1") is None
 
@@ -330,6 +367,139 @@ async def test_settle_terminal_delayed_and_fired_when_idle(monkeypatch) -> None:
         if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
     ]
     assert len(terminals) == 1
+
+
+@pytest.mark.asyncio
+async def test_settle_terminal_rearmed_by_new_round_content(monkeypatch) -> None:
+    """终态发出后同流来了新回合（排空轮/迟到回报唤醒）→ 新内容帧
+    再武装发射层，第二轮 final 的 settle 能再发一次终态——不再被一次性闸
+    拦死（修复前此形态 = 前端永久「正在思考」，只能手动中断）。"""
+    manager = _SettleRecordingManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+
+    async def _settled(_cid, _sid):
+        return True
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "team.member":
+            return {
+                "event_type": "team.member",
+                "event": {"type": "team.member.status_changed", "member_id": "m1"},
+            }
+        if ctype == "answer":
+            return {"event_type": "chat.final", "content": chunk.payload}
+        if ctype == "tool":
+            return {
+                "event_type": "chat.tool_call",
+                "tool_call": {"name": "bash", "tool_call_id": "c1"},
+            }
+        return None
+
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+
+    def _completion(text: str):
+        return SimpleNamespace(
+            type="controller_output",
+            payload=SimpleNamespace(
+                type="task_completion",
+                data=[SimpleNamespace(data={"output": text, "result_type": "answer"})],
+            ),
+            role=None,
+        )
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield _completion("第一轮结论")
+        await asyncio.sleep(0.05)  # 静默窗到点 → 第一次终态发出
+        # 同流新回合：内容帧触发再武装
+        yield SimpleNamespace(type="tool", payload={}, role=None)
+        yield _completion("第二轮结论")
+        await asyncio.sleep(0.05)  # 第二次终态应能发出（再武装生效）
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    await team_helpers._consume_stream_with_query(
+        "web", "sess-rearm", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
+    )
+    terminals = [
+        e for e in manager.events
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert len(terminals) == 2
+    assert all(not t.get("error") for t in terminals)
+
+
+@pytest.mark.asyncio
+async def test_member_late_frame_does_not_rearm_or_force_error_terminal(monkeypatch) -> None:
+    """「leader 先答、成员后报」常态形态：leader final → 干净终态已发出 →
+    成员迟到 tool_call（role=TEAMMATE）。成员帧不得再武装发射层——否则
+    completion_signals 被清 0 后，流末零终态兜底会对这个已收到
+    干净终态的回合再发一条带 error 的终态帧（settle 复核非 True），
+    前端「已完成」翻「失败」。"""
+    manager = _SettleRecordingManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+
+    # 首次 settle 窗口 True（干净终态）；此后一律 False——模拟流末时成员
+    # 在途/有未读，正是检视场景里 forced terminal 带 error 的条件。
+    settle_seq = [True] * 5 + [False] * 10
+    state = {"calls": 0}
+
+    async def _settled(_cid, _sid):
+        idx = min(state["calls"], len(settle_seq) - 1)
+        state["calls"] += 1
+        return settle_seq[idx]
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "team.member":
+            return {
+                "event_type": "team.member",
+                "event": {"type": "team.member.status_changed", "member_id": "m1"},
+            }
+        if ctype == "answer":
+            return {"event_type": "chat.final", "content": chunk.payload}
+        if ctype == "tool":
+            return {
+                "event_type": "chat.tool_call",
+                "tool_call": {"name": "bash", "tool_call_id": "c1"},
+            }
+        return None
+
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+
+    def _completion(text: str):
+        return SimpleNamespace(
+            type="controller_output",
+            payload=SimpleNamespace(
+                type="task_completion",
+                data=[SimpleNamespace(data={"output": text, "result_type": "answer"})],
+            ),
+            role=None,
+        )
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield _completion("第一轮结论")
+        await asyncio.sleep(0.05)  # 静默窗到点 → 干净终态发出
+        # 成员迟到产出（leader 先答、成员后报）——不得触发再武装
+        yield SimpleNamespace(type="tool", payload={}, role=TeamRole.TEAMMATE)
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    await team_helpers._consume_stream_with_query(
+        "web", "sess-member-late", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
+    )
+    terminals = [
+        e for e in manager.events
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert len(terminals) == 1
+    assert not terminals[0].get("error")
 
 
 @pytest.mark.asyncio
@@ -729,6 +899,7 @@ async def test_not_established_propagates_from_db_snapshot(monkeypatch) -> None:
 async def test_not_established_propagates_from_unread_check(monkeypatch) -> None:
     """快照正常但动态消息表不存在（unread 检查抛出）→ 同样原样上抛。"""
     _patch_progress(monkeypatch, (0, 0, False))
+    _patch_leader_in_flight(monkeypatch, False)
 
     async def _unread_raise(_cid, _sid):
         raise TeamNotEstablishedError("no such table: team_message_x")
