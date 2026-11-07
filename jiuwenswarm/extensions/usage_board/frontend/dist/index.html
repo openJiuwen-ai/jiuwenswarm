@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>用量与费用看板 · Usage Board</title>
+<style>
+  :root {
+    --ub-bg: var(--color-bg, #f7f8fa);
+    --ub-card: var(--color-surface, #ffffff);
+    --ub-border: var(--color-border, #e3e6eb);
+    --ub-text: var(--color-text, #1f2329);
+    --ub-muted: var(--color-text-secondary, #6b7280);
+    --ub-accent: var(--color-accent, #2563eb);
+    --ub-error: var(--color-error, #d92d20);
+    --ub-warn: var(--color-warn, #b54708);
+    --ub-ok: var(--color-success, #067647);
+    --ub-chip: rgba(37, 99, 235, .08);
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ub-bg: var(--color-bg, #14161a);
+      --ub-card: var(--color-surface, #1b1e24);
+      --ub-border: var(--color-border, #2c313a);
+      --ub-text: var(--color-text, #e6e8eb);
+      --ub-muted: var(--color-text-secondary, #9aa1ab);
+      --ub-accent: var(--color-accent, #6ea8fe);
+      --ub-error: var(--color-error, #ff8b84);
+      --ub-warn: var(--color-warn, #f0b429);
+      --ub-ok: var(--color-success, #4ade80);
+      --ub-chip: rgba(110, 168, 254, .14);
+    }
+  }
+  /* 显式主题钩子：宿主（或验证脚本）可用 <html data-color-scheme="dark"> 强制深色令牌 */
+  :root[data-color-scheme='dark'] {
+    --ub-bg: var(--color-bg, #14161a);
+    --ub-card: var(--color-surface, #1b1e24);
+    --ub-border: var(--color-border, #2c313a);
+    --ub-text: var(--color-text, #e6e8eb);
+    --ub-muted: var(--color-text-secondary, #9aa1ab);
+    --ub-accent: var(--color-accent, #6ea8fe);
+    --ub-error: var(--color-error, #ff8b84);
+    --ub-warn: var(--color-warn, #f0b429);
+    --ub-ok: var(--color-success, #4ade80);
+    --ub-chip: rgba(110, 168, 254, .14);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px; background: var(--ub-bg); color: var(--ub-text);
+    font: 13px/1.55 -apple-system, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  }
+  h1 { font-size: 16px; margin: 0 0 2px; }
+  h2 { font-size: 13px; margin: 0 0 8px; }
+  h3 { font-size: 13px; margin: 12px 0 6px; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .between { justify-content: space-between; }
+  .card {
+    background: var(--ub-card); border: 1px solid var(--ub-border);
+    border-radius: 8px; padding: 12px; margin-top: 12px;
+  }
+  .muted { color: var(--ub-muted); }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; }
+  .stat .k { color: var(--ub-muted); font-size: 12px; }
+  .stat .v { font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+  .stat .n { color: var(--ub-muted); font-size: 12px; overflow-wrap: anywhere; }
+  .badge {
+    border-radius: 999px; padding: 1px 8px; font-size: 12px;
+    border: 1px solid var(--ub-border); white-space: nowrap;
+  }
+  .badge.ok { color: var(--ub-ok); border-color: var(--ub-ok); }
+  .badge.bad { color: var(--ub-error); border-color: var(--ub-error); }
+  .badge.warn { color: var(--ub-warn); border-color: var(--ub-warn); }
+  .chip {
+    display: inline-block; border-radius: 4px; background: var(--ub-chip);
+    color: var(--ub-accent); padding: 0 6px;
+  }
+  button, select {
+    font: inherit; color: var(--ub-text); background: var(--ub-card);
+    border: 1px solid var(--ub-border); border-radius: 6px; padding: 4px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover:not([disabled]) { border-color: var(--ub-accent); color: var(--ub-accent); }
+  button[disabled] { opacity: .5; cursor: not-allowed; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--ub-border); vertical-align: top; }
+  th { font-weight: 600; color: var(--ub-muted); white-space: nowrap; }
+  th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody tr.clickable { cursor: pointer; }
+  tbody tr.clickable:hover { color: var(--ub-accent); }
+  .sev { font-weight: 600; white-space: nowrap; }
+  .sev.warning { color: var(--ub-warn); }
+  .sev.error { color: var(--ub-error); }
+  .sev.info { color: var(--ub-muted); }
+  .empty-line { color: var(--ub-muted); padding: 6px 0; }
+  pre.err {
+    margin: 6px 0; padding: 8px; border-radius: 6px; white-space: pre-wrap;
+    background: var(--ub-chip); color: var(--ub-error);
+  }
+  #toast {
+    position: fixed; left: 12px; right: 12px; bottom: 12px; max-width: 560px;
+    background: var(--ub-card); color: var(--ub-text); border: 1px solid var(--ub-warn);
+    padding: 8px 12px; border-radius: 6px; display: none; z-index: 9;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .18); overflow-wrap: anywhere;
+  }
+  .only-loading, .only-empty, .only-error, .only-ready { display: none; }
+  main[data-state='loading'] .only-loading { display: block; }
+  main[data-state='empty'] .only-empty { display: block; }
+  main[data-state='error'] .only-error { display: block; }
+  main[data-state='ready'] .only-ready { display: block; }
+  @media (max-width: 560px) {
+    body { padding: 10px; }
+    table, thead, tbody, tr, th, td { display: block; }
+    thead { display: none; }
+    tbody tr { border: 1px solid var(--ub-border); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+    tbody td, th.num, td.num { border: 0; padding: 2px 0; text-align: left; }
+    tbody td::before { content: attr(data-th) '：'; color: var(--ub-muted); }
+    tbody td.empty-line::before { content: ''; }
+    .card { padding: 10px; }
+  }
+</style>
+</head>
+<body>
+<main data-testid="usage-board" data-state="loading">
+  <div class="row between">
+    <div>
+      <h1>用量与费用看板</h1>
+      <div class="muted">只读扫描本地会话历史，统计 token 与费用；不联网、不写文件。</div>
+    </div>
+    <div class="row">
+      <span class="badge" id="conn" data-testid="usage-board-conn">连接中…</span>
+      <select id="range" data-testid="usage-board-range" aria-label="统计范围">
+        <option value="7">近 7 天</option>
+        <option value="30" selected>近 30 天</option>
+        <option value="90">近 90 天</option>
+        <option value="0">全部</option>
+      </select>
+      <button id="refresh" data-testid="usage-board-refresh">刷新</button>
+      <button id="export-json" data-testid="usage-board-export-json" disabled>导出 JSON</button>
+      <button id="export-markdown" data-testid="usage-board-export-markdown" disabled>导出 Markdown</button>
+      <button id="export-csv" data-testid="usage-board-export-csv" disabled>导出 CSV</button>
+    </div>
+  </div>
+
+  <section class="card only-loading" data-testid="usage-board-loading" aria-busy="true">
+    <div class="row">
+      <span class="badge warn">加载中…</span>
+      <span class="muted">正在调用 usage.board.overview</span>
+    </div>
+  </section>
+
+  <section class="card only-empty" data-testid="usage-board-empty">
+    <div><strong>扫描范围内没有任何用量事件。</strong></div>
+    <div class="muted">
+      对应 UB001。可把范围切到「全部」，或确认宿主会话目录下已有 history.jsonl（usage-board 只读该目录）。
+    </div>
+  </section>
+
+  <section class="card only-error" data-testid="usage-board-error">
+    <div><strong>加载失败</strong></div>
+    <pre class="mono err" id="error-text"></pre>
+    <div class="muted" id="error-hint">以上为宿主返回的错误原文；点「刷新」重试。</div>
+  </section>
+
+  <div class="only-ready">
+    <section class="card" data-testid="usage-board-summary">
+      <div class="row between">
+        <h2 style="margin:0">汇总</h2>
+        <span class="muted" id="generated" data-testid="usage-board-generated-at"></span>
+      </div>
+      <div class="grid">
+        <div class="stat"><div class="k">会话数</div><div class="v" id="sum-sessions">-</div></div>
+        <div class="stat"><div class="k">回合数</div><div class="v" id="sum-turns">-</div></div>
+        <div class="stat"><div class="k">调用次数</div><div class="v" id="sum-calls">-</div></div>
+        <div class="stat"><div class="k">输入 token</div><div class="v" id="sum-input">-</div></div>
+        <div class="stat"><div class="k">输出 token</div><div class="v" id="sum-output">-</div></div>
+        <div class="stat"><div class="k">总 token</div><div class="v" id="sum-total">-</div></div>
+        <div class="stat"><div class="k">缓存 token</div><div class="v" id="sum-cache">-</div></div>
+        <div class="stat">
+          <div class="k">费用</div>
+          <div class="v" id="sum-cost">-</div>
+          <div class="n" id="sum-cost-note" data-testid="usage-board-cost-source"></div>
+        </div>
+      </div>
+      <div class="muted mono" id="scan-note"></div>
+    </section>
+
+    <section class="card">
+      <div class="row between">
+        <h2 style="margin:0">数据来源与价格表</h2>
+        <span class="row">
+          <button id="prices-refresh" data-testid="usage-board-prices-refresh">重载价格表</button>
+        </span>
+      </div>
+      <div class="mono muted" id="price-hint" data-testid="usage-board-price-hint"></div>
+    </section>
+
+    <section class="card">
+      <h2>结论（findings）</h2>
+      <table>
+        <thead><tr><th>级别</th><th>编码</th><th>对象</th><th>说明</th><th>证据</th></tr></thead>
+        <tbody id="findings"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>按模型</h2>
+      <table data-testid="usage-board-model-table">
+        <thead>
+          <tr>
+            <th>模型</th><th class="num">回合</th><th class="num">调用</th><th class="num">输入</th>
+            <th class="num">输出</th><th class="num">总 token</th><th>费用</th>
+          </tr>
+        </thead>
+        <tbody id="models"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>按日期</h2>
+      <table id="day-table">
+        <thead><tr><th>日期</th><th class="num">回合</th><th class="num">总 token</th><th>费用</th></tr></thead>
+        <tbody id="days"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>会话（点行查看详情）</h2>
+      <table data-testid="usage-board-session-table">
+        <thead>
+          <tr>
+            <th>会话</th><th class="num">回合</th><th class="num">调用</th><th class="num">总 token</th>
+            <th>费用</th><th>最后活动</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="sessions"></tbody>
+      </table>
+    </section>
+
+    <section class="card" data-testid="usage-board-detail">
+      <div class="row between">
+        <h2 style="margin:0">会话详情</h2>
+        <button id="detail-close" disabled>关闭详情</button>
+      </div>
+      <div id="detail-body">
+        <div class="empty-line">尚未选择会话；点上方会话行查看单会话用量明细（usage.board.session）。</div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div id="toast" data-testid="usage-board-toast"></div>
+
+<!-- 列表行骨架：data-testid 字面量集中在模板里，运行时克隆后填值（只读展示，无写操作） -->
+<template id="tpl-finding-item">
+  <tr data-testid="usage-board-finding-item">
+    <td class="sev" data-th="级别"></td>
+    <td class="mono" data-th="编码"></td>
+    <td class="mono" data-th="对象"></td>
+    <td data-th="说明"></td>
+    <td class="mono" data-th="证据"></td>
+  </tr>
+</template>
+<template id="tpl-model-item">
+  <tr data-testid="usage-board-model-item">
+    <td class="mono" data-th="模型"></td>
+    <td class="num" data-th="回合"></td>
+    <td class="num" data-th="调用"></td>
+    <td class="num" data-th="输入"></td>
+    <td class="num" data-th="输出"></td>
+    <td class="num" data-th="总 token"></td>
+    <td data-th="费用"></td>
+  </tr>
+</template>
+<template id="tpl-day-item">
+  <tr data-testid="usage-board-day-item">
+    <td class="mono" data-th="日期"></td>
+    <td class="num" data-th="回合"></td>
+    <td class="num" data-th="总 token"></td>
+    <td data-th="费用"></td>
+  </tr>
+</template>
+<template id="tpl-session-item">
+  <tr data-testid="usage-board-session-item">
+    <td class="mono" data-th="会话"></td>
+    <td class="num" data-th="回合"></td>
+    <td class="num" data-th="调用"></td>
+    <td class="num" data-th="总 token"></td>
+    <td data-th="费用"></td>
+    <td class="mono" data-th="最后活动"></td>
+    <td data-th="操作"><button type="button">查看详情</button></td>
+  </tr>
+</template>
+
+<script>
+(function () {
+  'use strict';
+
+  var PREFIX = 'usage.board.';
+  var RETRY_MS = 2000;
+  var DETAIL_TURNS = 50;
+  var state = {
+    ws: null,
+    seq: 0,
+    pending: new Map(),
+    overview: null,
+    paths: null,
+    prices: null,
+    detail: null,
+    days: 30,
+    currency: 'USD',
+    busy: false
+  };
+
+  function $(id) { return document.getElementById(id); }
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) { node.className = className; }
+    if (text !== undefined && text !== null) { node.textContent = String(text); }
+    return node;
+  }
+
+  function toast(message) {
+    var box = $('toast');
+    box.textContent = String(message);
+    box.style.display = 'block';
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { box.style.display = 'none'; }, 6000);
+  }
+
+  function setConn(text, kind) {
+    var badge = $('conn');
+    badge.textContent = text;
+    badge.className = 'badge' + (kind ? ' ' + kind : '');
+  }
+
+  function showError(message) {
+    $('error-text').textContent = String(message);
+    setState('error');
+  }
+
+  function setState(name) {
+    // 四态：loading / empty / error / ready
+    document.querySelector('main[data-testid="usage-board"]').setAttribute('data-state', name);
+    var ready = name === 'ready';
+    $('export-json').disabled = !ready;
+    $('export-markdown').disabled = !ready;
+    $('export-csv').disabled = !ready;
+  }
+
+  function errText(err) {
+    if (!err) { return '未知错误'; }
+    return String(err.message || err) + (err.code ? '（' + err.code + '）' : '');
+  }
+
+  function wsUrl() {
+    var scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return scheme + '//' + location.host + '/ws';
+  }
+
+  function connect() {
+    var url = wsUrl();
+    var ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      setConn('桥不可用', 'bad');
+      showError('无法创建宿主桥连接（' + url + '）：' + (err && err.message ? err.message : '未知原因'));
+      return;
+    }
+    state.ws = ws;
+    ws.onopen = function () {
+      setConn('已连接', 'ok');
+      loadPaths();
+      loadPrices();
+      refresh();
+    };
+    ws.onclose = function () {
+      setConn('已断开，重连中…', 'bad');
+      if (!state.overview) {
+        showError('宿主桥连接已关闭（' + url + '）。请从宿主插件页打开本页面，Host 会提供 /ws RPC 通道。');
+      }
+      if (location.host) { setTimeout(connect, RETRY_MS); }
+    };
+    ws.onerror = function () {
+      setConn('连接错误', 'bad');
+      if (!state.overview) {
+        showError('host bridge error: ' + url + '（无可用 RPC 通道）');
+      }
+    };
+    ws.onmessage = function (event) {
+      var msg;
+      try { msg = JSON.parse(event.data); } catch (err) { return; }
+      if (msg && msg.type === 'res') { settle(msg); }
+    };
+  }
+
+  function settle(msg) {
+    var pending = state.pending.get(msg.id);
+    if (!pending) { return; }
+    clearTimeout(pending.timer);
+    state.pending.delete(msg.id);
+    if (msg.ok) { pending.resolve(msg.payload); return; }
+    var error = new Error(msg.error || '请求失败');
+    error.code = msg.code;
+    pending.reject(error);
+  }
+
+  function call(name, params, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('WebSocket 未连接'));
+        return;
+      }
+      var id = 'ub_' + (++state.seq) + '_' + Date.now().toString(36);
+      var timer = setTimeout(function () {
+        state.pending.delete(id);
+        reject(new Error('请求超时：' + name));
+      }, timeoutMs || 30000);
+      state.pending.set(id, { resolve: resolve, reject: reject, timer: timer });
+      state.ws.send(JSON.stringify({
+        type: 'req', id: id, method: PREFIX + name, params: params || {}
+      }));
+    });
+  }
+
+  function num(value) {
+    if (value === null || value === undefined || value === '') { return '-'; }
+    var n = Number(value);
+    if (!isFinite(n)) { return '-'; }
+    return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  function cost(value) {
+    if (value === null || value === undefined || value === '') { return '-'; }
+    var n = Number(value);
+    if (!isFinite(n)) { return '-'; }
+    var text = n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+    return text === '' ? '0' : text;
+  }
+
+  function costLabel(source) {
+    if (source === 'reported') { return '上报'; }
+    if (source === 'estimated') { return '估算'; }
+    if (source === 'mixed') { return '上报+估算'; }
+    if (source === 'missing') { return '未上报且无价格表'; }
+    return '未知口径';
+  }
+
+  function costText(value, source) {
+    if (source === 'missing') { return '—（未上报且无价格表）'; }
+    var amount = cost(value);
+    var unit = amount === '-' ? '' : ' ' + state.currency;
+    return amount + unit + '（' + costLabel(source) + '）';
+  }
+
+  function cell(row, text, className, header) {
+    var td = document.createElement('td');
+    if (className) { td.className = className; }
+    if (header) { td.setAttribute('data-th', header); }
+    td.textContent = text === null || text === undefined || text === '' ? '-' : String(text);
+    row.appendChild(td);
+    return td;
+  }
+
+  // 克隆列表行骨架（模板内含 data-testid 字面量），按序填文本，保留模板里的按钮。
+  function rowFrom(templateId, values, variant) {
+    var row = $(templateId).content.firstElementChild.cloneNode(true);
+    if (variant !== undefined && variant !== null) { row.setAttribute('data-variant', variant); }
+    var cells = row.children;
+    for (var i = 0; i < cells.length; i++) {
+      if (cells[i].children.length) { continue; }
+      var value = values[i];
+      cells[i].textContent = value === null || value === undefined || value === '' ? '-' : String(value);
+    }
+    return row;
+  }
+
+  function emptyRow(tbody, columns, text) {
+    var row = document.createElement('tr');
+    var td = document.createElement('td');
+    td.className = 'empty-line';
+    td.colSpan = columns;
+    td.textContent = text;
+    row.appendChild(td);
+    tbody.appendChild(row);
+  }
+
+  function statGrid(items) {
+    var grid = el('div', 'grid');
+    items.forEach(function (item) {
+      var box = el('div', 'stat');
+      box.appendChild(el('div', 'k', item.k));
+      box.appendChild(el('div', 'v', item.v));
+      if (item.note) { box.appendChild(el('div', 'n', item.note)); }
+      grid.appendChild(box);
+    });
+    return grid;
+  }
+
+  function loadPaths() {
+    return call('paths').then(function (payload) {
+      state.paths = payload || null;
+      renderPriceHint();
+    }).catch(function () { /* overview 会带同样的路径信息 */ });
+  }
+
+  function loadPrices() {
+    return call('prices').then(function (payload) {
+      state.prices = payload || null;
+      renderPriceHint();
+    }).catch(function (err) { toast('价格表读取失败：' + errText(err)); });
+  }
+
+  function refresh() {
+    if (state.busy) { return; }
+    state.busy = true;
+    $('refresh').disabled = true;
+    setState('loading');
+    setConn(state.ws && state.ws.readyState === WebSocket.OPEN ? '已连接' : '连接中…', '');
+    call('overview', { days: state.days }).then(function (payload) {
+      state.overview = payload;
+      state.currency = (payload.price_table && payload.price_table.currency) || 'USD';
+      renderOverview();
+      setState(isEmptyPayload(payload) ? 'empty' : 'ready');
+    }).catch(function (err) {
+      showError('usage.board.overview 调用失败：' + errText(err));
+    }).then(function () {
+      state.busy = false;
+      $('refresh').disabled = false;
+    });
+  }
+
+  function isEmptyPayload(payload) {
+    var totals = payload && payload.totals ? payload.totals : {};
+    var sessions = payload && payload.sessions ? payload.sessions.length : 0;
+    var models = payload && payload.by_model ? payload.by_model.length : 0;
+    var turns = Number(totals.turns || 0);
+    var calls = Number(totals.calls || 0);
+    var tokens = Number(totals.total_tokens || 0);
+    return sessions === 0 && models === 0 && turns === 0 && calls === 0 && tokens === 0;
+  }
+
+  function renderOverview() {
+    var payload = state.overview;
+    var totals = payload.totals || {};
+    $('generated').textContent = '生成于 ' + (payload.generated_at || '未知时间');
+    $('sum-sessions').textContent = num(totals.sessions);
+    $('sum-turns').textContent = num(totals.turns);
+    $('sum-calls').textContent = num(totals.calls);
+    $('sum-input').textContent = num(totals.input_tokens);
+    $('sum-output').textContent = num(totals.output_tokens);
+    $('sum-total').textContent = num(totals.total_tokens);
+    $('sum-cache').textContent = num(totals.cache_tokens);
+    $('sum-cost').textContent = totals.cost_source === 'missing'
+      ? '未上报且无价格表' : cost(totals.cost_total) + ' ' + state.currency;
+    $('sum-cost-note').textContent = costNote(totals);
+    var scanned = payload.scanned || {};
+    $('scan-note').textContent = '扫描：会话 ' + num(scanned.sessions) + ' · 文件 ' + num(scanned.files_read)
+      + ' · 字节 ' + num(scanned.bytes) + ' · 截断会话 ' + num(scanned.truncated_sessions)
+      + ' · 跳过行 ' + num(scanned.skipped_lines)
+      + (payload.cross_check
+        ? ' · 交叉核对偏差 ' + num(Math.round((payload.cross_check.relative_gap || 0) * 10000) / 100)
+          + '%（summary ' + num(payload.cross_check.summary_total_tokens)
+          + ' / metadata ' + num(payload.cross_check.metadata_total_tokens) + '）'
+        : '');
+    renderPriceHint();
+    renderFindings();
+    renderModels();
+    renderDays();
+    renderSessions();
+    renderBudget(payload.budget);
+  }
+
+  function costNote(totals) {
+    var source = totals.cost_source;
+    var note = '口径：' + costLabel(source);
+    if (source === 'estimated') { note += '（按价格表单价由 token 推算）'; }
+    if (source === 'mixed') { note += '（部分上报、部分估算）'; }
+    if (source === 'missing') { note += '：事件未上报金额且未配置可用价格表'; }
+    if (Number(totals.unpriced_turns || 0) > 0) { note += ' · unpriced_turns=' + num(totals.unpriced_turns); }
+    return note;
+  }
+
+  function renderBudget(budget) {
+    var box = $('scan-note');
+    if (!budget || !budget.configured) { return; }
+    var line = el('div', null, 'token 预算参照：' + num(budget.token_used_in_scope) + ' / '
+      + num(budget.token_budget) + '（' + num(Math.round((budget.token_used_ratio || 0) * 10000) / 100)
+      + '%）· 来源 ' + (budget.source || '未知') + (budget.note ? ' · ' + budget.note : ''));
+    box.appendChild(line);
+  }
+
+  function renderPriceHint() {
+    var box = $('price-hint');
+    if (!box) { return; }
+    var prices = state.prices;
+    var table = (state.overview && state.overview.price_table) || null;
+    var parts = [];
+    if (prices && prices.error) {
+      parts.push('价格表解析失败：' + prices.error + '（UB008）');
+    } else if ((prices && prices.configured) || (table && table.configured)) {
+      var count = prices && prices.entries ? prices.entries.length : (table ? table.models : null);
+      var currency = (prices && prices.currency) || (table && table.currency) || state.currency;
+      parts.push('价格表：已配置 ' + num(count) + ' 个模型 · 币种 ' + currency + '（用于估算未上报金额的回合）');
+    } else {
+      parts.push('价格表：未配置 → 未上报金额的回合无法估算，计入 unpriced_turns（UB002）');
+    }
+    var path = (prices && prices.path) || (table && table.path);
+    if (path) { parts.push('prices.json：' + path); }
+    if (state.paths && state.paths.sessions_dir) {
+      parts.push('会话目录：' + state.paths.sessions_dir
+        + '（会话 ' + num(state.paths.session_count) + ' 个）');
+    }
+    box.textContent = parts.join(' · ');
+  }
+
+  function renderFindings() {
+    var body = $('findings');
+    body.textContent = '';
+    var findings = (state.overview && state.overview.findings) || [];
+    findings.forEach(function (item) {
+      var row = rowFrom('tpl-finding-item', [
+        item.severity, item.code, item.subject, item.message, item.evidence
+      ], item.code);
+      row.children[0].className = 'sev ' + item.severity;
+      body.appendChild(row);
+    });
+    if (!body.children.length) { emptyRow(body, 5, '没有 findings（正常）。'); }
+  }
+
+  function renderModels() {
+    var body = $('models');
+    body.textContent = '';
+    var models = (state.overview && state.overview.by_model) || [];
+    models.forEach(function (item) {
+      var row = rowFrom('tpl-model-item', [
+        item.model, num(item.turns), num(item.calls), num(item.input_tokens), num(item.output_tokens),
+        num(item.total_tokens), costText(item.cost, item.cost_source)
+      ], item.model);
+      body.appendChild(row);
+    });
+    if (!body.children.length) { emptyRow(body, 7, '暂无按模型的用量。'); }
+  }
+
+  function renderDays() {
+    var body = $('days');
+    body.textContent = '';
+    var days = (state.overview && state.overview.by_day) || [];
+    days.forEach(function (item) {
+      var row = rowFrom('tpl-day-item', [
+        item.day, num(item.turns), num(item.total_tokens), costText(item.cost, costSourceOfDay(item))
+      ], item.day);
+      body.appendChild(row);
+    });
+    if (!body.children.length) { emptyRow(body, 4, '暂无按日期的用量。'); }
+  }
+
+  function costSourceOfDay(item) {
+    if (item.cost_source) { return item.cost_source; }
+    return (state.overview && state.overview.totals && state.overview.totals.cost_source) || 'missing';
+  }
+
+  function renderSessions() {
+    var body = $('sessions');
+    body.textContent = '';
+    var sessions = (state.overview && state.overview.sessions) || [];
+    sessions.forEach(function (item) {
+      var row = rowFrom('tpl-session-item', [
+        item.session_id, num(item.turns), num(item.calls), num(item.total_tokens),
+        costText(item.cost, item.cost_source), item.last_ts || item.first_ts
+      ], item.session_id);
+      row.className = 'clickable';
+      row.addEventListener('click', function () { openSession(item.session_id); });
+      row.querySelector('button').addEventListener('click', function (event) {
+        event.stopPropagation();
+        openSession(item.session_id);
+      });
+      body.appendChild(row);
+    });
+    if (!body.children.length) { emptyRow(body, 7, '暂无会话。'); }
+  }
+
+  function openSession(sessionId) {
+    var box = $('detail-body');
+    box.textContent = '';
+    box.appendChild(el('div', 'muted', '正在加载会话 ' + sessionId + ' …'));
+    $('detail-close').disabled = false;
+    $('detail-close').setAttribute('data-variant', sessionId);
+    call('session', { session_id: sessionId }).then(function (payload) {
+      state.detail = payload;
+      renderDetail(payload);
+    }).catch(function (err) {
+      box.textContent = '';
+      box.appendChild(el('div', 'sev error', '会话详情加载失败：' + errText(err)));
+    });
+  }
+
+  function renderDetail(payload) {
+    var box = $('detail-body');
+    box.textContent = '';
+    var totals = payload.totals || {};
+    if (payload.truncated) {
+      box.appendChild(el('div', 'sev warning', '该会话文件过大，已截断扫描（truncated=true）。'));
+    }
+    box.appendChild(statGrid([
+      { k: '会话', v: payload.session_id, note: payload.path },
+      { k: '回合数', v: num(totals.turns), note: '调用 ' + num(totals.calls) },
+      { k: '输入 token', v: num(totals.input_tokens) },
+      { k: '输出 token', v: num(totals.output_tokens) },
+      { k: '总 token', v: num(totals.total_tokens), note: '缓存 ' + num(totals.cache_tokens) },
+      {
+        k: '费用',
+        v: totals.cost_source === 'missing' ? '未上报且无价格表' : cost(totals.cost_total) + ' ' + state.currency,
+        note: costNote(totals)
+      }
+    ]));
+
+    var context = payload.context;
+    box.appendChild(el('h3', null, '上下文占用'));
+    if (context) {
+      box.appendChild(statGrid([
+        { k: '占用率', v: num(Math.round((context.occupancy_rate || 0) * 10000) / 100) + '%' },
+        { k: '窗口上限', v: num(context.limit_tokens) },
+        { k: '输入 token', v: num(context.input_tokens) },
+        { k: '模型', v: context.model || '-' },
+        { k: 'provider', v: context.provider || '-', note: context.agent_id ? 'agent ' + context.agent_id : '' }
+      ]));
+    } else {
+      box.appendChild(el('div', 'empty-line', '该会话没有 context.usage 快照。'));
+    }
+
+    box.appendChild(el('h3', null, '按模型'));
+    box.appendChild(detailTable(
+      ['模型', '回合', '总 token', '费用'],
+      (payload.models || []).map(function (item) {
+        return [item.model, num(item.turns), num(item.total_tokens), costText(item.cost, item.cost_source)];
+      }),
+      'usage-board-detail-model-item',
+      '暂无按模型的用量。'
+    ));
+
+    box.appendChild(el('h3', null, '按日期'));
+    box.appendChild(detailTable(
+      ['日期', '回合', '总 token', '费用'],
+      (payload.by_day || []).map(function (item) {
+        return [item.day, num(item.turns), num(item.total_tokens), costText(item.cost, costSourceOfDay(item))];
+      }),
+      'usage-board-detail-day-item',
+      '暂无按日期的用量。'
+    ));
+
+    var turns = payload.turns || [];
+    box.appendChild(el('h3', null, '回合明细（' + num(turns.length) + ' 条，最多显示 ' + DETAIL_TURNS + ' 条）'));
+    box.appendChild(detailTable(
+      ['时间', '模型', '输入', '输出', '总 token', '缓存', '费用', '来源'],
+      turns.slice(0, DETAIL_TURNS).map(function (item) {
+        return [
+          item.ts, item.model, num(item.input_tokens), num(item.output_tokens),
+          num(item.total_tokens), num(item.cache_tokens),
+          costText(item.cost, item.cost_source), item.source
+        ];
+      }),
+      'usage-board-detail-turn-item',
+      '该会话没有回合明细。'
+    ));
+
+    var findings = payload.findings || [];
+    box.appendChild(el('h3', null, '结论'));
+    box.appendChild(detailTable(
+      ['编码', '级别', '说明'],
+      findings.map(function (item) {
+        return [item.code, item.severity, item.message];
+      }),
+      'usage-board-detail-finding-item',
+      '该会话没有 findings。'
+    ));
+  }
+
+  function detailTable(headers, rows, testid, emptyText) {
+    var table = document.createElement('table');
+    var thead = document.createElement('thead');
+    var headRow = document.createElement('tr');
+    headers.forEach(function (header) { headRow.appendChild(el('th', null, header)); });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    rows.forEach(function (values) {
+      var row = document.createElement('tr');
+      row.setAttribute('data-testid', testid);
+      if (values[0] !== undefined) { row.setAttribute('data-variant', values[0]); }
+      values.forEach(function (value, index) {
+        cell(row, value, index === 0 ? 'mono' : null, headers[index]);
+      });
+      tbody.appendChild(row);
+    });
+    if (!rows.length) { emptyRow(tbody, headers.length, emptyText); }
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function closeDetail() {
+    state.detail = null;
+    $('detail-close').disabled = true;
+    var box = $('detail-body');
+    box.textContent = '';
+    box.appendChild(el('div', 'empty-line', '尚未选择会话；点上方会话行查看单会话用量明细（usage.board.session）。'));
+  }
+
+  function mimeOf(format) {
+    if (format === 'json') { return 'application/json'; }
+    if (format === 'markdown') { return 'text/markdown'; }
+    if (format === 'csv') { return 'text/csv'; }
+    return 'text/plain';
+  }
+
+  function extOf(format) {
+    return format === 'markdown' ? 'md' : format;
+  }
+
+  function download(format) {
+    call('export', { format: format, days: state.days }).then(function (payload) {
+      var content = payload && payload.content !== undefined && payload.content !== null
+        ? String(payload.content) : '';
+      var blob = new Blob([content], { type: mimeOf(format) });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = (payload && payload.filename) || ('usage-board.' + extOf(format));
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+      toast('已导出 ' + link.download + ' · ' + num(payload && payload.bytes ? payload.bytes : blob.size) + ' 字节');
+    }).catch(function (err) {
+      toast('导出失败：' + errText(err));
+    });
+  }
+
+  $('refresh').addEventListener('click', refresh);
+  $('range').addEventListener('change', function (event) {
+    state.days = Number(event.target.value);
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) { refresh(); }
+  });
+  $('export-json').addEventListener('click', function () { download('json'); });
+  $('export-markdown').addEventListener('click', function () { download('markdown'); });
+  $('export-csv').addEventListener('click', function () { download('csv'); });
+  $('detail-close').addEventListener('click', closeDetail);
+  $('prices-refresh').addEventListener('click', function () { loadPrices(); });
+  setState('loading');
+  connect();
+})();
+</script>
+</body>
+</html>
