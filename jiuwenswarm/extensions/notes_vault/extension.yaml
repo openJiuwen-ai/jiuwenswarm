@@ -1,0 +1,16 @@
+id: notes-vault
+name: Notes Vault
+version: 1.0.0
+description: Per-session scratch notes stored inside the agent workspace
+author: zhuyingming0708
+min_jiuwenswarm_version: "0.2.5"
+package_type: application
+dependencies: {}
+permissions: []
+config_schema:
+  type: object
+  properties:
+    storage_dir:
+      type: string
+    max_notes:
+      type: integer
