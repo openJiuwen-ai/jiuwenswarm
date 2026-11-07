@@ -516,3 +516,12 @@ test('an organization execution settles every member mentioned in its triggering
     [org('o1', 'alice', 2, 'completed')], members, sent,
   )), { m2: ['carol:-'] });
 });
+
+test('the group chat model is selectable only before the chat starts', async () => {
+  const { groupModelLocked } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  assert.equal(groupModelLocked([], [], false), false);
+  assert.equal(groupModelLocked([{ message_id: 'm1', sender: 'user', timestamp: 1 }], [], false), true);
+  assert.equal(groupModelLocked([], [{ execution_id: 'e1', status: 'running', created_at: 1 }], false), true);
+  // Older pages not loaded yet still mean the chat has already run.
+  assert.equal(groupModelLocked([], [], true), true);
+});

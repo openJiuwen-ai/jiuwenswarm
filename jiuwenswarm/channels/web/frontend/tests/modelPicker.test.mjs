@@ -994,6 +994,46 @@ test('deleted model groups fall back to a default model instead of showing model
   });
 });
 
+test('a locked selector keeps its model and shows why it cannot be changed', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    setupStableCatalog();
+    await mount(createElement(ChatModelSelector, { locked: true, lockedTitle: 'Locked after start' }));
+    const trigger = byId('chat-panel-model-selector-trigger');
+    assert.equal(trigger.disabled, true);
+    assert.equal(byId('chat-panel-model-selector-wrap').title, 'Locked after start');
+    await click(trigger);
+    assert.equal(byId('chat-panel-model-selector-menu'), null);
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, {
+      type: 'model',
+      id: 'mdl-a',
+    });
+  });
+});
+
+test('a locked selector still replaces a deleted model and writes the fallback back', async (t) => {
+  const persisted = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    assert.equal(method, 'session.selection.set');
+    persisted.push(params);
+    return { success: true };
+  });
+  await withFixture(async ({ mount }) => {
+    setupStableCatalog();
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model', id: 'mdl-deleted' });
+    await mount(createElement(ChatModelSelector, { locked: true, lockedTitle: 'Locked after start' }));
+    await act(async () => {});
+    // The deleted-model fallback runs even while locked and is written back.
+    assert.deepEqual(persisted.at(-1), {
+      session_id: sessionId,
+      model_selection: { type: 'model', id: 'mdl-a' },
+    });
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, {
+      type: 'model',
+      id: 'mdl-a',
+    });
+  });
+});
+
 function groupEditor(models, routes, onSave, groupOverrides = {}) {
   return createElement(
     SettingsServicesProvider,

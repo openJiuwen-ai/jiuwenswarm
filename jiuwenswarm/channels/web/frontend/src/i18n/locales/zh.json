@@ -6629,6 +6629,7 @@
     "viewResult": "查看任务成果",
     "sendFailed": "消息处理失败，请重试。",
     "sending": "发送中…",
+    "modelLocked": "群聊开始后不可切换模型",
     "processing": "正在处理…",
     "mentionPhase": {
       "dispatching": "已收到，正在处理中…",
