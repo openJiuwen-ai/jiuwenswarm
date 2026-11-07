@@ -920,6 +920,9 @@ class RuntimeSupervisor:
                 message = await conn.recv()
                 self._last_rx = time.monotonic()
                 await self._handle(message)
+                # Buffered IPC reads may not suspend; let the Gateway writer drain
+                # replay bursts before the next frame fills the bounded queue.
+                await asyncio.sleep(0)
         except (OSError, RuntimeError):
             # Deliver already-received terminal frames on EOF when possible,
             # but never hold Worker recovery behind an unavailable Gateway.
