@@ -187,12 +187,22 @@ class GatewayPackageManager:
             return _success(package_id, "reload")
 
     async def uninstall(self, package_id: str) -> ActivationReport:
-        """Release the handlers and delete every installed copy of one package."""
+        """Release the handlers and delete every installed copy of one package.
+
+        Refused with ``EXTENSION_PACKAGE_BUSY`` while a handler or data call of
+        the package is in flight, so data is never deleted under a running call.
+        """
 
         async with self._lock:
             versions = self.gateway_installed(package_id)
-            await self._close_splashes(package_id)
-            released = self._runtime.unpublish(package_id)
+            try:
+                # A busy package keeps everything, splash included; the check
+                # repeats right before unpublishing because closing awaits.
+                self._runtime.require_idle(package_id)
+                await self._close_splashes(package_id)
+                released = self._runtime.stop_package(package_id)
+            except ExtensionFailure as exc:
+                return _failure(package_id, "uninstall", exc.as_error())
             if not versions and not released:
                 return _failure(
                     package_id,

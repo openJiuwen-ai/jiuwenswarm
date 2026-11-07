@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / gateway-extension-runtime` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 设计依据 | [详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-06 |
+| 最近一次修订日期 | 2026-11-07 |
 | 契约状态 | 已实现；本文是 Gateway 扩展对外契约的唯一维护位置 |
 
 本文维护 Gateway 扩展运行时的对外契约：入口函数、事件数据类、路由语义、错误码、配置键与不变量。具体实现方案与决策历史见对应 feature 文档。
@@ -70,7 +70,14 @@
 `runtime.start()` 在 `ops.build` 前把 `JsonStore(<data_dir>/store)` 绑定到总线，停机时解除绑定。
 生命周期：重载、升级（安装更高版本）与停机保留；经管理门面卸载时先删除该包的存储与数据目录，
 再删除安装副本；删除数据失败时返回 `EXTENSION_DATA_WRITE_FAILED` 并保留安装副本，再次卸载可重试。
-包数据目录及其上级不得为符号链接。设计与验证见 [F_09](../features/F_09_package-store-and-data.md)。
+包数据目录及其上级不得为符号链接。
+
+存储调用与 `ops.data.root()` 只接受包**当前激活**交给 Handler 的 Ops：Handler 运行中可用，Handler 返回后
+由它派生的后台任务也可继续使用；激活被释放（重载替换、卸载、停机）后，这些 Ops 的数据调用返回 `EVENTS_OPS_INVALID`。
+卸载在当前激活仍有 Handler 运行、或该包仍有存储与数据目录调用在途时返回 `EXTENSION_PACKAGE_BUSY`，
+不注销 Handler、不删除数据，可稍后重试；不等待在途调用结束。检查先于关闭开场，关闭开场期间新出现的在途调用
+在注销前还会再检查一次。包通过 `ops.data.root()` 得到的路径
+直接读写文件不经过上述计数，包须在自己的后台任务里自行收尾。设计与验证见 [F_09](../features/F_09_package-store-and-data.md)。
 
 ### 3.2 包释放与浏览器通知
 
@@ -139,7 +146,8 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 | `BAD_REQUEST` | `gateway.request` CORE | `method` 缺失或非字符串 |
 | `ROUTE_UNSUPPORTED` | 本地方法表 | 声明 `local` 但无对应内置方法 |
 | `EVENTS_REGISTRATION_INVALID` | agent-core Events | 事件类型非法或重复注册 |
-| `EVENTS_OPS_INVALID` | agent-core Events | Ops 命名空间或方法重复注册 |
+| `EVENTS_OPS_INVALID` | agent-core Events；Gateway 存储与数据调用 | Ops 命名空间或方法重复注册；已释放激活的 Ops 调用存储或 `ops.data.root()` |
+| `EXTENSION_PACKAGE_BUSY` | 管理门面卸载 | 包仍有 Handler 或数据调用在途，本次卸载未做任何修改 |
 
 渲染与 HTTP 的错误码分别在 S_02 与 S_05 维护。
 
@@ -159,6 +167,8 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
     `sys.modules` 中的同包子模块。本次加载创建的模块在激活释放（卸载、重载替换、停机）且该激活的在途 Handler 调用全部结束后
     从 `sys.modules` 移除，包括入口导入的同包子模块；加载或发布失败时立即移除。重复发布同一次加载时模块随之转交新的激活。
     移除只解除 `sys.modules` 的引用，仍被其他对象引用的模块不会被强制回收。
+12. 卸载成功之后，该包已释放激活的 Ops 不能再写入存储或创建数据目录；有调用在途时卸载返回 `EXTENSION_PACKAGE_BUSY`
+    且不注销 Handler、不删除数据。已释放的激活不再开始新的 Handler 调用：释放前已收集该 Handler 的事件链会跳过它。
 
 ## 10. 验证索引
 
@@ -173,7 +183,7 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 | 本地方法表 | `test_gateway_request.py` |
 | 渲染与槽位契约 | `test_gateway_ui_render.py`（契约细节见 [S_02](S_02_ui-render.md)） |
 | 出站 HTTP 白名单与预算 | `test_gateway_http_fetch.py`（契约细节见 [S_05](S_05_http-fetch.md)） |
-| 包存储、数据目录、数据素材与卸载清理 | `test_gateway_package_data.py` |
+| 包存储、数据目录、数据素材与卸载清理；在途调用与已释放激活的数据调用（不变量 12） | `test_gateway_package_data.py` |
 | 应用级 UI 包与素材路由 | `test_gateway_application_assets.py` |
 | 包释放通知、受控外观与重载广播 | `test_gateway_appearance.py`、`test_gateway_package_management.py`（契约细节见 [S_08](S_08_appearance.md)） |
 | 宿主方法、开场偏好、导入与导出 | `test_gateway_application_settings.py`、`test_gateway_file_transfer.py`（契约细节见 [S_10](S_10_application-settings.md)） |

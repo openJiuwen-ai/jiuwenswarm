@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import zipfile
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from openjiuwen.core.common.exception.codes import StatusCode
 
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig, load_gateway_config
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
@@ -270,3 +272,139 @@ def test_data_dir_is_configurable_and_defaults_under_the_workspace(tmp_path, mon
     default = load_gateway_config({})
     assert default.data_dir == (tmp_path / "workspace" / "extension" / "gateway").resolve()
     assert not os.path.exists(default.data_dir)
+
+
+def _gated_package(package_id: str, root: Path, gate: asyncio.Event, entered: asyncio.Event,
+                   captured: dict) -> LoadedPackage:
+    """``slow`` waits on ``gate`` before writing; ``keep`` hands its Ops to a later caller."""
+
+    async def command(event, ops, next_handler):
+        method = event.event_input.method
+        if method == "keep":
+            captured["ops"] = ops
+        elif method == "slow":
+            entered.set()
+            await gate.wait()
+            await ops.store.set("late", True)
+        else:
+            return await next_handler(event)
+        return GatewayRequestOutput(handled=True, route="consume", response={"result": True})
+
+    return LoadedPackage(package_id=package_id, version="1.0.0", root=root,
+                         handlers=(HandlerDeclaration("gateway.request", command, {}, "command"),))
+
+
+async def test_uninstall_is_busy_while_a_handler_of_the_package_runs(tmp_path):
+    gate, entered = asyncio.Event(), asyncio.Event()
+    runtime = await _runtime(tmp_path)
+    try:
+        runtime.publish(_gated_package("test.slow", tmp_path, gate, entered, {}))
+        manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+        call = asyncio.create_task(_run(runtime, "slow"))
+        await entered.wait()
+
+        report = await manager.uninstall("test.slow")
+        assert report.status == "FAILED"
+        assert report.error.status is StatusCode.EXTENSION_PACKAGE_BUSY
+        assert runtime.is_active_package("test.slow")
+
+        gate.set()
+        assert await call is True
+        store_file = tmp_path / "gateway-data" / "store" / "test.slow.json"
+        assert store_file.is_file()
+        assert (await manager.uninstall("test.slow")).status == "SUCCESS"
+        assert not store_file.exists()
+    finally:
+        gate.set()
+        await runtime.shutdown()
+
+
+async def test_ops_of_a_finished_handler_cannot_write_data_after_uninstall(tmp_path):
+    captured: dict = {}
+    runtime = await _runtime(tmp_path)
+    try:
+        runtime.publish(_gated_package("test.keep", tmp_path, asyncio.Event(), asyncio.Event(), captured))
+        manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+        assert await _run(runtime, "keep") is True
+        assert (await manager.uninstall("test.keep")).status == "SUCCESS"
+
+        stale = captured["ops"]
+        with pytest.raises(Exception):
+            await stale.store.set("late", True)
+        with pytest.raises(Exception):
+            await stale.data.root()
+        assert not (tmp_path / "gateway-data" / "store" / "test.keep.json").exists()
+        assert not (tmp_path / "gateway-data" / "packages" / "test.keep").exists()
+    finally:
+        await runtime.shutdown()
+
+
+async def test_detached_ops_work_until_their_activation_is_replaced(tmp_path):
+    captured: dict = {}
+    runtime = await _runtime(tmp_path)
+    try:
+        runtime.publish(_gated_package("test.keep", tmp_path, asyncio.Event(), asyncio.Event(), captured))
+        assert await _run(runtime, "keep") is True
+        detached = captured["ops"]
+        # A background task of the current activation may still use its Ops.
+        assert await detached.store.set("theme", "hive") is True
+        assert (await detached.data.root()).is_dir()
+
+        runtime.publish(_gated_package("test.keep", tmp_path, asyncio.Event(), asyncio.Event(), captured))
+        with pytest.raises(Exception):
+            await detached.store.set("theme", "aurora")
+        assert await _run(runtime, "keep") is True
+        assert await captured["ops"].store.get("theme") == "hive"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_uninstall_is_busy_while_a_detached_data_call_runs(tmp_path):
+    captured: dict = {}
+    runtime = await _runtime(tmp_path)
+    try:
+        runtime.publish(_gated_package("test.keep", tmp_path, asyncio.Event(), asyncio.Event(), captured))
+        manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+        assert await _run(runtime, "keep") is True
+        with runtime.package_data_call("test.keep", captured["ops"]):
+            report = await manager.uninstall("test.keep")
+            assert report.error.status is StatusCode.EXTENSION_PACKAGE_BUSY
+        assert (await manager.uninstall("test.keep")).status == "SUCCESS"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_a_chain_collected_before_uninstall_skips_the_released_handler(tmp_path):
+    gate, entered = asyncio.Event(), asyncio.Event()
+    ran: list[str] = []
+
+    async def first(event, ops, next_handler):
+        if event.event_input.method == "chain":
+            entered.set()
+            await gate.wait()
+        return await next_handler(event)
+
+    async def second(event, ops, next_handler):
+        if event.event_input.method != "chain":
+            return await next_handler(event)
+        ran.append("second")
+        await ops.store.set("late", True)
+        return GatewayRequestOutput(handled=True, route="consume", response={"result": "second"})
+
+    runtime = await _runtime(tmp_path)
+    try:
+        runtime.publish(LoadedPackage(package_id="test.first", version="1.0.0", root=tmp_path,
+                                      handlers=(HandlerDeclaration("gateway.request", first, {}, "first"),)))
+        runtime.publish(LoadedPackage(package_id="test.second", version="1.0.0", root=tmp_path,
+                                      handlers=(HandlerDeclaration("gateway.request", second, {}, "second"),)))
+        manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+        call = asyncio.create_task(runtime.intercept(SimpleNamespace(closed=False), "chain", "chain", {}))
+        await entered.wait()
+        assert (await manager.uninstall("test.second")).status == "SUCCESS"
+        gate.set()
+        await call
+        assert ran == []
+        assert not (tmp_path / "gateway-data" / "store" / "test.second.json").exists()
+    finally:
+        gate.set()
+        await runtime.shutdown()

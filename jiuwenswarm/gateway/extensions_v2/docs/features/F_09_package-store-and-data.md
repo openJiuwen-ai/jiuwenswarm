@@ -11,7 +11,7 @@
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) |
 | 方案成熟度 | 已确认，已实现 |
 | 关联规约 | [S_01 运行时](../specs/S_01_gateway-extension-runtime.md)、[S_06 浏览器桥接](../specs/S_06_local-browser-bridge.md) |
-| 验证摘要 | 单元验证通过（2026-11-05） |
+| 验证摘要 | 单元验证通过（2026-11-05）；在途调用与激活校验修订于 2026-11-07，单元验证通过 |
 
 ## 2. 背景、目标与范围
 
@@ -84,6 +84,21 @@ Gateway 与 AgentServer 是两个宿主、两套实例；独立目录使清理�
 
 清理失败时返回失败报告且保留安装副本，再次执行卸载可以重试清理；重载、升级与停机不清理。
 
+#### D-05 数据调用绑定激活，卸载遇在途调用即返回忙（2026-11-07 修订）
+
+PR #10763 检视指出：卸载只注销 Handler，卸载前派生的任务仍可在清理后调用 `ops.store.set()`，重新建出存储文件。
+修订后：
+
+- 运行时记录每个 Handler 调用拿到的 Ops 属于哪一次激活。存储调用经 agent-core `configure_store` 的
+  `begin_calls` / `end_calls` 钩子进入运行时，`ops.data.root()` 走同一计数；Ops 所属激活不是该包的当前激活时拒绝，
+  返回 `EVENTS_OPS_INVALID`。
+- 卸载先检查当前激活的在途 Handler 与该包的在途数据调用，非零即返回 `EXTENSION_PACKAGE_BUSY`，什么都不改；
+  关闭开场需要等待，因此注销前再检查一次。检查与注销之间没有等待，释放之后不会再有该激活的数据调用被接受。
+- 已释放的激活不再开始新的 Handler 调用：释放前已收集该 Handler 的事件链直接交给下一个 Handler。
+
+与 agent-core 的差别：agent-core 只接受仍在运行的 Handler 的 Ops（Handler 返回即失效）。Gateway 包在渲染“进行中”
+页面后把导入、恢复等长任务放到后台，任务里仍要读写存储，因此 Gateway 以激活为界，而不以单次 Handler 为界。
+
 ### 4.3 替代方案与排除理由
 
 | 方案 | 排除理由 |
@@ -92,6 +107,8 @@ Gateway 与 AgentServer 是两个宿主、两套实例；独立目录使清理�
 | R-02 数据素材使用新路由前缀 | 需要同步修改 `app_web` 转发与前端约定，没有额外收益 |
 | R-03 在包内素材路径中保留 `data/` 等前缀 | 占用包作者可能使用的目录名，存在冲突 |
 | R-04 卸载时保留数据 | 与已确认的平台语义不一致 |
+| R-05 卸载时先注销，再限时等待在途调用结束 | 超时后包已注销但数据与副本仍在，状态难以说明；卡住的 Handler 还会拖住管理操作 |
+| R-06 Ops 只在 Handler 运行期间有效（agent-core 规则） | Handler 返回后的后台任务无法保存结果，见 D-05 |
 
 ## 5. 详细设计
 
@@ -101,10 +118,10 @@ Gateway 与 AgentServer 是两个宿主、两套实例；独立目录使清理�
 | --- | --- |
 | `config.py` | `GatewayExtensionConfig.data_dir`，读取 `extensions.gateway.data_dir`，默认 `extension/gateway`，相对路径锚定用户工作区 |
 | `bootstrap.py` | 注册 `ops.data` 的 `ops.build` BUILTIN |
-| `runtime.py` | 启动时 `configure_store`（总线已含 agent-core 的 `store`、`package` 能力）；停机时 `unconfigure_store`；`is_active_package()`、`package_data_dir()` 与 `cleanup_package_data()` |
-| `handler_ops/data_ops.py` | `ops.data.root()`：校验调用包处于活动状态，创建并返回包数据目录 |
+| `runtime.py` | 启动时 `configure_store`（总线已含 agent-core 的 `store`、`package` 能力，并传入数据调用计数钩子）；停机时 `unconfigure_store`；`is_active_package()`、`package_data_dir()`、`cleanup_package_data()`；Ops 与激活的对应、`package_data_call()`、`require_idle()` 与 `stop_package()`（D-05） |
+| `handler_ops/data_ops.py` | `ops.data.root()`：校验调用包处于活动状态且 Ops 属于当前激活，创建并返回包数据目录 |
 | `webui/bridge.py` | `ops.ui.asset_url(path, *, source="package")` 支持 `source="data"`；`asset_file` 解析 `.data` 代次标记 |
-| `management/registry.py` | 卸载时调用 `cleanup_package_data`，失败则保留安装副本并返回失败 |
+| `management/registry.py` | 卸载时调用 `cleanup_package_data`，失败则保留安装副本并返回失败；有在途调用时返回 `EXTENSION_PACKAGE_BUSY`（D-05） |
 
 ### 5.2 接口定义
 
@@ -155,6 +172,8 @@ await ops.ui.asset_url(path, *, source="package") -> str   # source: "package" |
 | F_09-V-06 | `public/` 外文件、符号链接越界、非法 `source` | 拒绝 |
 | F_09-V-07 | 经管理门面卸载 | 存储与数据目录被删除；重载不删除 |
 | F_09-V-08 | 既有 Gateway 扩展用例 | 全部通过 |
+| F_09-V-09 | Handler 运行中或数据调用在途时卸载 | 返回 `EXTENSION_PACKAGE_BUSY`，包仍活动；调用结束后卸载成功，存储不再出现 |
+| F_09-V-10 | 卸载或重载后，用旧 Ops 调用存储与 `ops.data.root()` | 被拒绝，文件不被重新创建；激活未变时后台任务可继续使用 |
 
 ### 8.2 实际执行与证据
 
@@ -171,6 +190,15 @@ await ops.ui.asset_url(path, *, source="package") -> str   # source: "package" |
 
 新增 6 个用例在恢复修改前的 Gateway 源码后全部失败。
 
+2026-11-07 修订（D-05）：
+
+| 编号 | 用例 | 结果 |
+| --- | --- | --- |
+| F_09-V-09 | `test_uninstall_is_busy_while_a_handler_of_the_package_runs`、`test_uninstall_is_busy_while_a_detached_data_call_runs` | 通过 |
+| F_09-V-10 | `test_ops_of_a_finished_handler_cannot_write_data_after_uninstall`、`test_detached_ops_work_until_their_activation_is_replaced`、`test_a_chain_collected_before_uninstall_skips_the_released_handler` | 通过 |
+
+修改前前两类场景可以复现：Handler 在途时卸载返回 SUCCESS，之后旧 Ops 写入成功并重新建出存储文件。
+
 实现中确认：agent-core 的 `ExtensionEventBus` 构造时已注册 `store.*` 事件类型与 `ops.store`、`ops.package`
 命名空间，Gateway 只需绑定 `JsonStore`，无需重复注册。
 
@@ -182,5 +210,5 @@ await ops.ui.asset_url(path, *, source="package") -> str   # source: "package" |
 
 ### 9.2 已知遗留
 
-- 未实现在途调用计数：卸载前由旧激活派生且仍在运行的任务，可能在清理后再次写入存储。
-  Handler 已在清理前注销，新的调用不会发生。
+- 在途调用计数已于 2026-11-07 实现（D-05）。仍不覆盖的是包用 `ops.data.root()` 返回的路径直接读写文件：
+  卸载时若包的后台线程仍在写文件，可能留下残余文件；包应在自己的任务里收尾。

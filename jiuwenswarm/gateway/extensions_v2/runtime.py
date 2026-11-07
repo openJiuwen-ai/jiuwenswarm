@@ -18,9 +18,10 @@ import functools
 import inspect
 import logging
 import shutil
-from contextlib import nullcontext
+import weakref
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
@@ -34,7 +35,9 @@ from openjiuwen.core.events import (
     SessionContext,
 )
 
+from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events.ops_impl.store import configure_store, unconfigure_store
+from openjiuwen.core.extension import ExtensionFailure
 from openjiuwen.core.extension.data import JsonStore
 from openjiuwen.core.extension.data.json_values import valid_package_id
 
@@ -86,6 +89,9 @@ class GatewayRuntime:
         self._package_handlers: dict[str, list[tuple[str, str]]] = {}
         self._packages: list[LoadedPackage] = []
         self._activations: dict[str, _Activation] = {}
+        # Which activation each handler's Ops belongs to; detached tasks keep using them.
+        self._ops_owner: weakref.WeakKeyDictionary[Any, _Activation] = weakref.WeakKeyDictionary()
+        self._data_calls: dict[str, int] = {}
         self._management: Any = None
         self._started = False
         self.browser = BrowserBridge(self)
@@ -208,7 +214,7 @@ class GatewayRuntime:
         )
         registered: list[tuple[str, str]] = []
         generation = uuid4().hex
-        activation = _Activation(package)
+        activation = _Activation(package, self._ops_owner)
         for declaration in package.handlers:
             try:
                 handler_id = self.bus.register_event_handler(
@@ -284,8 +290,67 @@ class GatewayRuntime:
         """
 
         if not self._data_store_bound:
-            configure_store(self.bus, self.data_store)
+            configure_store(
+                self.bus, self.data_store, begin_calls=self._begin_data_calls, end_calls=self._end_data_calls,
+            )
             self._data_store_bound = True
+
+    def _begin_data_calls(self, package_ids: Sequence[str], ops: Any = None) -> None:
+        """Admit one data call per package from Ops of its current activation (S_01 invariant 12).
+
+        Raises:
+            ExtensionFailure: The Ops belong to a released activation or another package.
+        """
+
+        owner = self._ops_owner.get(ops) if ops is not None else None
+        for package_id in package_ids:
+            if owner is None or owner.released or self._activations.get(package_id) is not owner:
+                raise ExtensionFailure(
+                    StatusCode.EVENTS_OPS_INVALID, reason="the package activation that issued these ops has ended",
+                )
+        for package_id in package_ids:
+            self._data_calls[package_id] = self._data_calls.get(package_id, 0) + 1
+
+    def _end_data_calls(self, package_ids: Sequence[str]) -> None:
+        """Finish the data calls admitted by :meth:`_begin_data_calls`."""
+
+        for package_id in package_ids:
+            remaining = self._data_calls.get(package_id, 0) - 1
+            if remaining > 0:
+                self._data_calls[package_id] = remaining
+            else:
+                self._data_calls.pop(package_id, None)
+
+    @contextmanager
+    def package_data_call(self, package_id: str, ops: Any) -> Iterator[None]:
+        """Count a Gateway data operation such as ``ops.data.root()`` like a store call."""
+
+        self._begin_data_calls((package_id,), ops)
+        try:
+            yield
+        finally:
+            self._end_data_calls((package_id,))
+
+    def stop_package(self, package_id: str) -> bool:
+        """Unpublish a package that is about to be uninstalled.
+
+        Raises:
+            ExtensionFailure: ``EXTENSION_PACKAGE_BUSY`` while a handler or data
+                call of the package is still running; nothing is unregistered.
+        """
+
+        self.require_idle(package_id)
+        return self.unpublish(package_id)
+
+    def require_idle(self, package_id: str) -> None:
+        """Raise ``EXTENSION_PACKAGE_BUSY`` while the package has calls in flight."""
+
+        activation = self._activations.get(package_id)
+        if (activation is not None and activation.running) or self._data_calls.get(package_id, 0):
+            raise ExtensionFailure(
+                StatusCode.EXTENSION_PACKAGE_BUSY, package_id=package_id,
+                reason="in-flight calls remain; uninstall stops without unregistering",
+            )
 
     def is_active_package(self, package_id: str) -> bool:
         """True when ``package_id`` is currently published."""
@@ -544,16 +609,28 @@ class _Activation:
     """In-flight handler calls of one published package version.
 
     The package's modules leave ``sys.modules`` once the activation is released
-    and no handler of it is still running (S_01 invariant 11).
+    and no handler of it is still running (S_01 invariant 11). Ops handed to its
+    handlers stay tied to it, so data calls stop once it is released (invariant 12).
     """
 
-    def __init__(self, package: LoadedPackage) -> None:
+    def __init__(self, package: LoadedPackage, ops_owner: weakref.WeakKeyDictionary[Any, _Activation]) -> None:
         self._package = package
+        self._ops_owner = ops_owner
         self._running = 0
         self._released = False
         self._purged = False
 
-    def enter(self) -> None:
+    @property
+    def released(self) -> bool:
+        return self._released
+
+    @property
+    def running(self) -> int:
+        return self._running
+
+    def enter(self, ops: Any = None) -> None:
+        if ops is not None:
+            self._ops_owner[ops] = self
         self._running += 1
 
     def leave(self) -> None:
@@ -587,7 +664,10 @@ def _async_handler(
     @functools.wraps(handler)
     async def adapter(event: Any, ops: Any, event_next: Any) -> Any:
         if activation is not None:
-            activation.enter()
+            if activation.released:
+                # A chain collected before the release still reaches this handler; skip it.
+                return await event_next(event)
+            activation.enter(ops)
         try:
             scope = browser.caller_scope(package_id, generation) if browser is not None else nullcontext()
             with scope:
