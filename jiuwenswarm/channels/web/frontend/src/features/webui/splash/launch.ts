@@ -52,19 +52,27 @@ function randomId(): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** Electron shares one identifier per start; a browser tab falls back to its session. */
+/**
+ * Electron shares one identifier per start; a browser tab falls back to its session.
+ *
+ * The completion record lives where the identifier lives: a desktop start is
+ * shared by its windows (local storage, replaced by the next start), a browser
+ * launch belongs to one tab (session storage), so tabs never overwrite each other.
+ */
 export function resolveLaunch(desktopLaunchId?: string): SplashLaunch {
-  let id = typeof desktopLaunchId === 'string' && desktopLaunchId ? desktopLaunchId : readItem(LAUNCH_SESSION_KEY, 'sessionStorage');
+  const desktop = typeof desktopLaunchId === 'string' && desktopLaunchId ? desktopLaunchId : null;
+  let id = desktop ?? readItem(LAUNCH_SESSION_KEY, 'sessionStorage');
   if (!id) {
     id = randomId();
     writeItem(LAUNCH_SESSION_KEY, id, 'sessionStorage');
   }
   const launchId = id;
+  const scope = desktop ? 'localStorage' : 'sessionStorage';
   return {
     id: launchId,
-    completed: readItem(COMPLETED_LAUNCH_KEY) === launchId,
+    completed: readItem(COMPLETED_LAUNCH_KEY, scope) === launchId,
     firstVisit: readItem(SPLASH_PLAYED_KEY) !== '1',
-    markCompleted: () => writeItem(COMPLETED_LAUNCH_KEY, launchId),
+    markCompleted: () => writeItem(COMPLETED_LAUNCH_KEY, launchId, scope),
   };
 }
 

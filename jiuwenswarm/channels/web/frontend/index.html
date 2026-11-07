@@ -34,9 +34,11 @@
     <script>
       (function () {
         try {
-          var launch = (window.jiuwenDesktop && window.jiuwenDesktop.launchId) || sessionStorage.getItem('workswarm.launch');
-          if (localStorage.getItem('workswarm.splash.expected') === '0'
-            || (launch && localStorage.getItem('workswarm.splash.completedLaunch') === launch)) {
+          // The completion record shares the launch identifier's storage (splash/launch.ts).
+          var desktop = window.jiuwenDesktop && window.jiuwenDesktop.launchId;
+          var launch = desktop || sessionStorage.getItem('workswarm.launch');
+          var completed = (desktop ? localStorage : sessionStorage).getItem('workswarm.splash.completedLaunch');
+          if (localStorage.getItem('workswarm.splash.expected') === '0' || (launch && completed === launch)) {
             document.getElementById('workswarm-neutral').remove();
           }
         } catch (error) {

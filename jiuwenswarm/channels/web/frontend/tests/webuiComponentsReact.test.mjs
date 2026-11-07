@@ -3452,6 +3452,86 @@ test('WebUISplashGate holds the workspace and entry until the queue ends and ski
   }
 });
 
+function sessionEntries() {
+  return Object.fromEntries(Object.keys(window.sessionStorage).map((key) => [key, window.sessionStorage.getItem(key)]));
+}
+
+function openTab(entries = {}) {
+  window.sessionStorage.clear();
+  for (const [key, value] of Object.entries(entries)) window.sessionStorage.setItem(key, value);
+}
+
+/** Runs the first-paint script of index.html; true when it keeps the neutral layer. */
+function neutralLayerKept() {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1])
+    .find((body) => body.includes('workswarm-neutral'));
+  const neutral = document.createElement('div'); neutral.id = 'workswarm-neutral'; document.body.append(neutral);
+  try {
+    // The page script uses the bare storage globals of a browser window.
+    new Function('window', 'document', 'localStorage', 'sessionStorage', script)(
+      window, document, window.localStorage, window.sessionStorage);
+    return document.getElementById('workswarm-neutral') !== null;
+  } finally {
+    document.getElementById('workswarm-neutral')?.remove();
+  }
+}
+
+test('each browser tab keeps its own splash completion through reloads', () => {
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  const sessionBefore = sessionEntries();
+  try {
+    window.localStorage.setItem(splashModule.SPLASH_EXPECTED_KEY, '1');
+    openTab();
+    const first = splashModule.resolveLaunch();
+    assert.equal(first.completed, false);
+    assert.equal(neutralLayerKept(), true);
+    first.markCompleted();
+    const firstTab = sessionEntries();
+
+    openTab();  // a second tab starts its own launch and finishes its splash
+    const second = splashModule.resolveLaunch();
+    assert.notEqual(second.id, first.id);
+    assert.equal(second.completed, false);
+    second.markCompleted();
+
+    openTab(firstTab);  // the first tab reloads
+    const reloaded = splashModule.resolveLaunch();
+    assert.equal(reloaded.id, first.id);
+    assert.equal(reloaded.completed, true, 'the other tab did not overwrite this tab\'s record');
+    assert.equal(neutralLayerKept(), false, 'the first-paint script reads the same record');
+
+    openTab();  // a fresh tab still plays
+    assert.equal(splashModule.resolveLaunch().completed, false);
+  } finally {
+    openTab(sessionBefore);
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
+test('desktop windows of one start share the completion and a new start plays again', () => {
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  const sessionBefore = sessionEntries();
+  try {
+    window.localStorage.setItem(splashModule.SPLASH_EXPECTED_KEY, '1');
+    window.jiuwenDesktop = { launchId: 'desktop-start-1' };
+    openTab();
+    const main = splashModule.resolveLaunch('desktop-start-1');
+    assert.equal(main.completed, false);
+    main.markCompleted();
+    openTab();  // another window of the same start
+    assert.equal(splashModule.resolveLaunch('desktop-start-1').completed, true);
+    assert.equal(neutralLayerKept(), false);
+    window.jiuwenDesktop = { launchId: 'desktop-start-2' };
+    assert.equal(splashModule.resolveLaunch('desktop-start-2').completed, false);
+    assert.equal(neutralLayerKept(), true);
+  } finally {
+    delete window.jiuwenDesktop;
+    openTab(sessionBefore);
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
 // ── Application settings and file transfers (Gateway F_13) ───────────────────
 
 const {

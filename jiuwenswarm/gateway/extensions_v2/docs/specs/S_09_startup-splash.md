@@ -104,7 +104,7 @@
 | 项 | 来源 |
 | --- | --- |
 | 启动标识 | Electron 主进程每次启动生成，经 `window.jiuwenDesktop.launchId` 提供；浏览器中取会话存储中的随机值 |
-| 已完成的启动 | 浏览器本地存储记录最近一次完成开场的启动标识；同一标识不再进入开场（刷新、重连、同一次启动中的新窗口） |
+| 已完成的启动 | 完成记录与启动标识存放在同一作用域（`workswarm.splash.completedLaunch`）：桌面端的标识由同一次启动的各窗口共享，记录在本地存储，下次启动的新标识使它失效；浏览器的标识属于一个标签页，记录在该标签页的会话存储，多个标签页互不覆盖。同一标识不再进入开场（刷新、重连、桌面端同一次启动中的新窗口） |
 | 候选提示 | `app_web` 的 `GET /extension-splash/hint` 返回 `{"candidates": <bool>}`，由 Gateway 的 `splash_hint.installed_splash_providers()` 计算：与 Gateway 相同的配置、加载器的 manifest 规则（`package.domain` 为 gateway 且声明合法的 `application.splash`）和用户开场偏好（已停用的不算），不运行包代码。只表示已安装的候选，不代表包已激活；取不到或格式不符（如开发模式由 Vite 返回页面）按“未知”处理 |
 | 首帧中性层 | 本地存储记录上次判定（`workswarm.splash.expected`）；上次判定没有开场或本启动已完成时，`index.html` 的内联脚本在首帧前移除中性层 |
 
