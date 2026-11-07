@@ -439,7 +439,7 @@ body.workspace-resize-active iframe {
     z-index: 50;
     border-radius: 6px;
     border: 1px solid var(--color-border-default);
-    background: var(--color-surface-panel);
+    background: var(--color-surface-popover);
     box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.16);
     white-space: nowrap;
     padding-block: 8px;
@@ -498,9 +498,14 @@ body.workspace-resize-active iframe {
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
-    background: var(--color-surface-card);
+    background: var(--color-surface-workspace);
     padding-top: var(--page-content-padding-top);
     margin-bottom: 16px;
+  }
+
+  /* Layer on the page body: one workspace surface, not two stacked ones. */
+  .app-page-body .page-content {
+    background-color: var(--color-surface-workspace-layer);
   }
 
   /* 限宽骨架：页面不滚动的固定区（header/toolbar 等）使用，

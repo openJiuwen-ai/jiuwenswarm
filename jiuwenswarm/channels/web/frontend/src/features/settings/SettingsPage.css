@@ -7,7 +7,12 @@
   height: 100%;
   min-height: 0;
   color: var(--color-text-primary);
-  background: var(--color-surface-content);
+  background: var(--color-surface-workspace);
+}
+
+/* Layer on the settings page: one workspace surface, not two stacked ones. */
+.settings-page .settings-page__main {
+  background-color: var(--color-surface-workspace-layer);
 }
 
 .settings-page--collapsed {
@@ -39,7 +44,7 @@
 .settings-page__nav.is-floating {
   width: clamp(208px, 15.4167vw, 296px);
   max-width: 100%;
-  background: var(--color-sidebar-surface);
+  background: var(--color-surface-floating);
   box-shadow: var(--color-sidebar-shadow);
 }
 
@@ -403,7 +408,7 @@
   overflow-y: auto;
   border: 1px solid var(--color-settings-border);
   border-radius: 8px;
-  background: var(--color-surface-elevated);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
 }
 
@@ -625,7 +630,7 @@
   overflow-y: auto;
   border: 1px solid var(--color-settings-border);
   border-radius: 8px;
-  background: var(--color-surface-elevated);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
 }
 
@@ -1285,7 +1290,7 @@
   overflow-y: auto;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--shadow-lg);
 }
 
