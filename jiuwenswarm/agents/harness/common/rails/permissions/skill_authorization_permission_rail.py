@@ -157,37 +157,20 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
     def _temp_permission_config_for_check(self, ctx) -> dict[str, Any] | None:
         """组装本次判定用的临时配置（会话 overlay + Skill overlay）。
 
-        仅由 ``_check_tool_permission`` 使用：有增量则返回合成结果并走
-        ``config=``；都没有则返回 None，调用方回落用户级 key。
+        委托 ``assemble_temp_permission_config``（业务侧唯一合成点）；
+        有增量则返回合成结果并走 ``config=``，否则 None 回落用户级 key。
         """
-        from openjiuwen.harness.security.skill_authorization import (
-            compose_skill_permissions,
-            is_skill_authorization_enabled,
-        )
-        from .config_loader import (
-            has_session_permissions_overlay,
-            merge_session_permissions_overlay,
-        )
+        from .temp_permission_config import assemble_temp_permission_config
 
         scope = self._permission_scope(ctx)
-        base = copy.deepcopy(self._static_config)
-        used_temp = False
-        if scope is not None and has_session_permissions_overlay(scope[0]):
-            base = merge_session_permissions_overlay(
-                self._static_config, session_id=scope[0]
-            )
-            used_temp = True
-        if scope is None or not scope[1]:
-            return base if used_temp else None
-        if not is_skill_authorization_enabled(base):
-            return base if used_temp else None
-        if not self._published_scopes.has_active_grant(*scope):
-            return base if used_temp else None
-        active = self._published_scopes.get_active(*scope)
-        if active is not None and active.overlay_snapshot:
-            base = compose_skill_permissions(base, active.overlay_snapshot)
-            used_temp = True
-        return base if used_temp else None
+        session_id = scope[0] if scope else None
+        agent_scope_id = scope[1] if scope else None
+        return assemble_temp_permission_config(
+            self._static_config,
+            session_id=session_id,
+            agent_scope_id=agent_scope_id or None,
+            published_scopes=getattr(self, "_published_scopes", None),
+        )
 
     def projection_config_for(self, ctx):
         # 投影只读镜像；与判定一致时复用同一套临时合成（不另开生成路径）。

@@ -11,6 +11,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permission_key import (
     DEFAULT_KEY,
     resolve_permission_key,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.temp_permission_config import (
+    assemble_temp_permission_config,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
     PERMISSIONS_AGENTS_KEY,
     SEED_PERMISSIONS_AGENT_IDS,
@@ -45,6 +48,7 @@ __all__ = [
     "DEFAULT_KEY",
     "PERMISSIONS_AGENTS_KEY",
     "SEED_PERMISSIONS_AGENT_IDS",
+    "assemble_temp_permission_config",
     "apply_permissions_config_payload",
     "clear_permissions_config_cache",
     "clear_session_permissions_overlay",
