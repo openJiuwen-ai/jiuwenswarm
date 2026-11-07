@@ -536,6 +536,9 @@ async def test_abrupt_disconnect_preserves_shared_work_and_logs_cleanup(
     server._server = None
     server._session_stream_tasks = {}
     server._acp_client_capabilities_by_ws = {}
+    server._live_protocols = set()
+    server._keepalive_degraded_until = 0.0
+    server._keepalive_relaxed = False
     cancelled: list[str] = []
     scheduler_stops: list[str] = []
 
@@ -589,6 +592,9 @@ async def test_connection_cleanup_error_still_logs_completion(
     server._server = None
     server._session_stream_tasks = {}
     server._acp_client_capabilities_by_ws = {}
+    server._live_protocols = set()
+    server._keepalive_degraded_until = 0.0
+    server._keepalive_relaxed = False
 
     async def fail_join(_tasks) -> None:
         raise RuntimeError("join failed")
