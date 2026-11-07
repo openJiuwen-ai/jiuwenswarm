@@ -389,7 +389,7 @@ def create_extension():
 """
 
 
-def _splash_zip(tmp_path: Path, log: Path, version: str) -> Path:
+def _splash_zip(tmp_path: Path, log: Path, version: str, splash: dict | None = None) -> Path:
     source = tmp_path / "src" / version
     (source / "demo_splash").mkdir(parents=True)
     (source / "manifest.json").write_text(json.dumps({
@@ -397,7 +397,8 @@ def _splash_zip(tmp_path: Path, log: Path, version: str) -> Path:
         "package": {"id": "demo.splash", "version": version, "domain": "gateway"},
         "extensions": [{"id": "demo", "runtime": "backend", "module": "demo_splash/extension.py"}],
         "ui": {"apiVersion": 1, "items": [
-            {"type": "web.slot.contribution", "id": "demo.splash", "slot": "application.splash"},
+            {"type": "web.slot.contribution", "id": "demo.splash", "slot": "application.splash",
+             **({"splash": splash} if splash is not None else {})},
         ]},
     }), encoding="utf-8")
     (source / "demo_splash" / "extension.py").write_text(SPLASH_ENTRY.format(log=str(log)), encoding="utf-8")
@@ -436,5 +437,21 @@ async def test_reload_upgrade_and_uninstall_close_a_playing_splash_as_removed(tm
         assert clears.count("removed") == 3
         saved = json.loads((tmp_path / "data" / "host" / "splash.json").read_text(encoding="utf-8"))
         assert saved["installed"] == []
+    finally:
+        await runtime.shutdown()
+
+
+async def test_a_version_that_cannot_be_published_leaves_the_playing_splash_alone(tmp_path):
+    log = tmp_path / "closed.log"
+    runtime = await _start(tmp_path, install_dir=tmp_path / "pkgs")
+    manager = GatewayPackageManager(runtime, tmp_path / "pkgs")
+    try:
+        assert (await manager.install([_splash_zip(tmp_path, log, "1.0.0")]))[0].status == "SUCCESS"
+        target = await _play(runtime)
+        broken = _splash_zip(tmp_path, log, "1.1.0", splash={"skippable": "yes"})
+        assert (await manager.install([broken]))[0].status != "SUCCESS"
+        await runtime.browser.settle()
+        assert not log.exists(), "the running version hears no ui.closed"
+        assert runtime.registry.get(target) is not None
     finally:
         await runtime.shutdown()

@@ -172,6 +172,8 @@ class GatewayPackageManager:
             try:
                 package = load_gateway_package(root)
                 try:
+                    # A version that cannot be published must not end the running version's splash.
+                    self._runtime.browser.validate_package(package)
                     await self._close_splashes(package_id)
                     self._runtime.publish(package)
                 except Exception:
@@ -196,8 +198,9 @@ class GatewayPackageManager:
         async with self._lock:
             versions = self.gateway_installed(package_id)
             try:
-                # A busy package keeps everything, splash included; the check
-                # repeats right before unpublishing because closing awaits.
+                # A busy package keeps everything; the check repeats right before
+                # unpublishing because closing the splash awaits (a call started
+                # meanwhile still keeps the package, though its splash has closed).
                 self._runtime.require_idle(package_id)
                 await self._close_splashes(package_id)
                 released = self._runtime.stop_package(package_id)
@@ -262,6 +265,7 @@ class GatewayPackageManager:
         try:
             package = load_gateway_package(root)
             try:
+                self._runtime.browser.validate_package(package)
                 await self._close_splashes(package_id)
                 self._runtime.publish(package)
             except Exception:
