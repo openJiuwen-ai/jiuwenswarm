@@ -44,6 +44,7 @@ test('catalog contains the supported components', () => {
     scope: 'application',
     rootComponents: ['MediaSurface'],
     strictRoot: true,
+    rerender: 'keep-mounted',
   });
   assert.deepEqual(componentCatalog.getSlot('conversation.panel.right').rootComponents, ['Panel', 'Iframe']);
   assert.equal(componentCatalog.getSlot('conversation.panel.right').strictRoot, true);
