@@ -456,6 +456,9 @@ class BrowserBridge:
         normalized = None if appearance is None else validate_appearance(appearance)
         lock = self._appearance_locks.setdefault(connection_id, asyncio.Lock())
         async with lock:
+            # A release while this call waited reserved its revoke already; a stale
+            # activation must not send a later revision that would outrank it.
+            self._action_package(package_id, generation)
             if normalized is None and self.appearance.provider(connection_id) != package.package_id:
                 return {"status": "unchanged", "revision": self.appearance.revision(connection_id)}
             revision = self.appearance.next_revision(connection_id)

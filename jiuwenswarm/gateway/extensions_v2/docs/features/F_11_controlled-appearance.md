@@ -122,6 +122,14 @@ CSS 选择器并生成覆盖样式，通用外观能力依赖具体业务 DOM。
 不发送撤销，在途帧随后仍到达浏览器，外观残留。现在发送前登记在途记录，释放同时撤销在途连接，撤销帧在同一连接锁内发送，
 排在在途帧之后；回归用例 `test_release_during_the_first_send_still_revokes_the_appearance` 在修复前失败、修复后通过。
 
+2026-11-07 第二轮检视：激活核对原先只在等待连接锁之前做一次。首帧 r1 发送中，同一包的第二次调用已通过核对、排队等锁；
+此时卸载在释放时预留撤销 r2，撤销任务也排在锁后。锁先交给排队的调用，它分到 r3 并发送外观，r2 随后到达被浏览器当作旧帧忽略，
+外观残留（复现帧序：r1、r3、r2）。现在取得连接锁后再次核对激活，失败即抛出 `ValueError`、不发送；撤销 revision 仍在释放时预留，
+其他包随后成为提供者时它的更大 revision 照常生效，不会被旧包的撤销清掉。回归用例
+`test_a_request_queued_behind_the_release_cannot_outrun_the_revoke`（帧序为 r1、r2）与
+`test_a_queued_request_of_a_released_package_without_provider_sends_nothing`（该包从未成为提供者、没有预留撤销时，排队的调用也不发送）
+在修复前失败、修复后通过。
+
 ## 6. 影响面与实施设计
 
 同步 S_06（应用级 UI 包可用的 Ops）、S_01（包释放语义）、概览与计划；没有新增用户可见文字。

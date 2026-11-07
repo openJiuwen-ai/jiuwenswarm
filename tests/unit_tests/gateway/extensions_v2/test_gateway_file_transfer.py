@@ -385,6 +385,30 @@ async def test_download_refuses_paths_outside_the_data_directory(tmp_path, expor
         await runtime.shutdown()
 
 
+async def test_a_release_while_the_download_is_prepared_sends_no_offer(tmp_path):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        data = runtime.package_data_dir(PACKAGE)
+        (data / "exports").mkdir(parents=True)
+        (data / "exports" / "backup.zip").write_bytes(b"x")
+        transfers = runtime.browser.transfers
+        expire = transfers.expire
+
+        async def release_meanwhile():
+            await expire()
+            runtime.unpublish(PACKAGE)  # uninstall lands while the offer waits for expired tickets
+
+        transfers.expire = release_meanwhile
+        await _call(runtime, "webui.dispatch", _event("ui.click", revision, "0.1", "export", {}))
+        assert len(package.offers) == 1 and isinstance(package.offers[0], str)
+        assert not any(event == "webui.download" for _, event, _ in runtime.channel.events)
+        assert transfers.downloads == {}
+    finally:
+        await runtime.shutdown()
+
+
 async def test_release_invalidates_tickets_and_downloads(tmp_path):
     package = ThemePackage()
     runtime = await _start(tmp_path)

@@ -255,6 +255,88 @@ async def test_release_during_the_first_send_still_revokes_the_appearance(tmp_pa
         await runtime.shutdown()
 
 
+async def test_a_request_queued_behind_the_release_cannot_outrun_the_revoke(tmp_path):
+    """A call that passed the activation check before the release waits on the connection lock; it must not send."""
+    theme = Theme(THEME)
+    runtime = await _start(tmp_path)
+    channel = runtime.channel
+    sent = channel.send_event
+    started, resume = asyncio.Event(), asyncio.Event()
+
+    async def slow_send(ws, event, payload):
+        if event == "webui.appearance" and payload["revision"] == 1:
+            started.set()
+            await resume.wait()
+        await sent(ws, event, payload)
+
+    channel.send_event = slow_send
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        generation = runtime.browser.generations[THEME]
+        theme.calls.append(_apply({"accent": "#b45309"}))
+        ready = asyncio.create_task(_ready(runtime, SimpleNamespace(closed=False), THEME))
+        await started.wait()
+        queued = asyncio.create_task(runtime.browser.apply_appearance(
+            THEME, generation, "browser-1", {"accent": "#0f766e"},
+        ))
+        await asyncio.sleep(0)  # the queued call is now waiting for the connection lock
+        runtime.unpublish(THEME)
+        resume.set()
+        await ready
+        with pytest.raises(ValueError):
+            await queued
+        await runtime.browser.settle()
+        frames = [payload for _, payload in _frames(runtime)]
+        assert frames == [
+            {"package_id": THEME, "revision": 1, "appearance": {"accent": "#b45309"}},
+            {"package_id": THEME, "revision": 2, "appearance": None},
+        ]
+        assert runtime.browser.appearance.provider("browser-1") is None
+    finally:
+        resume.set()
+        await runtime.shutdown()
+
+
+async def test_a_queued_request_of_a_released_package_without_provider_sends_nothing(tmp_path):
+    """Nothing is reserved to revoke when the package never became the provider; the queued call must stay silent."""
+    theme = Theme(THEME)
+    other = Theme(OTHER)
+    runtime = await _start(tmp_path)
+    channel = runtime.channel
+    sent = channel.send_event
+    started, resume = asyncio.Event(), asyncio.Event()
+
+    async def slow_send(ws, event, payload):
+        if event == "webui.appearance" and payload["revision"] == 1:
+            started.set()
+            await resume.wait()
+        await sent(ws, event, payload)
+
+    channel.send_event = slow_send
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        runtime.publish(other.package(tmp_path / "other"))
+        generation = runtime.browser.generations[THEME]
+        other.calls.append(_apply({"accent": "#b45309"}))
+        ready = asyncio.create_task(_ready(runtime, SimpleNamespace(closed=False), OTHER))
+        await started.wait()
+        queued = asyncio.create_task(runtime.browser.apply_appearance(
+            THEME, generation, "browser-1", {"accent": "#0f766e"},
+        ))
+        await asyncio.sleep(0)
+        runtime.unpublish(THEME)
+        resume.set()
+        await ready
+        with pytest.raises(ValueError):
+            await queued
+        await runtime.browser.settle()
+        assert [payload["package_id"] for _, payload in _frames(runtime)] == [OTHER]
+        assert runtime.browser.appearance.provider("browser-1") == OTHER
+    finally:
+        resume.set()
+        await runtime.shutdown()
+
+
 async def test_closed_connection_forgets_its_provider(tmp_path):
     theme = Theme(THEME)
     runtime = await _start(tmp_path)

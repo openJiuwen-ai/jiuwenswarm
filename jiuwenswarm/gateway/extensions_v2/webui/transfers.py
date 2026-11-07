@@ -281,6 +281,9 @@ class TransferManager:
             raise ValueError("invalid download filename")
         name = clean_filename(current.name if filename is None else filename)
         await self.expire()
+        if self.runtime.browser.generations.get(package_id) != generation:
+            # Released while expired tickets were removed: offer nothing the browser could not fetch.
+            raise ValueError("package call belongs to an inactive activation")
         token = uuid4().hex
         self.downloads[token] = Download(token=token, connection_id=connection_id, package_id=package_id,
                                          generation=generation, path=current, filename=name, created=self._clock())
