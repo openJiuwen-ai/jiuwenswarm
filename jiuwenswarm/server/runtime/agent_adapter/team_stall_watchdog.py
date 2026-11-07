@@ -162,6 +162,97 @@ async def team_progress_snapshot_db(
         return None
 
 
+async def team_leader_in_flight(channel_id: str | None, session_id: str) -> bool | None:
+    """leader 成员行执行态点查：True = leader 有回合在途（starting/running/completing）。
+
+    settle 复核的第四读数。两份团队快照（live/DB）都刻意剔除
+    leader（成员面板语义，team_monitor_handler），settle 看不见 leader 的
+    排空轮/追问轮——终态抢跑（已完成→又跳回思考）。leader 行的
+    execution_status 经 execution_changed 事件写穿 DB、随回合翻转，与成员行
+    同口径；不改快照形状，单独点查。
+
+    返回 None = 读数不可得（团队名/DB 路径解析不到、DAO 未挂载、瞬态读失败），
+    调用方续窗重试而非放弃。`TeamNotEstablishedError`（团队从未建立/已删除）
+    原样上抛——与 get_team_snapshot_from_db 的确定性终结语义一致。
+    """
+    from openjiuwen.agent_teams.context import reset_session_id, set_session_id
+    from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
+    from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
+
+    from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    try:
+        tm = get_team_manager(channel_id)
+        team_name = str(tm.get_active_team_name(session_id) or "").strip()
+        if not team_name:
+            team_name = str((get_session_metadata(session_id) or {}).get("team_name") or "").strip()
+        if not team_name:
+            return None
+        db_path = resolve_team_sqlite_db_path(get_config())
+        if db_path is None:
+            return None
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+
+        db = get_shared_db(DatabaseConfig(db_type="sqlite", connection_string=str(db_path)))
+        token = set_session_id(sid)
+        try:
+            await db.initialize()
+            # DAO 未挂载（共享库 close 竞态/初始化未竟）是瞬态，不是终结。
+            if db.team is None or db.member is None:
+                logger.warning(
+                    "[TeamStallWatchdog] leader in-flight check: team DAOs not "
+                    "mounted (db closed or init incomplete); transient, "
+                    "session_id=%s team_name=%s",
+                    sid,
+                    team_name,
+                )
+                return None
+            team_info = await db.team.get_team(team_name)
+            # 与 get_team_snapshot_from_db 同口径：team_info 无行 = 团队从未
+            # 建立/已删除（确定性终结），不是瞬态读失败。
+            if team_info is None:
+                raise TeamNotEstablishedError(
+                    f"team_info has no row for team '{team_name}' "
+                    f"(team never built or already deleted)"
+                )
+            leader_name = str(getattr(team_info, "leader_member_name", "") or "").strip()
+            if not leader_name:
+                return None
+            try:
+                leader_row = await db.member.get_member(
+                    member_name=leader_name, team_name=team_name
+                )
+            except Exception as read_err:
+                if "no such table" in str(read_err):
+                    raise TeamNotEstablishedError(
+                        f"session dynamic tables missing for session '{sid}' "
+                        f"(team never built): {read_err}"
+                    ) from read_err
+                raise
+            if leader_row is None:
+                return None
+            exec_status = str(getattr(leader_row, "execution_status", "") or "")
+            return exec_status in MEMBER_IN_FLIGHT_EXEC_STATUSES
+        finally:
+            reset_session_id(token)
+    except TeamNotEstablishedError:
+        raise
+    except Exception:
+        logger.debug(
+            "[TeamStallWatchdog] leader in-flight check failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return None
+
+
 async def team_runtime_liveness(channel_id: str | None, session_id: str) -> bool | None:
     """leader kernel 协调循环活性：True = 回合仍在推进（含模型长考与 agentic
     迭代间隙——这两类场景成员/leader 的 DB 状态采样都是 ready，快照判定必误判）。
