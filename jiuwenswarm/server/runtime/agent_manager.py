@@ -1893,7 +1893,7 @@ class AgentManager:
         params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
         mode_full = params.get("mode", "agent")
         mode = str(mode_full).split(".")[0] if mode_full else "agent"
-        workspace_dir = params.get("workspace_dir")
+        project_dir = params.get("project_dir")
 
         bound_skill_dirs = disk_only_evolution_skill_dirs(params)
         skill_dirs_token = None
@@ -1905,7 +1905,7 @@ class AgentManager:
             existing = self.get_agent_nowait(
                 channel_id,
                 mode,
-                project_dir=workspace_dir,
+                project_dir=project_dir,
             )
             if existing is not None:
                 return await existing.process_message(request)
@@ -2038,11 +2038,11 @@ class AgentManager:
                 adapter_source = getattr(request, "resolved_adapter_source", None)
         request.resolved_adapter_mode = adapter_mode
         request.resolved_adapter_source = adapter_source
-        project_dir = (
-            params.get("project_dir")
-            or params.get("workspace_dir")
-            or params.get("cwd")
-        )
+        # The internal workspace and cwd are execution paths, not a selected
+        # user project. Keep projectless Agent/Code cache identity projectless.
+        project_dir = params.get("project_dir")
+        if mode not in {"agent", "code", "auto_harness", "plan", "fast"} or agent_mode == "flash":
+            project_dir = project_dir or params.get("workspace_dir") or params.get("cwd")
         if isinstance(project_dir, str):
             project_dir = project_dir.strip() or None
         else:
