@@ -1155,9 +1155,12 @@ async def test_managed_restore_retires_saved_gateway_transport(
         assert handler.current_ws is new
         assert old.closed is retire_old
         if retire_old:
-            await asyncio.wait_for(old_task, timeout=1)
+            result = await asyncio.wait_for(asyncio.gather(old_task, return_exceptions=True), timeout=1)
+            assert result[0] is None or isinstance(result[0], asyncio.CancelledError)
         assert backend.disconnected == [], 'Retiring an old connection must not cancel the new runtime'
     finally:
         old._close_gate.set()
         new._close_gate.set()
-        await asyncio.gather(old_task, new_task)
+        results = await asyncio.gather(old_task, new_task, return_exceptions=True)
+        assert results[1] is None
+        assert results[0] is None or (retire_old and isinstance(results[0], asyncio.CancelledError))

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import httpx
 import pytest
@@ -19,6 +19,9 @@ from jiuwenswarm.extensions.adx.config import load_router_config
 from jiuwenswarm.extensions.adx.control_client import AdxControlClient
 from jiuwenswarm.extensions.adx.router_client import AdxRouterClient
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import InstanceRecord
+from jiuwenswarm.extensions.yuanrong_frontend_client import (
+    AGENT_GENERATION_ENV, YuanrongAgentNotFoundError, YuanrongAgentGenerationMismatchError,
+)
 
 
 def _config(monkeypatch, *, sandbox=None, **overrides):
@@ -63,7 +66,8 @@ class EnvironmentAPI:
             body = json.loads(request.content)
             self.creates.append(body)
             instance = body['namespace'] + '-' + body['name']
-            self.environments[instance] = {'id': instance, 'tenant_id': self.tenant, 'status': 'running'}
+            self.environments[instance] = {'id': instance, 'tenant_id': self.tenant, 'status': 'running',
+                                           'env_vars': dict(body.get('env') or {})}
             result = {'code': 200, 'data': base64.b64encode(json.dumps({'environmentId': instance}).encode()).decode()}
             return httpx.Response(200, json=result)
         if request.method == 'DELETE':
@@ -154,6 +158,60 @@ async def test_restart_preserves_native_lifecycle_and_keeps_legacy_startup_clean
 
 def _request(user='alice', rid='same-id', **params):
     return E2AEnvelope(request_id=rid, user_id=user, channel='web', method='chat.send', params=params)
+
+
+@pytest.mark.asyncio
+async def test_native_generation_contract_for_replacement_and_absence(monkeypatch):
+    router, _ = _router(_config(monkeypatch))
+    instance = 'test-gateway-new-generation'
+    try:
+        with pytest.raises(YuanrongAgentNotFoundError):
+            await router._control.get_agent_info(instance)
+        router.test_api.environments[instance] = {
+            'id': instance, 'tenant_id': 'appliance', 'status': 'running',
+            'env_vars': {AGENT_GENERATION_ENV: 'new-generation'},
+        }
+        deadline = asyncio.get_running_loop().time() + 1
+        result = await router._control.wait_until_running(
+            instance, expected_generation='new-generation', deadline=deadline)
+        assert result['id'] == instance
+        with pytest.raises(YuanrongAgentGenerationMismatchError):
+            await router._control.wait_until_running(
+                instance, expected_generation='old-generation', deadline=deadline)
+    finally:
+        await router.shutdown()
+
+
+def test_generated_gateway_name_keeps_builtin_runsc_launch(monkeypatch):
+    launch = {'process': {'commands': [['/opt/python/bin/python', '-m', 'agentserver']]},
+              'mounts': [{'type': 'bind', 'host_path': '/opt/python', 'target': '/opt/python', 'options': ['ro']}],
+              'env': {'JIUWENSWARM_ADX_NODE_CONTEXT_FILE': '/run/agentos/node.json'}}
+    control = AdxControlClient(_config(monkeypatch, runtime_class='runsc',
+        builtin_image='ubuntu:24.04', builtin_launch=launch))
+    body = control._creation_body('test', 'gateway-new-generation', '/workspace',
+        {'rootfs': {'imageurl': 'jiuwenswarm-agent-runtime:latest'}},
+        {AGENT_GENERATION_ENV: 'new-generation'}, None, builtin=True)
+    assert body['rootfs']['imageurl'] == 'ubuntu:24.04'
+    assert body['process'] == launch['process']
+    assert body['env']['JIUWENSWARM_ADX_API_TOKEN'] == 'platform-secret'
+    assert launch['mounts'][0] in body['mounts']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('instance', ['test-alice+jiuwenswarm', 'test-gateway-existing-generation'])
+@pytest.mark.parametrize('status', ['running', 'paused'])
+async def test_first_request_after_restart_reuses_native_registered_environment(monkeypatch, instance, status):
+    router, clients = _router(_config(monkeypatch, runtime_class='runsc'))
+    router.test_api.environments[instance] = {'id': instance, 'tenant_id': 'appliance', 'status': status}
+    router._registry.list_instances = AsyncMock(return_value=[InstanceRecord(
+        service_id='persistent', instance_id=instance, user='alice', framework='jiuwenswarm')])
+    await router.connect('')
+    try:
+        assert (await router.send_request(_request())).ok
+        assert router.test_api.creates == []
+        assert unquote(parse_qs(urlsplit(clients[0].uri).query)['target'][0]) == 'urn:adx:instance:' + instance
+    finally:
+        await router.shutdown()
 
 
 @pytest.mark.asyncio
@@ -251,6 +309,8 @@ async def test_builtin_launch_uses_configured_agent_and_tool_resources(monkeypat
 @pytest.mark.asyncio
 async def test_unknown_delete_retains_operation_until_lookup_confirms_result(monkeypatch, remote_deleted):
     router, clients = _router(_config(monkeypatch))
+    router._probe_settings = replace(router._probe_settings,
+        wait_running_timeout_seconds=0.2, wait_running_interval_seconds=0.01)
     await router.connect('')
     try:
         await router.send_request(_request())
@@ -261,35 +321,34 @@ async def test_unknown_delete_retains_operation_until_lookup_confirms_result(mon
         router.test_api.delete_committed = remote_deleted
         assert await router.delete_agent('alice', 'jiuwenswarm')
         instance = next(iter(router._control._deletes))
-        create_operation = router._control._creates[instance][0]
         delete_operation = router._control._deletes[instance]
         clients[0].disconnect.assert_awaited_once()
         assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is None
         router._registry.unregister_agent.assert_awaited_once()
-        # The delete may not have reached ADX. Stable-ID lookup reuses that instance.
-        assert (await router.send_request(_request(rid='next'))).ok
-        assert clients[-1].uri == first_url
-        expected_creates = 2 if remote_deleted else 1
-        assert len(router.test_api.creates) == expected_creates
-        create_ids = [request.headers['x-request-id'] for request in router.test_api.requests
-                      if request.method == 'POST']
-        assert len(set(create_ids)) == expected_creates
-        if remote_deleted:
-            assert instance not in router._control._deletes
-            assert router._control._creates[instance][0] != create_operation
-        else:
+        # An unknown DELETE must never hand its old target back to a caller.
+        response = await router.send_request(_request(rid='next'))
+        assert response.ok is remote_deleted
+        assert len(router.test_api.creates) == (2 if remote_deleted else 1)
+        if not remote_deleted:
+            assert 'AGENT_REBUILD_PENDING' in response.payload['error']
             assert router._control._deletes[instance] == delete_operation
         router.test_api.delete_error = False
+        if not remote_deleted:
+            for lifecycle in router._sandbox_lifecycles.values():
+                lifecycle.delete_retry_at = 0
+            assert (await router.send_request(_request(rid='delete-confirmed'))).ok
+            retries = [request for request in router.test_api.requests if request.method == 'DELETE'
+                       and request.url.path.endswith('/' + instance)]
+            assert all(request.headers['x-request-id'] == delete_operation for request in retries)
+        assert len(router.test_api.creates) == 2
+        assert clients[-1].uri != first_url
+        assert router.test_api.creates[0]['mounts'] == router.test_api.creates[1]['mounts']
         assert await router.delete_agent('alice', 'jiuwenswarm')
-        delete_ids = [request.headers['x-request-id'] for request in router.test_api.requests
-                      if request.method == 'DELETE']
-        if remote_deleted:
-            assert delete_ids[-1] != delete_operation
-        else:
-            assert delete_ids[-1] == delete_operation
-        assert instance not in router._control._deletes
         assert (await router.send_request(_request(rid='after-delete'))).ok
-        assert len(router.test_api.creates) == expected_creates + 1
+        assert len(router.test_api.creates) == 3
+        create_ids = [request.headers['x-request-id'] for request in router.test_api.requests
+                      if request.method == 'POST']
+        assert len(set(create_ids)) == 3
     finally:
         await router.shutdown()
 
@@ -342,12 +401,13 @@ async def test_registry_launch_spec_is_forwarded_to_environment_without_template
     await router.connect('')
     try:
         runtime = await router._agent_manager.get_or_create_agent('alice', 'third', creator=router._create_agent)
-        assert runtime.info.sandbox_id == 'test-alice+third'
         body = router.test_api.creates[0]
+        assert runtime.info.sandbox_id == 'test-' + body['name']
+        assert body['name'] == 'gateway-' + runtime.info.agent_id
         assert body['rootfs']['imageurl'] == 'registry.example/third:2'
         assert body['process'] == {'commands': spec['cmds'], 'user': '10001:10001', 'cwd': '/work'}
         assert body['cpu'] == 500 and body['memory'] == 1024
-        assert body['env'] == {'MODEL_ENDPOINT': 'http://model/v1'}
+        assert body['env'] == {'MODEL_ENDPOINT': 'http://model/v1', AGENT_GENERATION_ENV: runtime.info.agent_id}
         assert body['mounts'][0]['host_path'].endswith('/alice')
         assert body['readinessProbe']['tcpSocket']['port'] == 8080
         assert all('/api/agent/' not in request.url.path for request in router.test_api.requests)
@@ -542,5 +602,31 @@ async def test_runsc_idle_releases_routing_without_deleting_native_environment(m
         assert len(router.test_api.creates) == 1
         await router.delete_agent('alice', 'jiuwenswarm')
         assert any(r.method == 'DELETE' for r in router.test_api.requests)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reply', ['unknown', 'invalid-json'])
+async def test_unknown_create_reply_keeps_original_generation(monkeypatch, reply):
+    router, _ = _router(_config(monkeypatch))
+    api = router.test_api
+    async def handle(request):
+        response = api.handle(request)
+        if request.method == 'POST':
+            if reply == 'invalid-json':
+                return httpx.Response(502, text='proxy lost the response')
+            return httpx.Response(503, json={'message': 'create result unknown', 'error': {'code': 'UNAVAILABLE', 'outcome': 'unknown'}})
+        return response
+    await router._control.http.aclose()
+    router._control.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    await router.connect('')
+    try:
+        first = await router.send_request(_request())
+        assert not first.ok
+        assert 'AGENT_REBUILD_PENDING' in first.payload['error']
+        second = await router.send_request(_request())
+        assert second.ok
+        assert len(api.creates) == 1
     finally:
         await router.shutdown()

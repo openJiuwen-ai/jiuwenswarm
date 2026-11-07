@@ -179,7 +179,8 @@ async def test_real_stream_disconnect_is_not_replayed_and_next_call_reauthentica
         assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is None
         assert (await router.send_request(_request(rid="next"))).ok
         assert len(router.test_api.creates) == 2
-        assert len(handshakes) == 2 and targets[0] == targets[1]
+        assert len(handshakes) == 2 and targets[0] != targets[1]
+        assert router.test_api.creates[0]['mounts'] == router.test_api.creates[1]['mounts']
         assert all(headers["authorization"] == "Bearer platform-secret" for _, headers in handshakes)
 
 

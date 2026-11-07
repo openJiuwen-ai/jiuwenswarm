@@ -150,3 +150,5 @@ The new push connection is published first; only the old connection-owned reques
 streams are cancelled. Resident Team producers and history remain available, and
 the Web client reattaches its Team observer. Without a managed node-context file,
 Front keeps its existing multiple-connection behavior.
+
+Gateway replacements use generation-specific native Environment names and verify the generation through `env_vars` before publishing a replacement. An uncertain DELETE keeps the old instance fenced until a native lookup confirms absence. On Gateway restart, runsc routing checks matching registry rows against native state and can reuse Running/Paused environments, including earlier logical IDs; a missing native environment permits creation. Registry metadata alone never establishes native liveness.

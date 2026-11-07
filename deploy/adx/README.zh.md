@@ -93,3 +93,5 @@ runsc AgentServer 的 Environment 空闲删除和 checkpoint 保留由 ADX 管�
 请求流。驻留 Team producer 和历史保留，Web 客户端按原协议重新订阅 Team。
 runtime ID 读取现有 runsc `/proc/gvisor/spec_environ` 接口，同节点、同 IP
 恢复也能识别新执行实例。未配置受管节点上下文时，Front 保持原有多连接行为。
+
+Gateway 重建使用按代次区分的原生 Environment 名称，并通过 `env_vars` 核对代次后发布新实例。DELETE 结果未知时，必须等原生查询确认旧实例不存在才能重建。Gateway 重启后，runsc 路由通过注册记录查找对应原生实例，复用 Running/Paused 实例，并兼容旧逻辑 ID；原生实例确实不存在时允许创建。注册元数据不作为实例存活依据。

@@ -18,6 +18,8 @@ import httpx
 from jiuwenswarm.extensions.adx.config import AdxRouterConfig
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     SandboxInfo, YuanrongAgentApiError, YuanrongAgentTimeoutError,
+    AGENT_GENERATION_ENV, YuanrongAgentNotFoundError, YuanrongAgentNotVisibleError,
+    YuanrongAgentGenerationMismatchError, YuanrongAgentFailedError, YuanrongAgentCreateUncertainError,
 )
 
 
@@ -35,6 +37,14 @@ class AdxControlError(YuanrongAgentApiError):
 
 class AdxCreateTimeout(AdxControlError, YuanrongAgentTimeoutError):
     """An unknown create outcome must retain its instance and request identities."""
+
+
+class AdxCreateUncertain(AdxControlError, YuanrongAgentCreateUncertainError):
+    """Preserve the attempted generation when ADX cannot confirm creation."""
+
+
+class AdxNotFound(AdxControlError, YuanrongAgentNotFoundError):
+    """Confirmed native absence satisfies the Gateway retirement fence."""
 
 
 class AdxControlClient:
@@ -131,29 +141,54 @@ class AdxControlClient:
         del trace_id
         value = await self._lookup(instance_id)
         if value is None:
-            raise AdxControlError('ADX Environment not found', code='NOT_FOUND')
+            raise AdxNotFound('ADX Environment not found', code='NOT_FOUND')
         return value
 
-    async def wait_until_running(self, instance_id: str, *, trace_id: str | None = None) -> dict:
+    async def wait_until_running(self, instance_id: str, *, trace_id: str | None = None,
+                                 expected_generation: str | None = None, deadline: float | None = None) -> dict:
         del trace_id
+        loop = asyncio.get_running_loop()
+        expires = loop.time() + self.config.connect_timeout_seconds
+        if deadline is not None:
+            expires = min(expires, deadline)
+        observed = False
         try:
-            async with asyncio.timeout(self.config.connect_timeout_seconds):
+            async with asyncio.timeout_at(expires):
                 while True:
-                    value = await self.get_agent_info(instance_id)
+                    try:
+                        value = await self.get_agent_info(instance_id)
+                    except AdxNotFound:
+                        if expected_generation is None:
+                            raise
+                        await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
+                        continue
+                    observed = True
+                    if expected_generation is not None:
+                        actual = (value.get('env_vars') or {}).get(AGENT_GENERATION_ENV)
+                        if actual is not None and actual != expected_generation:
+                            raise YuanrongAgentGenerationMismatchError('ADX Environment generation mismatch')
+                        if actual is None:
+                            await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
+                            continue
                     if value.get('status') in ('running', 'paused', 'pausing', 'resuming'):
                         return value
                     if value.get('status') in ('failed', 'deleted', 'deleting'):
+                        if expected_generation is not None:
+                            raise YuanrongAgentFailedError('ADX replacement Environment is not available')
                         raise AdxControlError('ADX Environment is not available')
                     await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
         except TimeoutError as exc:
+            if expected_generation is not None and not observed:
+                raise YuanrongAgentNotVisibleError('ADX replacement Environment is not visible yet') from exc
             raise AdxCreateTimeout('Timed out waiting for the ADX Environment to become available') from exc
 
     def _creation_body(self, namespace: str, name: str, workspace: str, runtime_spec: dict,
-                       env_vars: dict | None, mounts: list | None) -> dict:
+                       env_vars: dict | None, mounts: list | None, *, builtin: bool | None = None) -> dict:
         spec = copy.deepcopy(runtime_spec)
         rootfs = spec.get('rootfs') or {}
         image = rootfs.get('imageurl') or rootfs.get('image_url')
-        builtin = name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest'
+        if builtin is None:
+            builtin = name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest'
         if builtin:
             image = self.config.builtin_image
         if not image:
@@ -260,7 +295,7 @@ class AdxControlClient:
 
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str, runtime_spec: dict,
                              env_vars: dict | None = None, mounts: list | None = None,
-                             trace_id: str | None = None) -> SandboxInfo:
+                             trace_id: str | None = None, builtin: bool | None = None) -> SandboxInfo:
         del trace_id
         instance = f'{namespace}-{name}'
         existing = await self._lookup(instance)
@@ -274,7 +309,7 @@ class AdxControlClient:
             self._creates.pop(instance, None)
             self._confirmed_creates.discard(instance)
             self._terminal_creates.discard(instance)
-        body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts)
+        body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts, builtin=builtin)
         digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         operation, original_digest = self._creates.setdefault(instance, ('create-' + uuid.uuid4().hex, digest))
         if digest != original_digest:
@@ -282,11 +317,14 @@ class AdxControlClient:
         try:
             result = await self._request('POST', '/api/environment/v1/environments', body=body, request_id=operation)
         except AdxControlError as error:
-            if error.outcome == 'terminal':
+            if error.outcome in ('terminal', 'not_started') or error.code in (
+                'INVALID_ARGUMENT', 'PERMISSION_DENIED', 'UNAUTHENTICATED', 'NOT_FOUND',
+            ):
                 self._terminal_creates.add(instance)
-            raise
+                raise
+            raise AdxCreateUncertain(str(error), code=error.code, outcome='unknown') from error
         if not isinstance(result, dict) or result.get('environmentId') != instance:
-            raise AdxControlError('ADX create returned an unexpected Environment ID')
+            raise AdxCreateUncertain('ADX create returned an unexpected Environment ID', outcome='unknown')
         return await self._ready_sandbox_info(instance)
 
     async def _ready_sandbox_info(self, instance: str) -> SandboxInfo:

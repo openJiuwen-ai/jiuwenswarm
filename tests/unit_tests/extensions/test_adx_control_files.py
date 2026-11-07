@@ -19,6 +19,14 @@ def _files(monkeypatch, *, auth_client=None):
     return router, router._control
 
 
+def _alice_instance(router):
+    creates = [body for body in router.test_api.creates
+               if body['mounts'][0]['host_path'].endswith('/alice')]
+    assert len(creates) == 1
+    body = creates[0]
+    return body['namespace'] + '-' + body['name']
+
+
 def _file_channel(router):
     from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
@@ -81,7 +89,7 @@ async def test_file_upload_is_atomic_and_scoped_to_activated_user(monkeypatch):
     payload = b'hello' * 17000
     actions = []
     def invoke(env, action, args):
-        assert env == 'test-alice+jiuwenswarm'
+        assert env == _alice_instance(router)
         actions.append((action, args))
         return {'bytes_written': len(bytes.fromhex(args['data']))} if action == 'file.write_chunk' else {'exit_code': 0}
     control.invoke.side_effect = invoke
@@ -92,7 +100,7 @@ async def test_file_upload_is_atomic_and_scoped_to_activated_user(monkeypatch):
     assert actions[-2][0] == 'file.rename' and actions[-2][1]['new_path'] == '/home/agentos/probe.txt'
     assert result['size'] == len(payload)
     with pytest.raises(AgentOSFileTransferError):
-        await router.download_container_file(user_id='bob', path='/home/agentos/probe.txt', instance_id='test-alice+jiuwenswarm')
+        await router.download_container_file(user_id='bob', path='/home/agentos/probe.txt', instance_id=_alice_instance(router))
     await router.shutdown()
 
 
@@ -103,7 +111,7 @@ async def test_http_download_keeps_environment_and_releases_activity(monkeypatch
     router, control = _files(monkeypatch)
     await router.connect('')
     def invoke(env, action, args):
-        assert env == 'test-alice+jiuwenswarm'
+        assert env == _alice_instance(router)
         if action == 'file.stat':
             return {'type': 'file', 'size': 6}
         return {'data': (b'abc' if args['offset'] == 0 else b'def').hex(), 'bytes_read': 3}
@@ -149,8 +157,8 @@ async def test_http_file_routes_require_business_auth_and_reject_other_users(mon
         response = await client.get('/file-api/list-files', params={'dir': '/home/agentos'})
         assert response.status_code == 200
     assert [call.args[0] for call in control.invoke.await_args_list] == [
-        'test-alice+jiuwenswarm', 'test-alice+jiuwenswarm',
-        'test-alice+jiuwenswarm', 'test-alice+jiuwenswarm',
+        _alice_instance(router), _alice_instance(router),
+        _alice_instance(router), _alice_instance(router),
     ]
     assert auth_client.authenticate.await_count == 6
     await router.shutdown()
@@ -240,11 +248,11 @@ async def test_mkdir_uses_native_adx_action_and_default_mode(monkeypatch, recurs
     assert await router.mkdir_container_dir(
         user_id='alice', path='/home/agentos/nested/dir', recursive=recursive,
     ) == {'success': True, 'path': '/home/agentos/nested/dir', 'created': True}
-    control.invoke.assert_awaited_once_with('test-alice+jiuwenswarm', 'file.mkdir', {'path': '/home/agentos/nested/dir'})
+    control.invoke.assert_awaited_once_with(_alice_instance(router), 'file.mkdir', {'path': '/home/agentos/nested/dir'})
     assert await router.mkdir_container_dir(
         user_id='alice', path='/home/agentos/other', mode='700', recursive=recursive,
     ) == {'success': True, 'path': '/home/agentos/other', 'created': True}
-    control.invoke.assert_awaited_with('test-alice+jiuwenswarm', 'file.mkdir', {'path': '/home/agentos/other'})
+    control.invoke.assert_awaited_with(_alice_instance(router), 'file.mkdir', {'path': '/home/agentos/other'})
     assert control.invoke.await_count == 2
     await router.shutdown()
 

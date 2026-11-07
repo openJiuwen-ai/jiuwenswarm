@@ -32,6 +32,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     ws_connect_ready_timeout_seconds,
     ws_connect_retry_interval_seconds,
     resolve_agent_workspace,
+    _sandbox_name,
 )
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
 from jiuwenswarm.extensions.yuanrong_frontend_client import apply_trace_header
@@ -85,7 +86,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                     await self._control.ensure_builtin_network(runtime.info.sandbox_id, workspace)
             except BaseException:
                 if acquire:
-                    await self._agent_manager.release(runtime.key)
+                    await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
                 raise
             return runtime
         except AdxControlError as exc:
@@ -94,6 +95,39 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
     async def shutdown(self) -> None:
         await super().shutdown()
         await self._control.close()
+
+    def _sandbox_instance_id(self, namespace: str, name: str) -> str:
+        return f'{namespace}-{name}'
+
+    async def _create_sandbox_for_agent(self, agent_info, *, reuse_existing, **kwargs):
+        if reuse_existing and self._config.runtime_class == 'runsc':
+            namespace = self._control.agent_namespace + '-'
+            # Registry rows survive Gateway restart; native state remains the
+            # authority. Also discover pre-generation IDs during an upgrade.
+            records = await self._registry.list_instances(
+                user=agent_info.user_id, framework=agent_info.agent_type, include_unhealthy=True)
+            candidates = {namespace + _sandbox_name(agent_info.user_id, agent_info.agent_type)}
+            candidates.update(record.instance_id for record in records
+                if record.user == agent_info.user_id and record.framework == agent_info.agent_type
+                and record.instance_id.startswith(namespace))
+            available = []
+            for instance in sorted(candidates):
+                try:
+                    view = await self._control.get_agent_info(instance)
+                except AdxControlError as exc:
+                    if exc.code == 'NOT_FOUND':
+                        continue
+                    raise
+                if view.get('status') in ('running', 'paused', 'pausing', 'resuming'):
+                    available.append(instance)
+                elif view.get('status') not in ('failed', 'deleted', 'stopped'):
+                    raise AdxControlError('Existing ADX Environment is still transitioning', code='CONFLICT')
+            if len(available) > 1:
+                raise AdxControlError('Multiple native Environments match the Agent identity', code='CONFLICT')
+            if available:
+                return await self._control._ready_sandbox_info(available[0])
+        return await self._control.create_sandbox(
+            builtin=agent_info.agent_type == BUILTIN_AGENT_TYPE, **kwargs)
 
     def _ensure_stale_cleanup_task(self) -> None:
         if self._config.runtime_class == 'runsc':
@@ -124,6 +158,11 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
 
     async def _run_network_failure_delete(self, runtime: AgentRuntime, *, reason: str = 'network_failure') -> None:
         """Keep ADX-owned recovery state when a business transport disconnects."""
+        if self._config.runtime_class != 'runsc':
+            await super()._run_network_failure_delete(runtime, reason=reason)
+            return
+        if not await self._agent_manager.is_current(runtime):
+            return
         instance = runtime.info.sandbox_id
         try:
             view = await self._control.get_agent_info(instance)
@@ -138,7 +177,8 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                 return
             logger.info('[ADX] retaining Environment after transport failure instance_id=%s state=%s',
                         instance, view.get('status'))
-        await self._close_ws_client(instance)
+        if await self._agent_manager.is_current(runtime):
+            await self._close_ws_client(instance)
 
     async def _delete_idle_agent(self, user_id: str, agent_type: str, *, key_values: dict,
                                  idle_timeout_seconds: float, trace_on_pop: bool = False) -> bool:
@@ -149,13 +189,14 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         # an idle Gateway route closes Relay activity without deleting Paused.
         key = AgentRuntime.build_key(self._agent_manager.key_fields, user_id=user_id,
                                      agent_type=agent_type, key_values=key_values or None)
-        runtime = await self._agent_manager.pop_if_idle(key, idle_timeout_seconds)
-        if runtime is None:
-            return False
-        await self._close_ws_client(runtime.info.sandbox_id)
-        logger.info('[ADX] released idle routing state; native idle policy retains lifecycle instance_id=%s',
-                    runtime.info.sandbox_id)
-        return True
+        async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)):
+            runtime = await self._agent_manager.pop_if_idle(key, idle_timeout_seconds, include_shared_sandbox=True)
+            if runtime is None:
+                return False
+            await self._close_ws_client(runtime.info.sandbox_id)
+            logger.info('[ADX] released idle routing state; native idle policy retains lifecycle instance_id=%s',
+                        runtime.info.sandbox_id)
+            return True
 
     def _agent_url(self, instance: str, port: int, protocol: str) -> str:
         origin = urlsplit(self._config.ingress_url)

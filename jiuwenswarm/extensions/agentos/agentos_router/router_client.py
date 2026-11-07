@@ -1202,7 +1202,7 @@ class AgentOSRouterClient(AgentServerClient):
             try:
                 existing = await self._agent_manager.get_agent(user_id, agent_type)
                 if existing is not None and existing.is_failed():
-                    await self._agent_manager.pop_agent(
+                    await self._agent_manager.discard_failed(
                         user_id, agent_type, expected_agent_id=existing.info.agent_id,
                     )
             except Exception:
@@ -3301,6 +3301,15 @@ class AgentOSRouterClient(AgentServerClient):
         lifecycle.attempt = None
         return sandbox
 
+    async def _create_sandbox_for_agent(
+        self, agent_info: AgentInfo, *, reuse_existing: bool, **kwargs: Any,
+    ) -> SandboxInfo:
+        """Allow backend-owned persistence without bypassing replacement fencing."""
+        return await self._yuanrong.create_sandbox(**kwargs)
+
+    def _sandbox_instance_id(self, namespace: str, name: str) -> str:
+        return deterministic_agent_instance_id(namespace, name)
+
     async def _create_agent(self, agent_info: AgentInfo) -> AgentInfo:
         operation = start_gateway_trace(
             "gw.agent.create", attributes={"agent_type": agent_info.agent_type, "user_id": agent_info.user_id},
@@ -3435,7 +3444,8 @@ class AgentOSRouterClient(AgentServerClient):
         namespace = self._yuanrong.agent_namespace
 
         async def _create_sandbox_once() -> SandboxInfo:
-            return await self._yuanrong.create_sandbox(
+            return await self._create_sandbox_for_agent(
+                agent_info, reuse_existing=not (lifecycle.retired_instance or lifecycle.attempt),
                 namespace=namespace,
                 name=physical_name,
                 workspace=workspace,
@@ -3464,7 +3474,7 @@ class AgentOSRouterClient(AgentServerClient):
                     sandbox = candidate
                 else:
                     attempt = lifecycle.attempt or _SandboxAttempt(
-                        generation, deterministic_agent_instance_id(namespace, physical_name), _create_sandbox_once,
+                        generation, self._sandbox_instance_id(namespace, physical_name), _create_sandbox_once,
                     )
                     sandbox = await self._provision_sandbox(lifecycle, attempt)
                     lifecycle.shared_sandbox = sandbox if sandbox.sandbox_id == attempt.deterministic_id else None

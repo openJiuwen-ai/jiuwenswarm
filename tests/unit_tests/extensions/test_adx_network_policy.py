@@ -145,7 +145,7 @@ async def test_policy_refresh_failure_releases_the_business_activity_hold(monkey
     from jiuwenswarm.extensions.adx.control_client import AdxControlError
     from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
     from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentCreateFailed
-    runtime = SimpleNamespace(info=SimpleNamespace(agent_type='jiuwenswarm', user_id='alice', sandbox_id='adx-alice'), key=('alice', 'jiuwenswarm'))
+    runtime = SimpleNamespace(info=SimpleNamespace(agent_type='jiuwenswarm', user_id='alice', sandbox_id='adx-alice', agent_id='generation-1'), key=('alice', 'jiuwenswarm'))
     monkeypatch.setattr(AgentOSRouterClient, '_resolve_agent', AsyncMock(return_value=runtime))
     launch = {'process': {'commands': [['true']]}, 'network': {'ingress_url': 'http://10.88.4.1:8080'}}
     router, _ = _router(_config(monkeypatch, builtin_launch=launch))
@@ -154,7 +154,7 @@ async def test_policy_refresh_failure_releases_the_business_activity_hold(monkey
     monkeypatch.setattr(router._agent_manager, 'release', release)
     with pytest.raises(AgentCreateFailed, match='policy rejected'):
         await router._resolve_agent(None, acquire=True)
-    release.assert_awaited_once_with(runtime.key)
+    release.assert_awaited_once_with(runtime.key, expected_agent_id=runtime.info.agent_id)
 
 
 @pytest.mark.asyncio
