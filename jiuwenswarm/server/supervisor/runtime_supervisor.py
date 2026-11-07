@@ -1458,7 +1458,8 @@ class RuntimeSupervisor:
                 # the verdict to the 180s stall window while pending>0.
                 if self._pending and (now - self._last_rx) <= _WORKER_STALL_RESTART:
                     logger.info(
-                        "[Supervisor] heartbeat busy-grace: pending=%d last_rx_age=%.1fs <= %.0fs busy window; defer verdict",
+                        "[Supervisor] heartbeat busy-grace: pending=%d last_rx_age=%.1fs"
+                        " <= %.0fs busy window; defer verdict",
                         len(self._pending), now - self._last_rx, _WORKER_STALL_RESTART,
                     )
                     continue
