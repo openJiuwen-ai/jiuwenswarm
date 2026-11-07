@@ -183,6 +183,7 @@
       "aspectRatio": "长宽比",
       "resolution": "分辨率",
       "duration": "视频时长",
+      "audioDuration": "音频时长",
       "count": "生成数量",
       "browseFiles": "浏览文件",
       "dropHint": "或者拖拽到区域内",
@@ -199,8 +200,15 @@
     "mediaSettings": {
       "videoTitle": "视频参数",
       "imageTitle": "图片参数",
+      "audioTitle": "音频参数",
       "durationValue": "{{seconds}} 秒",
       "durationUnit": "秒",
+      "minuteUnit": "分",
+      "secondUnit": "秒",
+      "audioDurationDefault": "影片默认时长",
+      "audioDurationMinutes": "{{count}}分",
+      "audioDurationSeconds": "{{count}}秒",
+      "audioDurationBoth": "{{minutes}}分{{seconds}}秒",
       "loading": "正在读取生成参数…",
       "loadError": "无法读取生成参数：{{message}}",
       "saveError": "参数未保存：{{message}}"
@@ -280,7 +288,9 @@
       "deleteConfirmCancel": "取消",
       "deleteConfirmOk": "确定",
       "resize": "调整大小",
-      "resizeHint": "拖动右下角调整节点大小"
+      "resizeHint": "拖动右下角调整节点大小",
+      "playAudio": "播放音频",
+      "pauseAudio": "暂停音频"
     },
     "edge": {
       "delete": "删除连线"
@@ -804,6 +814,7 @@
       "videoConfigTitle": "配置视频理解模型",
       "videoGenConfigTitle": "配置视频生成模型",
       "visualGenConfigTitle": "配置图像生成模型",
+      "musicGenConfigTitle": "配置音频生成模型",
       "toggleCapability": "切换{{name}}能力",
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
@@ -1147,6 +1158,10 @@
       "comfyui_workflow_enabled": {
         "title": "ComfyUI 工作流集成",
         "description": "目前支持将 ComfyUI 的 vLLM-Omni 节点和 Workflow 导入到设计画布中"
+      },
+      "music_gen_enabled": {
+        "title": "音频生成",
+        "description": "为设计画布生成背景音乐（BGM）：规划时自动加入 BGM 节点，成片时混入；关闭后仍保留已保存的模型配置。"
       },
       "progressive_tool_optimize": {
         "title": "启用工具检索优化",

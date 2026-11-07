@@ -11,6 +11,7 @@ import {
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
+import { MusicGenSettings } from '../agent/AgentSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
   id: 'experimental',
@@ -165,6 +166,7 @@ export const experimentalModule: SettingsModuleDefinition = {
           component: 'switch',
           key: 'comfyui_workflow_enabled',
         },
+        { id: 'music-gen-settings', component: 'custom', render: MusicGenSettings },
       ],
     },
   ],
