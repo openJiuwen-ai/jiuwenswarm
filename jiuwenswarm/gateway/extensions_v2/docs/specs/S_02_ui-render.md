@@ -8,7 +8,7 @@
 | 编号 / slug | `S_02 / ui-render` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/webui/`、`event_types/webui.py`、`handler_ops/ui.py` |
 | 设计依据 | [详细架构第 6 节](../designs/extensions-v2-architecture.md)、AgentServer [F_06](../../../../extensions_v2/docs/features/F_06_render-service.md) |
-| 最近一次修订日期 | 2026-11-05 |
+| 最近一次修订日期 | 2026-11-07 |
 | 契约状态 | 已实现；本文是 Gateway 侧 `ui.render` 与 Ops 契约的唯一维护位置 |
 
 本文维护 Gateway 侧渲染的对外契约：事件与 Ops 形状、槽位表、组件目录、下行帧、尺寸上限与错误码。平台不预置任何视图：`ui.render` 只负责校验并投递扩展包提交的树。与 AgentServer 同名的模型保持字段一致；差异只在第 6 节列出的必要项。
@@ -63,6 +63,10 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 - `connection_id` 由 Gateway 从实际 WebSocket 注入，前端不下发；前端携带且与调用方不一致时拒绝。
 - 下行 `target` 不包含 `connection_id`，`application` 目标也不包含 `session_id`。
 - `package_id`、`instance_key`、`connection_id` 各限 200 字节；字段不得含 `|`，不得含首尾空白。
+- **实例键规则唯一：** 上一条对 `instance_key` 的要求（字符串、不含 `|`、无首尾空白、UTF-8 编码后不超过 200 字节）同样用于
+  `application.settings` 声明的 `instanceKey`（另要求非空，与 AgentServer S_18 一致）、`webui.dispatch` 与显示型槽位生命周期帧的
+  `target.instance_key`，以及 `webui.upload.begin` 的目标（[S_10](S_10_application-settings.md)）。实现为
+  `webui/models.py` 的 `valid_instance_key()`；空键表示没有声明实例键的槽位的默认实例。
 
 ## 5. 上限与下行帧
 

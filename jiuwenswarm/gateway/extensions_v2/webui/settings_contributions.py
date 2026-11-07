@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from jiuwenswarm.gateway.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
+from jiuwenswarm.gateway.extensions_v2.webui.models import valid_instance_key
 
 SETTINGS_SLOT = "application.settings"
 _ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}")
@@ -70,8 +71,7 @@ def parse_settings(raw: Mapping[str, Any], *, gateway: bool = True) -> dict[str,
         if gateway and scope != "application":
             raise ValueError("Gateway settings items must declare the application scope")
         instance_key = raw.get("instanceKey", raw["id"])
-        if (not isinstance(instance_key, str) or not instance_key.strip() or instance_key != instance_key.strip()
-                or "|" in instance_key or len(instance_key.encode("utf-8")) > 200):
+        if not valid_instance_key(instance_key, required=True):
             raise ValueError("invalid settings instanceKey")
         result.update(scope=scope, instance_key=instance_key, presentation="row" if "title" in result else "content")
     elif "scope" in raw or "instanceKey" in raw:

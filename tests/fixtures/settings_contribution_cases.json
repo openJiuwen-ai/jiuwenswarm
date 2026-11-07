@@ -391,6 +391,63 @@
     "gateway": true
   },
   {
+    "name": "instance key with a colon and inner spaces",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "instanceKey": "settings:main 页面 1"
+    },
+    "agentserver": true,
+    "gateway": true
+  },
+  {
+    "name": "instance key of 200 UTF-8 bytes",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "instanceKey": "键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键kk"
+    },
+    "agentserver": true,
+    "gateway": true
+  },
+  {
+    "name": "instance key over 200 UTF-8 bytes",
+    "declaration": {
+      "type": "web.slot.contribution",
+      "slot": "application.settings",
+      "id": "main",
+      "location": {
+        "menu": "pkg::menu",
+        "section": "pkg::section"
+      },
+      "renderer": {
+        "kind": "webui-tree"
+      },
+      "scope": "application",
+      "instanceKey": "键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键键"
+    },
+    "agentserver": false,
+    "gateway": false
+  },
+  {
     "name": "instance key with a bar",
     "declaration": {
       "type": "web.slot.contribution",

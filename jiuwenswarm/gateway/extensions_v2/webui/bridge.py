@@ -28,7 +28,7 @@ from jiuwenswarm.gateway.extensions_v2.models import (
 )
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
     HostActionOutput, RenderNode, RenderTarget, RenderStatus, UiActionInput, UiActionOutput, UiAppearanceInput,
-    UiDownloadInput, UiRenderInput, UiRenderOutput, UiSplashPreviewInput,
+    UiDownloadInput, UiRenderInput, UiRenderOutput, UiSplashPreviewInput, valid_instance_key,
 )
 from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS, WebUIEvent
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
@@ -53,7 +53,6 @@ ASSET_PREFIX = "/extension-assets/"
 #: Marks a generation segment that addresses the package data ``public/`` directory.
 DATA_GENERATION_SUFFIX = ".data"
 ASSET_SOURCES = frozenset({"package", "data"})
-IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~\da-z-]+$", re.IGNORECASE | re.ASCII)
 FORBIDDEN = frozenset({"__proto__", "prototype", "constructor"})
 logger = logging.getLogger(__name__)
@@ -313,7 +312,7 @@ class BrowserBridge:
         if not isinstance(package_id, str) or not package_id:
             return invalid
         instance_key = target.get("instance_key", "")
-        if not isinstance(instance_key, str) or (instance_key and not IDENTIFIER.fullmatch(instance_key)):
+        if not valid_instance_key(instance_key):
             return invalid
         scoped = RenderTarget(session_id="", slot_id=SPLASH_SLOT, package_id=package_id, instance_key=instance_key,
                               scope="application", connection_id=request.connection_id)
@@ -686,7 +685,7 @@ class BrowserBridge:
             return UiActionOutput(accepted=False, status="invalid_target", code="SCHEMA_ERROR")
         event_name = params.get("event")
         instance_key = target.get("instance_key", "")
-        if not isinstance(instance_key, str) or (instance_key and not IDENTIFIER.fullmatch(instance_key)):
+        if not valid_instance_key(instance_key):
             return UiActionOutput(accepted=False, status="invalid_target", code="SCHEMA_ERROR")
         raw_payload = params.get("payload", {})
         if not isinstance(raw_payload, Mapping):

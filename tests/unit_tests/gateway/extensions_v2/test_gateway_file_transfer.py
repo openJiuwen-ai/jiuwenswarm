@@ -18,6 +18,7 @@ from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
 from jiuwenswarm.gateway.extensions_v2.webui import transfers as transfers_module
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
 from jiuwenswarm.gateway.extensions_v2.webui.http import attach_browser_routes
+from jiuwenswarm.gateway.extensions_v2.webui.schema import validate_target
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
     RenderMode, RenderNode, RenderTarget, UiActionOutput, UiRenderInput,
 )
@@ -29,8 +30,8 @@ TARGET = RenderTarget(session_id="", slot_id=SLOT, package_id=PACKAGE, instance_
                       connection_id="browser-1")
 
 
-def _settings_items(package_id: str) -> list[dict]:
-    """An S_18 settings menu with one application-scoped page (instance ``main``)."""
+def _settings_items(package_id: str, instance_key: str = "main") -> list[dict]:
+    """An S_18 settings menu with one application-scoped page (instance ``main`` by default)."""
     menu, section = f"{package_id}::menu", f"{package_id}::section"
     slot = {"type": "web.slot.contribution", "slot": "application.settings"}
     return [
@@ -38,7 +39,7 @@ def _settings_items(package_id: str) -> list[dict]:
          "title": {"zh": "主题", "en": "Theme"}, "icon": "image"},
         {**slot, "id": "section", "kind": "section", "location": {"menu": menu}, "title": {"zh": "主题", "en": "Theme"}},
         {**slot, "id": "main", "location": {"menu": menu, "section": section}, "renderer": {"kind": "webui-tree"},
-         "scope": "application", "instanceKey": "main"},
+         "scope": "application", "instanceKey": instance_key},
     ]
 
 
@@ -64,8 +65,9 @@ def _channel():
 class ThemePackage:
     """A settings page with an import control and an export button."""
 
-    def __init__(self, picker: dict | None = None) -> None:
+    def __init__(self, picker: dict | None = None, instance_key: str = "main") -> None:
         self.picker = picker or {"label": "Import theme", "accept": [".zip"]}
+        self.instance_key = instance_key
         self.imports: list = []
         self.kept: list = []
         self.offers: list = []
@@ -79,7 +81,7 @@ class ThemePackage:
         ))
 
     async def ready(self, event, ops, next_handler):
-        await ops.ui.render(UiRenderInput(target=RenderTarget(session_id="", slot_id=SLOT, instance_key="main"),
+        await ops.ui.render(UiRenderInput(target=RenderTarget(session_id="", slot_id=SLOT, instance_key=self.instance_key),
                                           root=self.root(), mode=RenderMode.REPLACE))
         return UiActionOutput(accepted=True, status="ready")
 
@@ -110,7 +112,7 @@ class ThemePackage:
         match = {"target.package_id": PACKAGE}
         return LoadedPackage(
             package_id=PACKAGE, version="1.0.0", root=root, client={},
-            ui={"apiVersion": 1, "items": _settings_items(PACKAGE)},
+            ui={"apiVersion": 1, "items": _settings_items(PACKAGE, self.instance_key)},
             handlers=(HandlerDeclaration("ui.ready", self.ready, match, "ready"),
                       HandlerDeclaration("ui.change", self.change, match, "change"),
                       HandlerDeclaration("ui.click", self.click, match, "click")),
@@ -132,18 +134,21 @@ async def _call(runtime, method, params, ws=None):
 async def _mount(runtime, package: ThemePackage, tmp_path: Path, ws=None) -> int:
     runtime.publish(package.loaded(tmp_path / "theme"))
     await _call(runtime, "webui.dispatch", {"event": "ui.ready", "payload": {}, "target": {
-        "scope": "application", "slot_id": SLOT, "package_id": PACKAGE, "instance_key": "main"}}, ws)
-    return runtime.registry.get(TARGET).revision
+        "scope": "application", "slot_id": SLOT, "package_id": PACKAGE, "instance_key": package.instance_key}}, ws)
+    record = runtime.registry.get(RenderTarget(session_id="", slot_id=SLOT, package_id=PACKAGE,
+                                               instance_key=package.instance_key, scope="application",
+                                               connection_id="browser-1"))
+    return record.revision
 
 
-def _begin(revision, files, node_key="0.0"):
-    return {"target": {"scope": "application", "slot_id": SLOT, "package_id": PACKAGE, "instance_key": "main"},
+def _begin(revision, files, node_key="0.0", instance_key="main"):
+    return {"target": {"scope": "application", "slot_id": SLOT, "package_id": PACKAGE, "instance_key": instance_key},
             "node_key": node_key, "revision": revision, "files": files}
 
 
-def _event(event, revision, node_key, action_id, data):
+def _event(event, revision, node_key, action_id, data, instance_key="main"):
     return {"event": event, "target": {"scope": "application", "slot_id": SLOT, "package_id": PACKAGE,
-                                       "instance_key": "main"},
+                                       "instance_key": instance_key},
             "payload": {"node_key": node_key, "revision": revision, "action_id": action_id, "args": {}, "data": data}}
 
 
@@ -180,6 +185,49 @@ async def test_import_round_trip_gives_the_package_a_relative_path_and_cleans_up
         response = await _call(runtime, "webui.dispatch", _event("ui.change", revision, "0.0", "import",
                                                                  {"upload_id": upload_id}))
         assert response["payload"]["accepted"] is False and len(package.imports) == 1
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("instance_key", ["settings:main", "主题 设置/页面 1", "k" * 200])
+async def test_every_declarable_instance_key_renders_dispatches_and_imports(tmp_path, instance_key):
+    """S_18 declarations, rendering, interaction and file import accept the same instance keys."""
+    package = ThemePackage(instance_key=instance_key)
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        data = runtime.package_data_dir(PACKAGE)
+        (data / "exports").mkdir(parents=True)
+        (data / "exports" / "backup.zip").write_bytes(b"x")
+        response = await _call(runtime, "webui.dispatch",
+                               _event("ui.click", revision, "0.1", "export", {}, instance_key=instance_key))
+        assert response["payload"] == {"accepted": True, "status": "clicked"}
+        response = await _call(runtime, "webui.upload.begin",
+                               _begin(revision, [{"path": "a.zip", "size": 1}], instance_key=instance_key))
+        assert response["ok"] is True
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("instance_key", ["", "a|b", " main", "main ", "k" * 201, "\ud800"])
+async def test_instance_keys_outside_the_shared_rule_are_refused_everywhere(tmp_path, instance_key):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        with pytest.raises(ValueError):
+            runtime.browser.validate_package(ThemePackage(instance_key=instance_key).loaded(tmp_path / "other"))
+        if not instance_key:
+            return  # the empty key addresses the default instance of slots without declarations
+        assert validate_target(RenderTarget(session_id="", slot_id=SLOT, package_id=PACKAGE, instance_key=instance_key,
+                                            scope="application", connection_id="browser-1")).ok is False
+        for slot in ("application.background", "application.splash"):
+            response = await _call(runtime, "webui.dispatch", {"event": "ui.ready", "payload": {}, "target": {
+                "scope": "application", "slot_id": slot, "package_id": PACKAGE, "instance_key": instance_key}})
+            assert response["payload"] == {"accepted": False, "status": "invalid_target", "code": "SCHEMA_ERROR"}
+        response = await _call(runtime, "webui.upload.begin",
+                               _begin(revision, [{"path": "a.zip", "size": 1}], instance_key=instance_key))
+        assert response["ok"] is False
     finally:
         await runtime.shutdown()
 

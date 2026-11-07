@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import CODE_BAD_REQUEST, HostRequestError
-from jiuwenswarm.gateway.extensions_v2.webui.models import RenderTarget
+from jiuwenswarm.gateway.extensions_v2.webui.models import RenderTarget, valid_instance_key
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
@@ -153,7 +153,7 @@ class TransferManager:
 
     async def begin_upload(self, request) -> dict[str, Any]:
         """Validate one ``webui.upload.begin`` and issue its ticket (S_10 section 6.2)."""
-        from jiuwenswarm.gateway.extensions_v2.webui.bridge import IDENTIFIER, SLOTS, tree_nodes
+        from jiuwenswarm.gateway.extensions_v2.webui.bridge import SLOTS, tree_nodes
 
         params = dict(request.params)
         target = params.get("target")
@@ -161,8 +161,7 @@ class TransferManager:
                 or set(target) != {"scope", "slot_id", "package_id", "instance_key"}
                 or target.get("scope") != "application" or target.get("slot_id") not in SLOTS
                 or not isinstance(target.get("package_id"), str) or not isinstance(params["node_key"], str)
-                or not isinstance(target.get("instance_key"), str)
-                or (target["instance_key"] and not IDENTIFIER.fullmatch(target["instance_key"]))):
+                or not valid_instance_key(target.get("instance_key"))):
             raise HostRequestError(CODE_BAD_REQUEST, "invalid upload target")
         browser = self.runtime.browser
         package_id = target["package_id"]

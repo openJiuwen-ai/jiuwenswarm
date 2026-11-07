@@ -49,7 +49,7 @@ manifest `ui.items` 中 `slot=application.settings`，`kind` 为 menu / section 
 
 | 规则 | 说明 |
 | --- | --- |
-| 字段校验 | 与 AgentServer `parse_settings` 相同；两侧共用 `tests/fixtures/settings_contribution_cases.json`。不合法时包发布失败 |
+| 字段校验 | 与 AgentServer `parse_settings` 相同；两侧共用 `tests/fixtures/settings_contribution_cases.json`。不合法时包发布失败。`instanceKey` 的规则与渲染、交互、文件导入相同（[S_02 第 4 节](S_02_ui-render.md)），可以声明的键在 Gateway 上都能渲染、交互和导入 |
 | 范围 | Gateway 配置项必须显式声明 `scope: "application"`（S_18 的缺省值是 session，Gateway 不寻址会话） |
 | 目录 | `webui.settings.catalog` 由 Gateway 先取 AgentServer 的目录，再追加 Gateway 活动包的声明，`revision` 覆盖两者；没有 Gateway 声明时原样返回 AgentServer 的应答。AgentServer 目录取不到时整次请求失败，浏览器保留上次目录并提示（S_18 第 4 节） |
 | 位置 | 按 S_18 的 location 规则合成；插件菜单通常写 `location.after: "extensions"`，排在宿主“扩展”模块之后。“扩展”模块只含宿主功能（第 4 节的开场顺序与停用） |
@@ -140,7 +140,7 @@ S_09 第 3.1 节的返回改为：只含启用的提供者，按生效顺序，�
 
 | 检查 | 规则 |
 | --- | --- |
-| 目标 | 当前连接上该包的应用级实例，有内容，`revision` 与当前版本一致 |
+| 目标 | 当前连接上该包的应用级实例，有内容，`revision` 与当前版本一致；`instance_key` 按 [S_02 第 4 节](S_02_ui-render.md)的实例键规则校验 |
 | 节点 | `node_key` 指向 `FileImport`，未禁用，声明了 `ui.change` |
 | 文件数 | 1～1000；未设 `multiple` 且未设 `directory` 时恰为 1 |
 | 路径 | 以 `/` 分隔的相对路径，不超过 512 字节、16 层；每段 1～255 字节，不为 `.`、`..`，不含 `\`、控制字符与 `<>:"\|?*`；忽略大小写后互不相同，且不互为前缀目录 |

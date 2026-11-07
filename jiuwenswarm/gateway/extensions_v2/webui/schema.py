@@ -28,12 +28,14 @@ from jiuwenswarm.gateway.extensions_v2.webui.constants import (
 )
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import COMPONENT_RULES, finite_number, validate_props
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
+    MAX_TARGET_BYTES,
     RenderFrame,
     RenderMode,
     RenderNode,
     RenderTarget,
     UiRenderInput,
     ValidationReport,
+    valid_instance_key,
 )
 
 _SLOT_ROOT_COMPONENTS: Mapping[str, tuple[str, ...]] = {
@@ -102,7 +104,10 @@ def validate_target(target: RenderTarget) -> ValidationReport:
 
     if not isinstance(target, RenderTarget):
         return _fail("target must be a RenderTarget")
-    for name in ("session_id", "slot_id", "package_id", "instance_key", "scope", "connection_id"):
+    if not valid_instance_key(target.instance_key):
+        # The same rule as settings declarations, interactions and file imports.
+        return _fail("invalid target.instance_key")
+    for name in ("session_id", "slot_id", "package_id", "scope", "connection_id"):
         value = getattr(target, name)
         if not isinstance(value, str) or "|" in value or value != value.strip():
             return _fail(f"invalid target.{name}")
@@ -123,10 +128,9 @@ def validate_target(target: RenderTarget) -> ValidationReport:
         return _fail("target.session_id is required")
     for field_name, value in (
         ("package_id", target.package_id),
-        ("instance_key", target.instance_key),
         ("connection_id", target.connection_id),
     ):
-        if len(value.encode("utf-8")) > 200:
+        if len(value.encode("utf-8")) > MAX_TARGET_BYTES:
             return _fail(f"target.{field_name} too long")
     return _OK
 

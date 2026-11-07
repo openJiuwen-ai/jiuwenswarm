@@ -1,6 +1,6 @@
 # 浏览器客户端能力接入规约
 
-最近修订：2026-11-06。状态：已实现通用接入。
+最近修订：2026-11-07。状态：已实现通用接入。
 关联规约：[Gateway 运行时](S_01_gateway-extension-runtime.md)、[渲染服务](S_02_ui-render.md)。
 
 ## 范围
@@ -41,6 +41,8 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 - HTTP 只提供真实 header 和路径给事件；请求的判定属于插件。
 - `webui.dispatch` 在 USER 请求策略继续之后，只分派本 Gateway 应用级 UI 包声明的 entry/footer；其他目标继续原有路径。
 - ready 按声明贡献分派；交互事件必须匹配当前连接、包、槽位、实例、revision、node_key、action_id 和 args。
+  `target.instance_key` 按 [S_02 第 4 节](S_02_ui-render.md)的实例键规则校验（与声明、渲染、文件导入同一规则），不符合时返回
+  `invalid_target` / `SCHEMA_ERROR`。
 - 本地 UI 子集为 Box、Text、Button、Input、Form、Form.Item、Dropdown、Avatar、Card、Image，以及只用于 `application.background` 的 MediaSurface（[S_07](S_07_media-surface.md)）与经宿主导入文件的 FileImport（[S_10](S_10_application-settings.md)）。
   Gateway Dropdown 仅支持一个展示子节点作为触发器，不开放 icon 属性；登录示例使用 Avatar。
   渲染复用正式 GatewayWebUIRuntime 的组件规则和预算，交互从同一 ActiveRenderRegistry 读取树并校验。

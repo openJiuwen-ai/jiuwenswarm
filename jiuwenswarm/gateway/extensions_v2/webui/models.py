@@ -25,6 +25,33 @@ def _empty_props() -> Mapping[str, Any]:
     return MappingProxyType({})
 
 
+#: Byte limit of every render target string (S_02).
+MAX_TARGET_BYTES = 200
+
+
+def valid_instance_key(value: Any, *, required: bool = False) -> bool:
+    """Apply the single instance-key rule shared by declarations, renders, interactions and imports.
+
+    A key is a string without ``|`` and without surrounding whitespace, encodable
+    as UTF-8 in at most 200 bytes. The empty key addresses a slot's default
+    instance; settings declarations pass ``required=True`` because their key
+    names a page. The rule matches AgentServer S_18 and ``validate_target``.
+
+    Args:
+        value: The candidate key, as received.
+        required: Refuse the empty key.
+
+    Returns:
+        True when the key may address an instance.
+    """
+    if not isinstance(value, str) or "|" in value or value != value.strip() or (required and not value):
+        return False
+    try:
+        return len(value.encode("utf-8")) <= MAX_TARGET_BYTES
+    except UnicodeError:
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class RenderTarget:
     """Render instance identity.
