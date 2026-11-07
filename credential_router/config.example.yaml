@@ -1,0 +1,42 @@
+# ── Credential Router — Minimal Config ─────────────────────────────────────
+# This file shows only the fields an operator typically sets. Every other
+# knob (server timeouts, validation limits, cache TTLs, backup template,
+# recovery wait, etc.) has a default tuned for the appliance use case.
+# For the full reference see CONFIG.md.
+
+# ── Required ───────────────────────────────────────────────────────────────
+server:
+  bind_address: 127.0.0.1:8080
+
+admin:
+  # bind address. Must be loopback (127.0.0.1, ::1) or a private range
+  # (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16). Public IPs and
+  # wildcards are rejected at startup because admin has no
+  # authentication and we do not provide TLS. For internet access,
+  # terminate TLS at a reverse proxy in front of admin.
+  addr: 127.0.0.1:8081
+
+data_dir: ./data
+backup_dir: ./backups
+
+rotation:
+  period: 720h                     # 30 days; first rotation fires after this elapses
+
+# ── Optional — SSRF policy (defaults fine for appliance deployments) ───────
+# ssrf:
+  # dial_check: false (appliance default). Turn on for non-appliance deployments.
+  # allowed_hosts: [] = no whitelist. Set to a list of hostnames to enforce
+  # on both the proxy dialer and the admin's real_url validation.
+  # Example:
+  # dial_check: true
+  # allowed_hosts:
+  #   - api.example.com
+  #   - "*.foo.com"
+
+# ── Optional — Crypto mode (default: aes) ──────────────────────────────────
+# crypto_mode: sm4                # aes (default) or sm4 (国密 SM4-GCM).
+                                 # Only read on first start (SelfInit);
+                                 # on-disk file is authoritative afterward.
+
+# For everything else (server timeouts, validation limits, cache size,
+# backup template, recovery wait, etc.) see CONFIG.md.
