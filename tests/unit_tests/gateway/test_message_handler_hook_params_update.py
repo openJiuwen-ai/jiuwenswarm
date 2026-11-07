@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from openjiuwen_protocol.message import EventType, Message, ReqMethod
-from gateway.extensions.registry import ExtensionRegistry
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.extensions.registry import ExtensionRegistry
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 
 class _FakeAgentClient:

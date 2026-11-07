@@ -22,7 +22,7 @@ JiuwenSwarm copies selected DSH Trajectory sources under the MIT license and ada
 
 `../client/TrajectoryToolbar.tsx` adds `showScaleControls` so the diagnosis view can hide the duration and token switches while keeping turn and call folding.
 
-`../client/TrajectoryTimeline.tsx` accepts `sharedDomain`, `mapTime`, `lockViewport`, and an optional shared viewport. The shared domain is the diagnosis ruler; `mapTime` places spans on it after idle gaps are removed. Locking keeps left-drag as a selection. When a shared viewport is controlled, the wheel zooms and pans that one window for every lane.
+`../client/TrajectoryTimeline.tsx` accepts `sharedDomain`, `mapTime`, `lockViewport`, and an optional shared viewport. The shared domain is the diagnosis ruler; `mapTime` places spans on it after idle gaps are removed. Locking keeps left-drag as a selection (display still slides late prep before the model reply; region brushes commit the exact drag without minimum-width padding). When a shared viewport is controlled, the wheel zooms and pans that one window for every lane.
 
 `../client/TrajectoryExplorer.tsx` is JiuwenSwarm's own assembly of these copies. For trajectory diagnosis it adds optional props, `highlightStepKeys`, `onTimelineSelectionChange`, `clearSelectionToken`, `timelineRange`, `onTimelineRangeChange`, `sharedTimeDomain`, `mapSharedTime`, `lockTimelineViewport`, `sharedViewport` and `onSharedViewportChange`; they emphasise timeline spans, share one wall-clock brush across lanes, and leave the DSH-derived ledger untouched. `lockTimelineViewport` is on only while diagnosis selection is active so browse/zoom still grab-pans like the duration overview.
 

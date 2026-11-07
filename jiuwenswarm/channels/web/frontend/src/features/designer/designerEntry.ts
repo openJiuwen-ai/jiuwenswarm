@@ -1,6 +1,7 @@
 import { useWorkspaceStore } from '../../stores';
 import { useChatStore } from '../../stores/chatStore';
 import { resolveChatModelSelection, useSessionStore } from '../../stores/sessionStore';
+import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { webClient } from '../../services/webClient';
 import { buildConversationModelPayload } from '../../multi-session/state/conversationModelSelection';
 import { useDesignerStore } from './designerStore';
@@ -57,9 +58,9 @@ function inheritDesignerModelChoice(sessionId: string, choice: DesignerModelChoi
 }
 
 /**
- * Bind the design session's chat runtime. The leader streams over the team
- * chain, so the shared MessageList and the websocket delta handler must treat
- * the session as a team session.
+ * Prepare the design runtime; the app route owns active-session selection.
+ * The leader streams over the team chain, so shared message rendering and
+ * websocket delta handling must treat this as a team session.
  */
 export function bindDesignerChatSession(sessionId: string): void {
   useChatStore.getState().ensureRuntime(sessionId);
@@ -71,7 +72,6 @@ export function bindDesignerChatSession(sessionId: string): void {
   if (useSessionStore.getState().getRuntime(sessionId)?.mode !== 'team') {
     useSessionStore.getState().setMode(sessionId, 'team');
   }
-  useChatStore.getState().setActiveSessionId(sessionId);
 }
 
 /** Seed persisted leader turns into an idle, empty chat runtime. */
@@ -112,6 +112,7 @@ export async function sendDesignerLeaderMessage(params: {
   chat.setThinking(sessionId, true);
   try {
     await useDesignerStore.getState().flushSave();
+    await flushApplicationConversationHistory(sessionId);
     await webClient.request('chat.send', {
       session_id: sessionId,
       query: prompt,
@@ -149,6 +150,18 @@ export function resolveDesignComposerProjectId(): string {
   }
   return projects.find((project) => project.is_default || project.project_id === DEFAULT_DESIGN_PROJECT_ID)?.project_id
     || DEFAULT_DESIGN_PROJECT_ID;
+}
+
+/** Create a saved canvas before starting media, without inventing a user prompt. */
+export async function createDesignerConversation(title = ''): Promise<{ projectId: string; sessionId: string }> {
+  const projectId = resolveDesignComposerProjectId();
+  const workspace = await designerWorkspaceClient.createSession({ projectId, title });
+  const sessionId = String(workspace.session?.session_id || '').trim();
+  if (!sessionId || workspace.graph.metadata?.session_id !== sessionId) throw new Error('missing design session');
+  useDesignerStore.getState().applyGraph(workspace.graph);
+  useDesignerChatStore.getState().replaceMessages(workspace.graph.graph_id, workspace.messages);
+  bindDesignerChatSession(sessionId);
+  return { projectId, sessionId };
 }
 
 /** New design task from the shared composer. No directory selection uses the default project. */

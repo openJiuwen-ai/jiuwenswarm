@@ -76,7 +76,7 @@ async def test_chat_hook_passes_params_to_extensions(monkeypatch, entry) -> None
         async def trigger(self, event, ctx) -> None:
             seen.append((event, ctx.params))
 
-    monkeypatch.setattr("gateway.extensions.registry.ExtensionRegistry", _Registry)
+    monkeypatch.setattr("agent_gateway.extensions.registry.ExtensionRegistry", _Registry)
 
     request = _request(ReqMethod.CHAT_SEND, session_id="sess-1", params={"query": "你好"})
     if entry == "middleware":
@@ -89,6 +89,32 @@ async def test_chat_hook_passes_params_to_extensions(monkeypatch, entry) -> None
 
     assert len(seen) == 1
     assert seen[0][1]["query"] == "你好"
+
+
+@pytest.mark.asyncio
+async def test_chat_hook_uses_local_hook_contract(monkeypatch) -> None:
+    from jiuwenswarm.common.hook_event import AgentServerHookEvents
+    from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
+
+    seen: list[tuple[str, object]] = []
+
+    class _Registry:
+        @staticmethod
+        def get_instance() -> _Registry:
+            return _Registry()
+
+        async def trigger(self, event, ctx) -> None:
+            seen.append((event, ctx))
+
+    monkeypatch.setattr("agent_gateway.extensions.registry.ExtensionRegistry", _Registry)
+
+    await trigger_before_chat_request(
+        _request(ReqMethod.CHAT_SEND, session_id="sess-1", params={"query": "你好"})
+    )
+
+    event, ctx = seen[0]
+    assert event == AgentServerHookEvents.BEFORE_CHAT_REQUEST
+    assert isinstance(ctx, AgentServerChatHookContext)
 
 
 @pytest.mark.asyncio

@@ -18,11 +18,11 @@ import {
   selectProviderDefaultModel,
   withoutGenerationOnlyPresets,
 } from '../models/modelAdapters';
-import type { MediaCapabilityModality } from './mediaCapabilities';
 import {
   buildMediaModelConfigUpdates,
   createMediaModelDraft,
   type MediaModelDraft,
+  type ModelConfigurationSlot,
 } from './mediaModelConfig';
 
 const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
@@ -104,13 +104,15 @@ export function MediaModelConfigDialog({
   save,
   onSaved,
   onClose,
+  titleKey,
 }: {
-  modality: MediaCapabilityModality;
+  modality: ModelConfigurationSlot;
   config: Record<string, unknown>;
   enableOnSave: boolean;
   save: SaveConfig;
   onSaved: (result: unknown) => void;
   onClose: () => void;
+  titleKey?: string;
 }) {
   const { t } = useTranslation();
   const { isConnected, request } = useSettingsServices();
@@ -165,7 +167,13 @@ export function MediaModelConfigDialog({
     try {
       const payload = await request<{ vendors?: unknown }>('vendors.list');
       if (currentRequestId !== catalogRequestId.current) return;
-      setCatalog(withoutGenerationOnlyPresets(parseVendorCatalog(payload.vendors)));
+      const next = withoutGenerationOnlyPresets(parseVendorCatalog(payload.vendors));
+      if (modality === 'topic') {
+        const compatible = (presets: VendorPresetMap['custom_api']) =>
+          presets.filter(preset => preset.client_provider === 'OpenAI');
+        setCatalog({ ...next, token_plan: compatible(next.token_plan), coding_plan: compatible(next.coding_plan),
+          custom_api: compatible(next.custom_api) });
+      } else setCatalog(next);
     } catch (error) {
       if (currentRequestId === catalogRequestId.current) {
         setCatalogError(
@@ -177,7 +185,7 @@ export function MediaModelConfigDialog({
     } finally {
       if (currentRequestId === catalogRequestId.current) setCatalogLoading(false);
     }
-  }, [isConnected, request, t]);
+  }, [isConnected, modality, request, t]);
 
   useEffect(() => {
     void loadCatalog();
@@ -317,6 +325,11 @@ export function MediaModelConfigDialog({
   };
 
   const errors = validateMediaModelDraft(values, catalog, t);
+  const hasSavedTopicKey = modality === 'topic' && config.topic_has_api_key === true
+    && values.api_base === initialValues.api_base && values.vendor_selection === initialValues.vendor_selection;
+  if (hasSavedTopicKey && !values.api_key.trim()) {
+    delete errors.api_key;
+  }
   const formItems: FormItem<MediaModelDraft>[] = [
     {
       name: 'vendor_selection',
@@ -454,7 +467,7 @@ export function MediaModelConfigDialog({
     <>
       <FormDialog
         open
-        title={t(`settingsPanel.agent.${modality}ConfigTitle`)}
+        title={t(titleKey ?? `settingsPanel.agent.${modality}ConfigTitle`)}
         submitting={closeBlocked}
         confirmDisabled={!isConnected || fetching}
         confirmLabel={t(enableOnSave ? 'settingsPanel.agent.saveAndEnable' : 'common.save')}

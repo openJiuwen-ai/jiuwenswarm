@@ -85,8 +85,7 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
     valid = [r for r in records if not r.parse_error]
     skipped = [r for r in records if r.parse_error]
 
-    # 计数（按四个展示分组）
-    counts = []
+    # Group documents by lifecycle for display within each module.
     grouped: dict[str, list[lib.DocRecord]] = {}
     for title, stage_dir, statuses in STAGE_GROUPS:
         rows = [
@@ -96,7 +95,6 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
         ]
         rows.sort(key=lambda r: _status_sort_key(r, statuses))
         grouped[title] = rows
-        counts.append(f"{title.split(' ')[0]} {len(rows)}")
 
     out: list[str] = []
     out.append("<!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->")
@@ -104,9 +102,7 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
     out.append("")
     out.append("# 设计文档索引 (INDEX)")
     out.append("")
-    out.append("> " + " · ".join(counts))
-    out.append("")
-    out.append("按模块目录分组，组内按生命周期展示；跨模块设计在各相关模块下列出，全局统计按文档去重。")
+    out.append("按模块目录分组，组内按生命周期展示；跨模块设计在各相关模块下列出。")
     out.append("")
 
     modules: dict[str, list[lib.DocRecord]] = {}
@@ -115,11 +111,11 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
             modules.setdefault(name, []).append(rec)
     names = sorted(modules, key=lambda name: (name == "未分类", name))
 
-    out.extend(["## 模块目录", "", "| 模块 | 设计数 |", "|---|---|"])
+    out.extend(["## 模块目录", "", "| 模块 |", "|---|"])
     for number, name in enumerate(names, start=1):
-        out.append(f"| [{_cell(name)}](#module-{number}) | {len(modules[name])} |")
+        out.append(f"| [{_cell(name)}](#module-{number}) |")
     if not names:
-        out.append("| — | 0 |")
+        out.append("| — |")
     out.append("")
 
     header = "| " + " | ".join(_COLUMNS) + " |"

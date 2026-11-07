@@ -166,14 +166,16 @@ async def test_other_scope_eviction_during_snapshot_send_does_not_lose_captured_
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_frames(tmp_path):
+@pytest.mark.parametrize("queue_size", [32, 256])
+async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_frames(tmp_path, queue_size):
     root = Path(__file__).resolve().parents[3]
     fixture = Path(__file__).parent / "fixtures" / "worker_recovery_process.py"
+    replay_release = tmp_path / "release-replay"
     path = str(tmp_path / "worker.sock") if os.name == "nt" else f"/tmp/jw-recovery-{uuid.uuid4().hex[:12]}.sock"
     env = {**os.environ, "PYTHONPATH": str(root)}
     # Keep the test environment's dependencies; a Windows venv launcher may
     # report a different PID from the interpreter serving the IPC connection.
-    process = await asyncio.create_subprocess_exec(sys.executable, str(fixture), path, cwd=root, env=env,
+    process = await asyncio.create_subprocess_exec(sys.executable, str(fixture), path, str(replay_release), cwd=root, env=env,
                                                   stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     conn = None
     reader_task = None
@@ -198,7 +200,12 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
 
         class Capture:
             async def send(self, payload, **_kwargs):
+                # Model a Gateway slower than IPC, including on fast Unix sockets.
+                await asyncio.sleep(0.001)
                 wires.append(payload)
+                sequence = payload.get("metadata", {}).get("runtime_event", {}).get("sequence", 0)
+                if payload.get("session_id") == "a" and sequence and sequence % 32 == 0:
+                    replay_release.with_name(f"consumed-{sequence}").touch()
                 if payload.get("body", {}).get("content") == "live-after-replay":
                     complete.set()
                 return True
@@ -209,7 +216,7 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
         supervisor._worker_instance = resumed["instance"]
         supervisor._gateway_ws = object()
         supervisor._gateway_lock = asyncio.Lock()
-        supervisor._forward_queue = asyncio.Queue(maxsize=256)
+        supervisor._forward_queue = asyncio.Queue(maxsize=queue_size)
         gateway_task = asyncio.create_task(
             supervisor._forward_messages(supervisor._forward_queue, supervisor._generation)
         )
@@ -231,9 +238,8 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
         assert a_state["cursor"] == 2048
         await asyncio.wait_for(first_replay.wait(), 3)
         b_start = time.perf_counter()
-        b_state = await supervisor.get_runtime_snapshot(request("b"))
+        b_state = await asyncio.wait_for(supervisor.get_runtime_snapshot(request("b")), 10)
         b_elapsed = time.perf_counter() - b_start
-        assert b_elapsed < 0.3
         assert b_state["is_processing"] is True
         assert b_state["executions"][0]["state"] == "waiting_for_control"
         assert b_state["dispatches"][0]["pending_interactions"][0]["interaction_id"] == "b-control"
@@ -243,11 +249,13 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
         await conn.send({"kind": KIND_REQUEST, "generation": resumed["generation"],
                          "dispatch_id": "live-a-dispatch", "payload": dump_agent_request(live)})
         pending_start = time.perf_counter()
-        pending = await supervisor.get_runtime_snapshot(request())
+        pending = await asyncio.wait_for(supervisor.get_runtime_snapshot(request()), 10)
         pending_elapsed = time.perf_counter() - pending_start
         assert pending["recovery_pending"] is True
         assert pending["recovery_reason"] == "snapshot_timeout"
-        assert pending_elapsed < 1.8
+        # Hold replay explicitly: scheduler load must not decide whether the
+        # same-scope query times out or the other scope can recover first.
+        replay_release.touch()
         await asyncio.wait_for(complete.wait(), 20)
         await supervisor._forward_queue.join()
         a_wires = [wire for wire in wires if wire.get("session_id") == "a"]
@@ -278,6 +286,7 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
         await asyncio.wait_for(process.wait(), 5)
         assert process.returncode == 0
     finally:
+        replay_release.touch()
         for task in (reader_task, gateway_task):
             if task is not None:
                 task.cancel()
@@ -287,4 +296,6 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
         if process.returncode is None:
             process.kill()
         stdout, stderr = await asyncio.wait_for(process.communicate(), 5)
-        assert process.returncode == 0, (stdout.decode(errors="replace"), stderr.decode(errors="replace"))
+        # Cleanup may kill the child after a test failure; preserve that failure.
+        if sys.exc_info()[0] is None:
+            assert process.returncode == 0, (stdout.decode(errors="replace"), stderr.decode(errors="replace"))

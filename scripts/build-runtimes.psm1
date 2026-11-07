@@ -228,6 +228,23 @@ function Copy-NodeRuntime {
     Write-Host "[runtime] Bundled Node $nodeVersion into $target" -ForegroundColor Green
 }
 
+function Write-NodeRuntimeManifest {
+    param([string]$DistDir)
+
+    # Call after all payload mutations, including signing. Installers compare
+    # this identity with the exact bytes distributed in the final package.
+    $target = Join-Path $DistDir "runtime\node-runtime"
+    if (-not (Test-Path -LiteralPath (Join-Path $target "node.exe") -PathType Leaf)) {
+        throw "Bundled Node runtime is missing: $target"
+    }
+    $inventoryScript = Join-Path $PSScriptRoot "preserve-windows-cli.ps1"
+    & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $inventoryScript -Mode DescribeBundle -InstallDir $target `
+        -ReportPath ($target + ".manifest.json")
+    if ($LASTEXITCODE -ne 0) { throw "Bundled Node inventory generation failed" }
+
+}
+
 function Resolve-UvRuntimeDir {
     param([string]$ProjectRoot)
 
@@ -288,6 +305,7 @@ Export-ModuleMember -Function @(
     "Resolve-NodeRuntimeDir",
     "Use-NodeRuntime",
     "Copy-NodeRuntime",
+    "Write-NodeRuntimeManifest",
     "Resolve-UvRuntimeDir",
     "Copy-UvRuntime"
 )

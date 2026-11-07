@@ -6,10 +6,10 @@ from typing import Any
 
 import pytest
 
-from gateway.extensions.auth.credential_authenticator import AuthResult
-from gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.extensions.auth.credential_authenticator import AuthResult
+from agent_gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
 
 async def _deny(**_kwargs: Any) -> AuthResult:

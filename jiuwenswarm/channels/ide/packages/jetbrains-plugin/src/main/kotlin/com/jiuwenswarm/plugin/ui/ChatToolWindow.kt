@@ -442,8 +442,9 @@ class ChatPanel(
                     if (answers.size() == 0) return
                     val source = msg.get("source")?.asString ?: "confirm_interrupt"
                     val mode = msg.get("mode")?.asString ?: "code.plan"
+                    val interruptId = msg.get("interruptId")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
                     debug("ANSWER→ requestId=$rid source=$source options=${answers.size()}")
-                    if (!service.session.sendAnswer(rid, answers, source, mode)) {
+                    if (!service.session.sendAnswer(rid, answers, source, mode, interruptId)) {
                         dispatchToWebview(mapOf(
                             "type" to "error",
                             "message" to "Not connected or no active session",

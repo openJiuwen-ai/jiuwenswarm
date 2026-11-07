@@ -9,12 +9,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.extensions.agentos.agentos_router.agent_manager import (
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentCreating,
     AgentManager,
     AgentRuntime,
 )
-from gateway.extensions.agentos.agentos_router.config import (
+from agent_gateway.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
     SshChannelEndpoint,
     agentos_router_selected,
@@ -23,20 +23,20 @@ from gateway.extensions.agentos.agentos_router.config import (
     read_optional_float,
     resolve_float_setting,
 )
-from gateway.extensions.agentos.agentos_router.extension import AgentOSRouter
-from gateway.extensions.agentos.agentos_router.models import (
+from agent_gateway.extensions.agentos.agentos_router.extension import AgentOSRouter
+from agent_gateway.extensions.agentos.agentos_router.models import (
     AgentInfo,
     AgentStatus,
     ImageInfo,
 )
-from gateway.extensions.agentos.agentos_router.registry_client import (
+from agent_gateway.extensions.agentos.agentos_router.registry_client import (
     LaunchSpec,
     RegistryConflictError,
     RegistryConnectionError,
     RegistryValidationError,
     instance_service_id,
 )
-from gateway.extensions.agentos.agentos_router.router_client import (
+from agent_gateway.extensions.agentos.agentos_router.router_client import (
     USER_DIRECTORY_ENV_KEY,
     AgentOSRouterClient,
     _extract_placement_ips,
@@ -48,7 +48,7 @@ from gateway.extensions.agentos.agentos_router.router_client import (
     _with_web_access_cmds,
     resolve_agent_workspace,
 )
-from gateway.extensions.yuanrong_frontend_client import (
+from agent_gateway.extensions.yuanrong_frontend_client import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
     RuntimeProbeSettings,
@@ -449,7 +449,7 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
 
 @pytest.mark.asyncio
 async def test_web_moa_status_routes_to_authenticated_user_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    from gateway.channel_manager.web.app_web_handlers import (
+    from agent_gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )
@@ -465,7 +465,7 @@ async def test_web_moa_status_routes_to_authenticated_user_runtime(monkeypatch: 
         channel_id="web", methods={}, send_response=AsyncMock(),
         on_connect=lambda _: None, on_disconnect=lambda _: None,
     )
-    channel.register_method = lambda method, callback: channel.methods.update({method: callback})
+    channel.register_method = lambda method, callback, *, local_only=False: channel.methods.update({method: callback})
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     selection = {"kind": "model_group", "id": "mgp_moa"}
     ws = object()
@@ -677,7 +677,7 @@ def test_is_ws_connect_retryable_for_cold_start_proxy_errors() -> None:
 @pytest.mark.asyncio
 async def test_get_ws_client_retries_http_502_until_ready(monkeypatch) -> None:
     """create 后首连 502 时，_get_ws_client 应退避重试直到 agentserver 就绪."""
-    import gateway.extensions.agentos.agentos_router.router_client as router_mod
+    import agent_gateway.extensions.agentos.agentos_router.router_client as router_mod
 
     monkeypatch.setattr(router_mod, "_WS_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(router_mod, "_WS_CONNECT_READY_TIMEOUT_SECONDS", 2.0)
@@ -725,7 +725,7 @@ async def test_get_ws_client_waits_until_yuanrong_status_running() -> None:
 @pytest.mark.asyncio
 async def test_get_ws_client_coalesces_concurrent_first_connect(monkeypatch) -> None:
     """同一 instance 并发首连只跑一轮就绪等待，其它请求等 Future."""
-    import gateway.extensions.agentos.agentos_router.router_client as router_mod
+    import agent_gateway.extensions.agentos.agentos_router.router_client as router_mod
 
     monkeypatch.setattr(router_mod, "_WS_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(router_mod, "_WS_CONNECT_READY_TIMEOUT_SECONDS", 2.0)
@@ -1622,7 +1622,7 @@ async def test_idle_reaper_task_lifecycle_on_connect_disconnect() -> None:
 
 @pytest.mark.asyncio
 async def test_unsupported_third_agent_returns_unsupported() -> None:
-    from gateway.routing.third_agent import get_unsupported_third_agent
+    from agent_gateway.routing.third_agent import get_unsupported_third_agent
 
     third = get_unsupported_third_agent()
     listed = await third.thirdagent_list(user_id="u1", current_agent_type="jiuwenswarm")
@@ -1638,7 +1638,7 @@ async def test_unsupported_third_agent_returns_unsupported() -> None:
 
 @pytest.mark.asyncio
 async def test_agentos_third_agent_list_and_switch() -> None:
-    from gateway.extensions.agentos.agentos_router.third_agent import (
+    from agent_gateway.extensions.agentos.agentos_router.third_agent import (
         AgentOSThirdAgent,
     )
 
@@ -2040,7 +2040,7 @@ async def test_sandbox_prewarm_lifecycle_protected_during_warmup(monkeypatch) ->
     清理到点时，清理路径必须因 task_count>0 拒绝删除；预热终态释放后，
     保护交还给连接语义，再次清理可正常删除。
     """
-    import gateway.extensions.agentos.agentos_router.router_client as router_mod
+    import agent_gateway.extensions.agentos.agentos_router.router_client as router_mod
 
     monkeypatch.setattr(router_mod, "_DISCONNECT_CLEANUP_RETRY_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(router_mod, "_DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS", 0.01)
@@ -2237,7 +2237,7 @@ async def test_register_agent_retries_connection_error_until_success() -> None:
     client = _router_client(FakeYuanRongClient(), registry, agent_manager)
 
     with patch(
-        "gateway.extensions.agentos.agentos_router.router_client.asyncio.sleep",
+        "agent_gateway.extensions.agentos.agentos_router.router_client.asyncio.sleep",
         new=AsyncMock(),
     ):
         await client._register_agent(info)
@@ -2306,7 +2306,7 @@ async def test_register_agent_stops_when_agent_deleted_mid_retry() -> None:
         await release.wait()
 
     with patch(
-        "gateway.extensions.agentos.agentos_router.router_client.asyncio.sleep",
+        "agent_gateway.extensions.agentos.agentos_router.router_client.asyncio.sleep",
         new=_gated_sleep,
     ):
         task = asyncio.create_task(client._register_agent(info))
@@ -2333,7 +2333,7 @@ async def test_register_agent_gives_up_at_backoff_cap() -> None:
     client = _router_client(FakeYuanRongClient(), registry, agent_manager)
 
     with patch(
-        "gateway.extensions.agentos.agentos_router.router_client.asyncio.sleep",
+        "agent_gateway.extensions.agentos.agentos_router.router_client.asyncio.sleep",
         new=AsyncMock(),
     ):
         await client._register_agent(info)
@@ -3063,7 +3063,7 @@ def test_load_router_config_clamps_wait_running_below_probe_budget(
 
     third_budget = DEFAULT_THIRD_AGENT_PROBE_SETTINGS.startup_budget_seconds()
     assert third_budget == 26.0
-    log_path = "gateway.extensions.agentos.agentos_router.config.log_agentos"
+    log_path = "agent_gateway.extensions.agentos.agentos_router.config.log_agentos"
 
     with patch(log_path) as logged:
         too_small = load_router_config(
@@ -3161,9 +3161,9 @@ async def test_create_uses_configured_workspace_root(tmp_path) -> None:
 async def test_agentos_extension_is_selected_independently(
     monkeypatch,
 ) -> None:
-    from gateway.extensions.agent_client import extension as plain_extension
-    from gateway.extensions.agentos import extension as agentos_extension
-    from gateway.extensions.agentos.agentos_router import (
+    from agent_gateway.extensions.agent_client import extension as plain_extension
+    from agent_gateway.extensions.agentos import extension as agentos_extension
+    from agent_gateway.extensions.agentos.agentos_router import (
         extension as agentos_router_impl,
     )
 
@@ -3255,7 +3255,7 @@ def test_is_agent_network_error_classifies_transport_failures() -> None:
 @pytest.mark.asyncio
 async def test_send_request_cleans_up_when_ws_connect_exhausted(monkeypatch) -> None:
     """连接重试耗尽（instance 不可达）→ 删沙箱 + 注销注册中心 + 错误响应."""
-    import gateway.extensions.agentos.agentos_router.router_client as router_mod
+    import agent_gateway.extensions.agentos.agentos_router.router_client as router_mod
 
     monkeypatch.setattr(router_mod, "_WS_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(router_mod, "_WS_CONNECT_READY_TIMEOUT_SECONDS", 0.05)
@@ -3434,7 +3434,7 @@ def test_apply_remote_overrides_updates_agent_sandbox_resources() -> None:
 
 def test_apply_remote_overrides_logs_tool_sandbox_only_on_change() -> None:
     client = _router_client(FakeYuanRongClient())
-    log_path = "gateway.extensions.agentos.agentos_router.router_client.log_agentos"
+    log_path = "agent_gateway.extensions.agentos.agentos_router.router_client.log_agentos"
     overrides = {"tool_sandbox": {"idle_timeout": 45, "cpu": 4000, "memory": 8192}}
 
     with patch(log_path) as logged:

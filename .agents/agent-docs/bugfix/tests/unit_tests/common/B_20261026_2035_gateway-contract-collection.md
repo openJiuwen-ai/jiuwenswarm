@@ -1,3 +1,15 @@
+---
+title: Gateway 拆包后协议契约测试无法收集
+author: null
+author_note: 历史作者待确认；缺少原 owner 和可靠创建署名
+id: B_20261026_2035_gateway-contract-collection
+type: B
+modules: []
+files: []
+designs: null
+design_note: 历史设计关联待核实，不等同于没有关联设计
+---
+
 # Gateway 拆包后协议契约测试无法收集
 
 日期：2026-10-26。范围：`tests/unit_tests/common/test_req_method_contract.py`

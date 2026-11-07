@@ -5,6 +5,17 @@
  */
 import type { MarketplacePluginItem, SkillItem } from './types';
 
+/** 广场复用技能入口；保留 Pack 类型供详情和安装使用，不按 Pack 另开分组。 */
+export function groupMarketplaceSkills(skills: MarketplacePluginItem[]) {
+  const teamSkills: MarketplacePluginItem[] = [];
+  const featuredSkills: MarketplacePluginItem[] = [];
+  for (const skill of skills) {
+    if (skill.plugin_type === 'swarmskill') teamSkills.push(skill);
+    else featuredSkills.push(skill);
+  }
+  return { teamSkills, featuredSkills };
+}
+
 /** 刷新会 git pull marketplace，略放宽；普通进页单次 RPC 一般很快。 */
 export const SKILLS_FETCH_TIMEOUT_REFRESH_MS = 60_000;
 export const SKILLS_FETCH_TIMEOUT_NORMAL_MS = 30_000;
@@ -165,6 +176,23 @@ export function shouldShowEnableSwitch(
 ): boolean {
   if (enterpriseEdition) return true;
   return !isPrebuiltSkill(skill);
+}
+
+/**
+ * 详情页当前版本展示文案。
+ * 优先 product ``version``，企业版可回退账本 ``version_id``；
+ * 已有前导 ``v``/``V`` 时不再加前缀，避免 ``v-1`` → ``vv-1``。
+ */
+export function formatSkillVersionLabel(
+  skill: Pick<SkillItem, 'version' | 'version_id'>,
+  options?: { allowVersionId?: boolean },
+): string | null {
+  const allowVersionId = Boolean(options?.allowVersionId);
+  const raw = String(
+    skill.version || (allowVersionId ? skill.version_id : '') || '',
+  ).trim();
+  if (!raw) return null;
+  return /^v/i.test(raw) ? raw : `v${raw}`;
 }
 
 /** 广场搜索结果列表 key：ClawHub 带 owner，避免同 slug 重复 key。 */

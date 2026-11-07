@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 
+from openjiuwen_protocol.expert_http_routes import expert_http_routes
+
 from jiuwenswarm.common.schema.agent import AgentResponse
-from jiuwenswarm.common.schema.expert_http_routes import expert_http_routes
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
 

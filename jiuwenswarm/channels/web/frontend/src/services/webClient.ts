@@ -11,6 +11,7 @@ import {
 import { getWebTransport, getWsBase } from '../utils/env';
 import { resolveUserId } from '../utils/userId';
 import { WebHttpClient } from './webHttpClient';
+import { readStoredSessionId } from './authClient';
 import i18n from '../i18n';
 import { appendRuntimeScopeQuery } from './runtimeScope';
 import { withExpertUiLanguage } from './expertUiLanguage';
@@ -25,7 +26,7 @@ type StateHandler = (state: WebConnectionState) => void;
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
-  timeoutId: number;
+  timeoutId: number | undefined;
   awaitRuntimeAccepted: boolean;
 }
 
@@ -316,7 +317,7 @@ class WebClient {
     };
 
     return new Promise<T>((resolve, reject) => {
-      const timeoutId = window.setTimeout(() => {
+      const timeoutId = timeoutMs === 0 ? undefined : window.setTimeout(() => {
         this.pending.delete(id);
         reject(this.createWebError(i18n.t('network.requestTimeout'), 'REQUEST_TIMEOUT', id, true));
       }, timeoutMs);
@@ -724,6 +725,10 @@ class WebClient {
     // 浏览器 new WebSocket 无法设置自定义 header，身份走 query：
     // user_id / group_id / bot_id（见 runtimeScope.ts；个人版可仅有 user_id）。
     appendRuntimeScopeQuery(params);
+    // 鸿蒙 WebView 拿不到系统浏览器的登录 cookie，也不能给 WebSocket 设置自定义 header。
+    // authClient 在本地存下的会话 id 通过 query 传给 Gateway，登录后重连时重新读取。
+    const authSession = readStoredSessionId();
+    if (authSession) params.set('auth_session', authSession);
     const query = params.toString();
     const target = `${base}${path}`;
     return query ? `${target}?${query}` : target;

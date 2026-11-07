@@ -52,3 +52,9 @@ test('normalizeTeamPanelState falls back for invalid enum fields', () => {
     },
   );
 });
+
+test('organization tab survives panel state persistence', () => {
+  const restored = parseTeamPanelStateRaw(JSON.stringify({ expanded: true, activeTab: 'organization' }));
+  assert.equal(restored.activeTab, 'organization');
+  assert.equal(restored.expanded, true);
+});

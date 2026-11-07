@@ -250,7 +250,7 @@ class TeamBindingStore:
         """Persist a validated stable model selection for a Team."""
         normalized_name = validate_team_name(team_name)
         try:
-            from gateway.common.model_selection import ModelSelection
+            from agent_gateway.common.model_selection import ModelSelection
             normalized = ModelSelection.model_validate(selection).model_dump(exclude_none=True)
         except Exception as exc:
             raise TeamBindingStoreError(
@@ -384,9 +384,11 @@ def get_team_binding_store() -> TeamBindingStore:
 def _register_common_provider() -> None:
     import sys
 
+    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_TEAM_BINDING_STORE
+
     from jiuwenswarm.common.external_providers import register
 
-    register("team_binding_store", sys.modules[__name__])
+    register(PROVIDER_DOMAIN_TEAM_BINDING_STORE, sys.modules[__name__])
 
 
 _register_common_provider()

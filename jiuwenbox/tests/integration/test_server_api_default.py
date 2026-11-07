@@ -3781,19 +3781,24 @@ class TestReservedSandboxPaths:
 
 class TestBwrapFilesystem:
     @staticmethod
-    def test_read_rules_do_not_mount_host_paths():
+    def test_read_rules_do_not_mount_host_paths(tmp_path):
+        source_ro = tmp_path / "host-source-ro"
+        source_ro.mkdir()
+        source_rw = tmp_path / "host-source-rw"
+        source_rw.mkdir()
+
         policy = SecurityPolicy.model_validate({
             "filesystem_policy": {
                 "read_only": ["/host-read-only"],
                 "read_write": ["/host-read-write"],
                 "bind_mounts": [
                     {
-                        "host_path": "/host-source-ro",
+                        "host_path": str(source_ro),
                         "sandbox_path": "/sandbox-target-ro",
                         "mode": "ro",
                     },
                     {
-                        "host_path": "/host-source-rw",
+                        "host_path": str(source_rw),
                         "sandbox_path": "/sandbox-target-rw",
                         "mode": "rw",
                     },
@@ -3805,8 +3810,27 @@ class TestBwrapFilesystem:
 
         assert not _has_mount(args, "--ro-bind", "/host-read-only", "/host-read-only")
         assert not _has_mount(args, "--bind", "/host-read-write", "/host-read-write")
-        assert _has_mount(args, "--ro-bind", "/host-source-ro", "/sandbox-target-ro")
-        assert _has_mount(args, "--bind", "/host-source-rw", "/sandbox-target-rw")
+        assert _has_mount(args, "--ro-bind", str(source_ro), "/sandbox-target-ro")
+        assert _has_mount(args, "--bind", str(source_rw), "/sandbox-target-rw")
+
+    @staticmethod
+    def test_missing_bind_mount_host_path_is_skipped(tmp_path):
+        """An unusable host_path is dropped instead of failing the whole start."""
+        missing = tmp_path / "not-created"
+
+        policy = SecurityPolicy.model_validate({
+            "filesystem_policy": {
+                "bind_mounts": [{
+                    "host_path": str(missing),
+                    "sandbox_path": "/sandbox-target-missing",
+                    "mode": "ro",
+                }],
+            },
+        })
+
+        args = BwrapConfig.from_policy(policy, ["true"]).to_args()
+
+        assert not _has_mount(args, "--ro-bind", str(missing), "/sandbox-target-missing")
 
     @staticmethod
     def test_nested_bind_targets_create_parent_directories():
@@ -5828,6 +5852,15 @@ class TestDefaultPolicyAPI:
         return policy["network"]["egress"]["blocked_ips"]
 
     @staticmethod
+    def test_bundled_default_policy_cgroup_limits():
+        """The bundled default policy caps each sandbox at 512 MiB and one CPU."""
+        policy = SecurityPolicy.model_validate(_DEFAULT_POLICY)
+        assert policy.cgroup.memory_max == 512 * 1024 * 1024
+        # One core is quota=period at the 100ms cgroup period.
+        assert policy.cgroup.cpu_max == (100_000, 100_000)
+        assert policy.cgroup.pids_max is None
+
+    @staticmethod
     def test_get_default_policy(client):
         resp = client.get("/api/v1/policies")
         assert resp.status_code == 200, resp.text
@@ -5836,6 +5869,9 @@ class TestDefaultPolicyAPI:
         assert data["network"]["mode"] in ("isolated", "host")
         assert "egress" in data["network"]
         assert "ingress" in data["network"]
+        assert data["cgroup"]["memory_max"] == 512 * 1024 * 1024
+        assert data["cgroup"]["cpu_max"] == [100_000, 100_000]
+        assert data["cgroup"]["pids_max"] is None
 
     @staticmethod
     def test_get_default_policy_matches_inherited_sandbox_policy(client):
@@ -5847,6 +5883,7 @@ class TestDefaultPolicyAPI:
 
         effective = client.get(f"/api/v1/policies/{sandbox_id}").json()
         assert effective["network"] == default["network"]
+        assert effective["cgroup"] == default["cgroup"]
 
     @staticmethod
     def test_put_policies_without_flag_leaves_default_untouched(
@@ -6095,3 +6132,157 @@ class TestDefaultPolicyAPI:
         assert timeout_resp.status_code == 200
         assert timeout_resp.json()["idle_timeout"] == 1234
         assert timeout_resp.json()["idle_check_interval"] == 61
+
+    @staticmethod
+    def test_update_default_policy_reparks_warm_pool(client, restore_default_policy):
+        """A network change must discard parked sandboxes and serve a newly parked one.
+
+        The stored policy of a checkout always matches the request, even when
+        the pool is skipped. The process start time and the live iptables
+        rules are what show the slot was parked from the updated template.
+        """
+        marker = TestDefaultPolicyAPI.MARKER_IP
+        updated_at = time.time()
+        TestDefaultPolicyAPI._append_default_blocked_ip(client, marker)
+        sandbox_id, _parked_at = TestDefaultPolicyAPI._wait_for_warm_sandbox(
+            client,
+            parked_after=updated_at,
+            marker=marker,
+        )
+        assert sandbox_id
+
+    @staticmethod
+    def test_warm_pool_refill_uses_updated_template(client, restore_default_policy):
+        """After the rebuilt pool is checked out, the next parked sandbox uses the new template."""
+        marker = TestDefaultPolicyAPI.MARKER_IP
+        updated_at = time.time()
+        TestDefaultPolicyAPI._append_default_blocked_ip(client, marker)
+        _first_id, first_parked_at = TestDefaultPolicyAPI._wait_for_warm_sandbox(
+            client,
+            parked_after=updated_at,
+            marker=marker,
+        )
+        _second_id, second_parked_at = TestDefaultPolicyAPI._wait_for_warm_sandbox(
+            client,
+            parked_after=first_parked_at,
+            marker=marker,
+        )
+        assert second_parked_at > first_parked_at
+
+    @staticmethod
+    def _append_default_blocked_ip(client, marker: str) -> None:
+        put_resp = client.put("/api/v1/policies", json={
+            "policy_mode": "append",
+            "update_default_policy": True,
+            "update_existing_sandboxes": False,
+            "policy": {
+                "network": {
+                    "egress": {"blocked_ips": [marker]},
+                },
+            },
+        })
+        assert put_resp.status_code == 200, put_resp.text
+        result = put_resp.json()
+        assert result["default_updated"] is True
+        assert marker in TestDefaultPolicyAPI._blocked_ips(result["default_policy"])
+
+    @staticmethod
+    def _wait_for_warm_sandbox(
+        client,
+        *,
+        parked_after: float,
+        marker: str,
+        timeout: float = 40.0,
+    ) -> tuple[str, float]:
+        """Create until a sandbox was parked after ``parked_after`` and before this request.
+
+        The create runs as uid 0 so ``iptables -S`` can read the netns rules.
+        Run-as does not affect pool matching; the network rules were installed
+        when the slot was parked.
+        """
+        deadline = time.monotonic() + timeout
+        attempts: list[str] = []
+        marker_ip = marker.split("/", 1)[0]
+        while time.monotonic() < deadline:
+            requested_at = time.time()
+            create_resp = client.post("/api/v1/sandboxes", json={
+                "policy_mode": "append",
+                "policy": {
+                    "process": {"run_as_user": "0", "run_as_group": "0"},
+                },
+            })
+            assert create_resp.status_code == 201, create_resp.text
+            sandbox = create_resp.json()
+            sandbox_id = sandbox["id"]
+            if sandbox.get("phase") != "ready":
+                attempts.append(f"{sandbox_id} phase={sandbox.get('phase')}")
+                client.delete(f"/api/v1/sandboxes/{sandbox_id}")
+                continue
+            parked_at, rules = TestDefaultPolicyAPI._parked_at_and_iptables(
+                client, sandbox_id,
+            )
+            policy = client.get(f"/api/v1/policies/{sandbox_id}").json()
+            blocked = TestDefaultPolicyAPI._blocked_ips(policy)
+            fresh = parked_after < parked_at < requested_at
+            has_marker = marker in blocked and marker_ip in rules
+            if fresh and has_marker:
+                return sandbox_id, parked_at
+            attempts.append(
+                f"id={sandbox_id} parked={parked_at:.3f} requested={requested_at:.3f} "
+                f"policy={marker in blocked} iptables={marker_ip in rules}"
+            )
+            client.delete(f"/api/v1/sandboxes/{sandbox_id}")
+        raise AssertionError(
+            "warm pool did not serve a sandbox parked from the updated template "
+            "(is JIUWENBOX_WARM_POOL disabled?):\n" + "\n".join(attempts[-8:])
+        )
+
+    @staticmethod
+    def _parked_at_and_iptables(client, sandbox_id: str) -> tuple[float, str]:
+        script = textwrap.dedent(
+            """
+            import os
+            import subprocess
+
+            stat = open("/proc/1/stat", encoding="utf-8").read()
+            fields = stat[stat.rfind(")") + 2:].split()
+            start_ticks = int(fields[19])
+            btime = 0
+            for line in open("/proc/stat", encoding="utf-8"):
+                if line.startswith("btime "):
+                    btime = int(line.split()[1])
+                    break
+            hz = os.sysconf("SC_CLK_TCK")
+            print(f"parked={btime + start_ticks / hz:.6f}")
+            try:
+                rules = subprocess.check_output(
+                    ["iptables", "-S", "OUTPUT"],
+                    text=True,
+                    stderr=subprocess.STDOUT,
+                )
+            except (OSError, subprocess.CalledProcessError) as exc:
+                rules = f"iptables-failed: {exc}"
+            print("RULES_BEGIN")
+            print(rules)
+            print("RULES_END")
+            """
+        ).strip()
+        resp = client.post(f"/api/v1/sandboxes/{sandbox_id}/exec", json={
+            "command": ["python3", "-c", script],
+            "timeout_seconds": 15,
+        })
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["exit_code"] == 0, data
+        stdout = data["stdout"]
+        parked_line = next(
+            (line for line in stdout.splitlines() if line.startswith("parked=")),
+            "",
+        )
+        assert parked_line, stdout
+        begin = stdout.find("RULES_BEGIN")
+        end = stdout.find("RULES_END")
+        assert begin != -1 and end != -1, stdout
+        rules = stdout[begin + len("RULES_BEGIN"):end]
+        assert "iptables-failed" not in rules, rules
+        return float(parked_line.split("=", 1)[1]), rules

@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -17,9 +16,6 @@ from jiuwenswarm.server.runtime.attachments.upload_storage import (
 )
 
 _FALLBACK = "document-1.md"
-# Windows 把 ``\`` 当路径分隔符，``Path("..\\..\\evil.md").name`` 是 ``evil.md``；
-# POSIX 上整串仍是一个名字，消毒后变成 ``.._.._evil.md``。
-_WIN_TRAVERSAL_EXPECTED = "evil.md" if os.name == "nt" else ".._.._evil.md"
 
 
 @pytest.mark.parametrize(
@@ -41,7 +37,8 @@ def test_safe_upload_filename_keeps_readable_names(filename: str):
     ("filename", "expected"),
     [
         ("../../etc/passwd", "passwd"),
-        ("..\\..\\evil.md", _WIN_TRAVERSAL_EXPECTED),
+        ("a\\b.txt", "a_b.txt"),
+        ("..\\..\\evil.md", ".._.._evil.md"),
         ("file:with|bad*chars?.md", "file_with_bad_chars_.md"),
         ("tab\there.md", "tab_here.md"),
         ("trailing .", "trailing"),
@@ -161,7 +158,7 @@ def test_atomic_write_unique_concurrent_writers_never_clobber(tmp_path: Path):
     """并发写入同名文件：每个 writer 各占独占路径，无相互覆盖、无丢失。"""
     from concurrent.futures import ThreadPoolExecutor
 
-    target = tmp_path / "report.md"
+    target = tmp_path / "uploads" / "report.md"
     payload = b"same-bytes"
     writers = 16
 
@@ -171,7 +168,7 @@ def test_atomic_write_unique_concurrent_writers_never_clobber(tmp_path: Path):
     with ThreadPoolExecutor(max_workers=8) as pool:
         paths = list(pool.map(_write, range(writers)))
 
-    files = sorted(tmp_path.iterdir(), key=lambda p: p.name)
+    files = sorted(target.parent.iterdir(), key=lambda p: p.name)
     assert len(files) == writers
     assert len({p.name for p in paths}) == writers
     assert {p.read_bytes() for p in files} == {payload}

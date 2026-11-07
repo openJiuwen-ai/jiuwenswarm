@@ -42,10 +42,11 @@ export interface TrajectoryTimelineSpan extends TrajectoryTimeRange {
   coveredIndexes?: readonly number[]
 }
 
-/** One turn boundary in the active timeline domain. */
+/** One numbered turn's span in the active timeline domain. */
 export interface TrajectoryTimelineTurnBoundary {
   turn: number
-  time: number
+  start: number
+  end: number
 }
 
 /** Full-domain model used by the overview. */
@@ -177,8 +178,8 @@ type PrepTimedSpan = TrajectoryTimelineSpan & {
  * into the open interval after earlier on-time prep (USER/SYSTEM) and before
  * the model reply, matching ledger phase order without rewriting cell.startedAt.
  *
- * Only mutate display coordinates. Callers that feed shared-axis `toWall` brush
- * selection must keep absolute wall-clock spans (see deriveTimedTimeline /
+ * Only mutate display coordinates. Shared-axis brushes sample the aligned
+ * display model and map ends back with `toWall` (see deriveTimedTimeline /
  * alignPrepSpansBeforeModel).
  */
 function placePrepSpansBeforeModel(spans: PrepTimedSpan[]): void {
@@ -319,21 +320,23 @@ export function deriveTrajectoryTimeline(
       group.cells.filter(cell => cell.requestOnly !== true),
     )
     if (cells.length === 0) continue
-    if (turn.turn !== null) {
-      turnBoundaries.push({
-        turn: turn.turn,
-        time: spans.length,
-      })
-    }
+    const turnStart = spans.length
     spans.push(...cells.map((cell, offset): TrajectoryTimelineSpan => ({
-      start: spans.length + offset,
-      end: spans.length + offset + 1,
+      start: turnStart + offset,
+      end: turnStart + offset + 1,
       index: cell.index,
       isError: cell.isError === true,
       kind: cell.kind,
       label: cell.text,
       lane: laneFor(cell.kind),
     })))
+    if (turn.turn !== null) {
+      turnBoundaries.push({
+        turn: turn.turn,
+        start: turnStart,
+        end: spans.length,
+      })
+    }
   }
 
   if (spans.length === 0) return null
@@ -422,7 +425,7 @@ function deriveTokenTimeline(
       }
     }
     if (turn.turn !== null && spans.length > spansBeforeTurn) {
-      turnBoundaries.push({ turn: turn.turn, time: turnStart })
+      turnBoundaries.push({ turn: turn.turn, start: turnStart, end: cursor })
     }
   }
 
@@ -504,7 +507,8 @@ function deriveTimedTimeline(
     if (turn.turn !== null) {
       turnBoundaries.push({
         turn: turn.turn,
-        time: Math.min(...projected.map(span => span.start)),
+        start: Math.min(...projected.map(span => span.start)),
+        end: Math.max(...projected.map(span => span.end)),
       })
     }
   }
@@ -518,14 +522,13 @@ function deriveTimedTimeline(
 }
 
 /**
- * Browse-only display realignment for wall-clock projections (`time` / `actual`).
+ * Display realignment for wall-clock projections (`time` / `actual`).
  *
  * Duration mode relocates inside `deriveTimedTimeline` because idle compression
- * already drops absolute wall identity. Wall-clock modes keep recorded span
- * times for shared-axis `toWall` brush selection; the overview may still slide
- * late prep for ledger-phase readability while left-drag is free to pan
- * (`lockViewport === false`). Diagnosis selection locks the viewport and must
- * keep the unrelocated model so brushed wall ranges cover real record times.
+ * already drops absolute wall identity. Wall-clock overviews still slide late
+ * prep for ledger-phase readability (including diagnosis selection). Brush
+ * selection uses pointer→domain coordinates on this display model; `toWall`
+ * converts those ends for the diagnosis scope.
  */
 export function alignPrepSpansBeforeModel(
   model: TrajectoryTimelineModel | null,
@@ -592,7 +595,8 @@ export function withSharedWallClockDomain(
     }),
     turnBoundaries: model.turnBoundaries.map(boundary => ({
       ...boundary,
-      time: map(boundary.time),
+      start: map(boundary.start),
+      end: map(boundary.end),
     })),
   }
 }

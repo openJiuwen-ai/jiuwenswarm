@@ -13,12 +13,13 @@ import os
 import time
 from typing import Any, Callable
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
-from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     is_default_project_id,
 )
+
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
     build_error_response,

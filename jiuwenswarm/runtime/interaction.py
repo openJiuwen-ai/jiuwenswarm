@@ -9,8 +9,9 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from agent_gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.runtime.evolution import (
     is_interrupt_evolution_approval_answer_payload,
 )
@@ -19,19 +20,14 @@ if TYPE_CHECKING:
     from jiuwenswarm.runtime.events import RuntimeEvent
 
 
-_INTERRUPT_RESUME_SOURCES = frozenset(
-    {
-        "confirm_interrupt",
-        "permission_interrupt",
-        "ask_user_interrupt",
-        "evolution_interrupt",
-    }
-)
 _WORK_MODES = frozenset({"work", "code"})
+
+#: The events that ask the user, or the user's client, for an answer the turn waits on.
+USER_INTERACTION_EVENTS = frozenset({"chat.ask_user_question", EventType.CHAT_CLIENT_TOOL_REQUEST.value})
 
 # The id an answer names, per event that asks for one.
 _INTERACTION_ID_KEYS: dict[str, str] = {
-    "chat.ask_user_question": "request_id",
+    **dict.fromkeys(USER_INTERACTION_EVENTS, "request_id"),
     "harness.activate_interaction": "interaction_id",
 }
 
@@ -122,6 +118,7 @@ class InteractionAnswerInput:
     interaction_id: str
     answers: tuple[Mapping[str, Any], ...]
     source: str = ""
+    interrupt_id: str = ""
     approval_schema: str = ""
     evolution_meta: Mapping[str, Any] | None = None
     mode: str = ""
@@ -148,6 +145,7 @@ class InteractionAnswerInput:
         )
         object.__setattr__(self, "answers", validate_answer_items(self.answers))
         object.__setattr__(self, "source", _optional_text("source", self.source))
+        object.__setattr__(self, "interrupt_id", _optional_text("interrupt_id", self.interrupt_id))
         object.__setattr__(
             self,
             "approval_schema",
@@ -178,7 +176,7 @@ class InteractionAnswerInput:
     def resumes_interrupted_turn(self) -> bool:
         """Return whether this answer targets a suspended chat execution."""
 
-        if self.source in _INTERRUPT_RESUME_SOURCES:
+        if self.source in INTERRUPT_RESUME_SOURCES:
             return True
         payload: dict[str, Any] = {
             "request_id": self.interaction_id,
@@ -202,6 +200,7 @@ class InteractionAnswerInput:
             "query": "" if self.resumes_interrupted_turn else None,
         }
         optional = {
+            "interrupt_id": self.interrupt_id,
             "mode": self.mode,
             "work_mode": self.work_mode,
             "project_dir": self.project_dir,
@@ -229,4 +228,10 @@ class InteractionAnswerInput:
         )
 
 
-__all__ = ["InteractionAnswerError", "InteractionAnswerInput", "asked_interaction_ids", "interaction_ids"]
+__all__ = [
+    "USER_INTERACTION_EVENTS",
+    "InteractionAnswerError",
+    "InteractionAnswerInput",
+    "asked_interaction_ids",
+    "interaction_ids",
+]

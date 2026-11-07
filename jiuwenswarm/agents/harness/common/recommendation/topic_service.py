@@ -34,7 +34,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
     TERMINAL_INTERACTION_EVENT_TYPES,
-    UNDONE_EVENT_TYPES,
     NewPageOutcomeQueue,
     NewPageOutcomeSignal,
 )
@@ -1378,23 +1377,6 @@ class TopicService:
             slot.candidate_task = None
             raise asyncio.CancelledError
 
-    def _give_way_to_feedback(self, context_scope: str) -> None:
-        """The scope's running replenishment read the feedback before an undo or a pause, so it
-        left out what the undo restores or keeps what the pause withholds: it gives way to the
-        request queued behind it."""
-
-        slot = self._runs.get(context_scope)
-        if slot is None:
-            return
-        if slot.queued is None:
-            return
-        if slot.queued.done():
-            return
-        if slot.candidate_task is None or slot.candidate_task.done():
-            slot.feedback_changed_before_candidates = True
-        elif not slot.candidate_task.cancelling():
-            slot.candidate_task.cancel()
-
     def schedule_successor(
         self,
         *,
@@ -1509,6 +1491,34 @@ class TopicService:
             "selection_mode": str(rows[0].get("selection_mode") or ""),
         }
 
+    def _opened_cold_start_card_filter(self) -> Callable[[dict[str, Any]], bool]:
+        """A preset card the user already opened stays out of a rebuilt pool."""
+
+        opened_cards: set[str] = set()
+        opened_starters: set[str] = set()
+        for row in self.store.query_events(
+            event_type="topic_click", policy_id=POLICY_ID, limit=100_000,
+        ):
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("context_scope") not in (None, GLOBAL_NEW_CHAT_SCOPE):
+                continue
+            card_id = str(payload.get("card_id") or "")
+            starter_id = str(payload.get("source_starter_id") or "")
+            if card_id:
+                opened_cards.add(card_id)
+            if starter_id:
+                opened_starters.add(starter_id)
+
+        def is_opened(card: dict[str, Any]) -> bool:
+            return (
+                str(card.get("card_id") or "") in opened_cards
+                or str(card.get("source_starter_id") or "") in opened_starters
+            )
+
+        return is_opened
+
     def _serve_cold_start(
         self,
         *,
@@ -1517,13 +1527,19 @@ class TopicService:
         issued_slate: dict[str, Any] | None,
         preset_only: bool = False,
     ) -> dict[str, Any]:
-        """Write packaged/hot-list cards so the first welcome visit has a slate."""
+        """Write packaged/hot-list cards so a scope visit has a slate to show.
 
+        Global and project scopes share this stand-in: when recommendation is off
+        or the personalized pool is empty, the packaged corpus fills the page.
+        """
+
+        context_scope = str(trigger_key["context_scope"])
+        project_id = trigger_key.get("project_id")
         empty = read_terminal_pool(
             self.store,
             serving_compatibility_key=build_serving_compatibility_key(trigger_key),
-            context_scope=GLOBAL_NEW_CHAT_SCOPE,
-            project_id=None,
+            context_scope=context_scope,
+            project_id=project_id,
             feedback=feedback,
             now=self._now(),
             issued_slate=issued_slate,
@@ -1531,17 +1547,37 @@ class TopicService:
         existing_is_preset = bool(empty["cards"]) and all(
             is_cold_start_card(card) for card in empty["cards"]
         )
-        if empty["cards"] and (not preset_only or existing_is_preset):
-            return empty
-        if not preset_only and self.configuration_status().get("provider_refused"):
-            return empty
+        if empty["cards"]:
+            if not preset_only:
+                return empty
+            # With recommendations off the packaged pool is the whole page: a card
+            # the user dismissed leaves the screen short, so the corpus is sampled
+            # again instead of showing one card fewer.
+            if existing_is_preset and len(empty["cards"]) >= FIRST_SCREEN_CARD_TARGET:
+                return empty
+        # Personalized pool miss (or provider refusal) still fills the page with
+        # packaged cards; never leave it blank when the corpus can serve.
+        provider_refused = (
+            not preset_only and bool(self.configuration_status().get("provider_refused"))
+        )
         cards = build_cold_start_cards(
             trigger_key=trigger_key,
             now=self._now(),
-            hot_list_pull=None if preset_only else self._hot_list.cached_pull(),
+            hot_list_pull=(
+                None
+                if preset_only or provider_refused
+                else self._hot_list.cached_pull()
+            ),
             feedback=feedback,
+            exclude=self._opened_cold_start_card_filter(),
         )
         if not cards:
+            return empty
+        # Compare like with like: the rebuilt pool against what the current pool
+        # can still serve, not against the one window it currently exposes.
+        current_serviceable = len(empty.get("served_card_ids") or empty["cards"])
+        if preset_only and existing_is_preset and len(cards) <= current_serviceable:
+            # The corpus cannot fill the screen again; keep what the page has.
             return empty
         written = write_cold_start_pool(
             self.store,
@@ -1554,8 +1590,8 @@ class TopicService:
         return read_terminal_pool(
             self.store,
             serving_compatibility_key=build_serving_compatibility_key(trigger_key),
-            context_scope=GLOBAL_NEW_CHAT_SCOPE,
-            project_id=None,
+            context_scope=context_scope,
+            project_id=project_id,
             feedback=feedback,
             now=self._now(),
             issued_slate=issued_slate,
@@ -1604,15 +1640,8 @@ class TopicService:
                     issued = payload
         preset_only = not self._accepting_work or self._ark_config is None
         if preset_only:
-            if context_scope != GLOBAL_NEW_CHAT_SCOPE:
-                return {
-                    "available": False,
-                    "reason": "disabled" if not self._accepting_work else "background_model_unavailable",
-                    "session_id": session_id,
-                    "policy_id": POLICY_ID,
-                    "context_scope": context_scope,
-                    "project_id": project_id,
-                }
+            # Global and project welcome pages both stand on packaged cards while
+            # recommendation is off or the background model is unset.
             served = self._serve_cold_start(
                 trigger_key=trigger_key,
                 feedback=feedback,
@@ -1629,7 +1658,7 @@ class TopicService:
                 now=self._now(),
                 issued_slate=issued,
             )
-            if not served["cards"] and context_scope == GLOBAL_NEW_CHAT_SCOPE:
+            if not served["cards"]:
                 served = self._serve_cold_start(
                     trigger_key=trigger_key,
                     feedback=feedback,
@@ -1706,24 +1735,47 @@ class TopicService:
         }
         # The cards stay usable while a refresh runs or after it fails.
         state = self.preparation_state(context_scope)
-        # Preset cards are a stand-in. While recommendation is on they stay on screen,
-        # but the page must say a personalized batch is coming and a run must be in flight.
+        # Preset cards are a stand-in when the personalized pool has nothing to
+        # show. While recommendation is on they stay on screen, but the page must
+        # say a personalized batch is coming (or that settings need attention) and
+        # a run must be in flight when the model can still be asked.
         only_preset_cards = bool(served["cards"]) and all(
             is_cold_start_card(card) for card in served["cards"]
         )
-        preset_stand_in = (
+        can_prepare_personalized = (
             self._accepting_work
             and self._ark_config is not None
             and self._generate is not None
-            and only_preset_cards
-            and state == "ready"
         )
-        if preset_stand_in:
+        # Writing the stand-in pool settles a prior failed attempt, which would
+        # otherwise clear provider_unavailable; keep the refusal visible.
+        if (
+            only_preset_cards
+            and self._accepting_work
+            and self.configuration_status().get("provider_refused")
+        ):
+            state = "provider_unavailable"
+        elif (
+            can_prepare_personalized
+            and only_preset_cards
+            and state in {
+                "ready",
+                "no_content",
+                "failed",
+                "waiting_for_input",
+            }
+        ):
             slot = self._runs.get(context_scope)
             if slot is None or not slot.busy:
                 self.schedule_seed(session_id)
             state = "preparing"
-        if state in {"preparing", "failed", "provider_unavailable", "disabled"}:
+        if state in {
+            "preparing",
+            "failed",
+            "provider_unavailable",
+            "disabled",
+            "no_content",
+        }:
             response["preparation_state"] = state
         if not self._record_issued_slate(
             session_id=session_id,
@@ -1763,11 +1815,7 @@ class TopicService:
         outcome_queue: NewPageOutcomeQueue,
         created_at: float | None = None,
     ) -> dict[str, bool]:
-        """Record an exact shown card's outcome and request its scope's refill.
-
-        A dismissal answers whether the card's interest may be paused: only a
-        global regular card's may.
-        """
+        """Record an exact shown card's outcome and request its scope's refill."""
 
         event_type = str(event.get("event_type") or "").strip()
         payload = event["payload"]
@@ -1831,15 +1879,11 @@ class TopicService:
         ))
         reply = {"recorded": status == "recorded"}
         if reply["recorded"]:
-            if event_type == "not_interested":
-                reply["pausable"] = context_scope == GLOBAL_NEW_CHAT_SCOPE and not card_is_news(card)
             self.schedule_successor(
                 context_scope=context_scope,
                 project_id=project_id,
                 visit_id=exposure_id,
             )
-            if event_type in UNDONE_EVENT_TYPES or event_type == "interest_paused":
-                self._give_way_to_feedback(context_scope)
             if context_scope == GLOBAL_NEW_CHAT_SCOPE and self._news_refresh_task is not None:
                 self._news_refresh_task.cancel()
         return reply

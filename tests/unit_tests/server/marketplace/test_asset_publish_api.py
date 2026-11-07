@@ -474,3 +474,49 @@ async def test_logged_out_describe_reads_local_defaults_without_account_records(
             await server.call(method, {"kind": "skill", "local_id": "demo"}, gateway_user="u")
     with pytest.raises(PublishAPIError, match="RESOURCE_NOT_FOUND"):
         await server.call("describe", {"kind": "skill", "local_id": "../secret"}, gateway_user="u")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [None, 401, 403, 500])
+async def test_pack_describe_retains_local_defaults_when_identity_check_fails(tmp_path, monkeypatch, status_code):
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubProtocolError
+
+    failure = HubProtocolError("Identity lookup failed")
+    failure.status_code = status_code
+
+    class UnavailableHub:
+        async def publisher_id(self, auth):
+            raise failure
+
+    root = tmp_path / "demo-pack"
+    root.mkdir()
+    (root / "SKILL.md").write_text(
+        "---\nname: demo-pack\nkind: skillpack\nskills: [member-a, member-b]\n"
+        "description: Local description\n---\nbody\n"
+    )
+    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
+    monkeypatch.setenv("SKILLPACK_HUB_DEPLOYMENT_SCOPE", "isolated")
+    monkeypatch.setenv("SKILLPACK_HUB_TRANSPORT_PROFILE", "legacy_skill_v1")
+    server = AssetPublishAPI(
+        tmp_path / "state", resolver=lambda kind, local_id: root,
+        hub_url="https://example.invalid", skillpack_hub=UnavailableHub(),
+    )
+    monkeypatch.setattr(
+        server.skillpacks, "records",
+        lambda *args: pytest.fail("Unverified account must not read Pack history"),
+    )
+    code = "AUTH_REQUIRED" if status_code in {401, 403} else "SKILLPACK_HUB_CHECK_FAILED"
+    request = params(kind="skillpack", local_id="demo-pack")
+    try:
+        result = await server.call("describe", request, gateway_user="u")
+        assert result["defaults"]["description"] == "Local description"
+        assert result["defaults"]["asset_name"] == "demo-pack"
+        assert result["records"] == []
+        assert result["can_publish"] is False
+        assert result["identity_verified"] is False
+        assert {"code": code} in result["errors"]
+        for method in ("records", "prepare", "commit", "status"):
+            with pytest.raises(PublishAPIError, match=code):
+                await server.call(method, request, gateway_user="u")
+    finally:
+        await server.close()

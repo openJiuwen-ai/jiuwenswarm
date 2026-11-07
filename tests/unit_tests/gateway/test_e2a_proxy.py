@@ -6,19 +6,26 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from openjiuwen_protocol.message import ReqMethod
-from gateway.routing.agent_client import (
+from agent_gateway import telemetry
+from agent_gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,
 )
-from gateway.routing.agent_request_timeout import (
+from agent_gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
     AgentRequestTimeoutError,
 )
-from gateway.routing.e2a_proxy import (
+from agent_gateway.routing.e2a_proxy import (
     SERVICE_UNAVAILABLE_CODE,
     _new_fetch_request_id,
     fetch_agent_unary,
@@ -333,6 +340,197 @@ async def test_fetch_agent_unary_gives_up_after_single_retry() -> None:
     assert len(agent.request_ids) == 2
 
 
+@pytest.fixture
+def proxy_trace_exporter(monkeypatch):
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        telemetry, "_runtime",
+        telemetry.GatewayTelemetry(tracer=provider.get_tracer("test-e2a-proxy"), provider=provider),
+    )
+    yield exporter
+    provider.shutdown()
+
+
+class TracedFakeAgentClient(FakeAgentClient):
+    def __init__(self, behavior="ok"):
+        super().__init__()
+        self.behavior = behavior
+        self.operations = []
+
+    async def send_request(self, envelope):
+        self.operations.append(telemetry.current_request_trace())
+        if self.behavior == "cancel":
+            raise asyncio.CancelledError()
+        return await super().send_request(envelope)
+
+
+class TracedFakeChannel(FakeChannel):
+    def __init__(self):
+        super().__init__()
+        self.operations = []
+
+    async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
+        operation = telemetry.current_request_trace()
+        self.operations.append(operation)
+        if operation is not None and not ok:
+            operation.record_outcome("failed", reason="response_failed")
+        await super().send_response(ws, req_id, ok=ok, payload=payload, error=error, code=code)
+
+
+@pytest.mark.asyncio
+async def test_proxy_starts_one_request_trace_without_web_entry(proxy_trace_exporter) -> None:
+    channel = TracedFakeChannel()
+    agent = TracedFakeAgentClient()
+
+    assert await _invoke(channel, agent) is True
+
+    operation = agent.operations[0]
+    assert operation is not None
+    assert channel.operations == [operation]
+    assert operation.finished
+    assert telemetry.current_request_trace() is None
+    spans = proxy_trace_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "gw.session.message"
+    assert spans[0].parent is None
+    assert spans[0].attributes["request_id"] == "req-1"
+    assert spans[0].attributes["method"] == "session.list"
+    assert spans[0].attributes["gateway.outcome"] == "success"
+    assert channel.responses[0]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_proxy_reuses_existing_request_trace_without_finishing_it(proxy_trace_exporter) -> None:
+    operation = telemetry.start_request_trace("req-1", "session.list", channel="web", connection_id="ws")
+    agent = TracedFakeAgentClient()
+    channel = TracedFakeChannel()
+
+    with telemetry.bind_request_trace(operation):
+        await _invoke(channel, agent)
+        assert telemetry.current_request_trace() is operation
+        assert not operation.finished
+        assert proxy_trace_exporter.get_finished_spans() == ()
+
+    assert agent.operations == [operation]
+    assert channel.operations == [operation]
+    operation.complete()
+    spans = proxy_trace_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "gw.session.message"
+
+
+@pytest.mark.asyncio
+async def test_proxy_completion_waits_for_pending_delivery(proxy_trace_exporter) -> None:
+    class PendingChannel(TracedFakeChannel):
+        async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
+            operation = telemetry.current_request_trace()
+            operation.retain_delivery()
+            await super().send_response(ws, req_id, ok=ok, payload=payload, error=error, code=code)
+
+    channel = PendingChannel()
+    agent = TracedFakeAgentClient()
+
+    await _invoke(channel, agent)
+
+    operation = agent.operations[0]
+    assert operation.producer_done
+    assert not operation.finished
+    assert proxy_trace_exporter.get_finished_spans() == ()
+    operation.release_delivery()
+    assert operation.finished
+    assert len(proxy_trace_exporter.get_finished_spans()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "behavior,outcome",
+    [("error", "failed"), ("agent_error", "failed"), ("timeout", "timeout"), ("cancel", "cancelled")],
+)
+async def test_proxy_trace_finishes_on_failure_and_restores_scope(proxy_trace_exporter, behavior, outcome) -> None:
+    agent = TracedFakeAgentClient(behavior)
+    channel = TracedFakeChannel()
+    unrelated = telemetry.start_request_trace("other", "chat.send", channel="web", connection_id="other-ws")
+
+    with telemetry.bind_request_trace(unrelated):
+        if behavior == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await _invoke(channel, agent)
+        else:
+            await _invoke(channel, agent)
+            assert channel.responses[0]["ok"] is False
+        assert telemetry.current_request_trace() is unrelated
+        assert not unrelated.finished
+
+    operation = agent.operations[0]
+    assert operation is not None and operation is not unrelated
+    assert operation.finished
+    spans = proxy_trace_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "gw.session.message"
+    assert spans[0].attributes["gateway.outcome"] == outcome
+    unrelated.complete()
+
+
+@pytest.mark.asyncio
+async def test_background_fetch_does_not_create_message_trace(proxy_trace_exporter) -> None:
+    agent = TracedFakeAgentClient()
+
+    ok, payload = await fetch_agent_unary(
+        agent_client=agent,
+        req_method=ReqMethod.SESSION_LIST,
+        params={},
+        session_id=None,
+        user_id="user-42",
+        channel_id="web",
+    )
+
+    assert ok is True
+    assert payload == {"sessions": [], "total": 0}
+    assert agent.operations == [None]
+    assert proxy_trace_exporter.get_finished_spans() == ()
+
+
+@pytest.mark.asyncio
+async def test_proxy_without_telemetry_preserves_response(monkeypatch) -> None:
+    monkeypatch.setattr(telemetry, "_runtime", None)
+    channel = TracedFakeChannel()
+    agent = TracedFakeAgentClient()
+
+    assert await _invoke(channel, agent) is True
+
+    assert agent.operations == [None]
+    assert channel.operations == [None]
+    assert channel.responses == [{
+        "id": "req-1", "ok": True, "payload": {"sessions": [], "total": 0}, "error": None, "code": None,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_proxy_without_telemetry_preserves_external_span(monkeypatch) -> None:
+    monkeypatch.setattr(telemetry, "_runtime", None)
+    seen_spans = []
+
+    class ExternalTraceAgent(FakeAgentClient):
+        async def send_request(self, envelope):
+            seen_spans.append(trace.get_current_span())
+            return await super().send_request(envelope)
+
+    class ExternalTraceChannel(FakeChannel):
+        async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
+            seen_spans.append(trace.get_current_span())
+            await super().send_response(ws, req_id, ok=ok, payload=payload, error=error, code=code)
+
+    provider = TracerProvider()
+    try:
+        with provider.get_tracer("external-test").start_as_current_span("external") as external:
+            assert telemetry.current_request_trace() is None
+            assert await _invoke(ExternalTraceChannel(), ExternalTraceAgent()) is True
+            assert seen_spans == [external, external]
+            assert trace.get_current_span() is external
+    finally:
+        provider.shutdown()
 @pytest.mark.asyncio
 async def test_fetch_agent_unary_forwards_reported_http_status() -> None:
     class _Client:

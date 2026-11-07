@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from openjiuwen.agent_teams.paths import organization_workspace_dir
+
 from jiuwenswarm.agents.harness.team.summary_org.launcher import (
     JiuwenSummaryTeamLauncher,
 )
@@ -158,6 +160,39 @@ async def test_summary_team_launch_rollback_reuses_resolved_runtime(monkeypatch)
     ]
 
 
+def _summary_prompts(monkeypatch):
+    """Build the fixed Summary Team and return its three role prompts."""
+    configured = SimpleNamespace(
+        agents={
+            "leader": SimpleNamespace(model=None, language="zh"),
+            "teammate": SimpleNamespace(model=None, language="zh"),
+        },
+        model_pool=[],
+        model_router=None,
+        model_intelli_router=None,
+        model_pool_strategy="round_robin",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager._load_team_spec",
+        lambda session_id: configured,
+    )
+    spec = build_summary_team_spec(
+        team_id="org-summary-org-1",
+        organization_id="org-1",
+        session_id="session-1",
+    )
+    members = {member.member_name: member.prompt for member in spec.predefined_members}
+    prompts = {
+        "leader": spec.agents["leader"].system_prompt,
+        "source-integrator": spec.agents["source-integrator"].system_prompt,
+        "delivery-drafter": spec.agents["delivery-drafter"].system_prompt,
+    }
+    assert spec.leader.prompt == prompts["leader"]
+    assert members["source-integrator"] == prompts["source-integrator"]
+    assert members["delivery-drafter"] == prompts["delivery-drafter"]
+    return prompts
+
+
 def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     """The fixed internal teammates need a live in-process message transport."""
     configured = SimpleNamespace(
@@ -202,19 +237,95 @@ def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     assert "verify the returned draft" in spec.agents["leader"].system_prompt
     assert "internal Team message" in spec.agents["leader"].system_prompt
     assert "Summary Team workspace" in spec.agents["leader"].system_prompt
-    assert "Organization workspace summary/" in spec.agents["leader"].system_prompt
-    assert (
-        "send the complete outline back"
-        in spec.agents["source-integrator"].system_prompt
-    )
-    assert "Return the complete draft" in spec.agents["delivery-drafter"].system_prompt
+    summary_dir = str(organization_workspace_dir("org-1", "session-1") / "summary")
     leader_prompt = spec.agents["leader"].system_prompt
+    integrator_prompt = spec.agents["source-integrator"].system_prompt
+    drafter_prompt = spec.agents["delivery-drafter"].system_prompt
+    assert summary_dir in leader_prompt
+    assert summary_dir in drafter_prompt
+    assert "Do not send that short text to source-integrator or delivery-drafter" in leader_prompt
+    assert "send the complete outline back" in integrator_prompt
+    assert "Return the complete draft" in drafter_prompt
     assert "root_task and summary_task" in leader_prompt
     assert "facts must come only from bound sources" in leader_prompt
     assert "stop after successful submission" in leader_prompt
     assert "correct the reported fields and retry without restarting drafting" in leader_prompt
-    assert "source disagreements and missing evidence" in spec.agents["source-integrator"].system_prompt
-    drafter_prompt = spec.agents["delivery-drafter"].system_prompt
+    assert "disagreements that would change the conclusion" in integrator_prompt
+    assert "do not call claim_task" in integrator_prompt
+    assert "do not call claim_task" in drafter_prompt
+    assert "use that text" in integrator_prompt
+    assert "use that text" in drafter_prompt
     assert "Do not automatically produce a long report or redo specialist work" in drafter_prompt
     assert "copy it unchanged" in drafter_prompt
     assert "Set result_type to the actual delivered format" in drafter_prompt
+
+
+def test_summary_leader_writes_short_text_without_the_two_teammates(monkeypatch):
+    """A single short text stays with the leader; teammates are only for a complex deliverable."""
+    prompts = _summary_prompts(monkeypatch)
+    leader = prompts["leader"]
+
+    assert "single short text deliverable" in leader
+    assert "check it once against the request" in leader
+    assert "Do not send that short text to source-integrator or delivery-drafter" in leader
+    assert "only when the bound sources contain a disagreement" in leader
+    assert "or the user asked for a file, code, or a multi-part specialist deliverable" in leader
+
+
+def test_summary_prompts_read_a_cited_source_file_only(monkeypatch):
+    """Bound source text is the default; a file is opened only when that source cites it."""
+    prompts = _summary_prompts(monkeypatch)
+
+    for prompt in prompts.values():
+        assert "use that text" in prompt
+        assert "explicitly cites it" in prompt
+        assert "Do not list directories or open files from earlier runs" in prompt
+
+
+def test_summary_outline_does_not_expand_unrequested_work(monkeypatch):
+    """The outline keeps structure, attribution, and conclusion-changing disagreements."""
+    prompts = _summary_prompts(monkeypatch)
+    outline = (
+        "structure the draft needs",
+        "source attribution",
+        "disagreements that would change the conclusion",
+        "Do not add research, risk lists, or verification items the user did not request",
+    )
+
+    for name in ("leader", "source-integrator"):
+        for phrase in outline:
+            assert phrase in prompts[name], name
+    assert (
+        "Do not add research, risk lists, or verification items the user did not request"
+        in prompts["delivery-drafter"]
+    )
+
+
+def test_summary_prompts_use_one_absolute_summary_directory(monkeypatch):
+    """Writing a final file and result_uri share the framework summary directory."""
+    prompts = _summary_prompts(monkeypatch)
+    summary_dir = str(organization_workspace_dir("org-1", "session-1") / "summary")
+
+    assert summary_dir.startswith("/")
+    assert summary_dir in prompts["leader"]
+    assert summary_dir in prompts["delivery-drafter"]
+    assert summary_dir not in prompts["source-integrator"]
+    assert "pass that same absolute path as result_uri" in prompts["leader"]
+    assert "omit result_uri" in prompts["leader"]
+    assert "report that same absolute path" in prompts["delivery-drafter"]
+    assert "do not invent a path" in prompts["delivery-drafter"]
+
+
+def test_summary_messages_do_not_require_claim_task(monkeypatch):
+    """A message assignment is complete unless view_task shows an internal task for that member."""
+    prompts = _summary_prompts(monkeypatch)
+
+    assert "Do not also create an internal task for work assigned by message" in prompts["leader"]
+    for name in ("source-integrator", "delivery-drafter"):
+        prompt = prompts[name]
+        assert "overrides the autonomous claim loop" in prompt
+        assert "assigns this work by message" in prompt
+        assert "view_task shows an internal task assigned to you" in prompt
+        assert "do not call claim_task" in prompt
+        assert "claim_task(status=completed)" not in prompt
+        assert "org_claim_task" not in prompt

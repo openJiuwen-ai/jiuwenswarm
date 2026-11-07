@@ -55,7 +55,7 @@ await build({
           : path.endsWith('assets/providers')
             ? `export const getModelLogoUrl = ({ vendor_key }) => 'provider-' + vendor_key + '.svg';`
           : path === './ExperimentalSettings'
-            ? ['A2UISetting', 'ExternalCliCustomAgentsItem', 'ProactiveLimitsSetting', 'RSISetting', 'TrajectoryDiagnosisSetting', 'TrajectoryUiSetting']
+            ? ['A2UISetting', 'ExternalCliCustomAgentsItem', 'ProactiveLimitsSetting', 'RSISetting', 'TaskAsrSetting', 'TaskFullDuplexSetting', 'TrajectoryDiagnosisSetting', 'TrajectoryUiSetting']
               .map(name => `export const ${name} = () => null;`).join('\n')
           : path === './A4PSettings' ? 'export const A4PSettings = () => null;'
           : path.endsWith('SettingsServicesProvider')
@@ -308,7 +308,7 @@ test('one shared Jev configuration is shown; mode and switches stay in their ori
   assert.deepEqual(browserItems.map(item => item.id), ['browser-path', 'browser-run-mode', 'browser-decision-mode']);
   const collaboration = experimentalModule.sections.find(section => section.id === 'multi-model-collaboration');
   assert.deepEqual(collaboration.items[0].subItems.items[0], {
-    id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled',
+    id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled', errorDisplay: 'inline',
   });
   assert.equal(collaboration.items[0].subItems.items[1].render.name, 'CollaborationVerifierInterval');
   await mount(async ({ calls, config, browser }) => {

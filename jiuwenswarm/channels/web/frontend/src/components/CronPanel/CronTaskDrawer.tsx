@@ -1,4 +1,4 @@
-import { useState, useRef, ReactNode } from 'react';
+import { useRef, useState, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
 import ScheduleEditor from './ScheduleEditor';
@@ -12,11 +12,13 @@ import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, isOnceScheduleExpired } from './scheduleConvert';
 import { TIMEZONE_OPTIONS } from './constants';
 import { isDefaultLikeProject } from './cronProjectDisplay';
+import { modelNameForSelection, resolveCronDefaultHint } from './cronModelSelection';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo, WorkMode } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
+import { isEnterprise } from '../../edition';
 import { useSessionStore } from '../../stores/sessionStore';
-import type { AgentMode } from '../../types';
+import type { AgentMode, ModelSelection } from '../../types';
 import '../ChatPanel/ChatPanel.css';
 
 export { isDefaultLikeProject } from './cronProjectDisplay';
@@ -44,6 +46,10 @@ export interface CronTaskFormValue {
   // work_mode 需由前端随 project_id 一并下发；见 index.tsx handleCreateSubmit）。
   workMode: WorkMode | null;
   modelName: string | null;
+  // 稳定模型选择（model_id），与 modelName 一起提交：执行会话按它直接定位模型。
+  // 只靠 model_name 的旧链路在目录里出现重名模型（多条目同 model_name）时，
+  // 执行侧反查会报 "ambiguous legacy model name" 导致任务秒败、无任何输出。
+  modelSelection: ModelSelection | null;
   description: string;
   /** 执行模式：单Agent('agent')/集群('team')，下发到后端 CronJob.mode（见 index.tsx handleCreateSubmit/handleEditSubmit） */
   mode: AgentMode;
@@ -63,6 +69,7 @@ function emptyForm(): CronTaskFormValue {
     projectId: null,
     workMode: null,
     modelName: null,
+    modelSelection: null,
     description: '',
     mode: 'agent',
     targets: 'web',
@@ -81,6 +88,7 @@ export function jobToForm(job: CronTaskUI): CronTaskFormValue {
     projectId: null,
     workMode: null,
     modelName: job.modelName,
+    modelSelection: job.modelSelection,
     description: job.description,
     mode: job.mode,
     targets: job.deliveryChannel,
@@ -99,6 +107,7 @@ export function templateToForm(tpl: CronTemplateUI, title: string, description: 
     projectId: null,
     workMode: null,
     modelName: null,
+    modelSelection: null,
     description,
     mode: 'agent',
     targets: 'web',
@@ -193,8 +202,21 @@ export default function CronTaskDrawer({
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelsLoaded = useSessionStore((state) => state.modelsLoaded);
-  const modelUnavailable =
-    modelsLoaded && Boolean(form.modelName) && !models.some((model) => model.model_name === form.modelName);
+  const defaultModelName = useSessionStore((state) => state.defaultModelName);
+  // 任务未存模型（新建/模板创建未选，或编辑一个本就未下发模型的任务）时，在
+  // picker 下方展示任务触发时实际执行的默认模型说明。仅提示、不写 form：
+  // 提交值保持不携带任何模型字段，「新建任务不借用聊天默认模型」的产品约束
+  // （!5666）不变。任务存了模型时 form 非空，提示自然消失（模型被删的旧任务
+  // 由既有 unavailable 提示接管）。清单加载完成（modelsLoaded）后才判定，
+  // 避免加载中把空目录误报成「未检测到可用模型」。
+  const defaultModelHint =
+    modelsLoaded && !form.modelName && !form.modelSelection
+      ? resolveCronDefaultHint(models, defaultModelName)
+      : null;
+  // 有稳定选择按 model_id 核对（重名模型也能正确判定可用性）；旧数据退回名字核对
+  const modelUnavailable = modelsLoaded && (form.modelSelection
+    ? !models.some((model) => model.model_id === form.modelSelection?.id)
+    : Boolean(form.modelName) && !models.some((model) => model.model_name === form.modelName));
   // 修复"在名称/描述输入框里选中文字、拖动选区移出抽屉后松开鼠标，抽屉被误关"：
   // 该手势的 mousedown 在抽屉内、mouseup 在遮罩上，浏览器会把产生的 click 派发到
   // 两者的最近公共祖先（即遮罩层本身），click 不经过抽屉冒泡，抽屉上的
@@ -277,7 +299,7 @@ export default function CronTaskDrawer({
           workMode: matched?.work_mode ?? null,
         });
       },
-      condition: mode !== 'edit',
+      condition: !isEnterprise() && mode !== 'edit',
     },
     {
       testId: 'cron-simple-select-3',
@@ -447,11 +469,33 @@ export default function CronTaskDrawer({
                     <ModelPicker
                       testIdPrefix="cron-model-picker"
                       value={form.modelName}
-                      onChange={(modelName) => setForm({ ...form, modelName })}
+                      onChange={(modelName) => setForm({ ...form, modelSelection: null, modelName })}
+                      selection={form.modelSelection}
+                      onSelectionChange={(modelSelection) => {
+                        // 稳定选择与展示名同源：按 model_id 反查展示名（重名目录下
+                        // 也能拿到选中条目的名字），payload 继续携带 model_name
+                        // 兼容列表展示与旧执行链路
+                        const matchedName = modelNameForSelection(models, modelSelection);
+                        setForm({ ...form, modelSelection, modelName: matchedName });
+                      }}
                       includeModelGroups={false}
                       disabled={proactiveLocked}
                     />
                   </div>
+                  {defaultModelHint && (
+                    <p
+                      className={`min-w-0 break-words text-xs ${defaultModelHint.kind === 'empty' ? 'text-warn' : 'text-text-muted'}`}
+                      role="status"
+                      data-testid="cron-drawer-model-default-hint"
+                      data-kind={defaultModelHint.kind}
+                    >
+                      {defaultModelHint.kind === 'named'
+                        ? t('cron.drawer.modelDefaultHintNamed', { model: defaultModelHint.modelName })
+                        : defaultModelHint.kind === 'generic'
+                          ? t('cron.drawer.modelDefaultHintGeneric')
+                          : t('cron.drawer.modelDefaultHintEmpty')}
+                    </p>
+                  )}
                   {modelUnavailable && (
                     <p
                       className="min-w-0 break-words text-xs text-warn"

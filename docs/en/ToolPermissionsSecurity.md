@@ -242,7 +242,31 @@ If not using `tiered_policy`, typically **only** `external_directory` is updated
 
 ---
 
-## 9. See Also
+## 9. JiuwenMate Tool Approvals in Feishu and DingTalk
+
+When a tool needs human confirmation, JiuwenMate sends an approval notice to the original conversation. Only the original initiator can decide through the original application and conversation:
+
+- For one pending approval containing one tool call, reply `approve` or `reject` (Chinese equivalents are supported).
+- For multiple calls, copy a complete command from the notice. Only the selected call is approved; all remaining calls are rejected. `reject APPROVAL_ID` rejects the entire batch.
+- Invalid, missing, processed and expired approvals receive explicit feedback. Approvals expire after 15 minutes and are rejected on expiry.
+- Approval replies bypass the business queue. Other business messages remain queued with a reminder to resolve the pending approval.
+- Redelivery of an approval message cannot execute the operation twice or approve a later interruption.
+
+Publishing a permission profile affects new requests only. Switching to full access does not approve an existing paused operation. Explicit approval or rejection resumes the original request with its original configuration. Tool execution confirmation is separate from Feishu or DingTalk application permissions and user OAuth authorization.
+
+## 10. JiuwenMate cross-group sharing approval
+
+Searching another group's messages creates a private approval in the **Agent owner's Web workspace → Private chat → Cross-group sharing approvals**. The card shows the requester, sources, destination, query and proposed content. The original IM conversation receives only a waiting notice; its requester cannot approve their own disclosure.
+
+- **Approve once** releases only the frozen result for this request and query, excluding later messages and other queries.
+- **Always approve** permits future sharing from those sources to the same group or private recipient. The owner can revoke it in the grants table below the cards.
+- **Reject** shares none of the proposed content. Pending approvals expire after 15 minutes and are rejected.
+
+Approval resumes the original request. Source access changes, message edits or recalls and revoked grants are rechecked before reading and delivery; blocked content and files are not sent. Full tool access and ordinary tool approvals do not replace owner consent.
+
+This gate protects group search and the associated request's delivery. It does not erase previously disclosed history or turn unrestricted Bash into an OS sandbox.
+
+## 11. See Also
 
 - [Configuration](Configuration.md): `JIUWENSWARM_CONFIG_DIR`, configuration file location.
 - [CLI Commands](CLI.md): CLI/TUI entry points (including slash commands).

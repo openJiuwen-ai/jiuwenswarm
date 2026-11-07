@@ -4,6 +4,12 @@ Task Memory is JiuwenSwarm's built-in experience system that allows the Agent to
 
 ---
 
+## Enterprise configuration updates
+
+With the enterprise configuration source, Gateway persists Manager memory/task memory updates and uses the existing Runtime refresh notification after a successful write. AgentServer reads and applies persisted settings on its next enterprise configuration resolution or explicit reload. A new execution process does not need to share Python caches with Gateway. A successful API response means saved, not applied by every execution instance.
+
+Memory retains its DB overlay deep merge over YAML; Task Memory retains DB precedence. Deleting configuration restores YAML settings. Database read failures keep the last applied values and log a warning. The next configuration resolution reads the database even without a configured Runtime endpoint or after a failed notification. Running objects that do not resolve configuration again are not forcibly rebuilt. Community and YAML-only behavior remains unchanged.
+
 ## Configuration
 
 Configure in `config/config.yaml`:

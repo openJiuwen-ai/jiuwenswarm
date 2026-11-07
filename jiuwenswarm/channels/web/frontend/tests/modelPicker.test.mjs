@@ -94,6 +94,7 @@ const initialForm = {
   name: 'Existing scheduled task',
   description: 'Draft description',
   modelName: 'configured-a',
+  modelSelection: null,
   mode: 'agent',
   cronExpr: '0 0 2 * * ? *',
   timezone: 'Asia/Shanghai',
@@ -318,8 +319,40 @@ test('selecting a scheduled-task model submits its ID and leaves the active chat
     assert.equal(byId('chat-panel-model-selector-trigger').textContent, 'Configured A');
     assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'configured-a');
     await click(byId('cron-drawer-submit-btn'));
+    // 目录条目没有 model_id 时退回名称契约：modelSelection 字段保留但为空
     assert.deepEqual(submitted, { ...initialForm, modelName: 'configured-b' });
-    assert.equal(Object.hasOwn(submitted, 'modelSelection'), false);
+    assert.equal(submitted.modelSelection, null);
+  });
+});
+
+test('a scheduled-task model with a stable ID submits its model_selection', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    // 回归：目录里两条同名配置只能按 model_id 区分；若提交只带 model_name，
+    // cron 执行会话按名字反查命中多条，报 "ambiguous legacy model name" 秒败。
+    const stableCatalog = [
+      { model_id: 'mdl-flash-1', model_name: 'deepseek-flash', alias: 'Flash One', is_default: true },
+      { model_id: 'mdl-flash-2', model_name: 'deepseek-flash', alias: 'Flash Two', is_free: false },
+      { model_id: 'mdl-glm', model_name: 'GLM-5.3', alias: 'GLM', is_free: false },
+    ];
+    await act(async () => useSessionStore.getState().setAvailableModels(stableCatalog, 'deepseek-flash'));
+    let submitted;
+    await mount(
+      cronDrawer({
+        initial: { ...initialForm, modelName: 'deepseek-flash' },
+        onSubmit(value) {
+          submitted = value;
+        },
+      }),
+    );
+    await click(byId('cron-model-picker-trigger'));
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="mdl-flash-2"]'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Flash Two');
+    await click(byId('cron-drawer-submit-btn'));
+    assert.deepEqual(submitted, {
+      ...initialForm,
+      modelName: 'deepseek-flash',
+      modelSelection: { type: 'model', id: 'mdl-flash-2' },
+    });
   });
 });
 
@@ -528,6 +561,62 @@ test('a new task keeps an unselected model instead of borrowing the active chat 
     assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
     await click(byId('cron-drawer-submit-btn'));
     assert.equal(submitted.modelName, null);
+  });
+});
+
+test('create drawer shows the default model hint without borrowing the default into the submitted task', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    let submitted;
+    await mount(
+      cronDrawer({
+        mode: 'create',
+        initial: { ...initialForm, modelName: null },
+        onSubmit(value) {
+          submitted = value;
+        },
+      }),
+    );
+    const hint = byId('cron-drawer-model-default-hint');
+    assert.ok(hint, 'hint renders when no model is selected in create mode');
+    assert.equal(hint.dataset.kind, 'named');
+    assert.equal(
+      hint.textContent,
+      resources.en.translation.cron.drawer.modelDefaultHintNamed.replace('{{model}}', 'Configured A'),
+    );
+    // 提示仅展示：提交值保持不带任何模型字段，!5666 契约不回退
+    await click(byId('cron-drawer-submit-btn'));
+    assert.equal(submitted.modelName, null);
+    assert.equal(submitted.modelSelection, null);
+  });
+});
+
+test('default model hint tracks catalog state, hides once a model is picked, and stays off in edit mode', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    // 模板创建与新建同样展示
+    await mount(cronDrawer({ mode: 'template', initial: { ...initialForm, modelName: null } }));
+    assert.equal(byId('cron-drawer-model-default-hint')?.dataset.kind, 'named');
+    // 目录清空 → 警示态（创建时即可预见到点失败，而不是静默提交）
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.equal(byId('cron-drawer-model-default-hint')?.dataset.kind, 'empty');
+    // 用户选中模型后提示消失
+    await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-a'));
+    await click(byId('cron-model-picker-trigger'));
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
+    assert.equal(byId('cron-drawer-model-default-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
+    // 编辑一个本就未存模型的任务：与创建时同样展示（提示只取决于任务是否存了模型）。
+    // 先空挂载一次卸载上个抽屉实例：同 root 连续 render 会复用组件实例，
+    // useState(initial) 不重新执行，form 会残留上个抽屉的选择
+    await mount();
+    await mount(cronDrawer({
+      mode: 'edit',
+      initial: { ...initialForm, modelName: null, modelSelection: null },
+    }));
+    assert.equal(byId('cron-drawer-model-default-hint')?.dataset.kind, 'named');
+    // 编辑存了模型的任务：不展示
+    await mount();
+    await mount(cronDrawer({ mode: 'edit', initial: initialForm }));
+    assert.equal(byId('cron-drawer-model-default-hint'), null);
   });
 });
 

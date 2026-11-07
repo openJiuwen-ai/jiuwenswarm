@@ -45,6 +45,35 @@ _MULTIMEDIA_SUFFIXES = frozenset(
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
 
+def resolve_skillpack_member_type(skill_dir: Path | None) -> str:
+    """Read a valid root for Pack membership; never infer skill from missing data."""
+    from jiuwenswarm.server.runtime.skill.skillpack import (
+        SkillPackValidationError,
+        _read_skill_document,
+    )
+
+    if skill_dir is None or not skill_dir.is_dir() or skill_dir.is_symlink():
+        return "unknown"
+    if any(path.is_symlink() for path in skill_dir.rglob("*")):
+        return "unknown"
+    try:
+        metadata, _ = _read_skill_document(skill_dir / "SKILL.md")
+    except SkillPackValidationError:
+        return "unknown"
+    if (
+        metadata.get("name") != skill_dir.name
+        or not isinstance(metadata.get("description"), str)
+        or not metadata["description"].strip()
+    ):
+        return "unknown"
+    kind = str(metadata.get("kind") or "").strip().lower()
+    if kind in {"", "skill"}:
+        return "skill"
+    if kind in _SWARM_KINDS:
+        return "swarm_skill"
+    return "skillpack" if kind == "skillpack" else "unknown"
+
+
 def detect_skill_type(skill_dir: Path | None) -> str:
     """识别 Skill 类型；目录无效时返回普通 ``skill``."""
     if skill_dir is None or not skill_dir.is_dir():

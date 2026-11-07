@@ -11,6 +11,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+from agent_gateway.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_INTERNAL_KEY,
+)
 
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     SessionMessagingRouteRail,
@@ -22,7 +27,6 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     session_messaging_route_context,
     with_session_messaging_route,
 )
-from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
     SessionRunAdmission,
 )
@@ -63,10 +67,6 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
-)
-from gateway.common.session_message import (
-    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
-    SESSION_MESSAGE_INTERNAL_KEY,
 )
 
 
@@ -306,6 +306,8 @@ async def test_session_message_status_content_is_web_only(monkeypatch, channel_i
     assert message["metadata"]["_jiuwenswarm_session_message_owner_scope_id"] == "owner"
     assert message["metadata"][SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY] is False
     assert ("content" in message["payload"]["message"]) is include_content
+    # Only the target conversation is told; the sender gets no copy.
+    assert len(pushed) == 1
 
 
 @pytest.mark.asyncio
@@ -2247,6 +2249,61 @@ async def test_agentserver_persists_question_correlation_before_push(
     assert ordering[2][1]["payload"]["event_type"] == "chat.ask_user_question"
     assert ordering[2][1]["payload"]["request_id"] == "tool-call-1"
     assert ordering[2][1]["payload"]["turn_request_id"] == "execution-1"
+
+
+@pytest.mark.asyncio
+async def test_a_message_paused_by_client_tools_and_questions_waits_on_the_whole_pause(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="execute-mixed")
+    record = store.claim(queued.message_id, "execution-1", "run-1")
+    correlations = []
+    pause = [
+        ("chat.ask_user_question", "ask-1", "ask_user_interrupt"),
+        ("chat.client_tool_request", "read-1", "client_tool_interrupt"),
+        ("chat.client_tool_request", "read-2", "client_tool_interrupt"),
+        ("chat.ask_user_question", "bash-1", "permission_interrupt"),
+    ]
+
+    class _Runtime:
+        agent_manager = object()
+
+        def stream(self, request, **kwargs):
+            async def events():
+                for index, (event_type, request_id, source) in enumerate(pause):
+                    yield RuntimeEvent(
+                        request_id=request.request_id, channel_id=request.channel_id,
+                        session_id=request.session_id,
+                        payload={"event_type": event_type, "request_id": request_id, "source": source},
+                        is_complete=index == len(pause) - 1,
+                    )
+
+            return events()
+
+    class _Service:
+        async def mark_waiting(self, message_id, **kwargs):
+            correlations.append(("mark", kwargs["interrupt_request_id"]))
+            return True
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._runtime = _Runtime()
+    server._agent_manager = server._runtime.agent_manager
+    server._session_message_service = _Service()
+
+    async def send_push(message):
+        return True
+
+    server.send_push = send_push
+    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
+    result = await server.execute_internal_session_message(record)
+
+    assert result.status == "waiting_user"
+    # An answer to any interaction of the pause finds the message (resumed_interactions).
+    assert correlations == [("mark", "ask-1")]
 
 
 @pytest.mark.asyncio
@@ -4264,3 +4321,129 @@ async def test_target_delete_lock_wait_is_bounded(
     finally:
         service._target_state_lock.release()
         await service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_a_resumed_mailbox_turn_that_asks_its_client_again_moves_the_correlation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    store = SessionMessageStore(tmp_path / "client-again.sqlite3")
+    service = SessionMessageService(store=store, admission=_RecordingAdmission(),
+                                    execute=lambda record: asyncio.sleep(0), available=False)
+    await service.start()
+    waiting, _ = _enqueue(store, key="client-again")
+    store.claim(waiting.message_id, "execution-1", "run-1")
+    store.mark_waiting(waiting.message_id, interrupt_request_id="read-1",
+                       interrupt_source="client_tool_interrupt")
+    request = AgentRequest(
+        request_id="resume-1", channel_id="web", session_id="target-1", req_method=ReqMethod.CHAT_SEND,
+        is_stream=streaming,
+        params={"source": "client_tool_interrupt",
+                "answers": [{"interrupt_id": "intr-read-1", "request_id": "read-1", "result": {"text": "one"}}]},
+    )
+    # The resumed turn pauses again: a client tool call, then a question of the same pause.
+    pause = [("chat.client_tool_request", "write-2", "client_tool_interrupt"),
+             ("chat.ask_user_question", "bash-3", "permission_interrupt")]
+
+    def _events(request):
+        return [RuntimeEvent(request_id=request.request_id, channel_id=request.channel_id,
+                             session_id=request.session_id,
+                             payload={"event_type": event_type, "request_id": rid, "source": source},
+                             is_complete=index == len(pause) - 1)
+                for index, (event_type, rid, source) in enumerate(pause)]
+
+    class _Runtime:
+        @staticmethod
+        def resumed_interactions(request):
+            return frozenset({"read-1"})  # the pause the client's answer resumes
+
+        def stream(self, request, **kwargs):
+            async def events():
+                for event in _events(request):
+                    yield event
+
+            return events()
+
+        async def invoke(self, request, **kwargs):
+            return _events(request)
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._session_message_service = service
+    server._session_stream_tasks = {}
+    server._execution_runtime = lambda: _Runtime()
+    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(0, result=True)
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
+    if streaming:
+        await server._handle_stream_impl(object(), request, asyncio.Lock())
+    else:
+        await server._handle_unary_impl(object(), request, asyncio.Lock())
+
+    # The next answer, to either interaction of the new pause, finds the message.
+    moved = store.waiting_for_pause("target-1", {"write-2", "bash-3"})
+    assert moved is not None and moved.message_id == waiting.message_id
+    await service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["chat.ask_user_question", "chat.client_tool_request"])
+async def test_a_first_turn_interaction_without_a_request_id_fails_the_message(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, event_type: str
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="uncorrelated")
+    record = store.claim(queued.message_id, "execution-1", "run-1")
+    marked = []
+
+    class _Runtime:
+        agent_manager = object()
+
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(request_id=request.request_id, channel_id=request.channel_id,
+                                   session_id=request.session_id,
+                                   payload={"event_type": event_type, "source": "ask_user_interrupt"},
+                                   is_complete=True)
+
+            return events()
+
+    class _Service:
+        async def mark_waiting(self, message_id, **kwargs):
+            marked.append(kwargs)
+            return True
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._runtime = _Runtime()
+    server._agent_manager = server._runtime.agent_manager
+    server._session_message_service = _Service()
+
+    async def send_push(message):
+        return True
+
+    server.send_push = send_push
+    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
+    result = await server.execute_internal_session_message(record)
+
+    assert result.status == "failed" and "uncorrelated" in result.error
+    assert marked == []
+
+
+@pytest.mark.asyncio
+async def test_send_message_without_input_mode_uses_the_documented_default():
+    # The tool layer fills an omitted optional field from the schema; without a default it
+    # passes None, which the service rejects as an unsupported input_mode.
+    toolkit = SessionMessagingToolkit()
+    received = {}
+
+    async def send_message(target_session_id, message, input_mode="steer"):
+        received["input_mode"] = input_mode
+        return {"ok": True}
+
+    toolkit.send_message = send_message
+    tool = next(tool for tool in toolkit.get_tools() if tool.card.name == "session_send_message")
+    await tool.invoke({"target_session_id": "target-1", "message": "count the slides"})
+    assert received["input_mode"] == "steer"

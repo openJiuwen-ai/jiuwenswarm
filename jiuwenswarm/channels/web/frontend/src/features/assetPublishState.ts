@@ -41,7 +41,17 @@ export function localRecordState(record: PublishRecord): LocalRecordState {
  * new submission instead.
  */
 export function isSubmissionLocked(record: PublishRecord): boolean {
+  return shouldPollPublish(record);
+}
+
+export function shouldPollPublish(record: PublishRecord): boolean {
+  if (['completed', 'blocked', 'reconcile_upload', 'reauth_required'].includes(record.stage || '')) return false;
   return record.execution_status === 'queued' || record.execution_status === 'uploading';
+}
+
+export function canRetrySkillPack(record: PublishRecord): boolean {
+  return ['reconcile_upload', 'reauth_required'].includes(record.stage || '') ||
+    (record.stage === 'blocked' && record.error?.code === 'SKILLPACK_HUB_CHECK_FAILED');
 }
 
 /** Terminal records, including an unverified outcome, can start a new submission. */

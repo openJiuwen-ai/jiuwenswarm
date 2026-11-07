@@ -13,7 +13,9 @@ names the CLI no longer offers are dropped and efforts come from the CLI.
 
 Custom agents (uploaded harness providers) have no hand-written policy, so an
 enabled one whose provider declares ``MODEL_DISCOVERY`` gets a catalog
-allowing every model it reports.
+allowing every model it reports. Disabling a CLI drops its catalog, so a CLI
+just enabled again without one gets the same: its catalog is the CLI's
+current model list, not the one it had before.
 
 Probing starts the CLI and reads its model list; it issues no model request.
 """
@@ -25,6 +27,7 @@ import os
 import tempfile
 import threading
 import uuid
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -150,6 +153,18 @@ def _discoverable_custom_agents(entries: list[Any]) -> dict[str, str | None]:
     return targets
 
 
+def _reenabled_agents(entries: list[Any], enabled_now: Collection[str]) -> dict[str, str | None]:
+    """Return the kinds just turned on that have no catalog, with their CLI path."""
+    targets: dict[str, str | None] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("builtin_models"):
+            continue
+        cli_agent = str(entry.get("cli_agent") or "").strip()
+        if cli_agent in enabled_now:
+            targets[cli_agent] = str(entry.get("cli_path") or "").strip() or None
+    return targets
+
+
 def _discovered_catalog(reported: dict[str, list[str]]) -> list[dict[str, Any]]:
     """Allow every reported model; efforts stay in the stored report."""
     return [{"name": name} for name in reported if name != _DEFAULT_MODEL_ALIAS]
@@ -219,17 +234,23 @@ def _store_reported_models(reports: dict[str, dict[str, list[str]]]) -> None:
     os.replace(temporary, path)
 
 
-def refresh_external_cli_builtin_models(timeout_s: float = DEFAULT_PROBE_TIMEOUT_S) -> list[str]:
+def refresh_external_cli_builtin_models(
+    timeout_s: float = DEFAULT_PROBE_TIMEOUT_S,
+    *,
+    enabled_now: Collection[str] = (),
+) -> list[str]:
     """Probe the CLIs whose built-in models the team may pick and store their reports.
 
-    Probed are the kinds declaring a catalog, plus enabled custom agents whose
-    provider can list models (those without a catalog get one allowing every
-    reported model). A deployment not using built-in model selection pays
-    nothing. A probe that fails (the CLI is not logged in, cannot start, or
-    times out) keeps that kind's previous report.
+    Probed are the kinds declaring a catalog, plus the kinds without one that
+    get it seeded with every reported model: enabled custom agents whose
+    provider can list models, and the kinds in ``enabled_now``. A deployment
+    not using built-in model selection pays nothing. A probe that fails (the
+    CLI is not logged in, cannot start, or times out) keeps that kind's
+    previous report and leaves a seeded kind without a catalog.
 
     Args:
         timeout_s: Per-CLI probe deadline.
+        enabled_now: The kinds this save turned on.
 
     Returns:
         The drift between each catalog and its CLI's report, for the log.
@@ -239,6 +260,7 @@ def refresh_external_cli_builtin_models(timeout_s: float = DEFAULT_PROBE_TIMEOUT
     if not isinstance(entries, list):
         return []
     seeds = _discoverable_custom_agents(entries)
+    seeds.update(_reenabled_agents(entries, enabled_now))
     declared_by_agent: dict[str, list[dict[str, Any]]] = {}
     paths: dict[str, str | None] = dict(seeds)
     for entry in entries:
