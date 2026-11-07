@@ -8,6 +8,9 @@ from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, Event, ExtensionEventBu
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    extract_permission_user_content,
+)
 from jiuwenswarm.server.runtime.agent_adapter import prompt_context as prompt_context_module
 from jiuwenswarm.extensions_v2.event_types.prompt_context import (
     PROMPT_CONTEXT_EVENT,
@@ -94,6 +97,45 @@ async def test_async_build_inputs_prepares_prompt_context_once_and_projects_resu
 
 
 @pytest.mark.asyncio
+async def test_async_build_inputs_keeps_permission_projection_with_context_carrier(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+
+    bus = ExtensionEventBus()
+    register_prompt_context_events(bus)
+    await bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
+
+    async def add_custom_context(event, ops, next_handler):
+        del ops, next_handler
+        return PromptContextResult(
+            blocks=[
+                *event.event_input.blocks,
+                PromptContextBlock(name="custom", text="custom-text"),
+            ],
+        )
+
+    bus.register_event_handler(PROMPT_CONTEXT_EVENT, add_custom_context, {}, HandlerLevel.USER)
+    monkeypatch.setattr(prompt_context_module, "_get_extension_bus", lambda: bus)
+
+    inputs, _, _ = await interface_module.JiuWenSwarm().build_inputs_async(
+        AgentRequest(
+            request_id="req-prompt-context-permission-projection",
+            channel_id="web",
+            session_id="session-prompt-context",
+            req_method=ReqMethod.CHAT_SEND,
+            params={"query": "hello", "mode": "agent"},
+        )
+    )
+
+    assert _envelope(inputs["query"])["prompt_context"] == {
+        "blocks": [{"name": "custom", "text": "custom-text"}],
+    }
+    assert extract_permission_user_content(inputs["query"]) == "hello"
+
+
+@pytest.mark.asyncio
 async def test_async_build_inputs_projects_deleted_known_contexts(monkeypatch) -> None:
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
@@ -128,7 +170,8 @@ async def test_async_build_inputs_projects_deleted_known_contexts(monkeypatch) -
     )
     envelope = _envelope(inputs["query"])
 
-    assert "timestamp" not in envelope
+    assert isinstance(envelope["timestamp"], str)
+    assert envelope["timestamp"]
     assert "must be removed" not in inputs["query"]
     assert envelope["prompt_context"] == {
         "blocks": [{"name": "custom", "text": "kept"}],
