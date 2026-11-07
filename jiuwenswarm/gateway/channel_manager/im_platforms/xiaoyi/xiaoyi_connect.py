@@ -99,7 +99,7 @@ _APPROVAL_EVENT_ACTIONS = {
     "deny": "reject",
     "refuse": "reject",
 }
-# 待答复审批有效期（超时后按普通消息处理，避免陈旧 request_id 误恢复）
+# 待答复审批有效期（超时后按普通消息处理，避免陈旧 request_id 误恢复）。
 _APPROVAL_EXPIRE_S = 30 * 60
 # 文本回退形态（app_ver ≤ 11.7.9 / 未上报）的审批回复约定话术：随提示正文
 # 下发，引导用户按词表回复。
@@ -786,6 +786,25 @@ class XiaoyiChannel(BaseChannel):
         self._canceled_platform_tasks: dict[tuple[str, str], float] = {}
         self._task_timeout_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._session_timeout_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        # ask_user 应答收口账本：(session_id, 主投任务 id=应答帧链路) →
+        # 待答表登记的原任务 id。云端在 InvokeRsp 后只对应答帧链路做下发
+        # （实测挂原链手机完全收不到，挂应答链手机有内容），故 resume 主投
+        # 跟随应答帧 task_id。resume 终态时向原任务链补发同态收口终帧
+        # （云端若仍下发原链则手机/桌面气泡闭环，被冻结则仅多一帧无害
+        # 状态帧），见 _send_legacy 终态分支。不要扩用作正文流镜像——PC 端
+        # 会话视图由云端话题同步驱动，本地增量与话题重渲染交替回流会抖动。
+        self._answer_receipts: dict[tuple[str, str], str] = {}
+        # 链路正文累积（断链续投播种用，见 _route_approval_reply）：每条任务链
+        # 已流出的完整正文，按端侧 append 语义维护（append=true 追加、
+        # append=false 整段替换、reasoning 不参与）。ask_user 应答续跑切到
+        # 跟随链路时，用它把应答前的正文播种到新链首帧——手机端这轮是同一
+        # 条消息续显，最终 streamText 以跟随链累积为准，不播种则缺头。
+        self._streamed_chain_texts: dict[tuple[str, str], str] = {}
+        # 挂起的断链续投种子：(session_id, 跟随链 task_id) → 待播种正文。
+        # 应答后立即发出的种子帧实测被云端竞态丢弃（~100ms 内应答交互尚未
+        # 就绪），改为挂起、随续跑首个正文帧下发（秒级延迟，路径已验证可达），
+        # 见 _send_legacy 文本分支；续跑无正文时由终态分支兜底补发。
+        self._pending_resume_seeds: dict[tuple[str, str], str] = {}
         self._sessions_waiting_for_push: dict[str, str] = {}  # {session: task} waiting for push
         self._team_sessions: set[str] = set()  # Team rounds stay active across member outputs
         self._team_tasks: set[tuple[str, str]] = set()
@@ -909,6 +928,8 @@ class XiaoyiChannel(BaseChannel):
         # V2: 启动 ws 保活任务，周期发 status-update 重置手机端空闲计时
         if self._team_ws_keepalive_interval > 0:
             self._ws_keepalive_task = asyncio.create_task(self._ws_keepalive_loop())
+        # AskUser 超时兜底：超时未应答自动选默认选项续跑（见 _ask_user_timeout_loop）
+        self._ask_user_timeout_task = asyncio.create_task(self._ask_user_timeout_loop())
         logger.info("XiaoyiChannel 已启动（客户端模式，双通道）")
 
     async def stop(self) -> None:
@@ -974,6 +995,10 @@ class XiaoyiChannel(BaseChannel):
         if self._ws_keepalive_task and not self._ws_keepalive_task.done():
             self._ws_keepalive_task.cancel()
         self._ws_keepalive_task = None
+        # 取消 AskUser 超时兜底任务
+        if self._ask_user_timeout_task and not self._ask_user_timeout_task.done():
+            self._ask_user_timeout_task.cancel()
+        self._ask_user_timeout_task = None
         # V2: 清理 ws 流式合并缓冲
         for _tid in list(self._ws_flush_tasks.keys()):
             if self._ws_flush_tasks[_tid]:
@@ -1706,6 +1731,50 @@ class XiaoyiChannel(BaseChannel):
                     task_id, session_id, status_text, status_state, url_key, extra_part=_tool_part
                 )
             if status_state in {"completed", "failed", "canceled"} and session_id:
+                # 断链续投种子终态兜底：续跑无任何正文事件时（纯工具轮），
+                # 种子仍需补发，否则端侧缓冲只有空续写、段1 彻底丢失。
+                _terminal_seed = self._pending_resume_seeds.pop(
+                    (session_id, task_id), None
+                )
+                if _terminal_seed:
+                    for _seed_url_key, _seed_ws in list(
+                        self._ws_connections.items()
+                    ):
+                        if _seed_ws:
+                            await self._send_text_response(
+                                session_id,
+                                task_id,
+                                _terminal_seed,
+                                _seed_url_key,
+                                append=True,
+                                last_chunk=False,
+                                is_final=False,
+                                kind="text",
+                            )
+                # 原链收口终帧：主投已跟随应答帧链路，向待答表登记的原任务
+                # 链补发同态终帧（同文案、不带工具卡片 part），尽力闭环手机/
+                # 桌面在原链上的任务气泡（云端若已冻结原链则此帧无效果）。
+                _receipt_task_id = self._answer_receipts.pop(
+                    (session_id, task_id), None
+                )
+                if _receipt_task_id:
+                    for url_key in list(self._ws_connections.keys()):
+                        await self._send_status_update_with_state(
+                            _receipt_task_id,
+                            session_id,
+                            status_text,
+                            status_state,
+                            url_key,
+                        )
+                    logger.info(
+                        "[GUI_AGENT_DIAG] phase=XIAOYI_ORIGINAL_CHAIN_CLOSE "
+                        "session_id=%s main_task_id=%s original_task_id=%s "
+                        "state=%s",
+                        session_id,
+                        task_id,
+                        _receipt_task_id,
+                        status_state,
+                    )
                 await self._finalize_session(
                     session_id,
                     task_id,
@@ -2048,6 +2117,38 @@ class XiaoyiChannel(BaseChannel):
         # 且未被前置 status_update / ask_user_question 分流者。当前 reasoning 集合里
         # 能落到此处的只有 CHAT_SUBTASK_UPDATE（CHAT_REASONING 在 :640 前置分流、
         # CHAT_PROCESSING_STATUS 在 :724 status_update 分流）。
+        # 链路正文累积（每批帧只记一次，在连接循环外）：供断链续投播种。
+        # ask_user 卡片经 _send_ask_user_question_prompt 直发（append=false 带
+        # data part），不经过本分支，不会把题干污染进累积正文。
+        if part_kind == "text":
+            # 断链续投种子下发：确认后首个正文事件先补发已流出正文
+            # （partial/append 帧，先于本批增量；登记时已处理累积，此处
+            # 不重复计入——同链形态累积本就含段1，链迁移形态登记时已播种
+            # 新链）。
+            _pending_seed = self._pending_resume_seeds.pop(
+                (session_id, task_id), None
+            )
+            if _pending_seed:
+                for _seed_url_key, _seed_ws in list(self._ws_connections.items()):
+                    if _seed_ws:
+                        await self._send_text_response(
+                            session_id,
+                            task_id,
+                            _pending_seed,
+                            _seed_url_key,
+                            append=True,
+                            last_chunk=False,
+                            is_final=False,
+                            kind="text",
+                        )
+            for frame_text, frame_append, _ in frames_to_send:
+                if frame_append:
+                    self._streamed_chain_texts[(session_id, task_id)] = (
+                        self._streamed_chain_texts.get((session_id, task_id), "")
+                        + frame_text
+                    )
+                else:
+                    self._streamed_chain_texts[(session_id, task_id)] = frame_text
         for url_key, ws in self._ws_connections.items():
             if ws:
                 try:
@@ -3067,6 +3168,7 @@ class XiaoyiChannel(BaseChannel):
         app_ver = ""  # 手机端版本（systemVariables.app_ver，既有字段），AskUser 选项卡开关依据
         client_variables: dict[str, Any] = {}  # data part 的 variables.clientVariables（workspace/permission 等）
         permission_reply: dict[str, Any] | None = None  # AgentEvent/PermissionReply 审批回执事件
+        ask_user_answer: dict[str, Any] | None = None  # data part 的 askUserAnswer 结构化应答
         file_attachments: list[str] = []
         media_files: list[dict[str, Any]] = []
 
@@ -3118,6 +3220,19 @@ class XiaoyiChannel(BaseChannel):
                         cv = variables.get("clientVariables")
                         if isinstance(cv, dict):
                             client_variables.update(cv)
+                    # AskUser 结构化应答（端侧选项卡点选）：InvokeRsp
+                    # 或旧 askUserAnswer 形态；InvokeRsp 的 source 由待答表回填，
+                    # 此处仅记录帧形状（user_cancel/answers 条数）。
+                    if ask_user_answer is None:
+                        ask_user_answer = _parse_ask_user_answer_part(data)
+                        if ask_user_answer is not None:
+                            logger.info(
+                                "XiaoYi: 识别到 AskUser 结构化应答 source=%s "
+                                "user_cancel=%s answers=%d 条",
+                                ask_user_answer.get("source"),
+                                ask_user_answer.get("user_cancel"),
+                                len(ask_user_answer.get("answers") or []),
+                            )
                     # 审批回执事件（AgentEvent/PermissionReply）：用户点选/结构化回复授权决定
                     events = data.get("events")
                     if isinstance(events, list):
@@ -3512,26 +3627,10 @@ class XiaoyiChannel(BaseChannel):
         # 任务进行中的周期状态保活：向手机/镜像侧持续推 status-update（working，带文案）。
         # 间隔必须小于客户端静默对账阈值（桌面端 45s），否则长静默期（如后台装依赖、
         # 长工具）客户端会误判完成。默认 20s，可用 config.status_update_interval 覆盖。
-        async def periodic_timeout_handler():
-            """任务期间的周期状态保活（默认 20s，见 _status_update_interval）。"""
-            try:
-                while (session_id, task_id) in self._active_tasks:
-                    await asyncio.sleep(self._status_update_interval)
-                    if (
-                        (session_id, task_id) not in self._active_tasks
-                        or (session_id, task_id) in self._canceled_platform_tasks
-                    ):
-                        break
-                    # Skip if already waiting for push (1-hour timeout triggered)
-                    if self._is_session_waiting_for_push(session_id, task_id):
-                        break
-                    # Send status update
-                    await self._send_status_update(task_id, session_id, "任务正在处理中，请稍后~")
-            except asyncio.CancelledError:
-                pass
-
         self._clear_session_timeout(session_id, task_id)
-        self._session_timeout_tasks[task_key] = asyncio.create_task(periodic_timeout_handler())
+        self._session_timeout_tasks[task_key] = asyncio.create_task(
+            self._periodic_status_keepalive(session_id, task_id)
+        )
         # =================================================================
 
         handled = False
@@ -3639,6 +3738,168 @@ class XiaoyiChannel(BaseChannel):
         # 其他意见：拒绝并把原文作为反馈（对齐 Web 端 custom_input 语义）
         return {"selected_options": [], "custom_input": feedback}
 
+    def _pop_pending_approval_for_answer(
+        self, logical_session: str
+    ) -> dict[str, Any] | None:
+        """取走会话的待答复审批（过期视为无待答复，不消费）。"""
+        pending = self._pending_approvals.get(logical_session)
+        if not pending:
+            return None
+        if time.time() - float(pending.get("created_at", 0)) > _APPROVAL_EXPIRE_S:
+            self._pending_approvals.pop(logical_session, None)
+            logger.info(
+                f"XiaoYi: 待答复审批已过期，结构化应答按普通消息处理 session={logical_session}"
+            )
+            return None
+        self._pending_approvals.pop(logical_session, None)
+        return pending
+
+    @staticmethod
+    def _attach_ask_user_answer_context(
+        ask_user_answer: dict[str, Any],
+        pending: dict[str, Any],
+    ) -> None:
+        """InvokeRsp 应答补全上下文：source 回填 + question_id → question 文本。
+
+        InvokeRsp 帧内不带 source、answers 按 question_id 对齐
+        （不带 question 文本），而 interrupt resume 按 question 文本对齐
+        （interface.py answers_dict 以 question 为键）。此处用出站登记的
+        question_ids 映射表还原；user_cancel 且无 answers 时按出站问题清单合成
+        空答案（ask_user → 跳过，权限类 → fail-closed 拒绝，语义在
+        _build_answer_from_ask_user 收口）。
+        """
+        if not str(ask_user_answer.get("source") or "").strip():
+            ask_user_answer["source"] = str(pending.get("source") or "").strip()
+        questions_by_id = pending.get("question_ids") or {}
+        questions = pending.get("questions") or []
+        answers = ask_user_answer.get("answers")
+        if not isinstance(answers, list):
+            answers = []
+        for answer in answers:
+            if not isinstance(answer, dict):
+                continue
+            if not str(answer.get("question") or "").strip():
+                answer["question"] = str(
+                    questions_by_id.get(
+                        str(answer.get("question_id") or "").strip(), ""
+                    )
+                )
+        if not answers and ask_user_answer.get("user_cancel"):
+            ask_user_answer["answers"] = [
+                {"question": str(q or ""), "selected_options": [], "custom_input": ""}
+                for q in questions
+            ] or [{"question": "", "selected_options": [], "custom_input": ""}]
+
+    @staticmethod
+    def _build_answer_from_ask_user(
+        ask_user_answer: dict[str, Any],
+        pending: dict[str, Any],
+    ) -> tuple[dict[str, Any], str] | None:
+        """AskUser 结构化应答（InvokeRsp / 旧 askUserAnswer）→ resume answers。
+
+        ask_user_interrupt：answers 原样透传（问题对齐 + 自由文本兜底）。
+        权限类中断（permission/confirm/evolution）：selected_options 必须**精确命中**
+        interface.py 的授权白名单（字符串相等，非模糊匹配）——映射不中一律按拒绝
+        处理（fail-closed），custom_input 只能作拒绝理由、不能授权。
+        user_cancel：ask_user → 空答案续跑（= 跳过该问题）；
+        权限类 → fail-closed 按拒绝，取消本身即拒绝理由。
+        answers 缺失首条时用空答案（= 拒绝 + 未知选项反馈），不猜测放行。
+        """
+        answers = ask_user_answer.get("answers") or []
+        answer = answers[0] if answers and isinstance(answers[0], dict) else None
+        if answer is None:
+            return None
+        source = str(pending.get("source") or "").strip()
+        answer_source = str(ask_user_answer.get("source") or "").strip()
+
+        if ask_user_answer.get("user_cancel"):
+            if source == "ask_user_interrupt" or answer_source == "ask_user_interrupt":
+                return (
+                    {
+                        "question": str(answer.get("question") or ""),
+                        "selected_options": [],
+                        "custom_input": "",
+                    },
+                    "ask_user 取消→跳过",
+                )
+            return (
+                {"selected_options": ["拒绝"], "custom_input": "用户取消了选项卡"},
+                "权限:取消→fail-closed拒绝",
+            )
+
+        if source == "ask_user_interrupt" or answer_source == "ask_user_interrupt":
+            # 自由问答：问题文本对齐（多问题场景靠 question 关联），选项+自由文本
+            # 均为合法答案；空 selected_options + 空 custom_input 表示跳过。
+            resume_answer = {
+                "question": str(answer.get("question") or ""),
+                "selected_options": list(answer.get("selected_options") or []),
+                "custom_input": str(answer.get("custom_input") or ""),
+            }
+            return resume_answer, "ask_user 透传"
+
+        selected = answer.get("selected_options") or []
+        custom_input = str(answer.get("custom_input") or "").strip()
+        first = str(selected[0]).strip() if selected else ""
+
+        # 授权白名单（与 interface.py _build_interactive_input_from_answers 同源）：
+        # 允许一次 / 会话内记住 / 永久记住 / 拒绝。
+        if first in ("approve", "本次允许", "Approve", "Proceed", "批准", "开始执行"):
+            return {"selected_options": ["本次允许"], "custom_input": ""}, "权限:本次允许"
+        if first in ("session_allow", "会话内记住", "Session Allow"):
+            return {"selected_options": ["会话内记住"], "custom_input": ""}, "权限:会话内记住"
+        if first in (
+            "always_allow",
+            "allow_always",
+            "永久记住",
+            "总是允许",
+            "Always Allow",
+        ):
+            return {"selected_options": ["永久记住"], "custom_input": ""}, "权限:永久记住"
+        if first in ("reject", "拒绝", "Reject"):
+            return (
+                {"selected_options": ["拒绝"], "custom_input": custom_input},
+                "权限:拒绝",
+            )
+        if first == "继续规划":
+            return (
+                {"selected_options": ["继续规划"], "custom_input": custom_input},
+                "plan:继续规划",
+            )
+        # 命不中白名单（含多选/空选/选项外文本）：fail-closed 按拒绝处理，
+        # 用户附带文字作为拒绝理由反馈给智能体。
+        feedback = custom_input or (
+            f"用户拒绝（选项卡应答未命中白名单: {first}）"
+            if first
+            else "用户拒绝（选项卡应答未选择任何选项）"
+        )
+        return {"selected_options": ["拒绝"], "custom_input": feedback}, "权限:fail-closed拒绝"
+
+    @staticmethod
+    def _resume_answers_from_ask_user(
+        ask_user_answer: dict[str, Any],
+        fallback_answer: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """askUserAnswer 全量 answers → resume answers 列表。
+
+        ask_user_interrupt：逐条透传（保留 question 文本做多问题对齐，interface.py
+        按 question 组 answers_dict）。权限类中断：白名单语义已收敛进
+        fallback_answer，只传这一条（多问题选项卡对权限场景无意义，防第二条
+        未校验的答案混进 resume）。
+        """
+        source = str(ask_user_answer.get("source") or "").strip()
+        if source == "ask_user_interrupt":
+            answers: list[dict[str, Any]] = []
+            for a in ask_user_answer.get("answers") or []:
+                if not isinstance(a, dict):
+                    continue
+                answers.append({
+                    "question": str(a.get("question") or ""),
+                    "selected_options": list(a.get("selected_options") or []),
+                    "custom_input": str(a.get("custom_input") or ""),
+                })
+            return answers or [fallback_answer]
+        return [fallback_answer]
+
     async def _route_approval_reply(
         self,
         message: dict[str, Any],
@@ -3664,36 +3925,100 @@ class XiaoyiChannel(BaseChannel):
         标识（多端抢答场景），随 params 透传供审计/UI 展示"由指定设备完成选择"。
         """
         pending_task_id = str(pending.get("task_id") or "")
+        # 主投寻址跟随应答帧带回的 task_id：云端在 InvokeRsp 后只对应答帧
+        # 链路做下发（2026-11-05 实测——挂原任务链手机完全收不到续跑内容，
+        # 同一条原链应答前却能实时收到卡片；挂应答链手机有内容），手机端
+        # 内容依赖跟随。原任务链记入收口账本：resume 终态时向其补发同态
+        # 终帧，尽力闭环手机/桌面在原链上的任务气泡（若云端已冻结原链则
+        # 仅多一帧无害状态帧）。
         task_id = str(reply_task_id or "").strip() or pending_task_id
         if task_id != pending_task_id:
             logger.info(
-                "XiaoYi: 应答帧带回 task_id=%s（待答表登记=%s），resume 跟随应答帧"
-                "任务链路 session=%s request_id=%s",
+                "XiaoYi: 应答帧带回 task_id=%s（待答表登记=%s），resume 跟随"
+                "应答帧任务链路，完成时向原链补发收口终帧 session=%s "
+                "request_id=%s",
                 task_id,
                 pending_task_id,
                 logical_session,
                 pending.get("request_id"),
             )
-        # resume 轮视为会话当前活跃任务。跟随应答帧 task_id 时该 id 未曾在用户
-        # 消息路径登记（正常路径见 _handle_message_stream 的
+            if pending_task_id and session_id:
+                self._answer_receipts[(session_id, task_id)] = pending_task_id
+        # resume 轮视为会话当前活跃任务。跟随应答帧 task_id 时该 id 未曾在
+        # 用户消息路径登记（正常路径见 _handle_message_stream 的
         # _mark_session_active/_remember_active_platform_task，resume 在应答桥
         # 提前 return 不经过那里），漏登记会让续跑流收尾的
         # processing_status(is_processing=false) 被 _is_session_active 误判跳过，
         # completed+final=true 终帧发不出去，手机端任务气泡永远等不到收尾
-        # （表现为"回答后卡住"，直到下一轮消息顶替取消或手动取消才关闭）。
+        # （表现为"回答后卡住"。2026-11-04 踩坑）。
         if task_id:
             self._mark_session_active(session_id, task_id)
             self._remember_active_platform_task(session_id, task_id)
             self._session_task_map[task_id] = session_id
+        # 键迁移收口：主投已迁移到应答帧链路，原键若不撤销，其 20s 周期保活
+        # 会无限上报
+        # working「任务正在处理中」，端云按已结束链路回 11115 Connection
+        # closed，端侧气泡永远停在"准备任务"。
+        if pending_task_id and pending_task_id != task_id:
+            self._mark_session_completed(session_id, pending_task_id)
+            self._clear_task_timeout(session_id, pending_task_id)
+            self._clear_session_timeout(session_id, pending_task_id)
+        # 断链续投的正文连续性：确认后端侧/云端以 streamType=start 重开消息
+        # 流（缓冲重置）——实测确认后的流只含扣片尾片+续写正文，确认前已
+        # 流出的正文全部丢失（2026-11-06 a.py 轮：手机端仅剩"可恢复）。"）。
+        # 把已流出正文登记为播种，随确认后首个正文事件以 partial（append=
+        # true）帧补发（首个正文事件可能是扣片收尾 flush——种子必须先于
+        # 尾片，否则端侧缓冲序为 尾片+段1 错序）。两种形态都播种：链迁移
+        # （手机端点选，resume 跟随应答帧新链路，累积迁到新链，链式
+        # ask_user 组合）与同链（PC 端点选，应答帧带回原任务 id，累积不动
+        # ——链还在续写）。
+        if session_id and task_id:
+            _seed_source_task = (
+                pending_task_id if task_id != pending_task_id else task_id
+            )
+            _seed_key = (session_id, _seed_source_task)
+            seed_text = str(self._streamed_chain_texts.get(_seed_key) or "")
+            # 格式对齐：把源链扣住的尾片并入种子并补段间换行。旧链路的尾片
+            # 要么随 tool_phase flush（补 \n）发出、要么被续跑首增量裸放，
+            # 断链/缓冲重置后都不会再发生——不并入则段1 缺尾（2026-11-06
+            # 实测缺"可恢复）。"）、不补 \n 则续写首行与段1 粘连。
+            _held_raw = self._text_stream_pending.pop(_seed_key, None)
+            self._text_stream_prefix.pop(_seed_key, None)
+            if _held_raw and _held_raw[0]:
+                seed_text += f"{_held_raw[0]}\n"
+            elif seed_text and not seed_text.endswith("\n"):
+                seed_text += "\n"
+            if seed_text:
+                self._pending_resume_seeds[(session_id, task_id)] = seed_text
+                logger.info(
+                    "XiaoYi: 断链续投正文播种（挂起，随确认后首个正文帧 "
+                    "partial 下发）session=%s seed_source_task=%s to_task=%s "
+                    "len=%d",
+                    logical_session,
+                    _seed_source_task,
+                    task_id,
+                    len(seed_text),
+                )
+            # 播种后累积器清零：每个 ask_user 应答只续"上一次暂停之后"新
+            # 流出的正文（用户规则：只在 ask_user 这一个对话中续上前一个
+            # ask_user 暂停的对话）。链式 ask_user 时第二张卡的种子=应答一
+            # 之后的续写文本，不再重复整轮开头（否则"你好"等段首文本会在
+            # 消息里出现两次）。端侧整轮完整性由各次应答消息顺序拼接保证。
+            self._streamed_chain_texts[(session_id, task_id)] = ""
+            if task_id != pending_task_id:
+                # 链迁移：原链累积清理（已迁到新链）
+                self._streamed_chain_texts.pop((session_id, pending_task_id), None)
         params: dict[str, Any] = {
             "query": "",
             "task_id": task_id,
             "session_id": logical_session,  # 对齐 Web 端 resume 载荷（useWebSocket chat.send）
             "request_id": pending.get("request_id") or "",
-            "answers": [answer],
+            "answers": answers if answers is not None else [answer],
             "source": pending.get("source") or "permission_interrupt",
             "mode": "agent",
         }
+        if responder_device_id:
+            params["responder_device_id"] = responder_device_id
         metadata = {
             "method": "message/stream",
             "xiaoyi_session_id": session_id,  # 顶层 sessionId（物理回发）
@@ -3745,7 +4070,7 @@ class XiaoyiChannel(BaseChannel):
         )
 
     async def _send_ask_user_question_prompt(self, msg: Message, session_id: str, task_id: str) -> None:
-        """权限/确认审批提示：渲染问题与选项，并登记待答复审批（等用户下一条消息回复）。
+        """权限/确认/ask_user 提示：结构化选项卡 + 文本回退，并登记待答复审批。
 
         按手机端版本分流（_ask_user_tabs_enabled，systemVariables.app_ver）：
 
@@ -3846,6 +4171,11 @@ class XiaoyiChannel(BaseChannel):
         """
         ask_user_command = _build_ask_user_command_payload(payload)
         if request_id and logical_session:
+            invoke_questions = [
+                q
+                for q in ask_user_command["payload"].get("questions") or []
+                if isinstance(q, dict)
+            ]
             self._pending_approvals[logical_session] = {
                 "request_id": request_id,
                 "source": source,
@@ -3880,34 +4210,27 @@ class XiaoyiChannel(BaseChannel):
         else:
             logger.warning("XiaoYi: ask_user_question 缺少 request_id/会话标识，无法登记待答复审批")
 
-        q0: dict[str, Any] = questions[0] if questions and isinstance(questions[0], dict) else {}
-        header = str(q0.get("header") or "").strip()
-        question = str(q0.get("question") or "").strip()
-        options = q0.get("options") or []
-        labels = [
-            str(opt.get("label") or "").strip()
-            for opt in options
-            if isinstance(opt, dict) and str(opt.get("label") or "").strip()
-        ]
-        lines = ["🔐 需要您的确认"]
-        if header:
-            lines.append(f"【{header}】")
-        if question:
-            lines.append(question)
-        if labels:
-            lines.append("可选项：" + " / ".join(labels))
-        lines.append(_APPROVAL_REPLY_HINT)
-        prompt_text = "\n".join(lines)
-        # 完整文本块但非 final：提示可见且不关闭任务气泡，续跑结果继续落到同一任务
+        prompt_text = _build_ask_user_prompt_text(source, questions)
+        ask_user_part = {
+            "kind": "data",
+            "data": {"commands": [ask_user_command]},
+        }
+        # artifact-update 承载：问题正文走
+        # text part，选项卡指令走 data part，同帧下发。final=false——任务仍在
+        # 等输入，true 会断开端云任务通道；last_chunk=true（本条 artifact 完整
+        # 发完）；append=false（新 artifact，不追加前序片段）。续跑结果继续落到
+        # 同一 task 气泡。
         for url_key in list(self._ws_connections.keys()):
             await self._send_text_response(
                 session_id,
                 task_id,
                 prompt_text,
                 url_key,
-                append=True,
+                append=False,
                 last_chunk=True,
                 is_final=False,
+                kind="text",
+                extra_part=ask_user_part,
             )
 
     async def _ask_user_timeout_loop(self) -> None:
@@ -4196,6 +4519,9 @@ class XiaoyiChannel(BaseChannel):
         self._clear_task_timeout(session_id, task_id)
         self._clear_session_timeout(session_id, task_id)
         self._mark_session_completed(session_id, task_id)
+        self._answer_receipts.pop((session_id, task_id), None)
+        self._pending_resume_seeds.pop((session_id, task_id), None)
+        self._streamed_chain_texts.pop((session_id, task_id), None)
         self._team_tasks.discard((session_id, task_id))
         self._team_last_leader_finals.pop((session_id, task_id), None)
         for agent_id, entry in list(self._active_push_sessions.items()):
@@ -4210,6 +4536,8 @@ class XiaoyiChannel(BaseChannel):
         task_key = (session_id, task_id)
         self._accumulated_texts.pop(task_key, None)
         self._accumulated_texts.pop(session_id, None)
+        self._streamed_chain_texts.pop(task_key, None)
+        self._pending_resume_seeds.pop(task_key, None)
         self._text_stream_prefix.pop(task_key, None)
         self._text_stream_prefix.pop(session_id, None)
         self._text_stream_pending.pop(task_key, None)
@@ -4303,6 +4631,8 @@ class XiaoyiChannel(BaseChannel):
             self._clear_session_waiting_for_push(session_id, task_id)
 
         self._accumulated_texts.pop(task_key, None)
+        self._streamed_chain_texts.pop(task_key, None)
+        self._pending_resume_seeds.pop(task_key, None)
         if preserve_team_session:
             self._team_tasks.discard((session_id, task_id))
             self._team_last_leader_finals.pop((session_id, task_id), None)
@@ -4324,6 +4654,21 @@ class XiaoyiChannel(BaseChannel):
         """强制清理会话."""
         self._sessions_marked_for_cleanup.pop(session_id, None)
         self._session_task_map.pop(session_id, None)
+        self._answer_receipts = {
+            key: value
+            for key, value in self._answer_receipts.items()
+            if key[0] != session_id
+        }
+        self._pending_resume_seeds = {
+            key: value
+            for key, value in self._pending_resume_seeds.items()
+            if key[0] != session_id
+        }
+        self._streamed_chain_texts = {
+            key: value
+            for key, value in self._streamed_chain_texts.items()
+            if key[0] != session_id
+        }
         self._mark_session_completed(session_id)
         self._latest_platform_tasks.pop(session_id, None)
         self._clear_team_session(session_id)
@@ -4515,6 +4860,26 @@ class XiaoyiChannel(BaseChannel):
         正文结束（下一个工具阶段开始 / 本轮终帧 / 出错）时补一个换行再下发——帧数
         不变、不补空帧，端侧拼接段落之间就有换行。
         """
+        # 断链续投种子兜底：确认后首个正文事件可能是本收尾（续跑首个工具
+        # 事件触发 tool_phase flush）——种子必须先于尾片发出，否则端侧缓冲
+        # 序为 尾片+段1 错序（2026-11-06 a.py 轮实测：手机端仅剩"可恢复）。"）。
+        # 本函数对无扣片的链也会被调用（空收尾早退），种子检查须在早退之前。
+        _pending_seed = self._pending_resume_seeds.pop(
+            (session_id, task_id), None
+        )
+        if _pending_seed:
+            for _seed_url_key, _seed_ws in list(self._ws_connections.items()):
+                if _seed_ws:
+                    await self._send_text_response(
+                        session_id,
+                        task_id,
+                        _pending_seed,
+                        _seed_url_key,
+                        append=True,
+                        last_chunk=False,
+                        is_final=False,
+                        kind="text",
+                    )
         held_raw = self._text_stream_pending.pop(task_key, None)
         self._text_stream_prefix.pop(task_key, None)
         if not held_raw:
@@ -4523,6 +4888,10 @@ class XiaoyiChannel(BaseChannel):
         if not held:
             return
         text = f"{held}\n"
+        # 扣住的尾片此刻才真正流出，计入链路正文累积（断链续投播种用）
+        self._streamed_chain_texts[(session_id, task_id)] = (
+            self._streamed_chain_texts.get((session_id, task_id), "") + text
+        )
         for url_key, ws in list(self._ws_connections.items()):
             if not ws:
                 continue
@@ -4559,8 +4928,12 @@ class XiaoyiChannel(BaseChannel):
             last_chunk: bool = True,
             is_final: bool = True,
             kind: str | None = None,
+            extra_part: dict | None = None,
     ) -> None:
-        """发送文本响应（A2A 格式）到指定通道.
+        """发送文本响应（A2A artifact-update 格式）到指定通道.
+
+        ``extra_part`` 追加在 text part 之后（AskUser 选项卡的 data part，
+        见 _send_ask_user_question_prompt）。
 
         ``kind`` 显式指定 part 类型（``"text"`` 或 ``"reasoningText"``）。
         默认 ``None`` 时按 ``last_chunk`` 推导（``True``→text，``False``→reasoningText），
@@ -4573,6 +4946,9 @@ class XiaoyiChannel(BaseChannel):
             data = {"kind": "reasoningText", "reasoningText": text}
         else:
             data = {"kind": "text", "text": text}
+        parts = [data]
+        if extra_part:
+            parts.append(extra_part)
         response = {
             "jsonrpc": "2.0",
             "id": f"msg_{int(time.time() * 1000)}",
@@ -4584,7 +4960,7 @@ class XiaoyiChannel(BaseChannel):
                 "final": is_final,
                 "artifact": {
                     "artifactId": f"artifact_{int(time.time() * 1000)}",
-                    "parts": [data],
+                    "parts": parts,
                 },
             },
         }
@@ -4602,6 +4978,9 @@ class XiaoyiChannel(BaseChannel):
             response,
         )
         await self._send_agent_response(session_id, task_id, response, url_key)
+        # 注意：不要把续跑正文镜像到原任务链——PC 端会话视图由云端话题同步
+        # 驱动，本地镜像增量与话题重渲染交替触发回流，页面会持续抖动
+        # （2026-11-05 实测）。PC 端续跑内容由轮末话题同步一次性带入。
 
     async def _send_empty_final_ack(
             self, session_id: str, task_id: str, message_id: str
@@ -4990,6 +5369,36 @@ class XiaoyiChannel(BaseChannel):
             task = self._session_timeout_tasks.pop(key, None)
             if task and not task.done():
                 task.cancel()
+
+    async def _periodic_status_keepalive(self, session_id: str, task_id: str) -> None:
+        """任务进行中的周期状态保活（默认 20s，见 _status_update_interval）。
+
+        向手机/镜像侧持续推 working 状态帧，防止长静默期（后台装依赖、长工具）
+        被客户端静默对账误判完成。除任务被移除/取消外，一旦会话被更新的平台
+        任务接管（_latest_platform_tasks 翻篇：ask_user 应答续跑迁移了任务键、
+        连发顶替开了新轮），本任务必须停止上报——否则旧键残留会制造僵尸
+        working 永动帧，端云按已结束的任务链路回 11115 Connection closed。
+        """
+        try:
+            while (session_id, task_id) in self._active_tasks:
+                await asyncio.sleep(self._status_update_interval)
+                if (
+                    (session_id, task_id) not in self._active_tasks
+                    or (session_id, task_id) in self._canceled_platform_tasks
+                ):
+                    break
+                # 翻篇守护：更新的平台任务已接管该会话，本任务让位。
+                if self._latest_platform_tasks.get(session_id) != task_id:
+                    break
+                # Skip if already waiting for push (1-hour timeout triggered)
+                if self._is_session_waiting_for_push(session_id, task_id):
+                    break
+                # Send status update
+                await self._send_status_update(
+                    task_id, session_id, "任务正在处理中，请稍后~"
+                )
+        except asyncio.CancelledError:
+            pass
 
     async def _send_push_notification(self, text: str, push_text: str) -> bool:
         """发送推送通知."""

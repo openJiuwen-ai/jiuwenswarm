@@ -74,8 +74,14 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     ch._accumulated_texts = {}
     ch._send_locks = {}
     ch._reload_permissions_cb = None
+    ch._status_update_interval = float(
+        getattr(ch.config, "status_update_interval", 20) or 20
+    )
     # beta3 新增状态（_handle_message_stream/_finalize 路径引用）
     ch._active_tasks = set()
+    ch._answer_receipts = {}
+    ch._streamed_chain_texts = {}
+    ch._pending_resume_seeds = {}
     ch._latest_platform_tasks = {}
     ch._team_sessions = set()
     ch._team_tasks = set()
@@ -494,18 +500,63 @@ async def test_ask_user_question_prompt_and_resume(cfg_file, workspace):
         ask.id = "req-777"
         await ch._send_legacy(ask)
 
-        # 审批提示：登记待答复 + 文本提示（完整文本块、非 final，不关闭气泡）
+        # 审批提示：登记待答复（含 question_id 映射）+ status-update(input-required)
+        # 双 part 帧（text part 人类可读 + data part ToolExecute/Invoke 选项卡）
         assert ch._pending_approvals["conv-1"]["request_id"] == "req-777"
+        assert ch._pending_approvals["conv-1"]["question_ids"] == {
+            "req-777": "允许执行 bash: zip ... 吗？",
+        }
         prompt = sent[-1]
         assert prompt["msgType"] == "agent_response"
         inner = json.loads(prompt["msgDetail"])
-        part = inner["result"]["artifact"]["parts"][0]
-        assert part["kind"] == "text"
-        assert "需要您的确认" in part["text"]
-        assert "权限审批: bash" in part["text"]
-        assert "同意" in part["text"] and "拒绝" in part["text"]
+        result = inner["result"]
+        # artifact-update 承载
+        assert result["kind"] == "artifact-update"
+        assert result["final"] is False  # 任务等输入，final=true 会断开端云通道
+        assert result["append"] is False
+        assert result["lastChunk"] is True
+        parts = result["artifact"]["parts"]
+        text_part = parts[0]
+        assert text_part["kind"] == "text"
+        # text part 只放问题本身：不带标题/标签/可选项/回复约定话术（卡片承载）
+        assert text_part["text"] == "允许执行 bash: zip ... 吗？"
+        data_part = parts[1]
+        assert data_part["kind"] == "data"
+        command = data_part["data"]["commands"][0]
+        assert command["header"] == {"namespace": "ToolExecute", "name": "Invoke"}
+        invoke = command["payload"]
+        assert invoke["source"] == "permission_interrupt"
+        assert "expiresAt" not in invoke  # 契约外字段，不发
+        q = invoke["questions"][0]
+        assert q["question_id"] == "req-777"
+        assert q["question"] == "允许执行 bash: zip ... 吗？"
+        assert "header" not in q  # 不下发短标签：端侧不渲染副标题（对齐 PC 端）
+        assert q["multi_select"] is False
+        assert q["text_input"] == {
+            "enabled": True,
+            "placeholder": "也可输入其他内容",
+            "required": False,
+        }
+        assert q["options"][0] == {"index": 1, "label": "本次允许"}
+        assert [o["label"] for o in q["options"]] == [
+            "本次允许", "会话内记住", "永久记住", "拒绝",
+        ]
+
+        # AskUser 挂起期间收到流收尾事件（is_processing=false）：不得发
+        # completed/final=true（手机气泡会显示"已完成"并关闭等待态），
+        # 应降级为 working"等待您的确认"，且不触发会话收尾。
+        ch._session_active.add("top-1")  # 状态分支守卫按顶层 sessionId 判活跃
+        proc = type("M", (), {})()
+        proc.event_type = EventType.CHAT_PROCESSING_STATUS
+        proc.payload = {"is_processing": False}
+        proc.metadata = ask.metadata
+        proc.session_id = "conv-1"
+        proc.id = "req-777"
+        await ch._send_legacy(proc)
+        inner = json.loads(sent[-1]["msgDetail"])
+        assert inner["result"]["status"]["state"] == "working"
         assert inner["result"]["final"] is False
-        assert inner["result"]["lastChunk"] is True
+        assert "等待您的确认" in inner["result"]["status"]["message"]["parts"][0]["text"]
 
         # 用户回复「同意」→ interrupt resume 路由（回原始任务气泡）
         await ch._handle_message_stream(_build_stream_msg("同意", None, task="task-9"))
@@ -983,11 +1034,13 @@ async def test_ask_user_invoke_rsp_reply_routes_resume(cfg_file):
         ]
         # responder_device_id 透传进 resume（审计/UI"由指定设备完成选择"）
         assert m.params["responder_device_id"] == "dev_abc123"
-        # 新契约 InvokeRsp：帧信封带回 task_id（task-9）优先于待答表登记
-        # （task-2），resume/续跑流/回执跟随应答帧返回的任务链路
+        # 主投跟随应答帧带回的 task_id（task-9）：云端在 InvokeRsp 后只对
+        # 应答帧链路做下发（实测挂原链手机完全收不到）；原任务链 task-2
+        # 记入收口账本，resume 终态时向其补发收口终帧
         assert m.params["task_id"] == "task-9"
         assert m.metadata["xiaoyi_task_id"] == "task-9"
         assert "conv-1" not in ch._pending_approvals  # 已消费
+        assert ch._answer_receipts.get(("conv-1", "task-9")) == "task-2"
         # resume 轮登记为会话活跃任务（跟随的 task_id 未曾在用户消息路径
         # 登记过）：续跑流收尾的 processing_status(false) 才能通过
         # _is_session_active 检查，completed+final=true 终帧正常下发
@@ -997,7 +1050,8 @@ async def test_ask_user_invoke_rsp_reply_routes_resume(cfg_file):
 
         # 续跑流收尾：processing_status(is_processing=false) 须放行并下发
         # completed+final=true 终帧（漏登记时被 _is_session_active 误跳过，
-        # 手机气泡永远等不到收尾，表现为"回答后卡住"）
+        # 手机气泡永远等不到收尾，表现为"回答后卡住"），并向原任务链
+        # （task-2）补发收口终帧，尽力闭环原链上的任务气泡
         proc = type("M", (), {})()
         proc.event_type = EventType.CHAT_PROCESSING_STATUS
         proc.payload = {"is_processing": False}
@@ -1009,12 +1063,274 @@ async def test_ask_user_invoke_rsp_reply_routes_resume(cfg_file):
         proc.session_id = "conv-1"
         proc.id = "task-9"
         await ch._send_legacy(proc)
-        inner = json.loads(sent[-1]["msgDetail"])
-        assert inner["result"]["kind"] == "status-update"
-        assert inner["result"]["status"]["state"] == "completed"
-        assert inner["result"]["final"] is True
+        main = json.loads(sent[-2]["msgDetail"])
+        receipt = json.loads(sent[-1]["msgDetail"])
+        assert main["result"]["kind"] == "status-update"
+        assert main["result"]["taskId"] == "task-9"
+        assert main["result"]["status"]["state"] == "completed"
+        assert main["result"]["final"] is True
+        # 原链收口帧：同态同 final，落在待答表登记的 task-2 链路
+        assert receipt["result"]["taskId"] == "task-2"
+        assert receipt["result"]["status"]["state"] == "completed"
+        assert receipt["result"]["final"] is True
+        assert ("conv-1", "task-9") not in ch._answer_receipts  # 已消费
     finally:
         _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_resume_seeds_streamed_text_to_follow_chain(cfg_file):
+    """播种 v3：格式对齐（含扣片尾片+段间换行），双形态，随首正文帧 partial。
+
+    确认后端侧以 streamType=start 重开消息流（缓冲重置），确认前已流出的
+    正文会丢。播种=累积+扣片尾片+
+（格式与旧链路 tool_phase flush 对齐：
+    段完整、续写另起一行），挂起后随确认后首个正文事件以 append=true
+    （partial）帧发出。链迁移（手机点选，累积迁新链）与同链（PC 点选，
+    原链续写）双形态；种子吸收源链扣片后，flush/续增量不再重发尾片。
+    """
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        # 段1（未收尾）：累积器=已发帧拼接，最后一片扣在 pending
+        acc = "第一段。\n第二段已发"
+        held = "收尾"
+        seg1 = acc + held + "\n"  # 播种期望：累积+尾片+换行
+        ch._streamed_chain_texts[("conv-1", "task-2")] = acc
+        ch._text_stream_pending[("conv-1", "task-2")] = (held, "text")
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-960",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["问1？"],
+            "question_ids": {"call_960": "问1？"},
+        }
+        # 形态一：链迁移（手机端点选，应答帧带回新 rpc id task-9）
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": False,
+            "answers": [{
+                "question_id": "call_960",
+                "selected_options": ["选项A"],
+                "custom_text": None,
+            }],
+        }, task="task-9"))
+        # 播种挂起（不立即发帧）；尾片已被吸收；新链累积=种子；原链清理
+        assert ch._pending_resume_seeds.get(("conv-1", "task-9")) == seg1
+        # 播种后累积器清零（下次种子只含本次应答之后的续写）
+        assert ch._streamed_chain_texts.get(("conv-1", "task-9")) == ""
+        assert ("conv-1", "task-2") not in ch._streamed_chain_texts
+        assert ("conv-1", "task-2") not in ch._text_stream_pending
+        # 未随应答立即发正文帧——仅"已收到您的回复"回执状态帧
+        assert all(
+            json.loads(s["msgDetail"])["result"]["kind"] == "status-update"
+            for s in sent
+        )
+
+        # 续跑首个正文 delta：种子以 partial 帧发出（格式对齐后完整段1）
+        delta = type("M", (), {})()
+        delta.event_type = EventType.CHAT_DELTA
+        delta.payload = {"content": "你的", "is_complete": False}
+        delta.metadata = {
+            "xiaoyi_session_id": "conv-1",
+            "xiaoyi_task_id": "task-9",
+            "xiaoyi_conversation_id": "conv-1",
+        }
+        delta.session_id = "conv-1"
+        delta.id = "task-9"
+        await ch._send_legacy(delta)
+        seed = json.loads(sent[1]["msgDetail"])  # sent[0]=回执状态帧
+        assert seed["result"]["taskId"] == "task-9"
+        assert seed["result"]["append"] is True
+        assert seed["result"]["lastChunk"] is False
+        assert seed["result"]["artifact"]["parts"][0]["text"] == seg1
+        # 后续续写正常追加到新链累积（扣片：首片扣住未发）
+        delta.payload = {"content": "选择已收到。", "is_complete": False}
+        await ch._send_legacy(delta)
+        assert ch._streamed_chain_texts.get(("conv-1", "task-9")) == "你的"
+
+        # 链式 ask_user：第二张卡挂 task-9 链，第二次应答播种=段1+续写
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-961",
+            "source": "ask_user_interrupt",
+            "task_id": "task-9",
+            "created_at": time.time(),
+            "questions": ["问2？"],
+            "question_ids": {"call_961": "问2？"},
+        }
+        sent.clear()
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": False,
+            "answers": [{
+                "question_id": "call_961",
+                "selected_options": ["选项B"],
+                "custom_text": None,
+            }],
+        }, task="task-10"))
+        # 第二次播种=段1+续写（含此时扣住的"选择已收到。"+\n，格式对齐）
+        seg2 = "你的选择已收到。\n"  # 仅含应答一之后的续写（扣片吸收+换行）
+        assert ch._pending_resume_seeds.get(("conv-1", "task-10")) == seg2
+        assert ch._streamed_chain_texts.get(("conv-1", "task-10")) == ""
+        assert ("conv-1", "task-9") not in ch._streamed_chain_texts
+
+        # 形态二：同链（PC 端点选，应答帧带回原任务 id）——尾片并入种子
+        ch._streamed_chain_texts[("conv-1", "task-2")] = acc
+        ch._text_stream_pending[("conv-1", "task-2")] = (held, "text")
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-962",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["问3？"],
+            "question_ids": {"call_962": "问3？"},
+        }
+        sent.clear()
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": False,
+            "answers": [{
+                "question_id": "call_962",
+                "selected_options": ["确认"],
+                "custom_text": None,
+            }],
+        }, task=""))
+        # 同链：种子挂起（含尾片+换行），累积对齐到种子（续写在种子上追加）
+        assert ch._pending_resume_seeds.get(("conv-1", "task-2")) == seg1
+        # 播种后累积器清零（同链形态：续写从空累积，下次种子不含段1）
+        assert ch._streamed_chain_texts.get(("conv-1", "task-2")) == ""
+        assert ("conv-1", "task-2") not in ch._text_stream_pending
+        # 确认后首个正文事件=tool_phase flush：种子发出，尾片已被吸收不再重发
+        await ch._flush_text_stream_segment(
+            "conv-1", "task-2", ("conv-1", "task-2"), reason="tool_phase"
+        )
+        seed2 = json.loads(sent[1]["msgDetail"])  # sent[0]=回执状态帧
+        assert seed2["result"]["taskId"] == "task-2"
+        assert seed2["result"]["append"] is True
+        assert seed2["result"]["artifact"]["parts"][0]["text"] == seg1
+        assert len(sent) == 2  # 无独立尾片帧（已并入种子）
+        assert ("conv-1", "task-2") not in ch._pending_resume_seeds
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_answer_follow_delivery_and_lifecycle(cfg_file):
+    """跟随应答帧链路主投 + 原链收口：生命周期随键迁移完整收口。
+
+    发卡轮 task-2 经普通消息路径登记进 _active_tasks 并挂 20s 周期保活；
+    应答帧带回 task-9，主投跟随（云端 InvokeRsp 后只对答链下发，实测挂
+    原链手机完全收不到）。键迁移时原键收口（活跃表/保活/超时撤销），
+    终态时主投 completed+final=true 落 task-9、原链 task-2 补发收口终帧
+    ——否则旧键残留的保活每 20s 上报 working「任务正在处理中」，端云按
+    已结束链路回 11115 Connection closed，端侧气泡永远停在"准备任务"。
+    """
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        # 复现真实状态：发卡轮已登记活跃 + 周期保活在跑 + 最近平台任务指向它
+        ch._active_tasks.add(("conv-1", "task-2"))
+        ch._latest_platform_tasks["conv-1"] = "task-2"
+        keepalive = asyncio.create_task(
+            ch._periodic_status_keepalive("conv-1", "task-2")
+        )
+        ch._session_timeout_tasks[("conv-1", "task-2")] = keepalive
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-950",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["单弹窗调试：你能看到这个带两个选项的问题卡片吗？"],
+            "question_ids": {
+                "call_950": "单弹窗调试：你能看到这个带两个选项的问题卡片吗？"
+            },
+        }
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": False,
+            "answers": [{
+                "question_id": "call_950",
+                "selected_options": ["选项B"],
+                "custom_text": None,
+            }],
+        }, task="task-9"))
+        # 键迁移：主投 task-9 登记活跃，原键 task-2 收口（保活撤销），
+        # 收口账本登记原链
+        m = captured[-1]
+        assert m.params["task_id"] == "task-9"
+        assert m.metadata["xiaoyi_task_id"] == "task-9"
+        assert ch._answer_receipts.get(("conv-1", "task-9")) == "task-2"
+        assert ("conv-1", "task-9") in ch._active_tasks
+        assert ch._latest_platform_tasks.get("conv-1") == "task-9"
+        assert ch._session_task_map.get("task-9") == "conv-1"
+        assert ("conv-1", "task-2") not in ch._active_tasks
+        assert ("conv-1", "task-2") not in ch._session_timeout_tasks
+        assert ("conv-1", "task-2") not in ch._task_timeout_tasks
+        await asyncio.gather(keepalive, return_exceptions=True)
+        assert keepalive.done()  # 旧键保活已终止，不再上报 working
+
+        # 续跑终帧：主投 completed+final=true 落 task-9（手机内容链收口），
+        # 原链 task-2 补发收口终帧（尽力闭环手机/桌面原链气泡）
+        proc = type("M", (), {})()
+        proc.event_type = EventType.CHAT_PROCESSING_STATUS
+        proc.payload = {"is_processing": False}
+        proc.metadata = {
+            "xiaoyi_session_id": "conv-1",
+            "xiaoyi_task_id": "task-9",
+            "xiaoyi_conversation_id": "conv-1",
+        }
+        proc.session_id = "conv-1"
+        proc.id = "task-9"
+        await ch._send_legacy(proc)
+        main = json.loads(sent[-2]["msgDetail"])
+        receipt = json.loads(sent[-1]["msgDetail"])
+        assert main["result"]["taskId"] == "task-9"
+        assert main["result"]["status"]["state"] == "completed"
+        assert main["result"]["final"] is True
+        assert receipt["result"]["taskId"] == "task-2"
+        assert receipt["result"]["status"]["state"] == "completed"
+        assert receipt["result"]["final"] is True
+        assert ("conv-1", "task-9") not in ch._answer_receipts  # 已消费
+        assert ("conv-1", "task-9") not in ch._active_tasks
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_periodic_keepalive_breaks_when_newer_task_takes_over():
+    """保活翻篇守护：更新的平台任务接管会话后，旧任务保活必须停止上报。
+
+    防御性兜底：任何未来路径若再制造旧键残留（在 _active_tasks 未撤销），
+    保活也必须在 _latest_platform_tasks 翻篇后停发，不再产生僵尸 working。
+    """
+    sent_frames: list = []
+
+    async def _fake_send(task_id, session_id, text, *args, **kwargs):
+        sent_frames.append((task_id, text))
+
+    ch = _make_channel([], [])
+    ch._status_update_interval = 0.01
+    ch._send_status_update = _fake_send
+    # 旧键仍在活跃表（未收口），但最近平台任务已翻篇到 task-9
+    ch._active_tasks.add(("conv-1", "task-2"))
+    ch._latest_platform_tasks["conv-1"] = "task-9"
+    keepalive = asyncio.create_task(
+        ch._periodic_status_keepalive("conv-1", "task-2")
+    )
+    await asyncio.sleep(0.05)
+    assert keepalive.done()  # 翻篇即退出，尽管旧键仍在 _active_tasks
+    assert sent_frames == []  # 一条僵尸 working 都不发
+
+    # 对照：未翻篇时正常周期上报
+    ch._active_tasks.add(("conv-1", "task-9"))
+    ch._latest_platform_tasks["conv-1"] = "task-9"
+    keepalive2 = asyncio.create_task(
+        ch._periodic_status_keepalive("conv-1", "task-9")
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not keepalive2.done()
+        assert sent_frames and sent_frames[0][0] == "task-9"
+    finally:
+        keepalive2.cancel()
+        await asyncio.gather(keepalive2, return_exceptions=True)
 
 
 @pytest.mark.asyncio
