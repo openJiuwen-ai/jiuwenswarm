@@ -105,7 +105,7 @@
 | --- | --- |
 | 启动标识 | Electron 主进程每次启动生成，经 `window.jiuwenDesktop.launchId` 提供；浏览器中取会话存储中的随机值 |
 | 已完成的启动 | 浏览器本地存储记录最近一次完成开场的启动标识；同一标识不再进入开场（刷新、重连、同一次启动中的新窗口） |
-| 候选提示 | `app_web` 的 `GET /extension-splash/hint` 返回 `{"candidates": <bool>}`：已安装包的 manifest 中出现 `application.splash` 即为 true。只表示可能有候选，不代表包已激活；取不到或格式不符（如开发模式由 Vite 返回页面）按“未知”处理 |
+| 候选提示 | `app_web` 的 `GET /extension-splash/hint` 返回 `{"candidates": <bool>}`，由 Gateway 的 `splash_hint.installed_splash_providers()` 计算：与 Gateway 相同的配置、加载器的 manifest 规则（`package.domain` 为 gateway 且声明合法的 `application.splash`）和用户开场偏好（已停用的不算），不运行包代码。只表示已安装的候选，不代表包已激活；取不到或格式不符（如开发模式由 Vite 返回页面）按“未知”处理 |
 | 首帧中性层 | 本地存储记录上次判定（`workswarm.splash.expected`）；上次判定没有开场或本启动已完成时，`index.html` 的内联脚本在首帧前移除中性层 |
 
 ## 5. 门控与开场队列（前端）
@@ -113,7 +113,7 @@
 | 阶段 | 行为 |
 | --- | --- |
 | 首帧 | `index.html` 显示与 Electron 加载页一致的中性层；脚本启动后由门控接管 |
-| 判定 | 本启动已完成，或提示为否：立即开放。提示为是：等待连接至多 30 秒后查询提供者。无法取得提示：等待连接并查询至多 3 秒 |
+| 判定 | 本启动已完成：立即开放。提示为否：立即开放，再在连接后（至多 3 秒）向 Gateway 查询一次，列表非空则依次播放——提示不能替代 Gateway 的最终判断。提示为是：等待连接至多 30 秒后查询提供者。无法取得提示：等待连接并查询至多 3 秒 |
 | 顺序 | `customized` 为 false 时，最近一次的外观提供者（S_08）排在首位，其余按提供者列表顺序；为 true 时按列表顺序 |
 | 准备 | 依次向每个提供者发送定向 `ui.ready`；5 秒内无回执或回执不是 `playing` 时转到下一个 |
 | 播放 | 只显示当前提供者的开场实例；媒体就绪时限 10 秒 |

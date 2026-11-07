@@ -3281,11 +3281,24 @@ test('splash gate opens at once for a completed launch or a hint without candida
     const app = splashSetup(options);
     await app.controller.start();
     assert.equal(app.controller.getState().phase, 'open');
-    assert.deepEqual(app.requests, []);
+    assert.equal(app.phases[0], 'open:', 'the gate opens before the Gateway answers');
+    assert.deepEqual(app.requests, options.hint ? ['providers'] : [], 'a "none" hint is still confirmed with the Gateway');
     assert.deepEqual(app.readies(), []);
     app.controller.dispose(); app.runtime.dispose();
   }
   assert.equal(window.localStorage.getItem('workswarm.splash.expected'), '0');
+});
+
+test('a "none" hint cannot hide a splash the Gateway lists', async () => {
+  const app = splashSetup({ hint: 'none', answers: { 'pkg.a': 'skip' }, providers: providerList(['pkg.a']) });
+  await app.controller.start();
+  assert.equal(app.phases[0], 'open:', 'the workspace is not held back by the hint');
+  assert.deepEqual(app.requests, ['providers']);
+  assert.deepEqual(app.readies(), ['pkg.a'], 'the provider the Gateway listed is asked to play');
+  assert.equal(app.controller.getState().phase, 'open');
+  assert.equal(window.localStorage.getItem('workswarm.splash.expected'), '1');
+  app.controller.dispose(); app.runtime.dispose();
+  window.localStorage.removeItem('workswarm.splash.expected');
 });
 
 test('splash queue plays providers in order, skips non-players and closes each played splash once', async () => {

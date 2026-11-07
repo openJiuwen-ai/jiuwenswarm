@@ -129,6 +129,12 @@ def discover_package_roots(install_dir: Path) -> list[Path]:
     return [root for _, root in highest.values()]
 
 
+def read_package_manifest(root: Path) -> dict[str, Any]:
+    """Read one installed version's manifest with the loader's rules, without running package code."""
+
+    return _read_manifest(Path(root))
+
+
 def _read_manifest(root: Path) -> dict[str, Any]:
     raw = read_manifest_document(root)
     package = raw["package"]

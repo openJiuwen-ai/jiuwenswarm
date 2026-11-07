@@ -1,4 +1,4 @@
-"""The Web UI server answers the startup splash hint locally (Gateway F_12)."""
+"""The Web UI server answers the startup splash hint locally (Gateway F_12, S_09 section 4)."""
 
 from __future__ import annotations
 
@@ -9,43 +9,60 @@ from functools import partial
 from http.server import ThreadingHTTPServer
 
 from jiuwenswarm.channels.web import app_web
-from jiuwenswarm.channels.web.app_web import _SpaStaticHandler, _gateway_install_dir, _splash_candidates
+from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
+from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig, load_gateway_config
+from jiuwenswarm.gateway.extensions_v2.splash_hint import installed_splash_providers
 
-def _install(root, package_id, slot, *, versioned=True):
+
+def _install(root, package_id, items, *, versioned=True, domain="gateway"):
     directory = root / package_id / "1.0.0" if versioned else root / package_id
     directory.mkdir(parents=True)
     manifest = {
         "schemaVersion": 1, "package_type": "extension",
-        "package": {"id": package_id, "version": "1.0.0", "domain": "gateway"},
-        "ui": {"apiVersion": 1, "items": [{"type": "web.slot.contribution", "id": f"{package_id}.view", "slot": slot}]},
+        "package": {"id": package_id, "version": "1.0.0", "domain": domain},
+        "extensions": [{"id": "main", "runtime": "backend", "module": "extension.py"}],
+        "ui": {"apiVersion": 1, "items": items},
     }
     (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (directory / "extension.py").write_text("def create_extension():\n    raise AssertionError('not run')\n",
+                                            encoding="utf-8")
 
 
-def test_install_dir_follows_the_gateway_configuration(tmp_path, monkeypatch):
+def _slot(slot, **extra):
+    return {"type": "web.slot.contribution", "id": f"item.{slot}", "slot": slot, **extra}
+
+
+def test_candidates_follow_the_gateway_rules(tmp_path):
+    config = GatewayExtensionConfig(install_dir=tmp_path / "pkgs", data_dir=tmp_path / "data")
+    assert installed_splash_providers(config) == []
+    _install(config.install_dir, "test.footer", [_slot("application.sidebar.footer")])
+    # Text that only mentions the slot is not a declaration.
+    _install(config.install_dir, "test.mention", [_slot("application.background", title="application.splash")])
+    _install(config.install_dir, "test.agent", [_slot("application.splash")], domain="agentserver")
+    _install(config.install_dir, "test.invalid", [_slot("application.splash", splash={"maxDurationMs": 10})])
+    assert installed_splash_providers(config) == []
+    _install(config.install_dir, "test.splash", [_slot("application.splash")], versioned=False)
+    _install(config.install_dir, "test.off", [_slot("application.splash")])
+    (tmp_path / "data" / "host").mkdir(parents=True)
+    (tmp_path / "data" / "host" / "splash.json").write_text(json.dumps(
+        {"version": 1, "installed": ["test.splash", "test.off"], "order": None, "disabled": ["test.off"]}))
+    assert installed_splash_providers(config) == ["test.splash"]
+    assert installed_splash_providers(GatewayExtensionConfig(enabled=False, install_dir=config.install_dir)) == []
+
+
+def test_the_hint_uses_the_gateway_configuration(tmp_path, monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
-    assert _gateway_install_dir() == tmp_path / "extension_pkgs"
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "config.yaml").write_text("extensions:\n  gateway:\n    install_dir: custom_pkgs\n")
-    assert _gateway_install_dir() == tmp_path / "custom_pkgs"
-    (tmp_path / "config" / "config.yaml").write_text(f"extensions:\n  gateway:\n    install_dir: {tmp_path / 'abs'}\n")
-    assert _gateway_install_dir() == tmp_path / "abs"
-    (tmp_path / "config" / "config.yaml").write_text("extensions: [broken")
-    assert _gateway_install_dir() == tmp_path / "extension_pkgs"
-
-
-def test_candidates_follow_installed_manifests(tmp_path):
-    root = tmp_path / "extension_pkgs"
-    assert _splash_candidates(root) is False
-    _install(root, "test.footer", "application.sidebar.footer")
-    assert _splash_candidates(root) is False
-    _install(root, "test.splash", "application.splash", versioned=False)
-    assert _splash_candidates(root) is True
+    install_dir = load_gateway_config({}).install_dir
+    seen = []
+    monkeypatch.setattr("jiuwenswarm.gateway.extensions_v2.splash_hint.load_gateway_config",
+                        lambda: seen.append(True) or GatewayExtensionConfig(install_dir=tmp_path / "custom"))
+    _install(tmp_path / "custom", "test.splash", [_slot("application.splash")])
+    assert app_web._splash_candidates() is True and seen == [True]
+    assert install_dir != tmp_path / "custom"
 
 
 def test_hint_is_served_by_the_web_server(tmp_path, monkeypatch):
-    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
-    _install(tmp_path / "extension_pkgs", "test.splash", "application.splash")
+    monkeypatch.setattr(app_web, "_splash_candidates", lambda: True)
 
     class _Handler(_SpaStaticHandler):
         def log_message(self, format: str, *args) -> None:  # noqa: A002 - base signature

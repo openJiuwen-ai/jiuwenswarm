@@ -93,37 +93,20 @@ def _get_user_workspace_dir() -> Path:
 #: Startup splash candidate hint (Gateway S_09 section 4); answered locally because
 #: the page may load before the Gateway is up.
 SPLASH_HINT_PATH = "/extension-splash/hint"
-_SPLASH_SLOT_MARKER = "application.splash"
 
 
-def _gateway_install_dir() -> Path:
-    """Resolve ``extensions.gateway.install_dir`` without importing the extension runtime."""
-    workspace = _get_user_workspace_dir()
-    install_dir = "extension_pkgs"
-    try:
-        import yaml
+def _splash_candidates() -> bool:
+    """Whether an installed Gateway package may play a splash (Gateway S_09 section 4).
 
-        raw = yaml.safe_load((workspace / "config" / "config.yaml").read_text(encoding="utf-8"))
-        configured = raw["extensions"]["gateway"]["install_dir"]
-        if isinstance(configured, str) and configured.strip():
-            install_dir = configured.strip()
-    except Exception:  # noqa: BLE001 - a missing or partial config keeps the default
-        pass
-    path = Path(install_dir).expanduser()
-    return path if path.is_absolute() else workspace / path
-
-
-def _splash_candidates(install_dir: Path) -> bool:
-    """Whether an installed manifest mentions the splash slot.
-
-    This is only a hint that a splash may play: the browser still asks the Gateway
-    which packages are active.
+    Shares the Gateway's configuration, manifest rules and splash preferences; the browser still
+    confirms with the Gateway once connected, so this only decides how long to wait.
     """
     try:
-        manifests = (*install_dir.glob("*/manifest.json"), *install_dir.glob("*/*/manifest.json"))
-        return any(_SPLASH_SLOT_MARKER in manifest.read_text(encoding="utf-8", errors="ignore")
-                   for manifest in manifests)
-    except OSError:
+        from jiuwenswarm.gateway.extensions_v2.splash_hint import installed_splash_providers
+
+        return bool(installed_splash_providers())
+    except Exception:  # noqa: BLE001 - an unreadable install counts as none; the Gateway answer decides
+        logging.getLogger(__name__).debug("splash hint unavailable", exc_info=True)
         return False
 
 
@@ -2333,7 +2316,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if parsed.path == SPLASH_HINT_PATH:
-            self._write_json(200, {"candidates": _splash_candidates(_gateway_install_dir())})
+            self._write_json(200, {"candidates": _splash_candidates()})
             return
         if parsed.path == "/oauth/hub/done":
             body = (

@@ -250,7 +250,9 @@ export function createSplashController(options: SplashControllerOptions): Splash
     if (disposed) return;
     if (hint !== 'unknown') writeItem(SPLASH_EXPECTED_KEY, hint === 'candidates' ? '1' : '0');
     if (hint === 'none') {
+      // The hint only spares the wait; the Gateway's list stays the final answer (Gateway S_09 section 4).
       open();
+      await confirmWithGateway();
       return;
     }
     const connected = await waitConnected(hint === 'candidates' ? SPLASH_TIMEOUTS.connectHinted : SPLASH_TIMEOUTS.connectUnknown);
@@ -259,15 +261,35 @@ export function createSplashController(options: SplashControllerOptions): Splash
       open();
       return;
     }
-    const answer = await delay(Promise.resolve().then(options.requestProviders), SPLASH_TIMEOUTS.answer, null);
-    // A saved order is final; otherwise the appearance provider goes first (Gateway S_10 section 4).
-    const providers = orderProviders(parseProviders(answer), parseCustomized(answer) ? null : options.preferredProvider);
-    if (answer !== null) writeItem(SPLASH_EXPECTED_KEY, providers.length ? '1' : '0');
-    for (const provider of providers) {
+    for (const provider of await askProviders()) {
       if (disposed) return;
       await play(provider);
     }
     if (!disposed) open();
+  }
+
+  async function askProviders(): Promise<SplashProvider[]> {
+    const answer = await delay(Promise.resolve().then(options.requestProviders), SPLASH_TIMEOUTS.answer, null);
+    // A saved order is final; otherwise the appearance provider goes first (Gateway S_10 section 4).
+    const providers = orderProviders(parseProviders(answer), parseCustomized(answer) ? null : options.preferredProvider);
+    if (answer !== null) writeItem(SPLASH_EXPECTED_KEY, providers.length ? '1' : '0');
+    return providers;
+  }
+
+  /** After a "none" hint the gate is open; play what the Gateway still lists, unless a preview runs. */
+  async function confirmWithGateway(): Promise<void> {
+    if (!(await waitConnected(SPLASH_TIMEOUTS.connectUnknown)) || disposed) return;
+    const providers = await askProviders();
+    if (!providers.length) return;
+    try {
+      for (const provider of providers) {
+        if (disposed || state.phase !== 'open') return;
+        await play(provider);
+        if (!disposed) set({ phase: 'open', provider: null, instanceKey: null });
+      }
+    } finally {
+      if (!disposed && state.phase !== 'open') set({ phase: 'open', provider: null, instanceKey: null });
+    }
   }
 
   async function preview(provider: SplashProvider): Promise<boolean> {
