@@ -8,13 +8,36 @@ facts from the ``SessionContext`` metadata set by the trigger point.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from types import MappingProxyType
 from typing import Any
 
 from openjiuwen.core.events import EventHandlerOps
 
+from jiuwenswarm.gateway.extensions_v2.webui.models import RenderTarget
+
 _EMPTY: Mapping[str, Any] = MappingProxyType({})
+RenderCheck = Callable[[RenderTarget], bool]
+RenderCheckFactory = Callable[[EventHandlerOps], RenderCheck]
+_RENDER_CHECK: ContextVar[RenderCheck | None] = ContextVar("gateway_render_check", default=None)
+
+
+@contextmanager
+def render_scope(check: RenderCheck | None) -> Iterator[None]:
+    """Carry the host's check of the original Ops through the render event chain."""
+    token = _RENDER_CHECK.set(check)
+    try:
+        yield
+    finally:
+        _RENDER_CHECK.reset(token)
+
+
+def render_is_current(target: RenderTarget) -> bool:
+    """Recheck the captured caller at the commit boundary; standalone hosts have no lease."""
+    check = _RENDER_CHECK.get()
+    return check is None or check(target)
 
 
 def session_metadata(ops: EventHandlerOps | None) -> Mapping[str, Any]:

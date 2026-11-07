@@ -24,6 +24,7 @@ from jiuwenswarm.gateway.extensions_v2.event_types.webui import register_webui_e
 from jiuwenswarm.gateway.extensions_v2.handler_ops.ui import build_ui_ops_build_handler
 from jiuwenswarm.gateway.extensions_v2.models import EVENT_UI_RENDER, gateway_session_id
 from jiuwenswarm.gateway.extensions_v2.webui.constants import DEFAULT_CHANNEL_ID
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import RenderCheckFactory
 from jiuwenswarm.gateway.extensions_v2.webui.core_handlers.render_core import (
     build_render_core_handler,
     clear_frame,
@@ -47,10 +48,12 @@ class GatewayWebUIRuntime:
         bus: ExtensionEventBus,
         transport: GatewayTransport,
         registry: ActiveRenderRegistry | None = None,
+        render_check: RenderCheckFactory | None = None,
     ) -> None:
         self.bus = bus
         self.transport = transport
         self.registry = registry or ActiveRenderRegistry()
+        self._render_check = render_check
 
     # ── registration ──────────────────────────────────────────────────────
 
@@ -70,7 +73,7 @@ class GatewayWebUIRuntime:
         return [
             target.register_event_handler(
                 OPS_BUILD_EVENT_TYPE,
-                build_ui_ops_build_handler(target),
+                build_ui_ops_build_handler(target, render_check=self._render_check),
                 {},
                 HandlerLevel.BUILTIN,
             )

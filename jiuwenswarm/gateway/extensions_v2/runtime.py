@@ -29,6 +29,7 @@ from uuid import uuid4
 from openjiuwen.core.events import (
     OPS_BUILD_EVENT_TYPE,
     Event,
+    EventHandlerOps,
     ExtensionEventBus,
     HandlerLevel,
     PackageMetadata,
@@ -56,6 +57,8 @@ from jiuwenswarm.gateway.extensions_v2.models import (
 )
 from jiuwenswarm.gateway.extensions_v2.state import UiStateStore
 from jiuwenswarm.gateway.extensions_v2.webui.registry import ActiveRenderRegistry
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import RenderCheck, trusted_connection
+from jiuwenswarm.gateway.extensions_v2.webui.models import RenderTarget
 from jiuwenswarm.gateway.extensions_v2.webui.runtime import GatewayWebUIRuntime
 from jiuwenswarm.gateway.extensions_v2.webui.transport import GatewayTransport
 from jiuwenswarm.gateway.extensions_v2.webui.bridge import BrowserBridge
@@ -82,6 +85,7 @@ class GatewayRuntime:
         self.webui = GatewayWebUIRuntime(
             bus=self.bus,
             transport=GatewayTransport(channel, generation=lambda package_id: self.browser.frame_generation(package_id)),
+            render_check=self._render_check,
         )
         self._handler_ids: list[str] = []
         self._builtin_ids: list[str] = []
@@ -282,6 +286,22 @@ class GatewayRuntime:
 
     # ── package store and data ────────────────────────────────────────────
 
+    def _render_check(self, ops: EventHandlerOps) -> RenderCheck:
+        """Capture the original Ops owner, independently of the surrounding handler context."""
+        owner = self._ops_owner.get(ops)
+        package_id = ops.package_metadata.package_id if ops.package_metadata else ""
+        connection_id = trusted_connection(ops)
+
+        def current(target: RenderTarget) -> bool:
+            lookup = getattr(self.channel, "ws_by_id", None)
+            ws = lookup(connection_id) if callable(lookup) else None
+            return (owner is not None and not owner.released and self._activations.get(package_id) is owner
+                    and target.package_id == package_id and bool(connection_id)
+                    and (not target.connection_id or target.connection_id == connection_id)
+                    and ws is not None and not getattr(ws, "closed", False))
+
+        return current
+
     def _bind_package_data(self) -> None:
         """Bind the package store before ``ops.build``.
 
@@ -326,6 +346,19 @@ class GatewayRuntime:
         """Count a Gateway data operation such as ``ops.data.root()`` like a store call."""
 
         self._begin_data_calls((package_id,), ops)
+        try:
+            yield
+        finally:
+            self._end_data_calls((package_id,))
+
+    @contextmanager
+    def package_io_call(self, package_id: str, generation: str) -> Iterator[None]:
+        """Keep host-mediated file work busy through cleanup, using its validated activation."""
+        activation = self._activations.get(package_id)
+        if (activation is None or activation.released
+                or self.browser.generations.get(package_id) != generation):
+            raise ExtensionFailure(StatusCode.EVENTS_OPS_INVALID, reason="the file operation's activation has ended")
+        self._data_calls[package_id] = self._data_calls.get(package_id, 0) + 1
         try:
             yield
         finally:

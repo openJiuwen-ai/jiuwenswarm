@@ -11,17 +11,21 @@ the host gives that one browser connection a single-use download address.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import re
 import shutil
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+from openjiuwen.core.extension import ExtensionFailure
+from openjiuwen.core.extension.data.files import run_file_operation
 
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import CODE_BAD_REQUEST, HostRequestError
 from jiuwenswarm.gateway.extensions_v2.webui.models import RenderTarget, valid_instance_key
@@ -182,37 +186,47 @@ class TransferManager:
             return (browser.generations.get(package_id) == generation
                     and self.runtime.registry.get(scoped) is record and record.revision == params["revision"])
 
+        try:
+            with self.runtime.package_io_call(package_id, generation):
+                return await self._prepare_upload(scoped, params["node_key"], generation, files, target_is_current)
+        except ExtensionFailure as exc:
+            raise HostRequestError(CODE_TARGET_INACTIVE, "the import activation has ended") from exc
+
+    async def _prepare_upload(self, target: RenderTarget, node_key: str, generation: str,
+                              files: dict[str, int], target_is_current: Callable[[], bool]) -> dict[str, Any]:
+        """Prepare one ticket under the caller's file-work lease, including cancellation cleanup."""
         await self.expire()
         if not target_is_current():
             raise HostRequestError(CODE_TARGET_INACTIVE, "the import control changed while preparing the import")
         # Records change synchronously and the new ticket is counted before any
         # await, so concurrent requests of one connection cannot exceed the limit.
-        own = sorted((item for item in self.uploads.values() if item.connection_id == request.connection_id),
+        own = sorted((item for item in self.uploads.values() if item.connection_id == target.connection_id),
                      key=lambda item: item.created)
         stale = own[:max(0, len(own) - MAX_OPEN_UPLOADS + 1)]
         for item in stale:
             self.uploads.pop(item.upload_id, None)
         upload_id = uuid4().hex
-        data_dir = self.runtime.package_data_dir(package_id)
+        data_dir = self.runtime.package_data_dir(target.package_id)
         directory = data_dir / UPLOAD_DIR / upload_id
         upload = Upload(
-            upload_id=upload_id, connection_id=request.connection_id, package_id=package_id,
-            generation=generation, target=scoped, node_key=params["node_key"],
+            upload_id=upload_id, connection_id=target.connection_id, package_id=target.package_id,
+            generation=generation, target=target, node_key=node_key,
             files=files, directory=directory, created=self._clock(),
         )
         self.uploads[upload_id] = upload
         try:
             for item in stale:
                 await self._discard(item)
-            await asyncio.to_thread(directory.mkdir, parents=True)
+            await run_file_operation(partial(directory.mkdir, parents=True))
         except BaseException:
             self._forget(upload)
+            await self._discard(upload)
             raise
         unusable = (data_dir / UPLOAD_DIR).is_symlink() or not directory.resolve().is_relative_to(data_dir.resolve())
         if unusable or self.uploads.get(upload_id) is not upload or not target_is_current():
             # The original target may change while directories are prepared; never adopt its replacement.
             self._forget(upload)
-            await asyncio.to_thread(shutil.rmtree, directory, True)
+            await self._discard(upload)
             if unusable:
                 raise HostRequestError(CODE_BAD_REQUEST, "package data directory is not usable")
             raise HostRequestError(CODE_TARGET_INACTIVE, "the import was withdrawn before it was ready")
@@ -229,40 +243,53 @@ class TransferManager:
             return 404
         if relative in upload.received or relative in upload.receiving:
             return 409
+        try:
+            with self.runtime.package_io_call(upload.package_id, upload.generation):
+                return await self._receive_file(upload, relative, chunks)
+        except ExtensionFailure:
+            return 404
+
+    async def _receive_file(self, upload: Upload, relative: str, chunks: AsyncIterator[bytes]) -> int:
+        """Own the handle before opening it, and retain ownership until close and cleanup finish."""
         upload.receiving.add(relative)
         destination = upload.directory.joinpath(*PurePosixPath(relative).parts)
-        partial = destination.with_name(f".{destination.name}.{uuid4().hex}.part")
+        partial_path = destination.with_name(f".{destination.name}.{uuid4().hex}.part")
         expected = upload.files[relative]
         status = 204
+        resources = ExitStack()
         try:
-            await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
+            await run_file_operation(partial(destination.parent.mkdir, parents=True, exist_ok=True))
             if not destination.parent.resolve().is_relative_to(upload.directory.resolve()):
                 return 404
-            handle = await asyncio.to_thread(open, partial, "xb")
             total = 0
             try:
+                # The worker registers the handle before returning it. Cancellation cannot lose that owner.
+                handle = await run_file_operation(lambda: resources.enter_context(open(partial_path, "xb")))
                 async for chunk in chunks:
                     total += len(chunk)
                     if total > expected:
                         status = 413
                         break
-                    await asyncio.to_thread(handle.write, chunk)
+                    await run_file_operation(partial(handle.write, chunk))
             finally:
-                await asyncio.to_thread(handle.close)
+                await run_file_operation(resources.close)
             if status == 204 and total != expected:
                 status = 400
-            if status == 204 and self.uploads.get(upload_id) is upload:
-                await asyncio.to_thread(os.replace, partial, destination)
+            if status == 204 and self.uploads.get(upload.upload_id) is upload:
+                await run_file_operation(partial(os.replace, partial_path, destination))
                 upload.received.add(relative)
             elif status == 204:
                 status = 404
         except OSError as exc:
-            logger.warning("[GatewayExtensions] import %s failed for %s: %s", upload_id, relative, exc)
-            status = 404 if self.uploads.get(upload_id) is not upload else 500
+            logger.warning("[GatewayExtensions] import %s failed for %s: %s", upload.upload_id, relative, exc)
+            status = 404 if self.uploads.get(upload.upload_id) is not upload else 500
         finally:
-            upload.receiving.discard(relative)
-            if partial.exists():
-                await asyncio.to_thread(partial.unlink, True)
+            try:
+                await run_file_operation(partial(partial_path.unlink, missing_ok=True))
+            finally:
+                upload.receiving.discard(relative)
+                if self.uploads.get(upload.upload_id) is not upload and not upload.receiving:
+                    await self._discard(upload)
         return status
 
     def claim(self, upload_id: str, target: RenderTarget, node_key: str) -> Upload | None:
@@ -366,9 +393,9 @@ class TransferManager:
             except ValueError:
                 continue
             if directory.is_symlink():
-                await asyncio.to_thread(directory.unlink, True)
+                await run_file_operation(partial(directory.unlink, missing_ok=True))
             elif directory.exists():
-                await asyncio.to_thread(shutil.rmtree, directory, True)
+                await run_file_operation(partial(shutil.rmtree, directory, True))
 
     def _forget(self, upload: Upload) -> None:
         """Drop this ticket's record unless something else replaced or removed it."""
@@ -376,8 +403,7 @@ class TransferManager:
             del self.uploads[upload.upload_id]
 
     async def _discard(self, upload: Upload) -> None:
-        if upload.directory.exists():
-            await asyncio.to_thread(shutil.rmtree, upload.directory, True)
+        await run_file_operation(partial(shutil.rmtree, upload.directory, True))
 
     def clear(self) -> None:
         self.uploads.clear()

@@ -114,6 +114,20 @@ flowchart LR
 | 2026-11-07 | GW-07～GW-14 | PR #10763 检视修改：外观在途帧随包释放撤销（S_08 不变量 7）；释放后清理包模块（S_01 不变量 11）；开场设置写盘失败返回 `SETTINGS_WRITE_FAILED` 且保持原状态；Vite 开发代理补齐 `/extension-uploads`、`/extension-downloads`；背景 HTML 不委派 autoplay（浏览器中静音；桌面端维持现状并写明限制，背景不得发声由插件遵守，见 S_07 不变量 4 与 F_10）；`ops.appearance.apply`、`ops.ui.download`、`ops.splash.preview` 改为 `ui.appearance`、`ui.download`、`ui.splash.preview` 事件链；开场提示按 Gateway 规则计算且“无候选”仍向 Gateway 复核；设置统一到 S_18 共享目录（F_13 D-11）；半透明外观只覆盖主题的角色变量（先行提交 `refactor(webui)` 提供变量，F_11）。复验（agent-core `c48b5bb`）：Gateway 扩展与 Web 渠道 845 通过、1 跳过；AgentServer WebUI、代理与包管理 869 通过；Electron 42 通过；前端 WebUI 各套件与插件设置全部通过，`test:settings-panel`、`test:agent-management`、`test:trajectory-host` 的 5 项失败与目标分支相同；构建通过；Chromium 中验证了设置导航、导入、开发代理传输与背景静音 |
 | 2026-11-07 | GW-07～GW-14 | PR #10763 第二轮检视（5 项均核实属实，修复前用例可复现）：卸载在 Handler 或数据调用在途时返回 `EXTENSION_PACKAGE_BUSY`，存储与 `ops.data.root()` 只接受包当前激活的 Ops，已释放激活不再开始新的 Handler 调用（S_01 不变量 12、F_09 D-05）；外观调用取得连接锁后再次核对激活，下载在生成凭据前同样再核对（S_08 不变量 7、S_10 第 7.1 节）；实例键统一为 `valid_instance_key()`，声明、渲染、交互与文件导入同一规则（S_02 第 4 节）；开场完成记录与启动标识放在同一作用域，浏览器标签页互不覆盖（S_09 第 4 节、F_12 D-04）；导入凭据先同步移除记录再删除目录，并发开始导入不越过每连接 4 个的上限（S_10 第 6.2 节、F_13 V-12）。复验（agent-core `c48b5bb`）：Gateway 扩展与 Web 渠道 867 通过、1 跳过；AgentServer WebUI、代理与包管理 872 通过；Electron 42 通过；前端 WebUI 各套件与插件设置全部通过（`test:webui-components` 360），`test:settings-panel`、`test:agent-management`、`test:trajectory-host` 的 5 项失败与目标分支相同；`tsc` 与构建通过 |
 | 2026-11-07 | GW-08、GW-12 | 补充修复 PR #10763 的取消与跨代次边界：`ops.data.root()` 复用 Core 文件操作取消处理，后台线程结束后才释放调用计数；上传始终绑定最初的激活代次、实例与渲染版本，在清理过期凭据和目录创建之后分别核对。新增 7 项回归，修复前 5 失败、2 通过，修复后全部通过；包含新页面规则下重新上传成功的路径。复验（Python 3.11.17、agent-core `c48b5bb`）：Gateway 扩展与 Web 渠道 874 通过、1 跳过，AgentServer 共享设置契约 30 通过；前端源码本次未改，沿用 `0767763d5` 上相关 544 项通过记录。未重做浏览器、打包版或桌面冷启动 |
+| 2026-11-07 | GW-03、GW-12、GW-14 | PR #10763：渲染 Ops 与提交绑定原激活；所有应用级目标保留清除版本下限；容量淘汰预留清除版本；宿主导入持有文件资源直到取消清理结束。后端 913 通过、1 跳过，前端 605 项通过；详细范围及未执行项见下方回归记录 |
+
+### 2026-11-07 渲染与上传生命周期回归记录
+
+负责人：Song Haoran；关联 [PR #10763](https://github.com/openJiuwen-ai/jiuwenswarm/pull/10763)，GW-03、GW-12、GW-14。
+修复旧 Ops 脱离 Handler 后渲染、旧调用跨越实例锁后重建、发送失败回退清除版本、应用级旧帧复活及上传取消丢失句柄；
+再次检视补齐容量淘汰的清除版本预留。实现与独立测试通过，整项真实环境验收状态仍按第 4 节记录。
+技术依据见 [F_03](../features/F_03_render-service.md) 与 [F_13 V-13](../features/F_13_application-settings-page.md)。
+
+| 验证范围 | 环境与命令 | 结果与限制 |
+| --- | --- | --- |
+| Gateway、Web 渠道、共享设置契约 | Python 3.11.17；独立 `.venv-v2-0120`；`PYTHONPATH` 使用锁定的 agent-core `c48b5bb` 与本工作树；独立 `JIUWENSWARM_DATA_DIR`；`python -m pytest -q --no-cov -o log_cli=false tests/unit_tests/gateway/extensions_v2 tests/unit_tests/channels/web tests/unit_tests/channel/test_trajectory_http.py tests/unit_tests/extensions_v2/webui/test_settings_contribution_cases.py` | 913 通过、1 跳过；新增后端 9 项覆盖正常新激活、旧激活、在途发送、排队、淘汰重现、取消清理与卸载重试 |
+| 前端 | Node 22.23.4；前端目录运行 `npm run test:webui-components`、`test:webui-runtime`、`test:webui-client`、`test:webui-transport`、`test:plugin-settings`、`test:webui-contracts` | 366、21、25、9、17、167 项通过，共 605 项；新增 6 项清除版本回归 |
+| 未执行 | 静态检查、构建、真实浏览器、打包版、桌面冷启动、用户验收 | 单元结果不替代这些验证；历史验证仍按原日期与范围理解 |
 
 ## 6. 风险与待确认
 

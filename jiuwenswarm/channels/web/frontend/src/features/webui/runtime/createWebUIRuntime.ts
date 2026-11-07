@@ -58,7 +58,8 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   const protocol: WebUIProtocol = options.protocol ?? createProtocolPipeline(catalog, options.limits);
 
   const records = new Map<string, InstanceRecord>();
-  const clearedEntries = new Map<string, number>();
+  // Clear revisions outlive local instances and mounts, until the connection/request context ends.
+  const clearedFrames = new Map<string, WebUINormalizedClearFrame>();
   let entryContextChanged = false;
   /** 挂载区 -> 实例键集合，范围订阅只关心成员变化。 */
   const scopeIndex = new Map<string, Set<string>>();
@@ -192,7 +193,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   function commitRenderFrame(frame: WebUINormalizedRenderFrame): void {
     adoptEntryContext(frame.target);
     const key = webUIInstanceKey(frame.target);
-    if (frame.target.slotId === 'application.entry' && frame.revision <= (clearedEntries.get(key) ?? -1)) return;
+    if (frame.target.scope === 'application' && frame.revision <= (clearedFrames.get(key)?.revision ?? -1)) return;
     const existing = records.get(key);
     if (existing && frame.revision <= existing.lastRenderRevision) {
       return;
@@ -231,8 +232,9 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     if (existing && frame.revision < existing.lastRenderRevision) {
       return;
     }
-    if (frame.target.slotId === 'application.entry') {
-      clearedEntries.set(key, Math.max(frame.revision, clearedEntries.get(key) ?? -1));
+    if (frame.target.scope === 'application') {
+      if (frame.revision <= (clearedFrames.get(key)?.revision ?? -1)) return;
+      clearedFrames.set(key, frame);
     }
     if (!existing) {
       if (frame.target.scope === 'application') {
@@ -252,6 +254,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   function commitErrorFrame(frame: WebUINormalizedErrorFrame): void {
     adoptEntryContext(frame.target);
     const key = webUIInstanceKey(frame.target);
+    if (frame.target.scope === 'application' && frame.revision <= (clearedFrames.get(key)?.revision ?? -1)) return;
     const existing = records.get(key);
     const error = { code: frame.code, message: frame.message };
     if (existing) {
@@ -287,6 +290,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   }
 
   function acceptsTarget(target: WebUINormalizedTarget): boolean {
+    if (target.scope === 'application' && connectionState !== 'connected') return false;
     if (!entryContextChanged && target.slotId === 'application.entry' && [...records.values()].some((record) =>
       record.target.slotId === target.slotId && record.key !== webUIInstanceKey(target))) return false;
     if (target.scope !== 'application') {
@@ -376,6 +380,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       refreshConnectedFlag();
       notifyAll();
       if (state === 'connected') {
+        clearedFrames.clear();
         void reportReadyAfterReconnect().then(() => {
           if (!disposed && appearanceStale && connectionState === 'connected') {
             appearanceStale = false;
@@ -723,7 +728,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       unsubscribeTransport = null;
     }
     records.clear();
-    clearedEntries.clear();
+    clearedFrames.clear();
     scopeIndex.clear();
     scopeOwners.clear();
     owners.clear();
@@ -740,7 +745,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
 
   function resetRequestContext(): void {
     nodeBindings.clear();
-    clearedEntries.clear();
+    clearedFrames.clear();
     entryContextChanged = true;
     for (const record of [...records.values()]) {
       if (record.target.slotId === 'application.entry') continue;

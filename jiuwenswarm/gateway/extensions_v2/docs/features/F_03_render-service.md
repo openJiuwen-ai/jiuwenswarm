@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-GW-03 `ui.render` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/webui/`、`event_types/webui.py`、`handler_ops/ui.py` |
 | 设计依据 | [详细架构第 7 节](../designs/extensions-v2-architecture.md)、[渲染规约](../specs/S_02_ui-render.md)、AgentServer [F_06](../../../../extensions_v2/docs/features/F_06_render-service.md) |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-07 |
 | 方案状态 | 已实现，单元验证通过 |
 
 ## 1. 问题与目标
@@ -211,3 +211,18 @@ Box 数值 gap、Dropdown 展示触发器、重复表单字段及本地输入事
 Gateway 不开放 Dropdown.icon，不生成图标白名单；前端与 AgentServer 原有图标能力保持不变。
 前端与 Gateway 共同执行 28 组契约向量；Gateway 另验证 icon 属性被拒绝。精简后 Gateway extensions_v2 的 108 项测试通过，包含 10 项登录示例安装测试。
 此前契约对齐时未修改认证门禁，异常处理测试使用有效 header。后续旧门禁清理已移除这一依赖，当前渲染测试无需认证 header；变更与本次验证见 [F_02](F_02_gateway-request-and-auth-gate.md)。
+
+## 2026-11-07 渲染生命周期修订与验证
+
+原先的浏览器桥接检查依赖当前 Handler 上下文，不能约束 Handler 返回后保存的旧 Ops；检查后等待实例锁也可能跨越包释放。
+现在 Ops 发起调用时捕获原激活与连接的宿主校验函数，通过调用作用域传到 CORE，在取得实例锁后再核对。
+发送返回时再次核对激活和注册表实例身份；已退休实例不走失败回滚，避免覆盖释放时预留的清除版本。
+容量淘汰也预留清除版本，使前端通用的清除版本下限不会误拦之后的有效渲染。公开语义见 [S_02](../specs/S_02_ui-render.md)。
+
+`test_gateway_appearance.py` 新增 6 项：当前与释放后的捕获 Ops、两个在途/排队发送场景（含发送失败）、
+容量淘汰后重现；前端 `test:webui-components` 新增 6 项覆盖 background、splash、settings 的旧渲染与错误帧、
+清除先到、重挂载、有效更高版本、断线与重连。旧实现可复现旧 Ops、排队渲染和旧帧复活，
+淘汰场景也可复现新版本等于清除版本（2）的错误。
+
+最终相关后端回归 913 通过、1 跳过；前端组件、运行时、客户端、传输、插件设置与契约共 605 项通过。
+执行范围、环境和限制统一记录在开发计划的本轮台账。本轮未重做浏览器、打包版或桌面冷启动验证。

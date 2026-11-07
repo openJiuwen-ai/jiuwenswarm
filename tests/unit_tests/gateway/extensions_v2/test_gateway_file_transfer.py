@@ -3,17 +3,22 @@
 """Host-mediated file import and export for application UI packages (F_13)."""
 
 import asyncio
+import builtins
 import json
 import shutil
+import threading
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from openjiuwen.core.common.exception.codes import StatusCode
 
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
+from jiuwenswarm.gateway.extensions_v2.management.registry import GatewayPackageManager
 from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
 from jiuwenswarm.gateway.extensions_v2.webui import transfers as transfers_module
@@ -388,6 +393,109 @@ async def test_concurrent_expiry_removes_each_ticket_once(tmp_path):
         await runtime.shutdown()
 
 
+@pytest.mark.parametrize("cancel_twice", [False, True])
+async def test_cancelled_upload_open_closes_the_worker_handle_and_removes_the_partial(tmp_path, monkeypatch, cancel_twice):
+    runtime = await _start(tmp_path)
+    transfers = runtime.browser.transfers
+    entered, finished = asyncio.Event(), asyncio.Event()
+    resume = threading.Event()
+    loop, opened, call = asyncio.get_running_loop(), {}, None
+
+    def slow_open(path, mode):
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            if not resume.wait(5):
+                raise TimeoutError("upload test worker was not released")
+            handle = builtins.open(path, mode)
+            opened.update(handle=handle, path=path)
+            return handle
+        finally:
+            loop.call_soon_threadsafe(finished.set)
+
+    async def content():
+        yield b"x"
+
+    try:
+        revision = await _mount(runtime, ThemePackage(), tmp_path)
+        ticket = await transfers.begin_upload(SimpleNamespace(
+            params=_begin(revision, [{"path": "one.zip", "size": 1}]), connection_id="browser-1"))
+        monkeypatch.setattr(transfers_module, "open", slow_open, raising=False)
+        call = asyncio.create_task(transfers.receive(ticket["upload_id"], "one.zip", content()))
+        await asyncio.wait_for(entered.wait(), 2)
+        call.cancel()
+        await asyncio.sleep(0)
+        if cancel_twice:
+            call.cancel()
+            await asyncio.sleep(0)
+        manager = GatewayPackageManager(runtime, tmp_path / "install")
+        report = await manager.uninstall(PACKAGE)
+        assert report.status == "FAILED"
+        assert report.error.status is StatusCode.EXTENSION_PACKAGE_BUSY
+        resume.set()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        await asyncio.wait_for(finished.wait(), 2)
+        assert opened["handle"].closed, "cancellation must not lose the handle returned by the worker"
+        assert not opened["path"].exists()
+        assert transfers.uploads[ticket["upload_id"]].receiving == set()
+        assert (await manager.uninstall(PACKAGE)).status == "SUCCESS"
+        assert not runtime.package_data_dir(PACKAGE).exists()
+    finally:
+        resume.set()
+        if call is not None:
+            await asyncio.gather(call, return_exceptions=True)
+        if entered.is_set():
+            await asyncio.wait_for(finished.wait(), 2)
+        if "handle" in opened:
+            opened["handle"].close()
+        await runtime.shutdown()
+
+
+async def test_cancelled_import_preparation_finishes_its_directory_cleanup_before_uninstall(tmp_path, monkeypatch):
+    runtime = await _start(tmp_path)
+    started, finished, resume = asyncio.Event(), asyncio.Event(), threading.Event()
+    loop, mkdir, created = asyncio.get_running_loop(), Path.mkdir, []
+    call = None
+
+    def slow_mkdir(path, *args, **kwargs):
+        if path.parent.name != ".uploads":
+            return mkdir(path, *args, **kwargs)
+        created.append(path)
+        loop.call_soon_threadsafe(started.set)
+        try:
+            if not resume.wait(5):
+                raise TimeoutError("import preparation test worker was not released")
+            return mkdir(path, *args, **kwargs)
+        finally:
+            loop.call_soon_threadsafe(finished.set)
+
+    try:
+        revision = await _mount(runtime, ThemePackage(), tmp_path)
+        monkeypatch.setattr(Path, "mkdir", slow_mkdir)
+        call = asyncio.create_task(runtime.browser.transfers.begin_upload(SimpleNamespace(
+            params=_begin(revision, [{"path": "one.zip", "size": 1}]), connection_id="browser-1")))
+        await asyncio.wait_for(started.wait(), 2)
+        call.cancel()
+        await asyncio.sleep(0)
+        manager = GatewayPackageManager(runtime, tmp_path / "install")
+        report = await manager.uninstall(PACKAGE)
+        assert report.error.status is StatusCode.EXTENSION_PACKAGE_BUSY
+        resume.set()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        await asyncio.wait_for(finished.wait(), 2)
+        assert runtime.browser.transfers.uploads == {} and not created[0].exists()
+        assert (await manager.uninstall(PACKAGE)).status == "SUCCESS"
+        assert not runtime.package_data_dir(PACKAGE).exists()
+    finally:
+        resume.set()
+        if call is not None:
+            await asyncio.gather(call, return_exceptions=True)
+        if started.is_set():
+            await asyncio.wait_for(finished.wait(), 2)
+        await runtime.shutdown()
+
+
 @pytest.mark.parametrize("phase", ["expiry", "directory"])
 @pytest.mark.parametrize("change", ["reload", "rerender", "disconnect"])
 async def test_import_preparation_refuses_a_target_changed_while_waiting(tmp_path, monkeypatch, phase, change):
@@ -414,8 +522,9 @@ async def test_import_preparation_refuses_a_target_changed_while_waiting(tmp_pat
 
     async def make_directory_then_change(operation, *args, **kwargs):
         result = await to_thread(operation, *args, **kwargs)
-        path = getattr(operation, "__self__", None)
-        if getattr(operation, "__name__", "") == "mkdir" and isinstance(path, Path) and path.parent.name == ".uploads":
+        method = operation.func if isinstance(operation, partial) else operation
+        path = getattr(method, "__self__", None)
+        if getattr(method, "__name__", "") == "mkdir" and isinstance(path, Path) and path.parent.name == ".uploads":
             await change_target()
         return result
 

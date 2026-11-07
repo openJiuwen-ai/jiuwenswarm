@@ -38,6 +38,11 @@
 
 `ui.render` 事件链与调用方所在的 `gateway.request` 链相互独立；调用方的返回值不受渲染结果影响。
 
+`GatewayRuntime` 中的渲染 Ops 绑定发放它的包激活与浏览器连接，而非调用时恰好所在的 Handler。
+当前激活的 Ops 可在 Handler 返回后继续渲染；原激活被释放或连接关闭后返回 `rejected`。
+宿主在 Ops 入口与 CORE 取得实例锁后分别核对原调用方，事件链或实例锁中的等待不能把旧调用转交给新激活。
+发送期间发生释放或断线时，不恢复已退休实例的快照，也不回退为清除帧预留的版本号。
+
 ## 3. 槽位契约
 
 Gateway 只接受自己能按 WebSocket 寻址的槽位：
@@ -90,6 +95,10 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 
 投递返回 `True` 只表示帧已交给渠道，不代表浏览器已应用。
 
+包释放、宿主关闭或容量淘汰实例时，清除帧也占用一个版本号；同一连接内该目标再次渲染必须高于清除版本。
+前端对所有 application 目标保留已接受的清除版本下限：即使从未收到对应渲染或本地槽位已卸载，
+也拒绝版本小于等于该下限的渲染与错误帧。同连接重挂载不清除下限；新连接或请求上下文重置后重新建立。
+
 ## 6. 与 AgentServer 的必要差异
 
 组件属性、嵌套字段、children 和事件数据统一遵循
@@ -98,7 +107,7 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 
 | 差异 | 原因 |
 | --- | --- |
-| 槽位表只含两个 application 槽位 | Gateway 不渲染会话槽位，避免与 AgentServer 双写同一实例 |
+| 槽位表只含 application 槽位 | Gateway 不渲染会话槽位，避免与 AgentServer 双写同一实例 |
 | 传输层按 `ws_id` 直接 `send_event` | Gateway 拥有 socket，不经过 AgentServer 推送通道 |
 | 连接事实来自 `SessionContext.metadata` | Gateway 没有 AgentServer 的 contextvar 调用上下文 |
 | `Form` / `Form.Item`、`Button.form`、布局与富菜单扩展 | Gateway 页面支持表单和富菜单；AgentServer 保持其组件子集；`Input` 不带 `name` |

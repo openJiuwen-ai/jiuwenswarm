@@ -12,6 +12,7 @@ from openjiuwen.core.events import Event, SessionContext
 
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
+from jiuwenswarm.gateway.extensions_v2.management.registry import GatewayPackageManager
 from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
 from jiuwenswarm.gateway.extensions_v2.webui.appearance import validate_appearance
@@ -350,5 +351,107 @@ async def test_closed_connection_forgets_its_provider(tmp_path):
         runtime.unpublish(THEME)
         await runtime.browser.settle()
         assert len(_frames(runtime)) == 1
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("transition", ["current", "reload", "uninstall"])
+async def test_captured_render_ops_are_bound_to_their_activation(tmp_path, transition):
+    theme, captured = Theme(THEME), {}
+    runtime = await _start(tmp_path)
+
+    async def keep(ops, event):
+        captured["ops"], captured["event"] = ops, event
+
+    try:
+        theme.calls.append(keep)
+        runtime.publish(theme.package(tmp_path / "theme"))
+        await _ready(runtime, SimpleNamespace(closed=False), THEME)
+        if transition == "reload":
+            runtime.publish(Theme(THEME).package(tmp_path / "new"))
+        elif transition == "uninstall":
+            assert (await GatewayPackageManager(runtime, tmp_path / "install").uninstall(THEME)).status == "SUCCESS"
+        # No ambient handler context remains here; the Ops itself must carry the identity.
+        result = await _render_background(captured["ops"], captured["event"])
+        assert result.status == (RenderStatus.DELIVERED if transition == "current" else RenderStatus.REJECTED)
+        assert len(runtime.registry.snapshot()) == (1 if transition == "current" else 0)
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("fail_first_send", [False, True])
+async def test_queued_render_cannot_recreate_a_released_activation(tmp_path, fail_first_send):
+    old, new = Theme(THEME), Theme(THEME)
+    runtime = await _start(tmp_path)
+    started, resume = asyncio.Event(), asyncio.Event()
+    sent = runtime.channel.send_event
+    calls = []
+
+    async def slow_send(ws, event, payload):
+        if event == "webui.render" and payload["revision"] == 1:
+            started.set()
+            await resume.wait()
+            if fail_first_send:
+                raise OSError("old connection send failed")
+        await sent(ws, event, payload)
+
+    runtime.channel.send_event = slow_send
+    try:
+        old.calls.append(_render_background)
+        runtime.publish(old.package(tmp_path / "old"))
+        ws = SimpleNamespace(closed=False)
+        calls.append(asyncio.create_task(_ready(runtime, ws, THEME)))
+        await asyncio.wait_for(started.wait(), 2)
+        calls.append(asyncio.create_task(_ready(runtime, ws, THEME)))
+        for _ in range(100):
+            if max(runtime.registry._lock_users.values(), default=0) == 2:
+                break
+            await asyncio.sleep(0)
+        assert max(runtime.registry._lock_users.values(), default=0) == 2
+        runtime.publish(new.package(tmp_path / "new"))
+        resume.set()
+        await asyncio.gather(*calls)
+        await runtime.browser.settle()
+        assert runtime.registry.snapshot() == ()
+        assert all(result.status != RenderStatus.DELIVERED for result in old.results)
+
+        new.calls.append(_render_background)
+        await _ready(runtime, ws, THEME)
+        assert new.results[-1].status == RenderStatus.DELIVERED
+        clears = _frames(runtime, "webui.render.clear")
+        assert new.results[-1].revision > clears[-1][1]["revision"], "failed old sends must not rewind the clear"
+    finally:
+        resume.set()
+        await asyncio.gather(*calls, return_exceptions=True)
+        await runtime.shutdown()
+
+
+async def test_evicted_application_target_resumes_above_its_clear_revision(tmp_path):
+    theme, captured = Theme(THEME), {}
+    runtime = await _start(tmp_path)
+
+    async def keep(ops, event):
+        captured["ops"] = ops
+
+    async def render(instance_key):
+        return await captured["ops"].ui.render(UiRenderInput(
+            target=RenderTarget(session_id="", slot_id="application.background", instance_key=instance_key),
+            root=RenderNode(component="MediaSurface", props={
+                "kind": "image", "src": "/extension-assets/x/y/bg.png", "title": "Theme",
+            }),
+        ))
+
+    try:
+        runtime.registry._max_per_session = 1
+        theme.calls.append(keep)
+        runtime.publish(theme.package(tmp_path / "theme"))
+        await _ready(runtime, SimpleNamespace(closed=False), THEME)
+        assert (await render("one")).status == RenderStatus.DELIVERED
+        assert (await render("two")).status == RenderStatus.DELIVERED
+        clear = _frames(runtime, "webui.render.clear")[-1][1]
+        assert clear["target"]["instance_key"] == "one"
+        resumed = await render("one")
+        assert resumed.status == RenderStatus.DELIVERED
+        assert resumed.revision > clear["revision"]
     finally:
         await runtime.shutdown()

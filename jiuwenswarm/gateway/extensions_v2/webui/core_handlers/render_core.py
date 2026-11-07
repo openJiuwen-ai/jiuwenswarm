@@ -14,7 +14,7 @@ from dataclasses import replace
 
 from openjiuwen.core.events import Event, EventHandler, EventHandlerOps, EventNext
 
-from jiuwenswarm.gateway.extensions_v2.webui.call_context import trusted_connection
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import render_is_current, trusted_connection
 from jiuwenswarm.gateway.extensions_v2.webui.constants import CODE_SCHEMA_ERROR, SlotScope, slot_spec
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
     ClearFrame,
@@ -73,6 +73,10 @@ def build_render_core_handler(
             return UiRenderOutput(status=RenderStatus.REJECTED)
 
         async with registry.claim(request.target) as claim:
+            if not render_is_current(request.target):
+                if claim.created:
+                    registry.drop_instance(request.target)
+                return UiRenderOutput(status=RenderStatus.REJECTED)
             previous = replace(claim.instance)
             preview = RenderFrame(
                 target=claim.instance.target,
@@ -101,6 +105,11 @@ def build_render_core_handler(
             else:
                 delivered = await transport.send_frame(frame)
 
+            # A release or disconnect may retire this instance while the send awaits.
+            # Never restore its snapshot or revision over the reserved clear.
+            if not render_is_current(request.target) or registry.get(request.target) is not claim.instance:
+                return UiRenderOutput(status=RenderStatus.REJECTED)
+
             if not delivered:
                 logger.warning("[GatewayWebUI] frame delivery failed: %s", request.target.key)
                 registry.restore(claim.instance, previous)
@@ -117,7 +126,7 @@ def build_render_core_handler(
             for evicted in claim.evicted:
                 async with registry.evict(evicted) as current:
                     if current and await transport.send_clear(clear_frame(evicted, reason="evicted")):
-                        registry.drop_instance(evicted.target)
+                        registry.retire_instance(evicted.target, "evicted")
                         log_eviction(evicted)
 
             return UiRenderOutput(status=RenderStatus.DELIVERED, revision=frame.revision)
