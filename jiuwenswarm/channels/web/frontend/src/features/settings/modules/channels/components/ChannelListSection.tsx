@@ -5,8 +5,8 @@ import { Button, Tag } from '../../../../../components/ui';
 import { SettingsSection } from '../../../components';
 import { getSettingsChannelLabel } from '../channelCatalog';
 import { getSettingsChannelGuideUrl, type ChannelGuideLanguage } from '../channelGuideUrls';
-import { isFeishuAppConfigured } from '../channelRequirements';
-import type { ChannelItem, FeishuAppDraft, SettingsChannelId } from '../channelTypes';
+import { isDingtalkAppConfigured, isFeishuAppConfigured } from '../channelRequirements';
+import type { ChannelItem, DingtalkAppDraft, FeishuAppDraft, SettingsChannelId } from '../channelTypes';
 import { ChannelLogo } from './ChannelLogo';
 
 const EnableIcon = settingsActionIcons.enable;
@@ -17,6 +17,7 @@ type ChannelListSectionProps = {
   channels: ChannelItem[];
   feishuApps: FeishuAppDraft[];
   feishuLoaded: boolean;
+  dingtalk: { apps: DingtalkAppDraft[]; loaded: boolean; onAdd: () => void };
   loading: boolean;
   channelConfigured: Record<SettingsChannelId, boolean>;
   channelEnabled: Record<SettingsChannelId, boolean>;
@@ -32,6 +33,7 @@ export function ChannelListSection({
   channels,
   feishuApps,
   feishuLoaded,
+  dingtalk,
   loading,
   channelConfigured,
   channelEnabled,
@@ -66,7 +68,21 @@ export function ChannelListSection({
                       name: app.name.trim() || t('channels.feishuApps.unnamedAppName'),
                       configured: isFeishuAppConfigured(app),
                       enabled: isFeishuAppConfigured(app) && app.enabled,
+                      bound: false,
+                      invalidAllowFrom: false,
                     }))
+                  : channel.channel_id === 'dingtalk' && dingtalk.loaded
+                  ? dingtalk.apps
+                      .map((app, index) => ({
+                        key: app.client_id.trim() || `dingtalk-${index}`,
+                        index,
+                        name: app.name.trim() || t('channels.dingtalkApps.unnamedAppName'),
+                        configured: isDingtalkAppConfigured(app),
+                        enabled: isDingtalkAppConfigured(app) && app.enabled,
+                        bound: Boolean(app.persistent_agent_id),
+                        invalidAllowFrom: app.allow_from_invalid,
+                      }))
+                      .filter((account) => account.configured)
                   : [
                       {
                         key: channel.channel_id,
@@ -74,6 +90,8 @@ export function ChannelListSection({
                         name: label,
                         configured,
                         enabled: configured && channelEnabled[channel.channel_id],
+                        bound: false,
+                        invalidAllowFrom: false,
                       },
                     ];
               return (
@@ -87,14 +105,17 @@ export function ChannelListSection({
                   data-state={configured ? 'configured' : 'unconfigured'}
                 >
                   <div className="settings-channels-panel__channel-copy">
-                    <span
-                      className="settings-channels-panel__channel-label"
-                      data-testid="settings-channels-panel-channel-label"
-                      data-variant={channel.channel_id}
-                      title={channel.channel_id === 'xiaoyi' ? t('channels.availability.xiaoyi') : undefined}
-                    >
-                      {label}
-                    </span>
+                    <div className="settings-channels-panel__channel-heading">
+                      {!configured ? <ChannelLogo channelId={channel.channel_id} label={label} variant="channel" /> : null}
+                      <span
+                        className="settings-channels-panel__channel-label"
+                        data-testid="settings-channels-panel-channel-label"
+                        data-variant={channel.channel_id}
+                        title={channel.channel_id === 'xiaoyi' ? t('channels.availability.xiaoyi') : undefined}
+                      >
+                        {label}
+                      </span>
+                    </div>
                     <div className="settings-channels-panel__channel-details">
                       <span
                         className="settings-channels-panel__channel-description"
@@ -138,6 +159,19 @@ export function ChannelListSection({
                             >
                               {account.enabled ? t('channels.status.enabled') : t('channels.status.disabled')}
                             </Tag>
+                            {account.bound ? (
+                              <Tag variant="neutral" data-testid="settings-channels-panel-account-colleague-tag">
+                                {t('channels.dingtalkApps.boundTag')}
+                              </Tag>
+                            ) : null}
+                            {account.invalidAllowFrom ? (
+                              <Tag
+                                variant="warning"
+                                data-testid="settings-channels-panel-account-allow-from-invalid-tag"
+                              >
+                                {t('channels.dingtalkApps.invalidAllowFromTag')}
+                              </Tag>
+                            ) : null}
                           </div>
                           <div className="settings-channels-panel__account-actions">
                             {account.configured ? (
@@ -190,6 +224,18 @@ export function ChannelListSection({
                           className="settings-channels-panel__add-configuration"
                           data-testid="settings-channels-panel-add-configuration-btn"
                           onClick={onAddFeishu}
+                        >
+                          {t('channels.addConfiguration')}
+                        </Button>
+                      ) : null}
+                      {channel.channel_id === 'dingtalk' ? (
+                        <Button
+                          variant="quiet"
+                          size="sm"
+                          className="settings-channels-panel__add-configuration"
+                          data-testid="settings-channels-panel-add-configuration-btn"
+                          data-variant="dingtalk"
+                          onClick={dingtalk.onAdd}
                         >
                           {t('channels.addConfiguration')}
                         </Button>

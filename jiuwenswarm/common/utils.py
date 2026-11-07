@@ -47,6 +47,11 @@ from logging.handlers import BaseRotatingHandler
 import portalocker
 from ruamel.yaml import YAML
 
+from openjiuwen_protocol.logging_config import (
+    LOGGING_LEVEL_FIELDS,
+    LOG_CONFIG_OP_DELETE,
+    LOG_CONFIG_OP_FIELD,
+)
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
 from jiuwenswarm.enterprise import is_enterprise
@@ -422,6 +427,7 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
         initialized: If True, skip cache reset (use when paths are already initialized elsewhere).
     """
     global _user_home, _initialized, _config_dir, _workspace_dir, _root_dir
+    global _workspace_base_dir
     _user_home = Path(path)
     if initialized:
         return
@@ -429,6 +435,13 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
     _config_dir = None
     _workspace_dir = None
     _root_dir = None
+    # _workspace_base_dir caches ``<home>/.jiuwenswarm`` and is filled on the first path
+    # lookup -- which happens at import time, from the *real* home, via setup_logger().
+    # Leaving it set made the promise above false: get_user_workspace_dir() returns the
+    # cached value before it ever consults get_user_home(), so a test that redirected the
+    # home still resolved to the developer's own workspace, and a force init deleted the
+    # real ~/.jiuwenswarm/config subdirectories.
+    _workspace_base_dir = None
 
 
 def get_user_workspace_dir() -> Path:
@@ -1764,15 +1777,6 @@ def get_root_dir() -> Path:
     return _root_dir
 
 
-def get_agent_workspace_dirname() -> str:
-    """Agent workspace directory name under ``agent/``.
-
-    - 个人版: ``workspace``
-    - 企业版: ``jiuwenclaw_workspace``
-    """
-    return "jiuwenclaw_workspace" if is_enterprise() else "workspace"
-
-
 def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
     """Get the agent workspace directory path.
 
@@ -1780,10 +1784,10 @@ def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
     It contains standard nodes like skills, memory, todo, messages, etc.
 
     - 个人版: ``~/.jiuwenswarm/agent/workspace``
-    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/jiuwenclaw_workspace``
+    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/workspace``
 
     ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
-    ``TenantContext`` 绑定路径，再兜底 ``get_agent_root_dir() / dirname``。
+    ``TenantContext`` 绑定路径，再兜底 ``get_agent_root_dir() / "workspace"``。
     """
     if tenant_key is None:
         try:
@@ -1796,7 +1800,7 @@ def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
             logger.debug(
                 "tenant_context unavailable for workspace bind", exc_info=True
             )
-    return get_agent_root_dir(tenant_key) / get_agent_workspace_dirname()
+    return get_agent_root_dir(tenant_key) / "workspace"
 
 
 def get_default_project_workspace_dir() -> Path:
@@ -2710,6 +2714,32 @@ def _mask_named_sensitive_kv(text: str) -> str:
     return "".join(chunks)
 
 
+def _has_possible_json_container_prefix(text: str, start: int) -> bool:
+    """Reject SDK/Python repr prefixes without constructing JSONDecodeError.
+
+    Failed decoding computes line/column information over the entire prefix,
+    which is expensive for many fragments in a large log. Only reject starts
+    that cannot be JSON; let the decoder validate everything else. Bound the
+    nested-container lookahead so deeply nested input stays the decoder's job.
+    """
+    position = start
+    for _ in range(64):
+        container = text[position]
+        position += 1
+        while position < len(text) and text[position] in " \t\r\n":
+            position += 1
+        if position == len(text):
+            return False
+        token = text[position]
+        if container == "{":
+            return token in '"}'
+        if token in "[{":
+            continue
+        # JSONDecoder also accepts the nonstandard NaN/Infinity constants.
+        return token in '"]-0123456789tfnNI'
+    return True
+
+
 def _sanitize_log_text(text: str) -> str:
     """Redact JSON by value, preserving numbers and valid serialization.
 
@@ -2732,6 +2762,8 @@ def _sanitize_log_text(text: str) -> str:
         start = match.start()
         search_from = start + 1
         candidates += 1
+        if not _has_possible_json_container_prefix(text, start):
+            continue
         try:
             value, end = decoder.raw_decode(text, start)
         except (ValueError, RecursionError):
@@ -2972,6 +3004,9 @@ def install_source_record_masking() -> None:
     _source_record_masking_installed = True
 
 
+_RECORD_BYTE_LIMIT = 64 * 1024
+
+
 def _sanitize_record_text(text: str) -> str:
     """Bound regex/JSON work per log record without truncating a credential.
 
@@ -2980,14 +3015,18 @@ def _sanitize_record_text(text: str) -> str:
     a partial credential at a truncation boundary. Public mask_sensitive keeps
     its full-text behavior.
     """
-    if len(text) > 64 * 1024:
+    # Short-circuit on characters to avoid encoding unbounded input.
+    if len(text) > _RECORD_BYTE_LIMIT or (
+        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
+    ):
         if text.lstrip().startswith(("{", "[")):
             return json.dumps({
                 "log_payload_omitted": True,
                 "original_characters": len(text),
-                "character_limit": 64 * 1024,
+                "character_limit": _RECORD_BYTE_LIMIT,  # Retain the previous summary field.
+                "byte_limit": _RECORD_BYTE_LIMIT,
             }, separators=(",", ":"))
-        return f"[log payload omitted: {len(text)} characters exceeds 65536 character limit]"
+        return f"[log payload omitted: exceeds {_RECORD_BYTE_LIMIT} UTF-8 bytes]"
     return _sanitize_log_text(text)
 
 
@@ -3043,14 +3082,14 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         handler.close()
         root.removeHandler(handler)
 
-    # M0-c：gateway 升为顶层包后，其模块 logger（``gateway.*``）不再位于
-    # ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式把
-    # ``gateway`` logger 挂回 ``jiuwenswarm`` 树，保持 gateway.log / 控制台
-    # 路由不变（否则 gateway 日志全部丢失）。
-    gateway_logger = logging.getLogger("gateway")
-    gateway_logger.setLevel(logging.NOTSET)
-    gateway_logger.propagate = True
-    gateway_logger.parent = root
+    # gateway 已拆为独立包 agent_gateway，其模块 logger（``agent_gateway.*``）
+    # 不在 ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式挂回
+    # ``jiuwenswarm`` 树，保持 gateway.log / 控制台路由不变（否则日志全部丢失）。
+    for gateway_logger_name in ("gateway", "agent_gateway"):
+        gateway_logger = logging.getLogger(gateway_logger_name)
+        gateway_logger.setLevel(logging.NOTSET)
+        gateway_logger.propagate = True
+        gateway_logger.parent = root
 
     formatter = logging.Formatter(
         fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
@@ -3187,35 +3226,27 @@ def update_log_levels(
 def _logging_config_row_to_dict(obj: dict[str, Any] | Any) -> dict[str, Any]:
     if isinstance(obj, dict):
         return {
-            "level": obj.get("level", "INFO"),
-            "console_level": obj.get("console_level"),
-            "gateway": obj.get("gateway"),
-            "channel": obj.get("channel"),
-            "agent_server": obj.get("agent_server"),
-            "full": obj.get("full"),
+            key: obj.get(key, "INFO" if key == "level" else None)
+            for key in LOGGING_LEVEL_FIELDS
         }
     return {
-        "level": getattr(obj, "level", "INFO"),
-        "console_level": getattr(obj, "console_level", None),
-        "gateway": getattr(obj, "gateway", None),
-        "channel": getattr(obj, "channel", None),
-        "agent_server": getattr(obj, "agent_server", None),
-        "full": getattr(obj, "full", None),
+        key: getattr(obj, key, "INFO" if key == "level" else None)
+        for key in LOGGING_LEVEL_FIELDS
     }
 
 
 def apply_logging_config_payload(payload: dict[str, Any] | None) -> None:
     """将 DB 行 / WS payload 转为 :func:`update_log_levels` 调用。"""
-    if not payload or payload.get("op") == "delete":
+    if not payload or payload.get(LOG_CONFIG_OP_FIELD) == LOG_CONFIG_OP_DELETE:
         update_log_levels()
         return
 
     kwargs: dict[str, Any] = {}
-    if payload.get("level") is not None:
-        kwargs["log_level"] = str(payload["level"])
-    for key in ("console_level", "gateway", "channel", "agent_server", "full"):
-        if payload.get(key) is not None:
-            kwargs[key] = str(payload[key])
+    for key in LOGGING_LEVEL_FIELDS:
+        if payload.get(key) is None:
+            continue
+        # ``level`` 对应 ``update_log_levels`` 的 ``log_level`` 形参。
+        kwargs["log_level" if key == "level" else key] = str(payload[key])
     update_log_levels(**kwargs)
 
 

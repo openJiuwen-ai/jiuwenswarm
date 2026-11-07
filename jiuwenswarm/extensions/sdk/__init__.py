@@ -10,7 +10,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-_GATEWAY_SDK = import_module("gateway.extensions.sdk")
+_GATEWAY_SDK = import_module("agent_gateway.extensions.sdk")
 
 __all__ = list(_GATEWAY_SDK.__all__)
 

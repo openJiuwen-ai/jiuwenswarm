@@ -1,6 +1,6 @@
 from websockets.exceptions import ConnectionClosedError
 
-from gateway.common.ws_diagnostics import (
+from agent_gateway.common.ws_diagnostics import (
     describe_ws_exception,
     format_ws_diagnostics,
 )

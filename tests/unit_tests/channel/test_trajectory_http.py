@@ -26,15 +26,15 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI
-
-from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
-from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.channel_manager.web.trajectory_http import (
+from agent_gateway.channel_manager.web.trajectory_http import (
     TRAJECTORY_API_PREFIX,
     TRAJECTORY_ARCHIVE_ENTRY_NAME,
     TrajectoryHttpService as _GatewayTrajectoryHttpService,
     attach_trajectory_routes as _attach_trajectory_routes,
 )
+
+from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
+from jiuwenswarm.common.schema.message import ReqMethod
 
 
 def TrajectoryHttpService(settings=None, *, reader=None, metadata_loader=None, fetch=None):
@@ -1843,7 +1843,7 @@ async def test_missing_trajectory_status_is_logged() -> None:
             records.append(record)
 
     handler = _Handler()
-    proxy_logger = logging.getLogger("gateway.channel_manager.web.trajectory_http")
+    proxy_logger = logging.getLogger("agent_gateway.channel_manager.web.trajectory_http")
     proxy_logger.addHandler(handler)
     try:
         async def fetch(method, params, user_id=None):
@@ -1910,7 +1910,7 @@ async def test_blob_read_without_progress_fails_closed() -> None:
 @pytest.mark.asyncio
 async def test_blob_read_chunk_limit_fails_closed() -> None:
     """A peer that streams forever hits the chunk limit instead of hanging."""
-    from gateway.channel_manager.web.trajectory_http import _MAX_BLOB_CHUNKS
+    from agent_gateway.channel_manager.web.trajectory_http import _MAX_BLOB_CHUNKS
 
     reads = 0
 

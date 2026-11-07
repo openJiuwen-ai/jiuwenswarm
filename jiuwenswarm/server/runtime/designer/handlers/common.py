@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote, urlparse
 
+from agent_gateway.common.work_mode import is_default_project_id
+
 from jiuwenswarm.common.schema.designer_graph import (
     EDGE_KIND_DATA,
     NODE_ROLE_BRIEF,
@@ -28,7 +30,6 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,  # re-exported; image/compose handlers call it on this module
     get_default_project_session_workspace_dir,
 )
-from gateway.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 from jiuwenswarm.server.runtime.designer.user_references import user_reference_image_paths
 from jiuwenswarm.server.runtime.session import project_store
@@ -756,82 +757,14 @@ def role_output_text(ctx: NodeExecutionContext, role: str) -> str:
 
 
 async def complete_designer_text(prompt: str, *, max_tokens: int = 8192) -> str:
-    """Call the default chat model. Tests monkeypatch this function."""
-    from jiuwenswarm.common.config import get_config, get_default_models
-    from openjiuwen.core.foundation.llm import Model
-    from openjiuwen.core.foundation.llm.schema.config import (
-        ModelClientConfig,
-        ModelRequestConfig,
+    """Call the Designer chat model for node text. Tests monkeypatch this function."""
+    from jiuwenswarm.server.runtime.designer.model_tools import (
+        call_model_tool,
+        model_text_or_raise,
     )
 
-    entries = get_default_models(get_config())
-    entry = next((item for item in entries if item.get("is_default") is True), None)
-    if entry is None and entries:
-        entry = entries[0]
-    client = (entry or {}).get("model_client_config") if isinstance(entry, dict) else {}
-    mco = (entry or {}).get("model_config_obj") if isinstance(entry, dict) else {}
-    if not isinstance(client, dict):
-        return ""
-    if not isinstance(mco, dict):
-        mco = {}
-    api_key = str(client.get("api_key") or "").strip()
-    api_base = str(client.get("api_base") or "").strip()
-    model_name = str(client.get("model_name") or "").strip()
-    provider = str(client.get("client_provider") or "").strip()
-    if not api_key or not model_name:
-        return ""
-    kwargs: dict[str, object] = {
-        "api_key": api_key,
-        "api_base": api_base,
-        "client_provider": provider,
-    }
-    profile = str(client.get("endpoint_profile") or "").strip()
-    if profile:
-        kwargs["endpoint_profile"] = profile
-    request = ModelRequestConfig(
-        model_name=model_name,
-        temperature=float(mco.get("temperature", 0.4) or 0.4),
-        top_p=float(mco.get("top_p", 0.95) or 0.95),
-        max_tokens=max_tokens,
-    )
-    model = Model(
-        model_client_config=ModelClientConfig(**kwargs),
-        model_config=request,
-    )
-    invoke_input = {
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.4,
-        "max_tokens": max_tokens,
-        "model": model_name,
-    }
-    from jiuwenswarm.server.runtime.designer.trajectory import (
-        current_trajectory_span,
-    )
-
-    with current_trajectory_span(
-        action="agent_call",
-        phase="inference",
-        detail={
-            "agent_type": "chat_model",
-            "prompt": prompt,
-            "system_prompt": "",
-            "input": invoke_input,
-        },
-    ) as span_payload:
-        response = await model.invoke(**invoke_input)
-        content = getattr(response, "content", response)
-        span_payload["output"] = content
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("text"):
-                parts.append(str(block["text"]))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(parts).strip()
-    return str(content).strip()
+    result = await call_model_tool(prompt=prompt, system="", max_tokens=max_tokens)
+    return model_text_or_raise(result)
 
 
 _IMAGE_GEN_SEM = None
@@ -851,6 +784,35 @@ def _image_gen_semaphore():
 _RATE_LIMIT_TOKENS = ("ratequota", "rate limit", "throttling", "too many requests", "429")
 
 
+def note_media_settings_gap(ctx: object, kind: str, where: str) -> str | None:
+    """Per-node Settings-gap check: log it, show it on the canvas, report it.
+
+    Runs before every media node generates, so a first run and a regenerate
+    both name the blocked node and the Settings > Agent fix instead of a bare
+    "no image_path" / "no file" (#5266).
+
+    Settings > Agent writes only to ``.env``, so reload it first; otherwise a
+    slot the user just fixed is reported from stale ``os.environ`` values.
+    """
+    from jiuwenswarm.common.utils import get_env_file
+    from jiuwenswarm.dotenv_early import load_dotenv_runtime
+    from jiuwenswarm.server.runtime.designer import media_generation
+
+    try:
+        load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
+    except Exception:
+        logger.debug("Failed to reload media generation env before Settings check", exc_info=True)
+
+    problem = media_generation.note_generation_problem(kind, where)  # type: ignore[arg-type]
+    emit = getattr(ctx, "emit_activity", None) if ctx is not None else None
+    if problem and callable(emit):
+        try:
+            emit("stage", problem, f"{kind}_gen")
+        except TypeError:
+            emit("stage", problem)
+    return problem
+
+
 def _is_rate_limit_error(text: str) -> bool:
     low = (text or "").lower()
     return any(token in low for token in _RATE_LIMIT_TOKENS)
@@ -862,8 +824,13 @@ async def generate_designer_image(
     reference_images: list[str] | None = None,
     max_tries: int = 2,
     save_dir: str | None = None,
-) -> dict[str, str] | None:
+) -> dict[str, str]:
     """Call the Settings > Agent image model when enabled. Tests monkeypatch this function.
+
+    Returns ``{"image_path": ...}`` or ``{"error": ...}``. The error always
+    names the reason — including a Settings gap (switched off / not configured
+    / unsupported endpoint) — so node handlers do not report a bare
+    "no image_path" for a Settings problem (#5266).
 
     Retries transient RateQuota/429 with backoff under a global concurrency cap.
     """
@@ -878,9 +845,17 @@ async def generate_designer_image(
     except Exception:
         logger.debug("Failed to reload image generation env before generation", exc_info=True)
 
+    # Keep the original gate (enabled flag only) so an enabled-but-incomplete
+    # slot still reaches the generator, which reports its own reason. Only the
+    # payload changes: carry the reason instead of returning None, because a
+    # bare None degrades to "no image_path" in node handlers (#5266).
     if not media_generation.generation_enabled("image"):
-        logger.info("Designer image generation skipped: VISUAL_GEN_ENABLED is off")
-        return None
+        problem = media_generation.generation_problem("image") or ""
+        logger.info(
+            "Designer image generation skipped: %s",
+            problem or "VISUAL_GEN_ENABLED is off",
+        )
+        return {"error": problem or "Image generation is switched off in Settings > Agent."}
     refs = [str(item).strip() for item in (reference_images or []) if str(item).strip()]
     if refs:
         logger.info(

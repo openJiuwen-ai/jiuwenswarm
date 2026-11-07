@@ -3,11 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
+from agent_gateway.common.model_selection import ModelSelection, ResolvedModelGroup
 
 from jiuwenswarm.common.model_config_validation import validate_models_config
 from jiuwenswarm.common.model_errors import MODEL_SELECTION_DISABLED, ModelSelectionError
 from jiuwenswarm.common.model_catalog import ModelCatalog
-from gateway.common.model_selection import ModelSelection, ResolvedModelGroup
 from jiuwenswarm.common.config import _merge_model_update
 from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 

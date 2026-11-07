@@ -10,6 +10,8 @@ The core goal of Harness Engineering is to build the engineered execution enviro
 
 The globally active RSI optimization package is the default session Harness. Selecting another RSI Harness in session extensions unloads the current version before loading the selection, so only one RSI Harness is effective per session. Clearing the selection restores the global default; omitting the selection retains the current choice. Global version changes preserve explicit session selections, and failed replacements restore the previous version. Ordinary extension packages can still be combined.
 
+New Harness RSI tasks use continuous scores from 0 to 1 with two-stage promotion (`continuous_two_stage_v2`). Each target case must first improve by more than 0.05 over its frozen baseline. One independent full evaluation then requires every target to remain improved, each non-target to regress by no more than 0.05, and the overall mean score to strictly increase. Runtime tool and skill usage and machine verification evidence must also pass their checks. Resumed historical tasks retain their saved configuration without automatic policy migration.
+
 ### 1.1 What Is Harness?
 
 Harness is the engineering control layer of an agent. The model generates reasoning and action intent, while the Harness places that intent into a controlled execution system. In other words, openJiuwen Harness does not replace the model; it supplies the execution, state, constraints, and feedback mechanisms outside the model:

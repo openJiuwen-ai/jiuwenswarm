@@ -6,21 +6,21 @@ Port of src-raw ``services/PromptSuggestion/promptSuggestion.ts`` with ``utils/f
 the ``query/stopHooks.ts`` trigger. When a turn the person drove ends successfully, AgentServer sends
 the turn's last main model call again unchanged (system, tools, messages, model and its parameters)
 followed by that call's answer and one user message asking for the next input, so the request reuses
-the prompt cache the call just wrote. The reply is one suggestion, or two when the
-dialogue supports two likely next inputs, or none; the gateway shows them on the
-pages open on the session while the request is still the session's latest completed one, and
+the prompt cache the call just wrote. The reply is one suggestion or none; the gateway shows it on
+the pages open on the session while the request is still the session's latest completed one, and
 records what the page did with it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
 import uuid
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from openjiuwen.core.foundation.llm import ToolMessage, UserMessage
@@ -45,107 +45,44 @@ READY_EVENT = "prompt_suggestion.ready"
 USER_INTERACTION_EVENTS = frozenset({
     "chat.ask_user_question", "harness.activate_interaction", "plan.approval_required",
 })
-PROMPT_VERSION = "prompt-suggestion-fork-v11"
-# A turn shows one next input, or two when the dialogue supports two likely ones.
-MAX_SUGGESTIONS = 2
-# src-raw skips a fork that would pay afresh for more than this. Ark caches a prompt prefix as the
-# call is served, so the fork sent right after it reads the call's whole prompt from the cache
-# (36,736 of 36,893 prompt tokens in a probe) and pays afresh only for the call's answer: the bound
-# is on the answer's output tokens.
-MAX_FORK_ANSWER_TOKENS = 10_000
+PROMPT_VERSION = "prompt-suggestion-fork-v13"
+# A turn shows one next input.
+MAX_SUGGESTIONS = 1
 # Nothing of the parent call is overridden, its reasoning setting included, as in src-raw: a
 # parameter that differs from the parent's breaks the prompt-cache key.
-SUGGESTION_PROMPT = """[建议模式：预测用户接下来会在输入框里自然输入什么。]
-
-先看用户最近的消息和最初的请求。
-
-先判断用户最新意愿是否允许预测下一句：如果用户明确要求只确认收到、暂停当前话题或等待，且没有后来用户亲自明确解除，就直接什么都不输出，停止本次预测。不得从「本轮」、以后想了解的内容、历史中未完成的内容或助手「后续随时说一声」的邀请推断用户下一轮马上继续，也不要把格式偏好理解为继续的意愿。
-对照：用户说「本轮只确认收到，不展开建议」，助手只确认 → 不出，「现在讲讲王车易位和兵的升变吧」反转了用户限制；
-用户后来亲自明确说「现在开始讲规则，讲完王车易位再谈兵的升变」，王车易位已讲完 → 「接着讲兵的升变」。
-对照：用户说「先讲邮票齿孔，再解释邮戳」，齿孔已讲完 → 「接着解释邮戳」；
-同一用户后来改说「集邮先到这儿，邮戳等我回来再谈」 → 不出，未讲的邮戳不能覆盖新的停止意愿。
-助手正在请求新的授权、批准或解除限制时，不要输出替用户同意的那一句；即使它问「是否继续」或建议「试试看」，也不能用「继续吧」来答应这个新授权。这一轮其余内容仍要预测：出用户还可能输入的其它下一句。回答里的风险提示只挡住它点名禁止的决定，不把整轮变成沉默。普通内容续讲、选择、收尾，以及用户已经明确授权的同一操作，仍按原意预测。
-对照：用户说「只整理展览文案，不对外发布」，助手问「是否允许发布到展览网站」，展品说明还没写完 → 「把展品说明写完」，不出「同意发布展讯」。
-用户亲自明确说「先排好已批准公开的展讯，再发布到展览网站，我授权这次发布」，文案已排好 → 「发布展讯」，这是继续已授权的同一操作。
-只有用户自己的停止意愿还在时，才整轮什么都不输出。没有这层限制时，执行下面的预测规则。出一条还是两条，按这一轮对话自己判断，最多两行。只有一个明显的下一句时只输出这一条，不要为了凑数再写第二条。回答里已经列出供挑选的做法时，优先从这些做法里选用户最可能输入的，出 1 到 2 条。也可以预测回答里没有写过、但顺着当前任务用户很可能接着输入的新一句；它必须像用户自己会打出来的话，具体、可点。不要输出替用户同意新授权的那一句，也不要编只有用户自己知道的事实。看不出任何可点的下一句时，什么都不输出；不要用括号或说明文字代替。
-
-你要预测的是用户自己会输入的话，不是你认为他该做什么。
-
-检验：用户看到时会不会想「我可以点这句」？
-
-例子：
-用户说「修复缺陷并运行测试」，缺陷已修复 → 「运行测试」
-代码写好后 → 「试试看」
-助手问要不要继续普通内容 → 「继续吧」
-任务完成、下一步很明显 → 「提交这些改动」
-出错或误解之后 → 不出（让用户自己判断、纠正）
-助手要用户提供只有用户自己知道、且回答里没有列出的内容（手上有什么、打算做什么、具体的数字或日期）→ 不出，不替用户编
-对照：助手说「把你现在会按的和弦报给我，我按这些挑练习曲」，用户没提过会哪些 → 不出，「C、G、Am、F」是替用户编的；
-用户前面说过「我会 C、G、Am」，助手同样这样问 → 「C、G、Am」，只用用户自己说过的。
-对照：用户问「黄金现在值得买吗」，助手问买首饰、金条还是 ETF，以及长期配置还是短线，并问跌破 4100 美元要不要提醒 →
-买ETF，长期配置
-跌破4100美元时提醒我
-对照：助手讲完 ETF 更适合长期配置，没有再列下一步 → 「对比一下金条和ETF的费用」，这是回答里没写过、但顺着当前问题用户很可能接着输入的一句。
-对照：助手给出金价情景和点位，写明不要据此交易，并问要不要把流程做成 Skill →
-看一下白银59关口
-把4060为什么叫生死门讲清楚
-不出「同意创建」或「4100买入」。「（本轮不预测）」不是用户会输入的话，不要写。
-
-要具体：「运行测试」好过「继续」。
-按助手实际回答的内容判断目标是否已经完成，不因它标作「下一步」「待确认」就把已经给出的答案当作未完成。用可识别的具体对象说明下一项，不用「下一组」「继续下一步」代替无法确定的目标。任务完成后仍有明显收尾动作，或助手询问普通内容是否继续时，可以按用户意图预测对应短指令。助手请求的新授权只禁止同意那一句，同一轮的其它下一句照常预测。回答里的风险提示只禁止它点名的决定。
-对照：用户说「先解释潮汐，再比较大潮和小潮」，助手只解释完潮汐 → 「比较大潮和小潮」；
-同一要求中，助手已经给出潮汐解释和大潮、小潮的比较，虽把比较标作「下一步（待确认）」 → 不出，「继续下一步」和「再讲下一组」没有未完成的具体目标。
-
-不要建议：
-- 评价或客套（「看起来不错」「谢谢」）
-- 提问（「那……呢？」）
-- 助手口吻（「让我……」「我会……」「这是……」）
-- 和当前任务无关的新话题（顺着当前任务的下一句可以，即使回答里没写过）
-- 一条建议里写多句话
-
-格式：用用户的语言，贴合用户的说话风格；每条中文 4–30 字，英文 2–12 个词（完整短指令除外）。一条建议占一行，最多两行。不要编号、引号、解释，也不要写「本轮不预测」。或者什么都不输出。"""
-
-
-# src-raw lets these single words through: each is a whole command the user types.
-_SINGLE_WORDS = frozenset({
-    "yes", "yeah", "yep", "yea", "yup", "sure", "ok", "okay",
-    "push", "commit", "deploy", "stop", "continue", "check", "exit", "quit", "no",
-    "是的", "当然", "好", "好的", "推送", "提交", "部署", "停止", "继续", "检查", "退出", "不", "不要",
-    "继续吧", "试试看",
-})
-_MAX_WORDS = 12
-_MIN_CHINESE_CHARS = 4
-_MAX_CHINESE_CHARS = 30
-_CJK_RE = re.compile(r"[㐀-鿿]")
-# The model spelling out the prompt's "stay silent" instead of staying silent.
-_META_TEXT_RE = re.compile(
-    r"^nothing found\.?$|^(?:nothing to suggest|no suggestion)|\bsilence is\b|\bstay(?:s|ing)? silent\b"
-    r"|^\W*silence\W*$|^\W*(?:不出|无|无建议|没有建议|沉默)\W*$|保持沉默"
-    r"|^(?:什么[都也])?(?:无输出|不输出)\W*$|^(?:本轮)?不预测(?:下一句)?\W*$",
-    re.I,
+# A long parent answer still forks: the suggestion is worth the extra completion tokens.
+SUGGESTION_PROMPT = (
+    "This is an app-generated request for a suggested next user message. "
+    "The user did not write this message.\n\n"
+    "Your suggestion will appear in the user's empty message composer. "
+    "They can accept it, edit it, or ignore it; it will not be sent "
+    "automatically.\n\n"
+    "Predict the single message this user is most likely to type next from "
+    "the visible conversation.\n"
+    "Use the whole conversation to understand their current intent and the "
+    "latest exchange. Choose the\n"
+    "action and specific object that best continue that intent, rather than "
+    "a generally useful follow-up.\n"
+    "Express its core naturally in the user's voice, keeping the requirements "
+    "needed to retain its meaning.\n"
+    "Choose the strongest grounded move even if several continuations are "
+    "possible; uncertainty about\n"
+    "exact wording or incidental details is not a reason to return null. "
+    "Use null only when the\n"
+    "conversation offers no grounded next move at all.\n\n"
+    "Set suggestion to exactly one natural user message, one line, at most "
+    "240 characters, or null.\n"
+    "No alternatives or explanation."
 )
-# src-raw's meta_wrapped, error_message and prefixed_label.
-_META_WRAPPED_RE = re.compile(r"^\(.*\)$|^\[.*\]$|^（.*）$")
-_ERROR_MESSAGE_RE = re.compile(
-    r"^(?:api error:|prompt is too long|request timed out|invalid api key|image was too large)", re.I,
-)
-_PREFIXED_LABEL_RE = re.compile(r"^\w+:\s", re.A)
-_CHINESE_LABEL_RE = re.compile(r"^(?:建议|用户|下一句|回复|预测)\s*[:：]")
-_SENTENCE_END_RE = re.compile(r"[。！？!?]|[.](?=\s*(?:[A-Z]|$))")
-_FORMATTING_RE = re.compile(r"[\n*]|```|^\s*(?:[-•]|\d+[.)])\s")
-_LINE_PREFIX_RE = re.compile(r"^(?:[-•*]|\d+[.)、])\s*")
-_EVALUATIVE_RE = re.compile(
-    r"thanks|thank you|looks good|sounds good|that works|that worked|that's all|nice|great|perfect"
-    r"|makes sense|awesome|excellent|谢谢|感谢|多谢|不错(?!过)|很好|完美|明白了|有道理|很有帮助",
-    re.I,
-)
-_CLAUDE_VOICE_RE = re.compile(
-    r"^(?:let me|i'll|i've|i'm|i can|i would|i think|i notice|here's|here is|here are|that's|this is"
-    r"|this will|you can|you should|you could|sure,|of course|certainly)"
-    # The assistant offering to act for 你. 我来 keeps the readings where 我 is the object of the
-    # verb before it (对我来说 / 帮我来) or starts 我来自.
-    r"|(?<![对帮给让替和跟同])我来(?!自)|我(?:可以|会|能|来|将|这就)?(?:帮|替|为)[你您]|^(?:以下是|下面是)",
-    re.I,
+
+
+# List markers stripped from a plain-text reply line before it is shown.
+# Require whitespace after the marker so Markdown emphasis like **bold** is kept.
+_LINE_PREFIX_RE = re.compile(r"^(?:[-•*]|\d+[.)、])\s+")
+# Models often wrap the JSON contract in a markdown fence; the fence is not part of the value.
+_FENCED_BLOCK_RE = re.compile(
+    r"^```(?:json)?\s*\r?\n?(.*?)\r?\n?```\s*$",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -173,12 +110,47 @@ def _suggestion_line(raw: str) -> str:
     return _LINE_PREFIX_RE.sub("", raw.strip().strip("「」\"'“”")).strip()
 
 
-def select_suggestions(text: str) -> tuple[list[str], str, str | None]:
-    """The suggestions to show, the ledger outcome when there are none, and why.
+def _strip_markdown_fence(text: str) -> str:
+    """Inner body of a single fenced block, or ``text`` unchanged."""
 
-    One reply line is one suggestion. Up to two lines that pass the filters are
-    shown; a single failing line keeps that line's filter reason.
+    match = _FENCED_BLOCK_RE.fullmatch(text.strip())
+    return match.group(1).strip() if match else text.strip()
+
+
+def _json_suggestion(text: str) -> str | None:
+    """The ``suggestion`` value of a JSON reply, ``""`` for null, or None when not that shape.
+
+    Accepts a bare object or the same object wrapped in a markdown ``json`` fence.
     """
+
+    try:
+        value = json.loads(_strip_markdown_fence(text))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict) or set(value) != {"suggestion"}:
+        return None
+    suggestion = value["suggestion"]
+    if suggestion is None:
+        return ""
+    return suggestion.strip() if isinstance(suggestion, str) else None
+
+
+def select_suggestions(text: str) -> tuple[list[str], str, str | None]:
+    """The suggestion to show, the ledger outcome when there is none, and why.
+
+    Host-side content filters are not applied: a non-empty null-contract reply is
+    shown as-is (JSON ``suggestion`` unwrapped, else the first non-empty line).
+    """
+    text = text.strip()
+    if text.lower() in {"null", "none"}:
+        return [], "suppressed", "empty"
+    json_suggestion = _json_suggestion(text)
+    if json_suggestion is not None:
+        text = json_suggestion
+        if not text:
+            return [], "suppressed", "empty"
+    else:
+        text = _strip_markdown_fence(text)
     lines = []
     for raw in text.splitlines():
         suggestion = _suggestion_line(raw)
@@ -186,51 +158,14 @@ def select_suggestions(text: str) -> tuple[list[str], str, str | None]:
             lines.append(suggestion)
     if not lines:
         return [], "suppressed", "empty"
-    if len(lines) == 1:
-        reason = filter_suggestion(lines[0])
-        return ([], "filtered", reason) if reason else ([lines[0]], "candidate", None)
-    kept: list[str] = []
-    first_reason: str | None = None
-    for line in lines:
-        reason = filter_suggestion(line)
-        if reason:
-            first_reason = first_reason or reason
-            continue
-        if line not in kept:
-            kept.append(line)
-        if len(kept) == MAX_SUGGESTIONS:
-            break
-    if not kept:
-        return [], "filtered", first_reason
-    return kept, "candidate", None
+    return lines[:MAX_SUGGESTIONS], "candidate", None
 
 
 def filter_suggestion(text: str) -> str | None:
-    """Return why the model's reply is not a suggestion to show, or ``None`` to show it."""
+    """Compatibility no-op: content filters were removed; always show the reply."""
 
-    lower = text.lower()
-    chinese = bool(_CJK_RE.search(text))
-    words = len(text.split())
-    characters = sum(not character.isspace() for character in text)
-    sentence_ends = [match.start() for match in _SENTENCE_END_RE.finditer(text)]
-    checks = (
-        ("done", lambda: lower == "done"),
-        ("meta_text", lambda: bool(_META_TEXT_RE.search(text))),
-        ("meta_wrapped", lambda: bool(_META_WRAPPED_RE.search(text))),
-        ("nonspecific", lambda: bool(re.fullmatch(r"继续下一步[，。！？；：、,.!?;:…]*", text))),
-        ("error_message", lambda: bool(_ERROR_MESSAGE_RE.search(text))),
-        ("prefixed_label", lambda: bool(_PREFIXED_LABEL_RE.search(text) or _CHINESE_LABEL_RE.search(text))),
-        ("too_few_words", lambda: lower not in _SINGLE_WORDS
-         and (characters < _MIN_CHINESE_CHARS if chinese else words < 2 and not text.startswith("/"))),
-        ("too_many_words", lambda: not chinese and words > _MAX_WORDS),
-        ("too_long", lambda: characters > _MAX_CHINESE_CHARS if chinese else len(text) >= 100),
-        ("multiple_sentences", lambda: len(sentence_ends) > 1
-         or any(index < len(text) - 1 for index in sentence_ends)),
-        ("has_formatting", lambda: bool(_FORMATTING_RE.search(text))),
-        ("evaluative", lambda: bool(_EVALUATIVE_RE.search(text))),
-        ("claude_voice", lambda: bool(_CLAUDE_VOICE_RE.search(text))),
-    )
-    return next((reason for reason, check in checks if check()), None)
+    del text
+    return None
 
 
 @dataclass(frozen=True)
@@ -243,6 +178,8 @@ class _MainCall:
     tools: Any
     answer: Any
     max_iterations: int
+    # The kwargs the main call actually sent, so the fork's request body matches it.
+    parameters: dict[str, Any] = field(default_factory=dict)
     # The session was in plan mode, where the turns discuss a plan not yet approved.
     planning: bool = False
 
@@ -258,18 +195,58 @@ class _MainCall:
         usage = getattr(self.answer, "usage_metadata", None)
         return None if usage is None else usage.output_tokens
 
-    async def fork(self, instruction: str, **parameters: Any) -> Any:
-        """Send the call again unchanged, then its answer and ``instruction`` as one user message.
-
-        Tools stay defined and nothing of the call is overridden (no max_tokens either), so the
-        request keeps the call's prompt-cache key; a reply that calls a tool is the caller's to read.
-        """
+    async def invoke(self, messages: list[Any]) -> Any:
+        """Send ``messages`` with exactly the parent call's model, tools and parameters."""
         return await self.llm.invoke(
             model=self.model,
-            messages=[*self.messages, self.answer, UserMessage(content=instruction)],
+            messages=messages,
             tools=self.tools or None,
-            **parameters,
+            **self.parameters,
         )
+
+    async def fork(self, instruction: str) -> Any:
+        """Send the call again unchanged, then its answer and ``instruction`` as one user message.
+
+        Tools and parameters stay exactly as the parent call sent them, so the request keeps the
+        call's prompt-cache key; a reply that calls a tool is the caller's to read.
+        """
+        return await self.invoke([*self.messages, self.answer, UserMessage(content=instruction)])
+
+
+def _main_call_parameters(ctx: AgentCallbackContext, llm: Any) -> dict[str, Any]:
+    """The per-call kwargs the main call used, so the fork's request body matches it."""
+
+    agent = ctx.agent
+    config = getattr(agent, "_config", None) or getattr(agent, "config", None)
+    parameters: dict[str, Any] = {}
+    if config is not None:
+        if getattr(config, "llm_return_token_ids", False):
+            parameters["return_token_ids"] = True
+        if getattr(config, "llm_logprobs", False):
+            parameters["logprobs"] = True
+            parameters["top_logprobs"] = getattr(config, "llm_top_logprobs", None)
+    hook = getattr(agent, "_kv_cache_model_call_hook", None)
+    if hook is None or config is None:
+        return parameters
+    try:
+        runtime = hook.resolve_runtime(llm, getattr(config, "kv_cache_affinity_config", None))
+        if not (runtime.enable_affinity and runtime.supports_affinity):
+            return parameters
+        session_id, parent_session_id = hook.resolve_lineage(
+            runtime, ctx.session, ctx.context.session_id(),
+        )
+        turn_num = hook.resolve_turn_num(ctx.extra, ctx.session)
+        parameters.update(hook.build_invoke_kwargs(
+            runtime=runtime,
+            llm=llm,
+            session=ctx.session,
+            session_id=session_id,
+            parent_session_id=parent_session_id,
+            turn_num=turn_num,
+        ))
+    except Exception:  # noqa: BLE001 - the fork still sends the prompt without extra kwargs
+        logger.debug("[PromptSuggestion] parent invoke kwargs unavailable", exc_info=True)
+    return parameters
 
 
 def usage_payload(message: Any) -> dict[str, Any] | None:
@@ -362,8 +339,6 @@ class PromptSuggestionForks:
             reason = "plan_mode"
         elif getattr(call.answer, "tool_calls", None):
             reason = "unanswered_tool_call"
-        elif answer is not None and answer > MAX_FORK_ANSWER_TOKENS:
-            reason = "cache_cold"
         else:
             task = asyncio.create_task(self._fork(epoch, session_id, request_id, call, completion))
             self._tasks[session_id] = task
@@ -430,7 +405,7 @@ class PromptSuggestionForks:
                 call_started = time.monotonic()
                 record["missing_provider_receipts"] += 1
                 record["usage_complete"] = False
-                reply = await call.llm.invoke(model=call.model, messages=messages, tools=call.tools or None)
+                reply = await call.invoke(messages)
                 replies.append(reply)
                 usage = usage_payload(reply)
                 receipts.append({"model": call.model, "provider_response_id": reply.response_id, "usage": usage,
@@ -525,7 +500,7 @@ class PromptSuggestionForkRail(AgentRail):
         forks.saw_main_call(ctx.session.get_session_id(), _MainCall(
             llm=llm, model=ctx.agent.config.model_name, messages=tuple(ctx.inputs.messages),
             tools=ctx.inputs.tools, answer=ctx.inputs.response, max_iterations=ctx.agent.config.max_iterations,
-            planning=planning,
+            parameters=_main_call_parameters(ctx, llm), planning=planning,
         ))
 
 
@@ -544,6 +519,34 @@ def _latest_completed_request(session_id: str) -> str | None:
         later = {later_row.get("request_id") for later_row in records[index + 1:]}
         return request_id if row.get("status") == "success" and later <= {request_id} else None
     return None
+
+
+def current_suggestions(store: TopicStarterStore, session_id: str) -> dict[str, Any]:
+    """Recover unconsumed suggestions for the session's latest successful answer."""
+    epoch = consent_epoch()
+    if epoch is None:
+        return {"enabled": False, "suggestions": []}
+    request_id = _latest_completed_request(session_id)
+    if not request_id:
+        return {"enabled": True, "suggestions": []}
+    suggestions = []
+    rows = store.query_events(
+        event_type="prompt_suggestion_generation", policy_id=POLICY_ID,
+        slate_id=f"prompt-suggestion:{request_id}", limit=2,
+    )
+    for row in rows:
+        payload = row["payload"]
+        if row["session_id"] != session_id or row["created_at"] < epoch or payload.get("outcome") != "candidate":
+            continue
+        consumed = any(store.query_events(
+            event_type=f"prompt_suggestion_{outcome}", policy_id=POLICY_ID,
+            topic_id=row["topic_id"], limit=1,
+        ) for outcome in ("accepted", "ignored", "suppressed"))
+        if not consumed:
+            suggestions.append({key: payload[key] for key in ("session_id", "request_id", "suggestion_id", "text")})
+    if consent_epoch() != epoch or _latest_completed_request(session_id) != request_id:
+        return {"enabled": consent_epoch() is not None, "suggestions": []}
+    return {"enabled": True, "suggestions": suggestions}
 
 
 def record_page_outcome(store: TopicStarterStore, params: dict[str, Any]) -> bool | None:

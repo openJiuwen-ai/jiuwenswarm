@@ -22,6 +22,10 @@ export interface MediaItem {
   /** 展示用的名字（比如任务素材被改过名）；不影响 filename 承担的扩展名识别/下载文件名。
    *  没有的话渲染时回退到 filename。 */
   displayName?: string;
+  /** 这张附件卡片（composer 草稿）自己的 id，发送时随 session.assets.register 的
+   *  client_id 一并带上，让后端识别"这是同一次附加的重试/重放，不是故意再附一次"
+   *  （见 session_assets.py）。不参与渲染。 */
+  clientId?: string;
   base64Data?: string;
   base64_data?: string;
   url?: string;
@@ -74,16 +78,37 @@ export interface AutoReviewerMetadata {
 }
 
 export interface ContextCompressionRuntime {
-  status: 'running' | 'completed' | 'unchanged' | 'failed';
+  status: 'running' | 'completed' | 'unchanged' | 'failed' | 'cancelled' | 'paused';
   summary: string;
   operationId: string;
   phase?: string;
   processor?: string;
+  /**
+   * Epoch ms when this compression round started. Set from the ``started``
+   * event so the elapsed-time display is accurate while the round is running;
+   * terminal states drop it and the timer stops.
+   */
+  startedAt?: number;
 }
 
 export interface ContextCompressionSummary {
   count: number;
   summaries: string[];
+}
+
+export type MoaPhase = 'reference' | 'verification';
+
+export interface MoaStatusPayload extends Record<string, unknown> {
+  operation_id: string;
+  phase: MoaPhase;
+  status: 'started' | 'completed' | 'failed' | 'cancelled';
+  execution_id?: string;
+}
+
+export interface MoaOperation {
+  phase: MoaPhase;
+  status: MoaStatusPayload['status'];
+  executionId?: string;
 }
 
 export interface TeamMemberContextCompressionState {
@@ -98,6 +123,8 @@ export interface Message {
   timestamp: string;
   /** True until the server confirms this optimistic input's timestamp. */
   isTimestampPending?: boolean;
+  /** True until runtime.accepted confirms the server received this optimistic input. */
+  isAcceptedPending?: boolean;
   /** A displayed supplement belongs to the existing execution, not a new user turn. */
   supplementalInput?: {
     executionId: string;
@@ -149,6 +176,8 @@ export interface Message {
   proactiveTarget?: string;  // 推荐目标（skill名/待办/探索方向），点赞请求带回后端兜底
   /** Team-attributed history is restored into this Team's conversation runtime. */
   teamId?: string;
+  /** Origin of an expert's user-directed message also displayed in the Owner chat. */
+  sourceTeamId?: string;
   /**
    * 这条用户消息是否曾经用于设置/修改持续目标（"设为目标"徽章）。发送那一刻本地回显消息
    * 直接置 true；历史消息刷新后重新加载时，优先读后端 history 字段

@@ -49,8 +49,6 @@ export type SettingsServices = {
           Record<ExternalCliAgentKind, ExternalCliDetectResult>
         >),
   ) => void;
-  recommendationFocus?: number | null;
-  onCorrectRecommendation?: (text: string) => void;
   onRecommendationEnabledChange?: (enabled: boolean) => void;
 };
 
@@ -85,8 +83,6 @@ export function SettingsServicesProvider({
       services.onTrackExternalCliDependencyInstalls,
       services.onValidateExternalCliPaths,
       services.onPruneExternalCliPathHistories,
-      services.recommendationFocus,
-      services.onCorrectRecommendation,
       services.onRecommendationEnabledChange,
       services.request,
     ],

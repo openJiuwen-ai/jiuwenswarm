@@ -1,4 +1,4 @@
-import type { AgentMode } from './index';
+import type { AgentMode, ModelSelection } from './index';
 
 export interface CronRunUpdate {
   event_id: string;
@@ -36,7 +36,12 @@ export interface CronJobDTO {
   timeout_seconds?: number;
   project_id: string;
   last_session_id?: string;
+  /** 正在执行的会话（企业版 list 挂载，供前端订 live） */
+  active_session_id?: string;
   model_name?: string;
+  // 稳定模型选择（对齐后端 CronJob.model_selection）；有值时执行侧按它定位模型，
+  // model_name 仅作展示/旧链路兜底——目录里出现重名模型时仅靠名字反查会失败
+  model_selection?: ModelSelection | null;
 }
 
 /** UI 层展示用结构，来自 CronJobDTO 派生（见 cronJobToUI） */
@@ -47,6 +52,7 @@ export interface CronTaskUI {
   projectName: string | null;
   description: string;
   modelName: string | null;
+  modelSelection: ModelSelection | null;
   /** 执行模式：单Agent('agent')/集群('team')，从后端 mode 归一而来，见 CronPanel/index.tsx cronJobToUI */
   mode: AgentMode;
   cronExpr: string;

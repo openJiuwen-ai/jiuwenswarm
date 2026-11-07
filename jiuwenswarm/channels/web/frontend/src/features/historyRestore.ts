@@ -893,6 +893,14 @@ function normalizeHistoryMediaItem(value: unknown): MediaItem | null {
     return null;
   }
 
+  // The composer draft's own id (session.assets.register's idempotency key),
+  // persisted by the backend (_history_media_record, interface.py) specifically so
+  // resolveAssetDisplayNames can match a restored message's attachment back to the
+  // ONE asset it actually created -- a path can now legitimately back more than
+  // one asset (a deliberate re-attach), so matching by path alone after a reload
+  // would resolve to whichever asset happens to be newest.
+  const clientId = pickFirstString(value, ['client_id', 'clientId']);
+
   return {
     type,
     filename,
@@ -900,6 +908,7 @@ function normalizeHistoryMediaItem(value: unknown): MediaItem | null {
     mime_type: mimeType,
     mimeType,
     ...(typeof size === 'number' ? { size_bytes: size, sizeBytes: size } : {}),
+    ...(clientId ? { clientId } : {}),
   };
 }
 
@@ -1238,6 +1247,11 @@ function parseSessionHistoryTimelineEntry(
   }
 
   if (eventType === 'chat.final') {
+    // A full-duplex task's raw Core answer (with its spoken-brief markers) is never shown
+    // live; the duplex runtime persists the clean result as its own tool_result reply.
+    if (record.channel_id === 'video_tool' || payload.channel_id === 'video_tool') {
+      return null;
+    }
     // Goal 完成卡片落盘的是 `goal.completed:` + JSON 信封，不是展示文本。
     // normalizeFinalContent 会把字面 `\n` 还原成真换行（GFM 表格要靠这个），信封里的
     // JSON 字符串于是带上非法控制符，parseGoalCompletedContent 解析失败 →

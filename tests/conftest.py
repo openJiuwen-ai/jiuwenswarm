@@ -2,13 +2,68 @@
 
 """Pytest configuration and shared fixtures."""
 
+import logging
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 from typing import Generator
 
 import pytest
+
+
+# Both Swarm and the extracted Gateway resolve configuration at import time.
+# Collection happens before fixtures, so install a private home before importing either.
+_collection_home = tempfile.TemporaryDirectory(prefix="jiuwenswarm-test-home-")
+_test_environment = pytest.MonkeyPatch()
+_home = Path(_collection_home.name)
+_data = _home / ".jiuwenswarm"
+_config = _data / "config"
+_config.mkdir(parents=True)
+shutil.copyfile(Path(__file__).resolve().parents[1] / "jiuwenswarm/resources/config.yaml", _config / "config.yaml")
+for _name, _value in {
+    "HOME": _home, "USERPROFILE": _home, "JIUWENSWARM_HOME": _home,
+    "JIUWENSWARM_DATA_DIR": _data, "JIUWENSWARM_CONFIG_DIR": _config,
+    "XDG_CONFIG_HOME": _home / ".config", "XDG_DATA_HOME": _home / ".local/share",
+}.items():
+    _test_environment.setenv(_name, str(_value))
+
+
+def pytest_unconfigure(config):
+    _test_environment.undo()
+    _collection_home.cleanup()
+
+
+@pytest.fixture(autouse=True)
+def _jiuwenswarm_logs_reach_caplog(request: pytest.FixtureRequest) -> Generator[None, None, None]:
+    """Let ``caplog`` see records from the ``jiuwenswarm`` logger tree.
+
+    ``jiuwenswarm.common.utils`` calls ``setup_logger()`` at import time, which sets
+    ``propagate = False`` on the ``jiuwenswarm`` logger and attaches its own handlers.
+    ``caplog`` installs its handler on the *root* logger, so nothing ever reaches it
+    and every ``caplog.records`` assertion sees an empty list — the warning is emitted
+    and visible on stderr, yet the test fails.
+
+    A test asserting on what was warned about should not be hostage to how the
+    deployment configures logging, so propagation is restored for the duration of the
+    test and put back afterwards.
+
+    Only for tests that actually use ``caplog``. Propagation also feeds pytest's
+    live-log handler, which suspends and resumes global capture around each record
+    and thereby reinstalls pytest's own ``sys.stderr`` over one a test has replaced --
+    a test that swaps stdio and never asks for ``caplog`` must not pay for this.
+    """
+    if "caplog" not in request.fixturenames:
+        yield
+        return
+    logger = logging.getLogger("jiuwenswarm")
+    previous = logger.propagate
+    logger.propagate = True
+    try:
+        yield
+    finally:
+        logger.propagate = previous
 
 
 @pytest.fixture

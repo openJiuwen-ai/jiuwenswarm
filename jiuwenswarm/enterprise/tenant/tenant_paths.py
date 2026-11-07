@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # tenant_key 纯契约（_TENANT_KEY_SEP / normalize_tenant_key_part / build_tenant_key）
 # 真源已迁 gateway.common.tenant_key（下载 URL 签验两侧同码）；此处 re-export 保持既有链路。
-from gateway.common.tenant_key import (  # noqa: F401
+from agent_gateway.common.tenant_key import (  # noqa: F401  # pylint: disable=wrong-import-order
     build_tenant_key,
     normalize_tenant_key_part,
 )
@@ -36,9 +36,7 @@ __all__ = [
 
 def get_agent_workspace_relative_dir() -> Path:
     """Relative agent workspace under a tenant root."""
-    from jiuwenswarm.common.utils import get_agent_workspace_dirname
-
-    return Path("agent") / get_agent_workspace_dirname()
+    return Path("agent") / "workspace"
 
 
 def get_agent_root_relative_dir() -> Path:

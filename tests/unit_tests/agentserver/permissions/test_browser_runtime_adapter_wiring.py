@@ -7,6 +7,9 @@ from typing import Any
 import pytest
 from openjiuwen.core.foundation.tool import McpServerConfig
 
+from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
+    SubagentToolActivityRail,
+)
 from jiuwenswarm.server.runtime.agent_adapter import interface_code, interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
@@ -104,6 +107,8 @@ def test_deep_agent_spec_provider_passes_prepared_browser_settings(
     assert subagents is not None
     assert "settings" not in captured
     assert captured["sys_operation"] is adapter._sys_operation
+    # Without it the subagent panel shows only thinking (issue #8637).
+    assert any(isinstance(rail, SubagentToolActivityRail) for rail in captured["rails"])
     assert subagents[-1].factory_kwargs["settings"].mcp_cfg is guarded_cfg
     assert adapter._browser_runtime_settings.mcp_cfg is guarded_cfg
     if adapter_type is JiuwenSwarmCodeAdapter:

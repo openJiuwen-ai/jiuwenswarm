@@ -30,7 +30,12 @@ import {
 import { Switch } from '../Switch';
 import { resolveMarketplaceInstalledLocalName } from '../../utils/skillNetUrl';
 import { isEnterprise } from '../../edition';
-import { isAdminManagedSkill, shouldShowEnableSwitch, shouldShowSkillPublish } from './skillPanelUtils';
+import {
+  formatSkillVersionLabel,
+  isAdminManagedSkill,
+  shouldShowEnableSwitch,
+  shouldShowSkillPublish,
+} from './skillPanelUtils';
 import { buildSkillVersionOptions } from './skillVersionOptions';
 import type {
   EvolutionEntry,
@@ -118,7 +123,10 @@ function PackMembersGrid({
                 ? [`${t('skills.memberUnavailable')}${reasonKey ? ` · ${t(reasonKey)}` : ''}`]
                 : undefined
             }
-            description={member.description || t('skills.noDescription')}
+            description={[
+              member.description || t('skills.noDescription'),
+              member.version ? `${member.version} · ${member.asset_id || ''}` : '',
+            ].filter(Boolean).join('\n')}
             onClick={interactable ? () => onOpenMember?.(member.name) : undefined}
           />
         );
@@ -394,6 +402,10 @@ export function SkillDetailView(props: SkillDetailViewProps) {
   const adminManaged = isAdminManagedSkill(selectedSkill, enterpriseEdition);
   const showEnableSwitch = shouldShowEnableSwitch(selectedSkill, enterpriseEdition);
   const showPublish = shouldShowSkillPublish(selectedSkill, enterpriseEdition);
+  const enterpriseVersionLabel = formatSkillVersionLabel(selectedSkill, {
+    allowVersionId: true,
+  });
+  const currentVersionLabel = formatSkillVersionLabel(selectedSkill);
   return renderShell(
     {
       avatar: { name: skillDisplayName, testId: 'skill-panel-my-detail-avatar' },
@@ -525,7 +537,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           className="ml-2 flex items-center justify-center rounded-[16px] text-sm text-text-inverse bg-control-emphasis hover:opacity-80 whitespace-nowrap"
           style={{ width: '96px', height: '32px' }}
           data-testid="skill-panel-my-detail-publish-btn"
-          onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}
+          onClick={() => openAssetPublish({ kind: selectedSkill.skill_type === 'skillpack' ? 'skillpack' : 'skill', local_id: selectedSkill.name })}
         >
           {t('skills.actions.publish')}
         </button>
@@ -533,9 +545,20 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     </div>,
     selectedSkill.description || t('skills.noDescription'),
     <>
-      {/* 版本管理 */}
-      <DetailSection testId={`${tid}-versions-section`} title={t('skills.detail.versionManage')}>
-        {versionsLoadState === 'loading' ? (
+      {/* 企业版：只展示当前版本；社区版保留版本管理（可切换历史副本） */}
+      <DetailSection
+        testId={`${tid}-versions-section`}
+        title={t(enterpriseEdition ? 'skills.detail.version' : 'skills.detail.versionManage')}
+      >
+        {enterpriseEdition ? (
+          <div
+            data-testid="skill-panel-my-detail-versions-state"
+            className="text-sm text-text-muted"
+            data-variant={enterpriseVersionLabel ? 'current' : 'empty'}
+          >
+            {enterpriseVersionLabel || t('skills.detail.noVersions')}
+          </div>
+        ) : versionsLoadState === 'loading' ? (
           <div
             data-testid="skill-panel-my-detail-versions-state"
             className="text-sm text-text-muted"
@@ -557,7 +580,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
             className="text-sm text-text-muted"
             data-variant="empty"
           >
-            {selectedSkill.version ? `v${selectedSkill.version}` : t('skills.detail.noVersions')}
+            {currentVersionLabel || t('skills.detail.noVersions')}
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-wrap">

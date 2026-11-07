@@ -328,7 +328,8 @@ async def test_real_external_child_skips_deep_bootstrap_and_history(monkeypatch)
     await parent.cleanup()
 
 
-def test_moa_bootstrap_consumes_request_and_keeps_aggregator_on_reload(monkeypatch):
+@pytest.mark.asyncio
+async def test_moa_bootstrap_consumes_request_and_keeps_aggregator_on_reload(monkeypatch):
     from jiuwenswarm.server.runtime import moa_runtime
 
     adapter = JiuWenSwarmDeepAdapter()
@@ -338,9 +339,9 @@ def test_moa_bootstrap_consumes_request_and_keeps_aggregator_on_reload(monkeypat
     adapter._instance_overrides = {"moa_model_selection": {"type": "model_group", "id": "group-a"}}
     aggregator = SimpleNamespace(model_client_config={}, model_config=SimpleNamespace())
     runtime = SimpleNamespace(aggregator=aggregator, fingerprint="group-snapshot", model_name="aggregator")
-    monkeypatch.setattr(moa_runtime, "build_moa_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(moa_runtime, "build_moa_runtime", AsyncMock(return_value=runtime))
 
-    model = adapter._prepare_moa_for_build({"experimental": {"multi_model_collaboration_enabled": True}})
+    model = await adapter._prepare_moa_for_build({"experimental": {"multi_model_collaboration_enabled": True}})
 
     assert model is aggregator
     assert adapter._initial_execution_request is None

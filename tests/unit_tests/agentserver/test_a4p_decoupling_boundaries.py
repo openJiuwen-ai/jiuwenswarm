@@ -9,10 +9,12 @@ from pathlib import Path
 
 import pytest
 
+import agent_gateway
+
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = ROOT / "jiuwenswarm"
-# M0-c：gateway 已升为顶层包（与 jiuwenswarm 并列），边界扫描需覆盖两者
-GATEWAY_PACKAGE = ROOT / "gateway"
+# gateway 已拆为独立包，边界扫描指向已安装的 agent_gateway 包
+GATEWAY_PACKAGE = Path(agent_gateway.__file__).resolve().parent
 
 
 def _imports(source: str, module: str):
@@ -54,36 +56,50 @@ def _imports(source: str, module: str):
 
 
 def _a4p_implementation(name: str) -> bool:
-    # M0-c：gateway 为顶层包，扫描锚可为 gateway.* 或 jiuwenswarm.*
+    # 扫描锚可为 agent_gateway.*（独立包）或 jiuwenswarm.*
     return name == "a4p" or name.startswith("a4p.") or (
-        (name.startswith("jiuwenswarm.") or name.startswith("gateway."))
+        (
+            name.startswith("jiuwenswarm.")
+            or name.startswith("agent_gateway.")
+            or name.startswith("gateway.")
+        )
         and any(part == "a4p" or part.startswith("a4p_") for part in name.split("."))
     )
 
 
-def _assert_boundary(paths, forbidden):
+def _assert_boundary(paths, forbidden, *, root: Path = ROOT, prefix: str = ""):
     paths = sorted(paths)
     assert paths, "Boundary must cover actual implementation files"
     violations = []
     for path in paths:
-        module = ".".join(path.relative_to(ROOT).with_suffix("").parts)
+        relative = path.relative_to(root).with_suffix("")
+        module = ".".join(([prefix] if prefix else []) + list(relative.parts))
         for line, target in _imports(path.read_text(encoding="utf-8"), module):
             if forbidden(target):
-                violations.append(f"{path.relative_to(ROOT)}:{line}: {target}")
+                violations.append(f"{path.relative_to(root)}:{line}: {target}")
     assert not violations, "Forbidden dependency:\n" + "\n".join(violations)
 
 
 def test_gateway_does_not_import_a4p_implementation():
-    _assert_boundary(GATEWAY_PACKAGE.rglob("*.py"), _a4p_implementation)
+    _assert_boundary(
+        GATEWAY_PACKAGE.rglob("*.py"),
+        _a4p_implementation,
+        root=GATEWAY_PACKAGE,
+        prefix="agent_gateway",
+    )
 
 
 def test_a4p_implementation_does_not_import_gateway():
-    # gateway.common 是无状态纯组件的唯一真源，a4p 允许引用；其余 gateway 子包禁止。
+    # agent_gateway.common 是无状态纯组件的唯一真源，a4p 允许引用；其余子包禁止。
     _assert_boundary(
         set(PACKAGE.rglob("a4p*.py")) | set((PACKAGE / "agents/harness/common/a4p").rglob("*.py")),
         lambda name: (
-            name == "gateway" or name.startswith("gateway.")
-        ) and not name.startswith("gateway.common"),
+            name == "gateway"
+            or name.startswith("gateway.")
+            or name == "agent_gateway"
+            or name.startswith("agent_gateway.")
+        )
+        and not name.startswith("agent_gateway.common"),
     )
 
 
@@ -112,6 +128,9 @@ def test_authorizer_broker_does_not_discover_server_singleton():
     "__import__('a4p.types')",
 ])
 def test_import_scanner_detects_boundary_bypasses(source):
-    # M0-c：gateway 是真实顶层包，锚点用其不存在的子包（resolve 仅做
-    # 字符串拼接，相对导入 "..agents" 正确解析为越界错误路径）
-    assert any(_a4p_implementation(name) for _, name in _imports(source, "gateway.example.scanner"))
+    # gateway 是独立包，锚点用其不存在的子包（resolve 仅做字符串拼接，
+    # 相对导入 "..agents" 正确解析为越界错误路径）
+    assert any(
+        _a4p_implementation(name)
+        for _, name in _imports(source, "agent_gateway.example.scanner")
+    )

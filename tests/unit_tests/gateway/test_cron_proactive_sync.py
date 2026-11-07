@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID, _find_job
+from agent_gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID, _find_job
 
 
 @pytest.mark.asyncio

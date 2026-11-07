@@ -6,14 +6,14 @@ import time
 
 import pytest
 
-from gateway.extensions.auth.credential_authenticator import (
+from agent_gateway.extensions.auth.credential_authenticator import (
     AuthContext,
     AuthResult,
     CredentialAuthenticator,
 )
-from gateway.extensions.auth.ssh_authenticator import SshPublicKeyAuthenticator
-from gateway.extensions.auth.ssh_key_issuer import AgentOSSshKeyIssuer
-from gateway.extensions.auth.ssh_key_registry import (
+from agent_gateway.extensions.auth.ssh_authenticator import SshPublicKeyAuthenticator
+from agent_gateway.extensions.auth.ssh_key_issuer import AgentOSSshKeyIssuer
+from agent_gateway.extensions.auth.ssh_key_registry import (
     KeyRegistry,
     KeyRegistryEntry,
 )

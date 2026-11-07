@@ -1063,6 +1063,23 @@ def update_rsi_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
+def update_cua_agent_enabled_in_config(value: bool | None) -> None:
+    """Persist an explicit desktop preference, or null to follow the release default."""
+    if value is not None and not isinstance(value, bool):
+        raise ValueError("cua_agent.enabled must be true, false or null")
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        current = data
+        for key in ("react", "subagents", "cua_agent"):
+            if not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
 def update_enable_free_models_in_config(value: bool) -> None:
     """原子更新 models.enable_free_models（历史兼容；前端已不再暴露此开关）。"""
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
@@ -3924,7 +3941,7 @@ _DEFAULT_SANDBOX_POLICY_FILE = "code-agent-policy.yaml"
 # YuanRong sandbox knobs under flat ``sandbox:`` (see get_sandbox_endpoint).
 _VALID_YUANRONG_EXECUTORS = ("default", "docker", "conch")
 _DEFAULT_YUANRONG_EXECUTOR = "docker"
-_DEFAULT_YUANRONG_URL = "http://yuanrong.local"
+_DEFAULT_YUANRONG_URL = "http://127.0.0.1:18093"
 _YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (
     "image",
     "workdir",
@@ -4199,7 +4216,7 @@ def get_sandbox_endpoint() -> dict[str, Any]:
     - 若 yaml 中存在: ``image`` / ``workdir`` / ``mounts`` / ``cpu`` /
       ``cpu_limit`` / ``memory`` / ``mem_limit`` / ``rootfs`` /
       ``user`` / ``group``
-    - ``url`` 为空时回落占位 ``http://yuanrong.local`` (仅作 cache key)
+    - ``url`` 为空时回落 ``http://127.0.0.1:18093``
 
     Raises:
         ValueError: yaml 里 ``preserve_file_sharing_mode`` 写了非法值时, 直接

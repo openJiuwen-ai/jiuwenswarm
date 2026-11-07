@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from gateway.extensions.adx.control_client import AdxControlClient, AdxControlError
-from gateway.extensions.adx.router_client import AdxRouterClient, AdxRoutingError
-from gateway.routing.container_files import AgentOSFileTransferError
-from gateway.extensions.auth.credential_authenticator import AuthResult
+from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError
+from agent_gateway.extensions.adx.router_client import AdxRouterClient, AdxRoutingError
+from agent_gateway.routing.container_files import AgentOSFileTransferError
+from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 from test_adx_router import _config, FakeClient, _request, _router
 
 
@@ -20,8 +20,8 @@ def _files(monkeypatch, *, auth_client=None):
 
 
 def _file_channel(router):
-    from gateway.channel_manager.base import RobotMessageRouter
-    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter(), agent_client=router)
     router.set_channel_manager(SimpleNamespace(
@@ -42,7 +42,7 @@ def _business_authenticator():
 
 @pytest.mark.parametrize('connected', [True, False])
 async def test_gateway_health_check_is_mocked_without_activation(monkeypatch, connected):
-    from gateway.health_check import (
+    from agent_gateway.health_check import (
         HEALTH_CHECK_OK,
         GatewayHealthCheckService,
         HealthCheckConfig,
@@ -95,7 +95,7 @@ async def test_file_upload_is_atomic_and_scoped_to_activated_user(monkeypatch):
 
 
 async def test_http_download_keeps_environment_and_releases_activity(monkeypatch):
-    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
     router, control = _files(monkeypatch)
     await router.connect('')
@@ -119,7 +119,7 @@ async def test_http_download_keeps_environment_and_releases_activity(monkeypatch
 
 
 async def test_http_file_routes_require_business_auth_and_reject_other_users(monkeypatch):
-    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
     auth_client = _business_authenticator()
     router, control = _files(monkeypatch, auth_client=auth_client)
     await router.connect('')
@@ -161,7 +161,7 @@ async def test_http_file_routes_require_business_auth_and_reject_other_users(mon
     ('environment', 502, 'SERVICE_UNAVAILABLE'),
 ])
 async def test_http_file_routes_map_adx_failures(monkeypatch, route, params, failure, status, code):
-    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
     router, control = _files(monkeypatch)
     await router.connect('')
@@ -208,7 +208,7 @@ async def test_recursive_listing_preserves_unlimited_depth_contract(monkeypatch)
 
 
 async def test_file_routes_follow_original_auth_disabled_behavior(monkeypatch):
-    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
     router, control = _files(monkeypatch)
     await router.connect('')

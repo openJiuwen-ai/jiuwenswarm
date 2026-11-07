@@ -19,8 +19,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
 
 # The other stores on recommendation.db use the same wait, so a write here waits like theirs.
 _SQLITE_BUSY_TIMEOUT_SECONDS = 5.0
-_NATURAL_INPUT_ORIGIN = "manual_free_text"
-_NATURAL_ASSISTANCE_ORIGIN = "none"
 _HIGH_INTENT_KINDS = frozenset({"new_goal", "correction", "recent_action"})
 MIN_DRIFT_SAMPLES = 3
 _PIPELINE_RECEIPT_VERSION = "topic-starter-v6-short-intent-read-v1"
@@ -44,10 +42,11 @@ class ShortIntentBehavior:
 
     @property
     def is_natural(self) -> bool:
-        return (
-            self.input_origin == _NATURAL_INPUT_ORIGIN
-            and self.assistance_origin == _NATURAL_ASSISTANCE_ORIGIN
+        from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
+            is_user_revisit_eligible,
         )
+
+        return is_user_revisit_eligible(self.input_origin, self.assistance_origin)
 
 
 @dataclass(frozen=True)

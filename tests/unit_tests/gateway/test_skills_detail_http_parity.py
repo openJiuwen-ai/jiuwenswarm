@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import agent_gateway
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
@@ -24,8 +25,9 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
 )
 
 _ROOT = Path(__file__).resolve().parents[3]
-_INVOKE = _ROOT / "gateway" / "channel_manager" / "web" / "invoke.py"
-_MAPPED = _ROOT / "gateway" / "channel_manager" / "web" / "http_routes" / "mapped.py"
+_GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
+_INVOKE = _GATEWAY_ROOT / "channel_manager" / "web" / "invoke.py"
+_MAPPED = _GATEWAY_ROOT / "channel_manager" / "web" / "http_routes" / "mapped.py"
 _DISPATCH = _ROOT / "jiuwenswarm" / "server" / "dispatch.py"
 _WEB_HTTP = (
     _ROOT

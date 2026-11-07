@@ -35,13 +35,13 @@ from openjiuwen.harness.rails import (
 )
 from openjiuwen.harness_protocol.state import HarnessState
 
-from gateway.common.cron_team_completion import (
+from agent_gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     apply_cron_team_round_event,
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
-from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -488,6 +488,10 @@ class TeamManager:
             return False
         return session_id in self._stream_tasks
 
+    def get_stream_task(self, session_id: str) -> asyncio.Task | None:
+        """Return the registered worker without changing its ownership."""
+        return self._stream_tasks.get(session_id)
+
     def pop_stream_task(
         self,
         session_id: str,
@@ -756,6 +760,12 @@ class TeamManager:
             }:
                 current_round.continued_after_flow = True
 
+        from jiuwenswarm.server.runtime.group_execution import project_group_stream_event
+
+        projected = await project_group_stream_event(session_id, event)
+        if projected is None:
+            return
+        event = projected
         waiters = self._select_broadcast_waiters(session_id)
 
         if not waiters:
@@ -1471,7 +1481,7 @@ class TeamManager:
         selection: SwarmModelSelection,
     ) -> CompiledModelSelection:
         """Resolve a stable Team selection through the server-side boundary."""
-        from gateway.common.model_selection import ResolvedModelGroup
+        from agent_gateway.common.model_selection import ResolvedModelGroup
         from jiuwenswarm.common.model_errors import (
             TEAM_MODEL_SELECTION_STALE,
             ModelSelectionError,
@@ -1593,6 +1603,17 @@ class TeamManager:
         return name
 
     @staticmethod
+    def _model_group_display_name(group_id: str) -> str:
+        """Return a model group's display name, falling back to its id."""
+        from jiuwenswarm.common.model_catalog import ModelCatalog
+
+        try:
+            return ModelCatalog().group_display_name(group_id)
+        except Exception:  # noqa: BLE001 - naming must never fail the Team build
+            logger.debug("[TeamManager] model group %s has no catalog entry", group_id, exc_info=True)
+            return group_id
+
+    @staticmethod
     def _apply_compiled_team_selection(
         spec_dict: dict[str, Any],
         selection: SwarmModelSelection,
@@ -1635,6 +1656,15 @@ class TeamManager:
                 entry.model_dump(exclude_none=True)
                 for entry in materialize_model_group(compiled, selection)
             ]
+            # Name the group for the Team: members run on the logical "*"
+            # model, so history records and the leader's roster show this name
+            # until the router reports the model that actually served a call.
+            group_name = TeamManager._model_group_display_name(selection.id)
+            for entry in spec_dict["model_pool"]:
+                entry.setdefault("metadata", {})["model_group"] = {
+                    "id": selection.id,
+                    "display_name": group_name,
+                }
             spec_dict["model_pool_strategy"] = "intelli_router"
             # The compiled selection is authoritative. Clear convenience
             # sources from a legacy template and normalize every predefined
@@ -2054,7 +2084,7 @@ class TeamManager:
         *,
         request_metadata: dict[str, Any] | None,
     ) -> None:
-        from gateway.common.mode_matrix import is_team_plan_mode
+        from agent_gateway.common.mode_matrix import is_team_plan_mode
 
         mode = (request_metadata or {}).get("mode")
         if is_team_plan_mode(mode):
@@ -2414,6 +2444,9 @@ class TeamManager:
             ).strip()
             or None,
         )
+        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
+
+        assign_shared_sandbox_sys_operation(spec, deep_agent)
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 
@@ -4071,6 +4104,23 @@ def is_team_session_running(session_id: str) -> bool:
         and run.status == "running"
         and any(agent.status == "running" for phase in run.phases for agent in phase.agents)
         for run_id, run in handler.get_run_states().items()
+    )
+
+
+def team_session_has_active_work(session_id: str) -> bool:
+    """Whether a round, an admitted turn or an executing member still owns the Session.
+
+    Unlike :func:`is_team_session_running` this also counts the windows before
+    and between member execution, so a ``false`` here means no Team signal will
+    later settle the Session's processing state on its own.
+    """
+    manager = _team_manager
+    if manager is None:
+        return False
+    return (
+        manager.is_round_active(session_id)
+        or manager.has_inflight_request(session_id)
+        or is_team_session_running(session_id)
     )
 
 

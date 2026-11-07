@@ -6,9 +6,60 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Callable
 import logging
 from os import _exit as exit_process
 import signal
+import sys
+
+
+def _install_stop_handlers(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> Callable[[], None]:
+    """Turn console signals into one cancellation while keeping cleanup alive."""
+    previous = {}
+    loop_signals = set()
+    stopping = False
+    console_interrupted = False
+
+    def stop() -> None:
+        nonlocal stopping
+        if not stopping and not task.done():
+            stopping = True
+            task.cancel()
+
+    def console_signal(_signum: int, _frame: object) -> None:
+        nonlocal console_interrupted
+        console_interrupted = True
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(stop)
+
+    def restore() -> None:
+        for signum, handler in previous.items():
+            if signum in loop_signals and not loop.is_closed():
+                loop.remove_signal_handler(signum)
+            if console_interrupted and sys.platform == "win32" and signum == signal.SIGINT:
+                # This process is exiting. Keep repeated Ctrl+C ignored during
+                # interpreter teardown, after the event loop no longer exists.
+                handler = signal.SIG_IGN
+            signal.signal(signum, handler)
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            try:
+                loop.add_signal_handler(signum, stop)
+            except (NotImplementedError, OSError):
+                # Windows event loops have no add_signal_handler support.
+                signal.signal(signum, console_signal)
+            else:
+                loop_signals.add(signum)
+    except BaseException:
+        restore()
+        raise
+    return restore
+
+
+async def _wait_for_worker(task: asyncio.Task) -> None:
+    await task
 
 
 def _activate_managed_external_cli_paths() -> None:
@@ -46,7 +97,7 @@ def main() -> None:
     enable_worker_diagnostics()
     parser = argparse.ArgumentParser(prog="jiuwenswarm-runtime-worker")
     parser.add_argument(
-        "--socket", required=True, help="Unix socket or named-pipe path."
+        "--socket", help="Unix socket or named-pipe path (resident mode)."
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18092)
@@ -57,11 +108,30 @@ def main() -> None:
     parser.add_argument("--stub-exit-on-request", action="store_true")
     parser.add_argument("--identity-from-parent", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    code_identity_value = None
-    if args.identity_from_parent:
-        from jiuwenswarm.server.supervisor.identity import read_launch_identity
+    from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
 
-        code_identity_value = read_launch_identity()
+    mode = runtime_ipc_mode()
+    if mode == FRONT_LOOPBACK and not args.identity_from_parent:
+        parser.error("front_loopback requires a private parent launch payload")
+    if mode != FRONT_LOOPBACK and not args.socket:
+        parser.error("resident mode requires --socket")
+    code_identity_value = None
+    session_source = None
+    if args.identity_from_parent:
+        from jiuwenswarm.server.supervisor.identity import data_scope, read_launch_payload
+
+        payload = read_launch_payload()
+        code_identity_value = payload["code_identity"]
+        if mode == FRONT_LOOPBACK:
+            from jiuwenswarm.server.ipc.loopback import FrontConnectSessionSource, LoopbackParameters
+
+            session_source = FrontConnectSessionSource(
+                LoopbackParameters.from_payload(
+                    payload.pop("runtime_ipc", None), code_identity=code_identity_value, data_scope=data_scope(),
+                ),
+            )
+        elif payload.get("runtime_ipc") is not None:
+            parser.error("runtime IPC mode does not match the parent launch payload")
     if args.stub:
         from jiuwenswarm.server.worker.stub import StubExit, serve_stub
 
@@ -69,10 +139,11 @@ def main() -> None:
         try:
             asyncio.run(
                 serve_stub(
-                    args.socket,
+                    args.socket or "",
                     ready_delay=args.stub_ready_delay,
                     exit_on_request=args.stub_exit_on_request,
                     code_identity_value=code_identity_value,
+                    session_source=session_source,
                 )
             )
             exit_code = 0
@@ -86,22 +157,19 @@ def main() -> None:
     _activate_managed_external_cli_paths()
     from jiuwenswarm.server.worker.service import WorkerForceExit, serve_worker
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    task = loop.create_task(serve_worker(args.socket, host=args.host, port=args.port,
-                                       code_identity_value=code_identity_value))
-
-    def _stop() -> None:
-        task.cancel()
-
-    try:
-        loop.add_signal_handler(signal.SIGINT, _stop)
-        loop.add_signal_handler(signal.SIGTERM, _stop)
-    except (NotImplementedError, OSError):
-        pass
+    runner = asyncio.Runner()
+    loop = runner.get_loop()
+    task = loop.create_task(serve_worker(args.socket or "", host=args.host, port=args.port,
+                                       code_identity_value=code_identity_value,
+                                       session_source=session_source))
+    restore_handlers: Callable[[], None] | None = None
     exit_code = 1
     try:
-        loop.run_until_complete(task)
+        restore_handlers = _install_stop_handlers(loop, task)
+        runner.run(_wait_for_worker(task))
+        exit_code = 0
+    except asyncio.CancelledError:
+        # A signal may arrive before serve_worker enters its cancellation guard.
         exit_code = 0
     except WorkerForceExit as exc:
         logging.getLogger(__name__).exception("[Worker] fatal exit with unfinished shutdown steps: %s", exc)
@@ -111,11 +179,19 @@ def main() -> None:
         # SystemExit waits for those threads and can exceed the shared deadline.
         exit_process(1)
     finally:
-        loop.close()
-        # logging.shutdown acquires every sink's lock at interpreter exit.
-        # A stuck disk must not make an otherwise drained Worker immortal.
-        if not stop_background_logging():
-            exit_process(exit_code)
+        try:
+            # Also drain SDK-owned tasks, async generators and the executor.
+            # Closing the loop directly abandons their asynchronous cleanup.
+            runner.close()
+        finally:
+            try:
+                # logging.shutdown acquires every sink's lock at interpreter exit.
+                # A stuck disk must not make an otherwise drained Worker immortal.
+                if not stop_background_logging():
+                    exit_process(exit_code)
+            finally:
+                if restore_handlers is not None:
+                    restore_handlers()
 
 
 if __name__ == "__main__":

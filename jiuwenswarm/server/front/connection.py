@@ -11,14 +11,14 @@ from typing import Any
 
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from gateway.common.security.ws_origin import (
+from agent_gateway.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
     get_header_value,
     is_allowed_browser_origin,
     is_origin_check_enabled,
 )
-from gateway.common.ws_diagnostics import (
+from agent_gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,

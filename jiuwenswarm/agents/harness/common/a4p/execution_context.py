@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from gateway.common.mode_matrix import deprecate_mode
+from agent_gateway.common.mode_matrix import deprecate_mode
 
 
 @dataclass(frozen=True)

@@ -132,7 +132,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             show: 'when-parent-checked',
             disabled: 'never',
             items: [
-              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled' },
+              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled', errorDisplay: 'inline' },
               { id: 'multi-model-verification', component: 'custom', render: CollaborationVerifierInterval },
             ],
           },
@@ -149,6 +149,12 @@ export const experimentalModule: SettingsModuleDefinition = {
           key: 'progressive_tool_optimize',
         },
       ],
+    },
+    {
+      id: 'computer-control',
+      visibleWhen: 'cua_backend_available',
+      titleKey: 'settingsPanel.experimental.computerControl',
+      items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
     },
     {
       id: 'design-mode',

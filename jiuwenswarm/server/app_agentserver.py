@@ -49,18 +49,12 @@ _mark_startup_import_phase("runtime_workspace_deferred")
 _mark_startup_import_phase("entry_module_ready")
 
 
-
 async def _start_supervisor(front: object, host: str, port: int) -> object:
-    """Attach the supervisor and wait until Worker IPC is up.
-
-    ``AGENT_READY`` arrives later on the IPC readiness stream. Control-plane
-    requests are already served by Front.
-    """
+    """Attach the supervisor after Front listens and wait for Worker IPC."""
     from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 
-    readiness = getattr(front, "readiness", None)
     supervisor = RuntimeSupervisor(
-        readiness,
+        getattr(front, "readiness", None),
         forwarder=getattr(front, "forwarder", None),
         host=host,
         port=port,
@@ -91,9 +85,71 @@ def _install_common_providers() -> None:
     install_front()
 
 
+def _configure_openjiuwen_logging() -> None:
+    """Bind OpenJiuwen logging to the writable workspace before Front serves.
+
+    Front handles control-plane requests (``history.get`` among them) whose
+    todo snapshot lazily imports OpenJiuwen. Without an explicit configuration
+    OpenJiuwen falls back to its relative default ``./logs/``, resolved against
+    the process CWD. AgentOS sandboxes run with CWD=/ on a read-only root, so
+    logger creation raises and the history stream aborts before its done frame.
+
+    Both branches are guarded: a missing or malformed ``logging.yaml`` (or an
+    unwritable path inside it) must not crash Front startup, so the workspace
+    fallback config is tried next and only if that also fails does the function
+    give up with a warning, leaving Front's default logging intact.
+
+    The fallback config keeps OpenJiuwen at ``INFO``; do not silence its
+    loggers here, or control-plane failures (``history.get`` included) would
+    disappear from Front's logs.
+    """
+    from jiuwenswarm.common.utils import get_root_dir
+
+    logging_yaml = get_root_dir() / "config" / "logging.yaml"
+    if logging_yaml.exists():
+        try:
+            from openjiuwen.core.common.logging.log_config import configure_log
+
+            configure_log(str(logging_yaml))
+            return
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] openjiuwen logging.yaml config failed; "
+                "trying workspace fallback",
+                exc_info=True,
+            )
+
+    try:
+        from openjiuwen.core.common.logging.log_config import configure_log_config
+
+        home = (
+            os.environ.get("JIUWENSWARM_HOME")
+            or os.environ.get("HOME")
+            or os.path.expanduser("~")
+        )
+        configure_log_config({
+            "backend": "default",
+            "level": "INFO",
+            "log_path": f"{home}/.jiuwenswarm/logs/",
+            "log_file": "run/jiuwen.log",
+            "output": ["file"],
+            "structured_output_format": "json",
+            "interface_log_file": "interface/jiuwen_interface.log",
+            "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
+            "performance_log_file": "performance/jiuwen_performance.log",
+        })
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] openjiuwen log config failed; Front keeps default logging",
+            exc_info=True,
+        )
+
+
 async def _run(host: str, port: int) -> None:
     _install_common_providers()
     from jiuwenswarm.server.front.server import AgentServerFront
+
+    _configure_openjiuwen_logging()
 
     startup_t0 = time.monotonic()
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)

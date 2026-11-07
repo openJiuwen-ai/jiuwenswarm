@@ -31,7 +31,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.harness.schema import deep_agent_spec as das
 from openjiuwen.agent_teams.harness.manifest import get_catalog, resolve_factory
@@ -62,6 +61,8 @@ from openjiuwen.harness.tools.worktree import WorktreeConfig
 from openjiuwen.harness.prompts.builder import SystemPromptBuilder
 from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentManager
 from openjiuwen.harness.rails import SkillUseRail
+from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
 
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (
     HEARTBEAT_TOOL_NAMES,
@@ -81,15 +82,13 @@ from jiuwenswarm.agents.swarm import (
     preflight_team_mcps,
     register_swarm_providers,
 )
-from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
-
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from gateway.common.mode_matrix import NEW_TEAM_DESIGN
+from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,

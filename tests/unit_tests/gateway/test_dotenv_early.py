@@ -9,8 +9,8 @@ import os
 import sys
 from pathlib import Path
 
-import gateway.dotenv_early as dotenv_early
-from gateway.dotenv_early import (
+import agent_gateway.dotenv_early as dotenv_early
+from agent_gateway.dotenv_early import (
     CLI_PORTS_ENV_FLAG,
     get_parsed_dotenv,
     load_dotenv_runtime,

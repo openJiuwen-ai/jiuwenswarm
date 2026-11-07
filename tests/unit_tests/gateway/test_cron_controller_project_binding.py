@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.cron.controller import CronController
-from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
+from agent_gateway.cron.controller import CronController
+from agent_gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.server.runtime.session.project_store import CronProjectBinding
 
 
@@ -252,6 +252,48 @@ async def test_get_job_uses_the_same_identity_defaults() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_project_filter_matches_materialized_default() -> None:
+    """读侧空串与写侧物化的 default 等价；存量空串任务同样命中。
+
+    回归场景：create 入口把未选项目物化为 ``default``，随后 run_now/delete
+    仍携带空串，若按空串精确比对会误判 NOT_FOUND。
+    """
+    jobs = {
+        "materialized": _listed_job(
+            "materialized", project_id="default", user_id="", group_id="", bot_id=""
+        ),
+        "legacy": _listed_job(
+            "legacy", project_id="", user_id="", group_id="", bot_id=""
+        ),
+        "code_default": _listed_job(
+            "code_default", project_id="default_code", user_id="", group_id="", bot_id=""
+        ),
+    }
+
+    async def list_jobs():
+        return list(jobs.values())
+
+    async def get_job(job_id):
+        return jobs.get(job_id)
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs, get_job=get_job),
+        scheduler=_FakeScheduler(),
+    )
+
+    listed = await controller.list_jobs(
+        project_id="", user_id="", group_id="", bot_id=""
+    )
+    assert [job["id"] for job in listed] == ["materialized", "legacy"]
+
+    found = await controller.get_job("materialized", project_id="")
+    assert found is not None and found["id"] == "materialized"
+    assert await controller.get_job("materialized", project_id="default") is not None
+    # default_code 是 code 模式的默认项目，不与 work 模式默认项目混同。
+    assert await controller.get_job("code_default", project_id="") is None
+
+
+@pytest.mark.asyncio
 async def test_run_now_checks_tenant_before_trigger() -> None:
     """两边都先核对用户、群、机器人。对不上不触发。不传按空身份。不看项目编号。"""
     jobs = {
@@ -280,6 +322,63 @@ async def test_run_now_checks_tenant_before_trigger() -> None:
     assert triggered == ["home", "alice"]
     with pytest.raises(KeyError):
         await controller.run_now("missing", user_id="alice", group_id="g1", bot_id="b1")
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_filters_owner_before_admission_gate() -> None:
+    """传 user_id 时先按属主过滤:只为自己的项目打闸门,不替其他用户付超时。"""
+    jobs = [
+        SimpleNamespace(group_id="", bot_id="", id="job_a", project_id="proj_alice", user_id="alice",
+                        to_dict=lambda: {"id": "job_a", "user_id": "alice"}),
+        SimpleNamespace(group_id="", bot_id="", id="job_b", project_id="proj_bob", user_id="bob",
+                        to_dict=lambda: {"id": "job_b", "user_id": "bob"}),
+        # 无属主的历史任务在带 user_id 的查询下不可见(与 Web 列表语义一致)。
+        SimpleNamespace(group_id="", bot_id="", id="job_c", project_id="proj_legacy", user_id="",
+                        to_dict=lambda: {"id": "job_c", "user_id": ""}),
+    ]
+    gate_calls: list[tuple[str | None, str | None]] = []
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def project_execution_allowed(project_id, user_id=None, group_id=None, bot_id=None):
+        gate_calls.append((project_id, user_id))
+        return True
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=SimpleNamespace(project_execution_allowed=project_execution_allowed),
+    )
+
+    result = await controller.list_jobs(user_id="alice")
+
+    assert [job["id"] for job in result] == ["job_a"]
+    assert gate_calls == [("proj_alice", "alice")]
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_owner_without_jobs_issues_no_gate_rpc() -> None:
+    """用户 0 任务时不得为 store 里其他用户的任务发起任何准入查询。"""
+    jobs = [
+        SimpleNamespace(group_id="", bot_id="", id="job_b", project_id="proj_bob", user_id="bob",
+                        to_dict=lambda: {"id": "job_b"}),
+    ]
+    gate_calls: list[tuple[str | None, str | None]] = []
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def project_execution_allowed(project_id, user_id=None, group_id=None, bot_id=None):
+        gate_calls.append((project_id, user_id))
+        return True
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=SimpleNamespace(project_execution_allowed=project_execution_allowed),
+    )
+
+    assert await controller.list_jobs(user_id="alice") == []
+    assert gate_calls == []
 
 
 class _RecordingStore:
@@ -408,7 +507,7 @@ async def test_create_job_without_marker_allows_default_project_and_no_fields() 
         },
         internal_proactive_sync=True,
     )
-    assert job["project_id"] == ""
+    assert job["project_id"] == "default"
     assert job["work_mode"] == "work"
 
     job_default = await cc.create_job(
@@ -537,7 +636,7 @@ async def test_enterprise_create_job_keeps_identity_and_skips_login_binding(
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("GATEWAY_DB_HOST", "db.example")
     monkeypatch.setattr(
-        "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+        "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
         AsyncMock(return_value="some-model"),
     )
     cc = _make_controller()
@@ -697,7 +796,7 @@ async def test_personal_update_rejects_a_different_user() -> None:
 async def test_enterprise_update_requires_identity_and_drops_mcp(monkeypatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setattr(
-        "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+        "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
         AsyncMock(return_value="ok-model"),
     )
     cc = _make_controller()

@@ -122,13 +122,13 @@ The fixed Summary Team contains:
 
 | Member | Responsibility |
 |--------|----------------|
-| `summary-leader` | Validates sources, coordinates drafting, and submits the result |
-| `source-integrator` | Creates a source-attributed outline from the read-only snapshot |
-| `delivery-drafter` | Produces the user-facing deliverable |
+| `summary-leader` | Validates sources. Integrates and submits short text directly; coordinates an outline and draft only for a complex deliverable |
+| `source-integrator` | For a complex deliverable, turns the bound sources into the outline the draft needs |
+| `delivery-drafter` | For a complex deliverable, produces the user-facing draft from the sources and outline |
 
 It uses the configured default Team models but does not copy user Team members, tools, or template prompts. Transport and spawning use `inprocess`; members use `build_mode`. Intermediate work stays in its Team workspace; final artifacts belong under the Organization `summary/` directory. One persistent Summary Team is lazily created per Organization and reused across root tasks; finishing one summary does not stop the shared Team.
 
-Summary inputs include `root_task` (ID, title, description and output specification) alongside the existing bound sources. Root and Summary Task requirements determine format and acceptance; factual conclusions still come only from bound sources. Preserve disagreements, limitations and accepted artifact locations instead of always producing another report. To publish an existing artifact as the final file, copy it unchanged into `summary/`; `result_uri` must still point there, with the actual `result_type`.
+Summary inputs include `root_task` (ID, title, description and output specification) alongside the existing bound sources. Root and Summary Task requirements determine format and acceptance; factual conclusions still come only from the bound sources of this execution. When a source body already covers the request, use that text. Read a cited file only when the summary needs its content, and do not scan files from earlier runs. An outline keeps only the structure the draft needs, source attribution, and disagreements that would change the conclusion. It does not add research, risk lists, or verification items the user did not request. A final file is written only in the absolute Organization `summary/` directory supplied for this turn, and `result_uri` uses that same path. With no final file, the full text goes in `output_context.description`. To publish an existing artifact, copy it unchanged into that directory before setting `result_uri` and the actual `result_type`.
 
 `WAITING_SOURCES` means aggregation has not started. Required sources must be both `COMPLETED` and `ACCEPTED`, including contributions executed by the Owner Team itself. The creation tool returns the current task status and `blocked_sources` while waiting; the Owner should address unfinished work or pending reviews before waiting for delivery. Accepted sources continue to trigger the existing activation path.
 
@@ -136,7 +136,7 @@ Summary delivery follows these steps:
 
 1. Claim the root, set `SUMMARY_TEAM`, and call `org_create_summary_execution` to create a Summary Execution bound to source children. A prompt naming the mode alone does not create the execution.
 2. Complete and explicitly accept the required sources. A completed source with a pending review still blocks aggregation.
-3. Summary Team reads the bound snapshot, prepares the outline and draft without new domain research, and resolves its internal work. After checking the deliverable, abstract, and path, `summary-leader` formally submits through `org_summary_complete`. A draft file or a reply saying "complete" is insufficient.
+3. Summary Team reads only the bound sources for this execution and does not add domain research. For a single short text deliverable, when the user did not ask for code, multiple files, or a long research document, `summary-leader` writes the text, checks it once, and submits with `org_summary_complete` without the other two members. `source-integrator` and `delivery-drafter` are used only when the sources disagree in a way that would change the conclusion, or the user asked for a file, code, or a multi-part specialist deliverable. Work is assigned by internal message. A member updates `claim_task` only when an internal task is actually assigned to them. After checking the deliverable, abstract, and path, `summary-leader` submits formally. A draft file or a reply saying "complete" is insufficient.
 4. Formal Summary Task completion also completes the root. Its responsible Team receives the result and handles user-facing delivery. In the User Guide examples, the Owner displays the report in its conversation without directly calling the root completion operation again.
 
 Summary roles inherit finite `max_iterations` budgets from the corresponding default Team roles; invalid budgets fall back to 200. Exhausting the budget or reporting an execution error does not complete the summary. Check execution state, existing drafts, and error logs rather than only increasing the budget.
@@ -148,6 +148,12 @@ Both modes require explicit acceptance of child results. For an Organization chi
 ## 4. Lifecycle and troubleshooting
 
 Chat messages, timeline headers and tool groups resolve the Leader identity within the selected Team's conversation. Without a saved identity, they use that Team's roster or display name. Runtime Teams such as Summary do not inherit the Owner's name or avatar, and this display resolution does not change AgentGroup bindings.
+
+Task completion and Web execution status have separate lifecycles. When a background Organization turn ends, the Web client closes that Team's current reasoning and streaming output without ending other Teams' work. A passive `attach_only` subscription does not keep the session busy; real execution and requests waiting for user input still do. Check Summary Execution and task states to confirm completion, rather than treating an intermediate `chat.final` segment as the end of the turn.
+
+The organization panel can also use the session's saved AgentGroup identity for the Owner's name and avatar. The server restores this identity only when it matches the Owner's current AgentGroup binding, so a saved snapshot remains usable when the AgentGroup catalog fails to load. Other Teams do not inherit the Owner's identity.
+
+The Owner's background Organization output affects Organization execution status without starting foreground processing. Ending that background turn does not clear a concurrent user request.
 
 Task completion and Web execution status have separate lifecycles. When a background Organization turn ends, the Web client closes that Team's current reasoning and streaming output without ending other Teams' work. Passive `attach_only` subscriptions and pending queries for Team lists, Organization snapshots, Team history, assets, plan status, workflows, pending authorizations, or Goal status do not keep the session busy. These queries do not mean that tasks restart when a completed session is reopened. Real execution, queued work, and requests waiting for authorization or interaction confirmation still keep the session busy. A Team that has finished its current work and is waiting for new input is idle. Check Summary Execution and task states to confirm completion, rather than treating an intermediate `chat.final` segment as the end of the turn.
 

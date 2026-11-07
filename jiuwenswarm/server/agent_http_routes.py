@@ -20,6 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 
 from jiuwenswarm.common.log_context import (
     bind_log_session,
@@ -28,7 +29,6 @@ from jiuwenswarm.common.log_context import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.server import http_chat
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.context import AgentServerServices, RequestContext
@@ -476,9 +476,9 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     from jiuwenswarm.enterprise.edition import is_enterprise
 
     if is_enterprise():
-        from jiuwenswarm.common.schema.package_allowlist import (
-            HEADER_NAME,
-            METADATA_KEY as GRANT_METADATA_KEY,
+        from openjiuwen_protocol.package_allowlist import (
+            PACKAGE_ALLOWLIST_HEADER_NAME as HEADER_NAME,
+            PACKAGE_ALLOWLIST_METADATA_KEY as GRANT_METADATA_KEY,
             decode_package_allowlist_header,
         )
 

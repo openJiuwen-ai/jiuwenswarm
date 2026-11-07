@@ -29,6 +29,18 @@ class AnswerInFlightError(NoControlTargetError):
     """The same answer is already being delivered; that delivery settles what it answers."""
 
 
+class NoControlTargetError(RuntimeError):
+    """No execution of the Session can take an answer.
+
+    None waits on the interactions it names, or the same answer is already
+    being delivered.
+    """
+
+
+class AnswerInFlightError(NoControlTargetError):
+    """The same answer is already being delivered; that delivery settles what it answers."""
+
+
 class SessionExecutionEndedError(RuntimeError):
     """Control input completed after the execution that asked for it was gone.
 

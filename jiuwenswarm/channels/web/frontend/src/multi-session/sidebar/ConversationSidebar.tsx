@@ -13,6 +13,7 @@ import {
   filterJobsForProject,
   type SidebarCronJob,
 } from '../../stores';
+import { shouldDiscoverCronActiveSessions } from '../../features/cron/cronActiveSessionDiscovery';
 import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
 import {
   getProjectNewLabel,
@@ -301,7 +302,7 @@ function ConversationListItem({
           {status}
         </span>
       </button>
-      <SidebarMenu
+      {session.type !== 'group_chat' && <SidebarMenu
         type="session"
         session={session}
         scope={menuScope}
@@ -309,7 +310,7 @@ function ConversationListItem({
         onLeaveActiveSession={onLeaveActiveSession}
         onOpenChange={setMenuOpen}
         triggerTooltipHandlers={itemTooltipHandlers}
-      />
+      />}
       <button
         type="button"
         className="conversation-list-item__pin-action"
@@ -832,6 +833,24 @@ export function ConversationSidebar({
     void loadCronJobs();
   }, [peek, loadCronJobs]);
 
+  // 企业 HTTP：轻量轮询 list，只为发现 active_session_id（到点跑起来），
+  // 再交给后台 live；不在这里根据 last_session_id 标未读。
+  useEffect(() => {
+    if (peek || !shouldDiscoverCronActiveSessions()) return;
+    const reload = () => {
+      void loadCronJobs();
+    };
+    const intervalId = window.setInterval(reload, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') reload();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [peek, loadCronJobs]);
+
   // 监听 agent 工具调用结果：当 cron 相关工具执行后刷新侧边栏定时任务
   // peek 实例不订阅：hover 短暂挂载，避免每次进出重复订阅/退订
   useEffect(() => {
@@ -925,7 +944,7 @@ export function ConversationSidebar({
   const sortedProjectSessions = useMemo(() => {
     const sorted: Record<string, Session[]> = {};
     for (const [projectId, list] of Object.entries(projectSessions)) {
-      sorted[projectId] = sortSessionsForSidebar(list);
+      sorted[projectId] = sortSessionsForSidebar(list.filter((session) => session.type !== 'group_chat'));
     }
     return sorted;
   }, [projectSessions]);
@@ -933,7 +952,10 @@ export function ConversationSidebar({
     if (defaultProject) return sortedProjectSessions[defaultProject.project_id] || [];
     return [];
   }, [defaultProject, sortedProjectSessions]);
-  const orderedPinnedSessions = useMemo(() => sortSessionsForSidebar(pinnedSessions), [pinnedSessions]);
+  const orderedPinnedSessions = useMemo(
+    () => sortSessionsForSidebar(pinnedSessions.filter((session) => session.type !== 'group_chat')),
+    [pinnedSessions],
+  );
   const observedSidebarSessions = useMemo(() => {
     const byId = new Map<string, Session>();
     for (const session of orderedPinnedSessions) {

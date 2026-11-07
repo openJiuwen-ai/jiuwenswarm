@@ -5,6 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from agent_gateway.common.model_selection import (
+    ModelSelection,
+    ResolvedModel,
+    ResolvedModelGroup,
+    ResolvedRoute,
+    ResolvedSelection,
+)
+
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.model_errors import (
@@ -13,13 +21,6 @@ from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_FORBIDDEN,
     MODEL_SELECTION_NOT_FOUND,
     ModelSelectionError,
-)
-from gateway.common.model_selection import (
-    ModelSelection,
-    ResolvedModel,
-    ResolvedModelGroup,
-    ResolvedRoute,
-    ResolvedSelection,
 )
 
 

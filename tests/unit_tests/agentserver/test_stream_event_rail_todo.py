@@ -29,22 +29,6 @@ class _TestRail(JiuSwarmStreamEventRail):
     async def emit_todo_updated(self, session, session_id: str):
         await self._emit_todo_updated(session, session_id)
 
-    async def emit_ask_user_question_if_interrupted(
-        self,
-        session,
-        tool_call,
-        tool_name,
-        result,
-        exception=None,
-    ):
-        await self._emit_ask_user_question_if_interrupted(
-            session,
-            tool_call,
-            tool_name,
-            result,
-            exception,
-        )
-
     async def emit_context_usage(self, ctx):
         await self._emit_context_usage(ctx)
 
@@ -172,7 +156,7 @@ async def test_context_usage_rail_does_not_duplicate_core_snapshot_without_repor
 
 
 @pytest.mark.asyncio
-async def test_after_model_call_persists_cumulative_usage_without_emitting_an_event(
+async def test_after_model_call_persists_cumulative_usage_without_duplicate_context_usage(
     monkeypatch,
     tmp_path,
 ):
@@ -232,8 +216,8 @@ async def test_after_model_call_persists_cumulative_usage_without_emitting_an_ev
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("has_build_context", [True, False])
-async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypatch, tmp_path, has_build_context):
+@pytest.mark.parametrize("context_field", ["_usage_build_context", "_build_context", None])
+async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypatch, tmp_path, context_field):
     from openjiuwen.core.single_agent.rail.base import bind_usage_invocation_id, reset_usage_invocation_id
     from openjiuwen.harness.deep_agent import DeepAgent
     from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
@@ -255,9 +239,9 @@ async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypa
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(DeepAgent, "create_subagent", lambda _self, *_args, **_kwargs: _Child())
     install_session_token_usage_subagent_hook()
-    parent = SimpleNamespace(
-        _build_context=SimpleNamespace(session_id="root_usage") if has_build_context else None,
-    )
+    parent = SimpleNamespace()
+    if context_field:
+        setattr(parent, context_field, SimpleNamespace(session_id="root_usage"))
     child = DeepAgent.create_subagent(parent, "general-purpose", "team/workflow/child")
     rail = child.rails[0]
     ctx = SimpleNamespace(
@@ -268,7 +252,7 @@ async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypa
     ctx.inputs = SimpleNamespace(
         context_usage_request_id="child-call",
         context_usage_attribution={
-            "product_session_id": "team/workflow" if has_build_context else "root_usage",
+            "product_session_id": "team/workflow" if context_field else "root_usage",
             "execution_session_id": "team/workflow/child",
             "invocation_id": "invoke-child",
         },
@@ -352,80 +336,3 @@ async def test_context_usage_keeps_runtime_context_limit_fallback(monkeypatch):
 
     assert captured_kwargs["context_engine_config"]["context_window_tokens"] == 1048576
     assert session.outputs[0].payload["context_max"] == 1000000
-
-
-@pytest.mark.asyncio
-async def test_ask_user_interrupt_emits_question_event_from_tool_args():
-    class ToolInterruptException(Exception):
-        def __init__(self):
-            super().__init__()
-            self.request = SimpleNamespace(
-                tool_call_id="tool-ask-1",
-                tool_args={
-                    "questions": [
-                        {
-                            "question": "请选择方案",
-                            "header": "方案",
-                            "options": [
-                                {"label": "A", "description": "方案 A"},
-                            ],
-                        }
-                    ]
-                },
-            )
-
-    session = _FakeSession()
-    tool_call = SimpleNamespace(id="tool-ask-1", arguments="{}")
-    rail = _TestRail()
-
-    await rail.emit_ask_user_question_if_interrupted(
-        session,
-        tool_call,
-        "ask_user",
-        ToolInterruptException(),
-    )
-
-    assert len(session.outputs) == 1
-    output = session.outputs[0]
-    assert output.type == "chat.ask_user_question"
-    assert output.payload["request_id"] == "tool-ask-1"
-    assert output.payload["source"] == "ask_user_interrupt"
-    assert output.payload["questions"][0]["question"] == "请选择方案"
-
-
-@pytest.mark.asyncio
-async def test_ask_user_interrupt_emits_question_event_from_exception_cause():
-    class ToolInterruptException(Exception):
-        def __init__(self):
-            super().__init__()
-            self.request = SimpleNamespace(
-                tool_call_id="tool-ask-2",
-                questions=[
-                    {
-                        "question": "是否继续",
-                        "header": "确认",
-                        "options": [
-                            {"label": "继续", "description": "继续执行"},
-                        ],
-                    }
-                ],
-            )
-
-    session = _FakeSession()
-    tool_call = SimpleNamespace(id="tool-ask-2", arguments="{}")
-    exception = SimpleNamespace(cause=ToolInterruptException())
-    rail = _TestRail()
-
-    await rail.emit_ask_user_question_if_interrupted(
-        session,
-        tool_call,
-        "ask_user",
-        None,
-        exception,
-    )
-
-    assert len(session.outputs) == 1
-    output = session.outputs[0]
-    assert output.type == "chat.ask_user_question"
-    assert output.payload["request_id"] == "tool-ask-2"
-    assert output.payload["questions"][0]["question"] == "是否继续"

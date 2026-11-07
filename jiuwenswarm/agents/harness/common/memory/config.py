@@ -15,13 +15,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-
-from jiuwenswarm.enterprise import is_enterprise
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     is_code_profile_mode,
 )
+
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.utils import get_config_file, get_agent_workspace_dir
 
