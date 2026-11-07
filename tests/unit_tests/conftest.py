@@ -129,6 +129,36 @@ def _is_external_memory_patched_module(node_path) -> bool:
     return base in _EXTERNAL_MEMORY_BASENAMES
 
 
+def _ensure_agent_checkpointer() -> None:
+    """Put back a checkpointer that implements the agent and team hooks.
+
+    ``CheckpointerFactory`` is process-wide. A test can leave its default as a
+    bare ``object()``. The next session then dies in ``pre_run`` with
+    ``'object' object has no attribute 'pre_agent_execute'`` or
+    ``'pre_agent_team_execute'``, and ``Runner.release`` fails the same way on
+    ``release``.
+    """
+    from openjiuwen.core.session.checkpointer import CheckpointerFactory
+    from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
+
+    try:
+        current = CheckpointerFactory.get_checkpointer()
+    except Exception:
+        current = None
+    if current is not None and all(
+        hasattr(current, name)
+        for name in ("pre_agent_execute", "pre_agent_team_execute", "release")
+    ):
+        return
+    CheckpointerFactory.set_default_checkpointer(InMemoryCheckpointer())
+
+
+@pytest.fixture(autouse=True)
+def _restore_inmemory_checkpointer():
+    _ensure_agent_checkpointer()
+    yield
+
+
 def pytest_runtest_setup(item) -> None:
     path = getattr(item, "path", None) or getattr(item, "fspath", None)
     p = str(path) if path is not None else ""
