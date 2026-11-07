@@ -127,6 +127,21 @@ ROUTES: list[RouteSpec] = [
     RouteSpec("POST", "/chat/{session_id}/actions/steer", ReqMethod.CHAT_STEER.value),
     RouteSpec("POST", "/chat/{session_id}/actions/steer/status", ReqMethod.CHAT_STEER_STATUS.value),
     RouteSpec("POST", "/chat/{session_id}/actions/answer", ReqMethod.CHAT_ANSWER.value),
+    RouteSpec(
+        "POST",
+        "/sessions/{session_id}/swarmflow/actions/pause",
+        ReqMethod.SWARMFLOW_PAUSE.value,
+    ),
+    RouteSpec(
+        "POST",
+        "/sessions/{session_id}/swarmflow/actions/resume",
+        ReqMethod.SWARMFLOW_RESUME.value,
+    ),
+    RouteSpec(
+        "POST",
+        "/sessions/{session_id}/swarmflow/actions/stop",
+        ReqMethod.SWARMFLOW_STOP.value,
+    ),
     # --- 命令 ---
     RouteSpec("POST", "/sessions/{session_id}/commands", ReqMethod.COMMAND_SESSION.value),
     RouteSpec("POST", "/sessions/{session_id}/commands/compact", ReqMethod.COMMAND_COMPACT.value),

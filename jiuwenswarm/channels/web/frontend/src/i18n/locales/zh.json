@@ -765,7 +765,12 @@
     "title": "A2A 调度中心",
     "subtitle": "管理 JiuwenSwarm 对外提供的 A2A 服务。",
     "enterpriseSubtitle": "查看管理员分配的 A2A Agent，并管理个人启用状态和处理历史。",
-    "tabs": { "ariaLabel": "A2A 调度中心页面", "config": "入站配置", "outbound": "出站配置", "history": "处理历史" },
+    "tabs": {
+      "ariaLabel": "A2A 调度中心页面",
+      "config": "入站配置",
+      "outbound": "出站配置",
+      "history": "处理历史"
+    },
     "enable": "启用服务",
     "enabling": "启用中...",
     "disable": "停用服务",
@@ -779,7 +784,13 @@
     "saved": "配置已保存并应用。",
     "disconnected": "当前未连接到 Gateway，无法读取或修改 A2A 服务。",
     "saveBeforeLifecycleAction": "配置有未保存的修改，请先保存或取消，再启用、停用或重启服务。",
-    "states": { "disabled": "已关闭", "starting": "启动中", "running": "运行中", "stopping": "停止中", "error": "异常" },
+    "states": {
+      "disabled": "已关闭",
+      "starting": "启动中",
+      "running": "运行中",
+      "stopping": "停止中",
+      "error": "异常"
+    },
     "status": {
       "title": "服务状态",
       "configRevision": "配置版本：{{revision}}",
@@ -787,7 +798,10 @@
       "effectiveCardUrl": "实际 Agent Card 地址",
       "notListening": "当前未监听"
     },
-    "config": { "title": "入站服务配置", "description": "保存后立即应用，正在运行的服务将重启；取消可放弃本次修改。" },
+    "config": {
+      "title": "入站服务配置",
+      "description": "保存后立即应用，正在运行的服务将重启；取消可放弃本次修改。"
+    },
     "outbound": {
       "credentialHelp": {
         "method": "Agent Card 声明的认证方式：{{method}}。",
@@ -848,7 +862,12 @@
         "syncWait": "同步等待超时（秒）",
         "replaceCredential": "替换凭据（留空则不修改）"
       },
-      "availability": { "available": "可用", "unreachable": "不可达", "incompatible": "不兼容", "review_required": "待确认" },
+      "availability": {
+        "available": "可用",
+        "unreachable": "不可达",
+        "incompatible": "不兼容",
+        "review_required": "待确认"
+      },
       "register": "注册",
       "registering": "注册中...",
       "registered": "第三方 Agent 已注册，现在可按启用和可用状态参与出站调用。",
@@ -869,10 +888,17 @@
       "confirm": "确认并应用",
       "reject": "拒绝变化",
       "deleteConfirm": "确定删除该注册项吗？已有派发历史会保留，但新调用将立即被拒绝。",
-      "errors": { "invalidResponse": "A2A 出站管理服务返回了无效数据。", "invalidSettings": "请填写有效的显示名称和大于 0 的超时时间。" }
+      "errors": {
+        "invalidResponse": "A2A 出站管理服务返回了无效数据。",
+        "invalidSettings": "请填写有效的显示名称和大于 0 的超时时间。"
+      }
     },
     "history": {
-      "tabs": { "ariaLabel": "A2A 请求处理历史类型", "ingress": "入站请求", "outbound": "出站请求" },
+      "tabs": {
+        "ariaLabel": "A2A 请求处理历史类型",
+        "ingress": "入站请求",
+        "outbound": "出站请求"
+      },
       "copy": "点击复制",
       "copied": "已复制",
       "copyFailed": "复制失败，请选中文本后手动复制。",
@@ -887,7 +913,10 @@
         "description": "显示最近 200 条 A2A 出站派发记录，不展示请求正文或响应正文。",
         "empty": "暂无出站处理记录",
         "emptyDescription": "向第三方 Agent 派发请求后，处理状态会显示在这里。",
-        "modes": { "sync": "同步", "async": "异步" },
+        "modes": {
+          "sync": "同步",
+          "async": "异步"
+        },
         "statuses": {
           "created": "已创建",
           "submitting": "提交中",
@@ -905,8 +934,15 @@
         }
       },
       "processing": "处理中",
-      "statuses": { "processing": "处理中", "completed": "已完成", "failed": "失败", "canceled": "已取消" },
-      "operations": { "message": "消息处理" },
+      "statuses": {
+        "processing": "处理中",
+        "completed": "已完成",
+        "failed": "失败",
+        "canceled": "已取消"
+      },
+      "operations": {
+        "message": "消息处理"
+      },
       "columns": {
         "status": "状态",
         "operation": "请求类型",
@@ -1576,7 +1612,11 @@
     "enable": "启动",
     "disable": "停用",
     "loading": "正在加载任务列表...",
-    "empty": "暂无定时任务",
+    "empty": {
+      "createButton": "创建定时任务",
+      "templateSectionTitle": "任务模板",
+      "templateMore": "更多"
+    },
     "deleteConfirm": "确定要删除这个任务吗？",
     "autoManaged": "自动维护",
     "autoManagedHint": "此任务由主动推荐开关自动创建/删除；开关在设置→主动推荐。仅 Cron 表达式与时区可在此面板编辑，其余字段（名称/状态/描述/偏移/频道）不可改；删除请到设置关闭开关。",
@@ -1631,11 +1671,6 @@
       "history": "运行历史",
       "triggeredSessions": "执行记录",
       "noTriggeredSessions": "暂无触发记录"
-    },
-    "empty": {
-      "createButton": "创建定时任务",
-      "templateSectionTitle": "任务模板",
-      "templateMore": "更多"
     },
     "history": {
       "comingSoon": "该功能即将上线"
@@ -2923,9 +2958,17 @@
       "cancel": "取消",
       "confirm": "确定"
     },
-    "runtime": { "processing": "处理中" },
-    "deleteDialog": { "title": "删除", "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。" },
-    "notFound": { "title": "对话不存在或已删除", "newConversation": "新建对话" },
+    "runtime": {
+      "processing": "处理中"
+    },
+    "deleteDialog": {
+      "title": "删除",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+    },
+    "notFound": {
+      "title": "对话不存在或已删除",
+      "newConversation": "新建对话"
+    },
     "errors": {
       "delete": "删除对话失败",
       "create": "创建对话失败",
@@ -3137,15 +3180,15 @@
       "autoCollectLabel": "自动采集",
       "autoCollectHint": "开启后按频率自动采集",
       "timeRangeLabel": "采集时间",
-    "timeRangeWeek": "最近一周",
-    "timeRangeMonth": "最近一个月",
-    "timeRangeQuarter": "最近三个月",
-    "timeRangeCustom": "自定义",
-    "dateRangeTitle": "选择日期范围",
-    "dateRangePlaceholder": "请选择日期范围",
-    "dateRangeRequired": "请选择自定义时间范围",
-    "addUrl": "+ 添加",
-    "frequencyLabel": "自动采集频率",
+      "timeRangeWeek": "最近一周",
+      "timeRangeMonth": "最近一个月",
+      "timeRangeQuarter": "最近三个月",
+      "timeRangeCustom": "自定义",
+      "dateRangeTitle": "选择日期范围",
+      "dateRangePlaceholder": "请选择日期范围",
+      "dateRangeRequired": "请选择自定义时间范围",
+      "addUrl": "+ 添加",
+      "frequencyLabel": "自动采集频率",
       "frequencyHour": "每 {{n}} 小时",
       "frequencyDay": "每 {{n}} 天",
       "frequencyEvery": "每",
@@ -3156,7 +3199,7 @@
       "advancedConfig": "高级配置",
       "maxItemsRangeError": "单次采集条数须在 1~10000 之间，或留空使用默认",
       "previousStep": "上一步",
-    "submit": "添加",
+      "submit": "添加",
       "save": "保存",
       "notConfigured": "尚未配置个人上下文，请先在设置页开启",
       "providerUnauthorized": "未授权，请先去设置页授权",
@@ -3483,10 +3526,21 @@
       "expired": "已过期"
     },
     "schedule": {
-      "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
-      "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
-      "cron": { "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）" },
-      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成" },
+      "tab": {
+        "interval": "按间隔",
+        "cron": "Cron 表达式",
+        "once": "单次"
+      },
+      "interval": {
+        "label": "每隔",
+        "unit": "分钟回到当前会话"
+      },
+      "cron": {
+        "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）"
+      },
+      "once": {
+        "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成"
+      },
       "summary": {
         "interval": "每 {{minutes}} 分钟回到当前会话",
         "cron": "{{expr}}（{{timezone}}）回到当前会话",
@@ -3518,8 +3572,15 @@
       "titleEdit": "编辑心跳任务",
       "back": "返回"
     },
-    "concurrencyPolicy": { "skip": "跳过（skip）", "queue": "排队（queue）", "replace": "替换（replace）" },
-    "sessionDeletedPolicy": { "disable": "停用任务", "completed": "标记为已完成" },
+    "concurrencyPolicy": {
+      "skip": "跳过（skip）",
+      "queue": "排队（queue）",
+      "replace": "替换（replace）"
+    },
+    "sessionDeletedPolicy": {
+      "disable": "停用任务",
+      "completed": "标记为已完成"
+    },
     "panel": {
       "title": "心跳任务",
       "loading": "加载中…",
@@ -3576,5 +3637,76 @@
       "skipped": "上次运行已跳过",
       "cancelled": "上次运行已取消"
     }
+  },
+  "swarmflow": {
+    "statusPlanned": "已规划",
+    "statusPending": "等待中",
+    "statusRunning": "运行中",
+    "statusPaused": "已暂停",
+    "statusCompleted": "已完成",
+    "statusFailed": "失败",
+    "statusStopped": "已停止",
+    "statusWaitingForHuman": "等待人工输入",
+    "subWorkflow": "子工作流",
+    "clickToReply": "点击回复",
+    "waitingForHuman": "等待回复 {{count}}",
+    "noWorkflow": "暂无工作流",
+    "layoutIndented": "缩进树",
+    "layoutOrgChart": "架构图",
+    "layoutGraph": "流程图",
+    "pauseResumeHint": "暂停/恢复",
+    "stopHint": "停止",
+    "controlAlreadyCompleted": "工作流已完成",
+    "controlAlreadyStopped": "工作流已停止",
+    "controlAlreadyFailed": "工作流已失败",
+    "controlAlreadyPaused": "工作流已暂停",
+    "controlUnavailable": "工作流正在运行，控制暂不可用",
+    "controlNotFound": "未找到工作流运行",
+    "controlsDisabledHint": "团队已暂停，发送一条消息唤醒团队后即可恢复或停止工作流",
+    "sessionBudget": "会话预算（团队共享，不随运行重置）",
+    "runBudget": "本次运行预算（META.workflow_token_limit）",
+    "sessionBudgetShort": "会话累计",
+    "runBudgetShort": "本次运行",
+    "budgetUnlimited": "无限制",
+    "budgetExhaustedSession": "会话预算耗尽",
+    "budgetExhaustedWorkflow": "运行预算耗尽",
+    "toggleLabel": "动态工作流",
+    "tagHint": "本次会话已启用动态工作流",
+    "closeTag": "关闭动态工作流",
+    "closeTagDisabled": "会话进行中，无法关闭",
+    "configTitle": "动态工作流配置",
+    "configReadonlyHint": "会话已开启，配置不可修改",
+    "budgetPanelTitle": "SwarmFlow 预算",
+    "budgetPanelHint": "设置本次会话的 Token 上限。",
+    "budgetPlaceholder": "输入数字",
+    "budgetActualHint": "本次配置上限：{{count}} tokens",
+    "workflowList": "工作流列表",
+    "verifyReviewing": "评审中…",
+    "verifyReviewingShort": "评审中",
+    "verifyPass": "✓ 通过",
+    "expertIdentity": "专家：{{name}}（{{template}}）",
+    "turnDetailHint": "点击查看该轮输入 / 输出",
+    "verifyFail": "✗ 不通过",
+    "verifyUndecided": "? 未裁决",
+    "verifyThreshold": "阈值 {{count}}",
+    "verifyUndecidedHint": "有 reviewer 未投票（undecided），建议重试",
+    "verifyVotesMissing": "{{count}} 票缺失 · 建议重试",
+    "verifyVoteUndecided": "? 未投",
+    "verifyScore": "{{score}} 分",
+    "verifyRound": "第{{count}}轮 · {{verdict}}",
+    "verifyGroupTitle": "verify 组 · {{label}}",
+    "verifyReviewersPending": "{{names}} 评审中…",
+    "sectionCallRecords": "活动",
+    "sectionToolCalls": "工具调用",
+    "sectionInput": "输入",
+    "sectionOutput": "输出",
+    "sectionHumanPrompt": "人工提问",
+    "sectionHumanReply": "人工回复",
+    "sectionError": "错误",
+    "charUnit": "字符",
+    "clickToViewDetail": "点击查看详情",
+    "runIdTooltip": "运行 ID：{{id}}",
+    "forkFromSession": "分叉自 {{name}}",
+    "forkChildSession": "子会话分叉"
   }
 }
