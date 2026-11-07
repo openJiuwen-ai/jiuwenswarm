@@ -89,6 +89,9 @@ class AppearanceProviders:
     def __init__(self) -> None:
         self._providers: dict[str, str] = {}
         self._revisions: dict[str, int] = {}
+        # Packages whose appearance frame is being sent, per connection: a release must
+        # revoke them too, because the frame may still reach the browser.
+        self._sending: dict[str, set[str]] = {}
 
     def provider(self, connection_id: str) -> str | None:
         return self._providers.get(connection_id)
@@ -107,17 +110,43 @@ class AppearanceProviders:
         else:
             self._providers.pop(connection_id, None)
 
+    def begin_send(self, connection_id: str, package_id: str) -> None:
+        """Record that a frame of this package is on its way to the connection."""
+        self._sending.setdefault(connection_id, set()).add(package_id)
+
+    def finish_send(self, connection_id: str, package_id: str) -> bool:
+        """End an in-flight send; False when the package was released meanwhile."""
+        packages = self._sending.get(connection_id)
+        if not packages or package_id not in packages:
+            return False
+        packages.discard(package_id)
+        if not packages:
+            del self._sending[connection_id]
+        return True
+
     def release(self, package_id: str) -> list[tuple[str, int]]:
-        """Forget a released package and reserve one revoke revision per connection."""
+        """Forget a released package and reserve one revoke revision per connection.
+
+        Connections that only have a frame of the package in flight are revoked as well.
+        """
         released = [connection_id for connection_id, owner in self._providers.items() if owner == package_id]
         for connection_id in released:
             del self._providers[connection_id]
+        for connection_id, packages in list(self._sending.items()):
+            if package_id in packages:
+                packages.discard(package_id)
+                if not packages:
+                    del self._sending[connection_id]
+                if connection_id not in released:
+                    released.append(connection_id)
         return [(connection_id, self.next_revision(connection_id)) for connection_id in released]
 
     def drop_connection(self, connection_id: str) -> None:
         self._providers.pop(connection_id, None)
         self._revisions.pop(connection_id, None)
+        self._sending.pop(connection_id, None)
 
     def clear(self) -> None:
         self._providers.clear()
         self._revisions.clear()
+        self._sending.clear()

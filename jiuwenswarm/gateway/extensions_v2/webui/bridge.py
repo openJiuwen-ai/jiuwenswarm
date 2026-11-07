@@ -418,9 +418,11 @@ class BrowserBridge:
         for frame in clears:
             await transport.send_clear(frame)
         for connection_id, revision in revokes:
-            await transport.send_appearance(connection_id, {
-                "package_id": package_id, "revision": revision, "appearance": None,
-            })
+            # The connection lock orders the revoke after a frame that was still in flight.
+            async with self._appearance_locks.setdefault(connection_id, asyncio.Lock()):
+                await transport.send_appearance(connection_id, {
+                    "package_id": package_id, "revision": revision, "appearance": None,
+                })
 
     def _spawn(self, coroutine) -> None:
         try:
@@ -451,13 +453,17 @@ class BrowserBridge:
             if normalized is None and self.appearance.provider(connection_id) != package.package_id:
                 return {"status": "unchanged", "revision": self.appearance.revision(connection_id)}
             revision = self.appearance.next_revision(connection_id)
-            delivered = await self.runtime.webui.transport.send_appearance(connection_id, {
-                "package_id": package.package_id, "revision": revision, "appearance": normalized,
-            })
+            self.appearance.begin_send(connection_id, package.package_id)
+            try:
+                delivered = await self.runtime.webui.transport.send_appearance(connection_id, {
+                    "package_id": package.package_id, "revision": revision, "appearance": normalized,
+                })
+            finally:
+                still_owned = self.appearance.finish_send(connection_id, package.package_id)
             if not delivered:
                 return {"status": "delivery_failed", "revision": revision}
-            # A release during delivery has already sent a later revoke; keep it authoritative.
-            if self.generations.get(package.package_id) == generation:
+            # A release during delivery queued a later revoke; keep it authoritative.
+            if still_owned and self.generations.get(package.package_id) == generation:
                 self.appearance.set(connection_id, package.package_id if normalized else None)
             return {"status": "applied" if normalized else "revoked", "revision": revision}
 

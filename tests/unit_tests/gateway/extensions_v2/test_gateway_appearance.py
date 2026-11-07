@@ -2,6 +2,7 @@
 
 """Controlled appearance: validation, providers and package release (F_11)."""
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -215,6 +216,41 @@ async def test_release_revokes_appearance_and_clears_views(tmp_path):
         await runtime.browser.settle()
         assert _frames(runtime)[-1][1] == {"package_id": THEME, "revision": 4, "appearance": None}
         assert _frames(runtime, "webui.render.clear")[-1][1]["revision"] == rendered + 3
+    finally:
+        await runtime.shutdown()
+
+
+async def test_release_during_the_first_send_still_revokes_the_appearance(tmp_path):
+    """The provider is only known after its first frame is sent; a release in between must still revoke it."""
+    theme = Theme(THEME)
+    runtime = await _start(tmp_path)
+    channel = runtime.channel
+    sent = channel.send_event
+    started, resume = asyncio.Event(), asyncio.Event()
+
+    async def slow_send(ws, event, payload):
+        if event == "webui.appearance" and payload["appearance"] is not None:
+            started.set()
+            await resume.wait()
+        await sent(ws, event, payload)
+
+    channel.send_event = slow_send
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        ws = SimpleNamespace(closed=False)
+        theme.calls.append(_apply({"accent": "#b45309"}))
+        ready = asyncio.create_task(_ready(runtime, ws, THEME))
+        await started.wait()
+        runtime.unpublish(THEME)  # uninstall while the first appearance frame is in flight
+        resume.set()
+        await ready
+        await runtime.browser.settle()
+        frames = [payload for _, payload in _frames(runtime)]
+        assert frames == [
+            {"package_id": THEME, "revision": 1, "appearance": {"accent": "#b45309"}},
+            {"package_id": THEME, "revision": 2, "appearance": None},
+        ]
+        assert runtime.browser.appearance.provider("browser-1") is None
     finally:
         await runtime.shutdown()
 
