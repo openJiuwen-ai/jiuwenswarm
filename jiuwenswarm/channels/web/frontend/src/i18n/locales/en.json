@@ -6642,6 +6642,12 @@
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
     "generatingTasks": "Generating tasks",
+    "organizationStage": {
+      "starting": "Starting expert teams",
+      "processing": "Processing",
+      "executing": "Experts working",
+      "summarizing": "Summarizing"
+    },
     "counts": {
       "total": "Total",
       "running": "In progress",

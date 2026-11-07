@@ -63,6 +63,10 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
   const titleRef = useRef<HTMLSpanElement>(null);
   const [titleOverflow, setTitleOverflow] = useState(false);
   const singleAgent = execution.execution_kind === 'agent';
+  const organizationStage = execution.execution_kind === 'organization'
+    && execution.status === 'running'
+    && ['starting', 'processing', 'executing', 'summarizing'].includes(execution.organization_stage ?? '')
+    ? t(`groupChat.organizationStage.${execution.organization_stage}`) : undefined;
   const counts = taskCounts(execution.tasks ?? {});
   const fullTitle = shortTaskName(execution.title || execution.task, t('groupChat.taskTitle'), Infinity);
   const owner = execution.member_name || execution.owner_member || execution.display_name;
@@ -122,7 +126,7 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
     {!singleAgent && !counts.total && <div className="group-chat-no-subtasks" data-testid="group-chat-no-subtasks">
       <span>{t('groupChat.noSubtasks')}</span>
       <TaskStatus status={execution.status} percent={progress} testId="group-chat-execution-status"
-        labelOverride={RUNNING.includes(execution.status) ? t('groupChat.generatingTasks') : undefined} />
+        labelOverride={organizationStage ?? (RUNNING.includes(execution.status) ? t('groupChat.generatingTasks') : undefined)} />
     </div>}
     {result && <a className="group-chat-text-button" href={`#group-chat-message-${result.message_id}`}
       data-testid="group-chat-execution-result">{t('groupChat.viewResult')}</a>}
