@@ -71,6 +71,21 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
 _CODE_MODES: frozenset[str] = frozenset({"code.team", "team.plan"})
 logger = logging.getLogger(__name__)
 
+# Prefer agent-core's TEAM_SKILL_USE when the rail is actually registered.
+# Older pins expose neither the constant nor TeamSkillUseRail — falling back
+# to the literal ``core.team.skill_use`` would crash every chat.send with
+# "Unknown rail type". Use registered ``core.skill_use`` until core catches up.
+try:
+    from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE as _TEAM_SKILL_USE
+except ImportError:  # pragma: no cover - older agent-core pins
+    _TEAM_SKILL_USE = CORE_SKILL_USE
+    logger.warning(
+        "TEAM_SKILL_USE missing in agent-core; folding skill rails to %r — "
+        "upgrade openjiuwen for TeamSkillUseRail / same-track visibility",
+        _TEAM_SKILL_USE,
+    )
+TEAM_SKILL_USE = _TEAM_SKILL_USE
+
 
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
     react = config.get("react")
@@ -103,7 +118,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.MODEL_ROUTING,
     registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.TEAM_SKILL_STORAGE_POLICY,
-    registry.TEAM_SHARED_SKILL_LINK_REFRESH,
+    registry.TEAM_SKILL_LIBRARY_RELOAD,
     registry.RESPONSE_PROMPT,
     registry.SYS_OPERATION,
     registry.STREAM_EVENT,
@@ -136,7 +151,7 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     registry.AUDIO,
     # Skill-management tools (search/install/uninstall_skill) are registered by
     # the MEMBER_SKILL_TOOLKIT rail (appended below), which owns them with a
-    # link-refresh callback. Declaring SKILL_TOOLKIT here too only double-
+    # library-reload callback. Declaring SKILL_TOOLKIT here too only double-
     # registers the same-named tools, logging a refresh + duplicate-ability
     # warning per tool every build; the rail is the sole registrar.
     registry.SKILL_RETRIEVAL,
@@ -175,7 +190,9 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_TASK_PLANNING,
     registry.CODE_AGENT_RAIL,
     registry.USER_HOOKS,
-    registry.CODE_SKILL_USE,
+    # Skill rail is declared separately as ``core.team.skill_use`` (see
+    # ``_team_skill_use_rail_spec``) so AgentConfigurator completes identity
+    # and does not remount a second generic SkillUseRail.
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
     registry.A2A_OUTBOUND_TOOLKIT,
@@ -318,23 +335,93 @@ def _retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     return False
 
 
-def _normalize_skill_use_rails_for_agentic_retrieval(rails: list[RailSpec]) -> list[RailSpec]:
-    """Normalize skill-use rails to auto-list mode and remove duplicates."""
-    skill_rail_types = {CORE_SKILL_USE, "skill_use", "SkillUseRail", registry.CODE_SKILL_USE}
-    has_skill_rail = False
-    normalized: list[RailSpec] = []
+# Legacy / alternate Skill-rail type names that must collapse into one
+# ``core.team.skill_use`` so Leader and Teammate share the same visibility track.
+_LEGACY_SKILL_RAIL_TYPES: frozenset[str] = frozenset(
+    {
+        CORE_SKILL_USE,
+        "skill_use",
+        "SkillUseRail",
+        registry.CODE_SKILL_USE,
+        TEAM_SKILL_USE,
+    }
+)
+
+
+def _team_skill_use_rail_spec(config: dict[str, Any]) -> RailSpec:
+    """Declare a bare team Skill rail; AgentConfigurator fills identity later.
+
+    Empty member identity is intentional: swarm blueprints cannot know the
+    spawned member name. ``complete_declared_team_skill_rails`` fills paths and
+    ``bootstrap_allow`` once the member exists. ``skills_dir`` is set here to
+    the full DeepAdapter-aligned library list so completion does not replace it
+    with the single-path ``global_skills_dir()`` pin (Ace SHARED tips stay
+    visible; pure Web without SHARED keeps workspace skills).
+    """
+    from jiuwenswarm.common.utils import resolve_team_skill_library_dirs
+
+    skill_mode = (
+        SkillUseRail.SKILL_MODE_AUTO_LIST
+        if _retrieval_enabled(config)
+        else _skill_mode(config)
+    )
+    return RailSpec(
+        type=TEAM_SKILL_USE,
+        params={
+            "skill_mode": skill_mode,
+            "include_tools": False,
+            "skills_dir": [str(path) for path in resolve_team_skill_library_dirs()],
+        },
+    )
+
+
+def _fold_team_skill_use_rails(
+    rails: list[RailSpec],
+    *,
+    force_auto_list: bool = False,
+) -> list[RailSpec]:
+    """Collapse every Skill-use rail into a single ``core.team.skill_use``.
+
+    Prefer params from an already-declared ``core.team.skill_use`` (capability
+    specs) over a legacy base-spec ``SkillUseRail``, so retrieval auto-list
+    and include_tools=False survive the fold. When *force_auto_list* is true,
+    exposure is forced to AUTO_LIST regardless of the source params.
+    """
+    preferred_params: dict[str, Any] | None = None
+    team_params: dict[str, Any] | None = None
     for rail in rails:
-        if rail.type in skill_rail_types:
-            if has_skill_rail:
-                continue
-            has_skill_rail = True
-            params = dict(rail.params or {})
-            params["skill_mode"] = SkillUseRail.SKILL_MODE_AUTO_LIST
-            params["include_tools"] = False
-            normalized.append(rail.model_copy(update={"params": params}))
+        if rail.type not in _LEGACY_SKILL_RAIL_TYPES:
             continue
-        normalized.append(rail)
-    return normalized
+        if preferred_params is None:
+            preferred_params = dict(rail.params or {})
+        if rail.type == TEAM_SKILL_USE:
+            team_params = dict(rail.params or {})
+    if preferred_params is None:
+        return list(rails)
+
+    params = dict(team_params if team_params is not None else preferred_params)
+    if force_auto_list:
+        params["skill_mode"] = SkillUseRail.SKILL_MODE_AUTO_LIST
+        params["include_tools"] = False
+    elif "include_tools" not in params:
+        params["include_tools"] = False
+
+    folded: list[RailSpec] = []
+    emitted = False
+    for rail in rails:
+        if rail.type not in _LEGACY_SKILL_RAIL_TYPES:
+            folded.append(rail)
+            continue
+        if emitted:
+            continue
+        emitted = True
+        folded.append(RailSpec(type=TEAM_SKILL_USE, params=params))
+    return folded
+
+
+def _normalize_skill_use_rails_for_agentic_retrieval(rails: list[RailSpec]) -> list[RailSpec]:
+    """Backward-compatible alias used by older call sites / tests."""
+    return _fold_team_skill_use_rails(rails, force_auto_list=True)
 
 
 def _additional_directories(config: dict[str, Any]) -> list[str]:
@@ -804,16 +891,9 @@ def _build_team_capability_specs(
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.STRUCTURED_ASK_USER))
 
-    if _retrieval_enabled(config):
-        rails_specs.append(
-            RailSpec(
-                type=CORE_SKILL_USE,
-                params={
-                    "skill_mode": SkillUseRail.SKILL_MODE_AUTO_LIST,
-                    "include_tools": False,
-                },
-            )
-        )
+    # One shared Skill track for Leader + Teammate (M2 路1). Soft-link toolkit
+    # remains below; do not also declare core.skill_use / swarm.code_skill_use.
+    rails_specs.append(_team_skill_use_rail_spec(config))
     rails_specs.append(
         RailSpec(
             type=registry.MEMBER_SKILL_TOOLKIT,
@@ -919,6 +999,8 @@ def _build_code_capability_specs(
                 params={"tool_names": ["switch_mode", "exit_plan_mode"]},
             ),
         )
+    # Fold code SkillUseRail into the same team Skill track as chat members.
+    rails_specs.append(_team_skill_use_rail_spec(config))
     rails_specs.append(
         RailSpec(
             type=registry.MEMBER_SKILL_TOOLKIT,
@@ -1168,8 +1250,11 @@ def build_member_deep_agent_spec(
     merged_mcps = _merge_mcp_configs(base_spec.mcps, mcp_configs)
 
     retrieval_enabled = _retrieval_enabled(config)
-    if retrieval_enabled:
-        merged_rails = _normalize_skill_use_rails_for_agentic_retrieval(merged_rails)
+    # Always fold legacy Skill rails into one team Skill track (Leader=Teammate).
+    merged_rails = _fold_team_skill_use_rails(
+        merged_rails,
+        force_auto_list=retrieval_enabled,
+    )
 
     update: dict[str, Any] = {
         "rails": merged_rails,
