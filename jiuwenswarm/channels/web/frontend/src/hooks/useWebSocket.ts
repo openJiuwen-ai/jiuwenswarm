@@ -1047,6 +1047,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   // 必须在渲染阶段同步更新，否则 effect 执行之前收到的事件会被错误过滤
   const userInputVersionRef = useRef(0);
   const activeRequestIdRef = useRef<string | undefined>(undefined);
+  const processingRequestIdsRef = useRef(new Map<string, string>());
   // 立即同步更新，不等待 effect
 
   const [isConnected, setIsConnected] = useState(false);
@@ -5022,6 +5023,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           flushPendingStreamDelta(sessionId);
         }
         useChatStore.getState().setProcessing(sessionId, isProcessingNow);
+        const processingRequestId = getPayloadRequestId(payload);
+        if (isProcessingNow && processingRequestId) {
+          processingRequestIdsRef.current.set(sessionId, processingRequestId);
+        }
         const sessionPatch: Partial<Session> = {
           is_processing: isProcessingNow,
           updated_at: new Date().toISOString(),
@@ -5222,6 +5227,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.error', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.error', payload)) return;
+        const terminalForwardError = payload.code === 'GATEWAY_FORWARD_FAILED' && payload.is_complete === true;
+        if (terminalForwardError) {
+          const currentRequestId = processingRequestIdsRef.current.get(getPayloadSessionId(payload) || '');
+          if (currentRequestId && getPayloadRequestId(payload) !== currentRequestId) return;
+        }
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         if (pendingAgentGroupBindingRef.current.has(sessionId)) {
@@ -5238,6 +5248,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const rawErrorMsg =
           typeof payload.error === 'string' ? payload.error : t('network.unknownError');
         const errorMsg = describeChatError(payload, rawErrorMsg, t);
+        if (terminalForwardError) {
+          // A failed forwarding stream may never deliver processing=false.
+          flushPendingStreamDelta(sessionId);
+          useChatStore.getState().setProcessing(sessionId, false);
+          useChatStore.getState().stopStreaming(sessionId);
+          localSendPendingRef.current.delete(sessionId);
+          updateSession(sessionId, { is_processing: false });
+          useWorkspaceStore.getState().patchSession(sessionId, { is_processing: false });
+        }
         if (payload.code === 'AGENT_GROUP_NOT_INSTALLED') {
           const chatStore = useChatStore.getState();
           chatStore.setAgentGroupUnavailable(sessionId, true);
