@@ -112,14 +112,13 @@ async def check_permission_by_key(
     Returns ``None`` when ``key`` is not registered (caller should treat as
     not-allowed / skip).  Otherwise returns the Manager ``PermissionResult``.
 
-    Does not expand host fetch URL lists — callers such as DeepResearch MCP
-    historically passed ``tool_args`` through unchanged; fetch expansion stays
-    on the temp-config / openjiuwen host path only.
+    Fetch URL lists go through the same ``_check_with_fetch_expand`` path as
+    ``check_permission_by_temp_config`` (scalar URL contract).
     """
     manager = get_permission_manager()
     if not manager.has_config(key):
         return None
-    return await manager.check_permission(tool_name, tool_args, key)
+    return await _check_with_fetch_expand(tool_name, tool_args, key=key)
 
 
 async def check_permission_by_temp_config(
@@ -127,7 +126,10 @@ async def check_permission_by_temp_config(
     tool_args: Mapping[str, Any],
     config: Mapping[str, Any],
 ) -> PermissionResult:
-    """Evaluate one tool call with a one-shot ``config=`` (never registered)."""
+    """Evaluate one tool call with a one-shot ``config=`` (never registered).
+
+    Shares fetch URL expansion with ``check_permission_by_key``.
+    """
     return await _check_with_fetch_expand(
         tool_name, tool_args, config=config
     )

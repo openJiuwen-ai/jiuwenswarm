@@ -117,8 +117,10 @@ async def check_avatar_permission(
         "allow" 或 "deny"
     """
     del channel_id, session_id  # channel comes from ContextVar; session unused
-    from openjiuwen.harness.security.permission_checks import check_tool_permission
-    from openjiuwen.harness.security.models import PermissionLevel as OJPermissionLevel
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+        PermissionLevel,
+        check_permission_by_key,
+    )
 
     perm_ctx = TOOL_PERMISSION_CONTEXT.get()
     if perm_ctx is None or not perm_ctx.principal_user_id:
@@ -130,8 +132,14 @@ async def check_avatar_permission(
         return "deny"
     key = permission_key.strip()
     try:
-        result = await check_tool_permission(tool_name, tool_args, key)
+        result = await check_permission_by_key(tool_name, tool_args, key)
     except Exception:
+        logger.warning(
+            "[check_avatar_permission] unregistered_key key=%s fail_closed=deny",
+            key,
+        )
+        return "deny"
+    if result is None:
         logger.warning(
             "[check_avatar_permission] unregistered_key key=%s fail_closed=deny",
             key,
@@ -143,7 +151,7 @@ async def check_avatar_permission(
         type(owner_scopes).__name__, list(owner_scopes.keys()) if isinstance(owner_scopes, dict) else None
     )
     if not isinstance(owner_scopes, dict) or not owner_scopes:
-        return "allow" if result.permission == OJPermissionLevel.ALLOW else "deny"
+        return "allow" if result.permission == PermissionLevel.ALLOW else "deny"
 
     cid, uid = perm_ctx.channel_id.strip(), perm_ctx.principal_user_id.strip()
     scope_cfg = (owner_scopes.get(cid) or {}).get(uid)
@@ -157,7 +165,7 @@ async def check_avatar_permission(
     global_level_value = result.permission.value
 
     if level is None:
-        if global_level_value == OJPermissionLevel.ALLOW.value:
+        if global_level_value == PermissionLevel.ALLOW.value:
             return "allow"
         return "deny"
 

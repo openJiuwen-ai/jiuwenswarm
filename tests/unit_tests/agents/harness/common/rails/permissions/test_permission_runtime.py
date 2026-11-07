@@ -53,7 +53,7 @@ async def test_check_by_key_registered(monkeypatch: pytest.MonkeyPatch) -> None:
     out = await check_permission_by_key("bash", {"cmd": "ls"}, "default")
     assert out is expected
     manager.check_permission.assert_awaited_once_with(
-        "bash", {"cmd": "ls"}, "default"
+        "bash", {"cmd": "ls"}, "default", config=None
     )
 
 
@@ -75,22 +75,36 @@ async def test_check_by_temp_config(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_by_temp_config_expands_fetch_urls(
+@pytest.mark.parametrize(
+    "via_key",
+    [False, True],
+    ids=["temp_config", "keyed"],
+)
+async def test_check_expands_fetch_urls(
     monkeypatch: pytest.MonkeyPatch,
+    via_key: bool,
 ) -> None:
+    """keyed / temp_config 共用 _check_with_fetch_expand，url 列表都要拆开判。"""
     allow = PermissionResult(PermissionLevel.ALLOW, "ok", "")
     deny = PermissionResult(PermissionLevel.DENY, "bad", "")
     manager = MagicMock()
+    manager.has_config.return_value = True
     manager.check_permission = AsyncMock(side_effect=[allow, deny])
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime.get_permission_manager",
         lambda: manager,
     )
-    cfg = {"enabled": True}
-    out = await check_permission_by_temp_config(
-        "mcp_fetch_webpage",
-        {"url": ["https://a.example", "https://b.example"]},
-        cfg,
-    )
+    args = {"url": ["https://a.example", "https://b.example"]}
+    if via_key:
+        out = await check_permission_by_key("mcp_fetch_webpage", args, "default")
+    else:
+        out = await check_permission_by_temp_config(
+            "mcp_fetch_webpage", args, {"enabled": True}
+        )
+    assert out is not None
     assert out.permission == PermissionLevel.DENY
     assert manager.check_permission.await_count == 2
+    first_args = manager.check_permission.await_args_list[0].args
+    second_args = manager.check_permission.await_args_list[1].args
+    assert first_args[1]["url"] == "https://a.example"
+    assert second_args[1]["url"] == "https://b.example"
