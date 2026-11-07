@@ -18,6 +18,10 @@ The configuration panel is organized into three tabs:
 - **Security**: Tool security guardrails, sensitive-info filtering (see [7. Tool Security Guardrails](#7-tool-security-guardrails))
 - **Other**: Third-party services, self-evolution, context compression, skill symphony, etc.
 
+Additional backend configuration sections include:
+
+- **Verification**: Post-task verifier command for benchmark / CI environments (see [11. Verification Configuration](#11-verification-configuration))
+
 > 💡 **Tip**: Model configuration (`api_base`, `api_key`, `model`, `model_provider`) is required; all other configurations are optional.
 
 ---
@@ -490,11 +494,53 @@ Generally, from highest to lowest: **values you save in the web Configuration UI
 
 ---
 
-## 11. Skill Sync Configuration (Split Server / Client Deployment)
+## 11. Verification Configuration
+
+The `verification` section lets you configure a post-task verifier command that the agent runs automatically after producing output. This is primarily used in benchmark or CI environments where a test script is provided to check correctness.
+
+### 11.1 Config key
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `verification.verifier_cmd` | string | `""` (disabled) | Shell command the agent runs after writing all output files. Empty string disables verification. |
+
+The value may also be supplied via the environment variable `VERIFICATION_CMD`, which takes precedence over the config file value.
+
+### 11.2 Behavior
+
+When `verifier_cmd` is set to a non-empty string, the agent's code-mode system prompt gains an additional **Verification Step** section instructing it to:
+
+1. Run the verifier command after all output files are written.
+2. Read the output: if tests pass, the task is complete.
+3. If any test fails, diagnose the error, fix the output, and re-run the verifier.
+4. Repeat until all tests pass or iterations are exhausted.
+5. Skip the verifier gracefully if the command cannot be found or executed.
+
+When `verifier_cmd` is empty (the default), no verification section is added to the prompt and agent behavior is unchanged.
+
+### 11.3 Example — SkillsBench
+
+SkillsBench ships a `/verifier/test.sh` wrapper in each task container. The bench-optimized `config.yaml` activates it:
+
+```yaml
+verification:
+  verifier_cmd: "bash /verifier/test.sh"
+```
+
+### 11.4 Example — environment variable override
+
+```bash
+export VERIFICATION_CMD="bash /path/to/test.sh"
+jiuwenswarm-agentserver
+```
+
+---
+
+## 12. Skill Sync Configuration (Split Server / Client Deployment)
 
 When the Server and the Client are deployed separately, each side keeps its own skill library (`~/.jiuwenswarm/agent/workspace/skills/`). The skill sync API (`/skill-sync/*`: diff / package / apply) lets a client synchronize its local skills with the server. The capability is **off by default** and must be enabled explicitly.
 
-### 11.1 Configuration keys
+### 12.1 Configuration keys
 
 These keys live in the main config file (`config.yaml`) and must be edited manually:
 
@@ -509,7 +555,7 @@ skill_sync:
   token: "<your strong random token>"
 ```
 
-### 11.2 Environment variable
+### 12.2 Environment variable
 
 | Variable | Description |
 | --- | --- |
