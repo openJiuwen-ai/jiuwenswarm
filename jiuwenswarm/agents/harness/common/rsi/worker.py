@@ -390,6 +390,12 @@ class RsiWorker:
                     result,
                     timeout=self._provider_poll_timeout_for(task_view),
                 )
+            finalize_terminal = getattr(adapter, "finalize_terminal", None)
+            if (
+                callable(finalize_terminal)
+                and _provider_status(result) == "COMPLETED"
+            ):
+                result = finalize_terminal(task_id, result)
             provider_result_ready = True
         except asyncio.CancelledError:
             cancelled = True
@@ -430,7 +436,10 @@ class RsiWorker:
                         logger.exception("[RSI] 事件消费协程退出异常 task=%s", task_id)
                     if provider_result_ready and self._is_current_execution(task_id, generation):
                         self._apply_result_status(task_id, result, adapter=adapter)
-                if self._is_current_execution(task_id, generation):
+                if (
+                    not provider_result_ready
+                    and self._is_current_execution(task_id, generation)
+                ):
                     self._persist_results(task_id, result)
             except asyncio.CancelledError:
                 # A late cancellation arriving during cleanup must not kill the
@@ -503,6 +512,7 @@ class RsiWorker:
             # this guard makes older/custom Providers fail-safe instead of
             # converting a non-terminal result into FAILED.
             if not getattr(result, "error_code", None):
+                self._persist_results(task_id, result)
                 return
             status = "FAILED"
         target = {
@@ -515,6 +525,7 @@ class RsiWorker:
             target = TaskStatus.FAILED.value
         current = self.store.get(task_id).status
         if current != TaskStatus.RUNNING.value:
+            self._persist_results(task_id, result)
             return
         cause = f"provider.{status.lower()}"
         if target == TaskStatus.FAILED.value:
@@ -527,12 +538,29 @@ class RsiWorker:
                     f"{getattr(result, 'error_code', None) or status.lower()})"
                 ),
             )
-        self.store.update_status(
-            task_id,
-            [TaskStatus.RUNNING.value],
-            target,
-            cause=cause,
-        )
+        try:
+            results = self._result_values(task_id, result)
+            self.store.update_status_with_results(
+                task_id,
+                [TaskStatus.RUNNING.value],
+                target,
+                results,
+                cause=cause,
+            )
+        except Exception:  # noqa: BLE001 - a terminal evidence failure must converge
+            if self.store.get(task_id).status != TaskStatus.RUNNING.value:
+                logger.exception("[RSI] 任务状态已改变，保留当前状态 task=%s", task_id)
+                return
+            logger.exception("[RSI] 终态证据持久化失败 task=%s", task_id)
+            try:
+                self.store.update_status(
+                    task_id,
+                    [TaskStatus.RUNNING.value],
+                    TaskStatus.FAILED.value,
+                    cause="worker.terminal_evidence_persist_failed",
+                )
+            except RsiTaskStateConflict:
+                logger.info("[RSI] 状态提交冲突，保留当前状态 task=%s", task_id)
 
     async def _wait_for_provider_terminal(
         self,
@@ -829,46 +857,52 @@ class RsiWorker:
         if result is None:
             return
         try:
-            results: dict[str, Any] = {}
-            for key in (
-                "state_path",
-                "report_path",
-                "current_harness_refs_path",
-                "best_harness_refs_path",
-                "published_harness_refs_path",
-                "best_score",
-                "best_artifact_path",
-                "published_artifact_path",
-                "final_node_id",
-                "error_code",
-                "error_message",
-            ):
-                value = getattr(result, key, None)
-                if value is not None:
-                    results[key] = str(value) if not isinstance(value, float) else value
-            # ``EngineResult`` in openjiuwen intentionally keeps a small
-            # common shape; the publication paths live in the raw persisted
-            # state.  Capture them when the concrete Harness adapter exposes
-            # that read-only seam so the task record remains self-describing.
-            if "published_harness_refs_path" not in results:
-                task = self.store.get(task_id)
-                adapter = self._adapter_for(task.scenario, task.artifact_type)
-                reader = getattr(adapter, "read_publication_state", None)
-                if callable(reader):
-                    state = reader(task_id)
-                    if isinstance(state, dict):
-                        for key in (
-                            "current_harness_refs_path",
-                            "best_harness_refs_path",
-                            "published_harness_refs_path",
-                            "publication_status",
-                        ):
-                            value = state.get(key)
-                            if value is not None:
-                                results[key] = str(value)
+            results = self._result_values(task_id, result)
             self.store.merge_results(task_id, results)
         except Exception:  # noqa: BLE001
             logger.exception("[RSI] 持久化引擎结果失败 task=%s", task_id)
+
+    def _result_values(self, task_id: str, result: Any) -> dict[str, Any]:
+        results: dict[str, Any] = {}
+        if result is None:
+            return results
+        for key in (
+            "state_path",
+            "report_path",
+            "current_harness_refs_path",
+            "best_harness_refs_path",
+            "published_harness_refs_path",
+            "best_score",
+            "best_artifact_path",
+            "published_artifact_path",
+            "final_node_id",
+            "error_code",
+            "error_message",
+        ):
+            value = getattr(result, key, None)
+            if value is not None:
+                results[key] = str(value) if not isinstance(value, float) else value
+        # ``EngineResult`` in openjiuwen intentionally keeps a small
+        # common shape; the publication paths live in the raw persisted
+        # state.  Capture them when the concrete Harness adapter exposes
+        # that read-only seam so the task record remains self-describing.
+        if "published_harness_refs_path" not in results:
+            task = self.store.get(task_id)
+            adapter = self._adapter_for(task.scenario, task.artifact_type)
+            reader = getattr(adapter, "read_publication_state", None)
+            if callable(reader):
+                state = reader(task_id)
+                if isinstance(state, dict):
+                    for key in (
+                        "current_harness_refs_path",
+                        "best_harness_refs_path",
+                        "published_harness_refs_path",
+                        "publication_status",
+                    ):
+                        value = state.get(key)
+                        if value is not None:
+                            results[key] = str(value)
+        return results
 
     def _push(self, event_type: str):
         callback = self._push_callbacks.get(event_type)

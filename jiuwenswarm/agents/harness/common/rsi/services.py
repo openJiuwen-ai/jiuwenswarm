@@ -575,7 +575,14 @@ class RsiReportService:
             state = _read_provider_snapshot(adapter, "read_state", task_id)
             report = _read_provider_snapshot(adapter, "read_report", task_id)
             if report is not None or state is not None:
-                return provider_report_to_web(report, state)
+                projected = provider_report_to_web(report, state)
+                if getattr(task, "artifact_type", None) == ArtifactType.PAPER.value:
+                    projected["status"] = task.status
+                    if task.status == TaskStatus.FAILED.value:
+                        reason = task.failure_reason_text()
+                        if reason:
+                            projected["failure_reason"] = reason
+                return projected
             # CREATED tasks legitimately have no Provider report yet.
         progress = self.projector.derive_progress(task_id)
         usage = self.usage_recorder.usage_summary(task_id)
