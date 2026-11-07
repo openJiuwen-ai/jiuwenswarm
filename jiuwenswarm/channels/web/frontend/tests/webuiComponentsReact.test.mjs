@@ -2359,7 +2359,9 @@ test('MediaSurface renders image, video and sandboxed pages with the host media 
     assert.equal(video.style.objectPosition, 'top');
     const layer = video.parentElement;
     assert.equal(layer.style.filter, 'blur(10px)');
-    assert.equal(layer.style.inset, '-20px');
+    // Blurred media is scaled past the edges (2 × blur on the shortest side) instead of being enlarged.
+    assert.equal(layer.style.inset, '');
+    assert.equal(layer.style.transform, `scale(${(1 + 40 / Math.min(window.innerWidth, window.innerHeight)).toFixed(4)})`);
     assert.equal(app.container.querySelector('[data-testid="webui-media-surface-dim"]').style.opacity, '0.4');
     assert.equal(app.container.querySelector('[data-testid="webui-media-surface"]').style.opacity, '0.5');
 
@@ -2539,7 +2541,9 @@ test('background updates with the same page keep it running and only restyle it'
     const current = container.querySelector('[data-testid="webui-media-surface-frame"]');
     assert.equal(current === first, true, 'the running page is not reloaded');
     assert.equal(container.querySelector('[data-testid="webui-media-surface-dim"]').style.opacity, '0.5');
-    assert.equal(container.querySelector('.webui-media-surface__layer').style.filter, 'blur(8px)');
+    const layer = container.querySelector('.webui-media-surface__layer');
+    assert.equal(layer.style.filter, 'blur(8px)');
+    assert.equal(layer.style.inset, '', 'blur never changes the size the page is laid out in');
     assert.deepEqual(changes, [], 'the document stays marked while the background updates');
 
     await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: surfaceAsset('other/index.html') }), 5,
