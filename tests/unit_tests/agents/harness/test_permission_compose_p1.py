@@ -156,6 +156,91 @@ def test_user_severity_only_rule_gets_product_action() -> None:
     assert "user_rm_severity_only" in matched
 
 
+def test_strict_mode_maps_medium_rules_to_ask() -> None:
+    """Issue #45: strict + bash allow + MEDIUM pwd/ls rules → ask card."""
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "permission_mode": "strict",
+            "package_builtin_rules": False,
+            "tools": {"bash": "allow"},
+            "defaults": {"*": "allow"},
+            "rules": [
+                {
+                    "id": "pwd_medium",
+                    "tools": ["bash"],
+                    "pattern": "pwd *",
+                    "severity": "MEDIUM",
+                },
+                {
+                    "id": "ls_medium",
+                    "tools": ["bash"],
+                    "pattern": "ls *",
+                    "severity": "MEDIUM",
+                },
+            ],
+        }
+    )
+    by_id = {r["id"]: r for r in effective["rules"]}
+    assert by_id["pwd_medium"]["action"] == "ask"
+    assert by_id["ls_medium"]["action"] == "ask"
+    for command, rule_id in (("pwd", "pwd_medium"), ("ls", "ls_medium")):
+        level, matched = evaluate_tiered_policy(
+            effective, "bash", {"command": command},
+        )
+        assert level == PermissionLevel.ASK
+        assert rule_id in matched
+
+
+def test_normal_mode_maps_medium_rules_to_allow() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "permission_mode": "normal",
+            "package_builtin_rules": False,
+            "tools": {"bash": "allow"},
+            "defaults": {"*": "allow"},
+            "rules": [
+                {
+                    "id": "pwd_medium",
+                    "tools": ["bash"],
+                    "pattern": "pwd *",
+                    "severity": "MEDIUM",
+                },
+            ],
+        }
+    )
+    assert effective["rules"][0]["action"] == "allow"
+    level, matched = evaluate_tiered_policy(
+        effective, "bash", {"command": "pwd"},
+    )
+    assert level == PermissionLevel.ALLOW
+    assert "pwd_medium" in matched
+
+
+def test_explicit_action_ignores_permission_mode() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "permission_mode": "strict",
+            "package_builtin_rules": False,
+            "tools": {"bash": "allow"},
+            "rules": [
+                {
+                    "id": "explicit_allow",
+                    "tools": ["bash"],
+                    "pattern": "pwd *",
+                    "severity": "MEDIUM",
+                    "action": "allow",
+                },
+            ],
+        }
+    )
+    assert effective["rules"][0]["action"] == "allow"
+    level, _ = evaluate_tiered_policy(effective, "bash", {"command": "pwd"})
+    assert level == PermissionLevel.ALLOW
+
+
 def test_compose_drops_session_net_guard() -> None:
     effective = compose_host_effective_permissions(
         global_permissions={"enabled": True, "defaults": {"*": "allow"}},
