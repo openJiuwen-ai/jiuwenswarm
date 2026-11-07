@@ -84,6 +84,11 @@ def _call_claude(
         input=prompt,
         capture_output=True,
         text=True,
+        # The CLI speaks UTF-8 in both directions; without an explicit codec the
+        # prompt would be encoded (and the answer decoded) with whatever text
+        # mode the interpreter happens to use.
+        encoding="utf-8",
+        errors="replace",
         env=env,
         timeout=timeout,
     )
