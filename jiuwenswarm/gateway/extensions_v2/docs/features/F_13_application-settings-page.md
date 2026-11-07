@@ -306,6 +306,14 @@ F_13-V-13（2026-11-07，PR #10763 第四轮检视）：上一轮在关闭开场
 准备成功后才关闭旧开场（S_01 第 3.2 节、不变量 14）。回归用例 `test_an_upgrade_whose_handlers_cannot_register_keeps_the_running_version`、
 `test_a_reload_whose_handlers_cannot_register_keeps_the_running_version` 修复前失败（旧开场已以 `removed` 关闭），修复后旧版本继续运行并照常应答。
 
+F_13-V-14（2026-11-07，PR #10763 第五轮检视，2 项均复现）：
+- 等待旧包 `ui.closed` 时取消安装：准备中的 Handler 被撤销，但外层只捕获 `Exception`，被取消的安装没有删除新副本；旧开场已消失，
+  重新创建运行时后启用了这个没有提交的版本。现在以开始关闭旧开场为提交点：之前的步骤都不等待；之后操作运行到结束，取消在完成后才抛出；
+  安装只在新版本真正提交后保留副本。卸载使用同样的提交点。
+- 等待期间停机后，提交仍然成功，留下有激活记录、没有 Handler 的状态。现在准备项由运行时按运行周期登记，停机终止它们，之后的提交失败。
+- 回归用例：`test_a_cancelled_upgrade_finishes_once_the_running_splash_is_closing`（修复前取消后仍运行旧版本、旧开场已关、新副本留存）、
+  `test_a_switch_prepared_before_shutdown_cannot_commit_after_it`（修复前报告成功）、`test_a_cancelled_uninstall_finishes_once_the_running_splash_is_closing`。
+
 ### 8.3 验证结论
 
 第 2.2 节场景在单元范围与 Chromium 中成立。浏览器验证中 Gateway 运行时与路由是真实的，WebChannel 以验证服务中的最小实现代替；
