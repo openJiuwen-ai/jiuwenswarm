@@ -93,6 +93,7 @@
 | 停用 | 用户在设置中停用了该包的开场（S_10 第 4 节）时同样可以预览 |
 | 效果 | 向该连接发送下行帧 `webui.splash.play`：`{"package_id", "skippable", "max_duration_ms"}`，后两项取第 1 节的声明 |
 | 返回 | `{"status": "requested"}`；帧未送达时 `{"status": "delivery_failed"}`；包未声明开场、激活已失效或没有连接时抛出 `ValueError` |
+| 执行 | 经事件链执行：Ops 只触发 `ui.splash.preview`（输入携带调用包与其激活代次），USER Handler 可以拒绝或接管（返回自己的 `HostActionOutput`，例如 `{"status": "denied", "code": …}`，Ops 原样返回），继续后由 CORE 默认动作核对激活与连接再执行；CORE 拒绝时 Ops 抛出 `ValueError`。 |
 
 前端收到 `webui.splash.play` 后，只在门控已开放且当前没有开场时处理，否则忽略：
 按第 5 节的“准备”到“结束”为这一个包走一遍，`ui.ready` 的 `preview` 为 true、`first_visit` 为 false；

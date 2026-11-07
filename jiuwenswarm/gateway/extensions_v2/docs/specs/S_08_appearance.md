@@ -22,6 +22,7 @@ await ops.appearance.apply(appearance: Mapping | None) -> dict
 - 调用方须是活动的应用级 UI 包（[S_06](S_06_local-browser-bridge.md)），调用须属于该包当前激活，
   且发生在带浏览器连接的事件中（如应用级槽位的 `ui.ready`、`ui.click`）。外观作用于该连接。
 - `appearance` 为 `None` 表示撤销本包提交的外观。
+- 经事件链执行：Ops 只触发 `ui.appearance`（输入携带调用包与其激活代次），USER Handler 可以拒绝或接管（返回自己的 `HostActionOutput`，例如 `{"status": "denied", "code": …}`，Ops 原样返回），继续后由 CORE 默认动作核对激活与连接再执行；CORE 拒绝时 Ops 抛出 `ValueError`。
 - 返回 `{"status": <状态>, "revision": <int>}`：
 
 | 状态 | 含义 |

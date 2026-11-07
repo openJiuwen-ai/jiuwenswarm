@@ -26,6 +26,12 @@ from jiuwenswarm.gateway.extensions_v2.handler_ops.data_ops import build_data_op
 from jiuwenswarm.gateway.extensions_v2.handler_ops.http_ops import build_http_ops_build_handler
 from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, EVENT_GATEWAY_DISCONNECT, EVENT_UI_RENDER
 from jiuwenswarm.gateway.extensions_v2.event_types.matching import match_pattern_subset
+from jiuwenswarm.gateway.extensions_v2.event_types.webui import register_webui_action_events
+from jiuwenswarm.gateway.extensions_v2.webui.core_handlers.action_core import (
+    build_appearance_core_handler,
+    build_download_core_handler,
+    build_splash_preview_core_handler,
+)
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import build_host_request_handler
 
 if TYPE_CHECKING:
@@ -38,6 +44,12 @@ def register_event_types(bus: ExtensionEventBus, runtime: GatewayRuntime) -> Non
     runtime.webui.register_event_types(bus)
     register_gateway_request_events(bus, build_request_core_handler())
     runtime.browser.register_events(bus)
+    register_webui_action_events(
+        bus,
+        appearance_core=build_appearance_core_handler(runtime.browser),
+        download_core=build_download_core_handler(runtime.browser),
+        splash_preview_core=build_splash_preview_core_handler(runtime.browser),
+    )
     async def disconnect_core(event, ops, next_handler):
         del event, ops, next_handler
         return None

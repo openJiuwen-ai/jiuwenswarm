@@ -23,15 +23,16 @@ from openjiuwen.core.events import Event, EventHandlerOps, EventHandlerOpsBuilde
 
 from jiuwenswarm.gateway.extensions_v2.event_types.matching import match_pattern_subset
 from jiuwenswarm.gateway.extensions_v2.models import (
+    EVENT_UI_APPEARANCE, EVENT_UI_DOWNLOAD, EVENT_UI_SPLASH_PREVIEW,
     GatewayRequestInput, GatewayRequestOutput, WEBUI_DISPATCH_METHOD, gateway_session_id,
 )
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
-    RenderNode, RenderTarget, RenderStatus, UiActionInput, UiActionOutput, UiRenderInput, UiRenderOutput,
+    HostActionOutput, RenderNode, RenderTarget, RenderStatus, UiActionInput, UiActionOutput, UiAppearanceInput,
+    UiDownloadInput, UiRenderInput, UiRenderOutput, UiSplashPreviewInput,
 )
 from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS, WebUIEvent
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
 from jiuwenswarm.gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
-from jiuwenswarm.gateway.extensions_v2.webui.call_context import trusted_connection
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import SplashPreferences
 from jiuwenswarm.gateway.extensions_v2.webui.transfers import TransferManager
 
@@ -440,11 +441,10 @@ class BrowserBridge:
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
-    async def apply_appearance(self, ops: EventHandlerOps, appearance: Mapping[str, Any] | None) -> dict[str, Any]:
+    async def apply_appearance(self, package_id: str, generation: str, connection_id: str,
+                               appearance: Mapping[str, Any] | None) -> dict[str, Any]:
         """Deliver or revoke the calling package's appearance on its browser connection (S_08)."""
-        package = self._package_caller(ops)
-        generation = self.generations[package.package_id]
-        connection_id = trusted_connection(ops)
+        package = self._action_package(package_id, generation)
         if not connection_id:
             raise ValueError("ops.appearance requires a browser connection")
         normalized = None if appearance is None else validate_appearance(appearance)
@@ -533,15 +533,15 @@ class BrowserBridge:
             return await self.operation(ops, "local_storage.delete", {"key": key})
         async def page_reload(ops):
             return await self.operation(ops, "page.reload", {})
+        # Host actions start their own event chain; the CORE default does the work (S_01 section 4).
         async def appearance_apply(ops, appearance: Mapping[str, Any] | None = None):
-            return await self.apply_appearance(ops, appearance)
+            return await self._run_action(ops, EVENT_UI_APPEARANCE, lambda package_id, generation:
+                                          UiAppearanceInput(package_id, generation, appearance))
         async def download(ops, path: str, *, filename: str | None = None):
-            package = self._package_caller(ops)
-            return await self.transfers.offer_download(
-                package.package_id, self.generations[package.package_id], trusted_connection(ops), path, filename,
-            )
+            return await self._run_action(ops, EVENT_UI_DOWNLOAD, lambda package_id, generation:
+                                          UiDownloadInput(package_id, generation, path, filename))
         async def splash_preview(ops):
-            return await self.preview_splash(ops)
+            return await self._run_action(ops, EVENT_UI_SPLASH_PREVIEW, UiSplashPreviewInput)
         async def build(event, ops, next_handler):
             del ops
             builder = await next_handler(event)
@@ -560,16 +560,51 @@ class BrowserBridge:
             return builder
         return build
 
-    async def preview_splash(self, ops: EventHandlerOps) -> dict[str, Any]:
+    async def _run_action(self, ops: EventHandlerOps, event_name: str, make_input) -> dict[str, Any]:
+        """Trigger one host action chain for the calling activation and translate its answer.
+
+        The activation is read here, in the caller's own scope, and carried in the event input:
+        USER handlers of other packages may run between this call and the CORE default.
+        """
+        package_id = ops.package_metadata.package_id if ops.package_metadata else ""
+        caller = _CALLER.get()
+        generation = caller[1] if caller is not None and caller[0] == package_id else ""
+        result = await self.runtime.bus.trigger(Event(event_name, make_input(package_id, generation)),
+                                                ops.session_context)
+        if not isinstance(result, HostActionOutput):
+            raise ValueError(f"{event_name} was not answered")
+        if result.status == "rejected":
+            # Unchanged public contract: invalid calls raise ValueError (S_08, S_09, S_10).
+            raise ValueError(result.message or result.code or f"{event_name} rejected")
+        answer: dict[str, Any] = {"status": result.status}
+        if result.revision is not None:
+            answer["revision"] = result.revision
+        if result.code:
+            answer["code"] = result.code
+        return answer
+
+    def _action_package(self, package_id: str, generation: str):
+        """The active application package whose current activation made the call."""
+        package = self._active_application_package(package_id)
+        if package is None or not generation or self.generations.get(package_id) != generation:
+            raise ValueError("package call belongs to an inactive activation")
+        return package
+
+    async def offer_download(self, package_id: str, generation: str, connection_id: str, path: Any,
+                             filename: Any) -> dict[str, Any]:
+        """Offer one data file to the calling connection (S_10 section 7.1)."""
+        self._action_package(package_id, generation)
+        return await self.transfers.offer_download(package_id, generation, connection_id, path, filename)
+
+    async def preview_splash(self, package_id: str, generation: str, connection_id: str) -> dict[str, Any]:
         """Ask the calling connection to play this package's splash once (S_09 section 3.3).
 
         A splash the user turned off can still be previewed: the request comes from the package's own page.
         """
-        package = self._package_caller(ops)
+        package = self._action_package(package_id, generation)
         declaration = self.splash_declaration(package)
         if declaration is None:
             raise ValueError("ops.splash.preview requires an application.splash contribution")
-        connection_id = trusted_connection(ops)
         if not connection_id:
             raise ValueError("ops.splash.preview requires a browser connection")
         delivered = await self.runtime.webui.transport.send_splash_play(connection_id, {

@@ -134,6 +134,50 @@ class UiActionOutput:
 
 
 @dataclass(frozen=True, slots=True)
+class UiAppearanceInput:
+    """``ui.appearance``: submit, or revoke with ``None``, the caller's appearance on its connection (S_08).
+
+    ``package_id`` and ``generation`` identify the calling activation; the Ops method fills them in.
+    """
+
+    package_id: str
+    generation: str
+    appearance: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UiDownloadInput:
+    """``ui.download``: offer one file of the caller's data directory to its connection (S_10 section 7)."""
+
+    package_id: str
+    generation: str
+    path: str = ""
+    filename: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UiSplashPreviewInput:
+    """``ui.splash.preview``: replay the caller's splash once on its connection (S_09 section 3.3)."""
+
+    package_id: str
+    generation: str
+
+
+@dataclass(frozen=True, slots=True)
+class HostActionOutput:
+    """Answer of a host action chain.
+
+    ``status`` is ``rejected`` (with ``code`` and ``message``) when the host refused the call; a USER
+    handler that takes the call over returns its own status, for example ``denied`` with a code.
+    """
+
+    status: str
+    revision: int | None = None
+    code: str | None = None
+    message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationReport:
     """Validation result with a machine-readable code when it fails."""
 
