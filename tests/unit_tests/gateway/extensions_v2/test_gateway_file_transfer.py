@@ -347,10 +347,13 @@ async def test_tickets_expire_and_close_with_the_connection(tmp_path):
         clock[0] += transfers_module.UPLOAD_TTL_S + 1
         async with _client(runtime) as client:
             assert (await client.put(f"/extension-uploads/{first}/a.zip", content=b"1")).status_code == 404
+        # Expired and evicted tickets lose their record at once; their directories go in the background.
+        await runtime.browser.transfers.settle_package(PACKAGE)
         assert not (uploads / first).exists()
         opened = [(await _call(runtime, "webui.upload.begin", _begin(revision, files), ws))["payload"]["upload_id"]
                   for _ in range(transfers_module.MAX_OPEN_UPLOADS + 1)]
         assert sorted(runtime.browser.transfers.uploads) == sorted(opened[1:])
+        await runtime.browser.transfers.settle_package(PACKAGE)
         assert not (uploads / opened[0]).exists()
         await runtime.on_disconnect(ws)
         await runtime.browser.settle()
