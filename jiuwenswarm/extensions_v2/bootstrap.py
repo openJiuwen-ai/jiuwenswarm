@@ -8,6 +8,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from jiuwenswarm.extensions_v2.event_types.context_usage import register_context_usage_events
+from jiuwenswarm.extensions_v2.event_types.prompt_context import register_prompt_context_events
 from jiuwenswarm.extensions_v2.event_types.session_attach import register_session_attach_event
 from jiuwenswarm.extensions_v2.event_types.session_detach import register_session_detach_event
 from jiuwenswarm.extensions_v2.event_types.session_end import register_session_end_event
@@ -36,6 +37,7 @@ def register_event_types(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
 
     webui.register_event_types(bus)
     register_context_usage_events(bus)
+    register_prompt_context_events(bus)
     register_session_history_events(bus)
     register_session_start_event(bus)
     register_session_end_event(bus)
