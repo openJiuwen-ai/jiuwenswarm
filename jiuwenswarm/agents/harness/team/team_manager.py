@@ -1732,8 +1732,58 @@ class TeamManager:
 
     @staticmethod
     def load_default_team_spec(session_id: str) -> TeamAgentSpec:
-        """Load the default Team specification for host organization adapters."""
-        return TeamManager._load_team_spec(session_id)
+        """Load the default Team specification for host organization adapters.
+
+        Group member instances are built from this spec, so it follows the
+        model the session selected instead of the global default model. A
+        selection that can no longer be compiled falls back to the default
+        model so member and summary Teams can still start.
+        """
+        from jiuwenswarm.common.model_errors import ModelSelectionError
+
+        metadata = get_session_metadata(session_id, cache_bust=True)
+        team_name = str(metadata.get("team_name") or "").strip()
+        selection = TeamManager._stored_model_selection(session_id, team_name)
+        if selection is None:
+            return TeamManager._load_team_spec(session_id)
+        try:
+            return TeamManager._load_team_spec(
+                session_id,
+                model_selection=TeamManager._default_if_deleted(selection),
+            )
+        except ModelSelectionError as exc:
+            logger.warning(
+                "stored model selection of session %s cannot be restored (%s); using the default model",
+                session_id,
+                getattr(exc, "code", exc),
+            )
+            return TeamManager._load_team_spec(session_id)
+
+    @staticmethod
+    def _stored_model_selection(session_id: str, team_name: str) -> dict[str, Any] | None:
+        """Return the persisted model selection of a Team, else of its session."""
+        # Team bindings own the long-lived business selection.  Keep the
+        # session field as a read-only compatibility fallback for legacy
+        # sessions/checkpoints that predate Team-level persistence.
+        if team_name:
+            try:
+                from jiuwenswarm.server.runtime.team_binding_store import (
+                    get_team_binding_store,
+                )
+                stored_team = get_team_binding_store().get_team_selection(team_name)
+            except Exception:
+                stored_team = None
+            if isinstance(stored_team, dict) and stored_team.get("type") and stored_team.get("id"):
+                return stored_team
+        from jiuwenswarm.server.runtime.session.model_selection_store import (
+            get_session_model_selection,
+        )
+
+        try:
+            stored = get_session_model_selection(session_id)
+        except ValueError:
+            stored = None
+        return stored.model_dump(exclude_none=True) if stored is not None else None
 
     @staticmethod
     def _load_team_spec(
@@ -1928,31 +1978,8 @@ class TeamManager:
         restored_selection = model_selection is None
         if restored_selection:
             metadata = get_session_metadata(session_id, cache_bust=True)
-            # Team bindings own the long-lived business selection.  Keep the
-            # session field as a read-only compatibility fallback for legacy
-            # sessions/checkpoints that predate Team-level persistence.
             team_name = str(metadata.get("team_name") or "").strip()
-            if team_name:
-                try:
-                    from jiuwenswarm.server.runtime.team_binding_store import (
-                        get_team_binding_store,
-                    )
-                    stored_team = get_team_binding_store().get_team_selection(team_name)
-                except Exception:
-                    stored_team = None
-                if isinstance(stored_team, dict) and stored_team.get("type") and stored_team.get("id"):
-                    model_selection = stored_team
-            if model_selection is None:
-                from jiuwenswarm.server.runtime.session.model_selection_store import (
-                    get_session_model_selection,
-                )
-
-                try:
-                    stored = get_session_model_selection(session_id)
-                except ValueError:
-                    stored = None
-                if stored is not None:
-                    model_selection = stored.model_dump(exclude_none=True)
+            model_selection = self._stored_model_selection(session_id, team_name)
 
         if model_selection is not None:
             if restored_selection:
