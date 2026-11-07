@@ -250,9 +250,9 @@ export function createSplashController(options: SplashControllerOptions): Splash
     if (disposed) return;
     if (hint !== 'unknown') writeItem(SPLASH_EXPECTED_KEY, hint === 'candidates' ? '1' : '0');
     if (hint === 'none') {
-      // The hint only spares the wait; the Gateway's list stays the final answer (Gateway S_09 section 4).
+      // The gate opens at once and stays open; the Gateway's answer only corrects the hint for the next start.
       open();
-      await confirmWithGateway();
+      await refreshHint();
       return;
     }
     const connected = await waitConnected(hint === 'candidates' ? SPLASH_TIMEOUTS.connectHinted : SPLASH_TIMEOUTS.connectUnknown);
@@ -276,20 +276,10 @@ export function createSplashController(options: SplashControllerOptions): Splash
     return providers;
   }
 
-  /** After a "none" hint the gate is open; play what the Gateway still lists, unless a preview runs. */
-  async function confirmWithGateway(): Promise<void> {
+  /** After a "none" hint, ask the Gateway once so a splash installed meanwhile is expected next time. */
+  async function refreshHint(): Promise<void> {
     if (!(await waitConnected(SPLASH_TIMEOUTS.connectUnknown)) || disposed) return;
-    const providers = await askProviders();
-    if (!providers.length) return;
-    try {
-      for (const provider of providers) {
-        if (disposed || state.phase !== 'open') return;
-        await play(provider);
-        if (!disposed) set({ phase: 'open', provider: null, instanceKey: null });
-      }
-    } finally {
-      if (!disposed && state.phase !== 'open') set({ phase: 'open', provider: null, instanceKey: null });
-    }
+    await askProviders();
   }
 
   async function preview(provider: SplashProvider): Promise<boolean> {

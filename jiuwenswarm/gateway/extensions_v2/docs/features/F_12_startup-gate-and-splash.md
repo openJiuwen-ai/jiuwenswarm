@@ -85,6 +85,10 @@ Electron 主进程生成的标识覆盖一次启动内的所有窗口；完成�
 记录没有保留的意义，因此未采用。回归用例 `each browser tab keeps its own splash completion through reloads` 在修复前失败、修复后通过；
 `desktop windows of one start share the completion and a new start plays again` 修复前后都通过，确认桌面端语义不变。
 
+2026-11-07 第三轮修订（检视收敛，用户批准）：提示为“无候选”时，门控开放后不再补播开场。原先连接后向 Gateway 复核，
+列表非空就依次播放，会在用户已经开始操作时盖上开场。现在复核结果只更新首帧提示，下次启动据此显示中性层并等待；
+提示已按 Gateway 的规则计算，两者只会在提示与连接之间恰好安装了开场插件时不一致。
+
 #### D-05 门控期间的输入与登录入口
 
 门控期间 `#root` 设为 `inert`，开场层挂在 `#root` 之外；登录入口的模态对话框推迟到门控开放后再显示，
