@@ -204,10 +204,10 @@ def build_subagent_authorization_rails(
     不完整则整体回退 legacy 路径）。委托下发 sender 走移植版默认实现
     （``build_context_approval_sender``，发送时取父 session ContextVar）。
 
-    ``engine`` 保留兼容，已忽略；门禁与工具裁决走 ``permission_key`` /
-    ``get_permission_manager``（使用已发布的会话/Skill key）。
+    ``engine`` 保留兼容，已忽略；工具裁决走父已登记 ``permission_key`` +
+    临时 config 合成（``SubagentPermissionRail``），ASK 委托父会话。
     """
-    del engine  # call-site compat; adjudication uses permission_key / manager
+    del engine  # call-site compat; adjudication uses permission_key / temp config
     scope = str(agent_scope_id or "").strip()
     main_session_id = str(session_id or "").strip()
     if not scope or not main_session_id:
@@ -257,28 +257,14 @@ def build_subagent_authorization_rails(
         if permission_key:
             # 无会话 Manager key：Skill 门禁读用户级 key。
             gate_rail.set_permission_key_resolver(lambda _ctx: permission_key)
-        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
-            SkillAuthorizationPermissionRail,
-        )
-
-        # 子 Agent 工具判定委托此 rail，Skill 临时 config 只在其 _check_tool_permission 生成。
-        base_cfg = effective_config_provider()
-        if not isinstance(base_cfg, dict):
-            base_cfg = {}
-        tool_check_rail = SkillAuthorizationPermissionRail(
-            config=base_cfg,
-            permission_key=permission_key,
-        )
-        tool_check_rail.set_skill_scope_resolver(
-            lambda _ctx: (main_session_id, scope)
-        )
+        # Check 复用父已登记的 permission_key + 临时 config 合成；ASK 委托父会话。
+        # 不再嵌套构造会登记 Manager key 的主 Agent 权限 rail。
         permission_rail = SubagentPermissionRail(
             agent_scope_id=scope,
             session_id=main_session_id,
             permission_key=permission_key,
             workspace_root=workspace_root,
             config_provider=effective_config_provider,
-            tool_check_rail=tool_check_rail,
         )
         from openjiuwen.harness.security.skill_authorization import (
             get_skill_grant_store,
