@@ -95,6 +95,16 @@ class AgentPreCreateError(ValueError):
     """Creator failed before any sandbox creation; safe to retry."""
 
 
+class AgentRebuildPending(ValueError):
+    """Rebuild is still being reconciled by the router."""
+
+    retry_after_seconds = 5
+
+
+class AgentCreateInterrupted(asyncio.CancelledError):
+    """The router can resume creation from its retained lifecycle state."""
+
+
 @dataclass
 class AgentRuntime:
     """In-process agent record: business info plus create-wait signaling."""
@@ -107,6 +117,7 @@ class AgentRuntime:
     # starts once it drops back to zero.
     task_count: int = 0
     last_active_at: float = field(default_factory=time.time)
+    rebuild_pending: str | None = None
 
     def touch(self) -> None:
         self.last_active_at = time.time()
@@ -447,6 +458,8 @@ class AgentManager:
                 raise AgentDeleted(f"AGENT_DELETED: {key_desc}")
             if runtime.is_failed():
                 raise AgentCreateFailed(self._failed_message(runtime, key_desc))
+            if runtime.rebuild_pending is not None:
+                raise AgentRebuildPending(runtime.rebuild_pending)
 
     async def get_agent(
         self,
@@ -472,6 +485,27 @@ class AgentManager:
                 self._acquire_locked(runtime)
             return runtime.snapshot()
 
+    async def wait_for_creation(
+        self, user_id: str, agent_type: str, *, expected_agent_id: str,
+        key_values: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Wait for this exact creation to settle before explicit deletion."""
+        key = self._make_key(user_id, agent_type, key_values=key_values)
+        async with self._runtimes_lock:
+            runtime = self._runtimes.get(key)
+            if runtime is None or runtime.info.agent_id != expected_agent_id:
+                return False
+            if not runtime.is_creating():
+                return True
+            event = runtime.creating_event
+        try:
+            await asyncio.wait_for(
+                event.wait(), timeout=self._creating_timeout_seconds,
+            )
+        except TimeoutError:
+            return False
+        return True
+
     async def delete_agent(
         self,
         user_id: str,
@@ -479,28 +513,68 @@ class AgentManager:
         *,
         key_values: Mapping[str, Any] | None = None,
     ) -> None:
+        await self.pop_agent(user_id, agent_type, key_values=key_values)
+
+    async def is_current(self, runtime: AgentRuntime) -> bool:
+        """Check that a snapshot still identifies the READY runtime for its key."""
+        async with self._runtimes_lock:
+            current = self._runtimes.get(runtime.key)
+            return bool(
+                current is not None
+                and current.is_ready()
+                and current.info.agent_id == runtime.info.agent_id
+            )
+
+    def _shared_sandbox_runtimes_locked(
+        self, key: AgentKey, runtime: AgentRuntime, include_shared_sandbox: bool,
+    ) -> list[tuple[AgentKey, AgentRuntime]]:
+        sandbox_id = runtime.info.sandbox_id
+        if not include_shared_sandbox or not sandbox_id or "session_id" not in self._key_fields:
+            return [(key, runtime)]
+        return [
+            (other_key, other)
+            for other_key, other in self._runtimes.items()
+            if other.info.sandbox_id == sandbox_id
+        ]
+
+    async def pop_agent(
+        self,
+        user_id: str,
+        agent_type: str,
+        *,
+        key_values: Mapping[str, Any] | None = None,
+        expected_agent_id: str | None = None,
+        include_shared_sandbox: bool = False,
+    ) -> AgentRuntime | None:
+        """Detach and return a deleted snapshot if the generation still matches."""
         key = self._make_key(user_id, agent_type, key_values=key_values)
         async with self._runtimes_lock:
-            runtime = self._runtimes.pop(key, None)
-        if runtime is not None:
-            runtime.mark_deleted()
-
-    async def discard_failed(self, user_id: str, agent_type: str) -> None:
-        """Allow a fresh lookup while waiters retain the failed create result."""
-        key = self._make_key(user_id, agent_type)
-        async with self._runtimes_lock:
             runtime = self._runtimes.get(key)
-            if runtime is not None and runtime.is_failed():
-                self._runtimes.pop(key)
+            if runtime is None or (
+                expected_agent_id is not None
+                and runtime.info.agent_id != expected_agent_id
+            ):
+                return None
+            for other_key, other in self._shared_sandbox_runtimes_locked(
+                key, runtime, include_shared_sandbox,
+            ):
+                self._runtimes.pop(other_key)
+                other.mark_deleted()
+            return runtime.snapshot()
 
-    async def release(self, key: AgentKey) -> None:
+    async def release(
+        self, key: AgentKey, *, expected_agent_id: str | None = None
+    ) -> None:
         """Drop one task holding acquired via ``get_or_create_agent`` / ``get_agent``.
 
         No-op when the runtime is already gone (e.g. explicitly deleted).
         """
         async with self._runtimes_lock:
             runtime = self._runtimes.get(key)
-            if runtime is None:
+            if runtime is None or (
+                expected_agent_id is not None
+                and runtime.info.agent_id != expected_agent_id
+            ):
                 return
             runtime.task_count = max(0, runtime.task_count - 1)
             runtime.touch()
@@ -509,6 +583,8 @@ class AgentManager:
         self,
         key: AgentKey,
         idle_timeout_seconds: float,
+        *,
+        include_shared_sandbox: bool = False,
     ) -> AgentRuntime | None:
         """Atomically remove a READY runtime idle beyond the timeout.
 
@@ -522,15 +598,33 @@ class AgentManager:
             return None
         async with self._runtimes_lock:
             runtime = self._runtimes.get(key)
-            if runtime is None or not runtime.is_ready():
+            if runtime is None:
                 return None
-            if runtime.task_count > 0:
+            if include_shared_sandbox and "session_id" in self._key_fields:
+                user_index = self._key_fields.index("user_id")
+                type_index = self._key_fields.index("agent_type")
+                if any(
+                    other_key != key
+                    and other_key[user_index] == key[user_index]
+                    and other_key[type_index] == key[type_index]
+                    and other.is_creating()
+                    for other_key, other in self._runtimes.items()
+                ):
+                    return None
+            candidates = self._shared_sandbox_runtimes_locked(
+                key, runtime, include_shared_sandbox,
+            )
+            now = time.time()
+            if any(
+                not other.is_ready() or other.task_count > 0
+                or now - other.last_active_at < timeout
+                for _, other in candidates
+            ):
                 return None
-            if time.time() - runtime.last_active_at < timeout:
-                return None
-            self._runtimes.pop(key, None)
-        runtime.mark_deleted()
-        return runtime.snapshot()
+            for other_key, other in candidates:
+                self._runtimes.pop(other_key)
+                other.mark_deleted()
+            return runtime.snapshot()
 
     async def list_keys(self) -> list[AgentKey]:
         async with self._runtimes_lock:
@@ -583,18 +677,14 @@ class AgentManager:
         key: AgentKey,
         *,
         owner_runtime: AgentRuntime,
+        rebuild_pending: str | None = None,
     ) -> None:
-        """丢弃创建前失败的内存 runtime，让下一次请求重新走 owner 路径重试。
-
-        与 ``mark_failed`` 不同：pre-create 失败发生在 YuanRong ``create`` 之前，
-        不存在“可能已建了一半沙箱”的双创建风险。此时若缓存为 FAILED，瞬时错误
-        （如 workspace 目录未就绪）会被永久钉死，故直接移除 runtime，并唤醒等待者
-        使其重新参与 single-flight 创建。
-        """
+        """Allow a later request to resume without repeating this request in waiters."""
         async with self._runtimes_lock:
             if self._runtimes.get(key) is not owner_runtime:
                 return
             self._runtimes.pop(key, None)
+            owner_runtime.rebuild_pending = rebuild_pending
             owner_runtime.creating_event.set()
 
     async def _run_creator(
@@ -627,6 +717,12 @@ class AgentManager:
                 if acquire:
                     self._acquire_locked(owner_runtime)
                 return owner_runtime.snapshot()
+        except AgentCreateInterrupted:
+            await self._discard_precreate_failure(
+                key, owner_runtime=owner_runtime,
+                rebuild_pending="AGENT_REBUILD_PENDING: creation was interrupted",
+            )
+            raise
         except asyncio.CancelledError as exc:
             await self._mark_creator_failed(
                 key, exc, owner_runtime=owner_runtime
@@ -634,11 +730,10 @@ class AgentManager:
             raise
         except AgentDeleted:
             raise
-        except AgentPreCreateError:
-            # 沙箱创建前失败（如 workspace 校验）：尚未调用 YuanRong create，
-            # 不存在“半创建”沙箱，直接丢弃内存 runtime 让下一次请求重试。
+        except (AgentPreCreateError, AgentRebuildPending) as exc:
             await self._discard_precreate_failure(
-                key, owner_runtime=owner_runtime
+                key, owner_runtime=owner_runtime,
+                rebuild_pending=str(exc) if isinstance(exc, AgentRebuildPending) else None,
             )
             raise
         except Exception as exc:

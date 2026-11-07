@@ -17,7 +17,8 @@ deleted ``instance_id``, not an unconditional ``service_id`` delete.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
@@ -41,6 +42,8 @@ async def cleanup_stale_sandboxes(
     registry: RegistryClient,
     agent_manager: AgentManager,
     is_closed: Callable[[], bool] | None = None,
+    sandbox_guard: Callable[[InstanceRecord], AbstractAsyncContextManager[Callable[[], Awaitable[bool]] | None]]
+    | None = None,
 ) -> int:
     """List registry instances and best-effort destroy each leftover sandbox.
 
@@ -66,12 +69,14 @@ async def cleanup_stale_sandboxes(
         if is_closed is not None and is_closed():
             break
         try:
-            await _cleanup_one(
-                record,
-                yuanrong=yuanrong,
-                registry=registry,
-                agent_manager=agent_manager,
-            )
+            async with sandbox_guard(record) if sandbox_guard is not None else nullcontext(None) as retire:
+                await _cleanup_one(
+                    record,
+                    yuanrong=yuanrong,
+                    registry=registry,
+                    agent_manager=agent_manager,
+                    retire=retire,
+                )
         except Exception:  # noqa: BLE001 - one bad row must not abort the rest
             logger.exception(
                 "[AgentOS] sandbox.cleanup.record.fail service_id=%s",
@@ -87,13 +92,16 @@ async def _cleanup_one(
     yuanrong: YuanrongFrontendAgentClient,
     registry: RegistryClient,
     agent_manager: AgentManager,
+    retire: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     with trace_operation("gw.agent.sweep", root=True, attributes={
         "source": "startup.sweep", "instance_id": str(record.instance_id or ""),
         "service_id": str(record.service_id or ""), "user_id": record.user,
         "agent_type": record.framework,
     }) as operation, bind_cleanup_trace(operation):
-        await _cleanup_one_impl(record, yuanrong=yuanrong, registry=registry, agent_manager=agent_manager)
+        await _cleanup_one_impl(
+            record, yuanrong=yuanrong, registry=registry, agent_manager=agent_manager, retire=retire,
+        )
 
 
 async def _cleanup_one_impl(
@@ -102,6 +110,7 @@ async def _cleanup_one_impl(
     yuanrong: YuanrongFrontendAgentClient,
     registry: RegistryClient,
     agent_manager: AgentManager,
+    retire: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     live_sandboxes = await _live_sandbox_ids(agent_manager)
     instance_id = str(record.instance_id or "").strip()
@@ -110,7 +119,12 @@ async def _cleanup_one_impl(
     if instance_id and instance_id not in live_sandboxes:
         sandbox_is_live = False
         try:
-            await yuanrong.delete_sandbox(instance_id)
+            if retire is None:
+                await yuanrong.delete_sandbox(instance_id)
+            elif not await retire():
+                record_cleanup_result("frontend.delete", "skipped", reason="lifecycle_in_progress")
+                record_cleanup_result("registry.unregister", "skipped", reason="lifecycle_in_progress")
+                return
             if get_cleanup_result("frontend.delete") is None:
                 record_cleanup_result("frontend.delete", "incomplete", reason="delete_result_unconfirmed")
             log_agentos(

@@ -1,8 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
+import asyncio
 import io
 import json
 import logging
+import socket
+import traceback
 import urllib.error
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -12,22 +15,31 @@ import pytest
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions import yuanrong_frontend_client as yuanrong_mod
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
+    AGENT_GENERATION_ENV,
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
     TRACE_ID_HEADER,
     RuntimeProbeSettings,
     YuanrongAgentApiError,
+    YuanrongAgentCreateUncertainError,
+    YuanrongAgentDeleteRejectedError,
+    YuanrongAgentFailedError,
     YuanrongAgentFileError,
+    YuanrongAgentGenerationMismatchError,
+    YuanrongAgentNotFoundError,
+    YuanrongAgentNotVisibleError,
+    YuanrongAgentRequestNotSentError,
     YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
     _is_agent_running,
     _merge_agent_instance_payload,
     apply_trace_header,
-    extract_trace_id,
-    normalize_trace_id,
     bind_southbound_trace_id,
     clear_southbound_trace_id,
     current_southbound_trace_id,
+    deterministic_agent_instance_id,
+    extract_trace_id,
+    normalize_trace_id,
 )
 
 
@@ -409,7 +421,7 @@ async def test_delete_sandbox_treats_404_as_success(client: YuanrongFrontendAgen
     await client.connect("http://127.0.0.1:8080")
     client._do_agent_delete = lambda instance_id, trace_id=None: (  # noqa: ARG005
         404,
-        '{"code":404,"message":"not found"}',
+        '{"code":404,"message":"instance not found or not running"}',
     )
     await client.delete_sandbox("already-gone")
 
@@ -563,7 +575,7 @@ async def test_delete_sandbox_treats_404_as_success(client: YuanrongFrontendAgen
             404,
             "Not Found",
             None,
-            io.BytesIO(b'{"code":404,"message":"instance not found"}'),
+            io.BytesIO(b'{"code":404,"message":"instance not found or not running"}'),
         )
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
@@ -601,7 +613,7 @@ async def test_create_sandbox_raises_on_agent_api_error(client: YuanrongFrontend
         return resp
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        with pytest.raises(YuanrongAgentApiError, match="agent API failed"):
+        with pytest.raises(YuanrongAgentCreateUncertainError, match="uncertain"):
             await client.create_sandbox(
                 namespace="dev",
                 name="agent-001",
@@ -1181,3 +1193,313 @@ async def test_mkdir_agent_dir_rejects_nul_path(client: YuanrongFrontendAgentCli
     with pytest.raises(YuanrongAgentFileError) as exc:
         await client.mkdir_agent_dir("inst-1", "/home/agentos/foo\x00bar")
     assert exc.value.error_code == "BAD_REQUEST"
+
+
+def _generation_client():
+    result = YuanrongFrontendAgentClient(
+        frontend_endpoint="http://localhost", function_version_urn="test",
+        wait_running_timeout_s=0.25, wait_running_interval_s=0.001,
+    )
+    result._connected = True
+    return result
+
+
+async def test_get_only_classifies_explicit_instance_absence(monkeypatch):
+    c = _generation_client()
+    monkeypatch.setattr(c, "_do_agent_get", lambda *args: (
+        404, json.dumps({"code": 404, "message": "instance not found or not running"})
+    ))
+    with pytest.raises(YuanrongAgentNotFoundError):
+        await c.get_agent_info("instance")
+    for status, body in [(404, '{"code":404,"message":"Not Found"}'),
+                         (200, '{"code":404,"message":"instance not found or not running"}')]:
+        monkeypatch.setattr(c, "_do_agent_get", lambda *args: (status, body))
+        with pytest.raises(YuanrongAgentApiError) as exc:
+            await c.get_agent_info("instance")
+        assert not isinstance(exc.value, YuanrongAgentNotFoundError)
+
+
+async def test_wait_rejects_stale_generation_and_accepts_matching(monkeypatch):
+    c = _generation_client()
+    async def get(*args, **kwargs):
+        return {"status": "running", "env_vars": {AGENT_GENERATION_ENV: "old"}}
+    monkeypatch.setattr(c, "get_agent_info", get)
+    with pytest.raises(YuanrongAgentGenerationMismatchError):
+        await c.wait_until_running("instance", expected_generation="new")
+    states = iter(["starting", "running"])
+
+    async def current(*args, **kwargs):
+        return {"status": next(states), "env_vars": {AGENT_GENERATION_ENV: "new"}}
+
+    monkeypatch.setattr(c, "get_agent_info", current)
+    assert (await c.wait_until_running("instance", expected_generation="new"))["status"] == "running"
+
+
+async def test_wait_missing_marker_does_not_accept_running_or_fail_old_instance(monkeypatch):
+    c = _generation_client()
+    for status in ("running", "failed"):
+        async def get(*args, **kwargs):
+            return {"status": status}
+        monkeypatch.setattr(c, "get_agent_info", get)
+        with pytest.raises(YuanrongAgentTimeoutError):
+            await c.wait_until_running("instance", expected_generation="new")
+    async def failed(*args, **kwargs):
+        return {"status": "failed", "env_vars": {AGENT_GENERATION_ENV: "new"}}
+    monkeypatch.setattr(c, "get_agent_info", failed)
+    with pytest.raises(YuanrongAgentFailedError):
+        await c.wait_until_running("instance", expected_generation="new")
+
+
+async def test_wait_polls_absence_and_limits_slow_get(monkeypatch):
+    c = _generation_client()
+    calls = 0
+    async def get(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise YuanrongAgentNotFoundError("not found")
+        return {"status": "running", "env_vars": {AGENT_GENERATION_ENV: "new"}}
+    monkeypatch.setattr(c, "get_agent_info", get)
+    await c.wait_until_running("instance", expected_generation="new")
+    assert calls == 2
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(1)
+    monkeypatch.setattr(c, "get_agent_info", slow)
+    with pytest.raises(YuanrongAgentTimeoutError):
+        await c.wait_until_running("instance", expected_generation="new", deadline=asyncio.get_running_loop().time() + 0.01)
+
+
+def test_deterministic_instance_id_utf8_and_normalization():
+    assert deterministic_agent_instance_id("default", "gw65-5c4c086ddc0c") == "85d85250-7d57-5686-a2b3-1f80cfe9acad"
+    assert deterministic_agent_instance_id("default", "gw65-6ece3f6090df") == "f6017c47-1930-548b-acf1-43346e8e21d4"
+    assert deterministic_agent_instance_id(" default ", " alice+jiuwenswarm ") == "d8659379-65fa-5586-a468-c343708d1120"
+    assert deterministic_agent_instance_id("\u547d\u540d\u7a7a\u95f4", "\u7528\u6237+agent") == "2840a28f-b0cd-554f-917f-b88264742e6e"
+    with pytest.raises(ValueError):
+        deterministic_agent_instance_id(" ", "agent")
+
+
+async def test_guarded_wait_distinguishes_only_continuous_explicit_absence(monkeypatch):
+    c = _generation_client()
+    async def absent(*args, **kwargs):
+        raise YuanrongAgentNotFoundError("not found")
+    monkeypatch.setattr(c, "get_agent_info", absent)
+    with pytest.raises(YuanrongAgentNotVisibleError):
+        await c.wait_until_running("instance", expected_generation="new")
+    # Legacy unguarded wait keeps its prior error classification.
+    with pytest.raises(YuanrongAgentApiError) as exc:
+        await c.wait_until_running("instance")
+    assert not isinstance(exc.value, YuanrongAgentNotVisibleError)
+
+    calls = 0
+    async def present_then_absent(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"status": "starting"}
+        raise YuanrongAgentNotFoundError("not found")
+    monkeypatch.setattr(c, "get_agent_info", present_then_absent)
+    with pytest.raises(YuanrongAgentTimeoutError) as exc:
+        await c.wait_until_running("instance", expected_generation="new")
+    assert calls > 1
+    assert not isinstance(exc.value, YuanrongAgentNotVisibleError)
+
+    calls = 0
+    async def absent_then_slow(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise YuanrongAgentNotFoundError("not found")
+        await asyncio.sleep(1)
+    monkeypatch.setattr(c, "get_agent_info", absent_then_slow)
+    with pytest.raises(YuanrongAgentTimeoutError) as exc:
+        await c.wait_until_running("instance", expected_generation="new")
+    assert calls == 2
+    assert not isinstance(exc.value, YuanrongAgentNotVisibleError)
+
+    with pytest.raises(YuanrongAgentTimeoutError) as exc:
+        await c.wait_until_running("instance", expected_generation="new", deadline=asyncio.get_running_loop().time())
+    assert not isinstance(exc.value, YuanrongAgentNotVisibleError)
+
+
+@pytest.mark.parametrize("status,body", [
+    (408, "sensitive timeout body"),
+    (502, "sensitive server body"),
+    (200, "sensitive malformed body"),
+    (200, '{"code":200,"instance_id":""}'),
+    (200, '{"code":200,"instance_id":123}'),
+    (200, '{"code":500,"message":"sensitive server body"}'),
+])
+async def test_create_response_uncertain_without_leaking_body(monkeypatch, status, body):
+    c = _generation_client()
+    monkeypatch.setattr(c, "_do_agent_create", lambda *args: (status, body))
+    with pytest.raises(YuanrongAgentCreateUncertainError) as exc:
+        await c.create_sandbox(namespace="default", name="agent", workspace="/tmp",
+                               runtime_spec={"runtime": "docker", "rootfs": {"imageurl": "image"}})
+    assert "sensitive" not in "".join(traceback.format_exception(exc.value))
+
+
+async def test_create_client_error_remains_definitive(monkeypatch):
+    c = _generation_client()
+    monkeypatch.setattr(c, "_do_agent_create", lambda *args: (400, '{"code":400,"message":"bad request"}'))
+    with pytest.raises(YuanrongAgentApiError) as exc:
+        await c.create_sandbox(namespace="default", name="agent", workspace="/tmp",
+                               runtime_spec={"runtime": "docker", "rootfs": {"imageurl": "image"}})
+    assert not isinstance(exc.value, (YuanrongAgentCreateUncertainError, YuanrongAgentTimeoutError))
+
+
+async def test_create_error_with_unreadable_body_remains_uncertain(monkeypatch):
+    c = _generation_client()
+
+    def fail(request, **kwargs):
+        class BrokenBody(io.BytesIO):
+            def read(self, *args):
+                raise TimeoutError("reading the error body timed out")
+
+        raise urllib.error.HTTPError(request.full_url, 502, "bad gateway", {}, BrokenBody())
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(YuanrongAgentCreateUncertainError):
+        await c.create_sandbox(namespace="default", name="agent", workspace="/tmp",
+                               runtime_spec={"runtime": "docker", "rootfs": {"imageurl": "image"}})
+
+
+@pytest.mark.parametrize("reason", [ConnectionRefusedError(10061, "refused"), socket.gaierror(-2, "name not found")])
+@pytest.mark.parametrize("method", ["create", "delete"])
+async def test_write_connection_setup_failure_is_not_sent(monkeypatch, reason, method):
+    c = _generation_client()
+    def fail(*args, **kwargs):
+        raise urllib.error.URLError(reason)
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(YuanrongAgentRequestNotSentError):
+        if method == "create":
+            c._do_agent_create({}, "trace")
+        else:
+            await c.delete_sandbox("instance")
+
+
+@pytest.mark.parametrize("method", ["create", "delete"])
+@pytest.mark.parametrize("reason, expected", [
+    (TimeoutError("timed out"), YuanrongAgentTimeoutError),
+    (ConnectionResetError("reset"), YuanrongAgentApiError),
+])
+async def test_write_ambiguous_transport_failure_is_not_not_sent(monkeypatch, method, reason, expected):
+    c = _generation_client()
+    def fail(*args, **kwargs):
+        raise urllib.error.URLError(reason)
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(expected) as exc:
+        if method == "create":
+            await c.create_sandbox(name="test", namespace="test", workspace="/tmp", runtime_spec={"runtime": "docker", "rootfs": {"imageurl": "image"}})
+        else:
+            await c.delete_sandbox("instance")
+    assert not isinstance(exc.value, YuanrongAgentRequestNotSentError)
+
+
+@pytest.mark.parametrize("status,body", [
+    (400, '{"code":400,"message":"bad request"}'),
+    (403, '{"code":403}'),
+    (404, '{"code":404,"message":"Not Found"}'),
+    (404, '<html>Not Found</html>'),
+    (404, '{"code":404,"message":"instance not found: other"}'),
+])
+async def test_delete_rejects_http_4xx_including_route_404(monkeypatch, status, body):
+    c = _generation_client()
+    monkeypatch.setattr(c, "_do_agent_delete", lambda *args: (status, body))
+    with pytest.raises(YuanrongAgentDeleteRejectedError):
+        await c.delete_sandbox("instance")
+
+
+async def test_delete_confirms_only_explicit_instance_absence(monkeypatch):
+    c = _generation_client()
+    monkeypatch.setattr(c, "_do_agent_delete", lambda *args: (
+        404, '{"code":"404","message":"instance not found or not running"}'
+    ))
+    await c.delete_sandbox("instance")
+    monkeypatch.setattr(c, "_do_agent_delete", lambda *args: (
+        404, '{"code":404,"message":"instance not found: instance"}'
+    ))
+    await c.delete_sandbox("instance")
+
+
+@pytest.mark.parametrize("status", [408, 503])
+async def test_delete_timeout_or_server_error_does_not_confirm_rejection(monkeypatch, status):
+    c = _generation_client()
+    monkeypatch.setattr(c, "_do_agent_delete", lambda *args: (status, f'{{"code":{status}}}'))
+    with pytest.raises(YuanrongAgentApiError) as exc:
+        await c.delete_sandbox("instance")
+    assert not isinstance(exc.value, (YuanrongAgentDeleteRejectedError, YuanrongAgentRequestNotSentError))
+
+
+async def test_failure_reading_response_is_not_classified_as_not_sent(monkeypatch):
+    c = _generation_client()
+    class Response:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self):
+            raise urllib.error.URLError(ConnectionRefusedError("read failure"))
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: Response())
+    with pytest.raises(YuanrongAgentApiError) as exc:
+        await c.delete_sandbox("instance")
+    assert not isinstance(exc.value, YuanrongAgentRequestNotSentError)
+
+
+async def test_get_and_delete_share_case_insensitive_absence_handling(monkeypatch):
+    c = _generation_client()
+    for message in (
+        "instance not found: instance",
+        "Instance not found or not running",
+    ):
+        monkeypatch.setattr(c, "_do_agent_get", lambda *args, m=message: (
+            404, json.dumps({"code": 404, "message": m}),
+        ))
+        with pytest.raises(YuanrongAgentNotFoundError):
+            await c.get_agent_info("instance")
+    monkeypatch.setattr(c, "_do_agent_delete", lambda *args: (
+        404, '{"code":404,"message":"Instance not found or not running"}'
+    ))
+    await c.delete_sandbox("instance")
+
+
+async def test_top_level_env_vars_are_promoted_for_generation_wait(monkeypatch):
+    c = _generation_client()
+    merged = _merge_agent_instance_payload({
+        "instance": {"status": "running"},
+        "env_vars": {AGENT_GENERATION_ENV: "generation-1"},
+    })
+    assert merged["env_vars"] == {AGENT_GENERATION_ENV: "generation-1"}
+
+    async def get(*args, **kwargs):
+        return merged
+
+    monkeypatch.setattr(c, "get_agent_info", get)
+    assert (await c.wait_until_running(
+        "instance", expected_generation="generation-1",
+    ))["status"] == "running"
+
+
+@pytest.mark.parametrize("status", [408, 503])
+async def test_delete_timeout_or_server_error_does_not_confirm_rejection(monkeypatch, status):
+    c = _generation_client()
+    monkeypatch.setattr(c, "_do_agent_delete", lambda *args: (status, f'{{"code":{status}}}'))
+    with pytest.raises(YuanrongAgentApiError) as exc:
+        await c.delete_sandbox("instance")
+    assert not isinstance(exc.value, (YuanrongAgentDeleteRejectedError, YuanrongAgentRequestNotSentError))
+
+
+async def test_failure_reading_response_is_not_classified_as_not_sent(monkeypatch):
+    c = _generation_client()
+    class Response:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self):
+            raise urllib.error.URLError(ConnectionRefusedError("read failure"))
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: Response())
+    with pytest.raises(YuanrongAgentApiError) as exc:
+        await c.delete_sandbox("instance")
+    assert not isinstance(exc.value, YuanrongAgentRequestNotSentError)

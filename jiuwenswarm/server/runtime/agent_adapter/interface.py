@@ -229,21 +229,26 @@ def restore_chat_send_equipment_params(
     return params
 
 
-def _permission_card_ids_from_answers(answers: list[dict]) -> list[str]:
-    """Normalize the single opaque permission-card locator."""
+def _validate_permission_card_alias(request_id: str, answers: list[dict]) -> None:
+    """Validate the deprecated alias without allowing it to select a target."""
 
-    if len(answers) != 1:
-        return []
-    answer = answers[0]
-    if not isinstance(answer, dict):
-        return []
-    raw_card_id = answer.get("card_id")
-    if not isinstance(raw_card_id, str):
-        return []
-    card_id = raw_card_id.strip()
-    if not card_id or len(card_id) > 128:
-        return []
-    return [card_id]
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+        RootPermissionQueueError,
+    )
+
+    for answer in answers:
+        if not isinstance(answer, dict) or "card_id" not in answer:
+            continue
+        if len(answers) != 1:
+            raise RootPermissionQueueError("permission_queue_one_answer_required")
+        raw_card_id = answer["card_id"]
+        if not isinstance(raw_card_id, str):
+            raise RootPermissionQueueError("permission_card_alias_invalid")
+        card_id = raw_card_id.strip()
+        if not card_id or len(card_id) > 512:
+            raise RootPermissionQueueError("permission_card_alias_invalid")
+        if card_id != request_id:
+            raise RootPermissionQueueError("permission_card_alias_conflict")
 
 
 def _history_user_content(params: Any, query: Any) -> Any:
@@ -2095,20 +2100,9 @@ class JiuWenSwarm:
             )
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": f"未知选项: {value}"}
 
-        card_ids = (
-            _permission_card_ids_from_answers(answers)
-            if source == "permission_interrupt" else []
-        )
-        if not card_ids:
-            interactive_input.update(request_id, confirm_payload)
-            return interactive_input
-        interactive_input.update(card_ids[0], confirm_payload)
-        logger.info(
-            "[JiuWenSwarm] PermissionRail card InteractiveInput.update: "
-            "request_id=%s card_id=%s",
-            request_id,
-            card_ids[0],
-        )
+        if source == "permission_interrupt":
+            _validate_permission_card_alias(request_id, answers)
+        interactive_input.update(request_id, confirm_payload)
         return interactive_input
 
     async def _handle_skilldev_request(self, request: AgentRequest) -> AgentResponse | None:

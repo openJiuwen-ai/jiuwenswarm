@@ -3277,10 +3277,15 @@ async def _run(
                                 user_id, agent_type, protocol, acquire=True
                             )
 
+                        token_resolver = getattr(agent_server_ext, "acquire_web_endpoint", None)
+
                         web_channel.web_proxy_enabled = wp_config.enabled
                         web_channel.web_proxy_auth_enabled = wp_config.auth_enabled
                         web_channel.web_proxy_config = wp_config
-                        web_channel.web_resolver = _held_web_resolver
+                        web_channel.web_resolver = (
+                            token_resolver if callable(token_resolver)
+                            else _held_web_resolver
+                        )
                         web_channel.web_runtime_release = (
                             web_release if callable(web_release) else None
                         )

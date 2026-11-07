@@ -1729,7 +1729,9 @@ def _format_question_from_interaction(
     }
     if source == "permission_interrupt":
         if invocation_record is not None:
-            question_data["card_id"] = invocation_record.key.invocation_id
+            # Deprecated compatibility alias; use request_id for new identity logic.
+            # Existing clients must echo this value until the alias is retired.
+            question_data["card_id"] = invocation_record.key.tool_call_id
         if reviewer_metadata:
             question_data["reviewer_metadata"] = reviewer_metadata
         if isinstance(tool_args, dict):

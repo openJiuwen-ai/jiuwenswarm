@@ -72,6 +72,7 @@ async def test_gateway_startup_sweep_tracing_is_configured_before_connect(monkey
     exporter = InMemorySpanExporter()
     router = object.__new__(AgentOSRouterClient)
     router._closed = True
+    router._sandbox_lifecycles = {}
     router._stale_cleanup_task = None
     router._ensure_idle_reaper_task = Mock()
     router._agent_manager = SimpleNamespace(list_all_agents=AsyncMock(return_value=[]))
