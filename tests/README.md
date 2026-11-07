@@ -117,3 +117,21 @@ pytest --cov=jiuwenswarm --cov-report=html
 open htmlcov/index.html  # macOS
 xdg-open htmlcov/index.html  # Linux
 ```
+
+---
+
+## 🧪 前端 Node 测试
+
+仓库级前端测试位于 `tests/frontend/`，基于 Node 内置测试运行器，与 pytest 无关：
+
+```bash
+# 首次运行前需安装 web 前端依赖（测试内部调用 esbuild 编译被测模块）
+cd jiuwenswarm/channels/web/frontend
+npm ci
+cd ../../../..   # 回到仓库根目录
+
+# 运行
+node --test tests/frontend/permission_card_presentation.test.mjs
+```
+
+按功能组织的前端测试（`test:*` 脚本）位于 `jiuwenswarm/channels/web/frontend/`，详见该目录的 `package.json` 与 README。
