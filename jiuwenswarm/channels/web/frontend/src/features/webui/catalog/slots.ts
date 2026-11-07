@@ -13,7 +13,9 @@ export const webUISlots: readonly WebUISlotRule[] = [
   { id: 'application.entry', display: 'single', scope: 'application' },
   { id: 'application.sidebar.footer', display: 'single', scope: 'application' },
   // Gateway-only full-window layer below the workspace.
-  { id: 'application.background', display: 'single', scope: 'application', rootComponents: ['MediaSurface'], strictRoot: true },
+  // A background keeps running between frames: dim or blur updates must not reload its page.
+  { id: 'application.background', display: 'single', scope: 'application', rootComponents: ['MediaSurface'], strictRoot: true,
+    rerender: 'keep-mounted' },
   // Gateway-only startup layer above the workspace, played by the splash gate.
   { id: 'application.splash', display: 'single', scope: 'application', rootComponents: ['MediaSurface'], strictRoot: true },
   { id: 'conversation.session.content.after', display: 'list' },

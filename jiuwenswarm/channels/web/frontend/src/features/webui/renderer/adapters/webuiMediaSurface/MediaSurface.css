@@ -19,6 +19,14 @@
   border: 0;
 }
 
+/* Blur filters the media behind this layer, so the media keeps its size and edges stay opaque. */
+.webui-media-surface__blur {
+  position: absolute;
+  inset: 0;
+  -webkit-backdrop-filter: blur(var(--webui-media-surface-blur));
+  backdrop-filter: blur(var(--webui-media-surface-blur));
+}
+
 /* Dimming darkens the media in both themes; it is not a theme surface. */
 .webui-media-surface__dim {
   position: absolute;

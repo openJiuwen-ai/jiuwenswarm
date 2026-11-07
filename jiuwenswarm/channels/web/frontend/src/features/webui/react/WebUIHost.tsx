@@ -35,11 +35,6 @@ export interface WebUIHostProps {
   /** Component styles supplied by the mounting UI, separate from plugin schema props. */
   styles?: WebUIStyleOverrides;
   selectedTarget?: WebUINormalizedTarget | null;
-  /**
-   * 新帧到达时保留已挂载的组件，只更新属性。默认每个合法帧整树重建，使 defaultValue 等非受控属性生效；
-   * 只给组件自行按身份管理状态的宿主使用，例如应用背景的 MediaSurface 按 src 保留正在运行的页面（Gateway S_07）。
-   */
-  keepMountedAcrossFrames?: boolean;
   /** 测试或特殊宿主的注入点；生产环境由 WebUIProvider 提供。 */
   runtime?: WebUIRuntime;
   registry?: WebUIRendererRegistry;
@@ -64,7 +59,6 @@ export function WebUIHost({
   instanceClassName,
   styles,
   selectedTarget,
-  keepMountedAcrossFrames,
   runtime: runtimeOverride,
   registry: registryOverride,
 }: WebUIHostProps) {
@@ -176,7 +170,6 @@ export function WebUIHost({
             instanceKey={key}
             mountLeaseId={mountHandle?.mountLeaseId}
             styles={styles}
-            keepMountedAcrossFrames={keepMountedAcrossFrames}
             selected={!!selectedTarget && selectedTarget.sessionId === sessionId
               && selectedTarget.packageId === runtime.getInstance(key)?.target.packageId
               && selectedTarget.instanceKey === runtime.getInstance(key)?.target.instanceKey}

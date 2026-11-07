@@ -3,9 +3,7 @@
  * 静音、就绪超时与角色来自宿主策略；素材地址是平台路由，直接使用以保留分段读取和页面内相对引用。
  */
 
-import {
-  useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type RefObject,
-} from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { WebUIAdapterProps } from '../../types.ts';
 import { useMediaSurfacePolicy, type MediaSurfaceEvent } from './hostPolicy.ts';
@@ -52,10 +50,11 @@ const serverTrue = (): boolean => true;
 type Emit = (event: MediaSurfaceEvent) => void;
 
 function Poster({ src, style }: { src?: string; style: CSSProperties }) {
-  const [failed, setFailed] = useState(false);
-  if (!src || failed) return null;
+  // Remember which address failed: a mounted background may receive a new poster later (S_07).
+  const [failed, setFailed] = useState<string | null>(null);
+  if (!src || failed === src) return null;
   return <img className="webui-media-surface__media" data-testid="webui-media-surface-poster" src={src} alt=""
-    draggable={false} style={style} onError={() => setFailed(true)} />;
+    draggable={false} style={style} onError={() => setFailed(src)} />;
 }
 
 function SurfaceImage({ src, poster, style, emit }: { src: string; poster?: string; style: CSSProperties; emit: Emit }) {
@@ -185,33 +184,6 @@ function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs
   );
 }
 
-/**
- * Scale that pushes every edge of blurred media at least twice the blur radius past the container,
- * so the blur never shows a transparent rim. Scaling keeps the media's layout size: a page behind it
- * is not resized (and does not redraw itself) while the blur changes.
- */
-function blurOverscan(blur: number, size: { width: number; height: number } | null): number {
-  if (!(blur > 0)) return 1;
-  const shortest = Math.max(1, Math.min(size?.width || window.innerWidth || 1, size?.height || window.innerHeight || 1));
-  return 1 + (4 * blur) / shortest;
-}
-
-function useElementSize(element: RefObject<HTMLElement | null>): { width: number; height: number } | null {
-  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
-  useLayoutEffect(() => {
-    const target = element.current;
-    if (!target || typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver((entries) => {
-      const box = entries[entries.length - 1]?.contentRect;
-      if (box) setSize((current) => (current?.width === box.width && current?.height === box.height
-        ? current : { width: box.width, height: box.height }));
-    });
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [element]);
-  return size;
-}
-
 export function WebUIMediaSurface({ node }: WebUIAdapterProps) {
   const p = node.props as unknown as MediaSurfaceProps;
   const policy = useMediaSurfacePolicy();
@@ -223,8 +195,6 @@ export function WebUIMediaSurface({ node }: WebUIAdapterProps) {
   const eventCallback = useRef(policy.onSurfaceEvent);
   eventCallback.current = policy.onSurfaceEvent;
   const emit = useMemo<Emit>(() => (event) => eventCallback.current?.(event), []);
-  const surface = useRef<HTMLDivElement>(null);
-  const size = useElementSize(surface);
 
   useEffect(() => {
     onPresence?.(true);
@@ -232,8 +202,7 @@ export function WebUIMediaSurface({ node }: WebUIAdapterProps) {
   }, [onPresence]);
 
   const mediaStyle: CSSProperties = { objectFit: p.fit, objectPosition: p.position };
-  const layerStyle: CSSProperties | undefined = p.blur > 0
-    ? { filter: `blur(${p.blur}px)`, transform: `scale(${blurOverscan(p.blur, size).toFixed(4)})` } : undefined;
+
   const posterOnly = policy.honorReducedMotion && p.kind !== 'image' && reducedMotion && !!p.poster;
 
   let content;
@@ -252,9 +221,12 @@ export function WebUIMediaSurface({ node }: WebUIAdapterProps) {
   }
 
   return (
-    <div ref={surface} className="webui-media-surface" data-testid="webui-media-surface" data-variant={p.kind}
+    <div className="webui-media-surface" data-testid="webui-media-surface" data-variant={p.kind}
       aria-hidden="true" style={{ opacity: p.opacity }}>
-      <div className="webui-media-surface__layer" style={layerStyle}>{content}</div>
+      <div className="webui-media-surface__layer">{content}</div>
+      {/* Blurs the media behind it in place: no layout change for the page, no transparent rim (S_07). */}
+      {p.blur > 0 ? <div className="webui-media-surface__blur" data-testid="webui-media-surface-blur"
+        style={{ '--webui-media-surface-blur': `${p.blur}px` } as CSSProperties} /> : null}
       {p.dim > 0 ? <div className="webui-media-surface__dim" data-testid="webui-media-surface-dim"
         style={{ opacity: p.dim }} /> : null}
     </div>

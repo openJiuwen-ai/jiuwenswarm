@@ -2358,10 +2358,10 @@ test('MediaSurface renders image, video and sandboxed pages with the host media 
     assert.equal(video.style.objectFit, 'contain');
     assert.equal(video.style.objectPosition, 'top');
     const layer = video.parentElement;
-    assert.equal(layer.style.filter, 'blur(10px)');
-    // Blurred media is scaled past the edges (2 × blur on the shortest side) instead of being enlarged.
-    assert.equal(layer.style.inset, '');
-    assert.equal(layer.style.transform, `scale(${(1 + 40 / Math.min(window.innerWidth, window.innerHeight)).toFixed(4)})`);
+    // The blur layer filters the media behind it; the media layer itself keeps its size and style.
+    assert.equal(layer.getAttribute('style'), null);
+    const blur = app.container.querySelector('[data-testid="webui-media-surface-blur"]');
+    assert.equal(blur.style.getPropertyValue('--webui-media-surface-blur'), '10px');
     assert.equal(app.container.querySelector('[data-testid="webui-media-surface-dim"]').style.opacity, '0.4');
     assert.equal(app.container.querySelector('[data-testid="webui-media-surface"]').style.opacity, '0.5');
 
@@ -2541,14 +2541,28 @@ test('background updates with the same page keep it running and only restyle it'
     const current = container.querySelector('[data-testid="webui-media-surface-frame"]');
     assert.equal(current === first, true, 'the running page is not reloaded');
     assert.equal(container.querySelector('[data-testid="webui-media-surface-dim"]').style.opacity, '0.5');
-    const layer = container.querySelector('.webui-media-surface__layer');
-    assert.equal(layer.style.filter, 'blur(8px)');
-    assert.equal(layer.style.inset, '', 'blur never changes the size the page is laid out in');
+    assert.equal(container.querySelector('.webui-media-surface__layer').getAttribute('style'), null,
+      'blur never changes the size the page is laid out in');
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-blur"]').style
+      .getPropertyValue('--webui-media-surface-blur'), '8px');
     assert.deepEqual(changes, [], 'the document stays marked while the background updates');
 
-    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: surfaceAsset('other/index.html') }), 5,
+    // A poster that failed stays hidden for that address only; a later frame may bring a new one.
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: page, poster: surfaceAsset('a.png') }),
+      5, backgroundScope)));
+    const broken = container.querySelector('[data-testid="webui-media-surface-poster"]');
+    await act(async () => broken.dispatchEvent(new window.Event('error')));
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-poster"]'), null);
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: page, poster: surfaceAsset('b.png') }),
+      6, backgroundScope)));
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-poster"]')?.getAttribute('src'), surfaceAsset('b.png'));
+
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: surfaceAsset('other/index.html') }), 7,
       backgroundScope)));
     assert.equal(container.querySelector('[data-testid="webui-media-surface-frame"]') === first, false, 'a new page loads anew');
+    // Only the background keeps its instance mounted; the splash restarts with every frame.
+    assert.equal(runtime.getCatalog().getSlot('application.background').rerender, 'keep-mounted');
+    assert.equal(runtime.getCatalog().getSlot('application.splash').rerender, undefined);
   } finally {
     observer.disconnect();
     await act(async () => root.unmount());

@@ -22,12 +22,10 @@ export interface WebUIInstanceViewProps {
   mountLeaseId?: number;
   styles?: WebUIStyleOverrides;
   selected?: boolean;
-  /** Keep the mounted components when a new frame arrives (see WebUIHostProps.keepMountedAcrossFrames). */
-  keepMountedAcrossFrames?: boolean;
 }
 
 export function WebUIInstanceView({
-  runtime, registry, instanceKey, mountLeaseId, styles, selected, keepMountedAcrossFrames,
+  runtime, registry, instanceKey, mountLeaseId, styles, selected,
 }: WebUIInstanceViewProps) {
   useSyncExternalStore(
     (listener) => runtime.subscribeInstance(instanceKey, listener),
@@ -56,8 +54,9 @@ export function WebUIInstanceView({
     if (frame) visit(frame.tree);
     componentState.prune(nodes);
   }, [frame, componentState]);
-  // Each valid frame rebuilds the tree unless the host keeps it mounted for the instance's lifetime.
-  const mountKey = keepMountedAcrossFrames ? `lifetime:${instance?.lifetimeId ?? ''}` : instance?.localFrameId ?? 0;
+  // Each valid frame rebuilds the tree unless the slot keeps it mounted for the instance's lifetime.
+  const keepMounted = !!frame && runtime.getCatalog().getSlot(frame.target.slotId)?.rerender === 'keep-mounted';
+  const mountKey = keepMounted ? `lifetime:${instance?.lifetimeId ?? ''}` : instance?.localFrameId ?? 0;
   // Display acknowledgements do not rebuild an unchanged component tree.
   const renderedTree = useMemo(() => {
     if (!frame || !instance) return null;

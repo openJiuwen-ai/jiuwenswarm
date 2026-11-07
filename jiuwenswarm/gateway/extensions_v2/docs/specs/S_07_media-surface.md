@@ -88,11 +88,12 @@
 3. HTML 内容固定在 `sandbox="allow-scripts"` 中运行，不含 `allow-same-origin`，插件不能覆盖。
 4. 背景容器不接收输入、不获得焦点、始终静音。视频由宿主强制静音；HTML 页面不获得 autoplay 委派，在浏览器中无法开始有声播放。桌面应用（Electron）当前的 autoplay 策略不要求用户手势，也不按 iframe 权限策略拦截，背景 HTML 若自行播放声音，宿主在桌面端不能阻止——背景页面不得发声，这一点由插件遵守（见 F_10 第 9.2 节）。
 5. 令牌在每次创建 iframe 时重新生成；旧 iframe 的消息不会影响新实例。
-6. 背景宿主（`application.background`）的实例在生命周期内跨帧保持挂载：新帧的 `src` 与 `kind` 不变时，正在运行的页面或视频
-   不重新加载，`dim`、`blur`、`opacity`、`fit`、`position` 只改变样式，文档根上的 `data-webui-background` 也不随之切换；`src` 或 `kind`
-   变化时按新内容创建。其他槽位仍按 WebUI 的整树重建契约处理每个合法帧。
-7. `blur` 不改变媒体的布局尺寸：模糊后的媒体按容器最短边放大，使每条边超出至少两倍模糊半径，避免边缘露出透明；
-   因此调整模糊不会让 HTML 页面收到 resize、不会触发页面自身的重新布局。
+6. `application.background` 的实例在生命周期内跨帧保持挂载（前端槽位目录的 `rerender: 'keep-mounted'` 策略）：新帧的 `src` 与 `kind`
+   不变时，正在运行的页面或视频不重新加载，`dim`、`blur`、`opacity`、`fit`、`position` 只改变样式，文档根上的 `data-webui-background`
+   也不随之切换；`src` 或 `kind` 变化时按新内容创建。因此地址就是内容的身份：包替换了同一地址下的文件时，须换地址
+   （例如附加内容版本参数）才会显示新内容；同一地址加载失败后也不会自动重试。海报的失败状态只对失败的那个海报地址有效。
+   `application.splash` 与其他槽位仍按 WebUI 的整树重建契约处理每个合法帧。
+7. 调整 `blur` 不改变媒体的布局尺寸（HTML 页面不会因此收到 resize），模糊后的边缘不露出透明背景。
 
 ## 5. 验证入口
 
