@@ -3943,7 +3943,15 @@ class XiaoyiChannel(BaseChannel):
                 pending.get("request_id"),
             )
             if pending_task_id and session_id:
-                self._answer_receipts[(session_id, task_id)] = pending_task_id
+                # 收口账本链式接力（CR-002）：登记新键前弹出旧键（原任务链），
+                # 原链值改挂新键——resume 终态时收口帧发给最初的原任务链，
+                # 避免链式迁移时中间链条目孤儿化、最初气泡收不到收口终帧。
+                _prior_original = self._answer_receipts.pop(
+                    (session_id, pending_task_id), None
+                )
+                self._answer_receipts[(session_id, task_id)] = (
+                    _prior_original or pending_task_id
+                )
         # resume 轮视为会话当前活跃任务。跟随应答帧 task_id 时该 id 未曾在
         # 用户消息路径登记（正常路径见 _handle_message_stream 的
         # _mark_session_active/_remember_active_platform_task，resume 在应答桥

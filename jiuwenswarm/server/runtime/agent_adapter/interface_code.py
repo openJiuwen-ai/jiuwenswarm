@@ -486,6 +486,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._session_instance_mode = mode
         self._session_instance_sub_mode = sub_mode
         self._static_prompt_profile = "design" if mode == "design" else "code"
+        # 对齐 deep 适配器：补记配置基座缓存——否则 _set_permission_rail_enabled
+        # (enabled=True) 补建路径拿到 None，permissions rail 静默不注册
+        # （xiaoyi 会话 app_ver>11.7.9 进入 code 模式时权限确认中断永不触发）。
+        self._config_base_cache = dict(config or {}) if isinstance(config, dict) else {}
 
         await self.set_checkpoint()
 

@@ -1503,7 +1503,9 @@ async def refresh_session_context_if_stale(
                 # 消息数最多的一个；池键诊断日志用于定位键不一致问题。
                 _pool = getattr(context_engine, "_context_pool", None) or {}
                 for _k, _v in _pool.items():
-                    if not str(_k).startswith("{}_".format(session_id)):
+                    # 精确归属：池键首段（首个 "_" 之前）必须等于 session_id，
+                    # 防 session_id 前缀包含关系导致跨会话误扫并回
+                    if str(_k).split("_", 1)[0] != str(session_id):
                         continue
                     _msgs = list(_v.get_messages() or []) if _v is not None else []
                     logger.info(
@@ -1549,9 +1551,10 @@ async def refresh_session_context_if_stale(
         )
         if not rebuilt:
             return synced
-        # 在途尾部并回：前向对齐 restored 与活窗（role+content），活窗游标
-        # 之后的剩余消息即在途轮次，add_messages 按序回填。至少匹配到一条
-        # 才并回（全不匹配说明对齐失败，宁缺勿错）；无在途则记日志跳过。
+        # 在途尾部并回：restored 与活窗按同索引严格位置对齐（磁盘重建是
+        # 同批轮次的重放，前缀应逐条一致），首处失配即在途边界；零匹配
+        # （活窗与磁盘无重叠，如分池/分轮上下文）整窗并回。活窗含工具等
+        # 中间消息时由 _msg_key 防御键容忍，不参与失配判定。
         if _live_msgs:
             try:
                 _rebuilt_ctx = context_engine.get_context(session_id=session_id)
@@ -1582,15 +1585,6 @@ async def refresh_session_context_if_stale(
                     if _msg_key(_r) != _msg_key(_live_msgs[_i]):
                         break
                     _boundary = _i + 1
-                logger.info(
-                    "DBG alignment restored=%d live=%d boundary=%d "
-                    "restored_keys=%r live_keys=%r",
-                    len(_restored_msgs),
-                    len(_live_msgs),
-                    _boundary,
-                    [_msg_key(_r) for _r in _restored_msgs],
-                    [_msg_key(_m) for _m in _live_msgs],
-                )
                 _in_flight = _live_msgs[_boundary:]
                 if _in_flight:
                     if _boundary == 0 and _restored_msgs:
