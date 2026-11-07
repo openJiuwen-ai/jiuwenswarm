@@ -651,6 +651,8 @@ class CronRuntimeBridge:
     def __init__(self) -> None:
         self._backend_override: CronToolBackend | None = None
         self._resolved_backends: dict[tuple[str, str], CronToolBackend] = {}
+        # 保存后台“启动调度器”任务的强引用，避免未引用的 Task 被 GC 回收
+        self._scheduler_start_tasks: set[asyncio.Task] = set()
 
     def set_backend(self, backend: CronToolBackend | None) -> None:
         self._backend_override = backend
@@ -725,11 +727,33 @@ class CronRuntimeBridge:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.create_task(backend.ensure_scheduler_started())
+                # 保存强引用，避免未引用的 Task 被 GC 回收（"Task was destroyed
+                # but it is pending"）；完成后经 done 回调移除。
+                task = asyncio.create_task(
+                    self._start_scheduler_guarded(backend),
+                    name="cron-scheduler-start",
+                )
+                self._scheduler_start_tasks.add(task)
+                task.add_done_callback(self._scheduler_start_tasks.discard)
             else:
-                loop.run_until_complete(backend.ensure_scheduler_started())
+                loop.run_until_complete(self._start_scheduler_guarded(backend))
         except Exception as exc:
             logger.warning("[CronRuntimeBridge] Failed to start scheduler: %s", exc)
+
+    async def _start_scheduler_guarded(self, backend: "_CronToolsCronBackend") -> None:
+        """后台启动调度器，并把启动异常落到日志。
+
+        否则启动失败只会成为 asyncio 的 "Task exception was never retrieved"，
+        调用方（build_tools）完全无感知，表现为“定时任务到点不触发”。
+        """
+        try:
+            await backend.ensure_scheduler_started()
+        except Exception as exc:
+            logger.warning(
+                "[CronRuntimeBridge] background scheduler start failed: %s",
+                exc,
+                exc_info=True,
+            )
 
     def build_tools(
         self,
