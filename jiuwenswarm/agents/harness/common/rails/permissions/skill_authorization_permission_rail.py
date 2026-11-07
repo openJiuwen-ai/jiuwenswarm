@@ -196,32 +196,11 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
         temp_cfg = self._temp_permission_config_for_check(ctx)
         if temp_cfg is None:
             return await super()._check_tool_permission(tool_name, tool_args, ctx)
-        from agent_shield.tool_permission import get_permission_manager
-        from openjiuwen.harness.security.permission_checks import (
-            _FETCH_TOOLS,
-            merge_permission_results,
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+            check_permission_by_temp_config,
         )
 
-        manager = get_permission_manager()
-        if tool_name in _FETCH_TOOLS:
-            urls = tool_args.get("url")
-            if isinstance(urls, list):
-                if not urls or any(
-                    not isinstance(url, str) or not url.strip() for url in urls
-                ):
-                    return PermissionResult(
-                        PermissionLevel.DENY,
-                        "host:invalid_urls",
-                        "Invalid fetch URL list",
-                    )
-                results = [
-                    await manager.check_permission(
-                        tool_name, {**tool_args, "url": url}, config=temp_cfg
-                    )
-                    for url in urls
-                ]
-                return merge_permission_results(results)
-        return await manager.check_permission(tool_name, tool_args, config=temp_cfg)
+        return await check_permission_by_temp_config(tool_name, tool_args, temp_cfg)
 
     def outbound_checks_enabled(self, ctx):
         return bool(self.projection_config_for(ctx).get("net_guard", {}).get("enabled", False))

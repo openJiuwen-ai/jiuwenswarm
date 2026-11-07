@@ -244,7 +244,7 @@ def persist_to_owner_scope(
 ) -> bool:
     """将规则持久化到 permissions.owner_scopes，并按 1B 刷新 rail。
 
-    谁落盘谁更新：写盘成功后若传入 ``rail``，必须 ``rail.update_config``；
+    谁落盘谁更新：写盘成功后若传入 ``rail``，必须 ``update_permission_config``；
     未传 rail 时只落盘并打警告（manager 不刷新）。``config`` 为调用方持有的
     permissions 段，成功后就地同步 ``owner_scopes``。
     """
@@ -292,7 +292,11 @@ def persist_to_owner_scope(
             config["owner_scopes"] = deepcopy(persisted.get("owner_scopes") or {})
 
         if rail is not None:
-            rail.update_config(persisted)
+            from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                update_permission_config,
+            )
+
+            update_permission_config(rail, persisted)
         else:
             logger.warning(
                 "persist_to_owner_scope ok but rail missing; manager not refreshed"

@@ -8616,6 +8616,10 @@ class JiuWenSwarmDeepAdapter:
         permission_config = self._resolve_permission_config_for_agent(
             session_id=""
         )
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+            update_permission_config,
+        )
+
         # 组 key 只走 resolve_permission_key；权限未启用且尚无 rail 时不必解析。
         need_key = (
             self._permission_rail is not None
@@ -8646,13 +8650,14 @@ class JiuWenSwarmDeepAdapter:
                 self._permission_rail = None
         if self._permission_rail is not None:
             self._sync_permission_workspace(self._permission_rail)
-            self._permission_rail.update_config(permission_config)
+            update_permission_config(self._permission_rail, permission_config)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated key=%s",
                 wanted_key,
             )
         elif permission_config.get("enabled", False):
             # 建轨 key 由 _build_permission_rail_for_agent → build_permission_rail 组。
+            # 唯一建轨入口：build_permission_rail（enabled 失败会抛，不会静默 None）
             self._permission_rail = self._build_permission_rail_for_agent(
                 config=config_base or {},
                 llm=self._model,
@@ -8663,29 +8668,29 @@ class JiuWenSwarmDeepAdapter:
                 if isinstance(config_base, dict)
                 else "gpt-4",
             )
-            if self._permission_rail is not None:
-                self._permission_rail.update_config(permission_config)
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] _permission_rail newly created key=%s",
-                    getattr(self._permission_rail, "permission_key", None),
-                )
-                # Keep SkillAuthorizationRail on the same manager key as the
-                # permission rail (DENY pre-check without Skill overlay).
-                if self._skill_authorization_rail is not None:
-                    setattr(
-                        self._skill_authorization_rail,
-                        "_permission_key",
-                        getattr(
-                            self._permission_rail,
-                            "permission_key",
-                            getattr(self._skill_authorization_rail, "_permission_key", None),
-                        ),
-                    )
-                    self._bind_skill_permission_scope_resolver(
-                        self._permission_rail, self._skill_authorization_rail
-                    )
-            else:
+            if self._permission_rail is None:
+                # 防御：生产路径 enabled 时 build_permission_rail 应已抛错。
                 raise RuntimeError("Permission rail could not be constructed")
+            update_permission_config(self._permission_rail, permission_config)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] _permission_rail newly created key=%s",
+                getattr(self._permission_rail, "permission_key", wanted_key),
+            )
+            # Keep SkillAuthorizationRail on the same manager key as the
+            # permission rail (DENY pre-check without Skill overlay).
+            if self._skill_authorization_rail is not None:
+                setattr(
+                    self._skill_authorization_rail,
+                    "_permission_key",
+                    getattr(
+                        self._permission_rail,
+                        "permission_key",
+                        getattr(self._skill_authorization_rail, "_permission_key", None),
+                    ),
+                )
+                self._bind_skill_permission_scope_resolver(
+                    self._permission_rail, self._skill_authorization_rail
+                )
         if stale_rail is not None and self._permission_rail is not stale_rail:
             # 重建成功或权限被显式关闭后才注销旧 key；重建抛异常时跳过注销，
             # 旧 key 继续服务在途请求（残留注册仅在极少数失败场景出现）。
