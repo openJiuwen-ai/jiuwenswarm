@@ -364,6 +364,33 @@ async def test_old_ops_called_from_the_new_activation_do_not_borrow_its_identity
         await runtime.shutdown()
 
 
+async def test_uninstall_does_not_wait_for_another_packages_browser_notifications(tmp_path):
+    """Cleaning up package A's data waits for A's own file work, not for B's revoke stuck on a browser."""
+    theme, plain = Theme(THEME), Theme("test.plain", ui={"apiVersion": 1, "items": []})
+    runtime = await _start(tmp_path)
+    channel = runtime.channel
+    sent, gate = channel.send_event, asyncio.Event()
+
+    async def stuck_revoke(ws, event, payload):
+        if event == "webui.appearance" and payload["appearance"] is None:
+            await gate.wait()
+        await sent(ws, event, payload)
+
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        runtime.publish(plain.package(tmp_path / "plain"))
+        theme.calls.append(_apply({"accent": "#b45309"}))
+        await _ready(runtime, SimpleNamespace(closed=False), THEME)
+        channel.send_event = stuck_revoke
+        runtime.unpublish(THEME)  # its revoke now waits on a browser that does not read
+        manager = GatewayPackageManager(runtime, tmp_path / "pkgs")
+        report = await asyncio.wait_for(manager.uninstall("test.plain"), 2)
+        assert report.status == "SUCCESS"
+    finally:
+        gate.set()
+        await runtime.shutdown()
+
+
 async def test_closed_connection_forgets_its_provider(tmp_path):
     theme = Theme(THEME)
     runtime = await _start(tmp_path)

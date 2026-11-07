@@ -399,7 +399,7 @@ class BrowserBridge:
         if clears or revokes:
             self.spawn(self._notify_release(package_id, clears, revokes))
         for upload in self.transfers.release(package_id=package_id):
-            self.spawn(self.transfers.discard(upload))
+            self.transfers.discard_later(upload)
 
     async def _notify_release(self, package_id: str, clears, revokes) -> None:
         transport = self.runtime.webui.transport
@@ -412,17 +412,18 @@ class BrowserBridge:
                     "package_id": package_id, "revision": revision, "appearance": None,
                 })
 
-    def spawn(self, coroutine) -> None:
+    def spawn(self, coroutine) -> asyncio.Task | None:
         """Run a browser notification or file cleanup in the background; ``settle`` waits for it."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             # Without a loop no browser can be connected either.
             coroutine.close()
-            return
+            return None
         task = loop.create_task(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return task
 
     async def settle(self) -> None:
         """Wait until release notifications have been sent."""
@@ -482,7 +483,7 @@ class BrowserBridge:
         self.appearance.drop_connection(connection_id)
         self._appearance_locks.pop(connection_id, None)
         for upload in self.transfers.release(connection_id=connection_id):
-            self.spawn(self.transfers.discard(upload))
+            self.transfers.discard_later(upload)
 
     def register_events(self, bus) -> None:
         async def core(event, ops, next_handler):
@@ -721,7 +722,7 @@ class BrowserBridge:
             )), context)
         finally:
             if upload is not None:
-                self.spawn(self.transfers.discard(upload))
+                self.transfers.discard_later(upload)
         return result if isinstance(result, UiActionOutput) else UiActionOutput(accepted=False, status="unhandled")
 
     @staticmethod

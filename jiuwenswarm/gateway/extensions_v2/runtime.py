@@ -431,8 +431,8 @@ class GatewayRuntime:
     async def cleanup_package_data(self, package_id: str) -> None:
         """Delete the store and data directory of an uninstalled package."""
 
-        # Import directories of released tickets are deleted in the background; let them finish first.
-        await self.browser.settle()
+        # This package's ticket directories are deleted in the background; let those finish first.
+        await self.browser.transfers.settle_package(package_id)
         await self.data_store.cleanup_package(package_id, reason="uninstall")
         directory = self.package_data_dir(package_id)
         if directory.exists():

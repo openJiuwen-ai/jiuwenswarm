@@ -11,6 +11,7 @@ the host gives that one browser connection a single-use download address.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -151,6 +152,8 @@ class TransferManager:
         self.runtime = runtime
         self.uploads: dict[str, Upload] = {}
         self.downloads: dict[str, Download] = {}
+        # Background deletions of ticket directories, per package: uninstall waits for its own only.
+        self._deletions: dict[str, set[asyncio.Task]] = {}
         self._clock = clock
 
     # ── import ────────────────────────────────────────────────────────────
@@ -216,7 +219,7 @@ class TransferManager:
         )
         self.uploads[upload_id] = upload
         for item in stale:
-            self._discard_later(item)
+            self.discard_later(item)
         try:
             await run_file_operation(partial(directory.mkdir, parents=True))
         except BaseException:
@@ -362,13 +365,13 @@ class TransferManager:
         """Drop expired tickets now and delete their directories in the background.
 
         Nothing awaits here, so callers keep the state they validated; uninstall waits for the
-        background deletions before it removes the package data (``BrowserBridge.settle``).
+        package's own background deletions before it removes the package data (``settle_package``).
         """
         now = self._clock()
         expired = [item for item in self.uploads.values() if now - item.created > UPLOAD_TTL_S]
         for upload in expired:
             self.uploads.pop(upload.upload_id, None)
-            self._discard_later(upload)
+            self.discard_later(upload)
         for token in [key for key, item in self.downloads.items() if now - item.created > DOWNLOAD_TTL_S]:
             self.downloads.pop(token, None)
 
@@ -399,8 +402,25 @@ class TransferManager:
         if self.uploads.get(upload.upload_id) is upload:
             del self.uploads[upload.upload_id]
 
-    def _discard_later(self, upload: Upload) -> None:
-        self.runtime.browser.spawn(self._discard(upload))
+    def discard_later(self, upload: Upload) -> None:
+        """Delete a ticket's directory in the background, tracked per package for uninstall."""
+        task = self.runtime.browser.spawn(self._discard(upload))
+        if task is None:
+            return
+        tasks = self._deletions.setdefault(upload.package_id, set())
+        tasks.add(task)
+
+        def forget(done: asyncio.Task) -> None:
+            tasks.discard(done)
+            if not tasks and self._deletions.get(upload.package_id) is tasks:
+                del self._deletions[upload.package_id]
+
+        task.add_done_callback(forget)
+
+    async def settle_package(self, package_id: str) -> None:
+        """Wait until the background deletions of this package's tickets have finished."""
+        while tasks := list(self._deletions.get(package_id, ())):
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _discard(self, upload: Upload) -> None:
         await run_file_operation(partial(shutil.rmtree, upload.directory, True))
