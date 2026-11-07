@@ -1502,8 +1502,6 @@ class RuntimeSupervisor:
         while not self._stopping:
             try:
                 await self._delivery_sweep_once()
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.warning("[Supervisor] delivery sweep iteration failed", exc_info=True)
             await asyncio.sleep(_DELIVERY_SWEEP_INTERVAL)

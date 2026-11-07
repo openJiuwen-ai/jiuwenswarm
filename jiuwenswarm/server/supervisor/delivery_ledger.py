@@ -25,9 +25,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from openjiuwen_protocol.e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
-from openjiuwen_protocol.e2a.wire_codec import encode_agent_chunk_for_wire
 
 logger = logging.getLogger(__name__)
 
@@ -280,15 +280,21 @@ class DeliveryLedger:
 
     def due_entries(self, now: float | None = None) -> list[LedgerEntry]:
         now = time.time() if now is None else now
-        return [item for item in self._entries.values()
-                if item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
-                and item.deadline > 0 and item.deadline <= now]
+        due: list[LedgerEntry] = []
+        for item in self._entries.values():
+            if (item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
+                    and item.deadline > 0 and item.deadline <= now):
+                due.append(item)
+        return due
 
     def expired_entries(self, now: float | None = None) -> list[LedgerEntry]:
         now = time.time() if now is None else now
-        return [item for item in self._entries.values()
-                if item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
-                and item.registered_at > 0 and now - item.registered_at > self._expire_seconds]
+        expired: list[LedgerEntry] = []
+        for item in self._entries.values():
+            if (item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
+                     and item.registered_at > 0 and now - item.registered_at > self._expire_seconds):
+                expired.append(item)
+        return expired
 
     def reap_terminal(self, now: float | None = None) -> int:
         """终态条目回收：超过保留窗的 sent/retracted/failed 删除内存与磁盘副本。
