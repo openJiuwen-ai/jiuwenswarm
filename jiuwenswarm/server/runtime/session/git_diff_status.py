@@ -36,13 +36,9 @@ def _session_team_member_names(session_id: str | None) -> list[str]:
         return []
     try:
         from jiuwenswarm.server.runtime.session.session_history import (
-            load_history_records,
+            iter_history_records,
         )
-
-        history = load_history_records(sid)
     except Exception:  # noqa: BLE001
-        return []
-    if not isinstance(history, list):
         return []
 
     names: list[str] = []
@@ -57,17 +53,26 @@ def _session_team_member_names(session_id: str | None) -> list[str]:
         seen.add(name)
         names.append(name)
 
-    for record in history:
-        if not isinstance(record, dict):
-            continue
-        extra = record.get("extra")
-        event = extra.get("event") if isinstance(extra, dict) else None
-        if not isinstance(event, dict):
-            continue
-        if event.get("type") != "team.member.spawned":
-            continue
-        add_name(event.get("name"))
-        add_name(event.get("member_id"))
+    try:
+        # 只需 team.member.spawned 事件，流式扫描即可：整份 history 可能有
+        # 数十万条记录、上百 MB，全量载入会带来 GB 级瞬时内存峰值。
+        history = iter_history_records(sid)
+        for record in history:
+            if not isinstance(record, dict):
+                continue
+            extra = record.get("extra")
+            event = extra.get("event") if isinstance(extra, dict) else None
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "team.member.spawned":
+                continue
+            add_name(event.get("name"))
+            add_name(event.get("member_id"))
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "读取团队事件失败，已忽略: session_id=%s", sid, exc_info=True
+        )
+        return []
     return names
 
 
