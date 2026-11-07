@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.subagent import SubagentRail
+from openjiuwen.harness.tools import is_free_search_enabled, is_paid_search_enabled
 
 from jiuwenswarm.agents.harness.common.cua_defaults import cua_model_rejects_images
 from jiuwenswarm.agents.harness.common.prompt.browser_task_prompt import (
@@ -68,7 +69,12 @@ class BrowserTaskPromptRail(SubagentRail):
         has_cua = "cua_agent" in mounted and not cua_model_rejects_images(current_model)
         sections: list[str] = []
         if has_browser:
-            sections.append(build_browser_task_prompt(language))
+            sections.append(
+                build_browser_task_prompt(
+                    language,
+                    search_fallback_enabled=not is_paid_search_enabled() and not is_free_search_enabled(),
+                )
+            )
         if has_cua:
             sections.append(
                 build_cua_task_prompt(language, browser_available=has_browser)
