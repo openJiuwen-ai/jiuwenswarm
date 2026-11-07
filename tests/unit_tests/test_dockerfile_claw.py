@@ -44,4 +44,4 @@ def test_noninteractive_initialization_does_not_read_stdin(monkeypatch) -> None:
         lambda _prompt: (_ for _ in ()).throw(AssertionError("stdin must not be read")),
     )
 
-    assert utils.prompt_preferred_language() == "zh"
+    assert utils.prompt_preferred_language() == "en"

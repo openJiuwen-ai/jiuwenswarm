@@ -196,8 +196,28 @@ def test_build_agent_identity_prompt_contains_stable_identity_and_task_strategy(
 
 
 @pytest.mark.asyncio
-async def test_response_prompt_rail_splits_input_and_output_rules():
-    builder = SystemPromptBuilder(language="cn")
+@pytest.mark.parametrize(
+    ("language", "input_heading", "output_heading", "language_heading", "model_heading", "fallback"),
+    [
+        (
+            "cn", "# 输入说明", "# 输出规则", "## 输出语言", "## 模型名称回答",
+            "当前消息未提供该字段时，默认使用简体中文。",
+        ),
+        (
+            "en", "# Input Instructions", "# Output Rules", "## Output Language", "## Model Name Answers",
+            "If the current message omits this field, default to English.",
+        ),
+    ],
+)
+async def test_response_prompt_rail_splits_input_and_output_rules(
+    language,
+    input_heading,
+    output_heading,
+    language_heading,
+    model_heading,
+    fallback,
+):
+    builder = SystemPromptBuilder(language=language)
     agent = _FakeAgent(builder)
     rail = ResponsePromptRail()
     rail.init(agent)
@@ -211,10 +231,15 @@ async def test_response_prompt_rail_splits_input_and_output_rules():
     await rail.before_model_call(ctx)
 
     prompt = builder.build()
-    assert "# 输入说明" in prompt
-    assert "# 输出规则" in prompt
-    assert "## 输出语言" in prompt
-    assert "## 模型名称回答" in prompt
+    assert input_heading in prompt
+    assert output_heading in prompt
+    assert language_heading in prompt
+    assert model_heading in prompt
+    output_rules = prompt.split(language_heading, 1)[1].split(model_heading, 1)[0]
+    assert "`preferred_response_language`" in output_rules
+    assert fallback in output_rules
+    assert "If the user does not specify one, default to Simplified Chinese." not in output_rules
+    assert "用户未指定时，默认使用简体中文。" not in output_rules
     assert "# 消息说明" not in prompt
     assert builder.has_section("input")
     assert builder.has_section("output")
