@@ -574,6 +574,13 @@ class DeepResearchExecutionRail(DeepAgentRail):
         mcp_servers = self._mcp_context_provider() if callable(self._mcp_context_provider) else None
         if inspect.isawaitable(mcp_servers):
             mcp_servers = await mcp_servers
+        materials_context = (
+            self._materials_context_provider()
+            if callable(self._materials_context_provider)
+            else None
+        )
+        if inspect.isawaitable(materials_context):
+            materials_context = await materials_context
         token = bind_deepresearch_execution_context(
             tool_call_id=workflow_id,
             state=states.get(workflow_id),
@@ -584,9 +591,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
             request_id=request_id,
             requested_report_type=requested_report_type,
             deepresearch_followup=deepresearch_followup,
-            materials_context=(
-                self._materials_context_provider() if callable(self._materials_context_provider) else None
-            ),
+            materials_context=materials_context,
             mcp_servers=mcp_servers,
             mcp_context_provider=self._mcp_context_provider,
             load_state=lambda: _load_states(ctx.session).get(workflow_id),

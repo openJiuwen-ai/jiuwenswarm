@@ -164,6 +164,9 @@ async def test_flash_file_grants_reopen_revoke_and_never_cross_session(
         permission_key=rail.permission_key, grant_store=reopened
     )
     rail.set_skill_scope_resolver(gate.resolve_scope)
+    # An ACTIVE grant must be evaluated against a published session overlay;
+    # otherwise the gate fails closed instead of silently dropping the grant.
+    rail.update_session_config("session", rail._static_config)
     for session_id, expected in [
         ("session", PermissionLevel.ALLOW),
         ("other", PermissionLevel.ASK),
@@ -184,3 +187,4 @@ async def test_flash_file_grants_reopen_revoke_and_never_cross_session(
             "web_flash", {"search": {"query": "fixture"}}, ctx
         )
     ).permission == PermissionLevel.ASK
+    rail._published_scopes.remove_session("session")

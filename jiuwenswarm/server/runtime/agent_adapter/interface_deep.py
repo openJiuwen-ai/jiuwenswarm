@@ -8002,7 +8002,7 @@ class JiuWenSwarmDeepAdapter:
             resolve_permission_config=resolve_permission_config,
         )
 
-    def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
+    async def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
         # Per-session adapter snapshot survives long-lived runner Task boundaries.
         context = copy.deepcopy(self._current_request_route.get("materials_context"))
         if context is None:
@@ -8018,17 +8018,32 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[DeepResearch] Material permission configuration unavailable")
             permission_config = {}
         enabled = permission_config.get("enabled") if isinstance(permission_config, dict) else None
-        engine = getattr(getattr(self, "_permission_rail", None), "_engine", None)
+        key = getattr(getattr(self, "_permission_rail", None), "permission_key", None)
         from openjiuwen.harness.security.models import PermissionLevel
+        from agent_shield.tool_permission import get_permission_manager
+
+        manager = get_permission_manager()
         for item in context["files"]:
             if enabled is False:
                 # A disabled permission system intentionally has no PermissionRail.
                 item["read_allowed"] = True
-            elif enabled is not True or engine is None:
+            elif enabled is not True or not key:
                 item["read_allowed"] = False
             else:
-                level, _ = engine.check_tool_permission_directly("read_file", {"file_path": item.get("path", "")})
-                item["read_allowed"] = level == PermissionLevel.ALLOW
+                try:
+                    result = await manager.check_permission(
+                        "read_file", {"file_path": item.get("path", "")}, key
+                    )
+                except Exception:
+                    # 路由身份重建会注销旧 key，并发中的材料求值可能查到已注销
+                    # 的 key；按拒绝处理，避免打断整个 deepresearch 流程。
+                    logger.warning(
+                        "[DeepResearch] Material read permission check failed",
+                        exc_info=True,
+                    )
+                    item["read_allowed"] = False
+                else:
+                    item["read_allowed"] = result.permission == PermissionLevel.ALLOW
         return context
 
     def _get_deepresearch_tool_context(self) -> dict[str, str]:
@@ -8556,7 +8571,7 @@ class JiuWenSwarmDeepAdapter:
             raw = getattr(request, "metadata", None)
             meta = raw if isinstance(raw, dict) else None
         identity = web_routing_identity(meta)
-        routing = {}
+        routing: dict[str, str] = {}
         for key in ("group_id", "bot_id", "user_id"):
             value = identity.get(key)
             if isinstance(value, str) and value.strip():
@@ -8602,18 +8617,25 @@ class JiuWenSwarmDeepAdapter:
             session_id=""
         )
         wanted_key = resolve_permission_key(**self._permission_key_dims())
+        stale_rail = None
         if self._permission_rail is not None:
             current_key = getattr(self._permission_rail, "permission_key", None)
             if getattr(self._permission_rail, "routing_key", current_key) != wanted_key:
-                # Adapter identity is fixed for the rail lifetime; never silently
-                # drop the old rail (would leak the old manager key without uninit).
-                logger.error(
-                    "[JiuWenSwarmDeepAdapter] _permission_rail key mismatch "
-                    "current=%s wanted=%s; keep existing rail (no rebuild)",
+                # Pooled adapters can serve different routing identities over
+                # their lifetime. Rebuild instead of failing the whole request,
+                # releasing the old manager registration first so it is not
+                # leaked.
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] _permission_rail key changed "
+                    "current=%s wanted=%s; rebuilding",
                     current_key,
                     wanted_key,
                 )
-                raise ValueError("Permission rail routing identity changed")
+                # 旧注册在重建定论后才注销：重建抛错时保留旧 key，在途请求
+                # 不会撞上已注销的 key（unregistered -> 全量 DENY）。
+                stale_rail = self._permission_rail
+                self._permission_rail = None
+        if self._permission_rail is not None:
             self._sync_permission_workspace(self._permission_rail)
             self._permission_rail.update_config(permission_config)
             logger.info(
@@ -8654,6 +8676,12 @@ class JiuWenSwarmDeepAdapter:
                     )
             else:
                 raise RuntimeError("Permission rail could not be constructed")
+        if stale_rail is not None and self._permission_rail is not stale_rail:
+            # 重建成功或权限被显式关闭后才注销旧 key；重建抛异常时跳过注销，
+            # 旧 key 继续服务在途请求（残留注册仅在极少数失败场景出现）。
+            release = getattr(stale_rail, "_release_registration", None)
+            if callable(release):
+                release()
 
     def _resolve_permission_config_for_agent(
         self,

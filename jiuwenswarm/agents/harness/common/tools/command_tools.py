@@ -134,22 +134,6 @@ def _enforce_tui_spawn_budget(command: str, session_id: str) -> str | None:
     return None
 
 
-_DANGEROUS_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\brm\s+-rf\b", re.IGNORECASE), "blocked pattern: rm -rf"),
-    (re.compile(r"\bdel\s+/[a-z]*[fsq][a-z]*\b", re.IGNORECASE), "blocked pattern: del /f /s /q"),
-    (re.compile(r"\brd\s+/s\s+/q\b", re.IGNORECASE), "blocked pattern: rd /s /q"),
-    (re.compile(r"\bformat\s+[a-z]:", re.IGNORECASE), "blocked pattern: format drive"),
-    (re.compile(r"\bshutdown\b", re.IGNORECASE), "blocked pattern: shutdown"),
-    (re.compile(r"\breboot\b", re.IGNORECASE), "blocked pattern: reboot"),
-    (re.compile(r"\bdiskpart\b", re.IGNORECASE), "blocked pattern: diskpart"),
-    (re.compile(r"\bmkfs\b", re.IGNORECASE), "blocked pattern: mkfs"),
-    (re.compile(r"\breg\s+delete\b", re.IGNORECASE), "blocked pattern: reg delete"),
-    (
-        re.compile(r"\bremove-item\b[^\n\r]*-recurse[^\n\r]*-force", re.IGNORECASE),
-        "blocked pattern: Remove-Item -Recurse -Force",
-    ),
-]
-
 _POWERSHELL_TOKENS = (
     "powershell ",
     "powershell.exe ",
@@ -249,15 +233,6 @@ def _clip_text(value: str, max_chars: int) -> str:
     if max_chars <= 0 or len(value) <= max_chars:
         return value
     return f"{value[:max_chars]}\n...[truncated]"
-
-
-def _check_command_safety(command: str) -> str | None:
-    """Local hard blocks only (rm -rf 等). HostGuard 走权限 rail / Manager 配置。"""
-
-    for pattern, message in _DANGEROUS_COMMAND_PATTERNS:
-        if pattern.search(command):
-            return message
-    return None
 
 
 def _context_cwd() -> Path:
@@ -1006,10 +981,6 @@ async def mcp_exec_command(
     command = (command or "").strip()
     if not command:
         return "[ERROR]: command cannot be empty."
-
-    blocked_reason = _check_command_safety(command)
-    if blocked_reason:
-        return f"[ERROR]: command rejected for safety ({blocked_reason})."
 
     # Guardrail: rate-limit jiuwenswarm-tui spawn loops. Returns a friendly
     # error (not a safety block) so the LLM can recover and pick an

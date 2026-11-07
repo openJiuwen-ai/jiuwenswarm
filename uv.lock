@@ -2170,7 +2170,7 @@ wheels = [
 [[package]]
 name = "jiuwenbox"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwenbox&rev=develop#38db5a46327c11e21efc40d7f541d05ea120e08a" }
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwenbox&rev=38db5a46327c11e21efc40d7f541d05ea120e08a#38db5a46327c11e21efc40d7f541d05ea120e08a" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
@@ -2388,7 +2388,7 @@ requires-dist = [
     { name = "httptools", marker = "extra == 'harmony'", specifier = ">=0.6.3" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'harmony'", specifier = ">=0.27" },
-    { name = "jiuwenbox", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwenbox&rev=develop" },
+    { name = "jiuwenbox", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwenbox&rev=38db5a46327c11e21efc40d7f541d05ea120e08a" },
     { name = "jiuwenswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
     { name = "json-repair", specifier = ">=0.58.0" },
     { name = "json-repair", marker = "extra == 'harmony'", specifier = ">=0.58.0" },

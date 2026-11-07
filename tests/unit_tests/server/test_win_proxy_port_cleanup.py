@@ -17,13 +17,13 @@ def test_listener_command_covers_the_port_range_once() -> None:
 
 
 def test_parse_listener_output_groups_ports_by_pid() -> None:
-    text = "\n".join([
-        "4242|python|60080,60081",
-        "noise",
-        "7|svchost|60082",
-        "not-a-pid|python|60083",
-        "99|jiuwenswarm|",
-    ])
+    text = (
+        "4242|python|60080,60081\n"
+        "noise\n"
+        "7|svchost|60082\n"
+        "not-a-pid|python|60083\n"
+        "99|jiuwenswarm|"
+    )
     assert _parse_win_proxy_listener_output(text) == {
         4242: ("python", [60080, 60081]),
         7: ("svchost", [60082]),
@@ -46,6 +46,12 @@ def test_cleanup_queries_once_and_stops_only_sandbox_pids(monkeypatch) -> None:
     monkeypatch.setattr(
         "jiuwenswarm.server.sandbox.jiuwenbox_runner._get_powershell",
         lambda: "powershell",
+    )
+    # Keep the test platform-neutral: the real helper touches Windows-only
+    # subprocess attributes even when sys.platform is monkeypatched.
+    monkeypatch.setattr(
+        "jiuwenswarm.server.sandbox.jiuwenbox_runner._win_hidden_kwargs",
+        dict,
     )
 
     _cleanup_stale_win_proxy_ports()
