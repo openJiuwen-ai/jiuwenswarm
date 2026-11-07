@@ -16,6 +16,7 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_GATEWAY_DETACH,
     KIND_HEARTBEAT,
     KIND_REQUEST,
+    KIND_REQUEST_DETACH,
     KIND_REQUEST_DONE,
     KIND_SHUTDOWN,
     cancel_request,
@@ -46,8 +47,10 @@ class WorkerDispatcher:
         self._lock = asyncio.Lock()
         self._runtime: Any = None
         self._attached = False
-        self._queued: list[tuple[int, AgentRequest]] = []
+        self._queued: list[tuple[int, AgentRequest, str]] = []
         self._tasks: dict[asyncio.Task[None], int] = {}
+        self._request_tokens: dict[asyncio.Task[None], str] = {}
+        self._binding_tokens: set[tuple[int, str]] = set()
         self._state_lock = asyncio.Lock()
         self.shutdown_requested = False
         self._draining = False
@@ -59,18 +62,21 @@ class WorkerDispatcher:
             attached = self._attached
             queued = self._queued
             self._queued = []
+            self._binding_tokens.update((generation, token) for generation, _request, token in queued if token)
             live = self._bridge.holder.generation
         if attached:
             await runtime.attach_gateway_connection(self._bridge, self._lock)
-        for generation, request in queued:
-            if self._draining or generation != live:
+        for generation, request, request_token in queued:
+            detached = bool(request_token) and (generation, request_token) not in self._binding_tokens
+            self._binding_tokens.discard((generation, request_token))
+            if self._draining or generation != live or detached:
                 logger.info(
                     "[Worker] dropped queued request_id=%s generation=%s",
                     request.request_id,
                     generation,
                 )
                 continue
-            self._spawn(self._run_request(request, generation), generation)
+            self._spawn(self._run_request(request, generation, request_token), generation, request_token)
 
     async def handle(self, message: dict[str, Any], conn: IpcConnection) -> bool:
         """Handle one frame. Return False when the session should close."""
@@ -103,6 +109,9 @@ class WorkerDispatcher:
         if kind == KIND_GATEWAY_DETACH:
             await self.detach_gateway(message.get("remote"))
             return True
+        if kind == KIND_REQUEST_DETACH:
+            await self._detach_request(message, generation)
+            return True
         if kind == KIND_CANCEL:
             request = cancel_request(message)
             if await self._drop_queued_cancel(request):
@@ -127,10 +136,35 @@ class WorkerDispatcher:
                     error="missing payload",
                 )
                 return True
-            self._spawn(self._run_request(load_agent_request(payload), generation), generation)
+            request_token = str(message.get("request_token") or "")
+            self._spawn(
+                self._run_request(load_agent_request(payload), generation, request_token),
+                generation, request_token,
+            )
             return True
         logger.info("[Worker] ignored ipc kind=%s", kind)
         return True
+
+    async def _detach_request(self, message: dict[str, Any], generation: int) -> None:
+        """Retire a transport stream without cancelling its Session or Team."""
+        token = message.get("request_token")
+        if not isinstance(token, str) or not token:
+            return
+        async with self._state_lock:
+            queued_before = len(self._queued)
+            self._queued = [item for item in self._queued if (item[0], item[2]) != (generation, token)]
+            queued_removed = queued_before - len(self._queued)
+            self._binding_tokens.discard((generation, token))
+            tasks = [task for task, owner in self._tasks.items()
+                     if owner == generation and self._request_tokens.get(task) == token]
+        for task in tasks:
+            task.cancel()
+        logger.info("[Worker] detached transport observer: generation=%s queued=%s active=%s",
+                    generation, queued_removed, len(tasks))
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=_DRAIN_TIMEOUT)
+            if pending:
+                raise RuntimeError("detached request streams ignored cancellation")
 
     async def detach_gateway(self, remote: object = None) -> None:
         """Run Runtime disconnect cleanup once per attached Gateway session."""
@@ -153,6 +187,7 @@ class WorkerDispatcher:
         """Cancel work owned by a supervisor connection that has gone away."""
         async with self._state_lock:
             self._queued = [item for item in self._queued if item[0] != generation]
+            self._binding_tokens = {item for item in self._binding_tokens if item[0] != generation}
             tasks = [task for task, owner in self._tasks.items() if owner == generation]
         for task in tasks:
             task.cancel()
@@ -169,6 +204,7 @@ class WorkerDispatcher:
             self._draining = True
             self.shutdown_requested = True
             self._queued.clear()
+            self._binding_tokens.clear()
             tasks = list(self._tasks)
         for task in tasks:
             task.cancel()
@@ -185,13 +221,15 @@ class WorkerDispatcher:
                 logger.warning("[Worker] dispatch ended during shutdown: %s", exc)
         return not pending
 
-    def _spawn(self, coro: Any, generation: int) -> None:
+    def _spawn(self, coro: Any, generation: int, request_token: str = "") -> None:
         task = asyncio.create_task(coro)
         self._tasks[task] = generation
+        self._request_tokens[task] = request_token
         task.add_done_callback(self._forget_task)
 
     def _forget_task(self, task: asyncio.Task) -> None:
         self._tasks.pop(task, None)
+        self._request_tokens.pop(task, None)
 
     async def _drop_queued_cancel(self, request: AgentRequest) -> bool:
         """Drop a cancel that arrived before Runtime exists. Return True when handled."""
@@ -200,17 +238,17 @@ class WorkerDispatcher:
         async with self._state_lock:
             if self._runtime is not None or self._draining:
                 return self._draining
-            kept: list[tuple[int, AgentRequest]] = []
-            dropped: list[tuple[int, AgentRequest]] = []
-            for generation, queued in self._queued:
+            kept: list[tuple[int, AgentRequest, str]] = []
+            dropped: list[tuple[int, AgentRequest, str]] = []
+            for generation, queued, queued_token in self._queued:
                 same_request = bool(target) and str(queued.request_id or "") == target
                 same_session = bool(session_id) and (queued.session_id or "") == session_id
                 if same_request or same_session:
-                    dropped.append((generation, queued))
+                    dropped.append((generation, queued, queued_token))
                     continue
-                kept.append((generation, queued))
+                kept.append((generation, queued, queued_token))
             self._queued = kept
-        for generation, queued in dropped:
+        for generation, queued, _queued_token in dropped:
             logger.info(
                 "[Worker] cancelled queued request_id=%s generation=%s",
                 queued.request_id,
@@ -225,7 +263,7 @@ class WorkerDispatcher:
             )
         return True
 
-    async def _run_request(self, request: AgentRequest, generation: int) -> None:
+    async def _run_request(self, request: AgentRequest, generation: int, request_token: str = "") -> None:
         async with self._state_lock:
             if self._draining or generation != self._bridge.holder.generation:
                 logger.info(
@@ -240,7 +278,7 @@ class WorkerDispatcher:
                 if len(self._queued) >= _MAX_QUEUED_REQUESTS:
                     overflow = True
                 else:
-                    self._queued.append((generation, request))
+                    self._queued.append((generation, request, request_token))
                     return
             else:
                 overflow = False
