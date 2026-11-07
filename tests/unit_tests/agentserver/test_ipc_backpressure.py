@@ -728,6 +728,12 @@ async def test_real_missing_heartbeats_triggers_transport_watchdog(
 
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", transport)
+    # P3 busy-grace: with in-flight dispatch the verdict defers to the
+    # stall window; pin it small so the frozen-worker kill stays at ~30s.
+    monkeypatch.setattr(
+        "jiuwenswarm.server.supervisor.runtime_supervisor._WORKER_STALL_RESTART", 2.0
+    )
+
     async with _worker("heartbeat-loss", tmp_path, monkeypatch) as (supervisor, process):
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:

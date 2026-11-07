@@ -1455,6 +1455,17 @@ class RuntimeSupervisor:
                 now = time.monotonic()
                 if now - self._last_rx <= _HEARTBEAT_TIMEOUT:
                     continue
+                # P3-fix: transport silence with in-flight dispatches may be the
+                # worker busy on a large-context call, not dead (2026-11-06
+                # 15:04 false kill, llm.log in-flight at input=201814). Defer
+                # the verdict to the 180s stall window while pending>0.
+                if self._pending and (now - self._last_rx) <= _WORKER_STALL_RESTART:
+                    logger.info(
+                        "[Supervisor] heartbeat busy-grace: pending=%d last_rx_age=%.1fs"
+                        " <= %.0fs busy window; defer verdict",
+                        len(self._pending), now - self._last_rx, _WORKER_STALL_RESTART,
+                    )
+                    continue
                 logger.warning(
                     "[Supervisor] runtime worker heartbeat timed out; last_rx_age=%.1fs "
                     "forward_queued=%s generation=%s pid=%s",
