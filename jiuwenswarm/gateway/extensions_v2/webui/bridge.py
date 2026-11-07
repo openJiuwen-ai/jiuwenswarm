@@ -160,12 +160,15 @@ class BrowserBridge:
         """Return the active application package with this id, or None."""
         return self._active_application_package(package_id)
 
-    def package_title(self, package_id: str) -> str:
-        """Navigation title: manifest ``displayName``, else the package id."""
+    def package_title(self, package_id: str) -> dict[str, str]:
+        """Navigation title as ``{zh, en}``: manifest ``display.name``, else the package id."""
         package = self._active_application_package(package_id)
-        return (getattr(package, "display_name", "") if package is not None else "") or package_id
+        names = getattr(package, "display_name", None) if package is not None else None
+        if isinstance(names, Mapping) and names.get("zh") and names.get("en"):
+            return {"zh": names["zh"], "en": names["en"]}
+        return {"zh": package_id, "en": package_id}
 
-    def settings_pages(self) -> list[dict[str, str]]:
+    def settings_pages(self) -> list[dict[str, Any]]:
         """Packages contributing ``application.settings.page``, in publication order (S_10 section 3.1)."""
         return [{"package_id": package.package_id, "title": self.package_title(package.package_id)}
                 for package in self.application_packages()

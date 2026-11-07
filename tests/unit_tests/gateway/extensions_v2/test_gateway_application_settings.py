@@ -47,7 +47,7 @@ def _channel():
 class Package:
     """A Gateway package with splash and settings contributions that records lifecycle events."""
 
-    def __init__(self, package_id: str, slots=("application.splash",), *, title: str = "") -> None:
+    def __init__(self, package_id: str, slots=("application.splash",), *, title: dict | None = None) -> None:
         self.package_id = package_id
         self.slots = slots
         self.title = title
@@ -72,7 +72,7 @@ class Package:
         root.mkdir(parents=True, exist_ok=True)
         match = {"target.package_id": self.package_id}
         return LoadedPackage(
-            package_id=self.package_id, version="1.0.0", root=root, client={}, display_name=self.title,
+            package_id=self.package_id, version="1.0.0", root=root, client={}, display_name=self.title or {},
             ui={"apiVersion": 1, "items": [{"type": "web.slot.contribution", "slot": slot} for slot in self.slots]},
             handlers=(HandlerDeclaration("ui.ready", self.ready, match, "ready"),
                       HandlerDeclaration("ui.closed", self.on_closed, match, "closed")),
@@ -110,7 +110,8 @@ def _dispatch(slot, event, package_id, payload=None, instance_key="main"):
 
 
 async def test_settings_pages_list_declaring_packages_with_their_titles(tmp_path):
-    theme = Package("test.theme", ("application.settings.page", "application.background"), title="Theme Studio")
+    theme = Package("test.theme", ("application.settings.page", "application.background"),
+                    title={"zh": "主题工作室", "en": "Theme Studio"})
     plain = Package("test.plain", ("application.background",))
     untitled = Package("test.untitled", ("application.settings.page",))
     runtime = await _start(tmp_path)
@@ -120,8 +121,8 @@ async def test_settings_pages_list_declaring_packages_with_their_titles(tmp_path
         visited, response = await _call(runtime, "webui.settings.pages")
         assert visited is True and response["ok"] is True
         assert response["payload"] == {"pages": [
-            {"package_id": "test.theme", "title": "Theme Studio"},
-            {"package_id": "test.untitled", "title": "test.untitled"},
+            {"package_id": "test.theme", "title": {"zh": "主题工作室", "en": "Theme Studio"}},
+            {"package_id": "test.untitled", "title": {"zh": "test.untitled", "en": "test.untitled"}},
         ]}
         _, response = await _call(runtime, "webui.dispatch", _dispatch("application.settings.page", "ui.ready",
                                                                         "test.theme"))
@@ -177,7 +178,8 @@ async def test_splash_order_disable_and_reset_are_saved_across_restarts(tmp_path
             runtime.publish(package.loaded(tmp_path / package.package_id))
         _, response = await _call(runtime, "webui.splash.settings")
         assert [item["package_id"] for item in response["payload"]["providers"]] == ["test.p1", "test.p2", "test.p3"]
-        assert response["payload"]["providers"][0] == {"package_id": "test.p1", "title": "test.p1", "skippable": False,
+        assert response["payload"]["providers"][0] == {"package_id": "test.p1", "title": {"zh": "test.p1", "en": "test.p1"},
+                                                      "skippable": False,
                                                       "max_duration_ms": 60000, "enabled": True}
         _, response = await _call(runtime, "webui.splash.settings.update", {"order": ["test.p3", "test.p1"]})
         assert [item["package_id"] for item in response["payload"]["providers"]] == ["test.p3", "test.p1", "test.p2"]
@@ -296,12 +298,14 @@ def create_extension():
 def _splash_zip(tmp_path: Path, log: Path, version: str) -> Path:
     source = tmp_path / "src" / version
     (source / "demo_splash").mkdir(parents=True)
-    (source / "manifest.yaml").write_text(
-        "schemaVersion: 1\npackage:\n  id: demo.splash\n  version: " + version + "\ndomain: gateway\n"
-        "extensions:\n  - id: demo\n    runtime: backend\n    module: demo_splash/extension.py\n"
-        "ui:\n  apiVersion: 1\n  items:\n    - type: web.slot.contribution\n      slot: application.splash\n",
-        encoding="utf-8",
-    )
+    (source / "manifest.json").write_text(json.dumps({
+        "schemaVersion": 1, "package_type": "extension",
+        "package": {"id": "demo.splash", "version": version, "domain": "gateway"},
+        "extensions": [{"id": "demo", "runtime": "backend", "module": "demo_splash/extension.py"}],
+        "ui": {"apiVersion": 1, "items": [
+            {"type": "web.slot.contribution", "id": "demo.splash", "slot": "application.splash"},
+        ]},
+    }), encoding="utf-8")
     (source / "demo_splash" / "extension.py").write_text(SPLASH_ENTRY.format(log=str(log)), encoding="utf-8")
     archive = tmp_path / f"demo-{version}.zip"
     with zipfile.ZipFile(archive, "w") as bundle:

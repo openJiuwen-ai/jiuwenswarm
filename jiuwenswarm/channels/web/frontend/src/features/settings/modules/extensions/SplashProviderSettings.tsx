@@ -13,6 +13,7 @@ import {
   type SplashSettings,
 } from '../../../webui/applicationSettings';
 import { APPEARANCE_PROVIDER_KEY, readItem } from '../../../webui/splash/launch';
+import { resolveLocalizedText } from '../../../webui/renderer/useLocalizedText';
 import { SettingRow } from '../../components/SettingRow';
 import type { SettingsCustomItemProps } from '../../registry/types';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
@@ -21,7 +22,7 @@ import './ExtensionsSettings.css';
 type LoadState = 'loading' | 'ready' | 'error';
 
 export function SplashProviderSettings({ disabled }: SettingsCustomItemProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { isConnected, request } = useSettingsServices();
   const [settings, setSettings] = useState<SplashSettings | null>(null);
   const [loadState, setLoadState] = useState<LoadState>('loading');
@@ -76,7 +77,7 @@ export function SplashProviderSettings({ disabled }: SettingsCustomItemProps) {
   return (
     <>
       {rows.map((provider, index) => {
-        const name = provider.title;
+        const name = resolveLocalizedText(provider.title, i18n.resolvedLanguage ?? i18n.language ?? 'zh');
         const move = (delta: -1 | 1) => {
           const order = movedOrder(rows, provider.packageId, delta);
           if (order) void update({ order });

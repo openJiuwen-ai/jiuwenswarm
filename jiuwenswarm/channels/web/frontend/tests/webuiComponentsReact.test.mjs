@@ -3463,6 +3463,11 @@ test('application settings answers are validated and the shown order follows the
     { package_id: 'pkg.a', title: 'Aurora' }, { package_id: 'pkg.a', title: 'Again' }, { package_id: '', title: 'x' },
     { package_id: 'pkg.b' }, 'pkg.c',
   ] }), [{ packageId: 'pkg.a', title: 'Aurora' }]);
+  // Manifest display.name arrives as { zh, en }; both languages are required and extra fields are dropped.
+  assert.deepEqual(parseSettingsPages({ pages: [
+    { package_id: 'pkg.l', title: { zh: '主题背景', en: 'Theme background', extra: 1 } },
+    { package_id: 'pkg.m', title: { zh: '只有中文' } }, { package_id: 'pkg.n', title: { zh: '', en: 'Blank' } },
+  ] }), [{ packageId: 'pkg.l', title: { zh: '主题背景', en: 'Theme background' } }]);
   assert.deepEqual(parseSettingsPages(null), []);
   const settings = parseSplashSettings({ customized: false, providers: [
     { package_id: 'pkg.a', title: 'A', skippable: true, max_duration_ms: 9500, enabled: true },
@@ -3682,6 +3687,28 @@ test('Extensions settings lists splash providers and saves order, switches and r
   } finally {
     await view.unmount();
     window.localStorage.removeItem('workswarm.appearance.provider');
+  }
+});
+
+test('Extensions settings shows localized plugin names in the interface language', async () => {
+  const services = settingsRequest(() => ({ customized: false, providers: [
+    { package_id: 'pkg.l', title: { zh: '主题背景', en: 'Theme background' }, skippable: true, max_duration_ms: 9500,
+      enabled: true },
+  ] }));
+  const previousLanguage = i18n.language;
+  await act(async () => i18n.changeLanguage('zh'));
+  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
+    request: services.request }, createElement(SplashProviderSettings, { disabled: false })));
+  const name = () => view.container.querySelector('[data-testid="settings-extensions-splash-item"]').textContent;
+  try {
+    assert.equal(name(), '主题背景');
+    await act(async () => i18n.changeLanguage('en'));
+    assert.equal(name(), 'Theme background');
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-up-btn"]').getAttribute('aria-label'),
+      i18n.t('settingsPanel.extensions.splash.moveUp', { name: 'Theme background' }));
+  } finally {
+    await view.unmount();
+    await act(async () => i18n.changeLanguage(previousLanguage));
   }
 });
 

@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | `S_10 / application-settings` |
 | 所属模块 | Gateway `webui/`（设置槽位、宿主方法、开场偏好、导入与导出）、`management/`（包释放前关闭开场）；`channels/web/app_web.py`（导入与导出的转发）；Web 前端 `features/settings/`（“扩展”模块与插件设置项）与 `features/webui/`（`FileImport`、导入导出服务、开场顺序） |
-| 最近一次修订日期 | 2026-11-06 |
-| 契约状态 | 已实现（2026-11-05 修订：导入与导出对远程浏览器同样开放；2026-11-06 修订：插件设置页在设置导航中单独成项） |
+| 最近一次修订日期 | 2026-11-07 |
+| 契约状态 | 已实现（2026-11-05 修订：导入与导出对远程浏览器同样开放；2026-11-06 修订：插件设置页在设置导航中单独成项；2026-11-07 修订：标题取 `display.name` 并按语言显示） |
 | 关联文档 | [F_13](../features/F_13_application-settings-page.md)、[S_09 启动门控与开场](S_09_startup-splash.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_01 运行时](S_01_gateway-extension-runtime.md)、[S_17 组件属性](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) §4.25 |
 
 ## 1. 范围与术语
@@ -28,15 +28,18 @@
 
 `application.settings.page`：应用级、`list`，接受普通组件树（`MediaSurface` 等专用根组件不可用）。
 
-```yaml
-ui:
-  apiVersion: 1
-  items:
-    - type: web.slot.contribution
-      slot: application.settings.page
+```json
+{
+  "ui": {
+    "apiVersion": 1,
+    "items": [{ "type": "web.slot.contribution", "id": "theme.settings", "slot": "application.settings.page" }]
+  }
+}
 ```
 
-- 导航标题取 manifest 的 `package.displayName`，缺省时取包标识。
+- 导航标题取 manifest.json 的 `display.name`，按 `{zh, en}` 下发，前端按界面语言显示；单个字符串按双语同值处理，
+  只有一种语言时另一种取同值，缺省或为空时两种语言都取包标识。`webui.settings.pages` 与 `webui.splash.settings`
+  中的 `title` 均为此对象。
 - 前端设置导航中，每个设置页包单独一项，排在宿主“扩展”模块之后，顺序同 `webui.settings.pages`；名称为上条的标题，图标统一。
   选中该项时只挂载该包，实例键为 `main`。“扩展”模块只含宿主功能（第 4 节的开场顺序与停用）。
 - 宿主访问策略隐藏“扩展”模块时，不显示插件项，也不发出 `webui.settings.pages`。

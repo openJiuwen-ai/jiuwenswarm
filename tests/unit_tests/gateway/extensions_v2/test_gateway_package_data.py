@@ -204,12 +204,11 @@ def create_extension():
 def _probe_zip(tmp_path: Path, version: str = "0.1.0") -> Path:
     source = tmp_path / "src" / version
     source.mkdir(parents=True)
-    (source / "manifest.yaml").write_text(
-        "schemaVersion: 1\npackage:\n  id: demo.data\n"
-        f"  version: {version}\ndomain: gateway\nextensions:\n"
-        "  - id: demo\n    runtime: backend\n    module: extension.py\n",
-        encoding="utf-8",
-    )
+    (source / "manifest.json").write_text(json.dumps({
+        "schemaVersion": 1, "package_type": "extension",
+        "package": {"id": "demo.data", "version": version, "domain": "gateway"},
+        "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+    }), encoding="utf-8")
     (source / "extension.py").write_text(PROBE_ENTRY, encoding="utf-8")
     archive = tmp_path / f"demo.data-{version}.zip"
     with zipfile.ZipFile(archive, "w") as bundle:

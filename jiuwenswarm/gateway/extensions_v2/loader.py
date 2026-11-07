@@ -49,8 +49,8 @@ class LoadedPackage:
     handlers: tuple[HandlerDeclaration, ...]
     ui: Mapping[str, Any] = field(default_factory=dict)
     client: Mapping[str, Any] = field(default_factory=dict)
-    #: ``package.displayName``; the host shows it in navigation, never as code.
-    display_name: str = ""
+    #: ``display.name`` as ``{zh, en}`` (empty when absent); the host shows it in navigation, never as code.
+    display_name: Mapping[str, str] = field(default_factory=dict)
 
 
 def load_gateway_packages(install_dir: Path) -> list[LoadedPackage]:
@@ -129,17 +129,31 @@ def _read_manifest(root: Path) -> dict[str, Any]:
         "modules": _modules(raw.get("extensions"), root),
         "ui": _optional_mapping(raw.get("ui"), "ui"),
         "client": _optional_mapping(raw.get("client"), "client"),
-        "display_name": _display_name(package.get("displayName")),
+        "display_name": _display_name(raw.get("display")),
     }
 
 
-def _display_name(value: object) -> str:
-    """Read the optional display name; anything but a short string is ignored."""
+def _display_name(display: object) -> dict[str, str]:
+    """Read ``display.name`` as ``{zh, en}``; an absent, empty or oversized name is ignored.
 
-    if not isinstance(value, str):
-        return ""
-    text = " ".join(value.split())
-    return text if len(text.encode("utf-8")) <= 200 else ""
+    A single string counts for both languages and a missing language falls back to the
+    other one, like the package catalog does.
+    """
+
+    value = display.get("name") if isinstance(display, Mapping) else None
+    if isinstance(value, str):
+        value = {"zh": value, "en": value}
+    if not isinstance(value, Mapping):
+        return {}
+    names: dict[str, str] = {}
+    for language in ("zh", "en"):
+        text = value.get(language)
+        text = " ".join(text.split()) if isinstance(text, str) else ""
+        if text and len(text.encode("utf-8")) <= 200:
+            names[language] = text
+    if not names:
+        return {}
+    return {"zh": names.get("zh") or names["en"], "en": names.get("en") or names["zh"]}
 
 
 def _optional_mapping(value: object, field_name: str) -> Mapping[str, Any]:

@@ -120,7 +120,7 @@ def _splash_candidates(install_dir: Path) -> bool:
     which packages are active.
     """
     try:
-        manifests = (*install_dir.glob("*/manifest.yaml"), *install_dir.glob("*/*/manifest.yaml"))
+        manifests = (*install_dir.glob("*/manifest.json"), *install_dir.glob("*/*/manifest.json"))
         return any(_SPLASH_SLOT_MARKER in manifest.read_text(encoding="utf-8", errors="ignore")
                    for manifest in manifests)
     except OSError:

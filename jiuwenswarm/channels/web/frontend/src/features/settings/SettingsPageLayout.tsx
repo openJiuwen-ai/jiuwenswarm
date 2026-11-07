@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, useSyncExternalStore, type HTMLAttribut
 import { Check, CircleAlert, Puzzle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Loading } from '../../components/ui';
+import { resolveLocalizedText } from '../webui/renderer/useLocalizedText';
 import { SettingItemRenderer, SettingsConfirmDialog, SettingsSection } from './components';
 import type { SettingsAccessResult, SettingsModuleDefinition, SettingsPageDefinition } from './registry/types';
 import { restrictSettingsAccess } from './registry/buildSettingsPageDefinition';
@@ -113,7 +114,8 @@ export function SettingsPageLayout({
   initialModuleId?: SettingsModuleTarget;
   sidebar?: SettingsSidebarControls;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n.resolvedLanguage ?? i18n.language ?? 'zh';
   const { definition, loadError, contributionErrors } = usePluginSettings(baseDefinition);
   const { saveQueue, unsavedChanges } = useSettingsServices();
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
@@ -201,12 +203,12 @@ export function SettingsPageLayout({
                     aria-current={activeEntry.id === entry.id ? 'page' : undefined}
                     data-testid="settings-nav-button"
                     data-variant={entry.id}
-                    title={entry.page?.title}
+                    title={entry.page ? resolveLocalizedText(entry.page.title, language) : undefined}
                     onClick={() => selectModule(entry.id)}
                     disabled={saveStatus.status === 'saving'}
                   >
                     <Icon aria-hidden />
-                    <span>{entry.module ? t(entry.module.module.titleKey) : entry.page?.title}</span>
+                    <span>{entry.module ? t(entry.module.module.titleKey) : entry.page ? resolveLocalizedText(entry.page.title, language) : null}</span>
                   </button>
                 );
               })}
@@ -219,7 +221,7 @@ export function SettingsPageLayout({
           <div className="settings-page__content">
             <header className="settings-page__header" data-testid="settings-header">
               <div className="settings-page__header-copy">
-                <h1 data-testid="settings-module-title">{active ? t(active.module.titleKey) : activePage?.title}</h1>
+                <h1 data-testid="settings-module-title">{active ? t(active.module.titleKey) : activePage ? resolveLocalizedText(activePage.title, language) : null}</h1>
                 {active?.module.descriptionKey ? <p data-testid="settings-module-description">{t(active.module.descriptionKey)}</p> : null}
               </div>
               {saveStatus.status === 'saving' ? (

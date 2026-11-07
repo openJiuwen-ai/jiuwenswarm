@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | `S_09 / startup-splash` |
 | 所属模块 | Gateway `webui/`（声明、提供者、平台帧与 `ui.closed`）；`channels/web/app_web.py`（候选提示）；Electron 主进程与预加载（启动标识）；Web 前端 `features/webui/`（门控与开场队列） |
-| 最近一次修订日期 | 2026-11-05 |
+| 最近一次修订日期 | 2026-11-07 |
 | 契约状态 | 已实现；开场顺序、停用与 `disabled` / `removed` 原因见 [S_10](S_10_application-settings.md)（EXTV2-GW-12）；开场预览（第 3.3 节）已实现（EXTV2-GW-13，[F_14](../features/F_14_splash-preview.md)） |
 | 关联文档 | [F_12](../features/F_12_startup-gate-and-splash.md)、[S_07 媒体容器](S_07_media-surface.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_08 受控外观](S_08_appearance.md) |
 
@@ -15,16 +15,23 @@
 
 包在 manifest 的 `ui.items` 中声明开场：
 
-```yaml
-ui:
-  apiVersion: 1
-  items:
-    - type: web.slot.contribution
-      slot: application.splash
-      splash:              # 可省略
-        skippable: true    # 默认 false
-        maxDurationMs: 9500
+```json
+{
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "theme.splash",
+        "slot": "application.splash",
+        "splash": { "skippable": true, "maxDurationMs": 9500 }
+      }
+    ]
+  }
+}
 ```
+
+`splash` 可省略；`skippable` 默认 `false`。
 
 | 字段 | 约束 |
 | --- | --- |

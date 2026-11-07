@@ -11,14 +11,15 @@ from http.server import ThreadingHTTPServer
 from jiuwenswarm.channels.web import app_web
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler, _gateway_install_dir, _splash_candidates
 
-MANIFEST = "schemaVersion: 1\npackage: {{id: {id}, version: 1.0.0}}\ndomain: gateway\nui:\n  items:\n{items}"
-
-
 def _install(root, package_id, slot, *, versioned=True):
     directory = root / package_id / "1.0.0" if versioned else root / package_id
     directory.mkdir(parents=True)
-    items = f"    - type: web.slot.contribution\n      slot: {slot}\n"
-    (directory / "manifest.yaml").write_text(MANIFEST.format(id=package_id, items=items), encoding="utf-8")
+    manifest = {
+        "schemaVersion": 1, "package_type": "extension",
+        "package": {"id": package_id, "version": "1.0.0", "domain": "gateway"},
+        "ui": {"apiVersion": 1, "items": [{"type": "web.slot.contribution", "id": f"{package_id}.view", "slot": slot}]},
+    }
+    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def test_install_dir_follows_the_gateway_configuration(tmp_path, monkeypatch):

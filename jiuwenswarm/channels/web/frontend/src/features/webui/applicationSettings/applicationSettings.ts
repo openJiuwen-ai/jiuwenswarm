@@ -3,20 +3,23 @@
  * compute the shown and adjusted orders. No React or client dependency; callers pass the request function.
  */
 
+import type { LocalizedText } from '../catalog/components/localizedText.ts';
+
 export const SETTINGS_PAGE_SLOT_ID = 'application.settings.page';
 export const SETTINGS_PAGE_INSTANCE_KEY = 'main';
 export const SETTINGS_PAGES_METHOD = 'webui.settings.pages';
 export const SPLASH_SETTINGS_METHOD = 'webui.splash.settings';
 export const SPLASH_SETTINGS_UPDATE_METHOD = 'webui.splash.settings.update';
 
+/** Titles come from the manifest ``display.name``: one string or ``{zh, en}``, resolved when shown. */
 export interface ApplicationSettingsPage {
   packageId: string;
-  title: string;
+  title: LocalizedText;
 }
 
 export interface SplashProviderSetting {
   packageId: string;
-  title: string;
+  title: LocalizedText;
   skippable: boolean;
   maxDurationMs: number;
   enabled: boolean;
@@ -35,13 +38,22 @@ function text(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+function title(value: unknown): value is LocalizedText {
+  if (text(value)) return true;
+  return isRecord(value) && text(value.zh) && text(value.en);
+}
+
+function titleOf(value: LocalizedText): LocalizedText {
+  return typeof value === 'string' ? value : { zh: value.zh, en: value.en };
+}
+
 export function parseSettingsPages(value: unknown): ApplicationSettingsPage[] {
   if (!isRecord(value) || !Array.isArray(value.pages)) return [];
   const seen = new Set<string>();
   return value.pages.flatMap((item) => {
-    if (!isRecord(item) || !text(item.package_id) || !text(item.title) || seen.has(item.package_id)) return [];
+    if (!isRecord(item) || !text(item.package_id) || !title(item.title) || seen.has(item.package_id)) return [];
     seen.add(item.package_id);
-    return [{ packageId: item.package_id, title: item.title }];
+    return [{ packageId: item.package_id, title: titleOf(item.title) }];
   });
 }
 
@@ -49,13 +61,13 @@ export function parseSplashSettings(value: unknown): SplashSettings | null {
   if (!isRecord(value) || !Array.isArray(value.providers) || typeof value.customized !== 'boolean') return null;
   const seen = new Set<string>();
   const providers = value.providers.flatMap((item) => {
-    if (!isRecord(item) || !text(item.package_id) || !text(item.title) || seen.has(item.package_id)
+    if (!isRecord(item) || !text(item.package_id) || !title(item.title) || seen.has(item.package_id)
       || typeof item.skippable !== 'boolean' || typeof item.enabled !== 'boolean'
       || typeof item.max_duration_ms !== 'number' || !Number.isInteger(item.max_duration_ms)) return [];
     seen.add(item.package_id);
     return [{
       packageId: item.package_id,
-      title: item.title,
+      title: titleOf(item.title),
       skippable: item.skippable,
       maxDurationMs: item.max_duration_ms,
       enabled: item.enabled,

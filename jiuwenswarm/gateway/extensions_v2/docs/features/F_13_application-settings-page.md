@@ -7,7 +7,7 @@
 | 类型 | feature |
 | 编号 / slug | `F_13 / application-settings-page` |
 | 建档日期 | 2026-11-05 |
-| 后续修订 | 2026-11-05：导入与导出对远程浏览器同样开放（D-07）；2026-11-06：每个插件的设置页在设置导航中单独一项，“扩展”模块只放宿主功能（D-08）；与 AgentServer 插件设置并存（D-09） |
+| 后续修订 | 2026-11-05：导入与导出对远程浏览器同样开放（D-07）；2026-11-06：每个插件的设置页在设置导航中单独一项，“扩展”模块只放宿主功能（D-08）；与 AgentServer 插件设置并存（D-09）；2026-11-07：标题改取 manifest.json 的 `display.name` 并按界面语言显示（D-10） |
 | 计划条目 | [EXTV2-GW-12](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 1.1、3.3 节 |
 | 方案成熟度 | 已确认，已实现 |
@@ -42,7 +42,7 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 范围：`application.settings.page` 槽位与前端扩展设置模块；宿主方法；开场偏好的保存与生效；
 `disabled` / `removed`；`FileImport` 组件、导入凭据与上传路由；`ops.ui.download` 与下载路由；`app_web` 转发。
 
-非目标：插件标题的多语言（取 manifest `displayName`）；导入进度的断点续传；设置页搜索；
+非目标：导入进度的断点续传；设置页搜索；
 `FileImport` 之外的通用远程上传（概览第 1.3 节仍推迟）。
 
 ## 3. 设计约束、假设与待决问题
@@ -139,6 +139,15 @@ S_18 说明 Gateway 域插件目录未接入该接口。合入时两套机制并
 目标分支的侧栏收起与悬浮、初始模块、行内保存错误和插件目录错误提示同样作用于插件项。目标分支已移除布局底部通用的
 `application.settings` 宿主，本特性不恢复。统一两套机制（例如让 Gateway 包也按 location 声明设置位置）留待后续评估。
 
+#### D-10 标题取 manifest.json 的 `display.name`（2026-11-07）
+
+`releases/0.2.9.beta3` 把系统插件包统一为 `manifest.json`：包归属写在 `package.domain`，展示信息写在 `display`，
+所有文案为 `{zh, en}`（[系统插件包指南](../../../../extensions_v2/docs/designs/system-plugin-package-guide.md)）。
+原方案读取的 `package.displayName` 不再存在，插件项会退回包标识。现在 Gateway 加载时按包目录的同一规则读取
+`display.name`：单个字符串按双语同值，缺一种语言时取另一种，为空或超过 200 字节时忽略；`webui.settings.pages`
+与 `webui.splash.settings` 的 `title` 改为 `{zh, en}`，前端设置导航、页头与启动开场列表按界面语言显示，切换语言即时生效。
+前端仍接受字符串标题，以兼容旧的应答。放弃的做法：由 Gateway 选定一种语言（Gateway 不知道浏览器的界面语言）。
+
 ### 4.3 替代方案与排除理由
 
 | 方案 | 排除理由 |
@@ -161,7 +170,7 @@ S_18 说明 Gateway 域插件目录未接入该接口。合入时两套机制并
 | Gateway `webui/http.py` | 上传与下载路由 |
 | Gateway `webui/component_rules.py` | `FileImport` |
 | Gateway `webui/registry.py` | 单个实例的退役（清除帧并预留版本号） |
-| Gateway `runtime.py`、`bootstrap.py`、`config.py`、`loader.py`、`handler_ops/ui.py` | 宿主方法进入链路；注册处理器；`uploads.max_bytes`；`displayName`；`ops.ui.download` |
+| Gateway `runtime.py`、`bootstrap.py`、`config.py`、`loader.py`、`handler_ops/ui.py` | 宿主方法进入链路；注册处理器；`uploads.max_bytes`；`display.name` 标题（D-10）；`ops.ui.download` |
 | Gateway `management/registry.py` | 释放活动包前以 `removed` 关闭开场；卸载时清除偏好记录 |
 | `channels/web/app_web.py` | 转发 `/extension-uploads/`（流式请求体）与 `/extension-downloads/` |
 | 前端 `catalog/`、`renderer/adapters/webuiFileImport/` | `FileImport` 规则与适配器 |
@@ -192,7 +201,7 @@ S_02 槽位表、概览、计划与模块 `AGENTS.md`；新增中英文界面文
 
 | 编号 | 场景 | 通过条件 |
 | --- | --- | --- |
-| F_13-V-01 | 设置槽位与页面列表 | 只列出声明该槽位的活动包；标题取 `displayName`；定向 `ui.ready` 受请求策略约束 |
+| F_13-V-01 | 设置槽位与页面列表 | 只列出声明该槽位的活动包；标题取 `display.name`（`{zh, en}`）；定向 `ui.ready` 受请求策略约束 |
 | F_13-V-02 | 宿主方法与请求策略 | 要求登录的 USER 策略拒绝未认证的帧，认证后应答；无 USER Handler 时仍由 Gateway 应答 |
 | F_13-V-03 | 开场偏好 | 安装顺序、用户顺序、恢复默认、停用、非法参数；重启后保留；卸载后删除 |
 | F_13-V-04 | `disabled` / `removed` | 正在播放的实例被清除并通知一次；版本号不复用 |
@@ -225,7 +234,7 @@ F_13-V-10（2026-11-05，D-08 之前的页签布局）：验证页（本地验�
 
 | 场景 | 结果 |
 | --- | --- |
-| 打开“扩展”模块 | 依次发出 `webui.splash.settings`、`webui.settings.pages` 与设置页 `ui.ready`；三个提供者按安装顺序，标为默认顺序；两个页签标题取 `displayName`，插件页面渲染 |
+| 打开“扩展”模块 | 依次发出 `webui.splash.settings`、`webui.settings.pages` 与设置页 `ui.ready`；三个提供者按安装顺序，标为默认顺序；两个页签标题取插件显示名，插件页面渲染 |
 | 下移第一个提供者 | 界面与 `webui.splash.providers` 都变为新顺序，`customized` 为 true |
 | 停用一个提供者 | 开关关闭；`webui.splash.providers` 不再包含它；`host/splash.json` 记录用户顺序与停用项 |
 | 恢复默认并重新启用 | 回到安装顺序，`customized` 为 false |
@@ -258,7 +267,6 @@ F_13-V-11（2026-11-06，D-08）：
 
 ## 9. 风险与已知遗留
 
-- 插件标题不支持多语言，取 manifest `displayName`。
 - 远程浏览器使用导入与导出时，凭据随请求地址经网络传输；部署方应使用 HTTPS。两台机器之间的导入与导出尚未实测。
 - 桌面打包版与真实 Gateway 的联调随壁纸插件进行。
 - Gateway 插件设置页与 AgentServer 插件设置（S_18）是两套机制，统一方式待评估（D-09）。

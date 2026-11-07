@@ -2,6 +2,7 @@
 
 """Host-mediated file import and export for application UI packages (F_13)."""
 
+import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -300,11 +301,12 @@ async def test_start_removes_imports_left_by_an_earlier_process(tmp_path):
     await runtime.shutdown()
     install = tmp_path / "install" / PACKAGE / "1.0.0"
     (install / "theme").mkdir(parents=True)
-    (install / "manifest.yaml").write_text(
-        f"schemaVersion: 1\npackage:\n  id: {PACKAGE}\n  version: 1.0.0\ndomain: gateway\n"
-        "extensions:\n  - id: theme\n    runtime: backend\n    module: theme/extension.py\n"
-        f"ui:\n  apiVersion: 1\n  items:\n    - type: web.slot.contribution\n      slot: {SLOT}\n",
-        encoding="utf-8")
+    (install / "manifest.json").write_text(json.dumps({
+        "schemaVersion": 1, "package_type": "extension",
+        "package": {"id": PACKAGE, "version": "1.0.0", "domain": "gateway"},
+        "extensions": [{"id": "theme", "runtime": "backend", "module": "theme/extension.py"}],
+        "ui": {"apiVersion": 1, "items": [{"type": "web.slot.contribution", "id": "theme.page", "slot": SLOT}]},
+    }), encoding="utf-8")
     (install / "theme" / "extension.py").write_text(
         "class Extension:\n    def register(self, registrar):\n        pass\n\n\n"
         "def create_extension():\n    return Extension()\n", encoding="utf-8")

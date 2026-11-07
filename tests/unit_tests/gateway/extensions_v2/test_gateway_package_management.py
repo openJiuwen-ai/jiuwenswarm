@@ -214,9 +214,11 @@ def _helper_package_zip(folder: Path, answer: str) -> Path:
     """demo.gateway 0.1.0 whose entry imports a sibling module holding ``answer``."""
     source = folder / "src"
     source.mkdir(parents=True)
-    (source / "manifest.yaml").write_text(
-        "schemaVersion: 1\npackage:\n  id: demo.gateway\n  version: 0.1.0\ndomain: gateway\n"
-        "extensions:\n  - id: demo\n    runtime: backend\n    module: extension.py\n", encoding="utf-8")
+    (source / "manifest.json").write_text(json.dumps({
+        "schemaVersion": 1, "package_type": "extension",
+        "package": {"id": "demo.gateway", "version": "0.1.0", "domain": "gateway"},
+        "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+    }), encoding="utf-8")
     (source / "extension.py").write_text(HELPER_ENTRY, encoding="utf-8")
     (source / "helpers.py").write_text(f"ANSWER = {answer!r}\n", encoding="utf-8")
     archive = folder / "demo.gateway-0.1.0.zip"
