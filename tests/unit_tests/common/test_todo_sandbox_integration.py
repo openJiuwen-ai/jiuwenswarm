@@ -23,19 +23,11 @@ from jiuwenbox.server.auth import BearerTokenAuthMiddleware
 from jiuwenbox.server.routes import sandbox as routes
 from jiuwenbox.server.runtime.process import ProcessRuntime
 from jiuwenbox.server.sandbox_manager import (
+    CodePolicyDenialError,
     SandboxManager,
     SandboxNotFoundError,
     SandboxStateError,
 )
-
-try:
-    from jiuwenbox.server.sandbox_manager import CodePolicyDenialError
-except ImportError:  # pragma: no cover - older agent-security jiuwenbox pin
-    # 86e8d62 等无 Detours 的 pin 尚无此类；CI 钉死后跳过本集成模块。
-    pytest.skip(
-        "CodePolicyDenialError requires newer jiuwenbox than locked agent-security",
-        allow_module_level=True,
-    )
 from jiuwenbox.supervisor.daemon_ipc import (
     LISTENER_FD_ENV,
     REQUEST_TYPE_SHUTDOWN,
