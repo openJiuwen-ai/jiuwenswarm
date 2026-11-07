@@ -8652,6 +8652,7 @@ class JiuWenSwarmDeepAdapter:
                 wanted_key,
             )
         elif permission_config.get("enabled", False):
+            # 建轨 key 由 _build_permission_rail_for_agent → build_permission_rail 组。
             self._permission_rail = self._build_permission_rail_for_agent(
                 config=config_base or {},
                 llm=self._model,
@@ -8666,7 +8667,7 @@ class JiuWenSwarmDeepAdapter:
                 self._permission_rail.update_config(permission_config)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] _permission_rail newly created key=%s",
-                    getattr(self._permission_rail, "permission_key", wanted_key),
+                    getattr(self._permission_rail, "permission_key", None),
                 )
                 # Keep SkillAuthorizationRail on the same manager key as the
                 # permission rail (DENY pre-check without Skill overlay).
