@@ -194,12 +194,13 @@ class TransferManager:
 
     async def _prepare_upload(self, target: RenderTarget, node_key: str, generation: str,
                               files: dict[str, int], target_is_current: Callable[[], bool]) -> dict[str, Any]:
-        """Prepare one ticket under the caller's file-work lease, including cancellation cleanup."""
-        await self.expire()
-        if not target_is_current():
-            raise HostRequestError(CODE_TARGET_INACTIVE, "the import control changed while preparing the import")
-        # Records change synchronously and the new ticket is counted before any
-        # await, so concurrent requests of one connection cannot exceed the limit.
+        """Prepare one ticket under the caller's file-work lease, including cancellation cleanup.
+
+        Records change synchronously and the new ticket is counted before the only await (creating its
+        directory), so concurrent requests of one connection cannot exceed the limit, and the target
+        validated by the caller is still current here.
+        """
+        self.expire()
         own = sorted((item for item in self.uploads.values() if item.connection_id == target.connection_id),
                      key=lambda item: item.created)
         stale = own[:max(0, len(own) - MAX_OPEN_UPLOADS + 1)]
@@ -214,9 +215,9 @@ class TransferManager:
             files=files, directory=directory, created=self._clock(),
         )
         self.uploads[upload_id] = upload
+        for item in stale:
+            self._discard_later(item)
         try:
-            for item in stale:
-                await self._discard(item)
             await run_file_operation(partial(directory.mkdir, parents=True))
         except BaseException:
             self._forget(upload)
@@ -237,7 +238,7 @@ class TransferManager:
 
         Access comes from the ticket alone, so a remote browser holding it may upload.
         """
-        await self.expire()
+        self.expire()
         upload = self.uploads.get(upload_id) if TOKEN.fullmatch(upload_id or "") else None
         if upload is None or relative not in upload.files:
             return 404
@@ -329,10 +330,7 @@ class TransferManager:
         if filename is not None and not isinstance(filename, str):
             raise ValueError("invalid download filename")
         name = clean_filename(current.name if filename is None else filename)
-        await self.expire()
-        if self.runtime.browser.generations.get(package_id) != generation:
-            # Released while expired tickets were removed: offer nothing the browser could not fetch.
-            raise ValueError("package call belongs to an inactive activation")
+        self.expire()
         token = uuid4().hex
         self.downloads[token] = Download(token=token, connection_id=connection_id, package_id=package_id,
                                          generation=generation, path=current, filename=name, created=self._clock())
@@ -360,20 +358,19 @@ class TransferManager:
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
-    async def expire(self) -> None:
-        """Drop expired tickets and their directories.
+    def expire(self) -> None:
+        """Drop expired tickets now and delete their directories in the background.
 
-        The records leave synchronously before any directory is deleted, so
-        concurrent callers each remove a ticket at most once.
+        Nothing awaits here, so callers keep the state they validated; uninstall waits for the
+        background deletions before it removes the package data (``BrowserBridge.settle``).
         """
         now = self._clock()
         expired = [item for item in self.uploads.values() if now - item.created > UPLOAD_TTL_S]
         for upload in expired:
             self.uploads.pop(upload.upload_id, None)
+            self._discard_later(upload)
         for token in [key for key, item in self.downloads.items() if now - item.created > DOWNLOAD_TTL_S]:
             self.downloads.pop(token, None)
-        for upload in expired:
-            await self._discard(upload)
 
     def release(self, *, connection_id: str | None = None, package_id: str | None = None) -> list[Upload]:
         """Invalidate the tickets of a closed connection or a released package."""
@@ -401,6 +398,9 @@ class TransferManager:
         """Drop this ticket's record unless something else replaced or removed it."""
         if self.uploads.get(upload.upload_id) is upload:
             del self.uploads[upload.upload_id]
+
+    def _discard_later(self, upload: Upload) -> None:
+        self.runtime.browser.spawn(self._discard(upload))
 
     async def _discard(self, upload: Upload) -> None:
         await run_file_operation(partial(shutil.rmtree, upload.directory, True))

@@ -380,11 +380,11 @@ async def test_concurrent_expiry_removes_each_ticket_once(tmp_path):
                   for _ in range(2)]
         clock[0] += transfers_module.UPLOAD_TTL_S + 1
         transfers._discard = slow_discard
-        first, second = asyncio.create_task(transfers.expire()), asyncio.create_task(transfers.expire())
-        await asyncio.sleep(0)
+        transfers.expire()
+        transfers.expire()
         assert transfers.uploads == {}, "records leave before any directory is deleted"
         gate.set()
-        await asyncio.gather(first, second)
+        await runtime.browser.settle()
         assert sorted(removed) == sorted(opened)
         uploads = runtime.package_data_dir(PACKAGE) / ".uploads"
         assert not any((uploads / upload_id).exists() for upload_id in opened)
@@ -496,14 +496,14 @@ async def test_cancelled_import_preparation_finishes_its_directory_cleanup_befor
         await runtime.shutdown()
 
 
-@pytest.mark.parametrize("phase", ["expiry", "directory"])
 @pytest.mark.parametrize("change", ["reload", "rerender", "disconnect"])
-async def test_import_preparation_refuses_a_target_changed_while_waiting(tmp_path, monkeypatch, phase, change):
+async def test_import_preparation_refuses_a_target_changed_while_waiting(tmp_path, monkeypatch, change):
+    """Creating the ticket directory is the only await; a target that changes meanwhile is refused."""
     package = ThemePackage()
     runtime = await _start(tmp_path)
     transfers = runtime.browser.transfers
     ws = SimpleNamespace(closed=False)
-    expire, to_thread = transfers.expire, asyncio.to_thread
+    to_thread = asyncio.to_thread
 
     async def change_target():
         if change == "reload":
@@ -515,11 +515,6 @@ async def test_import_preparation_refuses_a_target_changed_while_waiting(tmp_pat
         else:
             await runtime.on_disconnect(ws)
 
-    async def expire_then_change():
-        transfers.expire = expire
-        await expire()
-        await change_target()
-
     async def make_directory_then_change(operation, *args, **kwargs):
         result = await to_thread(operation, *args, **kwargs)
         method = operation.func if isinstance(operation, partial) else operation
@@ -530,10 +525,7 @@ async def test_import_preparation_refuses_a_target_changed_while_waiting(tmp_pat
 
     try:
         revision = await _mount(runtime, package, tmp_path, ws)
-        if phase == "expiry":
-            monkeypatch.setattr(transfers, "expire", expire_then_change)
-        else:
-            monkeypatch.setattr(asyncio, "to_thread", make_directory_then_change)
+        monkeypatch.setattr(asyncio, "to_thread", make_directory_then_change)
         with pytest.raises(transfers_module.HostRequestError) as caught:
             await transfers.begin_upload(SimpleNamespace(
                 params=_begin(revision, [{"path": "old.zip", "size": 1}]), connection_id="browser-1"))
@@ -543,7 +535,6 @@ async def test_import_preparation_refuses_a_target_changed_while_waiting(tmp_pat
         directory = runtime.package_data_dir(PACKAGE) / ".uploads"
         assert not directory.exists() or list(directory.iterdir()) == []
         if change != "disconnect":
-            monkeypatch.setattr(transfers, "expire", expire)
             monkeypatch.setattr(asyncio, "to_thread", to_thread)
             current = runtime.registry.get(TARGET)
             fresh = await transfers.begin_upload(SimpleNamespace(
@@ -664,27 +655,33 @@ async def test_download_refuses_paths_outside_the_data_directory(tmp_path, expor
         await runtime.shutdown()
 
 
-async def test_a_release_while_the_download_is_prepared_sends_no_offer(tmp_path):
+async def test_uninstall_waits_for_import_directories_deleted_in_the_background(tmp_path):
     package = ThemePackage()
     runtime = await _start(tmp_path)
+    transfers = runtime.browser.transfers
+    clock = [1000.0]
+    transfers._clock = lambda: clock[0]
+    discard, gate = transfers._discard, asyncio.Event()
+
+    async def slow_discard(upload):
+        await gate.wait()
+        await discard(upload)
+
     try:
         revision = await _mount(runtime, package, tmp_path)
-        data = runtime.package_data_dir(PACKAGE)
-        (data / "exports").mkdir(parents=True)
-        (data / "exports" / "backup.zip").write_bytes(b"x")
-        transfers = runtime.browser.transfers
-        expire = transfers.expire
-
-        async def release_meanwhile():
-            await expire()
-            runtime.unpublish(PACKAGE)  # uninstall lands while the offer waits for expired tickets
-
-        transfers.expire = release_meanwhile
-        await _call(runtime, "webui.dispatch", _event("ui.click", revision, "0.1", "export", {}))
-        assert len(package.offers) == 1 and isinstance(package.offers[0], str)
-        assert not any(event == "webui.download" for _, event, _ in runtime.channel.events)
-        assert transfers.downloads == {}
+        await _call(runtime, "webui.upload.begin", _begin(revision, [{"path": "a.zip", "size": 1}]))
+        clock[0] += transfers_module.UPLOAD_TTL_S + 1
+        transfers._discard = slow_discard
+        transfers.expire()
+        runtime.unpublish(PACKAGE)
+        cleanup = asyncio.create_task(runtime.cleanup_package_data(PACKAGE))
+        await asyncio.sleep(0.05)
+        assert not cleanup.done(), "data is not deleted under a running background deletion"
+        gate.set()
+        await cleanup
+        assert not runtime.package_data_dir(PACKAGE).exists()
     finally:
+        gate.set()
         await runtime.shutdown()
 
 
