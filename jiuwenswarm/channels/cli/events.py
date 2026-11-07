@@ -51,6 +51,11 @@ def event_kind(event_type: str) -> str:
         return "interactive"
     if event_type in ("chat.processing_status",):
         return "processing_status"
+    # Token accounting is already on the wire; without a kind of its own it
+    # falls into the generic "chat" bucket and is discarded, so a CLI run
+    # reports no cost even though the server measured it.
+    if event_type in ("chat.usage_metadata", "context.usage"):
+        return "usage"
     if event_type.startswith("chat.") or event_type.startswith("plan."):
         return "chat"
     return "other"
