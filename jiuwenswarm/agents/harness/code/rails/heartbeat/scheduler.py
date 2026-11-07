@@ -156,6 +156,14 @@ class HeartbeatSchedulerService:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
+            # _loop() 会捕获自身取消并正常返回;调用方的 cancel() 还会被 asyncio
+            # 委托给子任务(_fut_waiter),同样被 _loop 吞掉——此时 stop() 恢复运行
+            # 却没有任何异常,捕获分支感知不到调用方的取消,且 self._task.cancelled()
+            # 无法区分取消来源。按调用方自身的取消状态判断:存在待处理取消请求
+            # (cancelling() > 0)时重新抛出,保证取消信号向上传播。
+            caller = asyncio.current_task()
+            if caller is not None and caller.cancelling():
+                raise asyncio.CancelledError()
             self._task = None
 
     # ---- store mtime 检测(镜像 CronSchedulerService) ----
