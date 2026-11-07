@@ -140,6 +140,7 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
     # use the caller's project (especially code-mode projects), rather than
     # silently falling back to the work default project.
     metadata = dict(inp.request_metadata or {})
+    persisted_cron_session = False
     if isinstance(inp.session_id, str) and inp.session_id.strip():
         try:
             from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -150,6 +151,7 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
                 inp.session_id.strip(), cache_bust=True, enable_writeback=False
             )
             if isinstance(session_metadata, dict):
+                persisted_cron_session = bool(session_metadata.get("cron_id"))
                 for key in ("project_id", "project_dir", "work_mode", "model_name"):
                     if not str(metadata.get(key) or "").strip():
                         value = session_metadata.get(key)
@@ -185,6 +187,7 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
         (inp.request_metadata or {}).get("cron")
         or str(inp.channel_id or "").strip() == "__cron__"
         or is_cron_execution_session(inp.session_id)
+        or persisted_cron_session
     )
     if cron_execution_session:
         logger.info(
