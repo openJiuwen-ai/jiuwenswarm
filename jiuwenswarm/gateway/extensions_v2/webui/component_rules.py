@@ -14,7 +14,7 @@ import math
 import re
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 from jiuwenswarm.gateway.extensions_v2.webui.constants import MAX_LIST_ITEMS, MAX_PROP_DEPTH, MAX_TEXT_BYTES
 from jiuwenswarm.gateway.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
@@ -223,7 +223,22 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "src": LOCALIZED_TEXT, "srcDoc": LOCALIZED_TEXT, "title": LOCALIZED_TEXT,
         "minWidth": {"kind": "number", "min": 0, "max": 4096},
     }, "required": ("title",)},
+    "MediaSurface": {"props": {
+        "kind": token("image", "video", "html"), "src": TEXT, "title": {"kind": "string", "maxBytes": 200},
+        "poster": TEXT, "fit": token("cover", "contain"), "position": token("center", "top", "bottom", "left", "right"),
+        "loop": BOOL, "muted": BOOL, "dim": {"kind": "number", "min": 0, "max": 0.9},
+        "blur": {"kind": "number", "min": 0, "max": 40}, "opacity": {"kind": "number", "min": 0.1, "max": 1},
+    }, "required": ("kind", "src", "title")},
+    # Host-mediated import (S_10 section 6); the data is the host-issued upload id.
+    "FileImport": {"props": {
+        "label": {"kind": "string", "minBytes": 1, "maxBytes": 200}, "accept": array(TEXT),
+        "multiple": BOOL, "directory": BOOL, "disabled": BOOL,
+    }, "required": ("label",), "events": {"ui.change": obj({"upload_id": TEXT}, "upload_id")}},
 }
+
+#: One ``accept`` entry, for example ``.zip``.
+FILE_SUFFIX = re.compile(r"^\.[A-Za-z0-9][A-Za-z0-9._-]{0,15}$")
+UPLOAD_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
 def finite_number(value: Any) -> bool:
@@ -387,6 +402,38 @@ def valid_url(value: str, *, iframe: bool = False) -> bool:
         return False
 
 
+MEDIA_URL_PREFIX = "/extension-assets/"
+_MEDIA_PATH_CHARS = re.compile(r"[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*")
+# Printable ASCII without the space and the backslash.
+_MEDIA_FORBIDDEN = re.compile(r"[^\x21-\x5b\x5d-\x7e]")
+_MEDIA_BAD_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_MEDIA_BAD_SEGMENT = re.compile(r"[/\\\x00-\x1f\x7f]")
+
+
+def valid_media_url(value: str) -> bool:
+    """Accept only site-relative package or data asset paths for MediaSurface.
+
+    The browser copy in ``catalog/components/mediaSurface.ts`` applies the same
+    steps so both sides reach the same verdict.
+    """
+    if _MEDIA_FORBIDDEN.search(value):
+        return False
+    path = re.split(r"[?#]", value, maxsplit=1)[0]
+    if not path.startswith(MEDIA_URL_PREFIX) or not _MEDIA_PATH_CHARS.fullmatch(path) or _MEDIA_BAD_ESCAPE.search(path):
+        return False
+    segments = path[len(MEDIA_URL_PREFIX):].split("/")
+    if len(segments) < 3:
+        return False
+    for segment in segments:
+        try:
+            decoded = unquote(segment, errors="strict")
+        except UnicodeDecodeError:
+            return False
+        if not segment or decoded in (".", "..") or _MEDIA_BAD_SEGMENT.search(decoded):
+            return False
+    return True
+
+
 def _dimension_allowed(value: Any, *, allow_auto: bool) -> bool:
     if finite_number(value):
         return 0 <= value <= 4096
@@ -513,8 +560,21 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return "preview content or URL is required"
         if file is not None and "downloadUrl" in file and not valid_url(file["downloadUrl"]):
             return "invalid preview URL"
-    if component == "Panel" and not props["title"].strip():
+    if component in ("Panel", "MediaSurface") and not props["title"].strip():
         return "title is required"
+    if component == "FileImport":
+        if not props["label"].strip():
+            return "label is required"
+        accept = props.get("accept")
+        if accept is not None and (not 1 <= len(accept) <= 16 or not all(FILE_SUFFIX.fullmatch(item) for item in accept)
+                                   or not _unique([item.lower() for item in accept])):
+            return "invalid FileImport accept"
+        if props.get("directory") and ("accept" in props or "multiple" in props):
+            return "directory import does not take accept or multiple"
+    if component == "MediaSurface" and any(
+        key in props and not valid_media_url(props[key]) for key in ("src", "poster")
+    ):
+        return "invalid media URL"
     if component == "Iframe":
         title = props["title"]
         titles = [title] if isinstance(title, str) else list(title.values())
@@ -613,6 +673,8 @@ def validate_event_data(component: str, event: str, data: Mapping[str, Any], pro
             return _selection_allowed(value, values, props.get("treeCheckable", False) or props.get("multiple", False))
         return any(type(value) is type(item) and value == item or finite_number(value) and finite_number(item) and value == item
                    for item in values)
+    if component == "FileImport":
+        return bool(UPLOAD_ID.fullmatch(data["upload_id"]))
     if component == "FileTree":
         if props.get("status") not in (None, "ready"):
             return False

@@ -1580,10 +1580,12 @@ def test_web_proxy_preserves_canonical_outer_host_without_loopback(
     class _FakeResponse:
         status = 200
         reason = "OK"
+        _body = b'{"ok":true}'
 
-        @staticmethod
-        def read() -> bytes:
-            return b'{"ok":true}'
+        def read(self, amt: int | None = None) -> bytes:
+            # Behave like http.client.HTTPResponse: return the body once, then EOF.
+            body, self._body = self._body, b""
+            return body
 
         @staticmethod
         def getheaders() -> list[tuple[str, str]]:

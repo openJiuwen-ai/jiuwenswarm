@@ -30,6 +30,12 @@
   --color-surface-highlight-rgb: 0, 0, 0;
   --color-surface-highlight-alpha: 0.03;
   --color-surface-popover: #ffffff;
+  /* Surfaces by role, so an appearance layer can restyle them without knowing component classes:
+     large workspace containers, layers stacked on them, and layers floating over content. */
+  --color-surface-workspace: #ffffff;
+  --color-surface-workspace-layer: #ffffff;
+  --color-surface-floating: #f5f5f5;
+  --effect-surface-floating-backdrop: none;
   --color-surface-panel: #ffffff;
   --color-surface-panel-rgb: 255, 255, 255;
   --color-surface-panel-strong: #ffffff;

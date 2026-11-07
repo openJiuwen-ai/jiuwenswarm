@@ -546,7 +546,7 @@
   overflow: hidden;
   border: 1px solid var(--color-border-default);
   border-radius: 4px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-modal-shadow);
 }
 
@@ -1669,7 +1669,7 @@
   padding: 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 10px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
 }
 
@@ -1813,7 +1813,7 @@
   padding: 24px 8px 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
   box-sizing: border-box;
 }
@@ -2900,7 +2900,7 @@
 .perm-warning-modal {
   width: 420px;
   max-width: calc(100vw - 48px);
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   border: 1px solid var(--color-border-default);
   border-radius: 16px;
   box-shadow: var(--effect-shadow-lg);
@@ -3182,7 +3182,7 @@
   padding: 14px 16px;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-md, 0 4px 12px rgba(0, 0, 0, 0.08));
 }
 
@@ -3313,7 +3313,7 @@
   padding: 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 14px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
   box-sizing: border-box;
 }
@@ -3804,7 +3804,7 @@
   padding: 8px 10px;
   border: 1px solid rgba(var(--color-border-default-rgb), 0.9);
   border-radius: 10px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-menu-shadow);
 }
 
@@ -3893,7 +3893,7 @@
   padding: 6px;
   border: 1px solid rgba(var(--color-border-default-rgb), 0.74);
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-popover-shadow);
 }
 

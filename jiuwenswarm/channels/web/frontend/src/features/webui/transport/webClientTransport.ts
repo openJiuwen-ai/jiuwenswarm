@@ -9,6 +9,7 @@ import {
   WEBUI_ERROR_EVENT,
   WEBUI_RENDER_EVENT,
 } from '../contracts/wire.ts';
+import { WEBUI_APPEARANCE_EVENT } from '../appearance/appearance.ts';
 import type {
   WebUIConnectionState,
   WebUIDispatchReceipt,
@@ -47,6 +48,8 @@ export function createWebClientTransport(client: WebUIClientLike, capabilities?:
       const offRender = client.on(WEBUI_RENDER_EVENT, (event) => { if (accepted(event.payload)) handlers.onRenderFrame(event.payload); });
       const offClear = client.on(WEBUI_CLEAR_EVENT, (event) => { if (accepted(event.payload)) handlers.onClearFrame(event.payload); });
       const offError = client.on(WEBUI_ERROR_EVENT, (event) => { if (accepted(event.payload)) handlers.onErrorFrame(event.payload); });
+      // Appearance frames carry no render target; the Gateway refuses calls from a stale activation.
+      const offAppearance = client.on(WEBUI_APPEARANCE_EVENT, (event) => handlers.onAppearanceFrame?.(event.payload));
       const offOperation = capabilities ? client.on('client.operation', (event) => { capabilities.acceptOperation(event.payload); }) : undefined;
       const offDeclarations = capabilities ? client.on('client.declarations', (event) => {
         try { capabilities.configure(event.payload); } catch { /* The capability host exposes a localized configuration error. */ }
@@ -65,6 +68,7 @@ export function createWebClientTransport(client: WebUIClientLike, capabilities?:
         offRender();
         offClear();
         offError();
+        offAppearance();
         offPackagesChanged();
         offState();
         offOperation?.();

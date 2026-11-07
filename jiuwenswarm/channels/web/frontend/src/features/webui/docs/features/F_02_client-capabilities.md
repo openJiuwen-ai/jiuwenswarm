@@ -1,6 +1,6 @@
 # Web 浏览器能力与组件扩展实现记录
 
-建档日期：2026-11-03。最近修订：2026-11-04。
+建档日期：2026-11-03。最近修订：2026-11-07。
 
 关联规约：[客户端能力](../specs/S_02_client-capabilities.md)、[页面布局](../specs/S_03_page-composition.md)。
 
@@ -109,3 +109,14 @@ and 168 component tests. Chrome 157 verified both loaded and delayed assets over
 refresh with the new credential, and asset removal after package declarations were revoked. This uses the protocol fixture
 and real example artwork, not a production authentication service. The tests and both Chrome scenarios were rechecked
 from a staged-source export independently of other pending changes.
+
+## 2026-11-07 应用级清除版本回归
+
+将原本只用于 entry 的清除版本下限推广到所有 application 目标，并拒绝被清除目标的旧错误帧。
+下限不随槽位释放而丢失；断线拒绝应用帧，新连接与请求上下文重置再清空，避免旧画面复活或误拦新连接。
+Gateway 的包释放、关闭和容量淘汰必须预留清除版本，契约见 Gateway S_02。
+
+`test:webui-components` 新增 6 项（background、splash、settings × 清除前是否已渲染），旧实现全部失败；
+覆盖清除先到、旧渲染/错误、重挂载、接受更高版本及断线重连。Node 22.23.4 下最终
+`test:webui-components` 366、`test:webui-runtime` 21、`test:webui-client` 25、`test:webui-transport` 9、
+`test:plugin-settings` 17、`test:webui-contracts` 167 均通过，共 605 项。未运行静态检查、构建或真实浏览器/桌面验证。

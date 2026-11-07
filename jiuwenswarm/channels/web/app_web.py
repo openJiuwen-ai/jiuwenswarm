@@ -90,6 +90,26 @@ def _get_user_workspace_dir() -> Path:
     return (Path(user_home) if user_home else Path.home()) / ".jiuwenswarm"
 
 
+#: Startup splash candidate hint (Gateway S_09 section 4); answered locally because
+#: the page may load before the Gateway is up.
+SPLASH_HINT_PATH = "/extension-splash/hint"
+
+
+def _splash_candidates() -> bool:
+    """Whether an installed Gateway package may play a splash (Gateway S_09 section 4).
+
+    Shares the Gateway's configuration, manifest rules and splash preferences; the browser still
+    confirms with the Gateway once connected, so this only decides how long to wait.
+    """
+    try:
+        from jiuwenswarm.gateway.extensions_v2.splash_hint import installed_splash_providers
+
+        return bool(installed_splash_providers())
+    except Exception:  # noqa: BLE001 - an unreadable install counts as none; the Gateway answer decides
+        logging.getLogger(__name__).debug("splash hint unavailable", exc_info=True)
+        return False
+
+
 def _get_agent_root_dir() -> Path:
     return _get_user_workspace_dir() / "agent"
 
@@ -349,6 +369,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
+    _HTTP_PROXY_CHUNK_BYTES = 64 * 1024
     _WS_CONNECT_TIMEOUT = 10
     _WS_HANDSHAKE_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
@@ -516,6 +537,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _is_api_route(self) -> bool:
         return urlparse(self.path).path.startswith("/api")
 
+    def _is_extension_asset_route(self) -> bool:
+        # Gateway extension package assets live on the same WebChannel as /api.
+        return urlparse(self.path).path.startswith("/extension-assets/")
+
+    def _is_extension_transfer_route(self) -> bool:
+        # Gateway file import and export (S_10 sections 6 and 7); the Gateway's tickets decide access.
+        return urlparse(self.path).path.startswith(("/extension-uploads/", "/extension-downloads/"))
+
     def _is_ws_route(self) -> bool:
         return urlparse(self.path).path.startswith("/ws")
 
@@ -611,7 +640,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _proxy_http(self) -> None:
+    def _proxy_http(self, *, stream_body: bool = False) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
             self._write_proxy_error(400, "invalid Host header")
@@ -632,11 +661,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 timeout=self._HTTP_PROXY_TIMEOUT,
             )
 
+        headers_sent = False
         try:
             body = b""
+            length = 0
             if self.command not in ("GET", "HEAD"):
                 length = int(self.headers.get("Content-Length", "0") or "0")
-                body = self.rfile.read(length) if length > 0 else b""
+                if not stream_body:
+                    body = self.rfile.read(length) if length > 0 else b""
 
             forward_headers: dict[str, str] = {}
             for key, value in self.headers.items():
@@ -650,9 +682,22 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 forward_headers[key] = value
             forward_headers["Host"] = outer_host
 
-            conn.request(self.command, self.path, body=body, headers=forward_headers)
+            if stream_body:
+                # Large imports go through in chunks instead of being held in memory.
+                conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
+                for key, value in forward_headers.items():
+                    conn.putheader(key, value)
+                conn.endheaders()
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, self._HTTP_PROXY_CHUNK_BYTES))
+                    if not chunk:
+                        break
+                    conn.send(chunk)
+                    remaining -= len(chunk)
+            else:
+                conn.request(self.command, self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
-            resp_body = resp.read()
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
@@ -660,11 +705,18 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 self.send_header(key, value)
             self.end_headers()
+            headers_sent = True
             if self.command != "HEAD":
-                self.wfile.write(resp_body)
+                # Stream the body so large media starts playing before it is fully read.
+                while True:
+                    chunk = resp.read(self._HTTP_PROXY_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
-            self._write_proxy_error(502, "proxy http error")
+            if not headers_sent:
+                self._write_proxy_error(502, "proxy http error")
         finally:
             conn.close()
 
@@ -976,8 +1028,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         return True
 
     def _dispatch_proxy(self) -> bool:
-        if self._is_api_route() or urlparse(self.path).path.startswith("/extension-assets/"):
+        if self._is_api_route() or self._is_extension_asset_route():
             self._proxy_http()
+            return True
+        if self._is_extension_transfer_route():
+            self._proxy_http(stream_body=True)
             return True
         if self._is_ws_route():
             if self._is_websocket_upgrade():
@@ -2259,6 +2314,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return
+        if parsed.path == SPLASH_HINT_PATH:
+            self._write_json(200, {"candidates": _splash_candidates()})
             return
         if parsed.path == "/oauth/hub/done":
             body = (

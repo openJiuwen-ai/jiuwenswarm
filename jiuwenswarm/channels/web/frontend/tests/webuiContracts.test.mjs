@@ -25,8 +25,8 @@ function checkProps(name, input = {}) {
 
 test('catalog contains the supported components', () => {
   assert.deepEqual(componentCatalog.listComponents().map((rule) => rule.name).sort(), [
-    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FilePreview', 'FileTree', 'Form', 'Form.Item', 'Icon',
-    'Iframe', 'Image', 'Input', 'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
+    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FileImport', 'FilePreview', 'FileTree', 'Form', 'Form.Item', 'Icon',
+    'Iframe', 'Image', 'Input', 'MediaSurface', 'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
   ].sort());
   assert.deepEqual(componentCatalog.getSlot('application.entry'), {
     id: 'application.entry',
@@ -38,7 +38,25 @@ test('catalog contains the supported components', () => {
     display: 'single',
     scope: 'application',
   });
+  assert.deepEqual(componentCatalog.getSlot('application.background'), {
+    id: 'application.background',
+    display: 'single',
+    scope: 'application',
+    rootComponents: ['MediaSurface'],
+    strictRoot: true,
+    rerender: 'keep-mounted',
+  });
   assert.deepEqual(componentCatalog.getSlot('conversation.panel.right').rootComponents, ['Panel', 'Iframe']);
+  assert.equal(componentCatalog.getSlot('conversation.panel.right').strictRoot, true);
+  assert.deepEqual(componentCatalog.getSlot('application.splash'), {
+    id: 'application.splash',
+    display: 'single',
+    scope: 'application',
+    rootComponents: ['MediaSurface'],
+    strictRoot: true,
+  });
+  // Gateway settings share application.settings with AgentServer packages; there is no separate page slot.
+  assert.ok(!componentCatalog.getSlot('application.settings.page'));
   assert.deepEqual(componentCatalog.getSlot('application.menu.main').rootComponents, ['Iframe']);
   assert.equal(WEBUI_COMPONENT_SCHEMA_VERSION, 1);
 });
@@ -172,4 +190,12 @@ test('size aliases normalize consistently and compact components reject large si
   }
   assert.equal(checkProps('Avatar', { src: '/logo.svg', size: 'default' }).value.size, 'medium');
   assert.equal(checkProps('Avatar', { src: '/logo.svg', size: 48 }).value.size, 48);
+});
+
+test('FileImport change data carries only a host upload id', () => {
+  const rule = componentCatalog.getComponent('FileImport');
+  assert.equal(rule.validateEvent('ui.change', { upload_id: 'a'.repeat(32) }, { label: 'Import' }), null);
+  for (const uploadId of ['A'.repeat(32), 'a'.repeat(31), '../x', 7]) {
+    assert.notEqual(rule.validateEvent('ui.change', { upload_id: uploadId }, { label: 'Import' }), null);
+  }
 });

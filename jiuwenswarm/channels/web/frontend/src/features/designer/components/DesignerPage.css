@@ -414,7 +414,7 @@
   padding: 6px;
   border: 1px solid var(--color-border-default);
   border-radius: 10px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
   z-index: 40;
 }
@@ -2217,7 +2217,7 @@
   padding: 14px;
   border: 1px solid #25252510;
   border-radius: 6px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: 0 2px 12px 0 #00000006;
   box-sizing: border-box;
 }
@@ -2867,7 +2867,7 @@ textarea.designer-node-toolbar__param-input {
   list-style: none;
   border: 1px solid var(--color-border-default);
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
 }
 

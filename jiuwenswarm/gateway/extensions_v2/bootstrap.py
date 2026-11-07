@@ -22,9 +22,17 @@ from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, ExtensionEventBus, Hand
 from jiuwenswarm.gateway.extensions_v2.core_handlers.request_core import build_request_core_handler
 from jiuwenswarm.gateway.extensions_v2.event_types.gateway import register_gateway_request_events
 from jiuwenswarm.gateway.extensions_v2.handler_ops.gateway_ops import build_gateway_ops_build_handler
+from jiuwenswarm.gateway.extensions_v2.handler_ops.data_ops import build_data_ops_build_handler
 from jiuwenswarm.gateway.extensions_v2.handler_ops.http_ops import build_http_ops_build_handler
-from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, EVENT_GATEWAY_DISCONNECT, EVENT_UI_RENDER
+from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, EVENT_GATEWAY_DISCONNECT
 from jiuwenswarm.gateway.extensions_v2.event_types.matching import match_pattern_subset
+from jiuwenswarm.gateway.extensions_v2.event_types.webui import register_webui_action_events
+from jiuwenswarm.gateway.extensions_v2.webui.core_handlers.action_core import (
+    build_appearance_core_handler,
+    build_download_core_handler,
+    build_splash_preview_core_handler,
+)
+from jiuwenswarm.gateway.extensions_v2.webui.host_settings import build_host_request_handler
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
@@ -36,6 +44,12 @@ def register_event_types(bus: ExtensionEventBus, runtime: GatewayRuntime) -> Non
     runtime.webui.register_event_types(bus)
     register_gateway_request_events(bus, build_request_core_handler())
     runtime.browser.register_events(bus)
+    register_webui_action_events(
+        bus,
+        appearance_core=build_appearance_core_handler(runtime.browser),
+        download_core=build_download_core_handler(runtime.browser),
+        splash_preview_core=build_splash_preview_core_handler(runtime.browser),
+    )
     async def disconnect_core(event, ops, next_handler):
         del event, ops, next_handler
         return None
@@ -46,12 +60,6 @@ def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[s
     """Register BUILTIN handlers and return their ids for shutdown."""
 
     handler_ids = [
-        bus.register_event_handler(
-            EVENT_UI_RENDER,
-            runtime.browser.build_render_guard_handler(),
-            {},
-            HandlerLevel.BUILTIN,
-        ),
         bus.register_event_handler(
             OPS_BUILD_EVENT_TYPE,
             runtime.browser.build_ops_handler(),
@@ -76,8 +84,25 @@ def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[s
     )
     handler_ids.append(
         bus.register_event_handler(
+            OPS_BUILD_EVENT_TYPE,
+            build_data_ops_build_handler(runtime),
+            {},
+            HandlerLevel.BUILTIN,
+        )
+    )
+    handler_ids.append(
+        bus.register_event_handler(
             EVENT_GATEWAY_REQUEST,
             runtime.browser.build_request_dispatch_handler(),
+            {},
+            HandlerLevel.BUILTIN,
+        )
+    )
+    # USER request policies run first; host methods only answer requests they continue (S_10 section 3).
+    handler_ids.append(
+        bus.register_event_handler(
+            EVENT_GATEWAY_REQUEST,
+            build_host_request_handler(runtime),
             {},
             HandlerLevel.BUILTIN,
         )

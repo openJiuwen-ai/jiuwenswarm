@@ -186,7 +186,7 @@
   max-width: 260px;
   padding: 7px 10px;
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   border: 1px solid var(--color-border-default);
   box-shadow: var(--effect-shadow-lg);
   font-size: 12px;

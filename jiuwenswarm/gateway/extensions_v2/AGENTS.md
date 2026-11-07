@@ -37,6 +37,14 @@
 - [运行时规约](docs/specs/S_01_gateway-extension-runtime.md)：入口、配置、包、事件、路由、错误码与不变量的唯一维护位置。
 - [渲染服务](docs/features/F_03_render-service.md)与[渲染规约](docs/specs/S_02_ui-render.md)：应用级树、组件规则、实例版本与下行传输。
 - [浏览器桥接](docs/specs/S_06_local-browser-bridge.md)：声明、客户端操作、应用级交互与资源接入。
+- [应用级界面能力设计概览](docs/designs/application-surfaces-overview.md)：应用背景、启动开场、受控外观、应用级设置页、素材与数据的整体设计（EXTV2-GW-07～12）。
+- [应用级 UI 包与素材交付](docs/features/F_08_application-packages-and-assets.md)：应用级 UI 包的参与条件、素材路由与打包版转发。
+- [包存储与数据目录](docs/features/F_09_package-store-and-data.md)：Gateway 包的持久化存储、`ops.data.root()`、数据素材与卸载清理。
+- [媒体容器与应用背景](docs/features/F_10_media-surface-and-background.md)与[媒体容器规约](docs/specs/S_07_media-surface.md)：`MediaSurface`、`application.background`、宿主策略与沙箱消息协议。
+- [受控外观](docs/features/F_11_controlled-appearance.md)与[外观规约](docs/specs/S_08_appearance.md)：`ops.appearance.apply`、宿主派生的强调色与半透明模式、提供者生命周期、包释放时的浏览器通知。
+- [启动门控与开场](docs/features/F_12_startup-gate-and-splash.md)与[开场规约](docs/specs/S_09_startup-splash.md)：开场声明与提供者、显示型槽位的平台帧、`ui.closed`、候选提示、启动标识与前端门控。
+- [应用级设置页](docs/features/F_13_application-settings-page.md)与[应用级设置页与文件交接规约](docs/specs/S_10_application-settings.md)：设置贡献（与 AgentServer S_18 共用声明与目录）、宿主方法、开场顺序与停用、`disabled` / `removed`、`FileImport` 导入与 `ops.ui.download` 导出。
+- [开场预览](docs/features/F_14_splash-preview.md)：`ops.splash.preview()`、`webui.splash.play` 与 `ui.ready` 的 `preview` 字段，契约在开场规约第 3.3 节。
 - 待建立：ui.store 的浏览器订阅特性与规约；当前示例不依赖该能力。
 - [HTTP 能力](docs/features/F_06_http-fetch.md)：`ops.http.fetch` 的白名单、预算与重定向策略。
 - [HTTP 规约](docs/specs/S_05_http-fetch.md)：`ops.http.fetch`、配置键与错误码。

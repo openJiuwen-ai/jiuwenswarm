@@ -16,10 +16,13 @@ from openjiuwen.core.events import (
 )
 
 from jiuwenswarm.gateway.extensions_v2.models import EVENT_UI_RENDER
-from jiuwenswarm.gateway.extensions_v2.webui.models import UiRenderInput
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import CallerFactory
+from jiuwenswarm.gateway.extensions_v2.webui.models import RenderStatus, UiRenderInput, UiRenderOutput
 
 
-def build_ui_ops_build_handler(bus: ExtensionEventBus) -> EventHandler:
+def build_ui_ops_build_handler(
+    bus: ExtensionEventBus, *, caller_for: CallerFactory | None = None,
+) -> EventHandler:
     """Build the BUILTIN handler that adds the ``ops.ui`` namespace."""
 
     async def ui_render(ops_view: EventHandlerOps, request: UiRenderInput) -> object:
@@ -29,7 +32,10 @@ def build_ui_ops_build_handler(bus: ExtensionEventBus) -> EventHandler:
             if request.target.package_id and request.target.package_id != owner:
                 raise ValueError("render target does not belong to the calling package")
             request = replace(request, target=replace(request.target, package_id=owner))
-        return await bus.trigger(Event(EVENT_UI_RENDER, request), ops_view.session_context)
+        caller = caller_for(ops_view) if caller_for is not None else None
+        if caller_for is not None and (caller is None or not caller.current(request.target)):
+            return UiRenderOutput(status=RenderStatus.REJECTED)
+        return await bus.trigger(Event(EVENT_UI_RENDER, request), ops_view.session_context, trigger_context=caller)
 
     async def ui_ops_build(
         event: Event,

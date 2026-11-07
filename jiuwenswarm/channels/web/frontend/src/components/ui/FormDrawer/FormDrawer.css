@@ -10,7 +10,7 @@
 .form-drawer {
   width: min(550px, 100vw);
   height: 100%;
-  background: var(--color-surface-panel);
+  background: var(--color-surface-popover);
   color: var(--color-text-primary);
   border-left: 1px solid var(--color-border-default);
   display: flex;

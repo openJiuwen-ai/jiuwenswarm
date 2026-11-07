@@ -37,6 +37,23 @@
     min-width 0.25s ease;
 }
 
+/* Floating over content: its own surface, optionally frosted. The blur sits on a pseudo-element so
+   fixed-position menus inside the sidebar keep the viewport as their containing block. */
+.conversation-sidebar.is-floating {
+  background: var(--color-surface-floating);
+  isolation: isolate;
+}
+
+.conversation-sidebar.is-floating::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  -webkit-backdrop-filter: var(--effect-surface-floating-backdrop);
+  backdrop-filter: var(--effect-surface-floating-backdrop);
+}
+
 .conversation-sidebar:not(.is-floating) {
   transition:
     transform 0.25s ease,
@@ -800,7 +817,7 @@
   padding: 24px 24px 16px;
   border: 0;
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-conversation-dialog-shadow);
 }
 

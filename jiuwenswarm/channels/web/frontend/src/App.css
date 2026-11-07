@@ -4,7 +4,7 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--color-surface-card);
+  background: var(--color-surface-workspace);
 }
 
 .app-section {
@@ -60,12 +60,17 @@
 
 .chat-workspace {
   overflow: hidden;
-  background: var(--color-surface-card);
+  background: var(--color-surface-workspace);
 }
 
 .chat-layout__surface {
   min-width: 512px;
   background: var(--color-surface-card);
+}
+
+/* Layer on the chat workspace: one workspace surface, not two stacked ones. */
+.chat-workspace .chat-layout__surface {
+  background-color: var(--color-surface-workspace-layer);
 }
 
 .single-agent-surface {
@@ -345,7 +350,7 @@
   max-width: 24rem;
   border: 1px solid var(--color-border-default);
   border-radius: 0.75rem;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-xl);
   padding: 1.5rem;
 }
