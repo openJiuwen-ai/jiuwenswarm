@@ -260,6 +260,14 @@
   gap: 8px;
 }
 
+.settings-inline-input--error {
+  flex-wrap: wrap;
+}
+
+.settings-inline-input__error {
+  flex-basis: 100%;
+}
+
 @media (max-width: 960px) {
   .settings-inline-input {
     width: 100%;

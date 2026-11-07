@@ -199,6 +199,7 @@ def _initial_stored_config(*, collection_enabled: bool) -> dict[str, object]:
         "collection_enabled": collection_enabled,
         "agent_use_enabled": False,
         "strategy_profile": strategy_profile,
+        "max_context_size_mb": 50,
         "max_pages_per_directory": max_pages,
         "max_subdirectories_per_directory": max_subdirectories,
         "fetch_services": [],
@@ -217,6 +218,7 @@ def _unconfigured_projection() -> dict[str, object]:
         "collection_enabled": False,
         "agent_use_enabled": False,
         "strategy_profile": strategy_profile,
+        "max_context_size_mb": 50,
         "max_pages_per_directory": max_pages,
         "max_subdirectories_per_directory": max_subdirectories,
         "model_index": model_index,
@@ -864,6 +866,16 @@ class PersonalContextHostAPI:
             self._stored_config = deepcopy(stored)
             return
 
+        if previous is not None and previous.max_context_size_mb != candidate.max_context_size_mb:
+            capacity_update = previous.model_copy(update={"max_context_size_mb": candidate.max_context_size_mb})
+            if _configs_equivalent(capacity_update, candidate):
+                await self._apply_live_update_locked(
+                    capacity_update, stored, payload,
+                    apply=lambda: self._personal_context.set_configuration(capacity_update),
+                    rollback=lambda: self._personal_context.set_configuration(previous),
+                )
+                return
+
         temporary: Path | None = _stage_yaml(self._config_path, payload)
         disabling = (
             previous is not None
@@ -1109,6 +1121,7 @@ class PersonalContextHostAPI:
             "collection_enabled",
             "agent_use_enabled",
             "strategy_profile",
+            "max_context_size_mb",
         }
         if unknown:
             _raise_host_error(
