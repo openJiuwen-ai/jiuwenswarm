@@ -444,6 +444,13 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 - **硬依赖：** 新 Core 压缩前 Hook、Processor 安全候选/延迟副作用、Extension Runtime 当前包调用有效性校验；依赖 Core 新版本，不能作为 Server-only 功能交付。与 send/receive 或七查询无新增运行时硬依赖。
 - **编号登记：** 按用户要求接续当前目录：features/F_28_session-compact.md 与 specs/S_15_session-compact.md；负责人刘瑜。旧编号 F30/S17 已在本 PR 重命名并同步引用，已合入文档不重排。本次明确采用现存目录连续编号口径；合入前核对并行新增。不另建 designs/session-compact 文档。
 
+### EXTV2-33 用户消息 prompt.context 事件接入
+
+- **特性/规约：** [F_34 prompt.context](../features/F_34_prompt-context.md)、[S_20](../specs/S_20_prompt-context.md)；依据 `D:/wiki/extension/2026-11-03-jiuwenswarm-prompt-context-event-design.md`。
+- **范围：** 注册 `prompt.context` 事件和恒等 CORE；在 AgentServer unary/stream、非空 session、`CHAT_SEND`、外部用户来源请求的异步输入构造中准备完整 context blocks，team/team mode/group-chat 同样生效，等待事件后绑定到 `UserTurn`；投影 `currentDate`、`interactionContext`、未知 blocks 和 `instructionFiles`。补充、control、retry、`auto_harness`、A2UI、内部/跨 session 路径旁路。
+- **兼容决策：** `UserTurn.render()` 保持同步纯渲染；同步 `build_inputs()` 保留为 legacy / 测试入口；其它入口即使共用异步 helper，也不因本事件改变原有行为；不修改 openjiuwen 或 Events 内部实现。
+- **验证：** prompt.context、AgentServer 集成和 UserTurn 专项覆盖普通、team/group chat 生效路径与旁路矩阵；相关回归和当前限制见 F_34 第 7 节；Ruff、mypy 和 formatter 按仓库协作约束未执行。
+
 ### EXTV2-27 会话凭据授权句柄
 
 - **特性与规约：** [F_29 session.authorize / ops.session.authorize](../features/F_29_session-authorize.md)、[S_16](../specs/S_16_session-authorize.md)。沿用已登记的授权编号，负责人刘瑜。
@@ -501,6 +508,7 @@ flowchart TB
     A3 --> S25["EXTV2-25 store 持久化接入"]
     CORE_COMPACT["Core 压缩 Hook / 候选提交 / Runtime 调用校验（已开发，待合入）"] --> S26["EXTV2-26 会话压缩接口（已开发；主流程未接入）"]
     B1 --> S26
+    B1 --> S33["EXTV2-33 用户消息 prompt.context 事件接入"]
     A4 --> B3
     B3 --> C1
 
@@ -586,6 +594,7 @@ flowchart LR
 | EXTV2-26 会话压缩与压缩前扩展 | 接口已开发；主流程未接入 | 刘瑜 | 历史 [!109](https://gitcode.com/huenrui_/jiuwenswarm/pull/109)；本轮测试修复 [!119](https://gitcode.com/huenrui_/jiuwenswarm/pull/119) | 当前 Core 下 compact 15 项通过；受管包注册、激活代次、USER 完成和原压缩断言均验证，见 F_28 第 6.5 节；生产绑定仍未启用 | 2026-11-04 |
 | EXTV2-27 会话凭据授权句柄 | 已开发 | 刘瑜 | [!114](https://gitcode.com/huenrui_/jiuwenswarm/pull/114)，已合入 | 宿主显式绑定、Ops/Event 链、凭据隔离与句柄撤销验证见 F_29 第 6 节 | 2026-11-04 |
 | EXTV2-29 Server 斜杠命令执行扩展 | 已开发 | 刘瑜 | [!119](https://gitcode.com/huenrui_/jiuwenswarm/pull/119)，待合入 | 219 个不同定向用例通过；扩展全组 990 通过、2 跳过、2 失败已在基线复现；真实 ZIP 与隐藏消息恢复见 F_30 第 6 节 | 2026-11-04 |
+| EXTV2-33 用户消息 prompt.context 事件接入 | 已开发，待合入 | yang | 本地工作集 | 外部用户 `CHAT_SEND`（unary/stream，含 team/team mode/group-chat）接入、集中范围 gate、专用路径旁路、UserTurn 投影和专项回归见 F_34 / S_20 | 2026-11-07 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 
