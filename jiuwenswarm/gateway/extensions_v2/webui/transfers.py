@@ -419,8 +419,10 @@ class TransferManager:
 
     async def settle_package(self, package_id: str) -> None:
         """Wait until the background deletions of this package's tickets have finished."""
-        while tasks := list(self._deletions.get(package_id, ())):
+        tasks = list(self._deletions.get(package_id, ()))
+        while tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+            tasks = list(self._deletions.get(package_id, ()))
 
     async def _discard(self, upload: Upload) -> None:
         await run_file_operation(partial(shutil.rmtree, upload.directory, True))
