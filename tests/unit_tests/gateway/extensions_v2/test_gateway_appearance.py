@@ -92,6 +92,18 @@ def _apply(appearance):
     return call
 
 
+def _capture(captured: list):
+    """A call that keeps the handler's Ops for a detached task (S_01: Ops stay valid while current)."""
+    async def call(ops, event):
+        captured.append(ops)
+    return call
+
+
+async def _yield(times: int = 20) -> None:
+    for _ in range(times):
+        await asyncio.sleep(0)
+
+
 def _render_background(ops, event):
     target = event.event_input.target
     return ops.ui.render(UiRenderInput(
@@ -273,14 +285,13 @@ async def test_a_request_queued_behind_the_release_cannot_outrun_the_revoke(tmp_
     channel.send_event = slow_send
     try:
         runtime.publish(theme.package(tmp_path / "theme"))
-        generation = runtime.browser.generations[THEME]
-        theme.calls.append(_apply({"accent": "#b45309"}))
+        captured = []
+        theme.calls.extend([_capture(captured), _apply({"accent": "#b45309"})])
         ready = asyncio.create_task(_ready(runtime, SimpleNamespace(closed=False), THEME))
         await started.wait()
-        queued = asyncio.create_task(runtime.browser.apply_appearance(
-            THEME, generation, "browser-1", {"accent": "#0f766e"},
-        ))
-        await asyncio.sleep(0)  # the queued call is now waiting for the connection lock
+        # The package's own Ops, used from a detached task: the call queues behind the first one.
+        queued = asyncio.create_task(captured[0].appearance.apply({"accent": "#0f766e"}))
+        await _yield()  # the queued call is now waiting for the connection lock
         runtime.unpublish(THEME)
         resume.set()
         await ready
@@ -317,14 +328,14 @@ async def test_a_queued_request_of_a_released_package_without_provider_sends_not
     try:
         runtime.publish(theme.package(tmp_path / "theme"))
         runtime.publish(other.package(tmp_path / "other"))
-        generation = runtime.browser.generations[THEME]
+        ws, captured = SimpleNamespace(closed=False), []
+        theme.calls.append(_capture(captured))
+        await _ready(runtime, ws, THEME)
         other.calls.append(_apply({"accent": "#b45309"}))
-        ready = asyncio.create_task(_ready(runtime, SimpleNamespace(closed=False), OTHER))
+        ready = asyncio.create_task(_ready(runtime, ws, OTHER))
         await started.wait()
-        queued = asyncio.create_task(runtime.browser.apply_appearance(
-            THEME, generation, "browser-1", {"accent": "#0f766e"},
-        ))
-        await asyncio.sleep(0)
+        queued = asyncio.create_task(captured[0].appearance.apply({"accent": "#0f766e"}))
+        await _yield()
         runtime.unpublish(THEME)
         resume.set()
         await ready

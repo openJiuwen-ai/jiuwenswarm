@@ -28,6 +28,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.models import (
     HostActionOutput, RenderNode, RenderTarget, UiActionInput, UiActionOutput, UiAppearanceInput,
     UiDownloadInput, UiSplashPreviewInput, valid_instance_key,
 )
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import Caller
 from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS, WebUIEvent
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
 from jiuwenswarm.gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
@@ -130,7 +131,7 @@ class BrowserBridge:
     @property
     def application_enabled(self) -> bool:
         """Whether any active package contributes to a Gateway application slot."""
-        return any(self.is_application_package(package) for package in self.runtime.active_packages())
+        return any(activation.application for activation in self.runtime.current_activations())
 
     @property
     def generations(self) -> Mapping[str, str]:
@@ -156,18 +157,16 @@ class BrowserBridge:
 
     def application_packages(self) -> list:
         """Return the active packages that own Gateway application UI."""
-        return [package for package in self.runtime.active_packages() if self.is_application_package(package)]
-
-    def _active_application_package(self, package_id: str):
-        return next((package for package in self.application_packages() if package.package_id == package_id), None)
+        return [activation.package for activation in self.runtime.current_activations() if activation.application]
 
     def active_application_package(self, package_id: str):
         """Return the active application package with this id, or None."""
-        return self._active_application_package(package_id)
+        activation = self.runtime.current_activation(package_id)
+        return activation.package if activation is not None and activation.application else None
 
     def package_title(self, package_id: str) -> dict[str, str]:
         """Navigation title as ``{zh, en}``: manifest ``display.name``, else the package id."""
-        package = self._active_application_package(package_id)
+        package = self.active_application_package(package_id)
         names = getattr(package, "display_name", None) if package is not None else None
         if isinstance(names, Mapping) and names.get("zh") and names.get("en"):
             return {"zh": names["zh"], "en": names["en"]}
@@ -338,7 +337,7 @@ class BrowserBridge:
         if set(payload) != {"reason", "revision"} or reason not in CLOSE_REASONS or type(revision) is not int:
             return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
         record = self.runtime.registry.get(scoped)
-        if (self._active_application_package(package_id) is None or record is None or record.root is None
+        if (self.active_application_package(package_id) is None or record is None or record.root is None
                 or record.revision != revision):
             return UiActionOutput(accepted=False, status="inactive", code="TARGET_INACTIVE")
         # Drop first so a repeated or concurrent close is answered as inactive.
@@ -349,7 +348,7 @@ class BrowserBridge:
         return UiActionOutput(accepted=True, status="closed")
 
     def published(self, package_id: str) -> None:
-        package = self._active_application_package(package_id)
+        package = self.active_application_package(package_id)
         if package is not None and self.splash_declaration(package) is not None:
             self.splash_preferences.note_installed(package_id)
 
@@ -386,9 +385,10 @@ class BrowserBridge:
         host sends on its own (release, eviction, shutdown) carry the current one. Only client-capability
         packages are declared to the browser, so frames of other application packages carry none.
         """
-        if not any(package.package_id == package_id and package.client for package in self.runtime.active_packages()):
+        activation = self.runtime.current_activation(package_id)
+        if activation is None or not activation.package.client:
             return None
-        return generation or self.generations.get(package_id)
+        return generation or activation.generation
 
     def released(self, package_id: str) -> None:
         """Retire a package's views and appearance, and tell the affected browsers."""
@@ -428,10 +428,10 @@ class BrowserBridge:
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
-    async def apply_appearance(self, package_id: str, generation: str, connection_id: str,
-                               appearance: Mapping[str, Any] | None) -> dict[str, Any]:
+    async def apply_appearance(self, caller: Caller, appearance: Mapping[str, Any] | None) -> dict[str, Any]:
         """Deliver or revoke the calling package's appearance on its browser connection (S_08)."""
-        package = self._action_package(package_id, generation)
+        package = self._action_package(caller)
+        connection_id = caller.connection_id
         if not connection_id:
             raise ValueError("ops.appearance requires a browser connection")
         normalized = None if appearance is None else validate_appearance(appearance)
@@ -439,7 +439,7 @@ class BrowserBridge:
         async with lock:
             # A release while this call waited reserved its revoke already; a stale
             # activation must not send a later revision that would outrank it.
-            self._action_package(package_id, generation)
+            self._action_package(caller)
             if normalized is None and self.appearance.provider(connection_id) != package.package_id:
                 return {"status": "unchanged", "revision": self.appearance.revision(connection_id)}
             revision = self.appearance.next_revision(connection_id)
@@ -453,8 +453,8 @@ class BrowserBridge:
             if not delivered:
                 return {"status": "delivery_failed", "revision": revision}
             # A release during delivery queued a later revoke; keep it authoritative. Shutdown ends
-            # activations without releasing in-flight records, so the generation is checked as well.
-            if still_owned and self.generations.get(package.package_id) == generation:
+            # activations without releasing in-flight records, so currency is checked as well.
+            if still_owned and caller.current():
                 self.appearance.set(connection_id, package.package_id if normalized else None)
             return {"status": "applied" if normalized else "revoked", "revision": revision}
 
@@ -465,9 +465,9 @@ class BrowserBridge:
             await self._declare(connection)
 
     async def _declare(self, connection: BrowserConnection) -> None:
-        packages = [{"packageId": package.package_id, "activationGeneration": self.generations[package.package_id],
-                     "requestBindings": package.client["requestBindings"]}
-                    for package in self.runtime.active_packages() if package.client]
+        packages = [{"packageId": activation.package_id, "activationGeneration": activation.generation,
+                     "requestBindings": activation.package.client["requestBindings"]}
+                    for activation in self.runtime.current_activations() if activation.package.client]
         signature = json.dumps(packages, sort_keys=True)
         if signature != connection.declaration_signature:
             await self.runtime.channel.send_event(connection.ws, "client.declarations", {
@@ -559,7 +559,8 @@ class BrowserBridge:
         but not change whose it is.
         """
         caller = self.runtime.caller_for(ops)
-        if caller is None:
+        if caller is None or not caller.current():
+            # Ops of a released activation start no chain; other packages never see a dead call.
             raise ValueError("package call belongs to an inactive activation")
         result = await self.runtime.bus.trigger(Event(event_name, make_input(caller.package_id)),
                                                 ops.session_context, trigger_context=caller)
@@ -575,25 +576,28 @@ class BrowserBridge:
             answer["code"] = result.code
         return answer
 
-    def _action_package(self, package_id: str, generation: str):
-        """The active application package whose current activation made the call."""
-        package = self._active_application_package(package_id)
-        if package is None or not generation or self.generations.get(package_id) != generation:
+    @staticmethod
+    def _action_package(caller: Caller):
+        """The application package of a host operation's caller, while its activation is current.
+
+        Called on entry and again after each await that a release may overtake.
+        """
+        if not caller.application or not caller.current():
             raise ValueError("package call belongs to an inactive activation")
-        return package
+        return caller.package
 
-    async def offer_download(self, package_id: str, generation: str, connection_id: str, path: Any,
-                             filename: Any) -> dict[str, Any]:
+    async def offer_download(self, caller: Caller, path: Any, filename: Any) -> dict[str, Any]:
         """Offer one data file to the calling connection (S_10 section 7.1)."""
-        self._action_package(package_id, generation)
-        return await self.transfers.offer_download(package_id, generation, connection_id, path, filename)
+        self._action_package(caller)
+        return await self.transfers.offer_download(caller, path, filename)
 
-    async def preview_splash(self, package_id: str, generation: str, connection_id: str) -> dict[str, Any]:
+    async def preview_splash(self, caller: Caller) -> dict[str, Any]:
         """Ask the calling connection to play this package's splash once (S_09 section 3.3).
 
         A splash the user turned off can still be previewed: the request comes from the package's own page.
         """
-        package = self._action_package(package_id, generation)
+        package = self._action_package(caller)
+        connection_id = caller.connection_id
         declaration = self.splash_declaration(package)
         if declaration is None:
             raise ValueError("ops.splash.preview requires an application.splash contribution")
@@ -608,25 +612,22 @@ class BrowserBridge:
     def _package_caller(self, ops: EventHandlerOps):
         """Resolve the application package and caller of Ops from its current activation."""
         caller = self.runtime.caller_for(ops)
-        package = self._active_application_package(caller.package_id) if caller is not None else None
-        if package is None or not caller.current():
+        if caller is None:
             raise ValueError("package call belongs to an inactive activation")
-        return package, caller
+        return self._action_package(caller), caller
 
-    def _caller(self, ops: EventHandlerOps):
-        metadata = ops.session_context.metadata if ops.session_context else {}
-        package_id = ops.package_metadata.package_id if ops.package_metadata else ""
-        package = next((item for item in self.runtime.active_packages() if item.package_id == package_id and item.client), None)
-        connection = self.connections.get(metadata.get("connection_id"))
-        if package is None or connection is None or connection.ws.closed:
-            raise ValueError("inactive package or browser connection")
+    def _client_caller(self, ops: EventHandlerOps):
+        """The caller of a browser operation: a current client package and its open connection."""
         caller = self.runtime.caller_for(ops)
-        if caller is None or caller.package_id != package_id or not caller.current():
+        if caller is None or not caller.current():
             raise ValueError("package call belongs to an inactive activation")
-        return package, connection
+        connection = self.connections.get(caller.connection_id)
+        if not caller.package.client or connection is None or connection.ws.closed:
+            raise ValueError("inactive package or browser connection")
+        return caller, connection
 
     async def operation(self, ops: EventHandlerOps, method: str, params: dict[str, Any]) -> dict:
-        package, connection = self._caller(ops)
+        caller, connection = self._client_caller(ops)
         if method == "page.reload":
             if params:
                 raise ValueError("page.reload does not accept parameters")
@@ -642,8 +643,8 @@ class BrowserBridge:
             raise ValueError("browser operations require a current request id")
         await self.runtime.channel.send_event(connection.ws, "client.operation", {
             "clientProtocolVersion": 1, "invocation_id": request_id,
-            "connection_epoch": connection.epoch, "package_id": package.package_id,
-            "activation_generation": self.generations[package.package_id], "method": method,
+            "connection_epoch": connection.epoch, "package_id": caller.package_id,
+            "activation_generation": caller.generation, "method": method,
             "params": params, "deadline": int(time.time() * 1000) + 30_000,
         })
         return {"accepted": True, "status": "queued"}
@@ -745,12 +746,10 @@ class BrowserBridge:
         data = generation.endswith(DATA_GENERATION_SUFFIX)
         if data:
             generation = generation[:-len(DATA_GENERATION_SUFFIX)]
-        if self.generations.get(package_id) != generation:
+        activation = self.runtime.current_activation(package_id)
+        if activation is None or not activation.application or activation.generation != generation:
             raise ValueError("inactive package asset")
-        package = self._active_application_package(package_id)
-        if package is None:
-            raise ValueError("inactive package asset")
-        owner = self.runtime.package_data_dir(package_id) if data else package.root
+        owner = self.runtime.package_data_dir(package_id) if data else activation.package.root
         root = ((owner / "public") if data else (owner / "assets")).resolve()
         path = (root / relative).resolve()
         if not root.is_relative_to(owner.resolve()) or not path.is_relative_to(root) or path == root or not path.is_file():

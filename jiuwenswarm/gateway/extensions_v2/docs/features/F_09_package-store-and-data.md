@@ -108,6 +108,13 @@ PR #10763 检视指出：卸载只注销 Handler，卸载前派生的任务仍�
 传输层不再读取上下文：渲染 CORE 把调用方的代次显式交给渲染、错误与清除帧，宿主自行发送的帧取当前代次
 （`test_frames_a_render_causes_carry_the_activation_that_rendered`）。等待之后的激活核对保持不变。
 
+同轮的激活状态收敛：运行时不再并行维护包列表、各包 Handler 列表、全部 Handler 标识与按事件计数，都由激活记录派生；
+“激活是否有效”统一为 `runtime.is_current(activation)`，调用方直接持有激活，导入与下载凭据持有激活而不是代次字符串，
+桥接层不再在调用时重新扫描包声明（应用级标记在发布时记在激活上）。宿主动作在事件链开始前核对调用方，已释放激活的 Ops
+不再让其他包的 USER Handler 看到一次必然失败的调用（`test_ops_of_a_released_activation_start_no_host_action_chain` 修复前失败）。
+连接锁之后与发送之后的复核保留；外观排队用例改为由包自己的 Ops 在后台任务中调用，去掉复核后两例均失败。
+`ops.data.root()` 对非活动包仍先返回 `ValueError`，与存储调用的错误分开，契约不变。
+
 2026-11-07 第四轮修订（PR 检视）：上一轮让删除包数据前等待宿主全部后台任务（`browser.settle()`），检视复现：另一个包的外观撤销
 卡在不读消息的浏览器上时，卸载会一直等待，而被卸载的包已经停用。现在导入目录的后台删除按包登记，删除数据前只等待本包的删除任务
 （S_01 不变量 14）；回归用例 `test_uninstall_does_not_wait_for_another_packages_browser_notifications` 修复前超时、修复后通过。

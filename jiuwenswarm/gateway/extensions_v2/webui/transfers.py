@@ -32,7 +32,8 @@ from jiuwenswarm.gateway.extensions_v2.webui.host_settings import CODE_BAD_REQUE
 from jiuwenswarm.gateway.extensions_v2.webui.models import RenderTarget, valid_instance_key
 
 if TYPE_CHECKING:
-    from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
+    from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime, _Activation
+    from jiuwenswarm.gateway.extensions_v2.webui.call_context import Caller
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,8 @@ class Upload:
     upload_id: str
     connection_id: str
     package_id: str
-    generation: str
+    # The activation the ticket was issued to; the ticket ends with it.
+    activation: _Activation
     target: RenderTarget
     node_key: str
     files: dict[str, int]
@@ -139,7 +141,7 @@ class Download:
     token: str
     connection_id: str
     package_id: str
-    generation: str
+    activation: _Activation
     path: Path
     filename: str
     created: float
@@ -170,15 +172,14 @@ class TransferManager:
                 or not isinstance(target.get("package_id"), str) or not isinstance(params["node_key"], str)
                 or not valid_instance_key(target.get("instance_key"))):
             raise HostRequestError(CODE_BAD_REQUEST, "invalid upload target")
-        browser = self.runtime.browser
         package_id = target["package_id"]
         scoped = RenderTarget(session_id="", slot_id=target["slot_id"], package_id=package_id,
                               instance_key=target["instance_key"], scope="application",
                               connection_id=request.connection_id)
         record = self.runtime.registry.get(scoped)
         node = tree_nodes(record.root).get(params["node_key"]) if record and record.root is not None else None
-        generation = browser.generations.get(package_id)
-        if (browser.active_application_package(package_id) is None or generation is None or node is None
+        activation = self.runtime.current_activation(package_id)
+        if (activation is None or not activation.application or node is None
                 or type(params["revision"]) is not int or params["revision"] != record.revision
                 or node.component != "FileImport" or node.props.get("disabled") is True
                 or "ui.change" not in (node.events or {})):
@@ -186,16 +187,16 @@ class TransferManager:
         files = validate_manifest(node.props, params["files"], self.runtime.config.upload_max_bytes)
 
         def target_is_current() -> bool:
-            return (browser.generations.get(package_id) == generation
+            return (self.runtime.is_current(activation)
                     and self.runtime.registry.get(scoped) is record and record.revision == params["revision"])
 
         try:
-            with self.runtime.package_io_call(package_id, generation):
-                return await self._prepare_upload(scoped, params["node_key"], generation, files, target_is_current)
+            with self.runtime.package_io_call(activation):
+                return await self._prepare_upload(scoped, params["node_key"], activation, files, target_is_current)
         except ExtensionFailure as exc:
             raise HostRequestError(CODE_TARGET_INACTIVE, "the import activation has ended") from exc
 
-    async def _prepare_upload(self, target: RenderTarget, node_key: str, generation: str,
+    async def _prepare_upload(self, target: RenderTarget, node_key: str, activation: _Activation,
                               files: dict[str, int], target_is_current: Callable[[], bool]) -> dict[str, Any]:
         """Prepare one ticket under the caller's file-work lease, including cancellation cleanup.
 
@@ -214,7 +215,7 @@ class TransferManager:
         directory = data_dir / UPLOAD_DIR / upload_id
         upload = Upload(
             upload_id=upload_id, connection_id=target.connection_id, package_id=target.package_id,
-            generation=generation, target=target, node_key=node_key,
+            activation=activation, target=target, node_key=node_key,
             files=files, directory=directory, created=self._clock(),
         )
         self.uploads[upload_id] = upload
@@ -248,7 +249,7 @@ class TransferManager:
         if relative in upload.received or relative in upload.receiving:
             return 409
         try:
-            with self.runtime.package_io_call(upload.package_id, upload.generation):
+            with self.runtime.package_io_call(upload.activation):
                 return await self._receive_file(upload, relative, chunks)
         except ExtensionFailure:
             return 404
@@ -302,7 +303,7 @@ class TransferManager:
         if (upload is None or self._clock() - upload.created > UPLOAD_TTL_S
                 or upload.target.key != target.key or upload.connection_id != target.connection_id
                 or upload.node_key != node_key or upload.receiving or upload.received != set(upload.files)
-                or self.runtime.browser.generations.get(upload.package_id) != upload.generation):
+                or not self.runtime.is_current(upload.activation)):
             return None
         return self.uploads.pop(upload_id)
 
@@ -312,9 +313,9 @@ class TransferManager:
 
     # ── export ────────────────────────────────────────────────────────────
 
-    async def offer_download(self, package_id: str, generation: str, connection_id: str, path: Any,
-                             filename: Any) -> dict[str, Any]:
-        """Issue a single-use download of one data file to one connection (S_10 section 7.1)."""
+    async def offer_download(self, caller: Caller, path: Any, filename: Any) -> dict[str, Any]:
+        """Issue a single-use download of one data file to the caller's connection (S_10 section 7.1)."""
+        package_id, connection_id = caller.package_id, caller.connection_id
         if not connection_id:
             raise ValueError("ops.ui.download requires a browser connection")
         if not isinstance(path, str) or not path or path.startswith(("/", "\\")):
@@ -336,7 +337,8 @@ class TransferManager:
         self.expire()
         token = uuid4().hex
         self.downloads[token] = Download(token=token, connection_id=connection_id, package_id=package_id,
-                                         generation=generation, path=current, filename=name, created=self._clock())
+                                         activation=caller.activation, path=current, filename=name,
+                                         created=self._clock())
         delivered = await self.runtime.webui.transport.send_download(connection_id, {
             "package_id": package_id, "url": f"{DOWNLOAD_PREFIX}{token}", "filename": name,
             "size": current.stat().st_size,
@@ -352,7 +354,7 @@ class TransferManager:
             return None
         offer = self.downloads.get(token)
         if (offer is None or self._clock() - offer.created > DOWNLOAD_TTL_S
-                or self.runtime.browser.generations.get(offer.package_id) != offer.generation
+                or not self.runtime.is_current(offer.activation)
                 or offer.path.is_symlink() or not offer.path.is_file()):
             return None
         if consume:

@@ -90,11 +90,9 @@ class GatewayRuntime:
                 package_id, generation)),
             caller_for=self.caller_for,
         )
-        self._handler_ids: list[str] = []
         self._builtin_ids: list[str] = []
-        self._user_handlers: dict[str, int] = {}
-        self._package_handlers: dict[str, list[tuple[str, str]]] = {}
-        self._packages: list[LoadedPackage] = []
+        # The published activation of each package, in publication order: the one record of what runs,
+        # its handlers and its identity (S_01 invariant 13). Packages and handler counts derive from it.
         self._activations: dict[str, _Activation] = {}
         # Which activation each handler's Ops belongs to; detached tasks keep using them.
         self._ops_owner: weakref.WeakKeyDictionary[Any, _Activation] = weakref.WeakKeyDictionary()
@@ -135,11 +133,11 @@ class GatewayRuntime:
                     package.package_id,
                     exc,
                 )
-        await self.browser.transfers.purge(package.package_id for package in self._packages)
+        await self.browser.transfers.purge(tuple(self._activations))
         self._started = True
         logger.info(
             "[GatewayExtensions] started: packages=%d handlers=%d install_dir=%s",
-            len(self._packages),
+            len(self._activations),
             self.user_handler_count,
             self.config.install_dir,
         )
@@ -152,16 +150,13 @@ class GatewayRuntime:
         for prepared in self._prepared:
             prepared.activation.release()
         self._prepared.clear()
-        for handler_id in (*self._handler_ids, *self._builtin_ids):
+        user_ids = [handler_id for activation in self._activations.values() for handler_id in activation.registered]
+        for handler_id in (*user_ids, *self._builtin_ids):
             try:
                 self.bus.unregister_event_handler(handler_id)
             except Exception as exc:  # noqa: BLE001 - shutdown must keep going
                 logger.warning("[GatewayExtensions] failed to unregister %s: %s", handler_id, exc)
-        self._handler_ids.clear()
         self._builtin_ids.clear()
-        self._user_handlers.clear()
-        self._package_handlers.clear()
-        self._packages.clear()
         for activation in self._activations.values():
             activation.release()
         self._activations.clear()
@@ -186,7 +181,7 @@ class GatewayRuntime:
     def user_handler_count(self) -> int:
         """Number of published USER handlers; BUILTIN handlers never count."""
 
-        return sum(self._user_handlers.values())
+        return sum(len(activation.registered) for activation in self._activations.values())
 
     @property
     def packages(self) -> Any:
@@ -266,9 +261,8 @@ class GatewayRuntime:
         registered = self._register_batch(package, lambda declaration: _async_handler(declaration.handler, activation))
         self._prepared.discard(prepared)
         self.unpublish(package.package_id)
-        self._package_handlers[package.package_id] = registered
+        activation.registered = registered
         self._activations[package.package_id] = activation
-        self._packages.append(package)
         self.browser.published(package.package_id)
 
     def abort(self, prepared: PreparedPackage) -> None:
@@ -278,7 +272,7 @@ class GatewayRuntime:
         prepared.activation.release()
 
     def _register_batch(self, package: LoadedPackage,
-                        handler_for: Callable[[HandlerDeclaration], Callable[..., Any]]) -> list[tuple[str, str]]:
+                        handler_for: Callable[[HandlerDeclaration], Callable[..., Any]]) -> tuple[str, ...]:
         """Register one handler per declaration, all or nothing.
 
         Raises:
@@ -290,7 +284,7 @@ class GatewayRuntime:
             package_version=package.version,
             root=package.root,
         )
-        registered: list[tuple[str, str]] = []
+        registered: list[str] = []
         for declaration in package.handlers:
             try:
                 handler_id = self.bus.register_event_handler(
@@ -309,42 +303,28 @@ class GatewayRuntime:
                 )
                 self._drop_handlers(registered)
                 raise
-            self._handler_ids.append(handler_id)
-            registered.append((handler_id, declaration.event_type))
-            self._user_handlers[declaration.event_type] = (
-                self._user_handlers.get(declaration.event_type, 0) + 1
-            )
-        return registered
+            registered.append(handler_id)
+        return tuple(registered)
 
     def unpublish(self, package_id: str) -> bool:
         """Release every handler of one package and drop its active record."""
 
-        registered = self._package_handlers.pop(package_id, None)
-        if registered is None:
-            return False
-        self._drop_handlers(registered)
-        self._packages = [package for package in self._packages if package.package_id != package_id]
         activation = self._activations.pop(package_id, None)
-        if activation is not None:
-            activation.release()
+        if activation is None:
+            return False
+        self._drop_handlers(activation.registered)
+        activation.release()
         self.browser.released(package_id)
         return True
 
-    def _drop_handlers(self, registered: list[tuple[str, str]]) -> None:
-        """Unregister ``(handler_id, event_type)`` pairs and fix the counters."""
+    def _drop_handlers(self, registered: Sequence[str]) -> None:
+        """Unregister handler ids; a stale id is logged and the rest still go."""
 
-        for handler_id, event_type in registered:
+        for handler_id in registered:
             try:
                 self.bus.unregister_event_handler(handler_id)
             except Exception as exc:  # noqa: BLE001 - a stale id must not block the rest
                 logger.warning("[GatewayExtensions] cannot unregister %s: %s", handler_id, exc)
-            if handler_id in self._handler_ids:
-                self._handler_ids.remove(handler_id)
-            remaining = self._user_handlers.get(event_type, 0) - 1
-            if remaining > 0:
-                self._user_handlers[event_type] = remaining
-            else:
-                self._user_handlers.pop(event_type, None)
 
     # ── package store and data ────────────────────────────────────────────
 
@@ -358,6 +338,11 @@ class GatewayRuntime:
 
         return tuple(self._activations.values())
 
+    def is_current(self, activation: _Activation) -> bool:
+        """The one test of activation currency: ``activation`` is still the published one of its package."""
+
+        return self._activations.get(activation.package_id) is activation
+
     def caller_for(self, ops: EventHandlerOps | None) -> Caller | None:
         """Resolve the activation that issued ``ops`` (also from a detached task) as a host caller."""
 
@@ -367,7 +352,7 @@ class GatewayRuntime:
         connection_id = trusted_connection(ops)
 
         def current(target: RenderTarget | None = None) -> bool:
-            if self._activations.get(activation.package_id) is not activation:
+            if not self.is_current(activation):
                 return False
             if target is None:
                 return True
@@ -377,7 +362,7 @@ class GatewayRuntime:
                     and (not target.connection_id or target.connection_id == connection_id)
                     and ws is not None and not getattr(ws, "closed", False))
 
-        return Caller(activation.package_id, activation.generation, connection_id, current)
+        return Caller(activation, connection_id, current)
 
     def _bind_package_data(self) -> None:
         """Bind the package store before ``ops.build``.
@@ -422,16 +407,19 @@ class GatewayRuntime:
             yield
 
     @contextmanager
-    def package_io_call(self, package_id: str, generation: str) -> Iterator[None]:
-        """Keep host-mediated file work busy through cleanup, using its validated activation."""
-        activation = self._activations.get(package_id)
-        if activation is None or activation.generation != generation:
+    def package_io_call(self, activation: _Activation) -> Iterator[None]:
+        """Keep host-mediated file work of a current activation busy through cleanup.
+
+        Raises:
+            ExtensionFailure: The activation is no longer the published one.
+        """
+        if not self.is_current(activation):
             raise ExtensionFailure(StatusCode.EVENTS_OPS_INVALID, reason="the file operation's activation has ended")
-        _count(self._inflight, package_id, 1)
+        _count(self._inflight, activation.package_id, 1)
         try:
             yield
         finally:
-            self._end_data_calls((package_id,))
+            self._end_data_calls((activation.package_id,))
 
     def stop_package(self, package_id: str) -> bool:
         """Unpublish a package that is about to be uninstalled.
@@ -459,7 +447,7 @@ class GatewayRuntime:
     def is_active_package(self, package_id: str) -> bool:
         """True when ``package_id`` is currently published."""
 
-        return any(package.package_id == package_id for package in self._packages)
+        return package_id in self._activations
 
     def package_data_dir(self, package_id: str) -> Path:
         """Return ``<data_dir>/packages/<package_id>`` without creating it.
@@ -492,7 +480,7 @@ class GatewayRuntime:
     def active_packages(self) -> tuple[LoadedPackage, ...]:
         """Return the packages currently published on this runtime."""
 
-        return tuple(self._packages)
+        return tuple(activation.package for activation in self._activations.values())
 
     # ── trigger point: gateway.request ────────────────────────────────────
 
@@ -745,6 +733,8 @@ class _Activation:
         self.package_id = package.package_id
         self.generation = generation
         self.application = application
+        # Handler ids on the bus, set when the activation is committed.
+        self.registered: tuple[str, ...] = ()
         self._ops_owner = ops_owner
         self._inflight = inflight
         self._running = 0

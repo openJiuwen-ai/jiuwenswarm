@@ -197,3 +197,26 @@ async def test_a_chain_started_inside_a_host_action_does_not_inherit_its_caller(
         assert [frame["appearance"]["accent"] for frame in frames] == ["#b45309"]
     finally:
         await runtime.shutdown()
+
+
+async def test_ops_of_a_released_activation_start_no_host_action_chain(tmp_path):
+    """The activation is checked before the chain starts, so other packages never see a call that cannot succeed."""
+    captured, seen = [], []
+
+    async def keep(ops):
+        captured.append(ops)
+        return {"status": "kept"}
+
+    theme = Theme(keep)
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        runtime.publish(_policy("ui.appearance", deny=False, seen=seen))
+        await _ready(runtime)
+        runtime.unpublish(THEME)
+        with pytest.raises(ValueError, match="inactive activation"):
+            await captured[0].appearance.apply({"accent": "#b45309"})
+        assert seen == [], "no USER handler observed the dead call"
+        assert [name for name, _ in runtime.channel.events if name == "webui.appearance"] == []
+    finally:
+        await runtime.shutdown()

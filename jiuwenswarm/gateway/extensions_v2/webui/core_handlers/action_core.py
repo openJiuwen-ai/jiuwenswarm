@@ -51,8 +51,7 @@ def build_appearance_core_handler(browser: BrowserBridge) -> EventHandler:
     """Deliver or revoke the caller's appearance (S_08)."""
 
     async def act(request: UiAppearanceInput, caller: Caller) -> dict:
-        return await browser.apply_appearance(caller.package_id, caller.generation, caller.connection_id,
-                                              request.appearance)
+        return await browser.apply_appearance(caller, request.appearance)
 
     return _core("ui.appearance", UiAppearanceInput, act)
 
@@ -61,8 +60,7 @@ def build_download_core_handler(browser: BrowserBridge) -> EventHandler:
     """Offer one data file to the caller's connection (S_10 section 7)."""
 
     async def act(request: UiDownloadInput, caller: Caller) -> dict:
-        return await browser.offer_download(caller.package_id, caller.generation, caller.connection_id,
-                                            request.path, request.filename)
+        return await browser.offer_download(caller, request.path, request.filename)
 
     return _core("ui.download", UiDownloadInput, act)
 
@@ -71,6 +69,6 @@ def build_splash_preview_core_handler(browser: BrowserBridge) -> EventHandler:
     """Replay the caller's splash on its connection (S_09 section 3.3)."""
 
     async def act(request: UiSplashPreviewInput, caller: Caller) -> dict:
-        return await browser.preview_splash(caller.package_id, caller.generation, caller.connection_id)
+        return await browser.preview_splash(caller)
 
     return _core("ui.splash.preview", UiSplashPreviewInput, act)

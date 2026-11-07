@@ -11,11 +11,15 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openjiuwen.core.events import EventHandlerOps
 
 from jiuwenswarm.gateway.extensions_v2.webui.models import RenderTarget
+
+if TYPE_CHECKING:
+    from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
+    from jiuwenswarm.gateway.extensions_v2.runtime import _Activation
 
 _EMPTY: Mapping[str, Any] = MappingProxyType({})
 
@@ -31,10 +35,26 @@ class Caller:
     with a target it also checks that the target belongs to it and the connection is still open.
     """
 
-    package_id: str
-    generation: str
+    activation: _Activation
     connection_id: str
     current: Callable[[RenderTarget | None], bool]
+
+    @property
+    def package_id(self) -> str:
+        return self.activation.package_id
+
+    @property
+    def generation(self) -> str:
+        return self.activation.generation
+
+    @property
+    def package(self) -> LoadedPackage:
+        return self.activation.package
+
+    @property
+    def application(self) -> bool:
+        """Whether the package contributes to a Gateway application slot (resolved at publication)."""
+        return self.activation.application
 
 
 CallerFactory = Callable[[EventHandlerOps], "Caller | None"]
