@@ -651,6 +651,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
             **_agent_ras_kwargs_from_config(config_base),
         )
+        self._bind_subagent_runtime_config(config_base)
 
         # Keep ensure_initialized on the main event loop (same as interface_deep).
         # Running it via run_in_executor + asyncio.run in a worker thread poisons
