@@ -190,6 +190,11 @@ def run_llm_command(prompt: str, command: str, timeout_s: int = 120) -> dict:
             argv,
             input=prompt,
             text=True,
+            # The LLM CLI speaks UTF-8 in both directions; without an explicit
+            # codec the prompt would be encoded - and the answer decoded - with
+            # whatever text mode the interpreter happens to use.
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=timeout_s,
             check=False,

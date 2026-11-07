@@ -65,7 +65,7 @@ python3 app.py \
 - `--output-dir DIR`：输出目录，默认 `output`。
 - `--top-n 20`：控制 `report.md` 中各表展示的行数。
 - `--llm-analysis`：启用 LLM Analysis 章节。
-- `--llm-command "<cmd>"`：外部 LLM 命令，命令从 stdin 读取 prompt，并把分析文本写到 stdout。
+- `--llm-command "<cmd>"`：外部 LLM 命令，命令从 stdin 读取 prompt，并把分析文本写到 stdout。编码协议固定为 UTF-8：prompt 以 UTF-8 写入 stdin，分析文本以 UTF-8 写到 stdout。
 - `--llm-timeout 120`：LLM 命令超时时间，单位秒。
 
 如果使用默认 phase map，可以省略 `--phase-map`：
@@ -199,7 +199,7 @@ python3 app.py \
 
 可选能力：
 - `matplotlib`：用于自动生成 `analysis_charts.png`。
-- 外部 LLM CLI：用于 `--llm-analysis`，协议是 stdin 输入 prompt、stdout 输出分析文本。
+- 外部 LLM CLI：用于 `--llm-analysis`，协议是 stdin 输入 prompt、stdout 输出分析文本，两端编码均为 UTF-8；若该 CLI 按自身 locale 解码 stdin，中文 prompt 会乱码而结果仍可能显示成功，因此需让它以 UTF-8 读写。
 
 基础验证：
 
