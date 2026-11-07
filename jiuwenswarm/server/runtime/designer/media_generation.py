@@ -37,7 +37,10 @@ logger = logging.getLogger(__name__)
 Kind = Literal["image", "video"]
 
 _ENV_PREFIX: dict[Kind, str] = {"image": "VISUAL_GEN", "video": "VIDEO_GEN"}
-_SETTINGS_LABEL: dict[Kind, str] = {"image": "Image generation", "video": "Video generation"}
+_SETTINGS_LABEL_EN: dict[Kind, str] = {"image": "Image generation", "video": "Video generation"}
+_SETTINGS_LABEL_ZH: dict[Kind, str] = {"image": "图片生成", "video": "视频生成"}
+# Keep the English alias for any callers / tests that still import it.
+_SETTINGS_LABEL = _SETTINGS_LABEL_EN
 _VIDEO_POLL_SECONDS = 15.0
 _VIDEO_TIMEOUT_SECONDS = 1800.0
 # The agent tool budget stays under the node cap so a cloud job can still be
@@ -107,18 +110,53 @@ def generation_enabled(kind: Kind) -> bool:
     return visual_gen_enabled() if kind == "image" else video_gen_enabled()
 
 
+def _designer_ui_language() -> str:
+    """Return ``"en"`` or ``"zh"`` for Designer user-visible media errors.
+
+    These banners were historically English-only (#5003). Keep English when
+    ``preferred_language`` is missing, unreadable, or explicitly ``en``. Switch
+    to Chinese only when the config asks for ``zh`` / ``cn`` so a Chinese UI
+    no longer shows an English ``MEDIA_NOT_CONFIGURED`` banner.
+    """
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        config = get_config() or {}
+    except Exception:  # noqa: BLE001 - language lookup must never break Play
+        return "en"
+    raw = config.get("preferred_language") if isinstance(config, dict) else None
+    lang = str(raw or "").strip().lower()
+    if lang.startswith("zh") or lang in {"cn", "zh-cn", "zh-tw"}:
+        return "zh"
+    return "en"
+
+
 def generation_problem(kind: Kind) -> str | None:
     """Why Design cannot generate this media kind, or None when it can."""
-    label = _SETTINGS_LABEL[kind]
+    lang = _designer_ui_language()
+    label = (_SETTINGS_LABEL_EN if lang == "en" else _SETTINGS_LABEL_ZH)[kind]
     if not generation_enabled(kind):
-        return f"{label} is switched off in Settings > Agent."
+        if lang == "en":
+            return f"{label} is switched off in Settings > Agent."
+        return f"{label}已在「设置 > Agent」中关闭。"
     settings = slot_settings(kind)
     if not settings.complete:
-        return f"{label} is not configured: set the API URL, API key and model in Settings > Agent."
+        if lang == "en":
+            return (
+                f"{label} is not configured: set the API URL, API key and model "
+                "in Settings > Agent."
+            )
+        return f"{label}未配置：请在「设置 > Agent」中填写 API URL、API Key 和模型。"
     if settings.backend is None:
+        if lang == "en":
+            return (
+                f"{label} for Design needs a MiniMax, BytePlus ModelArk / Volcengine, "
+                f"Alibaba DashScope or vLLM-Omni endpoint; {settings.api_base} is not "
+                "one of them. Change it in Settings > Agent."
+            )
         return (
-            f"{label} for Design needs a MiniMax, BytePlus ModelArk / Volcengine, Alibaba DashScope or "
-            f"vLLM-Omni endpoint; {settings.api_base} is not one of them. Change it in Settings > Agent."
+            f"设计模式的{label}需要 MiniMax、BytePlus ModelArk / 火山引擎、阿里云 DashScope "
+            f"或 vLLM-Omni 端点；{settings.api_base} 不在支持列表中。请在「设置 > Agent」中修改。"
         )
     return None
 
