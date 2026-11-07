@@ -588,6 +588,11 @@ permissions:
   owner_scopes: {}
   deny_guidance_message: ""
 
+  soft_delete:
+    enabled: false
+    archive_dir: ""
+    batch_delete_threshold: 100
+
   file_guard:
     enabled: true
     defaults:
