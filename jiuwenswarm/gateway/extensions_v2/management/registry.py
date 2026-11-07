@@ -321,19 +321,29 @@ class GatewayPackageManager:
 
 
 async def _run_to_end(operation: Awaitable[Any]) -> Any:
-    """Await ``operation`` past a cancellation of the caller, then re-raise the cancellation.
+    """Await ``operation`` past every cancellation of the caller, then re-raise the first one.
 
     Used after a management operation's commit point, where stopping halfway would leave
-    browsers and packages in a state no version describes.
+    browsers and packages in a state no version describes. Like agent-core's
+    ``run_file_operation``, it keeps waiting until the task has really finished (a repeated
+    cancellation must not detach it) and reads its result so a failure is logged, not lost.
     """
 
     task = asyncio.ensure_future(operation)
     try:
         return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        if not task.done():
-            await asyncio.wait([task])
-        raise
+    except asyncio.CancelledError as cancelled:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001 - read below; the cancellation is what propagates
+                break
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("[GatewayExtensions] management operation failed after its caller was cancelled",
+                         exc_info=task.exception())
+        raise cancelled
 
 
 def _success(package_id: str, operation: str) -> ActivationReport:

@@ -564,6 +564,32 @@ async def test_a_cancelled_upgrade_finishes_once_the_running_splash_is_closing(t
         await restarted.shutdown()
 
 
+async def test_an_upgrade_cancelled_twice_still_waits_for_its_switch(tmp_path):
+    """A repeated cancellation does not detach the switch from the install that keeps its copy."""
+    log, gate = tmp_path / "closed.log", tmp_path / "gate"
+    runtime = await _start(tmp_path, install_dir=tmp_path / "pkgs")
+    manager = GatewayPackageManager(runtime, tmp_path / "pkgs")
+    try:
+        assert (await manager.install([_splash_zip(tmp_path, log, "1.0.0", gate=gate)]))[0].status == "SUCCESS"
+        target = await _play(runtime)
+        install = asyncio.create_task(manager.install([_splash_zip(tmp_path, log, "1.1.0")]))
+        await _until(lambda: _closing(log))
+        install.cancel()
+        await asyncio.sleep(0.02)
+        install.cancel()
+        await asyncio.sleep(0.02)
+        assert not install.done(), "the caller keeps waiting, and keeps the management lock"
+        gate.write_text("go", encoding="utf-8")
+        with pytest.raises(asyncio.CancelledError):
+            await install
+        assert _running(runtime, target) == ("1.1.0", False)
+        [package] = runtime.active_packages()
+        assert package.root.exists(), "the committed version keeps its installed copy"
+    finally:
+        gate.write_text("go", encoding="utf-8")
+        await runtime.shutdown()
+
+
 async def test_a_switch_prepared_before_shutdown_cannot_commit_after_it(tmp_path):
     log, gate = tmp_path / "closed.log", tmp_path / "gate"
     runtime = await _start(tmp_path, install_dir=tmp_path / "pkgs")
