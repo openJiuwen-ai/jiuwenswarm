@@ -113,6 +113,7 @@ class TestHandleSwarmflowControl:
         session_id: str = "sess-1",
         team_manager: Any = None,
         team_state: str = "running",
+        active_teams: list[Any] | None = None,
     ) -> tuple[dict[str, Any], _FakeController]:
         from unittest.mock import patch
 
@@ -144,7 +145,9 @@ class TestHandleSwarmflowControl:
             return_value=team_manager,
         ), patch(
             "openjiuwen.core.runner.Runner.list_active_teams",
-            new=AsyncMock(return_value=[active_team]),
+            new=AsyncMock(
+                return_value=[active_team] if active_teams is None else active_teams
+            ),
         ):
             await _run_handler(server, ws, request)
         return _decode_response(ws), fake_controller
@@ -259,6 +262,53 @@ class TestHandleSwarmflowControl:
             assert resp["payload"].get("error") == "工作流控制不可用，发送一条消息唤醒团队后即可使用。"
             assert ctl.calls == []
 
+    async def test_stopped_team_reports_authoritative_terminal_run(self) -> None:
+        """A cancelled run is terminal even when no Team runtime is alive."""
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
+            WorkflowRunState,
+        )
+
+        run = WorkflowRunState(status="stopped")
+        run.id = "wf_1"
+        manager = SimpleNamespace(
+            has_stream_task=lambda sid: False,
+            get_workflow_handler=lambda sid: _FakeWorkflowHandler({"wf_1": run}),
+        )
+        resp, controller = await self._invoke(
+            ReqMethod.SWARMFLOW_PAUSE,
+            params={"run_id": "wf_1"},
+            team_manager=manager,
+            active_teams=[],
+        )
+        assert controller.calls == []
+        assert resp["ok"] is False
+        assert resp["payload"] == {
+            "error": "workflow already stopped",
+            "status": "stopped",
+        }
+
+    async def test_asleep_team_keeps_wake_message_for_non_terminal_run(self) -> None:
+        """Non-terminal runs still need the leader to be woken, not a stale-state error."""
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
+            WorkflowRunState,
+        )
+
+        run = WorkflowRunState(status="paused")
+        run.id = "wf_1"
+        manager = SimpleNamespace(
+            has_stream_task=lambda sid: False,
+            get_workflow_handler=lambda sid: _FakeWorkflowHandler({"wf_1": run}),
+        )
+        resp, controller = await self._invoke(
+            ReqMethod.SWARMFLOW_RESUME,
+            params={"run_id": "wf_1"},
+            team_manager=manager,
+            active_teams=[],
+        )
+        assert controller.calls == []
+        assert resp["ok"] is False
+        assert resp["payload"].get("error") == "工作流控制不可用，发送一条消息唤醒团队后即可使用。"
+
     async def test_controller_false_returns_not_found(self) -> None:
         resp, controller = await self._invoke(
             ReqMethod.SWARMFLOW_STOP,
@@ -277,6 +327,52 @@ class TestHandleSwarmflowControl:
         )
         assert resp["request_id"] == "req-1"
         assert resp["channel_id"] == "web"
+
+
+class TestLegacyRunSwarmflowControl:
+    """Cover the AgentWebSocketServer control path that bypasses RequestContext."""
+
+    async def test_asleep_terminal_run_returns_authoritative_status(self) -> None:
+        from unittest.mock import patch
+
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
+            WorkflowRunState,
+        )
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        run = WorkflowRunState(status="stopped")
+        run.id = "wf_1"
+        handler = _FakeWorkflowHandler({"wf_1": run})
+        manager = SimpleNamespace(
+            has_stream_task=lambda sid: False,
+            get_workflow_handler=lambda sid: handler,
+        )
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(
+            req_method=ReqMethod.SWARMFLOW_PAUSE,
+            params={"run_id": "wf_1"},
+        )
+        with patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=manager,
+        ), patch(
+            "openjiuwen.core.runner.Runner.list_active_teams",
+            new=AsyncMock(return_value=[]),
+        ):
+            await server._run_swarmflow_control(
+                ws,
+                request,
+                asyncio.Lock(),
+                action="pause",
+            )
+
+        resp = _decode_response(ws)
+        assert resp["ok"] is False
+        assert resp["payload"] == {
+            "error": "workflow already stopped",
+            "status": "stopped",
+        }
 
 
 class TestSwarmflowControlDispatch:

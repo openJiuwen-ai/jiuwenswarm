@@ -172,7 +172,11 @@ def get_background_task_controller(session_id: str) -> BackgroundTaskController:
 
 
 def classify_swarmflow_control_miss(
-    channel_id: str, session_id: str, run_id: str,
+    channel_id: str,
+    session_id: str,
+    run_id: str,
+    *,
+    team_manager: Any | None = None,
 ) -> dict | None:
     """Classify a swarmflow control miss into the run's authoritative state.
 
@@ -182,10 +186,18 @@ def classify_swarmflow_control_miss(
     the workflow handler's in-memory states, then the session-metadata disk
     snapshot, and return ``{"error", "status"}`` for the caller's ok=False
     payload. Returns ``None`` when no state is found anywhere (true not-found).
+
+    Args:
+        channel_id: Channel owning the Team manager.
+        session_id: Session whose workflow snapshot to inspect.
+        run_id: Workflow run to classify.
+        team_manager: Optional manager already resolved by the caller, so the
+            classification and the control RPC observe the same instance.
     """
     run_state = None
     try:
-        wf_handler = get_team_manager(channel_id).get_workflow_handler(session_id)
+        manager = team_manager or get_team_manager(channel_id)
+        wf_handler = manager.get_workflow_handler(session_id)
         if wf_handler is not None:
             run_state = wf_handler.get_run_states().get(run_id)
         if run_state is None:
@@ -208,6 +220,36 @@ def classify_swarmflow_control_miss(
         else f"workflow is {run_state.status} but no live control handle"
     )
     return {"error": error, "status": run_state.status}
+
+
+_SWARMFLOW_CONTROL_UNAVAILABLE_ERROR = (
+    "工作流控制不可用，发送一条消息唤醒团队后即可使用。"
+)
+
+
+def swarmflow_control_unavailable_payload(
+    channel_id: str,
+    session_id: str,
+    run_id: str,
+    *,
+    team_manager: Any | None = None,
+) -> dict[str, str]:
+    """Build the control-RPC error payload when no Team runtime can host the run.
+
+    A terminal run in the persisted snapshot is reported with its authoritative
+    ``workflow already <status>`` error; otherwise the caller gets the generic
+    "wake the team" message. Centralized so both control RPC entry points use
+    the same terminal classification and fallback text.
+    """
+    miss = classify_swarmflow_control_miss(
+        channel_id,
+        session_id,
+        run_id,
+        team_manager=team_manager,
+    )
+    if miss is not None and str(miss.get("error") or "").startswith("workflow already "):
+        return miss
+    return {"error": _SWARMFLOW_CONTROL_UNAVAILABLE_ERROR}
 
 
 def _safe_team_path_segment(value: str, fallback: str = "_") -> str:

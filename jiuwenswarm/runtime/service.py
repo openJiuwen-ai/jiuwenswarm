@@ -88,6 +88,11 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
+from jiuwenswarm.runtime.team_interrupt_control import (
+    TeamRuntimeAction,
+    bind_team_runtime_action,
+    reset_team_runtime_action,
+)
 from jiuwenswarm.server.middleware.chat import trigger_before_chat_request
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
@@ -1355,6 +1360,7 @@ class AgentRuntime:
         )
         is_team_request = self._request_targets_team(request)
         team_paused = False
+        team_action: TeamRuntimeAction | None = None
         target_request_id = str(params.get("target_request_id") or "").strip()
         # Only the web cron path fences a specific execution. Other transports
         # (for example process-cli request-scoped cancels) must keep the
@@ -1451,19 +1457,34 @@ class AgentRuntime:
                     channel_id=request.channel_id,
                 )
             elif intent in {"cancel", "stop"}:
-                await self._team_lifecycle().stop_session(
+                team_stopped = await self._team_lifecycle().stop_session(
                     context,
                     reason=ExecutionCancelCause.USER_CANCEL.value,
+                )
+                team_action = TeamRuntimeAction(
+                    intent="cancel",
+                    handled=team_stopped,
+                    generation=snapshot.generation,
                 )
 
         from jiuwenswarm.runtime.request import cancel_request
 
         manager = await self.resolve_manager(request)
-        response = await cancel_request(
-            manager,
-            request,
-            allow_create=allow_create,
-        )
+        # The Team lifecycle above already performed the authoritative stop.
+        # Expose that outcome to the adapter so its Team interrupt path does not
+        # repeat the same call against an already-drained registry and report
+        # "nothing to cancel" after the stop actually succeeded.  Pause keeps
+        # its existing adapter path until the lifecycle pause guard also covers
+        # background-only runs (see the Team stop-lifecycle follow-up).
+        action_token = bind_team_runtime_action(team_action)
+        try:
+            response = await cancel_request(
+                manager,
+                request,
+                allow_create=allow_create,
+            )
+        finally:
+            reset_team_runtime_action(action_token)
         if is_team_request and intent == "pause" and not team_paused:
             # The adapter may pause successfully even when the generation-aware
             # lifecycle did not find a matching Team runtime.
