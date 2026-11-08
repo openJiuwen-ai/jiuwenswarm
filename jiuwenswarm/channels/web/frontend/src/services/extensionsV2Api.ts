@@ -90,4 +90,14 @@ export const systemPluginApi = {
     const failure = result ? reportFailure(result) : 'RELOAD_FAILED';
     if (failure) throw new Error(failure);
   },
+
+  async setEnabled(packageId: string, enable: boolean): Promise<void> {
+    const result = (await webRequest(
+      'extensions.v2.set_enabled',
+      { package_id: packageId, enable },
+      { timeoutMs: INSTALL_TIMEOUT_MS },
+    )) as SystemPluginReportPayload | null;
+    const failure = result ? reportFailure(result) : 'SET_ENABLED_FAILED';
+    if (failure) throw new Error(failure);
+  },
 };

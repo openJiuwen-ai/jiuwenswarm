@@ -19,6 +19,7 @@ from jiuwenswarm.common.e2a import E2AEnvelope, e2a_to_agent_request
 from jiuwenswarm.common.schema.agent import AgentRef, AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.management import adapter as adapter_module
+from jiuwenswarm.extensions_v2.management import catalog as catalog_module
 from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
 from jiuwenswarm.extensions_v2.management.registry import ExtensionManager
 from jiuwenswarm.gateway.channel_manager.web import extension_package_handlers as proxy_module
@@ -81,6 +82,51 @@ async def test_request_install_query_reload_and_uninstall(tmp_path: Path, monkey
     assert removed.payload["reports"][0]["status"] == "SUCCESS"
     assert (await manager.query()).active == ()
     assert not entry.exists()
+
+
+async def test_request_set_enabled_keeps_the_installed_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    await manager.install([write_package(tmp_path / "source", module_source=METADATA_EXTENSION)])
+    adapter = PackageManagementAdapter()
+
+    disabled = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_SET_ENABLED, {"package_id": "test.pkg", "enable": False})
+    )
+
+    assert disabled.ok and disabled.payload["reports"][0]["operation"] == "disable"
+    assert (await manager.query()).active == ()
+    assert (manager.install_dir / "test.pkg" / "1.0.0").is_dir()
+
+
+async def test_catalog_lists_disabled_installed_agentserver_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    await manager.install([write_package(tmp_path / "source", enable=False)])
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_CATALOG, {"scope": "mine"})
+    )
+
+    assert response.ok
+    assert response.payload["packages"] == [
+        {
+            "id": "test.pkg",
+            "version": "1.0.0",
+            "displayName": {"zh": "test.pkg", "en": "test.pkg"},
+            "displayDescription": {"zh": "", "en": ""},
+            "tags": [],
+            "avatar": None,
+            "installed": True,
+            "active": False,
+            "enabled": False,
+        }
+    ]
 
 
 async def test_failed_reload_returns_report_and_preserves_old_handler(
@@ -501,8 +547,34 @@ async def test_query_includes_ids_for_installed_but_inactive_packages(
     )
     assert response.ok and response.payload["state"]["active"] == []
     assert response.payload["state"]["installed_packages"] == [{
-        "package_id": "inactive.pkg", "version": "1.0.0", "install_path": str(installed),
+        "package_id": "inactive.pkg", "version": "1.0.0", "domain": "agentserver", "install_path": str(installed),
     }]
+
+
+def test_installed_package_domain_ignores_unreadable_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "broken-package"
+
+    def unreadable_manifest(_root: Path) -> dict[str, object]:
+        raise UnicodeError("manifest cannot be decoded")
+
+    monkeypatch.setattr(adapter_module, "read_manifest_document", unreadable_manifest)
+
+    assert adapter_module._installed_package_domain(root) is None
+
+
+def test_catalog_uses_active_version_for_enabled_state(tmp_path: Path) -> None:
+    active_root = write_package(tmp_path / "active", version="1.0.0", enable=True)
+    installed_root = write_package(tmp_path / "installed", version="2.0.0", enable=False)
+    entry = catalog_module.entry_from_root(active_root)
+    assert entry is not None
+    index = catalog_module.StateIndex(
+        active={"test.pkg": SimpleNamespace(root=active_root)},
+        installed={"test.pkg": installed_root},
+    )
+
+    assert catalog_module._summary(entry, index)["enabled"] is True
 
 
 async def test_file_preview_serves_both_domains(
