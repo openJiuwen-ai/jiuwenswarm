@@ -107,6 +107,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | jiuwenswarm/agents/swarm, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/swarm/group_execution.py, jiuwenswarm/agents/swarm/group_org_bootstrap.py, jiuwenswarm/server/runtime/agent_adapter/team_helpers.py, tests/agents/swarm/test_group_org_bootstrap.py | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
+| [B_20261108_2159_swarm-browser-agent-isolation](jiuwenswarm/agents/swarm/B_20261108_2159_swarm-browser-agent-isolation.md) | B | 团队浏览器子代理去重读取不存在的字段 | yanhai | jiuwenswarm/agents/swarm | jiuwenswarm/agents/swarm/config_specs.py, tests/agents/swarm/test_swarm_assembly.py | 无独立 D：团队装配的既有声明式契约不变，只修正去重判据与用例，无独立 D。 |
 
 <a id="module-9"></a>
 
