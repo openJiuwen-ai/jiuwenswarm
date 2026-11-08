@@ -5060,6 +5060,7 @@
     "title": "Authorization",
     "matchedRule": "Matched rule",
     "titleConfirm": "Confirm action",
+    "unavailable": "This option can't be applied to this request",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
     "skip": "Skip",
