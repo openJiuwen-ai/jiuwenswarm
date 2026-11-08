@@ -400,3 +400,172 @@ def test_colliding_ids_without_pattern_are_renamed() -> None:
     assert len(set(ids)) == len(overrides)
     assert "user_allow_foo" not in ids
     assert "user_allow_bar" not in ids
+
+
+def _data_rule(**axes: str) -> dict:
+    return {"path": "/data", "match": "prefix", **axes}
+
+
+def test_session_overlay_writes_only_the_widened_axis() -> None:
+    user = {
+        "file_guard": {
+            "paths": [_data_rule(read="allow", write="ask", exec="allow")],
+        }
+    }
+    effective = {
+        "file_guard": {
+            "paths": [_data_rule(read="allow", write="allow", exec="allow")],
+        }
+    }
+    overlay = layers.overlay_from_effective(
+        effective, session=True, global_permissions={}, user_permissions=user
+    )
+    # The widened axis only: the base layer's own read/exec must not be copied
+    # into the session file, or a later user tightening could never apply.
+    assert overlay["file_guard"]["paths"] == [_data_rule(write="allow")]
+
+
+def test_session_overlay_skips_identical_path_rule() -> None:
+    user = {"file_guard": {"paths": [_data_rule(read="allow", write="ask", exec="ask")]}}
+    effective = {"file_guard": {"paths": [_data_rule(read="allow", write="ask", exec="ask")]}}
+    overlay = layers.overlay_from_effective(
+        effective, session=True, global_permissions={}, user_permissions=user
+    )
+    assert "file_guard" not in overlay
+
+
+def test_user_overlay_keeps_session_only_axis_out() -> None:
+    session = {"file_guard": {"paths": [_data_rule(exec="allow")]}}
+    effective = {
+        "file_guard": {
+            "paths": [_data_rule(read="allow", write="ask", exec="allow")],
+        }
+    }
+    overlay = layers.overlay_from_effective(
+        effective, session=False, global_permissions={}, session_permissions=session
+    )
+    # exec=allow came from this session and must stay session-only.
+    assert overlay["file_guard"]["paths"] == [_data_rule(read="allow")]
+
+
+def test_user_overlay_keeps_its_own_rule_when_base_covers_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    user_path = tmp_path / "user_permissions.yaml"
+    monkeypatch.setattr(layers, "user_permissions_path", lambda: user_path)
+    monkeypatch.setattr(
+        layers,
+        "session_permissions_path",
+        lambda session_id: tmp_path / session_id / "session_permissions.yaml",
+    )
+    covered = _data_rule(read="allow", write="ask", exec="ask")
+    monkeypatch.setattr(
+        layers, "load_global_permissions", lambda: {"file_guard": {"paths": [covered]}}
+    )
+    layers.save_user_permissions({"file_guard": {"paths": [dict(covered)]}})
+    effective = {
+        "file_guard": {
+            "paths": [
+                dict(covered),
+                {"path": "/other", "match": "prefix", "read": "allow", "write": "ask", "exec": "ask"},
+            ],
+        }
+    }
+    assert layers.persist_user_overlay_from_effective(effective) is True
+    user = layers.load_user_permissions()
+    paths = (user.get("file_guard") or {}).get("paths") or []
+    assert [item["path"] for item in paths] == ["/data", "/other"]
+    assert paths[0] == covered
+
+
+def test_session_write_grant_survives_rebuild(tmp_path: Path, monkeypatch) -> None:
+    from openjiuwen.harness.security import merge_file_guard_access_allows
+    from openjiuwen.harness.security.permission_engine.fileguard.file_guard import (
+        build_file_guard_checker,
+    )
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        compose_host_effective_permissions,
+    )
+
+    monkeypatch.setattr(layers, "user_permissions_path", lambda: tmp_path / "user_permissions.yaml")
+    monkeypatch.setattr(
+        layers,
+        "session_permissions_path",
+        lambda session_id: tmp_path / session_id / "session_permissions.yaml",
+    )
+    # A real directory keeps the Engine's own path resolution identical on
+    # every platform (a POSIX "/data" would gain a drive letter on Windows).
+    target = (tmp_path / "data").resolve()
+    target.mkdir()
+    rule = {"path": target.as_posix(), "match": "prefix", "read": "allow", "write": "ask", "exec": "ask"}
+    global_permissions = {
+        "enabled": True,
+        "file_guard": {
+            "enabled": True,
+            "defaults": {"read": "ask", "write": "ask", "exec": "ask"},
+            "paths": [],
+        },
+    }
+    user = {"file_guard": {"paths": [dict(rule)]}}
+    monkeypatch.setattr(layers, "load_global_permissions", lambda: global_permissions)
+    monkeypatch.setattr(layers, "load_user_permissions", lambda: user)
+
+    effective = compose_host_effective_permissions(
+        global_permissions=global_permissions, user_permissions=user, session_permissions={}
+    )
+    config, wrote = merge_file_guard_access_allows(effective, [(target.as_posix(), "write")])
+    assert wrote
+    assert layers.persist_session_overlay_from_effective("s1", config) is True
+
+    session = layers.load_session_permissions("s1")
+    assert [(item["path"], item.get("write")) for item in session["file_guard"]["paths"]] == [
+        (target.as_posix(), "allow")
+    ]
+    assert "read" not in session["file_guard"]["paths"][0]
+
+    rebuilt = compose_host_effective_permissions(
+        global_permissions=global_permissions, user_permissions=user, session_permissions=session
+    )
+    checker = build_file_guard_checker(rebuilt, workspace_root=tmp_path)
+    assert checker is not None
+    level, _ = checker._resolve_one(target / "report.txt", "write")
+    assert level.value == "allow"
+
+
+def test_auto_mode_fill_ask_reaches_compose_but_default_chain_does_not(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from openjiuwen.harness.security import merge_file_guard_access_allows
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        compose_host_effective_permissions,
+    )
+
+    target = (tmp_path / "shared").resolve()
+    target.mkdir()
+    monkeypatch.setattr(layers, "user_permissions_path", lambda: tmp_path / "user_permissions.yaml")
+    global_permissions = {
+        "file_guard": {"paths": [{"path": target.as_posix(), "match": "prefix", "read": "allow"}]},
+    }
+    monkeypatch.setattr(layers, "load_global_permissions", lambda: global_permissions)
+
+    # Default (non-auto) chain: the Engine snapshot does carry the fill ask ...
+    snapshot, wrote = merge_file_guard_access_allows(
+        compose_host_effective_permissions(global_permissions=global_permissions),
+        [(target.as_posix(), "read")],
+    )
+    assert wrote
+    assert snapshot["file_guard"]["paths"][0]["write"] == "ask"
+    assert layers.persist_user_overlay_from_effective(snapshot) is True
+    # ... but overlay_from_effective drops it as a delta against the base's
+    # own "ask", so this chain cannot hand compose a User path ask at all.
+    assert "file_guard" not in layers.load_user_permissions()
+
+    # auto mode writes the fill ask straight into the User layer, and compose
+    # is what keeps it from vanishing on an axis Global never spoke about.
+    user, _ = merge_file_guard_access_allows({}, [(target.as_posix(), "read")])
+    effective = compose_host_effective_permissions(
+        global_permissions=global_permissions, user_permissions=user,
+    )
+    assert effective["file_guard"]["paths"][0]["write"] == "ask"
