@@ -1,0 +1,156 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from jiuwenswarm.common import system_plugin_recovery
+from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+from jiuwenswarm.common.system_plugin_recovery_sidecar import _RecoveryHandler, _page
+
+
+def _write_package(root: Path, package_id: str, version: str, enabled: bool) -> Path:
+    package = root / package_id / version
+    package.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "package_type": "extension",
+        "schemaVersion": 1,
+        "package": {"id": package_id, "version": version, "domain": "agentserver"},
+        "enable": enabled,
+    }
+    (package / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return package
+
+
+def _enabled(package: Path) -> bool:
+    document = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+    return document["enable"]
+
+
+def test_recovery_page_marks_the_confirm_action_as_dangerous() -> None:
+    page = _page("token", "zh")
+
+    assert '<button id="confirm-restore" class="danger" type="button"></button>' in page
+    assert ".dialog-actions .danger { background: var(--danger); }" in page
+
+
+def test_restore_disables_packages_installed_after_the_selected_record(tmp_path: Path) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    first = _write_package(install_dir, "demo.first", "1.0.0", True)
+    recovery = SystemPluginRecovery(install_dir, tmp_path / "extension")
+    startup = recovery.begin_session("session-one")
+    second = _write_package(install_dir, "demo.second", "1.0.0", True)
+    recovery.record("install", ["demo.second"])
+
+    restored = recovery.restore(startup["id"])
+
+    assert restored["action"] == "restore"
+    assert _enabled(first) is True
+    assert _enabled(second) is False
+    assert [record["action"] for record in recovery.records()] == ["restore", "install", "startup"]
+
+
+def test_restore_rolls_back_written_manifests_when_a_later_write_fails(tmp_path: Path, monkeypatch) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    first = _write_package(install_dir, "demo.first", "1.0.0", False)
+    second = _write_package(install_dir, "demo.second", "1.0.0", True)
+    recovery = SystemPluginRecovery(install_dir, tmp_path / "extension")
+    startup = recovery.begin_session("session-one")
+    _write_package(install_dir, "demo.first", "1.0.0", True)
+    _write_package(install_dir, "demo.second", "1.0.0", False)
+
+    original_write = system_plugin_recovery._write_json
+    writes = 0
+
+    def fail_second_manifest_write(path, document):
+        nonlocal writes
+        if path.name == "manifest.json":
+            writes += 1
+            if writes == 2:
+                raise OSError("simulated manifest write failure")
+        original_write(path, document)
+
+    monkeypatch.setattr(system_plugin_recovery, "_write_json", fail_second_manifest_write)
+
+    with pytest.raises(OSError, match="simulated manifest write failure"):
+        recovery.restore(startup["id"])
+
+    assert _enabled(first) is True
+    assert _enabled(second) is False
+    assert [record["action"] for record in recovery.records()] == ["startup"]
+
+
+def test_recovery_sidecar_rejects_non_ascii_token() -> None:
+    handler = SimpleNamespace(server=SimpleNamespace(token="expected-token"))
+
+    assert _RecoveryHandler._authorized(handler, {"token": ["非 ASCII"]}) is False
+
+
+def test_beginning_a_new_session_keeps_previous_records_and_adds_a_startup_snapshot(tmp_path: Path) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    _write_package(install_dir, "demo.first", "1.0.0", True)
+    recovery = SystemPluginRecovery(install_dir, tmp_path / "extension")
+    recovery.begin_session("session-one")
+    recovery.record("enable", ["demo.first"])
+
+    startup = recovery.begin_session("session-two")
+
+    assert startup["action"] == "startup"
+    assert [record["action"] for record in recovery.records()] == ["startup", "enable", "startup"]
+
+
+def test_restore_requests_one_delayed_backend_restart(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    _write_package(install_dir, "demo.first", "1.0.0", True)
+    now = 100.0
+    monkeypatch.setattr(system_plugin_recovery.time, "time", lambda: now)
+    recovery = SystemPluginRecovery(install_dir, tmp_path / "extension")
+    startup = recovery.begin_session("session-one")
+
+    recovery.restore(startup["id"])
+
+    assert recovery.consume_backend_restart("session-one") is False
+    now += system_plugin_recovery._RESTART_DELAY_SECONDS
+    assert recovery.consume_backend_restart("session-one") is True
+    assert recovery.consume_backend_restart("session-one") is False
+
+
+def test_restore_publishes_electron_restart_signal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    _write_package(install_dir, "demo.first", "1.0.0", True)
+    signal_path = tmp_path / "electron-restart.json"
+    monkeypatch.setenv(system_plugin_recovery._RESTART_SIGNAL_PATH_ENV, str(signal_path))
+    recovery = SystemPluginRecovery(install_dir, tmp_path / "extension")
+    startup = recovery.begin_session("session-one")
+
+    recovery.restore(startup["id"])
+
+    signal = json.loads(signal_path.read_text(encoding="utf-8"))
+    assert signal["session_id"] == "session-one"
+    assert signal["record_id"] == startup["id"]
+
+
+def test_recovery_history_retains_the_latest_fifty_records(tmp_path: Path) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    _write_package(install_dir, "demo.first", "1.0.0", True)
+    recovery = SystemPluginRecovery(install_dir, tmp_path / "extension")
+    recovery.begin_session("session-one")
+
+    for _ in range(49):
+        recovery.record("enable", ["demo.first"])
+
+    recovery.begin_session("session-two")
+
+    records = recovery.records()
+
+    assert len(records) == 50
+    assert records[-1]["action"] == "enable"
+    assert records[0]["action"] == "startup"

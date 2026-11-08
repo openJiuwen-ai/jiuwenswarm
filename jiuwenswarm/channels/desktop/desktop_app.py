@@ -72,6 +72,7 @@ APP_CHILD_FLAG = "--desktop-run-app"
 WEB_CHILD_FLAG = "--desktop-run-web"
 AGENT_CHILD_FLAG = "--desktop-run-agent"
 GATEWAY_CHILD_FLAG = "--desktop-run-gateway"
+RECOVERY_CHILD_FLAG = "--extension-recovery-sidecar"
 UPDATE_HELPER_FLAG = "--desktop-install-update"
 DESKTOP_ENV_FLAG = "JIUWENSWARM_DESKTOP"
 STARTUP_TIMEOUT_SECONDS = 120.0
@@ -510,6 +511,8 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
             flag = AGENT_CHILD_FLAG
         elif name == "gateway":
             flag = GATEWAY_CHILD_FLAG
+        elif name == "recovery":
+            flag = RECOVERY_CHILD_FLAG
         elif name == "app":
             flag = APP_CHILD_FLAG
         else:
@@ -519,6 +522,8 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
         base = [sys.executable, "-m", "jiuwenswarm.gateway.app_gateway"]
+    elif name == "recovery":
+        base = [sys.executable, "-m", "jiuwenswarm.common.system_plugin_recovery_sidecar"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -1260,6 +1265,7 @@ class DesktopRuntime:
         # 窗口首次导航 URL 携带 ?dt=<token> 换取 HttpOnly Cookie 后凭 Cookie
         # 访问, 浏览器直接打开对话页面时返回 403。
         self.desktop_token = secrets.token_urlsafe(32)
+        self.recovery_session_id = uuid.uuid4().hex
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
         self.window = None
         self._lock = threading.Lock()
@@ -1399,6 +1405,61 @@ class DesktopRuntime:
             raise RuntimeError("desktop startup cancelled")
         return process
 
+    def _restart_backend_processes(self) -> None:
+        """Restart only the backend pair after a recovery state change."""
+        with self._lock:
+            if self._is_shutting_down:
+                return
+            gateway_process = self.processes.get("gateway")
+            agent_process = self.processes.get("agent")
+
+        for process in (gateway_process, agent_process):
+            if process is None or process.poll() is not None:
+                continue
+            _terminate_process_tree(process)
+            try:
+                process.wait(timeout=8.0)
+            except subprocess.TimeoutExpired:
+                _kill_process_tree(process)
+                try:
+                    process.wait(timeout=3.0)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "[desktop] backend process did not exit after forced termination (pid=%s)",
+                        process.pid,
+                    )
+
+        self._preflight_gateway_singleton()
+        restarted: list[subprocess.Popen[bytes]] = []
+        try:
+            agent_process = self._start_managed_process(
+                "agent", _build_child_command("agent")
+            )
+            restarted.append(agent_process)
+            _ensure_process_running("agent", agent_process)
+            gateway_process = self._start_managed_process(
+                "gateway", _build_child_command("gateway")
+            )
+            restarted.append(gateway_process)
+            _ensure_process_running("gateway", gateway_process)
+            _wait_for_tcp(
+                BACKEND_HOST,
+                self.ports["agent_server"],
+                STARTUP_TIMEOUT_SECONDS,
+                process=agent_process,
+            )
+            _wait_for_tcp(
+                BACKEND_HOST,
+                self.backend_port,
+                STARTUP_TIMEOUT_SECONDS,
+                process=gateway_process,
+            )
+        except Exception:
+            for process in restarted:
+                if process.poll() is None:
+                    _terminate_process_tree(process)
+            raise
+
     def start_services(
         self, on_web_ready: Callable[[], None] | None = None
     ) -> None:
@@ -1408,6 +1469,16 @@ class DesktopRuntime:
         # in-flight upgrade restart (old gateway shutting down) can release
         # the lock before we fail.
         self._preflight_gateway_singleton()
+        os.environ["JIUWENSWARM_RECOVERY_SESSION_ID"] = self.recovery_session_id
+        try:
+            from jiuwenswarm.common.system_plugin_recovery import begin_system_plugin_recovery_session
+
+            begin_system_plugin_recovery_session()
+        except Exception:  # noqa: BLE001 - recovery history must not block desktop startup
+            logger.warning(
+                "[desktop] could not create system plugin recovery startup record",
+                exc_info=True,
+            )
         # 先起后台预读, 与后续子进程拉起/端口等待并行, 不阻塞 start_services.
         _warmup_page_cache_background()
         # web 只需打包内的静态资源；先拉起它，使其冻结 EXE 导入与 Desktop
@@ -1429,10 +1500,15 @@ class DesktopRuntime:
 
         agent_process: subprocess.Popen[bytes] | None = None
         gateway_process: subprocess.Popen[bytes] | None = None
+        recovery_process: subprocess.Popen[bytes] | None = None
         try:
             # 在 Desktop 进程中只做一次工作区迁移/补齐，随后直接拉起
             # AgentServer 与 Gateway。跳过 app supervisor 可省去一个冻结 EXE。
             prepare_runtime_workspace()
+            recovery_process = self._start_managed_process(
+                "recovery", _build_child_command("recovery")
+            )
+            _ensure_process_running("recovery", recovery_process)
             agent_process = self._start_managed_process(
                 "agent", _build_child_command("agent")
             )
@@ -1447,6 +1523,8 @@ class DesktopRuntime:
                 _terminate_process_tree(agent_process)
             if gateway_process is not None:
                 _terminate_process_tree(gateway_process)
+            if recovery_process is not None:
+                _terminate_process_tree(recovery_process)
             raise
 
         # The guarded startup above either raises or assigns both processes.
@@ -1535,6 +1613,8 @@ class DesktopRuntime:
                 _terminate_process_tree(agent_process)
                 _terminate_process_tree(gateway_process)
                 _terminate_process_tree(web_process)
+                if recovery_process is not None:
+                    _terminate_process_tree(recovery_process)
                 terminated_after_error = True
 
         while any(waiter.is_alive() for waiter in waiters):
@@ -1556,6 +1636,8 @@ class DesktopRuntime:
                 _terminate_process_tree(agent_process)
                 _terminate_process_tree(gateway_process)
                 _terminate_process_tree(web_process)
+                if recovery_process is not None:
+                    _terminate_process_tree(recovery_process)
             for exc in startup_errors[1:]:
                 logger.error("[desktop] startup waiter also failed: %r", exc)
             raise startup_errors[0]
@@ -1565,21 +1647,49 @@ class DesktopRuntime:
         # if either backend exits after startup, promptly stop its peer so it
         # cannot keep ports, cron jobs, or the gateway singleton lock alive.
         def _watch_backend_pair() -> None:
+            from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+
+            recovery = SystemPluginRecovery()
             while True:
                 with self._lock:
                     if self._is_shutting_down:
                         return
+                    agent = self.processes.get("agent")
+                    gateway = self.processes.get("gateway")
+                try:
+                    restart_requested = recovery.consume_backend_restart(
+                        self.recovery_session_id
+                    )
+                except Exception:  # noqa: BLE001 - recovery must not stop desktop supervision
+                    logger.warning(
+                        "[desktop] could not read system plugin recovery restart request",
+                        exc_info=True,
+                    )
+                    restart_requested = False
+                if restart_requested:
+                    logger.info(
+                        "[desktop] restarting AgentServer and Gateway after system plugin recovery"
+                    )
+                    try:
+                        self._restart_backend_processes()
+                    except Exception:  # noqa: BLE001 - keep the independent recovery page available
+                        logger.exception(
+                            "[desktop] could not restart backend services after system plugin recovery"
+                        )
+                    continue
+                if agent is None or gateway is None:
+                    return
                 exited = (
-                    ("agent", agent_process)
-                    if agent_process.poll() is not None
-                    else (("gateway", gateway_process) if gateway_process.poll() is not None else None)
+                    ("agent", agent)
+                    if agent.poll() is not None
+                    else (("gateway", gateway) if gateway.poll() is not None else None)
                 )
                 if exited is not None:
                     exited_name, _ = exited
                     peer_name, peer_process = (
-                        ("gateway", gateway_process)
+                        ("gateway", gateway)
                         if exited_name == "agent"
-                        else ("agent", agent_process)
+                        else ("agent", agent)
                     )
                     logger.error(
                         "[desktop] %s exited after startup; terminating %s peer",
@@ -3655,7 +3765,7 @@ if(bridgeNeverResponded||bridgeStoppedResponding){
         self.shutdown()
 
 
-def _psutil_terminate(pid: int, force: bool = False) -> None:
+def _psutil_terminate(pid: int, force: bool = False) -> bool:
     """Terminate a process and all its descendants using psutil.
 
     Unlike ``taskkill.exe``, this is a pure-Python operation that does not
@@ -3669,7 +3779,8 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
         # 获取所有子孙进程（在杀父进程之前先拿到完整列表）
         children = parent.children(recursive=True)
         kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
-        # 先杀子孙，再杀父进程，避免子孙变成孤儿
+        # 先杀子孙，再杀父进程，避免子孙变成孤儿。Runtime Worker 会创建
+        # 独立会话，不能只依赖 POSIX 进程组信号来结束它。
         for child in reversed(children):
             try:
                 kill_fn(child)
@@ -3679,30 +3790,35 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
             kill_fn(parent)
         except psutil.NoSuchProcess:
             pass
+        return True
     except Exception:  # noqa: BLE001
-        pass
+        return False
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     """Gracefully terminate a process and all its descendants."""
+    if _psutil_terminate(process.pid):
+        return
     if os.name != "nt":
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except OSError:
             process.terminate()
     else:
-        _psutil_terminate(process.pid, force=False)
+        process.terminate()
 
 
 def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
     """Force kill a process and all its descendants."""
+    if _psutil_terminate(process.pid, force=True):
+        return
     if os.name != "nt":
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except OSError:
             process.kill()
     else:
-        _psutil_terminate(process.pid, force=True)
+        process.kill()
 
 
 def _parse_args() -> argparse.Namespace:

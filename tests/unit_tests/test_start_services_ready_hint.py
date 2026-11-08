@@ -7,10 +7,12 @@ from __future__ import annotations
 import logging
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import jiuwenswarm.start_services as start_services
 from jiuwenswarm.start_services import (
     _resolve_runtime_ports,
     _start_process,
@@ -116,6 +118,93 @@ def test_start_process_passes_resolved_ports_to_child(
     assert child_env["FRONTEND_PORT"] == "6173"
     # Stale URL from parent shell must not override the remapped agent port.
     assert "AGENT_SERVER_URL" not in child_env
+
+
+def test_terminate_process_tree_stops_descendants_before_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import psutil
+
+    stopped: list[int] = []
+
+    class _Process:
+        def __init__(self, pid: int, children=()):
+            self.pid = pid
+            self._children = list(children)
+
+        def children(self, *, recursive: bool):
+            assert recursive
+            return self._children
+
+        def terminate(self):
+            stopped.append(self.pid)
+
+    grandchild = _Process(300)
+    child = _Process(200)
+    launcher = _Process(100, [child, grandchild])
+    monkeypatch.setattr(psutil, "Process", lambda pid: launcher)
+
+    assert start_services._terminate_process_tree(SimpleNamespace(pid=100)) is True
+    assert stopped == [300, 200, 100]
+
+
+def test_terminate_processes_keeps_descendants_for_forced_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import psutil
+
+    gracefully_stopped: list[int] = []
+    forcibly_stopped: list[int] = []
+    fallback: list[str] = []
+
+    class _Target:
+        def __init__(self, pid: int, children=()):
+            self.pid = pid
+            self._children = list(children)
+
+        def children(self, *, recursive: bool):
+            assert recursive
+            return self._children
+
+        def terminate(self):
+            gracefully_stopped.append(self.pid)
+
+        def kill(self):
+            forcibly_stopped.append(self.pid)
+
+    worker = _Target(200)
+    launcher_target = _Target(100, [worker])
+    process_calls: list[int] = []
+
+    def find_process(pid: int):
+        process_calls.append(pid)
+        return launcher_target
+
+    class _Launcher:
+        pid = 100
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            fallback.append("terminate")
+
+        @staticmethod
+        def kill():
+            fallback.append("kill")
+
+    clock = iter((0.0, 8.0))
+    monkeypatch.setattr(psutil, "Process", find_process)
+    monkeypatch.setattr(start_services.time, "time", lambda: next(clock))
+
+    start_services._terminate_processes({"app": _Launcher()})
+
+    assert process_calls == [100]
+    assert gracefully_stopped == [200, 100]
+    assert forcibly_stopped == [200, 100]
+    assert fallback == []
 
 
 def test_wait_for_services_ready_prints_access_url_for_web_dev(caplog: pytest.LogCaptureFixture):

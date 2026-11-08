@@ -176,7 +176,10 @@ def test_detail_omits_missing_preview_and_readme(tmp_path):
 async def _runtime(tmp_path: Path) -> GatewayRuntime:
     runtime = GatewayRuntime(
         channel=Channel(),
-        config=GatewayExtensionConfig(install_dir=tmp_path / "extension_pkgs"),
+        config=GatewayExtensionConfig(
+            install_dir=tmp_path / "extension_pkgs",
+            recovery_data_dir=tmp_path / "extension",
+        ),
     )
     await runtime.start()
     return runtime

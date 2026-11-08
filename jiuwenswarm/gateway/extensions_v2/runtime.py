@@ -65,6 +65,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.runtime import GatewayWebUIRuntime
 from jiuwenswarm.gateway.extensions_v2.webui.transport import GatewayTransport
 from jiuwenswarm.gateway.extensions_v2.webui.bridge import BrowserBridge
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import HOST_METHODS
+from jiuwenswarm.common.system_plugin_recovery import begin_system_plugin_recovery_session
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,16 @@ class GatewayRuntime:
 
         if self._started or not self.config.enabled:
             return
+        try:
+            begin_system_plugin_recovery_session(
+                self.config.install_dir,
+                self.config.recovery_data_dir,
+            )
+        except Exception:  # noqa: BLE001 - recovery history must not block Gateway startup
+            logger.warning(
+                "[GatewayExtensions] could not create system plugin recovery startup record",
+                exc_info=True,
+            )
         bootstrap.register_event_types(self.bus, self)
         self._builtin_ids.extend(bootstrap.register_handlers(self.bus, self))
         self._bind_package_data()
@@ -190,7 +201,11 @@ class GatewayRuntime:
         if self._management is None:
             from jiuwenswarm.gateway.extensions_v2.management import GatewayPackageManager
 
-            self._management = GatewayPackageManager(self, self.config.install_dir)
+            self._management = GatewayPackageManager(
+                self,
+                self.config.install_dir,
+                recovery_data_dir=self.config.recovery_data_dir,
+            )
         return self._management
 
     async def connection_id(self, ws: Any) -> str:
