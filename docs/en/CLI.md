@@ -414,7 +414,9 @@ identified by `JIUWENSWARM_EXECUTABLE`, followed by the same `extension` argumen
 
 In PowerShell, use `& $env:JIUWENSWARM_EXECUTABLE extension ...`.
 
-- Install selects the host from the final ZIP manifest. Use `--domain gateway` for subsequent Gateway queries, reloads and removals.
+- Install selects the host from the final ZIP manifest. A query without a package ID combines AgentServer and Gateway states;
+  a package-ID query, reload, or removal routes to the host that owns the installed copy. Use `--domain gateway` or
+  `--domain agentserver` only when an explicit host selection is needed.
 - Commands affect the selected host process. The ZIP must be readable by that host; the CLI does not upload files.
 - Existing copies are not automatically replaced. Reload reads the installed copy, not the original ZIP.
 - Successful installation notifies mounted WebUI owners. Notification delivery does not prove the UI or business effect was verified.

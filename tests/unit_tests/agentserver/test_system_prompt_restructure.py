@@ -1057,6 +1057,45 @@ async def test_runtime_environment_section_participates_in_priority_order():
     assert "# 运行时状态" not in prompt
 
 
+@pytest.mark.parametrize(("language", "heading", "required"), [
+    (
+        "cn",
+        "# 系统插件包查询",
+        (
+            "`jiuwenswarm extension query --json`",
+            "`JIUWENSWARM_EXECUTABLE` 指向的后端程序",
+            "不得把 `extension` 单独作为系统命令执行",
+        ),
+    ),
+    (
+        "en",
+        "# System Extension Package Query",
+        (
+            "`jiuwenswarm extension query --json`",
+            "backend program identified by `JIUWENSWARM_EXECUTABLE`",
+            "Do not invoke `extension` as a standalone system command",
+        ),
+    ),
+])
+def test_runtime_prompt_adds_bilingual_extension_package_query_guidance(
+    language,
+    heading,
+    required,
+):
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    runtime_rail = RuntimePromptRail(language=language, channel="web")
+
+    runtime_rail.init(agent)
+
+    prompt = builder.build()
+    assert heading in prompt
+    assert all(item in prompt for item in required)
+
+    runtime_rail.uninit(agent)
+    assert not builder.has_section("extension_package_management")
+
+
 @pytest.mark.asyncio
 async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_available(tmp_path, monkeypatch):
     monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)

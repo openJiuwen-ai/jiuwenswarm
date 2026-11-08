@@ -40,6 +40,7 @@ from jiuwenswarm.gateway.extensions_v2.management.catalog import (
     resolve_install_source,
 )
 from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
+from jiuwenswarm.common.extension_cli import merge_query_states
 
 MANAGEMENT_METHODS = frozenset(
     {
@@ -169,7 +170,7 @@ async def _handle_locally(
             )
             remote = payload.get("state") if ok else None
             if isinstance(remote, Mapping):
-                state = _merge_state(state, remote)
+                state = merge_query_states(state, remote)
         await _respond(channel, ws, req_id, ok=True, payload={"state": state})
         return True
 
@@ -434,20 +435,6 @@ def _merge_packages(local: list[dict[str, Any]], remote: list[Any]) -> list[dict
         if isinstance(item, Mapping):
             merged.setdefault(str(item.get("id")), dict(item))
     return list(merged.values())
-
-
-def _merge_state(local: Mapping[str, Any], remote: Mapping[str, Any]) -> dict[str, Any]:
-    """Merge the Gateway half into the AgentServer query state."""
-
-    merged = dict(remote)
-    merged["active"] = list(local.get("active") or []) + list(remote.get("active") or [])
-    merged["installed"] = list(local.get("installed") or []) + list(remote.get("installed") or [])
-    merged["installed_packages"] = (
-        list(local.get("installed_packages") or []) + list(remote.get("installed_packages") or [])
-    )
-    merged["published"] = {**remote.get("published", {}), **local.get("published", {})}
-    merged["inflight"] = {**remote.get("inflight", {}), **local.get("inflight", {})}
-    return merged
 
 
 def _encode(value: object) -> Any:

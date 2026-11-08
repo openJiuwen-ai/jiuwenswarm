@@ -44,6 +44,36 @@ from jiuwenswarm.common.utils import (
 A4P_PROMPT_VERSION = "2026-10-19.1"
 
 
+def _extension_package_management_prompt() -> PromptSection:
+    """Build the cross-mode extension package query guidance."""
+
+    return PromptSection(
+        name="extension_package_management",
+        content={
+            "cn": (
+                "# 系统插件包查询\n\n"
+                "当用户要求查看当前运行实例中已生效的 JiuwenSwarm 系统插件时，"
+                "先按当前分发形态选择入口：源码或 Wheel 使用 `jiuwenswarm extension query --json`；"
+                "EXE 或 DMG 将 `JIUWENSWARM_EXECUTABLE` 指向的后端程序作为入口，并传递 "
+                "`extension query --json` 参数。不得把 `extension` 单独作为系统命令执行。"
+                "该查询会汇总 AgentServer 和 Gateway 两个域的结果；根据 `state.active` 中的"
+                "包 ID、版本和安装目录回答用户。"
+            ),
+            "en": (
+                "# System Extension Package Query\n\n"
+                "When the user asks to inspect active JiuwenSwarm system extension packages in the current "
+                "running instance, choose the entrypoint for the current distribution: for source and "
+                "Wheel installations, run `jiuwenswarm extension query --json`; for EXE and DMG "
+                "installations, use the backend program identified by `JIUWENSWARM_EXECUTABLE` and pass "
+                "it `extension query --json`. Do not invoke `extension` as a standalone system command. "
+                "The query aggregates AgentServer and Gateway results; answer from the package ID, "
+                "version, and installation path in `state.active`."
+            ),
+        },
+        priority=SystemPromptPriority.EXTENSION_PACKAGE_MANAGEMENT,
+    )
+
+
 class RuntimePromptRail(DeepAgentRail):
     """Keep stable system context separate from dynamic prompt attachments."""
 
@@ -88,10 +118,13 @@ class RuntimePromptRail(DeepAgentRail):
         self._agent = agent
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         self.attachment_manager = getattr(agent, "prompt_attachment_manager", None)
+        if self.system_prompt_builder is not None:
+            self.system_prompt_builder.add_section(_extension_package_management_prompt())
 
     def uninit(self, agent) -> None:
         """清理注入的 section 并释放引用。"""
         if self.system_prompt_builder is not None:
+            self.system_prompt_builder.remove_section("extension_package_management")
             self.system_prompt_builder.remove_section("video_duplex.voice_receipt")
             self.system_prompt_builder.remove_section("time")
             self.system_prompt_builder.remove_section("runtime.model_answer_policy")
