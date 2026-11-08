@@ -20,6 +20,7 @@ The ``debug`` mode is a developer shortcut handled by
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import signal
@@ -620,7 +621,8 @@ def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] terminating {name} (pid={proc.pid})")
-            proc.terminate()
+            if not _terminate_process_tree(proc):
+                proc.terminate()
 
     deadline = time.time() + 8
     while time.time() < deadline:
@@ -631,7 +633,32 @@ def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] killing {name} (pid={proc.pid})")
-            proc.kill()
+            if not _terminate_process_tree(proc, force=True):
+                proc.kill()
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes], *, force: bool = False) -> bool:
+    """Stop one launcher and every descendant it still owns.
+
+    AgentServer's Runtime Worker has a separate process session.  Terminating
+    only the ``jiuwenswarm.app`` child therefore leaves the Worker alive on
+    Windows and POSIX.  Capturing the descendants first gives command-line
+    shutdown the same cold-start boundary as a full application exit.
+    """
+    try:
+        import psutil
+
+        root = psutil.Process(process.pid)
+        targets = [*reversed(root.children(recursive=True)), root]
+    except psutil.Error:
+        return False
+    for target in targets:
+        with contextlib.suppress(psutil.Error):
+            if force:
+                target.kill()
+            else:
+                target.terminate()
+    return True
 
 
 def _resolve_runtime_ports() -> dict[str, int]:

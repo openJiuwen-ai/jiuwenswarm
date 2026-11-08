@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 logger = logging.getLogger("jiuwenswarm.app")
@@ -57,14 +57,24 @@ _RESTART_WINDOW = 600.0
 _MAX_CRASH_RESTARTS = 3
 _MAX_RESTART_REQUESTS = 5
 _TERMINATE_GRACE = 12.0
+_DESCENDANT_TERMINATE_GRACE = 5.0
 
 # NTSTATUS error codes: access violation, stack overflow, heap corruption, ...
 _WINDOWS_CRASH_FLOOR = 0xC0000000
 _WINDOWS_CTRL_C_EXIT = 0xC000013A
+# Resolve POSIX signals by name: SIGBUS is 7 on Linux but 10 on macOS, while
+# 7 means SIGEMT on the latter. Windows never executes this branch, so use the
+# POSIX fallbacks there to keep its simulated POSIX tests deterministic.
+_POSIX_CRASH_SIGNAL_FALLBACKS = (
+    ("SIGILL", 4),
+    ("SIGABRT", 6),
+    ("SIGBUS", 7),
+    ("SIGFPE", 8),
+    ("SIGSEGV", 11),
+)
 _POSIX_CRASH_SIGNALS = frozenset(
-    getattr(signal, name)
-    for name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE")
-    if hasattr(signal, name)
+    fallback if sys.platform == "win32" else int(getattr(signal, name, fallback))
+    for name, fallback in _POSIX_CRASH_SIGNAL_FALLBACKS
 )
 # POSIX reserves 9 for SIGKILL; Windows lacks the constant (a hard kill reads
 # as exit code 1 there), so the literal keeps the gate testable everywhere.
@@ -235,6 +245,71 @@ def _terminate_all(procs: list[subprocess.Popen]) -> None:
             proc.kill()
 
 
+def _capture_lingering_descendants(children: Sequence[_Child]) -> list[tuple[int, float]]:
+    """Capture descendants that must not outlive one selected service restart."""
+    import psutil
+
+    identities: list[tuple[int, float]] = []
+    for child in children:
+        proc = child.proc
+        if proc is None or proc.pid is None or child.create_time is None:
+            continue
+        try:
+            parent = psutil.Process(proc.pid)
+            if parent.create_time() != child.create_time:
+                continue
+            descendants = parent.children(recursive=True)
+        except psutil.Error:
+            continue
+        for descendant in descendants:
+            try:
+                identities.append((descendant.pid, descendant.create_time()))
+            except psutil.Error:
+                continue
+    return identities
+
+
+def _matching_descendants(identities: Sequence[tuple[int, float]]) -> list[Any]:
+    """Return live descendants after verifying each PID was not recycled."""
+    import psutil
+
+    processes: list[Any] = []
+    for pid, create_time in identities:
+        try:
+            process = psutil.Process(pid)
+            if process.create_time() == create_time:
+                processes.append(process)
+        except psutil.Error:
+            continue
+    return processes
+
+
+def _terminate_lingering_descendants(identities: Sequence[tuple[int, float]]) -> None:
+    """End verified descendants left by a selected service restart."""
+    processes = _matching_descendants(identities)
+    if not processes:
+        return
+    logger.info("[app] terminating %s lingering service descendants", len(processes))
+    for process in processes:
+        with contextlib.suppress(Exception):
+            process.terminate()
+    deadline = time.monotonic() + _DESCENDANT_TERMINATE_GRACE
+    while processes and time.monotonic() < deadline:
+        time.sleep(0.1)
+        processes = [process for process in processes if _is_process_running(process)]
+    for process in processes:
+        with contextlib.suppress(Exception):
+            process.kill()
+
+
+def _is_process_running(process: Any) -> bool:
+    """Return whether a captured descendant still exists without racing exit."""
+    try:
+        return bool(process.is_running()) and process.status() != "zombie"
+    except Exception:  # noqa: BLE001 - a terminated descendant is already reaped
+        return False
+
+
 def _reap_lingering_tree(child: _Child) -> None:
     """Kill descendants a hard-killed child left behind, before respawning it.
 
@@ -265,10 +340,17 @@ def _reap_lingering_tree(child: _Child) -> None:
                 victim.kill()
     elif child.own_session:
         with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(proc.pid, _SIGKILL)
 
 
-def supervise(commands: Mapping[str, Sequence[str]], popen_kwargs: Mapping[str, Any]) -> int:
+def supervise(
+    commands: Mapping[str, Sequence[str]],
+    popen_kwargs: Mapping[str, Any],
+    *,
+    restart_requested: Callable[[], bool] | None = None,
+    restart_names: frozenset[str] = frozenset(),
+    terminate_descendants_on_restart: frozenset[str] = frozenset(),
+) -> int:
     """Run *commands* (spawned in order) until one stops for good; return its exit code.
 
     Returns 130 on KeyboardInterrupt. All children are terminated on return.
@@ -282,6 +364,14 @@ def supervise(commands: Mapping[str, Sequence[str]], popen_kwargs: Mapping[str, 
         for child in children:
             child.spawn(popen_kwargs)
         while True:
+            if restart_requested is not None and restart_requested():
+                _restart_selected_children(
+                    children,
+                    popen_kwargs,
+                    restart_names,
+                    terminate_descendants_on_restart,
+                )
+                continue
             for child in children:
                 proc = child.proc
                 if proc is None:
@@ -320,4 +410,35 @@ def supervise(commands: Mapping[str, Sequence[str]], popen_kwargs: Mapping[str, 
     except KeyboardInterrupt:
         return 130
     finally:
+        # Runtime Worker deliberately runs in its own session so an
+        # AgentServer Front restart can reuse it. A complete supervisor
+        # shutdown must nevertheless match a cold start: capture descendants
+        # before ending the Fronts, then reap the detached Worker as well.
+        descendants = _capture_lingering_descendants(children)
         _terminate_all([child.proc for child in children if child.proc is not None])
+        _terminate_lingering_descendants(descendants)
+
+
+def _restart_selected_children(
+    children: Sequence[_Child],
+    popen_kwargs: Mapping[str, Any],
+    names: frozenset[str],
+    terminate_descendants: frozenset[str],
+) -> None:
+    """Restart selected healthy children without ending the supervisor."""
+    selected = [child for child in children if child.name in names]
+    if not selected:
+        return
+    logger.info("[app] restarting requested children: %s", ", ".join(child.name for child in selected))
+    descendants = _capture_lingering_descendants(
+        [child for child in selected if child.name in terminate_descendants]
+    )
+    _terminate_all([child.proc for child in selected if child.proc is not None])
+    _terminate_lingering_descendants(descendants)
+    for child in selected:
+        child.spawn(popen_kwargs)
+        logger.info(
+            "[app] %s restarted (pid %s)",
+            child.name,
+            child.proc.pid if child.proc is not None else "?",
+        )

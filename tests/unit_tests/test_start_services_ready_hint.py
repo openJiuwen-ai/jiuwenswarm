@@ -7,10 +7,12 @@ from __future__ import annotations
 import logging
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import jiuwenswarm.start_services as start_services
 from jiuwenswarm.start_services import (
     _resolve_runtime_ports,
     _start_process,
@@ -116,6 +118,34 @@ def test_start_process_passes_resolved_ports_to_child(
     assert child_env["FRONTEND_PORT"] == "6173"
     # Stale URL from parent shell must not override the remapped agent port.
     assert "AGENT_SERVER_URL" not in child_env
+
+
+def test_terminate_process_tree_stops_descendants_before_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import psutil
+
+    stopped: list[int] = []
+
+    class _Process:
+        def __init__(self, pid: int, children=()):
+            self.pid = pid
+            self._children = list(children)
+
+        def children(self, *, recursive: bool):
+            assert recursive
+            return self._children
+
+        def terminate(self):
+            stopped.append(self.pid)
+
+    grandchild = _Process(300)
+    child = _Process(200)
+    launcher = _Process(100, [child, grandchild])
+    monkeypatch.setattr(psutil, "Process", lambda pid: launcher)
+
+    assert start_services._terminate_process_tree(SimpleNamespace(pid=100)) is True
+    assert stopped == [300, 200, 100]
 
 
 def test_wait_for_services_ready_prints_access_url_for_web_dev(caplog: pytest.LogCaptureFixture):

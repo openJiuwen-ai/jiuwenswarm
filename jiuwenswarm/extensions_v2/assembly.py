@@ -24,6 +24,7 @@ from jiuwenswarm.extensions_v2.management import ExtensionManager
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
 from jiuwenswarm.extensions_v2.webui.transport import RenderTransport
+from jiuwenswarm.common.system_plugin_recovery import begin_system_plugin_recovery_session
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,16 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
     async with _LOCK:
         if _ASSEMBLY is not None:
             return _ASSEMBLY
+        try:
+            begin_system_plugin_recovery_session(
+                resolve_install_dir(),
+                resolve_install_report_path().parent,
+            )
+        except Exception:  # noqa: BLE001 - recovery history must not block extension startup
+            logger.warning(
+                "[ExtensionsV2] could not create system plugin recovery startup record",
+                exc_info=True,
+            )
         try:
             assembly = _build_assembly(server)
 

@@ -25,6 +25,7 @@ from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.package_manager import PackageManager
 from openjiuwen.core.extension.schema.manifest import Manifest
 
+from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
 from jiuwenswarm.gateway.extensions_v2.loader import load_gateway_package
 from jiuwenswarm.gateway.extensions_v2.manifest import DOMAIN_GATEWAY
 
@@ -56,12 +57,16 @@ class GatewayPackageManager:
         install_dir: Path,
         *,
         on_released: Callable[[str], None] | None = None,
+        recovery_data_dir: Path | None = None,
     ) -> None:
         self._runtime = runtime
         self.install_dir = Path(install_dir).expanduser()
         self._store = PackageManager(self.install_dir, domain=DOMAIN_GATEWAY)
         self._lock = asyncio.Lock()
         self._on_released = on_released
+        if recovery_data_dir is None:
+            recovery_data_dir = runtime.config.recovery_data_dir
+        self._recovery_data_dir = recovery_data_dir
 
     # ── queries (no locking: read-only snapshot) ──────────────────────────
 
@@ -158,7 +163,13 @@ class GatewayPackageManager:
             reports: list[ActivationReport] = []
             for path in paths:
                 reports.append(await self._install_one(Path(path)))
-            return reports
+        _record_recovery_change(
+            self.install_dir,
+            self._recovery_data_dir,
+            "install",
+            reports,
+        )
+        return reports
 
     async def reload(self, package_id: str) -> ActivationReport:
         """Re-read the installed copy and republish its handlers."""
@@ -215,6 +226,13 @@ class GatewayPackageManager:
                     "enable" if enabled else "disable",
                     operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
                 )
+        if report.status == "SUCCESS":
+            _record_recovery_change(
+                self.install_dir,
+                self._recovery_data_dir,
+                "enable" if enabled else "disable",
+                (report,),
+            )
         return report
 
     async def uninstall(self, package_id: str) -> ActivationReport:
@@ -232,7 +250,15 @@ class GatewayPackageManager:
                 return _failure(package_id, "uninstall", exc.as_error())
             # Closing the splash is the commit point: from there the uninstall runs to its end
             # even if the caller is cancelled (S_01 section 3.2).
-            return await _run_to_end(self._finish_uninstall(package_id))
+            report = await _run_to_end(self._finish_uninstall(package_id))
+        if report.status == "SUCCESS":
+            _record_recovery_change(
+                self.install_dir,
+                self._recovery_data_dir,
+                "uninstall",
+                (report,),
+            )
+        return report
 
     async def _finish_uninstall(self, package_id: str) -> ActivationReport:
         """Close the splash, stop the package, delete its data and copies (after the commit point)."""
@@ -460,3 +486,19 @@ def _version_key(version: str) -> tuple[int, ...]:
         return tuple(int(part) for part in version.split("."))
     except ValueError:
         return (0,)
+
+
+def _record_recovery_change(
+    install_dir: Path,
+    data_dir: Path | None,
+    action: str,
+    reports: Sequence[ActivationReport],
+) -> None:
+    """Persist successful transitions without affecting Gateway package results."""
+    package_ids = [report.package_id for report in reports if report.status == "SUCCESS"]
+    if not package_ids:
+        return
+    try:
+        SystemPluginRecovery(install_dir, data_dir).record(action, package_ids)
+    except Exception:  # noqa: BLE001 - recovery history must not break a successful operation
+        logger.warning("[GatewayExtensions] could not record system plugin recovery history", exc_info=True)

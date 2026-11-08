@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 DEFAULT_INSTALL_DIR = "extension_pkgs"
+DEFAULT_RECOVERY_DATA_DIR = "extension"
 BUNDLED_EXAMPLES = Path("extensions_v2") / "examples"
 #: Gateway package store and data files, relative to the user workspace.
 DEFAULT_DATA_DIR = "extension/gateway"
@@ -90,6 +91,7 @@ class GatewayExtensionConfig:
     enabled: bool = True
     install_dir: Path = Path(DEFAULT_INSTALL_DIR)
     data_dir: Path = Path(DEFAULT_DATA_DIR)
+    recovery_data_dir: Path | None = None
     http: HttpPolicy = HttpPolicy()
     #: ``uploads.max_bytes``: total size of one file import.
     upload_max_bytes: int = DEFAULT_UPLOAD_MAX_BYTES
@@ -111,10 +113,14 @@ def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExten
     data_dir = gateway.get("data_dir")
     if not isinstance(data_dir, str) or not data_dir.strip():
         data_dir = DEFAULT_DATA_DIR
+    recovery_data_dir = extensions.get("data_dir") if isinstance(extensions, Mapping) else None
+    if not isinstance(recovery_data_dir, str) or not recovery_data_dir.strip():
+        recovery_data_dir = DEFAULT_RECOVERY_DATA_DIR
     return GatewayExtensionConfig(
         enabled=enabled if isinstance(enabled, bool) else True,
         install_dir=_resolve_dir(install_dir),
         data_dir=_resolve_dir(data_dir),
+        recovery_data_dir=_resolve_dir(recovery_data_dir),
         http=_read_http_policy(gateway.get("http")),
         upload_max_bytes=_bounded_int(
             (gateway.get("uploads") if isinstance(gateway.get("uploads"), Mapping) else {}).get("max_bytes"),

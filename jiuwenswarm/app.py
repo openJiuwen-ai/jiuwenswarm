@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
-"""Orchestrate AgentServer + Gateway in two processes (split layout, one command).
+"""Orchestrate the recovery sidecar, AgentServer and Gateway in one command.
 
 Runs ``jiuwenswarm.server.app_agentserver`` then ``jiuwenswarm.gateway.app_gateway`` with the same
 environment as a normal CLI launch. Web RPC handlers live in ``app_web_handlers``.
@@ -11,6 +11,9 @@ from __future__ import annotations
 import signal
 import sys
 import os
+import uuid
+import logging
+import subprocess
 
 from jiuwenswarm.dotenv_early import parse_dotenv_early, get_parsed_dotenv, load_dotenv_runtime
 parse_dotenv_early("jiuwenswarm-app")
@@ -21,6 +24,10 @@ from jiuwenswarm.common.media_capability_config import (
     migrate_media_capability_switches,
 )
 from jiuwenswarm.common.process_supervision import SUPERVISOR_PID_ENV, supervise
+from jiuwenswarm.common.system_plugin_recovery import (
+    SystemPluginRecovery,
+    begin_system_plugin_recovery_session,
+)
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     cleanup_stale_openjiuwen_descs,
@@ -30,6 +37,7 @@ from jiuwenswarm.common.utils import (
 
 # Record the parsed dotenv path for subprocess spawning
 _parsed_dotenv_path = get_parsed_dotenv()
+logger = logging.getLogger(__name__)
 
 
 cleanup_stale_openjiuwen_descs()
@@ -41,13 +49,29 @@ migrate_media_capability_switches(_env_file)
 apply_free_search_runtime_defaults()
 
 
+def _stop_optional_recovery_sidecar(process: subprocess.Popen) -> None:
+    """End the optional sidecar without affecting the supervised backend stack."""
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            logger.warning("[SystemPluginRecovery] could not kill recovery sidecar", exc_info=True)
+    except OSError:
+        logger.warning("[SystemPluginRecovery] could not stop recovery sidecar", exc_info=True)
+
+
 def main() -> None:
     import argparse
     import json
 
     parser = argparse.ArgumentParser(
         prog="jiuwenswarm-app",
-        description="Start JiuWenSwarm AgentServer + Gateway (split layout, one command).",
+        description="Start JiuWenSwarm recovery, AgentServer and Gateway services.",
     )
     parser.add_argument(
         "--dotenv",
@@ -88,9 +112,11 @@ def main() -> None:
     if getattr(sys, "frozen", False):
         agent_cmd = [python, "--desktop-run-agent"]
         gateway_cmd = [python, "--desktop-run-gateway"]
+        recovery_cmd = [python, "--extension-recovery-sidecar"]
     else:
         agent_cmd = [python, "-m", "jiuwenswarm.server.app_agentserver"]
         gateway_cmd = [python, "-m", "jiuwenswarm.gateway.app_gateway"]
+        recovery_cmd = [python, "-m", "jiuwenswarm.common.system_plugin_recovery_sidecar"]
 
     # Pass --dotenv to subprocesses for multi-instance isolation
     if dotenv_path is not None:
@@ -105,11 +131,19 @@ def main() -> None:
 
     # Take the child environment snapshot only after recording the original
     # launcher command. UpgradeExecutor uses it to build a valid restart.
+    recovery_session_id = uuid.uuid4().hex
+    os.environ["JIUWENSWARM_RECOVERY_SESSION_ID"] = recovery_session_id
+    try:
+        begin_system_plugin_recovery_session()
+    except Exception:  # noqa: BLE001 - recovery history must not block service startup
+        logger.warning("[SystemPluginRecovery] could not create startup record", exc_info=True)
+
     _popen_kwargs: dict = {
         "env": {
             **os.environ,
             "JIUWENSWARM_RUNTIME_WORKSPACE_READY": "1",
             SUPERVISOR_PID_ENV: str(os.getpid()),
+            "JIUWENSWARM_RECOVERY_SESSION_ID": recovery_session_id,
         }
     }
     if os.name != "nt":
@@ -118,7 +152,35 @@ def main() -> None:
         # SIGTERM still tear everything down through this supervisor's handlers.
         _popen_kwargs["start_new_session"] = True
 
-    raise SystemExit(supervise({"agentserver": agent_cmd, "gateway": gateway_cmd}, _popen_kwargs))
+    recovery = SystemPluginRecovery()
+
+    def _backend_restart_requested() -> bool:
+        try:
+            return recovery.consume_backend_restart(recovery_session_id)
+        except Exception:  # noqa: BLE001 - recovery must not stop supervision
+            logger.warning("[SystemPluginRecovery] could not read restart request", exc_info=True)
+            return False
+
+    recovery_process: subprocess.Popen | None = None
+    try:
+        recovery_process = subprocess.Popen(recovery_cmd, **_popen_kwargs)
+    except OSError:
+        logger.warning("[SystemPluginRecovery] could not start recovery sidecar", exc_info=True)
+    try:
+        exit_code = supervise(
+            {"agentserver": agent_cmd, "gateway": gateway_cmd},
+            _popen_kwargs,
+            restart_requested=_backend_restart_requested,
+            restart_names=frozenset({"agentserver", "gateway"}),
+            # The AgentServer Runtime Worker runs in its own session. A recovery
+            # restart must replace it too, otherwise it keeps the old in-memory
+            # handlers even after manifests were restored on disk.
+            terminate_descendants_on_restart=frozenset({"agentserver"}),
+        )
+    finally:
+        if recovery_process is not None:
+            _stop_optional_recovery_sidecar(recovery_process)
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
