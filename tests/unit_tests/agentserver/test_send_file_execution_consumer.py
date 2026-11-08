@@ -31,10 +31,10 @@ from jiuwenswarm.agents.harness.common.tools.web_file_download import (
 @pytest.fixture(autouse=True)
 def _clear_runtime_state() -> None:
     clear_send_file_execution_grant()
-    send_module._SENT_FILE_PATHS_BY_SESSION.clear()
+    send_module._SENT_FILE_FINGERPRINTS_BY_SESSION.clear()
     yield
     clear_send_file_execution_grant()
-    send_module._SENT_FILE_PATHS_BY_SESSION.clear()
+    send_module._SENT_FILE_FINGERPRINTS_BY_SESSION.clear()
 
 
 def _toolkit(owner: VerifiedDownloadAssetOwner) -> SendFileToolkit:
