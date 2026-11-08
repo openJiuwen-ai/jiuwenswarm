@@ -898,6 +898,7 @@ class SwarmSymphonyService:
                 async with self._skillpack_candidate_lock:
                     identity = CandidateEvidenceScope.resolve(
                         session_id, trusted_session_user(session_id), "current_user", None,
+                        flow_root=flow.store.root,
                     )
                     prepared = await self._prepare_skillpack_candidates(session_id=session_id, automatic=True)
                     for preview in prepared.get("candidates", []):
@@ -1097,11 +1098,11 @@ class SwarmSymphonyService:
         if scope not in {"current_user", "current_session"}:
             return {"success": False, "reason": "invalid_scope"}
         user_id = trusted_session_user(session_id)
-        effective_scope = scope if user_id else "current_session"
         source = self._runtime_for(config).flow_engine
         if source is None:
             return {"success": False, "reason": "flow_disabled"}
-        identity = CandidateEvidenceScope.resolve(session_id, user_id, effective_scope, source_refs)
+        identity = CandidateEvidenceScope.resolve(session_id, user_id, scope, source_refs, flow_root=source.store.root)
+        effective_scope = identity.scope
         flow = await self._skillpack_candidate_flow(source, config, identity)
         await flow.start()
         scope_store = CandidateScopeStore(source.store.root)
@@ -1115,18 +1116,30 @@ class SwarmSymphonyService:
                     item.recipe_id, item.version, session_id, identity.key,
                 )) not in self._notified_candidates
             )
+        # One preview batch must not rescan all evidence for every candidate.
+        # Confirmation and installation still read fresh ownership/evidence.
+        evidence_ids: set[str] = set()
+        if candidates:
+            try:
+                evidence_ids = {
+                    item.trace_id for item in await asyncio.to_thread(flow.store.read_evidence)
+                }
+            except (OSError, ValueError):
+                candidates = ()
         for candidate in candidates[:20]:
             recipe = flow.get_recipe(candidate.recipe_id)
             if recipe is None:
                 continue
             try:
-                snapshot = member_snapshot(
+                snapshot = await asyncio.to_thread(
+                    member_snapshot,
                     config.paths.skills_root, candidate_members(recipe), load_execution_disabled_skills(),
                 )
-                traces = scope_store.scoped_evidence(
+                traces = await asyncio.to_thread(
+                    scope_store.scoped_evidence,
                     recipe, session_id, snapshot, user_id=user_id, scope=effective_scope, source_refs=source_refs,
                 )
-                if not traces or not flow.store.contains_evidence(traces):
+                if not traces or not set(traces).issubset(evidence_ids):
                     continue
                 prepared = await flow.review_and_prepare_install(
                     candidate.recipe_id, recipe_version=candidate.version,
@@ -1175,7 +1188,14 @@ class SwarmSymphonyService:
         prepared = await self._prepare_skillpack_candidates(session_id=session_id, scope=scope, source_refs=source_refs)
         if not prepared.get("success"):
             return prepared
-        identity = CandidateEvidenceScope.resolve(session_id, user_before_review, scope, source_refs)
+        if not evolution_flow_enabled(load_symphony_config()):
+            return {"success": False, "reason": "skillpack_disabled"}
+        source = self.runtime().flow_engine
+        if source is None:
+            return {"success": False, "reason": "flow_disabled"}
+        identity = CandidateEvidenceScope.resolve(
+            session_id, user_before_review, scope, source_refs, flow_root=source.store.root,
+        )
         preview = next((
             item for item in prepared["candidates"]
             if item["recipe_id"] == recipe_id and item["recipe_version"] == recipe_version
@@ -1191,16 +1211,21 @@ class SwarmSymphonyService:
         session_id: str, channel_id: str | None, force: bool = True,
     ) -> dict[str, Any]:
         """Offer this lock-protected review result without reviewing it again."""
+        if not evolution_flow_enabled(load_symphony_config()):
+            return {"success": False, "reason": "skillpack_disabled"}
+        source = self.runtime().flow_engine
+        if source is None:
+            return {"success": False, "reason": "flow_disabled"}
         current_identity = CandidateEvidenceScope.resolve(
             session_id, trusted_session_user(session_id), identity.scope,
             list(identity.source_refs) if identity.source_refs is not None else None,
+            flow_root=source.store.root,
         )
         if identity.key != current_identity.key:
             return {"success": False, "reason": "evidence_scope_changed_reconfirm"}
         if not evolution_flow_enabled(load_symphony_config()):
             return {"success": False, "reason": "skillpack_disabled"}
         recipe_id, recipe_version = preview["recipe_id"], preview["recipe_version"]
-        source = self.runtime().flow_engine
         flow = await self._skillpack_candidate_flow(source, load_symphony_config(), identity)
         # Review validates the current recipe version. Its grade can advance
         # from draft to verified without replacing the historical snapshot.
@@ -1274,6 +1299,7 @@ class SwarmSymphonyService:
             flow = self._runtime_for(config).flow_engine
             if flow is None:
                 return {"installed": False, "reason": "flow_disabled"}
+            source_flow = flow
             if from_tool:
                 approval = CandidateScopeStore(flow.store.root).approval(request_id)
                 if not approval or approval.get("session_id") != session_id:
@@ -1294,7 +1320,7 @@ class SwarmSymphonyService:
                 try:
                     identity = CandidateEvidenceScope.resolve(
                         session_id, trusted_session_user(session_id), saved_scope.get("scope", ""),
-                        saved_scope.get("source_refs"),
+                        saved_scope.get("source_refs"), flow_root=flow.store.root,
                     )
                 except (TypeError, ValueError):
                     return {"installed": False, "reason": "evidence_scope_changed_reconfirm"}
@@ -1377,7 +1403,7 @@ class SwarmSymphonyService:
                     try:
                         current_identity = CandidateEvidenceScope.resolve(
                             session_id, trusted_session_user(session_id), saved_scope.get("scope", ""),
-                            saved_scope.get("source_refs"),
+                            saved_scope.get("source_refs"), flow_root=source_flow.store.root,
                         )
                     except (TypeError, ValueError):
                         return {"installed": False, "reason": "evidence_scope_changed_reconfirm"}
