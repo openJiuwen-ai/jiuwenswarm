@@ -171,6 +171,16 @@ class ExtensionManager:
         self._require_ready()
         return await self._registry.reload(package_id)
 
+    async def set_enabled(self, package_id: str, enabled: bool) -> ActivationReport:
+        """Keep an installed package while changing whether its handlers are active."""
+
+        async with self._operation_lock:
+            self._require_ready()
+            report = await self._registry.set_enabled(package_id, enabled)
+        if report.status == "SUCCESS" and not enabled:
+            await self._notify_inactive(package_id)
+        return report
+
     async def query(self, package_id: str | None = None) -> QueryResult:
         """Return the facts agent-core can confirm for this process."""
 

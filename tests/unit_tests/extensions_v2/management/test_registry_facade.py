@@ -231,6 +231,25 @@ async def test_uninstall_inactive_installed_copy(tmp_path: Path) -> None:
     assert not (manager.install_dir / "test.pkg" / "1.0.0").exists()
 
 
+async def test_set_enabled_keeps_the_copy_and_changes_handler_publication(tmp_path: Path) -> None:
+    bus = make_bus()
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
+    await manager.init(bus)
+    await manager.install([write_package(tmp_path / "source", module_source=METADATA_EXTENSION)])
+
+    disabled = await manager.set_enabled("test.pkg", False)
+
+    assert disabled.status == "SUCCESS"
+    assert await bus.trigger(Event("test.event", {})) == ("core", {})
+    manifest = manager.install_dir / "test.pkg" / "1.0.0" / "manifest.json"
+    assert '"enable": false' in manifest.read_text(encoding="utf-8")
+
+    enabled = await manager.set_enabled("test.pkg", True)
+
+    assert enabled.status == "SUCCESS"
+    assert (await bus.trigger(Event("test.event", {})))[0] == "test.pkg"
+
+
 async def test_shutdown_releases_handlers_and_preserves_copy(tmp_path: Path) -> None:
     bus = make_bus()
     manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")

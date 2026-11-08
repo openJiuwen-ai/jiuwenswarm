@@ -64,6 +64,8 @@ def load_gateway_packages(install_dir: Path) -> list[LoadedPackage]:
             manifest = _read_manifest(root)
             if manifest["domain"] != DOMAIN_GATEWAY:
                 continue
+            if not manifest["enable"]:
+                continue
             handlers, module_names = _load_handlers(root, manifest["modules"])
         except Exception as exc:  # noqa: BLE001 - one bad package must not block startup
             logger.warning("[GatewayExtensions] skipping package %s: %s", root, exc)
@@ -78,6 +80,8 @@ def load_gateway_package(root: Path) -> LoadedPackage:
     manifest = _read_manifest(Path(root))
     if manifest["domain"] != DOMAIN_GATEWAY:
         raise ValueError(f"{root} is not a gateway package")
+    if not manifest["enable"]:
+        raise ValueError(f"{root} is disabled")
     handlers, module_names = _load_handlers(Path(root), manifest["modules"])
     return _package_from(Path(root), manifest, handlers, module_names)
 
@@ -142,6 +146,7 @@ def _read_manifest(root: Path) -> dict[str, Any]:
         "package_id": package["id"],
         "version": str(package["version"]).strip(),
         "domain": _domain(package.get("domain")),
+        "enable": raw.get("enable", True),
         "modules": _modules(raw.get("extensions"), root),
         "ui": _optional_mapping(raw.get("ui"), "ui"),
         "client": _optional_mapping(raw.get("client"), "client"),

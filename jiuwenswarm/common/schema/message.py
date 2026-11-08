@@ -189,6 +189,7 @@ class ReqMethod(Enum):
     EXTENSIONS_V2_INSTALL = "extensions.v2.install"
     EXTENSIONS_V2_UNINSTALL = "extensions.v2.uninstall"
     EXTENSIONS_V2_RELOAD = "extensions.v2.reload"
+    EXTENSIONS_V2_SET_ENABLED = "extensions.v2.set_enabled"
     EXTENSIONS_V2_FILE_LIST = "extensions.v2.file.list"
     EXTENSIONS_V2_FILE_READ = "extensions.v2.file.read"
 

@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-07 |
+| 最近修订 | 2026-11-08 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md) |
 
@@ -24,6 +24,7 @@
 | `extensions.v2.import` | `path: str`，现有目录或归档的绝对路径 | 按 `package.domain` 分流安装（Gateway 入口） |
 | `extensions.v2.uninstall` | `package_id: str` | 卸载包或未生效副本 |
 | `extensions.v2.reload` | `package_id: str` | 从安装副本热重载，不先卸载 |
+| `extensions.v2.set_enabled` | `package_id: str`、`enable: bool` | 保留安装副本，启用或禁用系统插件 |
 | `extensions.v2.file.list` | `package_id: str` | 列出包内可预览文件树 |
 | `extensions.v2.file.read` | `package_id: str`、`path: str` | 读取一个可预览文件 |
 
@@ -58,6 +59,7 @@ Gateway 不实现本地读取，`files` 与 `file.read` 始终转发给 AgentSer
 | `package.id`、`package.version` | 是 | Core | 包标识与版本 |
 | `extensions[]` | 是 | Core | `id`、`runtime=backend`、`module`；模块文件须位于包内 |
 | `package.domain` | 是 | Core / 宿主 | `gateway` 归 Gateway，`agentserver` 归 AgentServer；缺失或其它值拒绝安装 |
+| `enable` | 否 | Core / 宿主 | 是否登记该包 Handler。缺失按 `true`；受管副本会补写为 `true`，`false` 时保留文件但不生效 |
 | `expose` | 否 | 宿主 | 本地预设扫描用；为 `true` 才出现在本地插件广场 |
 | `display` | 否 | 宿主 | 展示信息，字段见 1.3 |
 | `ui` | 否 | 宿主 | 槽位贡献，见 [F_07](../features/F_07_ui-contributions.md) |
@@ -120,7 +122,8 @@ Gateway 下发该事件时保留完整结构，包括 `package_ids` 和 `session
 
 查询的 `state` 另含 `installed_packages`，各项为 `{package_id, version, install_path}`。
 它从安装目录的固定布局取得 ID、版本和实际路径，不执行包代码；因此未生效的副本也可以展示 ID。
-generation 保留为内部校验字段，不出现在命令结果中。
+generation 保留为内部校验字段，不出现在命令结果中。目录和详情投影还提供 `enabled: bool`：
+已安装但禁用的系统插件仍出现在“我的扩展”，并显示开关；只对系统插件展示该开关。
 
 ## 3. Web 命令
 

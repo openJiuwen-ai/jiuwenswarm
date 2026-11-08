@@ -23,6 +23,7 @@ from openjiuwen.core.extension import ActivationReport, ExtensionFailure
 from openjiuwen.core.extension.errors import OperationError, operation_error
 from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.package_manager import PackageManager
+from openjiuwen.core.extension.schema.manifest import Manifest
 
 from jiuwenswarm.gateway.extensions_v2.loader import load_gateway_package
 from jiuwenswarm.gateway.extensions_v2.manifest import DOMAIN_GATEWAY
@@ -135,6 +136,7 @@ class GatewayPackageManager:
             {
                 "package_id": package.package_id,
                 "version": package.version,
+                "domain": package.domain,
                 "install_path": str(package.root),
             }
             for package in installed
@@ -170,6 +172,11 @@ class GatewayPackageManager:
                     operation_error(StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED, package_id=package_id),
                 )
             try:
+                manifest = load_manifest(root, require_domain=True)
+                if manifest.domain != DOMAIN_GATEWAY:
+                    raise ExtensionFailure(StatusCode.EXTENSION_DOMAIN_MISMATCH, package_id=package_id)
+                if not manifest.enable:
+                    return _success(package_id, "reload")
                 await self._switch(load_gateway_package(root))
             except Exception as exc:  # noqa: BLE001 - one bad package must surface as a report
                 logger.exception("[GatewayExtensions] cannot reload %s", package_id)
@@ -179,6 +186,36 @@ class GatewayPackageManager:
                     operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
                 )
             return _success(package_id, "reload")
+
+    async def set_enabled(self, package_id: str, enabled: bool) -> ActivationReport:
+        """Keep an installed Gateway package while changing its loading state."""
+
+        async with self._lock:
+            root = self._highest(package_id)
+            if root is None:
+                return _failure(
+                    package_id,
+                    "enable" if enabled else "disable",
+                    operation_error(StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED, package_id=package_id),
+                )
+            try:
+                manifest = load_manifest(root, require_domain=True)
+                if manifest.domain != DOMAIN_GATEWAY:
+                    raise ExtensionFailure(StatusCode.EXTENSION_DOMAIN_MISMATCH, package_id=package_id)
+                if enabled:
+                    report = await self._enable(root, manifest)
+                else:
+                    report = await self._disable(root, manifest)
+            except ExtensionFailure as exc:
+                report = _failure(package_id, "enable" if enabled else "disable", exc.as_error())
+            except Exception as exc:  # noqa: BLE001 - report malformed or failed Gateway loads
+                logger.exception("[GatewayExtensions] cannot change enabled state for %s", package_id)
+                report = _failure(
+                    package_id,
+                    "enable" if enabled else "disable",
+                    operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
+                )
+        return report
 
     async def uninstall(self, package_id: str) -> ActivationReport:
         """Release the handlers and delete every installed copy of one package.
@@ -277,6 +314,7 @@ class GatewayPackageManager:
             with self._store.open_source(path) as opened:
                 package_id = opened.manifest.package_id
                 root = self._store.copy_into_store(opened.root, opened.manifest)
+                enabled = opened.manifest.enable
         except ExtensionFailure as exc:
             return _failure(package_id or path.stem, "install", exc.as_error())
         except Exception as exc:  # noqa: BLE001 - report, never raise to the frame
@@ -286,6 +324,8 @@ class GatewayPackageManager:
                 "install",
                 operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
             )
+        if not enabled:
+            return _success(package_id, "install")
         package = None
         try:
             package = load_gateway_package(root)
@@ -314,6 +354,43 @@ class GatewayPackageManager:
         if not versions:
             return None
         return max(versions, key=lambda package: _version_key(package.version)).root
+
+    async def _enable(self, root: Path, manifest: Manifest) -> ActivationReport:
+        """Persist true, then publish the selected version; undo on failure."""
+        package_id = manifest.package_id
+        active = any(item.package_id == package_id for item in self._runtime.active_packages())
+        self._store.set_enabled(package_id, manifest.version, True)
+        if active:
+            return _success(package_id, "enable")
+        package = None
+        try:
+            package = load_gateway_package(root)
+            await self._switch(package)
+        except BaseException as exc:
+            current = self._runtime.current_activation(package_id)
+            if package is None or current is None or current.package is not package:
+                self._store.set_enabled(package_id, manifest.version, False)
+            if not isinstance(exc, Exception):
+                raise
+            raise ExtensionFailure(
+                StatusCode.EXTENSION_LOAD_FAILED,
+                package_id=package_id,
+                reason=str(exc),
+                cause=exc,
+            ) from exc
+        return _success(package_id, "enable")
+
+    async def _disable(self, root: Path, manifest: Manifest) -> ActivationReport:
+        """Unpublish the selected package without deleting its install copy."""
+        package_id = manifest.package_id
+        released = self._runtime.unpublish(package_id)
+        self._store.set_enabled(package_id, manifest.version, False)
+        if released and self._on_released is not None:
+            try:
+                self._on_released(package_id)
+            except Exception:  # noqa: BLE001 - view cleanup must not fail management
+                logger.exception("[GatewayExtensions] release cleanup failed for %s", package_id)
+        return _success(package_id, "disable")
 
 
 async def _run_to_end(operation: Awaitable[Any]) -> Any:
