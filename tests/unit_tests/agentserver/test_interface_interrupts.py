@@ -21,6 +21,12 @@ from jiuwenswarm.server.runtime.agent_adapter.interface import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.team_interrupt_control import (
+    TeamRuntimeAction,
+    bind_team_runtime_action,
+    current_team_runtime_action,
+    reset_team_runtime_action,
+)
 
 test_logger = logging.getLogger("tests.interface_interrupts")
 
@@ -186,6 +192,161 @@ async def test_team_interrupt_pause_like_intents_use_team_manager(
     else:
         assert fake_manager.cancel_calls == [("team-session-1", f"interrupt(intent={intent}): ")]
         assert fake_manager.pause_calls == []
+
+
+@pytest.mark.asyncio
+async def test_team_cancel_uses_lifecycle_result_without_repeating_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Runtime lifecycle already stopped the Team; do not cancel it twice."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(cancel_result=False)
+    cancelled: list[tuple[str, str, float | None]] = []
+
+    async def _fake_cancel_session_task(
+        session_id: str,
+        reason: str = "",
+        wait_timeout: float | None = None,
+    ) -> None:
+        cancelled.append((session_id, reason, wait_timeout))
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(claw.session_manager_for_test, "cancel_session_task", _fake_cancel_session_task)
+
+    token = bind_team_runtime_action(TeamRuntimeAction(intent="cancel", handled=True))
+    try:
+        response = await claw.process_interrupt_for_test(_build_team_interrupt_request("cancel"))
+    finally:
+        reset_team_runtime_action(token)
+
+    assert response.payload == {
+        "event_type": "chat.interrupt_result",
+        "intent": "cancel",
+        "success": True,
+        "message": "团队当前执行已结束",
+    }
+    assert fake_manager.cancel_calls == []
+    assert cancelled == [("team-session-1", "interrupt(intent=cancel): ", 5.0)]
+    assert current_team_runtime_action() is None
+
+
+@pytest.mark.asyncio
+async def test_team_cancel_normalizes_intent_case_and_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A case/whitespace variant must still consume the lifecycle hand-off."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(cancel_result=False)
+
+    async def _fake_cancel_session_task(
+        session_id: str,
+        reason: str = "",
+        wait_timeout: float | None = None,
+    ) -> None:
+        pass
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(claw.session_manager_for_test, "cancel_session_task", _fake_cancel_session_task)
+
+    token = bind_team_runtime_action(TeamRuntimeAction(intent="cancel", handled=True))
+    try:
+        response = await claw.process_interrupt_for_test(
+            _build_team_interrupt_request("  Cancel  ")
+        )
+    finally:
+        reset_team_runtime_action(token)
+
+    assert response.payload == {
+        "event_type": "chat.interrupt_result",
+        "intent": "cancel",
+        "success": True,
+        "message": "团队当前执行已结束",
+    }
+    assert fake_manager.cancel_calls == []
+
+
+@pytest.mark.asyncio
+async def test_team_pause_keeps_manager_path_while_lifecycle_guard_is_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pause must still use the Team manager until its lifecycle guard covers runs."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(pause_result=True)
+
+    async def _fake_cancel_session_task(
+        session_id: str,
+        reason: str = "",
+        wait_timeout: float | None = None,
+    ) -> None:
+        pass
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(claw.session_manager_for_test, "cancel_session_task", _fake_cancel_session_task)
+
+    token = bind_team_runtime_action(TeamRuntimeAction(intent="pause", handled=True))
+    try:
+        response = await claw.process_interrupt_for_test(_build_team_interrupt_request("pause"))
+    finally:
+        reset_team_runtime_action(token)
+
+    assert response.payload == {
+        "event_type": "chat.interrupt_result",
+        "intent": "pause",
+        "success": True,
+        "message": "团队已暂停",
+    }
+    assert fake_manager.pause_calls == [("team-session-1", "interrupt(intent=pause): ")]
+    assert current_team_runtime_action() is None
+
+
+@pytest.mark.asyncio
+async def test_team_cancel_falls_back_when_lifecycle_reports_no_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lifecycle no-op must leave the adapter's own cancel path intact."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(cancel_result=True)
+
+    async def _fake_cancel_session_task(
+        session_id: str,
+        reason: str = "",
+        wait_timeout: float | None = None,
+    ) -> None:
+        pass
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(claw.session_manager_for_test, "cancel_session_task", _fake_cancel_session_task)
+
+    token = bind_team_runtime_action(TeamRuntimeAction(intent="cancel", handled=False))
+    try:
+        response = await claw.process_interrupt_for_test(_build_team_interrupt_request("cancel"))
+    finally:
+        reset_team_runtime_action(token)
+
+    assert response.payload["success"] is True
+    assert response.payload["message"] == "团队当前执行已结束"
+    assert fake_manager.cancel_calls == [("team-session-1", "interrupt(intent=cancel): ")]
+
+
+def test_team_runtime_action_hint_is_request_scoped() -> None:
+    """A bound lifecycle outcome must not leak past its reset token."""
+    assert current_team_runtime_action() is None
+    token = bind_team_runtime_action(TeamRuntimeAction(intent="cancel", handled=True))
+    assert current_team_runtime_action() == TeamRuntimeAction(intent="cancel", handled=True)
+    reset_team_runtime_action(token)
+    assert current_team_runtime_action() is None
 
 
 @pytest.mark.asyncio
