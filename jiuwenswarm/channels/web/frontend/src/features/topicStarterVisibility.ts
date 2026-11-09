@@ -13,13 +13,16 @@ export interface TopicStarterTopic {
 export type TopicStarterContextScope = 'global_new_chat' | `project:${string}`;
 export const TOPIC_STARTER_POLICY_ID = 'topic-starter-mvp-v6';
 export type TopicStarterPolicyId = typeof TOPIC_STARTER_POLICY_ID;
-export type TopicStarterSelectionMode = 'personalized_dynamic' | 'mixed_dynamic' | 'generic_dynamic';
+export type TopicStarterSelectionMode = 'personalized_dynamic' | 'generic_dynamic';
+
+export type TopicStarterWorkMode = 'work' | 'design' | 'code';
 
 export interface TopicStarterRequest {
   session_id: string;
   policy_id: TopicStarterPolicyId;
   context_scope: TopicStarterContextScope;
   project_id: string | null;
+  work_mode: TopicStarterWorkMode;
 }
 
 export interface TopicStarterVisibleSlate {
@@ -32,6 +35,7 @@ export interface TopicStarterVisibleSlate {
   policyId: TopicStarterPolicyId;
   contextScope: TopicStarterContextScope;
   projectId: string | null;
+  workMode: TopicStarterWorkMode;
   shortIntentVersion: number;
   exposureSliceId: string;
   selectionMode: TopicStarterSelectionMode;
@@ -50,6 +54,7 @@ export interface TopicStarterResponse {
   policy_id?: string;
   context_scope?: TopicStarterContextScope;
   project_id?: string | null;
+  work_mode?: TopicStarterWorkMode;
   short_intent_version?: number;
   pool_card_count?: number;
   exposure_slice_id?: string;
@@ -76,9 +81,18 @@ export interface TopicStarterEvent {
   payload: Record<string, unknown>;
 }
 
+function normalizeTopicWorkMode(value: string | null | undefined): TopicStarterWorkMode {
+  const mode = (value || '').trim().toLowerCase();
+  if (mode === 'design' || mode === 'code') {
+    return mode;
+  }
+  return 'work';
+}
+
 export function buildTopicStarterRequest(
   sessionId: string,
   projectId: string | null | undefined,
+  workMode?: string | null,
 ): TopicStarterRequest {
   const normalizedProjectId = projectId?.trim() || null;
   return {
@@ -86,6 +100,7 @@ export function buildTopicStarterRequest(
     policy_id: TOPIC_STARTER_POLICY_ID,
     context_scope: normalizedProjectId ? `project:${normalizedProjectId}` : 'global_new_chat',
     project_id: normalizedProjectId,
+    work_mode: normalizeTopicWorkMode(workMode),
   };
 }
 
@@ -132,15 +147,17 @@ export function buildDynamicTopicStarterSlate(
     typeof response.profile_version !== 'number' ||
     !Number.isInteger(response.profile_version) ||
     response.profile_version < 0 ||
-    (response.selection_mode !== 'personalized_dynamic' && response.selection_mode !== 'mixed_dynamic' && response.selection_mode !== 'generic_dynamic')
+    (response.selection_mode !== 'personalized_dynamic' && response.selection_mode !== 'generic_dynamic')
   ) {
     return null;
   }
 
   const globalScope = request.context_scope === 'global_new_chat';
+  const responseWorkMode = normalizeTopicWorkMode(response.work_mode);
   if (
     response.context_scope !== request.context_scope ||
     response.project_id !== request.project_id ||
+    responseWorkMode !== request.work_mode ||
     typeof response.pool_card_count !== 'number' ||
     !Number.isInteger(response.pool_card_count) ||
     (globalScope
@@ -165,6 +182,7 @@ export function buildDynamicTopicStarterSlate(
     policyId: request.policy_id,
     contextScope: response.context_scope,
     projectId: response.project_id,
+    workMode: responseWorkMode,
     shortIntentVersion: response.short_intent_version,
     exposureSliceId: response.exposure_slice_id,
     selectionMode: response.selection_mode,
@@ -178,6 +196,7 @@ function dynamicBatchPayload(slate: TopicStarterVisibleSlate): Record<string, un
     generation_batch_id: slate.generationBatchId,
     context_scope: slate.contextScope,
     project_id: slate.projectId,
+    work_mode: slate.workMode,
     short_intent_version: slate.shortIntentVersion,
     exposure_slice_id: slate.exposureSliceId,
   };
@@ -216,7 +235,6 @@ export function buildDirectInputEvent(slate: TopicStarterVisibleSlate): TopicSta
   const event = baseEvent(slate, 'post_exposure_direct');
   event.payload = {
     ...dynamicBatchPayload(slate),
-    negative_feedback: false,
   };
   return event;
 }
@@ -230,23 +248,10 @@ export function buildTopicClickEvent(slate: TopicStarterVisibleSlate, topicId: s
   return event;
 }
 
-export function buildNotInterestedEvent(
-  slate: TopicStarterVisibleSlate,
-  topicId: string,
-): TopicStarterEvent {
-  const event = baseEvent(slate, 'not_interested', topicId);
-  event.payload = {
-    ...dynamicBatchPayload(slate),
-    card_revision_id: topicId,
-  };
-  return event;
-}
-
 export function buildPageLeftEvent(slate: TopicStarterVisibleSlate): TopicStarterEvent {
   const event = baseEvent(slate, 'page_left');
   event.payload = {
     ...dynamicBatchPayload(slate),
-    negative_feedback: false,
   };
   return event;
 }
@@ -258,7 +263,6 @@ export function buildSessionBoundEvent(slate: TopicStarterVisibleSlate, realSess
     ...dynamicBatchPayload(slate),
     card_revision_id: cardRevisionId,
     visit_session_id: slate.sessionId,
-    negative_feedback: false,
   };
   return event;
 }
@@ -269,8 +273,9 @@ export function topicStarterShowsStatus(state: string | null | undefined, _hasCa
   if (!state || state === 'ready') {
     return false;
   }
-  // Settings blockers keep a go-to-settings hint. Soft-wait copy only while preparing;
-  // once preparation ends, presets (or personalized cards) cover the page—no empty tip.
+  // Settings blockers keep status copy only (no go-to-settings button). Soft-wait
+  // copy only while preparing; once preparation ends, presets (or personalized
+  // cards) cover the page—no empty tip.
   if (SETTINGS_PREPARATION_STATES.has(state)) {
     return true;
   }
@@ -278,15 +283,16 @@ export function topicStarterShowsStatus(state: string | null | undefined, _hasCa
 }
 
 export function topicStarterStatusMessageKey(state: string, _hasCards = false): string {
-  // Homepage keeps two copy jobs only: soft wait vs go-to-settings.
+  // Homepage keeps two copy jobs only: soft wait vs settings-needed status text.
   if (SETTINGS_PREPARATION_STATES.has(state)) {
     return 'chat.topicStarter.statusNeedsSettings';
   }
   return 'chat.topicStarter.statusPreparing';
 }
 
-export function topicStarterShowsSettingsAction(state: string): boolean {
-  return SETTINGS_PREPARATION_STATES.has(state);
+export function topicStarterShowsSettingsAction(_state: string): boolean {
+  // Homepage status no longer ships a settings CTA next to the hint.
+  return false;
 }
 
 export function topicStarterShowsProviderRefusal(state: string): boolean {
