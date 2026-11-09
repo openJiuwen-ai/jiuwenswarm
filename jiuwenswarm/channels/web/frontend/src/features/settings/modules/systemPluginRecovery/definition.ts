@@ -10,6 +10,7 @@ export const systemPluginRecoveryModule: SettingsModuleDefinition = {
   sections: [
     {
       id: 'system-plugin-recovery',
+      separatedRows: true,
       items: [{ id: 'system-plugin-recovery-panel', component: 'custom', render: SystemPluginRecoverySettings }],
     },
   ],
