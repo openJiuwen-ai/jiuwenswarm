@@ -51,7 +51,7 @@ _PHRASES: dict[str, dict[str, str]] = {
         "tod_with_lighting": "It is {label}; {lighting}.",
         "tod": "It is {label}.",
         "continue": (
-            "This shot opens already past earlier finished beats in the storyboard — "
+            "This shot opens already past earlier finished moments in the storyboard — "
             "same setting and faces continue from that authored start_state."
         ),
         "scene_as_in": "The scene is as in {scene_word}: {place}.",

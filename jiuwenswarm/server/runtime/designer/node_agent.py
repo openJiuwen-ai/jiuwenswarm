@@ -696,7 +696,7 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "LOCKS (must keep in every tool prompt before image/video calls): "
         "obey PRODUCTION LOCK BIBLE + costume_lock, positioning_lock, language_lock, "
         "speech_line, occupancy, spatial_lock, and character specs — never invent "
-        "new faces/wardrobe/architecture. Every clip uses character sheets plus the "
+        "new faces/clothing/architecture. Every clip uses character sheets plus the "
         "scene specs, and keeps the film STYLE LOCK.\n"
         "SAME-SCENE PROMPT GATE: the video prompt MUST agree with THIS storyboard shot "
         "(action/camera/speech). Continue from structured continuity "
@@ -1862,7 +1862,8 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                 (
                     "Generate a clip via the configured video model. "
                     "Positive story form only: The scene is as in Image N. "
-                    "<Name> from Image k, wearing <wardrobe>, <placement>, is <action>. "
+                    "<Name> from Image k, wearing <clothing>, <placement>. State this "
+                    "shot's action verbatim — never glue it onto an auxiliary verb. "
                     "Name only on_screen / partial cast; omit exited cast until returned. "
                     "Same-setting continue cue only — do not paste prior Wan text. "
                     "Speaker says: \"<this shot's line>\". One camera move. One look phrase. "
@@ -1876,7 +1877,7 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                             "type": "string",
                             "description": (
                                 "Concise positive story-form prompt. Present cast only "
-                                "from Image k with wardrobe, placement, action; scene as "
+                                "from Image k with clothing, placement, action; scene as "
                                 "in Image N; this shot's line. No forbid / do-not / "
                                 "examples. " + video_tool_hint
                             ),

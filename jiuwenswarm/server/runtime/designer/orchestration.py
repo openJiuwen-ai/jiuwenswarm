@@ -822,7 +822,7 @@ def assign_audio_node_agents(graph: DesignerExecutionGraph) -> dict[str, Any]:
                 cfg["director_task"] = (
                     cfg.get("director_task")
                     or "Write concise spoken lines from brief/storyboard, then call_speech_model "
-                    "to synthesize TTS. Keep under 8s; sync to film beats. Skip if silent policy."
+                    "to synthesize TTS. Keep under 8s; sync to the film's shots. Skip if silent policy."
                 )
                 assigned.append(f"{nid}:speech_agent")
             else:
@@ -1355,7 +1355,7 @@ class Director:
                 "that share one look; list that character on every shot where they are visible, "
                 "scene geography (spatial lock), motion consistency, time-coherent continuity "
                 "(do not undo a completed shot on a later shot), "
-                "shot-view coverage for every named beat, audio policy, and one explicit "
+                "shot-view coverage for every named moment, audio policy, and one explicit "
                 "Visual Style section. Preserve the user's exact visual medium and rendering "
                 "details; use the provided style_lock when present. "
                 "Preserve all explicit people, places, brand facts, claims, and requested events; "
@@ -1475,7 +1475,7 @@ class Director:
                 "Different setting_id = DIFFERENT place (distinct architecture). "
                 "Group shots by setting_id. Shots are consecutive TIME windows that "
                 "concatenate to the film — each action is THAT window in FULL DETAIL "
-                "(blocking, speech, wardrobe, camera); do not paste the entire user "
+                "(blocking, speech, clothing, camera); do not paste the entire user "
                 "prompt into every shot; do not restage the whole story from a new "
                 "camera unless the user asked for same-moment coverage. "
                 "Materialize the Brief's entire narrative/content arc and timed shot plan into "
@@ -1484,11 +1484,11 @@ class Director:
                 "coverage used to consume runtime. Ensure the timelines span the requested "
                 "duration and preserve setup/hook, development, and payoff/CTA as applicable. "
                 "A shot duration already written in the approved brief is fixed: copy that "
-                "length exactly and do not shorten it. Character names, wardrobe, and body "
+                "length exactly and do not shorten it. Character names, clothing, and body "
                 "locks written there stay on those characters. Place names and geography "
                 "written there stay on those scenes. Continuity notes and per-shot story "
-                "beats written there stay in the shot; do not rename people, move the scene, "
-                "or replace the beat. "
+                "action written there stay in the shot; do not rename people, move the scene, "
+                "or replace the action. "
                 "Materialize the Brief's Script/speech plan as exact speech_by_character and "
                 "speech_line values so later clips can speak them. Speech is the default: "
                 "every shot where someone talks needs character_id→exact line in "
@@ -1523,7 +1523,7 @@ class Director:
                 "Exactly one shot has emotion=climax. Each shot includes irreversible "
                 "(what is newly true at the last frame) and cast_states "
                 "{id:{wardrobe,emotion,presence}}. Face stays the character sheet; "
-                "change wardrobe or emotion only when this shot's story changes them. "
+                "change clothing or emotion only when this shot's story changes them. "
                 "Shots are self-contained continuity windows — do not rely on prior "
                 "clip media. "
                 + "Film-wide locks: language_lock (e.g. en/zh — ALL dialogue in that "
@@ -1564,7 +1564,7 @@ class Director:
                         "clips": shots,
                         "spatial_lock": meta.get("spatial_lock"),
                         "rule": (
-                            "Multi-shot storyboard required when multiple beats exist. "
+                            "Multi-shot storyboard required when multiple moments exist. "
                             "Write exact speech_by_character and speech_line on every shot "
                             "where someone talks, so later clips can speak those lines."
                         ),
@@ -1865,12 +1865,12 @@ class Director:
                 "film, or no dialogue. "
                 "story window needs, with contiguous timelines. A duration the approved brief "
                 "already gave a shot stays that length. Keep the brief's character names and "
-                "wardrobe, place names, and continuity notes. Retain every storyboard "
+                "clothing, place names, and continuity notes. Retain every storyboard "
                 "clip that provides distinct content. "
                 "Keep every distinct shot. Do not drop shots to fit a fixed count. "
                 "One clip = one continuous shot of that window's length. New clip on hard cut, new setting, "
-                "wardrobe/prop change, or on-screen cast change. "
-                "Qwen image: lock identity+wardrobe for every visible person, including a "
+                "clothing/prop change, or on-screen cast change. "
+                "Qwen image: lock identity+clothing for every visible person, including a "
                 "shared-look group as one reference. One variable per new clip. "
                 "Honor explicit N-shot / N分镜 as a HARD ceiling. "
                 "First clip of each setting: compose_from_character_specs with on_screen + "
@@ -2656,7 +2656,7 @@ class Director:
                         "The LAST reference is the Scene specs (environment) — not a person. "
                         f"Keep faces, body types, ages, and costumes"
                         f"{(' for ' + cast_who) if cast_who else ''}. "
-                        "Do not recast, redesign wardrobe, or invent unlabeled extras."
+                        "Do not recast, redesign clothing, or invent unlabeled extras."
                     )
                 else:
                     prompt = (
@@ -2664,7 +2664,7 @@ class Director:
                         + "\nCHARACTER CONSISTENCY LOCK: animate ONLY people already in Image 1 "
                         "(this shot's scene spec); keep the same faces, body types, ages, and "
                         f"costumes{(' for ' + cast_who) if cast_who else ''}. "
-                        "Do not recast, redesign wardrobe, or invent a different hero. "
+                        "Do not recast, redesign clothing, or invent a different hero. "
                         "IDENTITY character specs remain the face authority."
                     )
                 notes.append("inject_clip_character_consistency")
@@ -3318,7 +3318,7 @@ class Director:
             brief = (
                 brief.rstrip()
                 + "\n\n**Shot views:** cover establishing, mid, reaction close-ups "
-                "for every major prompt beat.\n"
+                "for every major prompt moment.\n"
             )[:12000]
             patched.append("shot_views")
 
@@ -3335,7 +3335,11 @@ class Director:
                 "creative concept, narrative/content arc, timed shot plan, and script/speech "
                 "plan; do not remove an enriched shot merely because it was not stated verbatim "
                 "in the user prompt. Flag missing characters, insufficient shot views, or content "
-                "that contradicts explicit user facts."
+                "that contradicts explicit user facts. Also flag hollow staging: interior states "
+                "left as labels instead of visible behavior, key lines without delivery "
+                "direction (tone, expression, accompanying movement), or journeys compressed "
+                "into static description — patch by enriching the brief's own plan and keeping "
+                "its arc."
                 "Preserve the user's visual style and the existing Visual Style section exactly. "
                 "Patch only to repair those issues; do not "
                 "introduce a conflicting or unrelated plot, cast, claim, or geography. "
@@ -3478,13 +3482,25 @@ class Director:
                 "enhance sparse shots "
                 "(crowd, atmosphere), keep each shot duration the approved brief already wrote, "
                 "fill a duration only when that shot was left untimed, keep the brief's character "
-                "names, wardrobe, places, and continuity notes, enforce time-coherent continuity, and "
+                "names, clothing, places, and continuity notes, enforce time-coherent continuity, and "
                 "keep geography locked (same landmarks/layout/light across views). "
                 "Also approve/enforce film audio locks: language_lock (one language for all "
                 "speech), per-shot speech_by_character (exact lines for every speaking shot; "
                 "{} only when that shot has no speaker or the user asked for mime or no dialogue), and "
                 "film-wide bgm_lock. "
                 + _BGM_LOCK_RULE
+                + "Check dialogue discipline: every spoken line must be speakable words that do "
+                "story work, and a line addressed to or spoken by a group must match the "
+                "headcount on screen — a crowd's answer comes from the group as an off-screen "
+                "voice, never from one on-screen mouth, and one person speaks only for "
+                "themselves unless declared the spokesperson. Check performance design: an "
+                "inner state that sets up a later turn (desire, fear, resolve) must be "
+                "externalized as visible performance at the strength the turn needs, and key "
+                "lines must carry delivery direction — tone, expression, accompanying "
+                "movement — not neutral shouting; enrich thin staging in shot_fixes instead "
+                "of leaving it to chance. Check opening establishment: "
+                "each shot's action stages its own opening state (who is where, what is "
+                "already true) instead of depending on a transition no earlier shot showed. "
                 + "Respond JSON only: "
                 '{"ok":true,"shot_fixes":[{"clip_index":1,"action":"...","camera":"...",'
                 '"timeline":"<copy this shot timeline from the approved brief>",'
