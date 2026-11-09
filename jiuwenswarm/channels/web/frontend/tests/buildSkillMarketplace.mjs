@@ -1,4 +1,5 @@
 import { build } from 'esbuild';
+import { resolve } from 'node:path';
 
 const svgComponentStub = {
   name: 'skill-marketplace-svg-component-stub',
@@ -11,6 +12,12 @@ const svgComponentStub = {
       contents: 'export default function SvgStub() { return null; }',
       loader: 'js',
     }));
+    builder.onResolve({ filter: /services\/webClient$/ }, ({ importer }) => {
+      if (importer.endsWith('useSkillFilesTab.tsx')) {
+        return { path: resolve('tests/fixtures/skillDetailWebClientStub.ts') };
+      }
+      return undefined;
+    });
   },
 };
 
@@ -20,6 +27,9 @@ await build({
     { in: 'src/components/SkillPanel/skillPanelUtils.ts', out: 'skillPanelUtils' },
     { in: 'src/components/ui/FilePreviewPanel/FilePreviewContent.tsx', out: 'FilePreviewContent' },
     { in: 'src/components/ui/MarkdownPane/MarkdownPane.tsx', out: 'MarkdownPane' },
+    { in: 'src/components/SkillPanel/useSkillFilesTab.tsx', out: 'useSkillFilesTab' },
+    { in: 'src/components/SkillPanel/SkillDetailView.tsx', out: 'SkillDetailView' },
+    { in: 'tests/fixtures/skillDetailWebClientStub.ts', out: 'skillDetailWebClientStub' },
   ],
   bundle: true,
   splitting: true,

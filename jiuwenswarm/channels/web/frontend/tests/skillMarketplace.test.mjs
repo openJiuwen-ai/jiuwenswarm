@@ -58,6 +58,12 @@ test('SKILL.md file links resolve inside the skill package', () => {
   assert.equal(resolveSkillFileLinkPath('SKILL.md', '#section'), null);
 });
 
+test('decodes encoded paths before validating the skill package boundary', () => {
+  assert.equal(resolveSkillFileLinkPath('SKILL.md', '%2e%2e/outside.md'), null);
+  assert.equal(resolveSkillFileLinkPath('docs/SKILL.md', '..%2f..%2foutside.md'), null);
+  assert.equal(resolveSkillFileLinkPath('SKILL.md', '../outside.md'), null);
+});
+
 test('preview Markdown forwards referenced file clicks instead of navigating the page', async () => {
   let clickedHref = null;
   const root = createRoot(document.getElementById('root'));
@@ -123,6 +129,33 @@ test('content detail Markdown forwards referenced file clicks instead of navigat
     assert.equal(clickedHref, 'references/api.md#usage');
     assert.equal(event.defaultPrevented, true);
     assert.equal(link.hasAttribute('target'), false);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+test('MarkdownPane preserves default link behavior when onLinkClick returns false', async () => {
+  let clickedHref = null;
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(MarkdownPane, {
+          content: '[Deferred target](./guide.md)',
+          onLinkClick: (href) => {
+            clickedHref = href;
+            return false;
+          },
+        }),
+      ),
+    );
+    const link = document.querySelector('a[href="./guide.md"]');
+    assert.ok(link);
+    link.removeAttribute('href');
+    const event = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+    await act(async () => link.dispatchEvent(event));
+    assert.equal(clickedHref, './guide.md');
+    assert.equal(event.defaultPrevented, false);
   } finally {
     await act(async () => root.unmount());
   }
