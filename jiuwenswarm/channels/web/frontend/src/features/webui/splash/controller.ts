@@ -101,14 +101,13 @@ export function parseSplashPlay(value: unknown): SplashProvider | null {
   return parseProviders({ providers: [value] })[0] ?? null;
 }
 
-/** Whether the user saved a splash order in the Extensions settings (Gateway S_10 section 4). */
+/** Whether Gateway has a saved splash order (Gateway S_10 section 4). */
 export function parseCustomized(value: unknown): boolean {
   return isRecord(value) && value.customized === true;
 }
 
 /**
  * The splash order (Gateway S_10 section 4): a saved order is final; otherwise the appearance provider goes first.
- * The settings page lists providers in this same order.
  */
 export function orderProviders<T extends { packageId: string }>(
   providers: readonly T[], preferred?: string | null, customized = false,
