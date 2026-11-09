@@ -10,7 +10,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  JiuwenClow Test Runner${NC}"
+echo -e "${GREEN}  JiuwenSwarm Test Runner${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
@@ -69,48 +69,60 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Check if pytest is installed
-if ! command -v pytest &> /dev/null; then
-    echo -e "${RED}pytest is not installed!${NC}"
-    echo "Install test dependencies:"
-    echo "  pip install -e '.[test]'"
+# Check that uv is available. It owns the project virtual environment.
+if ! command -v uv &> /dev/null; then
+    echo -e "${RED}uv is not installed!${NC}"
+    echo "Install uv: https://docs.astral.sh/uv/getting-started/installation/"
     exit 1
 fi
 
-# Build pytest command
-PYTEST_CMD="pytest $VERBOSE"
+# Check that pytest is available in the uv environment.
+# `uv run` syncs the environment from uv.lock before it runs the command.
+if ! uv run pytest --version &> /dev/null; then
+    echo -e "${RED}pytest is not available in the uv environment!${NC}"
+    echo "Install test dependencies:"
+    echo "  uv sync"
+    exit 1
+fi
+
+# Build the pytest command as an array so no eval is needed.
+PYTEST_CMD=(uv run pytest "$VERBOSE")
 
 # Add coverage
 if [[ "$COVERAGE_REPORT" == "html" ]]; then
     echo -e "${YELLOW}Generating HTML coverage report...${NC}"
-    PYTEST_CMD="$PYTEST_CMD --cov=jiuwenswarm --cov-report=html --cov-report=term-missing"
+    PYTEST_CMD+=(--cov=jiuwenswarm --cov-report=html --cov-report=term-missing)
 fi
 
 # Add parallel execution
 if [[ "$PARALLEL" == true ]]; then
-    if ! python -c "import xdist" 2>/dev/null; then
+    if ! uv run python -c "import xdist" 2>/dev/null; then
         echo -e "${YELLOW}pytest-xdist not installed, running sequentially...${NC}"
-        echo "Install it with: pip install pytest-xdist"
+        echo "Install it with: uv pip install pytest-xdist"
     else
         echo -e "${YELLOW}Running tests in parallel...${NC}"
-        PYTEST_CMD="$PYTEST_CMD -n auto"
+        PYTEST_CMD+=(-n auto)
     fi
 fi
 
 # Add test path
-PYTEST_CMD="$PYTEST_CMD $TEST_PATH"
+PYTEST_CMD+=("$TEST_PATH")
 
 # Print command
 echo -e "${YELLOW}Running command:${NC}"
-echo "$PYTEST_CMD"
+echo "${PYTEST_CMD[*]}"
 echo ""
 
 # Run tests
 echo -e "${GREEN}Running tests...${NC}"
 echo ""
 
-eval $PYTEST_CMD
-EXIT_CODE=$?
+# Run inside an `if` so `set -e` does not skip the failure summary.
+if "${PYTEST_CMD[@]}"; then
+    EXIT_CODE=0
+else
+    EXIT_CODE=$?
+fi
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
