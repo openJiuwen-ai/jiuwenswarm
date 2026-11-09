@@ -15,7 +15,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -306,7 +306,9 @@ class GatewayPackageManager:
                 manifest = load_manifest(root, require_domain=True)
                 if manifest.domain != DOMAIN_GATEWAY:
                     raise ExtensionFailure(StatusCode.EXTENSION_DOMAIN_MISMATCH, package_id=package_id)
-                if enabled:
+                if self._report is not None:
+                    report = await _run_to_end(self._set_enabled_reported(root, manifest, enabled))
+                elif enabled:
                     report = await self._enable(root, manifest)
                 else:
                     report = await self._disable(root, manifest)
@@ -486,6 +488,69 @@ class GatewayPackageManager:
             manifest.package_id,
             "install",
             operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason="package did not start"),
+        )
+
+    async def _set_enabled_reported(
+        self, root: Path, manifest: Manifest, enabled: bool,
+    ) -> ActivationReport:
+        assert self._report is not None
+        service = self._report
+        package_id = manifest.package_id
+        operation = "enable" if enabled else "disable"
+        admission = "install" if enabled else "uninstall"
+        target = replace(manifest, enable=True) if enabled else manifest
+        token: PackageOperationToken | None = None
+        report: ActivationReport | None = None
+        try:
+            token = await service.begin_operation(target, admission)
+            if enabled:
+                await service.wait_for_dependencies(token)
+            await service.validate_operation(token, target, admission)
+            # Persist before releasing handlers: a failed write keeps the running copy intact.
+            with service.operation_scope(token):
+                await run_file_operation(
+                    lambda: self._store.set_enabled(package_id, manifest.version, enabled)
+                )
+            if enabled:
+                active = self._runtime.active_record(package_id)
+                report = (
+                    _success(package_id, operation, active=active)
+                    if active is not None
+                    else await self._publish_manifest(target, root, operation)
+                )
+                if report.status != "SUCCESS":
+                    with service.operation_scope(token):
+                        await run_file_operation(
+                            lambda: self._store.set_enabled(package_id, manifest.version, manifest.enable)
+                        )
+            else:
+                released = self._runtime.unpublish(package_id)
+                if released and self._on_released is not None:
+                    try:
+                        self._on_released(package_id)
+                    except Exception:  # noqa: BLE001 - view cleanup must not fail management
+                        logger.exception("[GatewayExtensions] release cleanup failed for %s", package_id)
+                report = _success(package_id, operation, active=None)
+        except ExtensionFailure as exc:
+            report = _failure(package_id, operation, exc.as_error())
+        except Exception as exc:  # noqa: BLE001 - settle the token even on local I/O failures
+            logger.exception("[GatewayExtensions] cannot %s %s", operation, package_id)
+            report = _failure(
+                package_id, operation,
+                operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
+            )
+        finally:
+            if token is not None:
+                await _finish_operation(
+                    service,
+                    token,
+                    report=None if report is None else replace(report, operation=admission),
+                    active=self._runtime.active_record(package_id),
+                    cleanup_pending=False,
+                )
+        return report or _failure(
+            package_id, operation,
+            operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason="enabled state did not change"),
         )
 
     async def _reload_reported(self, package_id: str) -> ActivationReport:
