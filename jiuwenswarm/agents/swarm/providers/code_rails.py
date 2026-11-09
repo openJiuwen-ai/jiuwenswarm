@@ -257,8 +257,9 @@ class _TeamPlanPermissionInterruptRail:
 def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
     """Build PermissionInterruptRail (None unless ``permissions.enabled`` in config).
 
-    Same factory as Deep/Flash adapters; identity dims come from request metadata
-    (personal → default; enterprise → group/bot/user triad).
+    Same ``build_permission_rail`` as Deep/Flash adapters; identity dims come
+    from request metadata (personal → default; enterprise → triad / default).
+    Assembly is fail-open: any failure → warning + None (S_17 / 铁律 34).
     """
     try:
         from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (

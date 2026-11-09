@@ -8019,10 +8019,11 @@ class JiuWenSwarmDeepAdapter:
             permission_config = {}
         enabled = permission_config.get("enabled") if isinstance(permission_config, dict) else None
         key = getattr(getattr(self, "_permission_rail", None), "permission_key", None)
-        from openjiuwen.harness.security.models import PermissionLevel
-        from agent_shield.tool_permission import get_permission_manager
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+            PermissionLevel,
+            check_permission_by_key,
+        )
 
-        manager = get_permission_manager()
         for item in context["files"]:
             if enabled is False:
                 # A disabled permission system intentionally has no PermissionRail.
@@ -8031,7 +8032,7 @@ class JiuWenSwarmDeepAdapter:
                 item["read_allowed"] = False
             else:
                 try:
-                    result = await manager.check_permission(
+                    result = await check_permission_by_key(
                         "read_file", {"file_path": item.get("path", "")}, key
                     )
                 except Exception:
@@ -8043,7 +8044,11 @@ class JiuWenSwarmDeepAdapter:
                     )
                     item["read_allowed"] = False
                 else:
-                    item["read_allowed"] = result.permission == PermissionLevel.ALLOW
+                    # 未登记 key → None，按拒绝（与原先异常路径一致）。
+                    item["read_allowed"] = (
+                        result is not None
+                        and result.permission == PermissionLevel.ALLOW
+                    )
         return context
 
     def _get_deepresearch_tool_context(self) -> dict[str, str]:
@@ -8616,7 +8621,20 @@ class JiuWenSwarmDeepAdapter:
         permission_config = self._resolve_permission_config_for_agent(
             session_id=""
         )
-        wanted_key = resolve_permission_key(**self._permission_key_dims())
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+            update_permission_config,
+        )
+
+        # 组 key 只走 resolve_permission_key；权限未启用且尚无 rail 时不必解析。
+        need_key = (
+            self._permission_rail is not None
+            or bool(permission_config.get("enabled", False))
+        )
+        wanted_key = (
+            resolve_permission_key(**self._permission_key_dims())
+            if need_key
+            else None
+        )
         stale_rail = None
         if self._permission_rail is not None:
             current_key = getattr(self._permission_rail, "permission_key", None)
@@ -8637,13 +8655,14 @@ class JiuWenSwarmDeepAdapter:
                 self._permission_rail = None
         if self._permission_rail is not None:
             self._sync_permission_workspace(self._permission_rail)
-            self._permission_rail.update_config(permission_config)
+            update_permission_config(self._permission_rail, permission_config)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated key=%s",
                 wanted_key,
             )
         elif permission_config.get("enabled", False):
-            self._permission_rail = self._build_permission_rail_for_agent(
+            # 建轨失败 → None（与迁仓前一致）；有 stale 时保留旧轨，不抬异常。
+            new_rail = self._build_permission_rail_for_agent(
                 config=config_base or {},
                 llm=self._model,
                 model_name=config_base.get("models", {})
@@ -8653,8 +8672,9 @@ class JiuWenSwarmDeepAdapter:
                 if isinstance(config_base, dict)
                 else "gpt-4",
             )
-            if self._permission_rail is not None:
-                self._permission_rail.update_config(permission_config)
+            if new_rail is not None:
+                self._permission_rail = new_rail
+                update_permission_config(self._permission_rail, permission_config)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] _permission_rail newly created key=%s",
                     getattr(self._permission_rail, "permission_key", wanted_key),
@@ -8674,11 +8694,12 @@ class JiuWenSwarmDeepAdapter:
                     self._bind_skill_permission_scope_resolver(
                         self._permission_rail, self._skill_authorization_rail
                     )
-            else:
-                raise RuntimeError("Permission rail could not be constructed")
+            elif stale_rail is not None:
+                # 重建失败：退回旧轨，避免注销仍在服务的 key。
+                self._permission_rail = stale_rail
+                stale_rail = None
         if stale_rail is not None and self._permission_rail is not stale_rail:
-            # 重建成功或权限被显式关闭后才注销旧 key；重建抛异常时跳过注销，
-            # 旧 key 继续服务在途请求（残留注册仅在极少数失败场景出现）。
+            # 重建成功或权限被显式关闭后才注销旧 key。
             release = getattr(stale_rail, "_release_registration", None)
             if callable(release):
                 release()

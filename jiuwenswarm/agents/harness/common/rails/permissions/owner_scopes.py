@@ -117,8 +117,10 @@ async def check_avatar_permission(
         "allow" 或 "deny"
     """
     del channel_id, session_id  # channel comes from ContextVar; session unused
-    from openjiuwen.harness.security.permission_checks import check_tool_permission
-    from openjiuwen.harness.security.models import PermissionLevel as OJPermissionLevel
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+        PermissionLevel,
+        check_permission_by_key,
+    )
 
     perm_ctx = TOOL_PERMISSION_CONTEXT.get()
     if perm_ctx is None or not perm_ctx.principal_user_id:
@@ -130,8 +132,14 @@ async def check_avatar_permission(
         return "deny"
     key = permission_key.strip()
     try:
-        result = await check_tool_permission(tool_name, tool_args, key)
+        result = await check_permission_by_key(tool_name, tool_args, key)
     except Exception:
+        logger.warning(
+            "[check_avatar_permission] unregistered_key key=%s fail_closed=deny",
+            key,
+        )
+        return "deny"
+    if result is None:
         logger.warning(
             "[check_avatar_permission] unregistered_key key=%s fail_closed=deny",
             key,
@@ -143,7 +151,7 @@ async def check_avatar_permission(
         type(owner_scopes).__name__, list(owner_scopes.keys()) if isinstance(owner_scopes, dict) else None
     )
     if not isinstance(owner_scopes, dict) or not owner_scopes:
-        return "allow" if result.permission == OJPermissionLevel.ALLOW else "deny"
+        return "allow" if result.permission == PermissionLevel.ALLOW else "deny"
 
     cid, uid = perm_ctx.channel_id.strip(), perm_ctx.principal_user_id.strip()
     scope_cfg = (owner_scopes.get(cid) or {}).get(uid)
@@ -157,7 +165,7 @@ async def check_avatar_permission(
     global_level_value = result.permission.value
 
     if level is None:
-        if global_level_value == OJPermissionLevel.ALLOW.value:
+        if global_level_value == PermissionLevel.ALLOW.value:
             return "allow"
         return "deny"
 
@@ -244,7 +252,7 @@ def persist_to_owner_scope(
 ) -> bool:
     """将规则持久化到 permissions.owner_scopes，并按 1B 刷新 rail。
 
-    谁落盘谁更新：写盘成功后若传入 ``rail``，必须 ``rail.update_config``；
+    谁落盘谁更新：写盘成功后若传入 ``rail``，必须 ``update_permission_config``；
     未传 rail 时只落盘并打警告（manager 不刷新）。``config`` 为调用方持有的
     permissions 段，成功后就地同步 ``owner_scopes``。
     """
@@ -292,7 +300,11 @@ def persist_to_owner_scope(
             config["owner_scopes"] = deepcopy(persisted.get("owner_scopes") or {})
 
         if rail is not None:
-            rail.update_config(persisted)
+            from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                update_permission_config,
+            )
+
+            update_permission_config(rail, persisted)
         else:
             logger.warning(
                 "persist_to_owner_scope ok but rail missing; manager not refreshed"
