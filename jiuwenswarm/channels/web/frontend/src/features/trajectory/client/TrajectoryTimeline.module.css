@@ -108,23 +108,31 @@
 
 .turnBoundary {
   position: absolute;
+  z-index: 4;
   top: 0;
   bottom: 0;
-  left: var(--trajectory-turn-left);
+  left: calc(var(--trajectory-turn-left) + var(--trajectory-turn-shift, 0px));
   width: 1px;
   background: var(--dsw-alias-border-l2);
+  pointer-events: none;
 }
 
 .span {
   position: absolute;
   top: calc(var(--trajectory-span-lane) * 22px);
-  left: calc(var(--trajectory-span-left) + var(--trajectory-span-gap));
+  left: calc(
+    var(--trajectory-span-left)
+    + var(--trajectory-span-gap)
+    + var(--trajectory-span-turn-pad-left, 0px)
+  );
   width: max(
     2px,
     calc(
       var(--trajectory-span-width)
       - var(--trajectory-span-gap)
       - var(--trajectory-span-gap)
+      - var(--trajectory-span-turn-pad-left, 0px)
+      - var(--trajectory-span-turn-pad-right, 0px)
     )
   );
   height: 12px;

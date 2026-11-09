@@ -15,6 +15,7 @@ import pytest
 
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from openjiuwen_protocol.message import EventType, ReqMethod
+
 from agent_gateway.cron.models import CronJob, CronRunState
 from agent_gateway.cron.scheduler import (
     CRON_INTERRUPT_RESULT_TEXT,

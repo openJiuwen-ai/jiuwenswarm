@@ -60,7 +60,7 @@ def _isolate_user_workspace(tmp_path_factory):
     flush_pending_writes = session_metadata.flush_pending_writes
     with pytest.MonkeyPatch.context() as mp:
         data = tmp_path_factory.mktemp("unit_workspace") / ".jiuwenswarm"
-        config_dir = data / "config"
+        config_dir = data / "infra" / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(
             Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml",
@@ -68,6 +68,8 @@ def _isolate_user_workspace(tmp_path_factory):
         )
         mp.setattr(_utils, "_workspace_base_dir", data)
         mp.setattr(_utils, "_initialized", False)
+        for name in ("_config_dir", "_workspace_dir", "_root_dir"):
+            mp.setattr(_utils, name, None)
         mp.setenv("JIUWENSWARM_CONFIG_DIR", str(config_dir))
         # A Gateway operation can resolve either package's cached config path.
         for name in ("agent_gateway.common.config", "jiuwenswarm.common.config"):
@@ -127,6 +129,36 @@ def _stub_get_agent_workspace_dir() -> Path:
 def _is_external_memory_patched_module(node_path) -> bool:
     base = os.path.basename(str(node_path or ""))
     return base in _EXTERNAL_MEMORY_BASENAMES
+
+
+def _ensure_agent_checkpointer() -> None:
+    """Put back a checkpointer that implements the agent and team hooks.
+
+    ``CheckpointerFactory`` is process-wide. A test can leave its default as a
+    bare ``object()``. The next session then dies in ``pre_run`` with
+    ``'object' object has no attribute 'pre_agent_execute'`` or
+    ``'pre_agent_team_execute'``, and ``Runner.release`` fails the same way on
+    ``release``.
+    """
+    from openjiuwen.core.session.checkpointer import CheckpointerFactory
+    from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
+
+    try:
+        current = CheckpointerFactory.get_checkpointer()
+    except Exception:
+        current = None
+    if current is not None and all(
+        hasattr(current, name)
+        for name in ("pre_agent_execute", "pre_agent_team_execute", "release")
+    ):
+        return
+    CheckpointerFactory.set_default_checkpointer(InMemoryCheckpointer())
+
+
+@pytest.fixture(autouse=True)
+def _restore_inmemory_checkpointer():
+    _ensure_agent_checkpointer()
+    yield
 
 
 def pytest_runtest_setup(item) -> None:

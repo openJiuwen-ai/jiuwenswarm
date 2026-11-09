@@ -231,7 +231,7 @@ async def test_music_handler_writes_silent_placeholder(
     )
 
     async def _noop_async(*_a, **_k):
-        return None
+        return None, ""
 
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.designer.handlers.audio_nodes._try_music_api",

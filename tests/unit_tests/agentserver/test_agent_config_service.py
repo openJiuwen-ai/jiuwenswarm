@@ -34,18 +34,18 @@ class TestAgentConfigService:
 
     @pytest.fixture
     def service(self, tmp_workspace):
-        """Create AgentConfigService with mocked get_user_workspace_dir."""
+        """Create AgentConfigService with mocked get_domain_data_dir."""
         import jiuwenswarm.server.runtime.agent_config_service as svc_mod
-        orig = svc_mod.get_user_workspace_dir
+        orig = svc_mod.get_domain_data_dir
 
-        def mock_get_user_workspace_dir():
-            return tmp_workspace
+        def mock_get_domain_data_dir():
+            return tmp_workspace / "domain"
 
-        svc_mod.get_user_workspace_dir = mock_get_user_workspace_dir
+        svc_mod.get_domain_data_dir = mock_get_domain_data_dir
         try:
             return AgentConfigService(tmp_workspace)
         finally:
-            svc_mod.get_user_workspace_dir = orig
+            svc_mod.get_domain_data_dir = orig
 
     # ---- list_agents ----
 

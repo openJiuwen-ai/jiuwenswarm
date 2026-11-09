@@ -502,6 +502,7 @@ def test_prepare_workspace_copies_rsi_program_dataset_creator(
 
     assert (
         workspace_dir
+        / "domain"
         / "agent"
         / "workspace"
         / "skills"
@@ -763,10 +764,10 @@ class TestHardcodedPathsPhase2:
 
         # Original hardcoded: get_user_workspace_dir() / "agent" / "home" / "cron_jobs.json"
         # New: get_agent_home_dir() / "cron_jobs.json"
-        # get_agent_home_dir() = get_user_workspace_dir() / "agent" / "home"
+        # get_agent_home_dir() = get_user_workspace_dir() / "domain" / "agent" / "home"
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "home" / "cron_jobs.json"
+        expected_path = workspace / "domain" / "agent" / "home" / "cron_jobs.json"
         actual_path = get_agent_home_dir() / "cron_jobs.json"
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -786,7 +787,7 @@ class TestHardcodedPathsPhase2:
         from jiuwenswarm.common.utils import get_user_workspace_dir
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "workspace" / "task-data.json"
+        expected_path = workspace / "domain" / "agent" / "workspace" / "task-data.json"
         actual_path = Path(_get_task_data_path())
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -805,7 +806,7 @@ class TestHardcodedPathsPhase2:
         from jiuwenswarm.common.utils import get_deepagent_user_md_path, get_user_workspace_dir
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "workspace" / "USER.md"
+        expected_path = workspace / "domain" / "agent" / "workspace" / "USER.md"
         actual_path = get_deepagent_user_md_path()
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -828,7 +829,7 @@ class TestAdditionalHardcodedPaths:
         monkeypatch.setattr(RailManager, "_instance", None)
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "workspace" / "extensions"
+        expected_path = workspace / "domain" / "agent" / "workspace" / "extensions"
         rail_manager = RailManager()
 
         extensions_dir = getattr(rail_manager, '_extensions_dir')
@@ -861,7 +862,7 @@ class TestAdditionalHardcodedPaths:
         from jiuwenswarm.common.utils import get_interactions_dir, get_user_workspace_dir
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "workspace" / "interactions"
+        expected_path = workspace / "domain" / "agent" / "workspace" / "interactions"
         actual_path = get_interactions_dir()
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \

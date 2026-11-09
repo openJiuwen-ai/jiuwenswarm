@@ -30,8 +30,9 @@ SERVICE_UNAVAILABLE，阻断已有恢复路径。fetch_agent_unary 同样受影�
 
 本仓 develop 已迁出内置 Gateway，实际执行 agent_gateway 包。
 实现修复位于 [agent-gateway !31](https://gitcode.com/openJiuwen/agent-gateway/merge_requests/31)，
-本仓将官方依赖固定到已合入的 66df2594fe7bd05e97133db4a71a0bc8e7801f76，并同步 uv.lock。
-该提交是 !31 的官方合并结果，保留此前已合入的群接入、定时任务广播与快照退役调整。
+!31 的官方合并提交为 66df2594fe7bd05e97133db4a71a0bc8e7801f76。
+2026-11-09 主仓 !9667 已独立升级到其后继 435d3323425e1051c6fe2d1feadcba68b4be020d，
+因此本 PR 保留主仓的依赖配置和锁文件，不再承担依赖升级；剩余交付为消费端回归与文档。
 企业版仍使用内置 gateway，独立交付于
 [jiuwenclaw !150](https://gitcode.com/ZYQ5333/jiuwenclaw/merge_requests/150)。
 
@@ -199,3 +200,20 @@ ACK 单测在原候选也复现了同一 session_id TypeError。
 未来正式发布可改为版本约束与锁文件配合；branch=develop 配合受控更新 uv.lock 也能固定
 uv 安装，但 pip/已构建 wheel 不读取 tool.uv.sources 或本项目 uv.lock，不能只改第 247 行
 就认为所有安装路径都保留同一版本。不在本次 UT 修复中改变整个项目的依赖发布策略。
+
+
+## 2026-11-09 同步主仓升级并解决合入冲突
+
+主仓 !9667（b1e201a8183dbfdaf1ddd120913fea31444e0a54）将 Gateway 升级到
+435d3323425e1051c6fe2d1feadcba68b4be020d、协议升级到 4c5f3e9e，与本 PR 的旧依赖
+升级及两处测试形成四文件冲突。Git 祖先检查确认 66df2594 是 435d3323 的祖先；
+两版本的 e2a_proxy 与 cron/scheduler 实现无差异。保留主仓 pyproject.toml 与 uv.lock，
+ACK 替身采用主仓等价签名，保留本 PR 的广播/占位回归断言。
+主仓新增 runtime/conftest.py 隔离检查点及 SDK factory 状态，已覆盖前轮局部修复，
+故撤去本 PR 的重复局部隔离。当前 PR 不再升级依赖或修改产品运行时代码。
+
+按合并锁文件 uv sync --locked 成功，实际安装官方 Gateway 435d3323 与协议 4c5f3e9e。
+在该环境先初始化真实检查点，运行前轮 CI 失败涉及的四个完整文件及 17 个 Gateway、
+Worker、transport 单元测试文件：836 passed in 95.50s。测试包括实际 WebSocket 重连
+及跨进程 ACK，验证主仓的统一隔离 fixture 能覆盖原污染路径。
+未重跑完整集成测试或全量单元测试、未部署；平台 CI 须针对新提交重新执行。

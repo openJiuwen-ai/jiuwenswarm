@@ -11,6 +11,7 @@ import {
   DragEvent,
   ChangeEvent,
   useMemo,
+  useSyncExternalStore,
   forwardRef,
   useImperativeHandle,
   FormEvent,
@@ -53,6 +54,8 @@ import { effectivePermissionProfile, permissionOptionsForMode } from '../../conf
 import clsx from 'clsx';
 import { PermissionWarningDialog } from './PermissionWarningDialog';
 import ChatModelSelector from './ChatModelSelector';
+import { getTeamSessionLive, subscribeTeamSessionLive, teamFollowUpLiveReady } from '../../services/sessionLive';
+import { getTeamQuota } from '../../services/teamApi';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
@@ -1202,13 +1205,61 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isAgentMode = mode === 'agent';
   const isTeamMode = mode === 'team';
   const enterprise = isEnterprise();
-  const modeLocked = enterprise || hasHistory || isProcessing;
+  const teamSessionLive = useSyncExternalStore(
+    subscribeTeamSessionLive,
+    getTeamSessionLive,
+    getTeamSessionLive,
+  );
+  const teamLiveReady = !isTeamMode || teamFollowUpLiveReady(
+    enterprise,
+    activeSessionId,
+    teamSessionLive,
+    NEW_CONVERSATION_ID,
+  );
+  const modeLocked = hasHistory || isProcessing;
+  const [teamQuotaHint, setTeamQuotaHint] = useState('');
+  const [teamCreateBlocked, setTeamCreateBlocked] = useState(false);
 
   useEffect(() => {
-    if (enterprise && activeSessionId === NEW_CONVERSATION_ID && mode !== 'agent') {
-      onSwitchMode('agent');
+    if (!enterprise || !isTeamMode || activeSessionId !== NEW_CONVERSATION_ID) {
+      setTeamQuotaHint('');
+      setTeamCreateBlocked(false);
+      return;
     }
-  }, [enterprise, activeSessionId, mode, onSwitchMode]);
+    let cancelled = false;
+    void getTeamQuota()
+      .then((quota) => {
+        if (cancelled) return;
+        const userLimit = quota.teams.limit;
+        const userUsed = quota.teams.used;
+        if (userLimit > 0 && userUsed >= userLimit) {
+          setTeamQuotaHint(t('teams.createUserFull', { limit: userLimit }));
+          setTeamCreateBlocked(true);
+          return;
+        }
+        const orgLimit = quota.org?.limit ?? 0;
+        const orgUsed = quota.org?.used ?? 0;
+        if (orgLimit > 0 && orgUsed >= orgLimit) {
+          setTeamQuotaHint(t('teams.createOrgFull', { limit: orgLimit }));
+          setTeamCreateBlocked(true);
+          return;
+        }
+        const parts = [t('teams.quota', { used: userUsed, limit: userLimit, default: quota.teams.default })];
+        if (quota.org && orgLimit > 0) {
+          parts.push(t('teams.orgQuota', { used: orgUsed, limit: orgLimit }));
+        }
+        setTeamQuotaHint(parts.join(' · '));
+        setTeamCreateBlocked(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTeamQuotaHint(t('teams.quotaUnavailable'));
+        setTeamCreateBlocked(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enterprise, isTeamMode, activeSessionId, t]);
   const isAutoHarnessMode = mode === 'auto_harness';
   const existingTeamGroupSelectionDisabled = Boolean(
     isTeamMode && activeSessionId !== NEW_CONVERSATION_ID && !agentGroupBinding && !agentGroupBindingPending,
@@ -2809,6 +2860,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handleSubmit = useCallback(() => {
     if (composerDisabled || isListening || isTranscribing || modelGroupSendBlocked) return;
+    if (
+      enterprise &&
+      isTeamMode &&
+      (useChatStore.getState().activeSessionId ?? NEW_CONVERSATION_ID) === NEW_CONVERSATION_ID &&
+      teamCreateBlocked
+    ) {
+      if (teamQuotaHint) pushAttachmentAlert(teamQuotaHint);
+      return;
+    }
 
     // 用富文本（含 chip 标记）作为发送内容，气泡可交织渲染技能
     const richContent = extractRichContent();
@@ -2898,6 +2958,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       // 在 session.create 成功、拿到真实 session id 后再落地消息 + 调 onSetGoal
       onSubmit(submitContent, readyMediaItems);
     } else if (isTeamMode) {
+      if (!teamFollowUpLiveReady(enterprise, sid, getTeamSessionLive(), NEW_CONVERSATION_ID)) return;
       onSubmit(submitContent, readyMediaItems);
     } else if (queuePaused && isAgentMode && sid) {
       // 队列已暂停时，弹窗提示用户选择
@@ -2978,6 +3039,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     mode,
     isAgentMode,
     isTeamMode,
+    enterprise,
+    teamCreateBlocked,
+    teamQuotaHint,
     queuePaused,
     goalArmed,
     onSetGoal,
@@ -3003,6 +3067,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       !isListening &&
       !isTranscribing &&
       !modelGroupSendBlocked &&
+      teamLiveReady &&
       (hasTextDraft || hasReadyMedia || selectedSkills.length > 0) &&
       !isLoadingHistory &&
       !isImageInterruptBlocked &&
@@ -5170,9 +5235,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       }
                       setIsModeMenuOpen((open) => !open);
                     }}
-                    disabled={enterprise}
-                    aria-haspopup={enterprise ? undefined : 'menu'}
-                    aria-expanded={enterprise ? undefined : isModeMenuOpen}
+                    aria-haspopup="menu"
+                    aria-expanded={isModeMenuOpen}
                     style={modeLocked ? { cursor: 'default' } : undefined}
                   >
                     <span className="chat-mode-select__value" data-testid="chat-panel-mode-select-value">
@@ -5195,8 +5259,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     )}
                   </button>
 
-                  {!enterprise &&
-                    isModeMenuOpen &&
+                  {isModeMenuOpen &&
                     modeMenuAnchor &&
                     createPortal(
                       <div
@@ -5266,8 +5329,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       </div>,
                       document.body,
                     )}
-                  {!enterprise &&
-                    isModeMenuOpen &&
+                  {isModeMenuOpen &&
                     hoveredOptionDesc &&
                     hoveredOptionRect &&
                     createPortal(
@@ -5286,6 +5348,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       document.body,
                     )}
                 </div>
+                {enterprise && isTeamMode && activeSessionId === NEW_CONVERSATION_ID && teamQuotaHint ? (
+                  <span
+                    className={clsx('chat-team-quota-hint', teamCreateBlocked && 'chat-team-quota-hint--blocked')}
+                    data-testid="chat-panel-team-quota"
+                  >
+                    {teamQuotaHint}
+                  </span>
+                ) : null}
                 {!enterprise && !isTeamMode && (
                   <PermissionSelector
                     mode={mode}

@@ -598,7 +598,14 @@ class SendFileToolkit:
             # it makes delivery uncertain on exceptions, so staged assets must
             # remain valid until TTL instead of being revoked prematurely.
             exposure_started = True
-            if not await send_runtime_push(msg):
+            delivered = await send_runtime_push(msg)
+            if not delivered and is_enterprise():
+                from jiuwenswarm.enterprise.team.session_live import (
+                    publish_team_session_file,
+                )
+
+                delivered = publish_team_session_file(msg)
+            if not delivered:
                 exposure_started = False
                 raise RuntimeError(
                     "send_file_to_user requires an active Runtime push host"
