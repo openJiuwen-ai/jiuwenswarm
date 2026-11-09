@@ -374,9 +374,9 @@ class WorkflowRunState(BaseModel):
     # Private mutable state for ID generation sequencing (not serialized)
     _phase_counter: int = 0  # Global phase counter (1-based)
     _agent_slug_counter: dict[str, int] = {}  # Per-slug agent counter
-    # Last phase entered via agent events (not serialized). Drives phase sealing:
-    # when the next agent event carries a different phase name, the previous
-    # phase is finalized. See ``_switch_to_phase``.
+    # Last phase card entered via agent events (not serialized). Drives phase
+    # sealing across different names and successive same-name iterations.
+    # A card with live agents remains running. See ``_switch_to_phase``.
     _last_phase: Optional[WorkflowPhaseState] = None
 
     model_config = {"arbitrary_types_allowed": True}
@@ -737,7 +737,6 @@ class WorkflowRunState(BaseModel):
         can_seal_prev = (
             prev is not None
             and prev is not target
-            and prev.name != phase_name
             and prev.status == "running"
         )
         if can_seal_prev and self._phase_quiescent(prev):
@@ -1233,6 +1232,8 @@ class WorkflowRunState(BaseModel):
         relaunch_kind = progress.relaunch_kind
         if relaunch_kind == "relaunch":
             self.phases = []
+            # The previous card belongs to the discarded phase tree.
+            self._last_phase = None
             # Drop every terminal leftover from the prior run so the frontend does
             # not show a stale "budget exhausted" / failed badge over the fresh
             # attempt, and the run-level counts rebuild from zero.

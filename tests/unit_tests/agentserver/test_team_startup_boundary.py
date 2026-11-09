@@ -61,7 +61,7 @@ def legacy_team_storage(tmp_path, monkeypatch):
         (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
     view = home / ".agent_teams" / "demo" / "workspaces" / "reader_workspace" / "skills"
     shutil.copytree(library / "skill-a", view / "skill-a")
-    monkeypatch.setattr(bootstrap, "get_user_workspace_dir", lambda: home)
+    monkeypatch.setattr(bootstrap, "get_domain_data_dir", lambda: home)
     monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: library)
     monkeypatch.setattr(utils, "_openjiuwen_skill_library", None)
     previous_home = paths.get_openjiuwen_home()
@@ -112,7 +112,7 @@ def test_team_storage_rebinds_when_workspace_changes(legacy_team_storage, tmp_pa
     bootstrap.prepare_team_storage()
     next_home = tmp_path / "next-home"
     next_library = next_home / "agent" / "workspace" / "skills"
-    monkeypatch.setattr(bootstrap, "get_user_workspace_dir", lambda: next_home)
+    monkeypatch.setattr(bootstrap, "get_domain_data_dir", lambda: next_home)
     monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: next_library)
 
     bootstrap.prepare_team_storage()

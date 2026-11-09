@@ -19,6 +19,7 @@ from jiuwenswarm.server.runtime.session.session_history import HistorySnapshotCh
 from jiuwenswarm.server.runtime.session.session_history import InvalidHistoryCursor
 from jiuwenswarm.server.wire_truncate import _HISTORY_PAGE_SIZE
 from jiuwenswarm.server.wire_truncate import _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+from jiuwenswarm.server.wire_truncate import history_assistant_event_is_restorable
 from jiuwenswarm.server.wire_truncate import _TEAM_HISTORY_DEFAULT_LIMIT
 from jiuwenswarm.server.wire_truncate import _TEAM_HISTORY_DEFAULT_MAX_BYTES
 from jiuwenswarm.server.wire_truncate import _TEAM_HISTORY_MAX_LIMIT
@@ -80,7 +81,7 @@ def _is_restorable_history_record(record: Any) -> bool:
     event_type = record.get("event_type")
     if not event_type:
         return has_content
-    return event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+    return history_assistant_event_is_restorable(record)
 
 
 def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:

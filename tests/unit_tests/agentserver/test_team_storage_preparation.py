@@ -19,7 +19,7 @@ def storage(tmp_path, monkeypatch):
     state = {"home": tmp_path / "home", "library": tmp_path / "skills"}
     previous_home = paths.get_openjiuwen_home()
     previous_library = paths.global_skills_dir()
-    monkeypatch.setattr(bootstrap, "get_user_workspace_dir", lambda: state["home"])
+    monkeypatch.setattr(bootstrap, "get_domain_data_dir", lambda: state["home"])
     monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: state["library"])
     try:
         yield state, bootstrap, paths
@@ -171,7 +171,7 @@ def test_parallel_owners_keep_directory_bindings_during_consumption(storage, mon
     from jiuwenswarm.common import utils
 
     local = threading.local()
-    monkeypatch.setattr(bootstrap, "get_user_workspace_dir", lambda: local.home)
+    monkeypatch.setattr(bootstrap, "get_domain_data_dir", lambda: local.home)
     monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: local.home / "skills")
     migration = Mock()
     monkeypatch.setattr(bootstrap, "migrate_team_skill_views", migration)

@@ -75,6 +75,7 @@ def _server(
     # Heartbeat startup are covered independently by real Worker acceptance.
     server._runtime._initializer = _noop_async
     monkeypatch.setattr(server._heartbeat_runtime, "start", _noop_async)
+    monkeypatch.setattr(server, "_ensure_persistent_group_fanout", _noop_async)
     if activate:
         server._personal_context_host
     monkeypatch.setattr(server, "_schedule_tokenizer_warmup", lambda *_args, **_kwargs: None)
@@ -121,7 +122,7 @@ async def test_agentserver_constructs_one_host_at_deployment_data_home(
     assert _FakePersonalContextHost.instances == []
     host = server._personal_context_host
     assert len(_FakePersonalContextHost.instances) == 1
-    assert _FakePersonalContextHost.instances[0].home == data_home / ".personal_context"
+    assert _FakePersonalContextHost.instances[0].home == data_home / "domain" / ".personal_context"
     assert (
         server._personal_context_host is host is _FakePersonalContextHost.instances[0]
     )  # pylint: disable=protected-access

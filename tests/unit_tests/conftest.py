@@ -18,9 +18,11 @@ functions, hence this hook.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -60,7 +62,7 @@ def _isolate_user_workspace(tmp_path_factory):
     flush_pending_writes = session_metadata.flush_pending_writes
     with pytest.MonkeyPatch.context() as mp:
         data = tmp_path_factory.mktemp("unit_workspace") / ".jiuwenswarm"
-        config_dir = data / "config"
+        config_dir = data / "infra" / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(
             Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml",
@@ -68,6 +70,8 @@ def _isolate_user_workspace(tmp_path_factory):
         )
         mp.setattr(_utils, "_workspace_base_dir", data)
         mp.setattr(_utils, "_initialized", False)
+        for name in ("_config_dir", "_workspace_dir", "_root_dir"):
+            mp.setattr(_utils, name, None)
         mp.setenv("JIUWENSWARM_CONFIG_DIR", str(config_dir))
         # A Gateway operation can resolve either package's cached config path.
         for name in ("agent_gateway.common.config", "jiuwenswarm.common.config"):
@@ -168,3 +172,24 @@ def pytest_runtest_setup(item) -> None:
     else:
         _utils.get_config_file = _REAL_GET_CONFIG_FILE
         _utils.get_agent_workspace_dir = _REAL_GET_AGENT_WORKSPACE_DIR
+
+
+@pytest.fixture(scope="session")
+def event_loop_policy(
+    event_loop_policy: asyncio.AbstractEventLoopPolicy,
+) -> Iterator[asyncio.AbstractEventLoopPolicy]:
+    """Prevent implicit loop creation before pytest-asyncio enters its runner."""
+    if sys.version_info >= (3, 14):
+        yield event_loop_policy
+        return
+
+    # pytest-asyncio looks up the current loop before installing its runner.
+    # On older Python versions, a fresh policy may create an unowned loop on
+    # that lookup. Explicitly start with no current loop in an isolated policy.
+    policy = asyncio.DefaultEventLoopPolicy()
+    policy.set_event_loop(None)
+    asyncio.set_event_loop_policy(policy)
+    try:
+        yield policy
+    finally:
+        asyncio.set_event_loop_policy(event_loop_policy)

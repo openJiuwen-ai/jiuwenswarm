@@ -1488,7 +1488,16 @@ class AgentRuntime:
         ):
             await self._clear_pending_interaction(request.session_id or "default")
         cancellation_drained = True
-        if request.session_id and self._owns_session(request.session_id):
+        # 单 Agent 的 pause 只挂起 ReAct 循环：StreamEventRail 在下一个
+        # checkpoint 阻塞，resume 后同一条流继续产出。协调器取消会直接杀掉
+        # producer 且不产终止帧，前端/Gateway 永远等不到 chat.processing_status。
+        # 团队 pause 仍需取消前台业务流，并由 lifecycle 发布 pause 终态。
+        skip_coordinator_cancel = intent == "pause" and not is_team_request
+        if (
+            request.session_id
+            and self._owns_session(request.session_id)
+            and not skip_coordinator_cancel
+        ):
             target_request_id = str(params.get("target_request_id") or "").strip()
             excluded_execution_ids: tuple[str, ...] = ()
             if is_team_request and intent == "pause":

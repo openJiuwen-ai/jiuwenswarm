@@ -368,6 +368,8 @@ class CommandsManagement:
             )
             if agent is None:
                 raise ValueError("Failed to get agent")
+            # Non-chat commands must build the root instance before compacting.
+            await agent.ensure_instance()
             result_data = await agent.compact_partial(
                 session_id=session_id, turn_index=turn_index, direction=direction
             )

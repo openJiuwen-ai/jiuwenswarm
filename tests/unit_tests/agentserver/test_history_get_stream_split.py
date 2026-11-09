@@ -26,7 +26,7 @@ from jiuwenswarm.server.handlers.session import handle_history_get_stream
 from jiuwenswarm.server.runtime.session.session_history import HistorySnapshotChanged
 from jiuwenswarm.server.wire_truncate import _HISTORY_WIRE_RECORD_MAX_BYTES
 
-from jiuwenswarm.server.management import history as owner_history
+from jiuwenswarm.server.handlers import session as history_handler
 
 
 class FakeWebSocket:
@@ -90,9 +90,9 @@ def _make_history_records() -> list[dict]:
 
 
 def _patch_history(monkeypatch, records: list[dict]) -> None:
-    monkeypatch.setattr(owner_history, "history_exists", lambda session_id, **_kwargs: True)
+    monkeypatch.setattr(history_handler, "history_exists", lambda session_id, **_kwargs: True)
     monkeypatch.setattr(
-        owner_history,
+        history_handler,
         "load_history_records",
         lambda session_id, **_kwargs: records,
     )

@@ -90,3 +90,10 @@ Source 两条启动停顿仍需独立定位，不能归入云端模型波动，�
 本地 PyInstaller 配置中残留的 `gateway/channel_manager/__init__.py` 读取已移除；Gateway 仍由既有 `collect_submodules("agent_gateway")` 收集，不恢复已拆出的源码目录。本次尚未重新构建 Frozen/Electron EXE，不能据此宣称其验收通过。
 
 前端使用与 lockfile 一致的已有完整依赖安装重新构建，Vite 生产构建通过；配置状态、模型草稿、连接重试、Runtime ACK 和中英文资源用例通过。模型推理和设置用例中原基线同样存在的 6 项失败继续保留。证据位于仓库外 `D:/work_space/.codex-temp/startup-pr-delivery-20261110/`；完整单测、远端 CodeCheck/CI 和上述两条 Source 停顿仍未获得通过结论。
+
+后续同步 develop `be95ee9903fccf2188ce90f248f696556a1a13bf`，按上游锁定版本安装 Gateway 435d3323 和协议 4c5f3e9e，在独立环境中完成扩大定向回归：474 项通过。保留数据分区、同名工作流阶段封口、历史通知恢复、压缩前根实例构造和团队启动清理；这些行为放入已提取的实际职责模块，不恢复沉重传输层实现。
+
+同步复查还修正了公开 command.workflows 读取路径对共享轻量 workflow_reader 的遗漏；历史切片测试替身改为实际调用的 Session handler。PersonalContext 测试隔离无关的群聊 fanout 初始化，保留 WebSocket 不等待 PersonalContext 的原行为断言。恢复合并时遗漏的 CUA 设置中英文文案；前端生产构建及五组 53 项定向用例通过，原有 6 项失败在干净的同版 develop 中复现。
+
+新上游 Windows 团队清理锁问题及真实子进程证据见 [B_20261109_2218_team-startup-lock-windows](../enterprise/team/B_20261109_2218_team-startup-lock-windows.md)。新版 Source 真实浏览器至 SDK 协议桩完整回复通过、22 个拥有的进程无残留；并非真实云模型性能采样。
+前述 240 次性能数据仍对应 9f4ddcede 基线与当时固定的 SDK/Gateway，不能当作同步新依赖后的正式性能结果。Source 两条历史准备停顿、冷启动 2.5 秒门槛及完整制品验收继续保留，等待独立复验。
