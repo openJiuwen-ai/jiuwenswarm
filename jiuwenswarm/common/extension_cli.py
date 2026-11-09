@@ -22,6 +22,20 @@ ENV_PREFIX = "JIUWENSWARM_EXTENSION_CLI_"
 Handler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+def merge_query_states(local: Mapping[str, Any], remote: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge Gateway and AgentServer query states for a cross-host query."""
+
+    merged = dict(remote)
+    merged["active"] = list(local.get("active") or []) + list(remote.get("active") or [])
+    merged["installed"] = list(local.get("installed") or []) + list(remote.get("installed") or [])
+    merged["installed_packages"] = (
+        list(local.get("installed_packages") or []) + list(remote.get("installed_packages") or [])
+    )
+    merged["published"] = {**remote.get("published", {}), **local.get("published", {})}
+    merged["inflight"] = {**remote.get("inflight", {}), **local.get("inflight", {})}
+    return merged
+
+
 class ControlError(Exception):
     """A local management failure that contains no connection credentials."""
 

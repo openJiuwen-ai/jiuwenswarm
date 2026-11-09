@@ -86,26 +86,41 @@ async def test_cli_real_zip_install_reload_uninstall(tmp_path: Path, monkeypatch
 
 
 class Peer:
-    def __init__(self, mode: str = "success") -> None:
+    def __init__(self, mode: str = "success", package_id: str = PACKAGE_ID) -> None:
         self.mode = mode
+        self.package_id = package_id
         self.active = False
         self.writes = 0
         self.queries = 0
 
-    def state(self) -> dict[str, Any]:
-        record = {"package_id": PACKAGE_ID, "version": "1.0.0", "generation": 1, "root": "/installed"}
-        return {"active": [record] if self.active else [], "installed": ["/installed"] if self.active else [],
-                "installed_packages": [record] if self.active else []}
+    def state(self, package_id: str | None = None) -> dict[str, Any]:
+        owns_package = package_id in (None, self.package_id)
+        record = {
+            "package_id": self.package_id,
+            "version": "1.0.0",
+            "generation": 1,
+            "root": f"/installed/{self.package_id}",
+        }
+        return {
+            "active": [record] if self.active and owns_package else [],
+            "installed": [record["root"]] if self.active and owns_package else [],
+            "installed_packages": [record] if self.active and owns_package else [],
+        }
 
     async def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if action == "query":
             self.queries += 1
             if self.mode == "query_failed" and self.writes:
                 return {"ok": False, "payload": {"code": "QUERY_FAILED", "error": "query failed"}}
-            return {"ok": True, "payload": {"state": self.state()}}
+            return {"ok": True, "payload": {"state": self.state(params.get("package_id"))}}
         self.writes += 1
         self.active = action != "uninstall"
-        report = {"package_id": PACKAGE_ID, "operation": action, "status": "SUCCESS", "current_generation": 1}
+        report = {
+            "package_id": str(params.get("package_id") or self.package_id),
+            "operation": action,
+            "status": "SUCCESS",
+            "current_generation": 1,
+        }
         if self.mode == "failed":
             report.update(status="FAILED", error={"code": "LOAD_FAILED"})
         elif self.mode == "timeout":
@@ -216,6 +231,69 @@ async def test_same_instance_record_supports_sibling_host(monkeypatch: pytest.Mo
     finally:
         await service.close()
     assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_default_query_merges_active_packages_from_both_hosts() -> None:
+    agent_peer = Peer(package_id="demo.agent")
+    gateway_peer = Peer(package_id="demo.gateway")
+    agent_peer.active = gateway_peer.active = True
+    agent = transport.LocalControl("agent_server", agent_peer.handle)
+    gateway = transport.LocalControl("gateway", gateway_peer.handle)
+    await agent.start()
+    await gateway.start()
+    try:
+        result, code = await invoke("query")
+        assert code == 0 and result["domain"] == "all"
+        assert result["domains"] == ["agentserver", "gateway"]
+        assert {record["package_id"] for record in result["state"]["active"]} == {
+            "demo.agent", "demo.gateway",
+        }
+        assert agent_peer.queries == gateway_peer.queries == 1
+    finally:
+        await gateway.close()
+        await agent.close()
+
+
+@pytest.mark.asyncio
+async def test_default_mutations_follow_web_owner_routing() -> None:
+    agent_peer = Peer(package_id="demo.agent")
+    gateway_peer = Peer(package_id="demo.gateway")
+    agent_peer.active = gateway_peer.active = True
+    agent = transport.LocalControl("agent_server", agent_peer.handle)
+    gateway = transport.LocalControl("gateway", gateway_peer.handle)
+    await agent.start()
+    await gateway.start()
+    try:
+        result, code = await invoke("reload", "demo.gateway")
+        assert code == 0 and result["domain"] == "gateway"
+        assert gateway_peer.writes == 1 and agent_peer.writes == 0
+
+        result, code = await invoke("uninstall", "demo.agent")
+        assert code == 0 and result["domain"] == "agentserver"
+        assert gateway_peer.writes == 1 and agent_peer.writes == 1
+    finally:
+        await gateway.close()
+        await agent.close()
+
+
+@pytest.mark.asyncio
+async def test_default_package_query_follows_web_owner_routing() -> None:
+    agent_peer = Peer(package_id="demo.agent")
+    gateway_peer = Peer(package_id="demo.gateway")
+    agent_peer.active = gateway_peer.active = True
+    agent = transport.LocalControl("agent_server", agent_peer.handle)
+    gateway = transport.LocalControl("gateway", gateway_peer.handle)
+    await agent.start()
+    await gateway.start()
+    try:
+        result, code = await invoke("query", "demo.gateway")
+        assert code == 0 and result["domain"] == "gateway"
+        assert result["state"]["active"][0]["package_id"] == "demo.gateway"
+        assert gateway_peer.queries == 1 and agent_peer.queries == 0
+    finally:
+        await gateway.close()
+        await agent.close()
 
 
 @pytest.mark.asyncio
