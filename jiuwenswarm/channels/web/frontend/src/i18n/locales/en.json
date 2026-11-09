@@ -183,6 +183,7 @@
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
       "duration": "Video duration",
+      "audioDuration": "Audio duration",
       "count": "Count",
       "browseFiles": "Browse files",
       "dropHint": "Or drag into this area",
@@ -199,8 +200,15 @@
     "mediaSettings": {
       "videoTitle": "Video settings",
       "imageTitle": "Image settings",
+      "audioTitle": "Audio settings",
       "durationValue": "{{seconds}}s",
       "durationUnit": "s",
+      "minuteUnit": "min",
+      "secondUnit": "sec",
+      "audioDurationDefault": "Film default duration",
+      "audioDurationMinutes": "{{count}} min",
+      "audioDurationSeconds": "{{count}} sec",
+      "audioDurationBoth": "{{minutes}} min {{seconds}} sec",
       "loading": "Loading generation settings…",
       "loadError": "Could not load generation settings: {{message}}",
       "saveError": "Settings not saved: {{message}}"
@@ -280,7 +288,9 @@
       "deleteConfirmCancel": "Cancel",
       "deleteConfirmOk": "Confirm",
       "resize": "Resize",
-      "resizeHint": "Drag the bottom-right corner to resize this node"
+      "resizeHint": "Drag the bottom-right corner to resize this node",
+      "playAudio": "Play audio",
+      "pauseAudio": "Pause audio"
     },
     "edge": {
       "delete": "Delete connection"
@@ -804,6 +814,7 @@
       "videoConfigTitle": "Configure video understanding model",
       "videoGenConfigTitle": "Configure video generation model",
       "visualGenConfigTitle": "Configure visual generation model",
+      "musicGenConfigTitle": "Configure audio generation model",
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
@@ -1147,6 +1158,10 @@
       "comfyui_workflow_enabled": {
         "title": "ComfyUI workflow integration",
         "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
+      },
+      "music_gen_enabled": {
+        "title": "Audio generation",
+        "description": "Generate background music (BGM) for the design canvas: planning adds a BGM node and compose mixes it in; disabling it keeps the saved model configuration."
       },
       "progressive_tool_optimize": {
         "title": "Enable tool retrieval optimization",
