@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from openjiuwen.core.extension.schema.manifest import PackageDependency
+
 from jiuwenswarm.gateway.extensions_v2.registry import GatewayRegistrar, HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.manifest import (
     DOMAIN_AGENT_SERVER,
@@ -53,6 +55,8 @@ class LoadedPackage:
     display_name: Mapping[str, str] = field(default_factory=dict)
     #: Root module names created by this load; removed from ``sys.modules`` once the activation is released.
     module_names: tuple[str, ...] = ()
+    domain: str = DEFAULT_DOMAIN
+    requires_packages: tuple[PackageDependency, ...] = ()
 
 
 def load_gateway_packages(install_dir: Path) -> list[LoadedPackage]:
@@ -107,6 +111,8 @@ def _package_from(
         client=manifest["client"],
         display_name=manifest["display_name"],
         module_names=module_names,
+        domain=manifest["domain"],
+        requires_packages=manifest["requires"],
     )
 
 
@@ -151,6 +157,7 @@ def _read_manifest(root: Path) -> dict[str, Any]:
         "ui": _optional_mapping(raw.get("ui"), "ui"),
         "client": _optional_mapping(raw.get("client"), "client"),
         "display_name": _display_name(raw.get("display")),
+        "requires": _requires(raw.get("requires")),
     }
 
 
@@ -175,6 +182,32 @@ def _display_name(display: object) -> dict[str, str]:
     if not names:
         return {}
     return {"zh": names.get("zh") or names["en"], "en": names.get("en") or names["zh"]}
+
+
+def _requires(value: object) -> tuple[PackageDependency, ...]:
+    """Read ``requires.packages`` declarations; a broken entry fails the load."""
+
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise ValueError("requires must be a mapping")
+    packages = value.get("packages")
+    if packages is None:
+        return ()
+    if not isinstance(packages, list):
+        raise ValueError("requires.packages must be a list")
+    declarations: list[PackageDependency] = []
+    for item in packages:
+        if not isinstance(item, Mapping):
+            raise ValueError("each requires.packages item must be a mapping")
+        package_id = item.get("id")
+        version = item.get("version")
+        if not isinstance(package_id, str) or not package_id.strip():
+            raise ValueError("each requires.packages item needs an id")
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError("each requires.packages item needs a version")
+        declarations.append(PackageDependency(package_id.strip(), version.strip()))
+    return tuple(declarations)
 
 
 def _optional_mapping(value: object, field_name: str) -> Mapping[str, Any]:

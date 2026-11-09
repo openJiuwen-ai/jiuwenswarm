@@ -36,6 +36,7 @@ from openjiuwen.core.events import (
     PackageMetadata,
     SessionContext,
 )
+from openjiuwen.core.extension.schema.records import ActivePackageRecord
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events.ops_impl.store import configure_store, store_call, unconfigure_store
@@ -99,6 +100,8 @@ class GatewayRuntime:
         self._ops_owner: weakref.WeakKeyDictionary[Any, _Activation] = weakref.WeakKeyDictionary()
         # Handler and data calls in flight per package, across activations (S_01 invariant 12).
         self._inflight: dict[str, int] = {}
+        # Publication counter per package: the integer generation the shared install report records.
+        self._generations: dict[str, int] = {}
         # Prepared switches not yet committed or aborted (S_01 section 3.2); shutdown ends them.
         self._prepared: set[PreparedPackage] = set()
         # Set for good by shutdown: nothing more is prepared, and a runtime does not start twice.
@@ -135,15 +138,26 @@ class GatewayRuntime:
         self._bind_package_data()
         self.browser.splash_preferences.load()
         await self.bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
-        for package in load_gateway_packages(self.config.install_dir):
-            try:
-                self.publish(package)
-            except Exception as exc:  # noqa: BLE001 - one bad package must not block startup
+        if self.config.report_path is not None:
+            await self.packages.init(host_version=_host_version())
+            reports = await self.packages.load_installed()
+            failed = [report for report in reports if report.status != "SUCCESS"]
+            if failed:
                 logger.warning(
-                    "[GatewayExtensions] skip package %s at startup: %s",
-                    package.package_id,
-                    exc,
+                    "[GatewayExtensions] %d package(s) did not start: %s",
+                    len(failed),
+                    ", ".join(report.package_id for report in failed),
                 )
+        else:
+            for package in load_gateway_packages(self.config.install_dir):
+                try:
+                    self.publish(package)
+                except Exception as exc:  # noqa: BLE001 - one bad package must not block startup
+                    logger.warning(
+                        "[GatewayExtensions] skip package %s at startup: %s",
+                        package.package_id,
+                        exc,
+                    )
         await self.browser.transfers.purge(tuple(self._activations))
         self._started = True
         logger.info(
@@ -156,6 +170,11 @@ class GatewayRuntime:
     async def shutdown(self) -> None:
         """Unregister every handler and drop in-process state."""
 
+        if self._management is not None:
+            try:
+                await self._management.begin_shutdown()
+            except Exception as exc:  # noqa: BLE001 - shutdown must keep going
+                logger.warning("[GatewayExtensions] cannot mark the install report stopping: %s", exc)
         # No switch is prepared from here on, and one prepared earlier can no longer commit.
         self._closed = True
         for prepared in self._prepared:
@@ -180,6 +199,11 @@ class GatewayRuntime:
         self.browser.connections.clear()
         self.browser.appearance.clear()
         self.browser.transfers.clear()
+        if self._management is not None:
+            try:
+                await self._management.close()
+            except Exception as exc:  # noqa: BLE001 - a broken report must not block shutdown
+                logger.warning("[GatewayExtensions] cannot release the install report: %s", exc)
         self._started = False
 
     @property
@@ -205,6 +229,10 @@ class GatewayRuntime:
                 self,
                 self.config.install_dir,
                 recovery_data_dir=self.config.recovery_data_dir,
+                report_path=self.config.report_path,
+                poll_interval=self.config.poll_interval,
+                dependency_timeout=self.config.dependency_timeout,
+                lock_timeout=self.config.lock_timeout,
             )
         return self._management
 
@@ -278,6 +306,7 @@ class GatewayRuntime:
         self.unpublish(package.package_id)
         activation.registered = registered
         self._activations[package.package_id] = activation
+        self._generations[package.package_id] = self._generations.get(package.package_id, 0) + 1
         self.browser.published(package.package_id)
 
     def abort(self, prepared: PreparedPackage) -> None:
@@ -496,6 +525,42 @@ class GatewayRuntime:
         """Return the packages currently published on this runtime."""
 
         return tuple(activation.package for activation in self._activations.values())
+
+    def active_package_records(self) -> tuple[ActivePackageRecord, ...]:
+        """Facts used by install and dependency validation."""
+
+        return tuple(
+            ActivePackageRecord(
+                package_id=activation.package.package_id,
+                version=activation.package.version,
+                root=activation.package.root,
+                generation=self._generations.get(activation.package_id, 1),
+                requires_packages=activation.package.requires_packages,
+                domain=activation.package.domain,
+            )
+            for activation in self._activations.values()
+        )
+
+    def active_record(self, package_id: str) -> ActivePackageRecord | None:
+        """Return one published package record, if any."""
+
+        for record in self.active_package_records():
+            if record.package_id == package_id:
+                return record
+        return None
+
+    def inflight_count(self, package_id: str) -> int:
+        """Handlers and data calls of one package currently executing."""
+
+        return self._inflight.get(package_id, 0)
+
+    def published_handlers(self, package_id: str) -> list[str]:
+        """Event types registered by one active package."""
+
+        activation = self._activations.get(package_id)
+        if activation is None:
+            return []
+        return [declaration.event_type for declaration in activation.package.handlers]
 
     # ── trigger point: gateway.request ────────────────────────────────────
 
@@ -805,3 +870,14 @@ def _async_handler(handler: Callable[..., Any], activation: _Activation) -> Call
             activation.leave()
 
     return adapter
+
+
+def _host_version() -> str | None:
+    """Host version recorded in the install report."""
+
+    try:
+        from importlib.metadata import version
+
+        return version("jiuwenswarm")
+    except Exception:  # noqa: BLE001 - a source checkout may not be installed
+        return None
