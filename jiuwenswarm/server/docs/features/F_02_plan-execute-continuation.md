@@ -30,7 +30,11 @@ project_dir/work_mode/agent_scope 抄自原请求，query/display_query 为服�
 `source=plan_execute_continuation` 回显用户气泡（heartbeat automation 回显同款）。
 
 会话忙（`is_deep_agent_executing_for_session`，理论上批准轮已收尾不应发生）按 2s×3 次
-退避重试后放弃并留日志，用户可手动补发。执行轮自身的失败按普通轮次错误路径呈现。
+退避重试后放弃并留日志，用户可手动补发。执行轮自身的失败（`process_message_stream`
+中途抛异常）补推 `chat.error` + `chat.processing_status{is_processing:false}` 终态帧：
+续跑由 server 发起，前端没有本地 `chat.send` 的 15s 超时兜底，缺终态帧会停在
+processing=true（2026-11-09 评审补充）。后台续跑 task 由模块级集合持强引用防 GC
+（asyncio 官方要求保存 `create_task` 返回值），done 回调自清理，取消语义不变。
 
 TUI 不受影响（纯 approve 同轮继续）；不新增协议方法与请求参数；agent-core 零改动
 （`restore_mode_after_plan_exit` 保留 plan_slug 的两阶段设计即本特性的前置）。

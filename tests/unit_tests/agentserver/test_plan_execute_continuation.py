@@ -112,6 +112,7 @@ async def _run_pending_tasks():
     await asyncio.sleep(_GRACE * 5)
     await asyncio.sleep(0)
 
+@pytest.mark.asyncio
 
 async def test_schedule_is_idempotent_per_approval_round(monkeypatch):
     """同一审批轮重复触发（双事件/对账并发）→ 续跑恰好一次（issue 测试计划 1）。"""
@@ -127,6 +128,7 @@ async def test_schedule_is_idempotent_per_approval_round(monkeypatch):
     assert run_stream.await_count == 1
     assert pec._pending == {}
 
+@pytest.mark.asyncio
 
 async def test_non_execute_answers_never_schedule(monkeypatch):
     """TUI approve / 跳过 / 修订不含 plan_execute 取值 → 不登记（状态隔离）。"""
@@ -142,6 +144,7 @@ async def test_non_execute_answers_never_schedule(monkeypatch):
     assert run_stream.await_count == 0
     assert pec._pending == {}
 
+@pytest.mark.asyncio
 
 async def test_normal_message_cancels_pending(monkeypatch):
     """grace 窗口内普通消息到达 → 取消续跑，由该消息充当执行消息。"""
@@ -157,6 +160,7 @@ async def test_normal_message_cancels_pending(monkeypatch):
     assert run_stream.await_count == 0
     assert pec._pending == {}
 
+@pytest.mark.asyncio
 
 async def test_cancel_other_session_is_noop(monkeypatch):
     run_stream = AsyncMock()
@@ -189,6 +193,7 @@ class _FakeAgent:
         for chunk in self._chunks:
             yield chunk
 
+@pytest.mark.asyncio
 
 async def test_continuation_request_fields_and_pushes():
     """合成请求字段 + 回显帧/chunk 推送次序（issue 测试计划 2 的服务端侧）。"""
@@ -237,6 +242,7 @@ async def test_continuation_request_fields_and_pushes():
 
 
 # ── busy 避让与语言 ─────────────────────────────────────────────────────────
+@pytest.mark.asyncio
 
 async def test_busy_session_gives_up_after_retries(monkeypatch):
     """会话持续忙 → 退避重试后放弃并清记账，不代发。"""
@@ -257,25 +263,90 @@ async def test_busy_session_gives_up_after_retries(monkeypatch):
     assert run_stream.await_count == 0
     assert pec._pending == {}
 
+@pytest.mark.asyncio
 
+@pytest.mark.asyncio
 async def test_resolve_language_prefers_agent_builder(monkeypatch):
+    """builder 挂在 adapter._instance 上（真实形状，评审 2026-11-09）：
+    adapter 自身无 system_prompt_builder，直接读恒 None 恒回退 cn。"""
     en_agent = SimpleNamespace()
     monkeypatch.setattr(
         AgentWebSocketServer,
         "resolve_adapter",
         staticmethod(
             lambda agent: SimpleNamespace(
-                system_prompt_builder=SimpleNamespace(language="en")
+                _instance=SimpleNamespace(
+                    system_prompt_builder=SimpleNamespace(language="en")
+                )
             )
         ),  # noqa: ARG005
     )
     assert pec._resolve_language(en_agent) == "en"
+    # _instance 上 builder 为 None / adapter 无 _instance → 回退 cn
+    monkeypatch.setattr(
+        AgentWebSocketServer,
+        "resolve_adapter",
+        staticmethod(
+            lambda agent: SimpleNamespace(
+                _instance=SimpleNamespace(system_prompt_builder=None)
+            )
+        ),  # noqa: ARG005
+    )
+    assert pec._resolve_language(en_agent) == "cn"
     monkeypatch.setattr(
         AgentWebSocketServer,
         "resolve_adapter",
         staticmethod(lambda agent: SimpleNamespace()),  # noqa: ARG005
     )
     assert pec._resolve_language(en_agent) == "cn"
+
+
+@pytest.mark.asyncio
+async def test_continuation_failure_pushes_terminal_frames(monkeypatch):
+    """执行流抛异常 → 补推 chat.error + processing_status=false 终态帧。
+
+    续跑无本地 chat.send 超时兜底，缺终态帧前端停在 processing=true
+    （评审 2026-11-09）。走完整 _grace_then_run 路径（grace/退避已被
+    fixture 压到毫秒级）。
+    """
+    agent = _FakeAgent([])
+
+    async def _boom(request):
+        agent.requests.append(request)
+        raise RuntimeError("quota exceeded")
+        yield  # pragma: no cover
+
+    agent.process_message_stream = _boom
+    monkeypatch.setattr(pec, "_wait_until_session_idle", AsyncMock(return_value=True))
+    ctx = SimpleNamespace(services=SimpleNamespace(send_push=AsyncMock()))
+    plan = pec._ContinuationPlan(
+        key="sess-plan-1:call_1",
+        session_id="sess-plan-1",
+        channel_id="web",
+        round_id="call_1",
+        plan_slug="slug-1",
+        mode="code.normal",
+        query="计划已批准，请按计划开始执行。",
+        copied_params={},
+    )
+    pec._pending[plan.key] = plan
+
+    await pec._grace_then_run(ctx, agent, plan)
+    await _run_pending_tasks()
+
+    pushes = ctx.services.send_push.await_args_list
+    event_types = [call.args[0]["payload"].get("event_type") for call in pushes]
+    assert "chat.error" in event_types
+    assert "chat.processing_status" in event_types
+    error_frame = pushes[event_types.index("chat.error")].args[0]
+    assert error_frame["payload"]["error"] == "quota exceeded"
+    assert error_frame["session_id"] == "sess-plan-1"
+    assert error_frame["request_id"].startswith("plan_execute_continuation_call_1_")
+    status_frame = pushes[event_types.index("chat.processing_status", 1)].args[0]
+    assert status_frame["payload"]["is_processing"] is False
+    # 两帧共用同一 request_id，前端可对齐
+    assert status_frame["request_id"] == error_frame["request_id"]
+    assert pec._pending == {}
 
 
 # ── 编排挂点：_check_post_process_plan_exit ────────────────────────────────
@@ -313,6 +384,7 @@ async def _check_plan_exit(request, *, mode="normal"):
         _shared._plan_active_sessions.discard(request.session_id)
     return server
 
+@pytest.mark.asyncio
 
 async def test_check_post_process_schedules_for_plan_execute(monkeypatch):
     """批准轮检出 plan→normal 且载荷含 plan_execute → 登记续跑（编排挂点）。"""
@@ -329,6 +401,7 @@ async def test_check_post_process_schedules_for_plan_execute(monkeypatch):
     pushed_events = [call.args[0]["payload"].get("event_type") for call in server.send_push.await_args_list]
     assert "plan.mode_exited" in pushed_events
 
+@pytest.mark.asyncio
 
 async def test_check_post_process_is_idempotent_and_isolated(monkeypatch):
     """重复 post-process 只登记一次；非 plan_execute 载荷与 plan 态不登记。"""
