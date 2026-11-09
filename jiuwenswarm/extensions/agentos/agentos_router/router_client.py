@@ -188,7 +188,6 @@ class _SandboxAttempt:
     deterministic_id: str
     create: Callable[[], Awaitable[SandboxInfo]]
     sandbox: SandboxInfo | None = None
-    post_uncertain: bool = False
 
 
 @dataclass
@@ -3212,17 +3211,20 @@ class AgentOSRouterClient(AgentServerClient):
                 raise AgentRebuildPending("AGENT_REBUILD_PENDING: old sandbox deletion was rejected")
         return False
 
-    async def _post_sandbox_attempt(self, attempt: _SandboxAttempt, deadline: float) -> None:
-        attempt.post_uncertain = True
+    async def _post_sandbox_attempt(
+        self, lifecycle: _SandboxLifecycle, attempt: _SandboxAttempt, deadline: float,
+    ) -> None:
         try:
             async with asyncio.timeout_at(deadline):
                 attempt.sandbox = await attempt.create()
         except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
         except (ValueError, YuanrongAgentApiError) as exc:
-            attempt.post_uncertain = False
+            # Retire this name so the next request starts a new generation instead of replaying a refused create.
+            lifecycle.retired_instance = attempt.deterministic_id
+            lifecycle.attempt = None
+            await self._request_sandbox_delete(lifecycle)
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement creation was rejected") from exc
-        attempt.post_uncertain = False
 
     async def _provision_sandbox(
         self,
@@ -3235,26 +3237,23 @@ class AgentOSRouterClient(AgentServerClient):
             except YuanrongAgentRequestNotSentError as exc:
                 raise AgentRebuildPending("AGENT_REBUILD_PENDING: create request was not sent") from exc
             except (YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
-                attempt.post_uncertain = True
+                # Keep this attempt so later callers replay the same name
+                # instead of minting a generation that could orphan this POST.
                 lifecycle.attempt = attempt
                 raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
             except asyncio.CancelledError:
-                attempt.post_uncertain = True
                 lifecycle.attempt = attempt
                 raise
 
         deadline = asyncio.get_running_loop().time() + self._probe_settings.wait_running_timeout_seconds
         lifecycle.attempt = attempt
-        if attempt.post_uncertain:
-            # Recover an unknown create by looking up its original generation.
-            instance_id = attempt.deterministic_id
-            sandbox = SandboxInfo(instance_id, metadata={"instance_id": instance_id})
-        else:
-            if attempt.sandbox is None:
-                if lifecycle.retired_instance:
-                    await self._wait_for_retired_sandbox(lifecycle, deadline)
-                await self._post_sandbox_attempt(attempt, deadline)
-            sandbox = attempt.sandbox
+        if attempt.sandbox is None:
+            if lifecycle.retired_instance:
+                await self._wait_for_retired_sandbox(lifecycle, deadline)
+            # YuanRong derives the instance ID from the name and returns the existing instance
+            # on a repeated create (AGENT_REUSE_EXISTING_INSTANCE), so a replay cannot start a second one.
+            await self._post_sandbox_attempt(lifecycle, attempt, deadline)
+        sandbox = attempt.sandbox
         if sandbox.sandbox_id == lifecycle.retired_instance:
             # A delayed DELETE still targets this ID even if its marker
             # changed. Never publish it as a replacement.
@@ -3273,7 +3272,7 @@ class AgentOSRouterClient(AgentServerClient):
             await self._request_sandbox_delete(lifecycle)
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox failed to start") from exc
         except YuanrongAgentNotVisibleError as exc:
-            if not attempt.post_uncertain and sandbox.sandbox_id == attempt.deterministic_id:
+            if sandbox.sandbox_id == attempt.deterministic_id:
                 # A later caller can retry this same physical name after
                 # the acknowledged instance remains invisible.
                 attempt.sandbox = None
