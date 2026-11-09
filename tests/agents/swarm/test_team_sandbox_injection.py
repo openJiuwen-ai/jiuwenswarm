@@ -178,3 +178,25 @@ def test_double_enrich_keeps_ids_stable(_sandbox_enabled) -> None:
     _build_member_sandbox_specs({"react": {"evolution": {}}}, spec, session_id="sess-1")
     second = {n: s.sys_operation.id for n, s in spec.agents.items()}
     assert first == second  # deterministic derivation: concurrent/rerun enrich is id-stable
+
+
+def test_injected_specs_survive_serialization_roundtrip(_sandbox_enabled) -> None:
+    spec = _make_team_spec()
+    spec.agents["browser-usd-sgd"] = DeepAgentSpec()
+    spec.reviewer_agent = DeepAgentSpec()
+    _build_member_sandbox_specs({"react": {"evolution": {}}}, spec, session_id="sess-1")
+    original_ids = {n: s.sys_operation.id for n, s in spec.agents.items()}
+
+    # dict round-trip (from_spawn_payload path: payload.py model_dump -> team_agent.py model_validate)
+    restored = TeamAgentSpec.model_validate(spec.model_dump(mode="json", exclude={"build_context"}))
+    for name, oid in original_ids.items():
+        assert restored.agents[name].sys_operation is not None
+        assert restored.agents[name].sys_operation.id == oid
+        assert restored.agents[name].sys_operation.mode == OperationMode.SANDBOX
+
+    # json round-trip (the entry !9041's monkey patch missed)
+    restored2 = TeamAgentSpec.model_validate_json(spec.model_dump_json(exclude={"build_context"}))
+    assert restored2.agents["leader"].sys_operation.id == original_ids["leader"]
+
+    # reviewer keeps the shared teammate id across the boundary too
+    assert restored.reviewer_agent.sys_operation.id == original_ids["teammate"]
