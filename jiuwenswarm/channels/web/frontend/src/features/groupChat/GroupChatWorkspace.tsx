@@ -459,7 +459,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   }
   const timeline = groupTimeline(messages, executions);
 
-  const visibleMembers = group?.members.filter((member) => `${member.display_name ?? ''} ${member.member_name}`
+  const visibleMembers = group?.members.filter((member) => (member.display_name ?? '')
     .toLocaleLowerCase().includes(memberQuery.trim().toLocaleLowerCase())) ?? [];
   const showSelf = !memberQuery.trim() || t('groupChat.you').includes(memberQuery.trim());
   const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
