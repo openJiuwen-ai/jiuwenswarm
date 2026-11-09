@@ -14,7 +14,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.message import ReqMethod
+from openjiuwen_protocol.message import EventType, ReqMethod
+
 from agent_gateway.cron.models import CronJob, CronRunState
 from agent_gateway.cron.scheduler import (
     CRON_INTERRUPT_RESULT_TEXT,
@@ -1179,7 +1180,7 @@ class TestHandleEventStoreValidation:
         assert content == "result: 9am now"
 
     @pytest.mark.asyncio
-    async def test_web_push_update_stays_silent(self, tmp_path):
+    async def test_web_push_update_broadcasts_result(self, tmp_path):
         store_file = tmp_path / "cron_jobs.json"
         store = CronJobStore(path=store_file)
         job = await _create_one_job(store, targets="web")
@@ -1197,9 +1198,16 @@ class TestHandleEventStoreValidation:
         ev = _Event(at_ts=time.time(), seq=1, kind="push_update", job_id=job.id, run_id=run_id)
         await svc.handle_event(ev)
 
-        # Run-status notifications are disabled: web runs deliver results
-        # through the execution session only, so push_update stays silent.
-        assert handler.published == []
+        # Web push_update broadcasts the final result (chat.final with an
+        # empty session_id and payload.cron routing) instead of staying
+        # silent: the personal WS edition has no other delivery path.
+        assert len(handler.published) == 1
+        broadcast = handler.published[0]
+        assert broadcast.event_type == EventType.CHAT_FINAL
+        assert broadcast.session_id is None
+        assert broadcast.payload["content"] == "web result"
+        assert broadcast.payload["cron"]["status"] == "succeeded"
+        assert broadcast.payload["cron"]["job_id"] == job.id
 
     @pytest.mark.asyncio
     async def test_wake_executes_normally_when_job_present(self, tmp_path):
