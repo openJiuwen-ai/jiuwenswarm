@@ -348,7 +348,7 @@ async def _team_list_entries(session_id: str, channel_id: str) -> list[dict[str,
         pending_name = vars(team_manager).get("_pending_team_names", {}).get(session_id)
         if pending_name:
             _upsert(pending_name, state="pending", source="manager")
-        metadata = get_session_metadata(session_id) or {}
+        metadata = get_session_metadata(session_id, cache_bust=True) or {}
         metadata_team_name = str(metadata.get("team_name") or "").strip()
         if metadata_team_name:
             _upsert(
@@ -368,10 +368,21 @@ async def _team_list_entries(session_id: str, channel_id: str) -> list[dict[str,
 
 
 async def handle_team_list(ctx: RequestContext) -> None:
-    """列出这个会话里的团队，给团队选择器用。"""
+    """列出这个会话里的团队，给团队选择器用。
+
+    团队管理页不带 session_id，这时返回调用者名下的控制面团队，
+    而不是一个空的临时会话。
+    """
     request = ctx.request
     params = request.params if isinstance(request.params, dict) else {}
-    session_id = str(params.get("session_id") or request.session_id or "").strip()
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        from jiuwenswarm.enterprise.team.handlers import (
+            handle_team_list as handle_team_catalog,
+        )
+
+        await handle_team_catalog(ctx)
+        return
     channel_id = request.channel_id or "web"
     teams: list[dict[str, Any]] = []
     try:

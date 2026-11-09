@@ -160,21 +160,24 @@ def import_routes(path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.common.utils import get_infra_data_dir, get_user_workspace_dir
 
     parser = argparse.ArgumentParser(
         description="Import team SQLite rows into Gateway MySQL"
     )
     workspace = get_user_workspace_dir()
+    infra = get_infra_data_dir()
+    control_db = infra / "agent" / "teams" / "team_control.db"
+    route_db = infra / "gateway" / "team_route_bindings.db"
     parser.add_argument(
         "--control-db",
         type=Path,
-        default=workspace / "agent" / "teams" / "team_control.db",
+        default=control_db if control_db.exists() else workspace / "agent" / "teams" / "team_control.db",
     )
     parser.add_argument(
         "--route-db",
         type=Path,
-        default=workspace / "gateway" / "team_route_bindings.db",
+        default=route_db if route_db.exists() else workspace / "gateway" / "team_route_bindings.db",
     )
     args = parser.parse_args(argv)
     if not use_team_mysql():

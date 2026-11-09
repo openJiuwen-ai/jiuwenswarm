@@ -43,10 +43,28 @@ def test_mapped_routes_for_edition_strips_a2a_ingress(mapped_mod: ModuleType) ->
     enterprise = mapped_mod.mapped_routes_for_edition(enterprise=True)
     assert any("/a2a/ingress" in r.path for r in personal)
     assert not any("/a2a/ingress" in r.path for r in enterprise)
+    assert not any(r.rpc_method == "team.create" for r in personal)
+    assert any(r.rpc_method == "team.create" for r in enterprise)
     assert not any("/a2a/outbound" in r.path for r in personal)
     assert not any("/a2a/outbound" in r.path for r in enterprise)
     assert not any(r.path.startswith("/agent-templates") for r in personal)
     assert any(r.path == "/agent-templates" for r in enterprise)
+    assert not any(r.path.startswith("/agent-groups") for r in personal)
+    assert any(r.path == "/agent-groups" for r in enterprise)
+    control_methods = {
+        "team.create",
+        "team.get",
+        "team.stop",
+        "team.member.join",
+        "team.member.leave",
+        "team.members.list",
+        "team.quota.get",
+    }
+    assert mapped_mod._ENTERPRISE_TEAM_CONTROL_METHODS == frozenset(control_methods)
+    personal_methods = {route.rpc_method for route in personal}
+    enterprise_methods = {route.rpc_method for route in enterprise}
+    assert control_methods.isdisjoint(personal_methods)
+    assert control_methods <= enterprise_methods
 
 
 def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -266,3 +284,21 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     assert client.get("/api/v1/connection/status").status_code == 200
     assert client.post("/api/v1/sessions", json={}).status_code == 201
     assert [call.kwargs["method"] for call in dispatch.await_args_list] == ["connection.status", "session.create"]
+
+    dispatch.reset_mock()
+    searched = client.get(
+        "/api/v1/agent-templates",
+        params={"filter": "builtin+hub", "query": "英语", "cache_mode": "prefer_cache", "refresh": "true"},
+    )
+    assert searched.status_code == 200
+    forwarded = dispatch.await_args.kwargs["params"]
+    assert dispatch.await_args.kwargs["method"] == "agent_templates.list"
+    assert forwarded["filter"] == "builtin+hub"
+    assert forwarded["query"] == "英语"
+    assert forwarded["cache_mode"] == "prefer_cache"
+    assert forwarded["refresh"] is True
+
+    dispatch.reset_mock()
+    plain = client.get("/api/v1/agent-templates", params={"filter": "builtin+hub"})
+    assert plain.status_code == 200
+    assert "query" not in dispatch.await_args.kwargs["params"]
