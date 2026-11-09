@@ -13444,10 +13444,12 @@ class JiuWenSwarmDeepAdapter:
         self._config_cache = config_base.get("react", {}).copy()
         # Prompt/tool sets may have changed. Drop the guard's derived caches
         # (and the prompt cache shared with context usage) so it never judges
-        # the next request against the previous configuration.
+        # the next request against the previous configuration. Assign a fresh
+        # dict instead of clearing in place: reload is also exercised on
+        # adapters constructed without ``__init__``.
         self._last_system_prompt = ""
         self._input_guard_tools_cache = None
-        self._input_guard_overhead_cache.clear()
+        self._input_guard_overhead_cache = {}
         return config_base
 
     async def _apply_multimodal_reload_snapshot(
@@ -16039,30 +16041,13 @@ class JiuWenSwarmDeepAdapter:
         )
         # Match the sibling call sites (``get_context_usage`` and the usage
         # fallback) by passing the selected model's captured context window.
-        # The override must come from the session adapter, never from the
-        # root's startup model, or a session on another model is judged with
-        # the wrong window. It is also ignored when the cached adapter still
-        # belongs to a previous model (a model switch before the child is
-        # rebuilt), because then its captured window is the old model's.
-        model_window_override = None
-        if effective is not None:
-            candidate_override = getattr(
-                effective, "_selected_model_context_window_tokens", None
-            )
-            actual_model = ""
-            resolve_name = getattr(effective, "_resolve_model_name", None)
-            if callable(resolve_name):
-                try:
-                    actual_model = str(resolve_name() or "")
-                except Exception:  # noqa: BLE001 - diagnostics must not block
-                    actual_model = ""
-            if not (
-                model_name
-                and actual_model
-                and actual_model != "unknown"
-                and actual_model != model_name
-            ):
-                model_window_override = candidate_override
+        # The session adapter decides whether that value belongs to this model;
+        # the root's startup model value is never used.
+        model_window_override = (
+            effective.input_guard_model_window_override(model_name)
+            if effective is not None
+            else None
+        )
         try:
             window = resolve_context_window_tokens(
                 model_name,
@@ -16093,8 +16078,10 @@ class JiuWenSwarmDeepAdapter:
             ):
                 reserved = raw_max_tokens
 
-        live = await self._input_guard_live_costs(
-            effective, request.session_id, model_name
+        live = (
+            await effective.input_guard_live_costs(request.session_id, model_name)
+            if effective is not None
+            else None
         )
         if live is None:
             cached_overhead = self._input_guard_overhead_cache.get(model_name or "")
@@ -16107,6 +16094,14 @@ class JiuWenSwarmDeepAdapter:
             token_counter = None
         else:
             system_tokens, tools_tokens, token_counter = live
+            overhead = system_tokens + tools_tokens
+            if model_name and overhead > 0:
+                # Keep the largest measurement seen for this model: the first
+                # live check can run before every rail has contributed its
+                # prompt section, and caching that transiently small value
+                # would make the later static path too lenient.
+                previous = self._input_guard_overhead_cache.get(model_name, 0)
+                self._input_guard_overhead_cache[model_name] = max(previous, overhead)
 
         return (
             InputBudget(
@@ -16119,37 +16114,38 @@ class JiuWenSwarmDeepAdapter:
             model_name,
         )
 
-    async def _input_guard_live_costs(
+    @staticmethod
+    def _input_guard_models_differ(session_model: str, live_model: str) -> bool:
+        """Whether a live adapter's model is a different, known model."""
+        if not session_model or not live_model or live_model == "unknown":
+            return False
+        return session_model != live_model
+
+    def input_guard_model_window_override(self, model_name: str) -> int | None:
+        """Return this adapter's captured window when it belongs to ``model_name``."""
+        if self._input_guard_models_differ(model_name, self._resolve_model_name()):
+            return None
+        return getattr(self, "_selected_model_context_window_tokens", None)
+
+    async def input_guard_live_costs(
         self,
-        adapter: "JiuWenSwarmDeepAdapter | None",
         session_id: str,
         model_name: str,
     ) -> tuple[int, int, Any] | None:
-        """Return live system/tool token counts from the session adapter.
+        """Return this adapter's live system/tool token counts.
 
-        Only the cached session child is usable: the root adapter may hold an
-        instance built with the startup default model, whose prompt and tool
-        set do not describe this session. A model mismatch falls back to the
-        fixed overhead. A successful measurement is cached per model so later
-        static checks can use the real overhead instead of the configured
-        estimate.
+        Called on the effective session adapter; a model mismatch (for example
+        a stale child after a model switch) falls back to the fixed overhead.
         """
-        if adapter is None:
-            return None
-        instance = getattr(adapter, "_instance", None)
+        instance = getattr(self, "_instance", None)
         if instance is None:
             return None
         react_agent = getattr(instance, "react_agent", None)
         if react_agent is None:
             return None
 
-        actual_model = adapter._resolve_model_name()
-        if (
-            model_name
-            and actual_model
-            and actual_model != "unknown"
-            and actual_model != model_name
-        ):
+        actual_model = self._resolve_model_name()
+        if self._input_guard_models_differ(model_name, actual_model):
             logger.info(
                 "[InputGuard] live adapter model=%s does not match session model=%s; "
                 "using fixed overhead",
@@ -16173,19 +16169,11 @@ class JiuWenSwarmDeepAdapter:
                     logger.debug("[InputGuard] token counter unavailable", exc_info=True)
                     token_counter = None
 
-        system_tokens = estimate_text_tokens(
-            adapter._get_agent_system_prompt(), token_counter
+        return (
+            estimate_text_tokens(self._get_agent_system_prompt(), token_counter),
+            await self._input_guard_tools_tokens(react_agent, token_counter),
+            token_counter,
         )
-        tools_tokens = await adapter._input_guard_tools_tokens(react_agent, token_counter)
-        overhead = system_tokens + tools_tokens
-        if model_name and overhead > 0:
-            # Keep the largest measurement seen for this model: the first
-            # live check can run before every rail has contributed its prompt
-            # section, and caching that transiently small value would make the
-            # later static path too lenient. Reload clears this cache.
-            previous = self._input_guard_overhead_cache.get(model_name, 0)
-            self._input_guard_overhead_cache[model_name] = max(previous, overhead)
-        return system_tokens, tools_tokens, token_counter
 
     def _input_guard_model_config(
         self,
