@@ -18,6 +18,7 @@ from typing import Any, AsyncIterator
 from zipfile import BadZipFile, ZipFile
 
 from jiuwenswarm.common import extension_cli as control
+from jiuwenswarm.common.extension_cli import merge_query_states
 
 PACKAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 UNCERTAIN_CODES = frozenset({
@@ -50,11 +51,12 @@ def valid_id(value: str) -> str:
 
 @dataclass(frozen=True)
 class Settings:
+    domain: str
     context: dict[str, Any]
     timeout: float
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> Settings:
+    def from_args(cls, args: argparse.Namespace, *, domain: str | None = None) -> Settings:
         if args.timeout is None:
             from jiuwenswarm.extensions_v2.config import resolve_install_report_settings
             try:
@@ -63,11 +65,12 @@ class Settings:
                 raise ClientError("INVALID_CONFIG", str(error)) from None
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             raise ClientError("INVALID_CONFIG", "--timeout 必须是大于零的有限秒数。")
+        selected_domain = domain or args.domain or "agentserver"
         try:
-            context = control.read_context("gateway" if args.domain == "gateway" else "agent_server")
+            context = control.read_context("gateway" if selected_domain == "gateway" else "agent_server")
         except control.ControlError as error:
             raise ClientError("HOST_UNAVAILABLE", str(error)) from None
-        return cls(context, args.timeout)
+        return cls(selected_domain, context, args.timeout)
 
 
 class LocalClient:
@@ -157,8 +160,90 @@ def active_record(state: dict[str, Any], package_id: str) -> dict[str, Any] | No
 
 
 def has_installed_copy(state: dict[str, Any], package_id: str) -> bool:
-    return any(isinstance(item, dict) and item.get("package_id") == package_id
-               for item in state.get("installed_packages", [])) or bool(state["installed"])
+    return any(
+        isinstance(item, dict) and item.get("package_id") == package_id
+        for item in state.get("installed_packages", [])
+    )
+
+
+def state_contains_package(state: dict[str, Any], package_id: str) -> bool:
+    """Return whether a host owns an active or installed copy of a package."""
+
+    return active_record(state, package_id) is not None or has_installed_copy(state, package_id)
+
+
+async def query_state(settings: Settings, package_id: str | None) -> dict[str, Any]:
+    """Read one host's package state without retrying its management endpoint."""
+
+    params = {"package_id": package_id} if package_id else {}
+    async with open_client(settings) as client:
+        return read_state(await client.request("query", params))
+
+
+async def query_available_domains(
+    args: argparse.Namespace,
+) -> tuple[dict[str, tuple[Settings, dict[str, Any]]], dict[str, ClientError]]:
+    """Query both hosts, tolerating an unavailable sibling host like Web does."""
+
+    states: dict[str, tuple[Settings, dict[str, Any]]] = {}
+    errors: dict[str, ClientError] = {}
+    for domain in ("gateway", "agentserver"):
+        try:
+            settings = Settings.from_args(args, domain=domain)
+            states[domain] = (settings, await query_state(settings, None))
+        except ClientError as error:
+            errors[domain] = error
+    if not states:
+        raise errors.get("agentserver") or errors.get("gateway") or ClientError(
+            "HOST_UNAVAILABLE", "当前实例的扩展管理入口不可用。"
+        )
+    return states, errors
+
+
+async def resolve_owner(
+    args: argparse.Namespace,
+    package_id: str,
+) -> tuple[Settings, dict[str, Any]]:
+    """Match Web routing: Gateway owns first, then AgentServer handles the fallback."""
+
+    try:
+        gateway_settings = Settings.from_args(args, domain="gateway")
+        gateway_state = await query_state(gateway_settings, package_id)
+        if state_contains_package(gateway_state, package_id):
+            return gateway_settings, gateway_state
+    except ClientError as error:
+        if error.code != "HOST_UNAVAILABLE":
+            raise
+    agentserver_settings = Settings.from_args(args, domain="agentserver")
+    agentserver_state = await query_state(agentserver_settings, package_id)
+    return agentserver_settings, agentserver_state
+
+
+async def perform_automatic_query(args: argparse.Namespace, result: dict[str, Any]) -> int:
+    """Run the same automatic cross-host query routing as the Web command."""
+
+    package_id = result.get("package_id")
+    if package_id:
+        settings, state = await resolve_owner(args, package_id)
+        result["domain"] = settings.domain
+        result["before_state"] = state
+        result["state"] = state
+    else:
+        states, _ = await query_available_domains(args)
+        gateway = states.get("gateway")
+        agentserver = states.get("agentserver")
+        if gateway is not None and agentserver is not None:
+            state = merge_query_states(gateway[1], agentserver[1])
+        elif gateway is not None:
+            state = gateway[1]
+        else:
+            state = agentserver[1]
+        result["domain"] = "all"
+        result["domains"] = sorted(states)
+        result["before_state"] = state
+        result["state"] = state
+    result.update(ok=True, status="SUCCESS")
+    return 0
 
 
 def read_report(payload: dict[str, Any], action: str, package_id: str) -> dict[str, Any]:
@@ -196,12 +281,18 @@ async def recover_state(settings: Settings, package_id: str, result: dict[str, A
         result["query_error"] = error.as_dict()
 
 
-async def perform(args: argparse.Namespace, settings: Settings, result: dict[str, Any]) -> int:
+async def perform(
+    args: argparse.Namespace,
+    settings: Settings,
+    result: dict[str, Any],
+    *,
+    before_state: dict[str, Any] | None = None,
+) -> int:
     action = args.action
     package_id = result.get("package_id")
     query_params = {"package_id": package_id} if package_id else {}
     async with open_client(settings) as client:
-        before = read_state(await client.request("query", query_params))
+        before = before_state or read_state(await client.request("query", query_params))
         result["before_state"] = before
         if action == "query":
             result["state"] = before
@@ -279,9 +370,18 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 result["package_id"] = valid_id(args.target)
             elif args.action != "query":
                 raise ClientError("INVALID_INPUT", "reload 和 uninstall 需要 package_id。")
-        result["domain"] = args.domain or "agentserver"
-        settings = Settings.from_args(args)
-        return result, await perform(args, settings, result)
+        if args.action == "install":
+            settings = Settings.from_args(args, domain=result["domain"])
+            return result, await perform(args, settings, result)
+        if args.domain:
+            settings = Settings.from_args(args)
+            result["domain"] = settings.domain
+            return result, await perform(args, settings, result)
+        if args.action == "query":
+            return result, await perform_automatic_query(args, result)
+        settings, before_state = await resolve_owner(args, result["package_id"])
+        result["domain"] = settings.domain
+        return result, await perform(args, settings, result, before_state=before_state)
     except ClientError as error:
         result["error"] = error.as_dict()
         return result, 2
@@ -296,7 +396,7 @@ def parser() -> argparse.ArgumentParser:
     command = JsonArgumentParser(description="管理当前运行实例中的扩展包；无需提供 Gateway 地址或浏览器登录凭据。")
     command.add_argument("action", choices=("install", "query", "reload", "uninstall"))
     command.add_argument("target", nargs="?", help="install 传最终 ZIP；其他操作传 package_id，query 可省略")
-    command.add_argument("--domain", choices=("agentserver", "gateway"), help="install 从 package.domain 确定；其他操作默认 agentserver")
+    command.add_argument("--domain", choices=("agentserver", "gateway"), help="显式选择宿主；未指定时按包归属自动路由")
     command.add_argument("--json", action="store_true", help="使用结构化 JSON 输出（默认也是 JSON）")
     command.add_argument("--server-path", help="宿主可读取的 ZIP 绝对路径；默认使用最终 ZIP 路径，不负责上传")
     command.add_argument("--timeout", type=float, default=None, help="每次请求的超时秒数，默认配置的依赖等待时间加 30 秒")
