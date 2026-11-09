@@ -21,6 +21,9 @@ from types import SimpleNamespace
 from openjiuwen.harness.prompts.builder import SystemPromptBuilder
 from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentManager
 
+from jiuwenswarm.agents.harness.common.multimodal.image_history import (
+    rewrite_orphan_attached_markers,
+)
 from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
     MultimodalImageRail,
 )
@@ -206,6 +209,40 @@ def test_sync_mutator_rewrites_orphan_attached_markers() -> None:
         if isinstance(p, dict) and p.get("type") == "text"
     ]
     assert any("[image #1 attached]" in t for t in block_texts), block_texts
+
+
+def test_rewrite_orphan_attached_markers_string_summary() -> None:
+    """字符串 content(压缩器摘要形态)同样改写孤儿 attached 标记。
+
+    DialogueCompressor 的替换消息是 UserMessage(content=<str>);旧实现的
+    isinstance(content, list) 检查会跳过字符串消息,docstring 声称的主场景
+    (纯文本摘要残留标记)实际不被处理。字符串消息不可能携带像素块,其中
+    残留的 attached 状态行必为孤儿。
+    """
+
+    # 压缩摘要形态:引用行 + attached 状态行同在一个纯字符串 content 里。
+    summary = {
+        "role": "user",
+        "content": (
+            "[image #1] path=/tmp/a.png filename=a.png mime=image/png\n"
+            "用户上传了图片并提问。\n"
+            "[image #1 attached]"
+        ),
+    }
+    assert rewrite_orphan_attached_markers([summary]) == 1
+    rewritten = summary["content"]
+    assert isinstance(rewritten, list), "命中后写回列表形态"
+    texts = [str(part.get("text", "")) for part in rewritten if isinstance(part, dict)]
+    joined = "\n".join(texts)
+    assert "[image #1 attached]" not in joined
+    assert "[image #1 omitted: compacted]" in joined
+    # 引用行原样保留(它是 read_file 重读的路径来源,不是孤儿)。
+    assert "[image #1] path=/tmp/a.png" in joined
+
+    # 无命中的字符串消息保持原形态,不强转列表。
+    plain = {"role": "user", "content": "普通文本,没有标记"}
+    assert rewrite_orphan_attached_markers([plain]) == 0
+    assert plain["content"] == "普通文本,没有标记"
 
 
 def test_sync_mutator_resyncs_prompt_after_compaction() -> None:

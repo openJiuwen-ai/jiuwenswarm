@@ -591,20 +591,31 @@ def rewrite_orphan_attached_markers(messages: list[Any]) -> int:
     生效(与 ``_apply_image_evictions`` 的就地语义一致),幂等——已是 omitted
     的行不重复处理。
 
+    content 形态经 ``_message_parts`` 统一(字符串折成 text part):压缩器的
+    替换消息是 ``UserMessage(content=str)``,纯字符串摘要里的孤儿标记同样
+    需要改写;字符串消息本身不可能携带像素块,其中的 attached 状态行必为
+    孤儿。无命中时消息保持原形态(字符串不强转列表)。
+
     Returns:
         改写的标记行数(0 = 没有孤儿)。
     """
     rewritten = 0
     for message in messages:
-        content = _message_content(message)
-        if not isinstance(content, list):
+        # 经 _message_parts 取 parts（与 _rewrite_reference_line_index /
+        # _apply_image_evictions 同口径）：字符串 content 在此折成 text part。
+        # DialogueCompressor 的替换消息即 UserMessage(content=str)——纯文本摘要
+        # 残留的孤儿标记就落在字符串形态里，直接 isinstance(list) 跳过会漏掉
+        # 本函数要修的主场景。字符串消息不可能携带像素块，其中的 attached
+        # 状态行必为孤儿。
+        parts = _message_parts(message)
+        if not parts:
             continue
-        if any(is_image_content_block(part) for part in content):
+        if any(is_image_content_block(part) for part in parts):
             # 像素块还在(整条消息作用域):标记与块仍配对,不是孤儿。
             continue
         new_parts: list[Any] = []
         message_hit = False
-        for part in content:
+        for part in parts:
             text = _text_from_content_part(part)
             if text is None:
                 new_parts.append(part)
