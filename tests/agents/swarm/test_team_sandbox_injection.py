@@ -200,3 +200,43 @@ def test_injected_specs_survive_serialization_roundtrip(_sandbox_enabled) -> Non
 
     # reviewer keeps the shared teammate id across the boundary too
     assert restored.reviewer_agent.sys_operation.id == original_ids["teammate"]
+
+
+def test_code_and_browser_subagents_inherit_parent_sysop(_sandbox_enabled) -> None:
+    from openjiuwen.harness.schema.build_context import PARENT_SYS_OPERATION_EXTRAS_KEY
+
+    from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+    from jiuwenswarm.agents.swarm.providers import code_subagents as cs
+
+    spec = _make_team_spec()
+    _build_member_sandbox_specs({"react": {"evolution": {}}}, spec, session_id="sess-1")
+    sysop_id = spec.agents["teammate"].sys_operation.id
+
+    ctx = SwarmBuildContext(session_id="sess-1", mode="team", channel="web")
+    # resolve() stand-in: the parent sysop published on the build context is the
+    # live SysOperation object; the id is the stable observable on its config.
+    ctx.extras[PARENT_SYS_OPERATION_EXTRAS_KEY] = SimpleNamespace(
+        id=sysop_id,
+        mode=OperationMode.SANDBOX,
+        isolation_key_template=None,
+    )
+    from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
+
+    ctx.extras[cs._PARENT_MODEL_EXTRAS_KEY] = SimpleNamespace(
+        model_client_config=ModelClientConfig(
+        model_name="m",
+        client_provider="openai",
+        api_key="test-key",
+        api_base="http://localhost:8000",
+    ),
+        model_config=ModelRequestConfig(model_name="m"),
+    )
+
+    built_code = cs.build_code_agent({}, ctx)
+    assert built_code is not None
+    # SubAgentConfig carries sys_operation as a field (create_subagent consumes it)
+    assert built_code.sys_operation is ctx.extras[PARENT_SYS_OPERATION_EXTRAS_KEY]
+
+    built_browser = cs.build_swarm_browser_agent({}, ctx)
+    assert built_browser is not None
+    assert built_browser.sys_operation is ctx.extras[PARENT_SYS_OPERATION_EXTRAS_KEY]
