@@ -24,6 +24,7 @@ purely from the config source plus provider name references.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -570,7 +571,7 @@ def enrich_team_spec_for_swarm(
     # P-B entry-level sandbox injection (design D-20261105-1041 KD1/KD2, §4.0).
     # Runs after every named entry exists (role bases, AgentGroup roster, group
     # members) so the whole spec.agents dict is covered by one pass.
-    _build_member_sandbox_specs(config, spec, session_id=session_id)
+    _build_member_sandbox_specs(config, spec, session_id=session_id, project_dir=project_dir)
     logger.info(
         "[swarm.assembly] enriched team spec '%s' "
         "(roles=%s, session=%s, mcps=%d, agent_group=%s)",
@@ -582,18 +583,27 @@ def enrich_team_spec_for_swarm(
     )
 
 
+# Teams already covered by the one-time enterprise known-boundary note (KD7).
+_ENTERPRISE_BOUNDARY_NOTED: set[str] = set()
+
+
 def _entry_slug(value: str) -> str:
     """Sanitize one name fragment for use inside a sandbox id / isolation key.
 
     jiuwenbox validates custom sandbox ids against ``^[0-9a-z_-]+$``
-    (models/sandbox.py). Openjiuwen already constrains member names and
-    roster names to safe alphabets, so this is defense in depth: any stray
-    character (notably ``#`` from binder directory names) degrades to ``-``
-    instead of failing sandbox creation.
+    (models/sandbox.py), so the slug is lowercased and every stray character
+    (notably ``#`` from binder directory names) degrades to ``-``. Names longer
+    than 80 chars keep a 12-hex digest suffix so two distinct oversized keys
+    cannot collapse onto the same truncated slug (key/id bijection, KD2).
     """
-    slug = re.sub(r"[^0-9a-zA-Z_-]", "-", str(value or ""))
-    slug = slug.strip("-_")
-    return slug[:80] or "entry"
+    raw = str(value or "")
+    slug = re.sub(r"[^0-9a-zA-Z_-]", "-", raw).lower().strip("-_")
+    if not slug:
+        return "entry"
+    if len(slug) <= 80:
+        return slug
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{slug[:67]}-{digest}"
 
 
 def _entry_sandbox_slug(team_name: str, entry_name: str) -> str:
@@ -601,7 +611,9 @@ def _entry_sandbox_slug(team_name: str, entry_name: str) -> str:
     return f"entry_{_entry_slug(team_name)}_{_entry_slug(entry_name)}"
 
 
-def _build_member_sandbox_specs(config: Any, spec: Any, *, session_id: str) -> None:
+def _build_member_sandbox_specs(
+    config: Any, spec: Any, *, session_id: str, project_dir: str | None = None
+) -> None:
     """Give every ``spec.agents`` entry its own sandbox SysOperationSpec (P-B).
 
     Injection condition matrix (design D-20261105-1041 KD7): all branches that
@@ -617,6 +629,9 @@ def _build_member_sandbox_specs(config: Any, spec: Any, *, session_id: str) -> N
             symmetry with the other assembly helpers and future knobs).
         spec: The ``TeamAgentSpec`` being enriched (mutated in place).
         session_id: Active session id, threaded into the team mount context.
+        project_dir: The request's project directory, mounted rw into every
+            member container (KD3). Without it the policy builder falls back
+            to the agent-server cwd, which is not what team members work on.
     """
     from jiuwenswarm.common.config import get_sandbox_endpoint, get_sandbox_runtime
     from jiuwenswarm.enterprise.edition import is_enterprise
@@ -633,13 +648,16 @@ def _build_member_sandbox_specs(config: Any, spec: Any, *, session_id: str) -> N
         return  # expected configuration: silent
     if is_enterprise():
         # Known boundary (design §3 non-goal): enterprise team members stay
-        # LOCAL until multi-tenant isolation-key semantics exist. Info-level so
-        # the note is auditable without polluting warning channels.
-        logger.info(
-            "[swarm.assembly] team members stay LOCAL: enterprise sandbox "
-            "isolation is a known boundary (team=%s)",
-            spec.team_name,
-        )
+        # LOCAL until multi-tenant isolation-key semantics exist. Info-level,
+        # logged once per team (KD7) so the note is auditable without
+        # repeating on every enrich.
+        if spec.team_name not in _ENTERPRISE_BOUNDARY_NOTED:
+            _ENTERPRISE_BOUNDARY_NOTED.add(spec.team_name)
+            logger.info(
+                "[swarm.assembly] team members stay LOCAL: enterprise sandbox "
+                "isolation is a known boundary (team=%s)",
+                spec.team_name,
+            )
         return
 
     endpoint = get_sandbox_endpoint()
@@ -674,6 +692,7 @@ def _build_member_sandbox_specs(config: Any, spec: Any, *, session_id: str) -> N
     team_ctx["session_id"] = str(session_id or "")
 
     injected: list[str] = []
+    failed_entries: list[str] = []
     for entry_name, agent_spec in list(spec.agents.items()):
         entry_slug = _entry_sandbox_slug(spec.team_name, entry_name)
         card = create_sandbox_sysop_card(
@@ -684,12 +703,12 @@ def _build_member_sandbox_specs(config: Any, spec: Any, *, session_id: str) -> N
             idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
             idle_check_interval=runtime.get("idle_check_interval"),
             fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
+            project_dir=project_dir,
             isolation_custom_id=entry_slug,
             team_context=team_ctx,
         )
         if card is None:
-            # create_sandbox_sysop_card already warned with the cause; the
-            # entry stays None (LOCAL) and the loop continues.
+            failed_entries.append(entry_name)
             continue
         spec.agents[entry_name] = agent_spec.model_copy(
             update={
@@ -720,6 +739,16 @@ def _build_member_sandbox_specs(config: Any, spec: Any, *, session_id: str) -> N
         injected,
         spec.team_name,
     )
+    if failed_entries:
+        # KD7: partial injection is loud at the assembly layer too — the
+        # builder's warning names the cause, this names WHICH entries stay
+        # LOCAL so partial-injection is auditable from one log line.
+        logger.warning(
+            "[swarm.assembly] team members stay LOCAL: entry card build "
+            "failed for %s (team=%s)",
+            failed_entries,
+            spec.team_name,
+        )
 
 
 async def preflight_team_mcps(spec: Any) -> list[str]:
@@ -776,56 +805,15 @@ async def preflight_team_mcps(spec: Any) -> list[str]:
     return dropped
 
 
-def assign_shared_sandbox_sys_operation(spec: Any, deep_agent: Any) -> None:
-    """Point every team member at the main agent's sandbox SysOperation.
-
-    ``setup_agent`` keeps a member's own ``sys_operation`` when the spec
-    already has one. Reusing the main agent's id makes ``SysOperationSpec.resolve``
-    return that registered sandbox instead of creating a local one.
-
-    No-op when the main agent has no sandbox SysOperation.
-    """
-    shared = _shared_sandbox_sys_operation_spec(deep_agent)
-    if shared is None:
-        return
-    agents = getattr(spec, "agents", None)
-    if isinstance(agents, dict):
-        for name, agent_spec in list(agents.items()):
-            if not hasattr(agent_spec, "model_copy"):
-                continue
-            agents[name] = agent_spec.model_copy(update={"sys_operation": shared})
-    reviewer = getattr(spec, "reviewer_agent", None)
-    if hasattr(reviewer, "model_copy"):
-        spec.reviewer_agent = reviewer.model_copy(update={"sys_operation": shared})
-    logger.info(
-        "[swarm.assembly] team members share sandbox sys_operation %s",
-        shared.id,
-    )
-
-
-def _shared_sandbox_sys_operation_spec(deep_agent: Any) -> Any:
-    """Copy the main agent's sandbox card into a member SysOperationSpec."""
-    from openjiuwen.core.sys_operation import OperationMode
-    from openjiuwen.core.sys_operation.config import SandboxGatewayConfig
-    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
-
-    config = getattr(deep_agent, "deep_config", None)
-    sys_operation = getattr(config, "sys_operation", None)
-    if getattr(sys_operation, "mode", None) != OperationMode.SANDBOX:
-        return None
-    run_config = getattr(sys_operation, "_run_config", None)
-    gateway = getattr(run_config, "config", None)
-    if not isinstance(gateway, SandboxGatewayConfig):
-        return None
-    return SysOperationSpec(
-        id=str(sys_operation.id),
-        mode=OperationMode.SANDBOX,
-        gateway_config=gateway,
-    )
+# The v1 prototype ``assign_shared_sandbox_sys_operation`` (reusing the main
+# agent's single sysop id for every member) was removed per design
+# D-20261105-1041 §6: it overwrote the P-B per-entry injection with one shared
+# id, silently restoring the superseded shared-container behavior on the
+# primary team path. Per-entry injection now lives in
+# ``_build_member_sandbox_specs`` at enrich time.
 
 
 __all__ = [
-    "assign_shared_sandbox_sys_operation",
     "enrich_team_spec_for_swarm",
     "preflight_team_mcps",
 ]

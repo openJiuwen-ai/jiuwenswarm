@@ -2389,6 +2389,10 @@ async def _initialize_team_agent_db(
         return False
 
 
+# Teams already covered by the one-time enterprise known-boundary note (KD7).
+_ENTERPRISE_BOUNDARY_NOTED: set[str] = set()
+
+
 def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
     """Re-encode team entry sandbox specs against THIS node's config (KD6).
 
@@ -2402,8 +2406,8 @@ def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
     collide across nodes).
 
     Degradation matrix mirrors the leader side (design KD7): ``enabled=false``
-    silent; enterprise known-boundary info; endpoint unresolved or unsupported
-    type → loud warning, members stay LOCAL — or, when
+    silent; enterprise known-boundary info once per team; endpoint unresolved
+    or unsupported type → loud warning, members stay LOCAL — or, when
     ``sandbox.team_fail_closed`` is set, the member is rejected instead.
 
     Idempotent: re-running only recomputes the same values.
@@ -2419,11 +2423,14 @@ def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
     if not runtime.get("enabled"):
         return  # expected configuration: silent
     if is_enterprise():
-        logger.info(
-            "[RemoteMemberBootstrap] team members stay LOCAL: enterprise "
-            "sandbox isolation is a known boundary (team=%s)",
-            getattr(spec, "team_name", ""),
-        )
+        team_name = str(getattr(spec, "team_name", "") or "")
+        if team_name not in _ENTERPRISE_BOUNDARY_NOTED:
+            _ENTERPRISE_BOUNDARY_NOTED.add(team_name)
+            logger.info(
+                "[RemoteMemberBootstrap] team members stay LOCAL: enterprise "
+                "sandbox isolation is a known boundary (team=%s)",
+                team_name,
+            )
         return
 
     endpoint = get_sandbox_endpoint()
@@ -2456,6 +2463,11 @@ def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
 
     team_ctx = _team_context_from_spec(spec)
     if team_ctx is None:
+        if get_sandbox_team_fail_closed():
+            raise RuntimeError(
+                "teammate refuses unsandboxed members (sandbox.team_fail_closed=true): "
+                "team context unresolvable"
+            )
         logger.warning(
             "[RemoteMemberBootstrap] team members stay LOCAL: team context "
             "unresolvable (team=%s)",
@@ -2464,6 +2476,7 @@ def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
         return
     team_ctx["session_id"] = str(session_id or "")
 
+    failed_entries: list[str] = []
     for entry_name, agent_spec in list(spec.agents.items()):
         entry_slug = _entry_sandbox_slug(str(getattr(spec, "team_name", "")), entry_name)
         card = create_sandbox_sysop_card(
@@ -2478,7 +2491,8 @@ def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
             team_context=team_ctx,
         )
         if card is None:
-            continue  # builder already warned; entry stays LOCAL
+            failed_entries.append(entry_name)
+            continue
         spec.agents[entry_name] = agent_spec.model_copy(
             update={
                 "sys_operation": SysOperationSpec(
@@ -2488,10 +2502,27 @@ def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
                 ),
             }
         )
+    if failed_entries and get_sandbox_team_fail_closed():
+        raise RuntimeError(
+            "teammate refuses unsandboxed members (sandbox.team_fail_closed=true): "
+            f"entry card build failed for {failed_entries}"
+        )
+
+    # The reviewer rides the teammate entry (design KD2); after a local rebuild
+    # the teammate's sysop object is fresh, so re-share it to keep the
+    # shared-id invariant intact on the distributed path.
+    teammate_sysop = (spec.agents.get("teammate").sys_operation
+                      if spec.agents.get("teammate") is not None else None)
+    if teammate_sysop is not None and getattr(spec, "reviewer_agent", None) is not None:
+        spec.reviewer_agent = spec.reviewer_agent.model_copy(
+            update={"sys_operation": teammate_sysop}
+        )
+
     logger.info(
         "[RemoteMemberBootstrap] rebuilt team entry sandbox specs from local "
-        "config (entries=%d, team=%s)",
-        len(spec.agents),
+        "config (entries=%d, failed=%s, team=%s)",
+        len(spec.agents) - len(failed_entries),
+        failed_entries,
         getattr(spec, "team_name", ""),
     )
 

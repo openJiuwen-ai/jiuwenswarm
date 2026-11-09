@@ -240,3 +240,80 @@ def test_code_and_browser_subagents_inherit_parent_sysop(_sandbox_enabled) -> No
     built_browser = cs.build_swarm_browser_agent({}, ctx)
     assert built_browser is not None
     assert built_browser.sys_operation is ctx.extras[PARENT_SYS_OPERATION_EXTRAS_KEY]
+
+
+def test_entry_slug_enforces_lowercase_charset_and_collision_resistance() -> None:
+    # jiuwenbox sandbox_id charset is ^[0-9a-z_-]+$ — uppercase must not survive
+    slug = _entry_sandbox_slug("MyTeam_ABC", "Expert")
+    assert re.fullmatch(r"[0-9a-z_-]+", slug)
+    assert "myteam_abc" in slug
+
+    # two distinct oversized keys must not collapse onto the same 80-char slug
+    slug_a = _entry_sandbox_slug("x" * 200 + "AAA", "m")
+    slug_b = _entry_sandbox_slug("x" * 200 + "BBB", "m")
+    assert slug_a != slug_b
+    # each fragment stays within the 80-char cap (67 body + 1 dash + 12 digest)
+    assert len(slug_a) <= len("entry_") + 80 + 1 + len("_m")
+
+
+def test_card_failure_for_one_entry_warns_and_names_the_entry(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.assembly.get_config", lambda: _sandbox_config()
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_sandbox_runtime",
+        lambda: {"enabled": True, "files": {"allow": [], "deny": []}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_sandbox_endpoint",
+        lambda: {"url": "http://sandbox.local", "type": "jiuwenbox"},
+    )
+    monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: False)
+
+    import jiuwenswarm.server.runtime.agent_adapter.sysop_builder as builder_mod
+
+    real_builder = builder_mod.create_sandbox_sysop_card
+
+    def flaky_builder(*args, isolation_custom_id=None, **kwargs):
+        if isolation_custom_id and isolation_custom_id.endswith("_teammate"):
+            return None  # simulate a card-build failure for one entry only
+        return real_builder(*args, isolation_custom_id=isolation_custom_id, **kwargs)
+
+    monkeypatch.setattr(builder_mod, "create_sandbox_sysop_card", flaky_builder)
+
+    spec = _make_team_spec()
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.agents.swarm.assembly"):
+        _build_member_sandbox_specs({"react": {"evolution": {}}}, spec, session_id="sess-1")
+    assert spec.agents["leader"].sys_operation is not None
+    assert spec.agents["teammate"].sys_operation is None  # failed entry stays LOCAL
+    assert any(
+        "stay LOCAL" in r.getMessage() and "teammate" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_injection_threads_project_dir_into_policy(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.assembly.get_config", lambda: _sandbox_config()
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_sandbox_runtime",
+        lambda: {"enabled": True, "files": {"allow": [], "deny": []}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_sandbox_endpoint",
+        lambda: {"url": "http://sandbox.local", "type": "jiuwenbox"},
+    )
+    monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: False)
+
+    spec = _make_team_spec()
+    _build_member_sandbox_specs(
+        {"react": {"evolution": {}}}, spec, session_id="sess-1", project_dir=str(project)
+    )
+    launcher = spec.agents["leader"].sys_operation.gateway_config.launcher_config
+    binds = launcher.extra_params["policy"]["filesystem_policy"]["bind_mounts"]
+    assert str(project) in {b["host_path"] for b in binds}
