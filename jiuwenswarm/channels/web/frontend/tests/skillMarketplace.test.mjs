@@ -20,7 +20,11 @@ await i18next.use(initReactI18next).init({
   lng: 'en', showSupportNotice: false, resources: { en: { translation: {} } },
 });
 const { MarketplaceView } = await import('../node_modules/.cache/skill-marketplace/MarketplaceView.mjs');
-const { groupMarketplaceSkills } = await import('../node_modules/.cache/skill-marketplace/skillPanelUtils.mjs');
+const { FilePreviewContent } = await import('../node_modules/.cache/skill-marketplace/FilePreviewContent.mjs');
+const { MarkdownPane } = await import('../node_modules/.cache/skill-marketplace/MarkdownPane.mjs');
+const { groupMarketplaceSkills, resolveSkillFileLinkPath } = await import(
+  '../node_modules/.cache/skill-marketplace/skillPanelUtils.mjs'
+);
 
 const skill = { asset_id: 'ordinary', name: 'Ordinary Skill', plugin_type: 'skill', skill_type: 'skill' };
 const legacy = {
@@ -38,6 +42,90 @@ test('ordinary Skills and both Pack transport types share Featured Skills withou
   assert.equal(groups.featuredSkills[0].skill_type, 'skillpack');
   assert.equal(groups.featuredSkills[0].short_desc, legacy.short_desc);
   assert.deepEqual(groupMarketplaceSkills([]), { teamSkills: [], featuredSkills: [] });
+});
+
+test('SKILL.md file links resolve inside the skill package', () => {
+  assert.equal(resolveSkillFileLinkPath('SKILL.md', 'references/api.md'), 'references/api.md');
+  assert.equal(resolveSkillFileLinkPath('SKILL.md', './references/api.md#usage'), 'references/api.md');
+  assert.equal(resolveSkillFileLinkPath('docs/SKILL.md', '../templates/report.md'), 'templates/report.md');
+  assert.equal(
+    resolveSkillFileLinkPath('docs/SKILL.md', './assets/My%20Guide.md?download=1'),
+    'docs/assets/My Guide.md',
+  );
+  assert.equal(resolveSkillFileLinkPath('SKILL.md', '/references/guide.md'), 'references/guide.md');
+  assert.equal(resolveSkillFileLinkPath('docs/SKILL.md', '../../outside.md'), null);
+  assert.equal(resolveSkillFileLinkPath('SKILL.md', 'https://example.com/guide.md'), null);
+  assert.equal(resolveSkillFileLinkPath('SKILL.md', '#section'), null);
+});
+
+test('preview Markdown forwards referenced file clicks instead of navigating the page', async () => {
+  let clickedHref = null;
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(FilePreviewContent, {
+          selected: true,
+          selectedPreviewable: true,
+          file: { path: 'SKILL.md', content: '[API guide](references/api.md#usage)' },
+          status: 'success',
+          labels: {
+            selectPrompt: '',
+            notPreviewable: '',
+            loading: '',
+            readError: '',
+            copy: '',
+            copied: '',
+            copyFailed: '',
+            download: '',
+            downloadFailed: '',
+            noPreview: '',
+            binaryDownload: '',
+          },
+          onLinkClick: (href) => {
+            clickedHref = href;
+            return true;
+          },
+        }),
+      ),
+    );
+    const link = document.querySelector('[data-testid="file-preview-content-markdown"] a');
+    assert.ok(link);
+    const event = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+    await act(async () => link.dispatchEvent(event));
+    assert.equal(clickedHref, 'references/api.md#usage');
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(link.hasAttribute('target'), false);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+test('content detail Markdown forwards referenced file clicks instead of navigating the page', async () => {
+  let clickedHref = null;
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(MarkdownPane, {
+          content: '[API guide](references/api.md#usage)',
+          onLinkClick: (href) => {
+            clickedHref = href;
+            return true;
+          },
+        }),
+      ),
+    );
+    const link = document.querySelector('a[href="references/api.md#usage"]');
+    assert.ok(link);
+    const event = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+    await act(async () => link.dispatchEvent(event));
+    assert.equal(clickedHref, 'references/api.md#usage');
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(link.hasAttribute('target'), false);
+  } finally {
+    await act(async () => root.unmount());
+  }
 });
 
 for (const searchKeyword of ['', 'standup']) {

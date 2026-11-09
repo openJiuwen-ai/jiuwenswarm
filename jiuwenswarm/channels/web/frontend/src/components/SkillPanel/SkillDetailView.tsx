@@ -23,6 +23,7 @@ import {
   PageToolbar,
   Select,
   Tabs,
+  getPreviewFileLabel,
   isPreviewableImagePath,
   type FilePreviewContentFile,
   type FilePreviewTreeNode,
@@ -33,6 +34,7 @@ import { isEnterprise } from '../../edition';
 import {
   formatSkillVersionLabel,
   isAdminManagedSkill,
+  resolveSkillFileLinkPath,
   shouldShowEnableSwitch,
   shouldShowSkillPublish,
 } from './skillPanelUtils';
@@ -159,7 +161,7 @@ export interface InstalledSkillDetailViewProps extends SkillDetailCommonProps {
   previewTreeNodes: FilePreviewTreeNode[];
   filePreview: SkillFilePreview | null;
   onSelectSkillFile: (filePath: string) => void;
-  onFetchSkillFiles: (skillName: string) => void;
+  onFetchSkillFiles: (skillName: string, preferredFilePath?: string) => void;
   evolutionMessage: string | null;
   evolutionMessageType: 'success' | 'error' | null;
   evolutionFormatError: string | null;
@@ -676,6 +678,21 @@ export function SkillDetailView(props: SkillDetailViewProps) {
             testId={`${tid}-content`}
             content={selectedSkill.content ? detailContent : null}
             emptyText={t('skills.noContent')}
+            onLinkClick={(href) => {
+              const contentFilePath =
+                getPreviewFileLabel((selectedSkill.file_path || '').replace(/\\/g, '/')) || 'SKILL.md';
+              const targetPath = resolveSkillFileLinkPath(contentFilePath, href);
+              if (targetPath) {
+                setDetailTab('files');
+                if (filesLoadState === 'success') {
+                  onSelectSkillFile(targetPath);
+                } else {
+                  onFetchSkillFiles(selectedSkill.name, targetPath);
+                }
+              }
+              // Internal links are always handled here so they never fall through to SPA navigation.
+              return true;
+            }}
           />
         )}
 
@@ -721,6 +738,12 @@ export function SkillDetailView(props: SkillDetailViewProps) {
                     : null
                 }
                 status={filePreviewStatus}
+                onLinkClick={(href) => {
+                  const targetPath = resolveSkillFileLinkPath(filePreviewPath || '', href);
+                  if (targetPath) onSelectSkillFile(targetPath);
+                  // Internal links are always handled here so they never fall through to SPA navigation.
+                  return true;
+                }}
                 labels={{
                   selectPrompt: t('skills.detail.selectFileToPreview'),
                   notPreviewable: t('skills.detail.notPreviewable'),

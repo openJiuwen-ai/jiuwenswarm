@@ -44,6 +44,41 @@ export function isFilePreviewable(entry: { type: string; mime_type: string | nul
   return PREVIEWABLE_FILE_EXTS.includes(ext);
 }
 
+/**
+ * 将 Markdown 文件中引用的相对路径解析为技能包内文件路径。
+ *
+ * - 以当前预览文件所在目录为基准，支持 `./`、`../` 和 URL 编码路径；
+ * - 忽略查询串与 fragment，外链、锚点及越出技能包根目录的路径返回 null；
+ * - 返回路径与 `skills.files.list/get` 使用的包内相对路径保持一致。
+ */
+export function resolveSkillFileLinkPath(currentFilePath: string, href: string): string | null {
+  const rawPath = (href || '').trim().split(/[?#]/, 1)[0];
+  if (!rawPath || rawPath.startsWith('#') || rawPath.startsWith('//')) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(rawPath)) return null;
+
+  let decodedPath = rawPath;
+  try {
+    decodedPath = decodeURIComponent(rawPath);
+  } catch {
+    // Keep malformed escape sequences literal; the backend still validates the selected path.
+  }
+  decodedPath = decodedPath.replace(/\\/g, '/');
+
+  const segments = decodedPath.startsWith('/')
+    ? []
+    : currentFilePath.replace(/\\/g, '/').split('/').slice(0, -1);
+  for (const part of decodedPath.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (segments.length === 0) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(part);
+  }
+  return segments.length > 0 ? segments.join('/') : null;
+}
+
 /** 与后端一致：tags/allowed_tools 可能是逗号分隔字符串，统一为 string[] */
 export function coerceStringList(val: unknown): string[] {
   if (val == null) return [];

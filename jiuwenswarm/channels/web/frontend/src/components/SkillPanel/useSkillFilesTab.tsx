@@ -99,7 +99,7 @@ export function useSkillFilesTab({ withSession }: UseSkillFilesTabParams) {
   );
 
   const fetchSkillFiles = useCallback(
-    async (skillName: string) => {
+    async (skillName: string, preferredFilePath?: string) => {
       const revision = ++filesRevisionRef.current;
       setFilesLoadState('loading');
       try {
@@ -108,9 +108,10 @@ export function useSkillFilesTab({ withSession }: UseSkillFilesTabParams) {
         const files = data.files || [];
         setSkillFiles(files);
         setFilesLoadState('success');
-        // 默认选中：树展示顺序里第一个目录下的第一个可预览文件；无目录则取第一个可预览文件
+        // 显式目标优先；否则默认选中树展示顺序里第一个目录下的第一个可预览文件，无目录则取第一个可预览文件
         const defaultFile = findDefaultPreviewFile(toPreviewTreeNodes(files));
-        if (defaultFile) await fetchFilePreview(skillName, defaultFile.path);
+        const initialFilePath = preferredFilePath || defaultFile?.path;
+        if (initialFilePath) await fetchFilePreview(skillName, initialFilePath);
       } catch (error) {
         if (revision !== filesRevisionRef.current) return;
         console.error(error);
