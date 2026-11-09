@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 
 from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
 from openjiuwen.agent_teams.group_chat.tools import GroupSendMessageTool
@@ -21,6 +22,7 @@ _LEADER_MUTE_ERROR = (
     "Leader public group output is temporarily muted; "
     "do not retry this tool."
 )
+logger = logging.getLogger(__name__)
 
 
 def _reject_tool(ctx, error: str) -> None:
@@ -68,9 +70,10 @@ TASK_RULES = (
     "answer it yourself with group_send_message when one agent can do it, "
     "or call run_team when the expert team should do it. "
     "That run_team resumes the same instance and loads the context from its earlier child task. "
-    "When the same message mentions multiple expert teams, call run_team and do not reply to that message. "
+    "When the same message mentions only multiple expert teams, call run_team for that message's own "
+    "Organization plan and do not reply to that message. Its requirements never update an older Organization. "
     "Only the Owner posts that organization's reply; your expert-team instance never posts to the group. "
-    "While you are in an organization, decide each later message that mentions you by its meaning: "
+    "Only for messages not assigned their own Organization plan, decide later mentions by their meaning: "
     "a request about the organization's task is run_team action=update with the organization's execution_id; "
     "an unrelated task is a new run_team start; ordinary chat is a normal group_send_message reply. "
     "If important requirements are missing, ask_user before work; do not invent user preferences. "
@@ -197,6 +200,61 @@ class GroupTaskPolicyRail(DeepAgentRail):
         super().__init__()
         self.context = context
 
+    async def on_user_message(self, ctx):
+        from jiuwenswarm.agents.swarm.group_turn import bind_consumed_group_turn
+
+        group = read_group(self.context.session_id)
+        if group is None:
+            return
+        parts = getattr(ctx.inputs, "parts", None)
+        if parts is None:
+            return
+        await bind_consumed_group_turn(
+            ctx, get_team_backend(self.context), self.context.session_id,
+            self.context.member_name, group,
+        )
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import note_organization_turn_started
+        from jiuwenswarm.agents.swarm.group_turn import TURN_KEY
+
+        turn = getattr(ctx, "extra", {}).get(TURN_KEY)
+        if turn is not None and turn.route == "organization" and turn.client_message_id:
+            note_organization_turn_started(
+                self.context.session_id, self.context.member_name, turn.client_message_id,
+            )
+
+    async def before_model_call(self, ctx):
+        from openjiuwen.harness.prompts import PromptSection
+        from jiuwenswarm.agents.swarm.group_turn import TURN_KEY
+
+        builder = getattr(ctx.agent, "system_prompt_builder", None)
+        if builder is None:
+            return
+        builder.remove_section("group_current_organization_turn")
+        turn = getattr(ctx, "extra", {}).get(TURN_KEY)
+        if turn is None or turn.route != "organization":
+            return
+        content = (
+            "The current user message has its own Organization plan. Process only this message now: "
+            + json.dumps({"client_message_id": turn.client_message_id, "plan_id": turn.client_message_id})
+            + ". Earlier and later messages in the archive are context, not replacement instructions. "
+            "Call run_team to accept this plan. An update or continuation must not modify an older "
+            "Organization; this plan will wait when its members are occupied."
+        )
+        builder.add_section(PromptSection(
+            name="group_current_organization_turn", content={"en": content, "cn": content}, priority=95,
+        ))
+
+    async def after_model_call(self, ctx):
+        from jiuwenswarm.agents.swarm.group_turn import restore_suspended_organization
+
+        response = getattr(ctx.inputs, "response", None)
+        if (
+            getattr(ctx, "exception", None) is None
+            and response is not None
+            and not getattr(response, "tool_calls", None)
+        ):
+            restore_suspended_organization(ctx)
+
     async def before_invoke(self, ctx):
         from openjiuwen.harness.prompts import PromptSection
 
@@ -263,7 +321,8 @@ class GroupTaskPolicyRail(DeepAgentRail):
         organizations = live_organizations_for_member(self.context.session_id, self.context.member_name)
         if organizations:
             content += (
-                "\nRunning Team Organizations you are in. Send a request about one of these tasks with "
+                "\nRunning Team Organizations you are in. Only when the current message has no new "
+                "Organization plan, send a request about one of these tasks with "
                 "run_team action=update and its execution_id; a new unrelated task is a run_team start: "
                 + json.dumps(organizations, ensure_ascii=False)
             )
@@ -296,6 +355,16 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
     async def before_tool_call(self, ctx):
         group = read_group(self.context.session_id)
+        if group is not None and ctx.inputs.tool_name == "run_team":
+            from jiuwenswarm.agents.swarm.group_org_bootstrap import note_organization_run_attempt
+            from jiuwenswarm.agents.swarm.group_turn import TOKEN_KEY, TURN_KEY, bind_group_turn
+
+            turn = ctx.extra.get(TURN_KEY)
+            if turn is not None and turn.route == "organization" and turn.client_message_id:
+                note_organization_run_attempt(
+                    self.context.session_id, self.context.member_name, turn.client_message_id,
+                )
+            ctx.extra[TOKEN_KEY] = bind_group_turn(turn)
         # Temporary mute: public-group leader role allocation is not designed
         # yet. Revisit once leader responsibilities are explicitly assigned.
         if (
@@ -366,6 +435,14 @@ class GroupTaskPolicyRail(DeepAgentRail):
         )
 
     async def after_tool_call(self, ctx):
+        self._reset_group_turn(ctx)
+        if ctx.inputs.tool_name in {"run_team", "group_send_message"}:
+            from jiuwenswarm.agents.swarm.group_turn import restore_suspended_organization
+
+            result = getattr(ctx.inputs, "tool_result", None)
+            success = result.get("success") if isinstance(result, dict) else getattr(result, "success", False)
+            if success is True:
+                restore_suspended_organization(ctx)
         org_task_tools = {"org_create_task", "org_update_task", "org_claim_task", "org_delegate_task"}
         if ctx.inputs.tool_name not in org_task_tools:
             return
@@ -398,15 +475,36 @@ class GroupTaskPolicyRail(DeepAgentRail):
             "organization_id": manager.organization_id if manager is not None else None,
         })
 
+    async def on_tool_exception(self, ctx):
+        self._reset_group_turn(ctx)
+
+    @staticmethod
+    def _reset_group_turn(ctx):
+        from jiuwenswarm.agents.swarm.group_turn import TOKEN_KEY, reset_group_turn
+
+        token = getattr(ctx, "extra", {}).pop(TOKEN_KEY, None)
+        if token is not None:
+            reset_group_turn(token)
+
     async def after_invoke(self, ctx):
-        if read_group(self.context.session_id) is None:
-            return
-        store = GroupExecutions(self.context.session_id)
-        active = store.active(self.context.member_name)
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import finish_organization_member_turn
         from jiuwenswarm.server.runtime.group_questions import GroupQuestions
 
+        if read_group(self.context.session_id) is None:
+            return
         if GroupQuestions(self.context.session_id).pending(self.context.member_name):
             return
+
+        try:
+            await finish_organization_member_turn(self.context.session_id, self.context.member_name)
+        except Exception:
+            logger.exception(
+                "organization turn close failed session=%s member=%s",
+                self.context.session_id,
+                self.context.member_name,
+            )
+        store = GroupExecutions(self.context.session_id)
+        active = store.active(self.context.member_name)
         if active is not None and active["phase"] != "publishing" and not active.get("background"):
             await store.update(active["execution_id"], status="interrupted", phase="result_not_submitted")
 

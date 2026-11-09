@@ -400,12 +400,16 @@ class ResultDeliveryService:
         )
 
     async def _run(self) -> None:
-        while True:
+        while self._task is asyncio.current_task():
             self._wake.clear()
             try:
                 await self.dispatch_pending()
             except Exception:
                 logger.exception("[JiuwenMate] result delivery scan failed")
+            # A completed await can consume a racing cancellation on Python 3.11.
+            # aclose relinquishes ownership before cancelling either worker.
+            if self._task is not asyncio.current_task():
+                return
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=self._poll_interval)
             except TimeoutError:
@@ -413,9 +417,11 @@ class ResultDeliveryService:
 
     async def _run_welink_reconciliation(self) -> None:
         """Keep slow WeLink history requests and scan failures off the delivery worker."""
-        while True:
+        while self._welink_task is asyncio.current_task():
             try:
                 await self.reconcile_welink_deliveries()
             except Exception:
                 logger.exception("[JiuwenMate] WeLink reconciliation scan failed")
+            if self._welink_task is not asyncio.current_task():
+                return
             await asyncio.sleep(self._poll_interval)

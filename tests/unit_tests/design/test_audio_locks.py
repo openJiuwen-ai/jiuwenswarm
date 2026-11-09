@@ -231,7 +231,7 @@ async def test_music_handler_writes_silent_placeholder(
     )
 
     async def _noop_async(*_a, **_k):
-        return None
+        return None, ""
 
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.designer.handlers.audio_nodes._try_music_api",
@@ -347,7 +347,6 @@ def test_silent_policy_drops_shot_cues_from_the_clip_prompt() -> None:
         audio_lock_prompt_block,
         stamp_audio_fields_on_clip_config,
     )
-    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import _sound_line
 
     meta = {"audio_intent": {"policy": "silent", "include_speech": False, "include_music": False}}
     shot = {"sfx": ["rain on the roof", "distant thunder"]}
@@ -355,7 +354,6 @@ def test_silent_policy_drops_shot_cues_from_the_clip_prompt() -> None:
     stamp_audio_fields_on_clip_config(cfg, shot=shot, meta=meta)
     assert cfg["sfx"] == []
     assert cfg["audio_policy"] == "silent"
-    assert _sound_line(cfg, "en") == ""
     block = audio_lock_prompt_block(include_speech=False, include_music=False, silent=True)
     assert "this shot is silent" in block
     assert "room tone" not in block

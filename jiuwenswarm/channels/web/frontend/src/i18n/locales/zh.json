@@ -114,8 +114,7 @@
       "imageMissing": "图像生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
       "lockedHint": "本次设计使用创建时选定的模型，画布上不提供切换模型。",
       "notSelected": "未选择模型",
-      "openModelSettings": "去设置",
-      "chatAnthropicUnsupported": "设计暂不支持 Anthropic 协议的对话模型。请在「设置」中改为配置 OpenAI 协议的模型后再试。"
+      "openModelSettings": "去设置"
     },
     "activity": {
       "thinking": "思考中",
@@ -184,6 +183,7 @@
       "aspectRatio": "长宽比",
       "resolution": "分辨率",
       "duration": "视频时长",
+      "audioDuration": "音频时长",
       "count": "生成数量",
       "browseFiles": "浏览文件",
       "dropHint": "或者拖拽到区域内",
@@ -200,8 +200,15 @@
     "mediaSettings": {
       "videoTitle": "视频参数",
       "imageTitle": "图片参数",
+      "audioTitle": "音频参数",
       "durationValue": "{{seconds}} 秒",
       "durationUnit": "秒",
+      "minuteUnit": "分",
+      "secondUnit": "秒",
+      "audioDurationDefault": "影片默认时长",
+      "audioDurationMinutes": "{{count}}分",
+      "audioDurationSeconds": "{{count}}秒",
+      "audioDurationBoth": "{{minutes}}分{{seconds}}秒",
       "loading": "正在读取生成参数…",
       "loadError": "无法读取生成参数：{{message}}",
       "saveError": "参数未保存：{{message}}"
@@ -281,7 +288,9 @@
       "deleteConfirmCancel": "取消",
       "deleteConfirmOk": "确定",
       "resize": "调整大小",
-      "resizeHint": "拖动右下角调整节点大小"
+      "resizeHint": "拖动右下角调整节点大小",
+      "playAudio": "播放音频",
+      "pauseAudio": "暂停音频"
     },
     "edge": {
       "delete": "删除连线"
@@ -472,7 +481,38 @@
       "channels": "频道",
       "personalContext": "知识",
       "archivedTasks": "已归档的任务",
-      "experimental": "实验功能"
+      "experimental": "实验功能",
+      "appearance": "外观"
+    },
+    "appearance": {
+      "uiFont": "界面字体",
+      "uiFontDescription": "设置聊天、设置页等界面文本使用的字体；偏好仅保存在本机。",
+      "uiFontDefault": "跟随默认",
+      "uiFontZhHei": "中文黑体（微软雅黑 / 苹方）",
+      "uiFontZhSong": "中文宋体（宋体 / 思源宋体）",
+      "uiFontZhKai": "中文楷体（楷体 / 霞鹜文楷）",
+      "uiFontCustom": "自定义",
+      "customFontPlaceholder": "字体名称，多个字体用英文逗号分隔",
+      "customFontHint": "将按顺序匹配本机已安装的字体；也可以填写 sans-serif、monospace 等通用字体族。",
+      "fontSize": "界面字号",
+      "fontSizeDescription": "按比例调整界面文字大小，默认 100% 与当前版本一致。",
+      "fontSizeSmaller": "较小（90%）",
+      "fontSizeDefault": "默认（100%）",
+      "fontSizeLarger": "较大（110%）",
+      "fontSizeLarge": "大（125%）",
+      "fontSizeXLarge": "特大（140%）",
+      "codeFont": "代码字体",
+      "codeFontDescription": "设置代码块、命令与轨迹等等宽内容使用的字体。",
+      "codeFontDefault": "跟随默认",
+      "codeFontJetbrainsFira": "JetBrains Mono / Fira Code",
+      "codeFontCascadia": "Cascadia Code",
+      "codeFontCustom": "自定义",
+      "preview": "预览",
+      "previewBody": "界面文字预览：正在为你整理今天的任务摘要。",
+      "previewCodeSample": "npm run build",
+      "resetTitle": "恢复默认外观",
+      "resetDescription": "清除本机保存的外观偏好，恢复主题默认字体与字号。",
+      "resetButton": "恢复默认"
     },
     "feedback": {
       "loadFailed": "设置加载失败",
@@ -774,6 +814,7 @@
       "videoConfigTitle": "配置视频理解模型",
       "videoGenConfigTitle": "配置视频生成模型",
       "visualGenConfigTitle": "配置图像生成模型",
+      "musicGenConfigTitle": "配置音频生成模型",
       "toggleCapability": "切换{{name}}能力",
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
@@ -1117,6 +1158,10 @@
         "title": "ComfyUI 工作流集成",
         "description": "目前支持将 ComfyUI 的 vLLM-Omni 节点和 Workflow 导入到设计画布中"
       },
+      "music_gen_enabled": {
+        "title": "音频生成",
+        "description": "为设计画布生成背景音乐（BGM）：规划时自动加入 BGM 节点，成片时混入；关闭后仍保留已保存的模型配置。"
+      },
       "progressive_tool_optimize": {
         "title": "启用工具检索优化",
         "description": "开启后模型通过 tool_search 分类目录按需检索工具。"
@@ -1281,6 +1326,7 @@
           "vote": "Review 投票",
           "revision": "要求返工",
           "verified": "验收通过",
+          "completed": "任务完成",
           "cancelled": "任务取消",
           "escalated": "验收升级",
           "anomaly": "调度异常",
@@ -1301,16 +1347,16 @@
         "cancel": "取消",
         "start": "开始执行",
         "starting": "启动中…",
-        "summary": "已选择 {{count}} 个 Agent · {{spans}} 个 OTel Span",
-        "emptyNodes": "选中范围内没有完整可诊断的 OTel Span（起止未都被覆盖的 Span 已被剔除）",
+        "summary": "已选择 {{count}} 个 Agent · {{spans}} 个节点",
+        "emptyNodes": "选中范围内没有完整可诊断的节点（起止未都被覆盖的记录已被剔除）",
         "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
-        "nodeLimit": "选中轨迹超过 {{limit}} 个 OTel Span（当前 {{count}} 个），请缩小选择范围",
+        "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
         "running": "已有诊断正在进行",
         "noData": "当前没有可诊断的轨迹",
         "replay": "只读复现中无法诊断，请先退出复现"
       },
-      "summary": "{{agents}}个Agent · {{spans}} 个 OTel Span",
-      "teamSummary": "{{members}} 名正式成员 · {{completed}}/{{tasks}} 个任务完成 · {{reviews}} 次 Review · {{spans}} 个 Span",
+      "summary": "{{agents}}个Agent · {{spans}} 个 OTel Span · {{nodes}} 个节点",
+      "teamSummary": "{{members}} 名正式成员 · {{completed}}/{{tasks}} 个任务完成 · {{reviews}} 次 Review · {{spans}} 个 OTel Span · {{nodes}} 个节点",
       "toolbar": {
         "scale": "轨迹比例",
         "time": "时间",
@@ -1345,6 +1391,7 @@
       "includeAgent": "已选中：{{name}}",
       "includeAgentHint": "取消勾选可清除 {{name}} 的当前选区",
       "timeAxis": "时间轴",
+      "turnMarker": "第 {{turn}} 轮",
       "records": "诊断记录",
       "noRecords": "还没有诊断记录",
       "delete": "删除",
@@ -1449,7 +1496,7 @@
       "dimension": "评分维度",
       "requestCount": "模型请求 {{count}} 次",
       "objectSteps": "范围",
-      "objectStepsCount": "{{count}} 个 OTel Span",
+      "objectStepsCount": "{{count}} 个节点",
       "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
       "objectTask": "任务描述",
       "objectSummary": "轨迹摘要",
@@ -5021,6 +5068,7 @@
     "title": "操作授权",
     "matchedRule": "匹配规则",
     "titleConfirm": "操作确认",
+    "unavailable": "该选项在当前授权卡中不可用",
     "allowOnce": "授权单次",
     "allowAlways": "总是允许",
     "skip": "跳过",
@@ -5829,7 +5877,9 @@
       "groupAudience": "分享内容可能对目标群内所有成员可见。",
       "audience": "分享内容可能对目标会话内所有参与者可见。",
       "exactMessages": "展开确切消息（{{count}} 条）",
+      "collapseExactMessages": "收起确切消息（{{count}} 条）",
       "exactArtifacts": "展开确切文件和文档（{{count}} 项）",
+      "collapseExactArtifacts": "收起确切文件和文档（{{count}} 项）",
       "fileSize": "文件大小：{{size}} 字节",
       "created": "创建时间：{{time}}",
       "createdAt": "创建时间",
@@ -6066,6 +6116,7 @@
       "welinkCredentialDone": "完成",
       "welinkShowAssistantQr": "弹出助手码",
       "welinkRetry": "重试",
+      "welinkScanReminder": "绑定成功后页面会自动跳转，请勿关闭窗口或点击“取消”。",
       "welinkAssistantWaiting": "请用手机扫描确认",
       "welinkAssistantScan": "扫码创建",
       "welinkAssistantExisting": "填写已有 AK/SK",
@@ -6602,6 +6653,12 @@
     "unnamedTask": "未命名子任务",
     "noSubtasks": "暂无子任务记录",
     "generatingTasks": "任务生成中",
+    "organizationStage": {
+      "starting": "专家团启动中",
+      "processing": "处理中",
+      "executing": "专家执行中",
+      "summarizing": "汇总中"
+    },
     "counts": {
       "total": "总任务数",
       "running": "进行中",
@@ -6617,6 +6674,7 @@
     "viewResult": "查看任务成果",
     "sendFailed": "消息处理失败，请重试。",
     "sending": "发送中…",
+    "modelLocked": "群聊开始后不可切换模型",
     "processing": "正在处理…",
     "mentionPhase": {
       "dispatching": "已收到，正在处理中…",

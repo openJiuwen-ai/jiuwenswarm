@@ -18,7 +18,6 @@ def safe_error_detail(value: object) -> str:
                     message = re.sub(
                         token_chars + re.escape(fragment) + token_chars, "******", message,
                     )
-    message = re.sub(r"(?i)(\bBearer\s+)\S+", r"\g<1>******", message)
     return message[:1500]
 
 

@@ -152,6 +152,7 @@ test = [
     "pytest-html>=4.1.1",
     "pytest-mock>=3.14.0",
     "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.3",
     "coverage>=7.7.1",
     "pyyaml>=6.0",
 ]
@@ -205,6 +206,9 @@ jiuwenswarm = [
     # styles markdown 与 index.json，运行期由 designer.skills_loader 读取
     "server/runtime/designer/skills/*",
     "server/runtime/designer/skills/**/*",
+    # Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json), read at runtime
+    "office/powerpoint/*",
+    "office/powerpoint/**/*",
 ]
 jiuwenbox = [
     "configs/**/*",
@@ -257,6 +261,7 @@ test = [
     "pytest-html>=4.1.1",
     "pytest-mock>=3.14.0",
     "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.3",
     "coverage>=7.7.1",
     "pyyaml>=6.0",
 ]

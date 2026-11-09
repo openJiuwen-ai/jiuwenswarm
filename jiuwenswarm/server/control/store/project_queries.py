@@ -35,7 +35,7 @@ def attribute_session_project(
     visible_project_ids: set[str],
     removed_project_ids: set[str] = frozenset(),
 ) -> str:
-    """Return the owning project ID, ``""`` for a removed project, or the default.
+    """Return the owning project ID, ``""`` for a removed project or a client app's conversation, or the default.
 
     Removed (hidden) projects keep their sessions on disk, but those sessions
     must not surface: returning ``""`` makes every caller skip them instead of
@@ -43,6 +43,10 @@ def attribute_session_project(
     record is missing entirely, or that carry no ``project_id`` at all, still
     fall back to the default project so legacy metadata stays readable.
     """
+    from jiuwenswarm.server.client_attachments.registry import conversation_app
+
+    if conversation_app(metadata) is not None:
+        return ""
     project_id = str(metadata.get("project_id") or "")
     if project_id:
         if project_id in visible_project_ids:
@@ -293,6 +297,16 @@ def _session_matches_requested_work_mode(session: dict[str, Any], raw_work_mode:
     return actual == requested
 
 
+def _session_recency_key(session: dict[str, Any]) -> tuple[float, str]:
+    """Deterministic recency key: timestamp, then ``session_id`` as tiebreaker.
+
+    Sessions sharing the same timestamp (e.g. second-level precision or bursts
+    of ``run_now``) must keep a stable order across paginated requests, so
+    ``limit``/``offset`` pages are always consistent slices of one ordering.
+    """
+    return _last_user_message_ts(session), str(session.get("session_id") or "")
+
+
 def load_project_sessions(
     params: dict[str, Any], _user_id: str
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
@@ -318,7 +332,7 @@ def load_project_sessions(
         if not _session_matches_requested_work_mode(session, params.get("work_mode")):
             continue
         matched.append(session)
-    matched.sort(key=_last_user_message_ts, reverse=True)
+    matched.sort(key=_session_recency_key, reverse=True)
     total = len(matched)
     page = matched[offset:offset + limit] if limit is not None else matched[offset:]
     return {
@@ -396,7 +410,7 @@ def load_project_cron_sessions(
         ):
             continue
         matched.append(session)
-    matched.sort(key=_last_user_message_ts, reverse=True)
+    matched.sort(key=_session_recency_key, reverse=True)
     total = len(matched)
     page = matched[offset:offset + limit] if limit is not None else matched[offset:]
     return {

@@ -685,13 +685,17 @@ def test_permission_interrupt_projects_reviewer_metadata_from_request_object() -
 
 
 def test_permission_interrupt_projects_sanitized_bounded_tool_payload() -> None:
+    reason = "Check /home/user/report.txt，保留后文。\ntoken=plain-secret\n" + "完整理由。" * 400
     interaction = SimpleNamespace(
         id="tool-call-payload",
         metadata={
             "reviewer_assessment_id": "internal-id",
             "decision_digest": "internal-digest",
             "reviewer_prompt": "internal-prompt",
-            "manual_reason_summary": "Check token=plain-secret before approval.",
+            "manual_reason_summary": reason,
+            "evidence_summary": reason,
+            "user_review_hint": reason,
+            "action_summary": "bash token=machine-secret",
             "contract_gate_missing_evidence": [
                 f"missing-{index}" for index in range(10)
             ],
@@ -721,9 +725,9 @@ def test_permission_interrupt_projects_sanitized_bounded_tool_payload() -> None:
         "nested": {"safe": True},
     }
     reviewer = question["reviewer_metadata"]
-    assert (
-        reviewer["manual_reason_summary"] == "Check token=[redacted] before approval."
-    )
+    for key in ("manual_reason_summary", "evidence_summary", "user_review_hint"):
+        assert reviewer[key] == reason
+    assert reviewer["action_summary"] == "bash token=[redacted]"
     assert reviewer["contract_gate_missing_evidence"][-1] == "[TRUNCATED]"
     assert len(reviewer["contract_gate_missing_evidence"]) == 9
     for forbidden in (

@@ -150,7 +150,13 @@ When a handler fails to write or close, the background thread counts failures an
 
 A log message or exception text longer than 65,536 characters is replaced entirely with `[log payload omitted: ...]` before masking. JSON records use a valid JSON summary containing `log_payload_omitted`. This bounds large-payload work on the business thread. The log limit does not apply to session history. INFO timing records for `llm_stream_output` callbacks keep the first record per source each minute and summarize repeats. DEBUG and WARNING records retain their normal behavior. Heartbeat timeout settings are unchanged.
 
-On Windows, a dedicated named-pipe reader continues answering heartbeats while the business loop is stalled, including when additional session requests or delivery acknowledgements arrive. Business messages remain ordered in a buffer capped at 256 messages and 64 MiB; exceeding either bound reports an IPC backlog error. Pongs report business-loop age, so a live transport does not hide a sustained stall. A stalled loop still produces a native thread stack dump in Worker stderr after about 25 seconds; off-loop heartbeats do not postpone it. The Supervisor retains its 30-second transport timeout and 180-second sustained-stall restart threshold.
+Windows named pipes use a dedicated reader thread. Unix domain sockets and loopback TCP establish, authenticate, continuously read, write and close connections on a process-local I/O thread. Heartbeats are answered there even when a stalled business loop receives additional session requests or delivery acknowledgements. Business messages remain ordered in a buffer capped at 256 messages and 64 MiB; exceeding either bound reports an IPC backlog error. Pongs report business-loop age, so a live transport does not hide a sustained stall. A stalled loop still produces a native thread stack dump in Worker stderr after about 25 seconds; off-loop heartbeats do not postpone it. The Supervisor retains its 30-second transport timeout and 180-second sustained-stall restart threshold.
+
+The 30-second business-stall warning and 180-second restart log include `business`: the running task, method, request/session/channel/dispatch identifiers, and at most 16 file/line/function locations. Background child tasks inherit diagnostic request identity. Supervisor diagnostic snapshots retain the same data in `worker_stall_context` for correlation with Worker stderr. Parameters, prompts, tool results, local variables and source text are excluded. Unattributed tasks and event-loop callbacks are identified explicitly; other concurrent requests are not named as the cause. Thread isolation cannot guarantee responses while an extension holds the GIL indefinitely or the process cannot be scheduled.
+
+A socket business-buffer overflow emits a separate `[IPC] business receive backlog exceeded` warning with pending message and byte counts, incoming frame size and limits, then follows connection-failure handling. Failed Supervisor diagnostic collection records only the exception type. Snapshot collection, serialization or output failures do not interrupt health checks or recovery.
+
+When retiring a blocked Worker, the Supervisor reserves time within the existing exit deadline to confirm forced termination. It starts the next Worker generation only after confirming that the old process exited. The 30/180-second business-loop thresholds remain unchanged.
 
 ## 5. Log Configuration
 
@@ -261,7 +267,7 @@ In the Worker, the first Team tool-description scan reads into an isolated snaps
 
 If a background thread cannot start, the optional read degrades as it does when capacity is full and can retry later. Team guard installation and bundled-description preloading fail independently with warnings, allowing the remaining Worker startup patches to continue. An incompatible SDK cache skips custom document reads until invalidation and preserves existing values or bundled descriptions.
 
-On Windows, continuous named-pipe heartbeat reading and queued SDK log sinks remain independent of the business loop. The 30-second transport timeout and 180-second sustained business-stall restart remain active so the Supervisor can recover a permanently stuck Worker.
+Continuous heartbeat reading for named pipes, Unix domain sockets and loopback TCP, together with queued SDK log sinks, remains independent of the business loop. The 30-second transport timeout and 180-second sustained business-stall restart remain active so the Supervisor can recover a permanently stuck Worker.
 
 ## 9. Best Practices
 

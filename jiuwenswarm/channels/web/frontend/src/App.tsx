@@ -39,6 +39,10 @@ import {
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
 import { watchCronExecutionSessions, watchCronRunUpdates } from './features/cron/cronSessionLive';
+import {
+  markCronOptimisticProcessing,
+  shouldKeepLocalCronProcessing,
+} from './features/cron/cronProcessingGuard';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -2067,10 +2071,33 @@ function AppContent({
       // session 的运行态并覆盖，不是磁盘 metadata 的历史值。刷新页面时用这条
       // 明确状态恢复停止按钮；之后同一 WebSocket 上的 processing_status 事件
       // 继续按发送顺序推进状态机。
+      //
+      // 企业版 cron 执行态走 /sessions/{id}/live，不写进 web channel 的 busy 表，
+      // metadata 常误报 false。乐观宽限期内挡住误报；权威 idle / 宽限过期必须放行。
       if (typeof session.is_processing === 'boolean') {
-        setProcessing(targetSessionId, session.is_processing);
-        if (!session.is_processing) {
-          setThinking(targetSessionId, false);
+        const localProcessing = Boolean(
+          useChatStore.getState().getRuntime(targetSessionId)?.isProcessing,
+        );
+        const trackedLastRun = Object.values(useCronStore.getState().lastRunSessionId).includes(
+          targetSessionId,
+        );
+        if (!shouldKeepLocalCronProcessing(
+          targetSessionId,
+          session.is_processing,
+          localProcessing,
+          {
+            // 统一会话未必 cron_ 前缀，靠 cron_id / lastRun 放行
+            hasCronMetadata: Boolean(session.cron_id) || trackedLastRun,
+            // 组织负责人停止是权威空闲，不能被守卫吞掉
+            authoritativeIdle:
+              session.organization_owner_stopped === true
+              || isOrganizationOwnerStopped(targetSessionId),
+          },
+        )) {
+          setProcessing(targetSessionId, session.is_processing);
+          if (!session.is_processing) {
+            setThinking(targetSessionId, false);
+          }
         }
       }
       if (session.session_equipment && typeof session.session_equipment === 'object') {
@@ -4018,6 +4045,14 @@ function AppContent({
         resetHarnessStore(targetSessionId);
         historyRestoreFromPanelHintRef.current = !targetSession?.cron_id;
       }
+      // 企业版 live 不推「正在执行中」占位气泡；普通发消息会乐观标 processing，
+      // 「立即执行」跳进会话时同样立刻标上，对话里才会马上出现「任务执行 Xs」提示。
+      // 必须放在上面 ensureRuntime 默认 setProcessing(false) 之后，否则会被盖掉。
+      // mark 开启宽限期：挡住紧随其后的 metadata 误报，超时后仍放行以免永久卡住。
+      if (seedUserMessage?.trim()) {
+        markCronOptimisticProcessing(targetSessionId);
+        setProcessing(targetSessionId, true);
+      }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
       ensureSessionRuntimes(targetSessionId);
@@ -4654,8 +4689,14 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             isActive
             onUseAgent={(packageName) => openInstalledExpertRef.current(packageName)}
             onUsePrompt={handleUseAgentPrompt}
-            onUseAgentGroup={handleUseAgentGroup}
-            onUseGroupPrompt={handleUseGroupPrompt}
+            onUseAgentGroup={(groupId) => {
+              setIsJiuwenMate(false);
+              handleUseAgentGroup(groupId);
+            }}
+            onUseGroupPrompt={(groupId, prompt) => {
+              setIsJiuwenMate(false);
+              handleUseGroupPrompt(groupId, prompt);
+            }}
             onCreateViaChat={() => {
               setIsJiuwenMate(false);
               requestSessionNavigation('new', {

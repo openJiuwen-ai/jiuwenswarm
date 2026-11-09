@@ -13,6 +13,13 @@ import os
 import re
 from typing import Any
 
+from jiuwenswarm.common.schema.designer_graph import (
+    CONFIG_KEY_INPUTS,
+    PIPELINE_COMPOSE,
+    PIPELINE_MUSIC,
+    node_config,
+    node_pipeline,
+)
 from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
     current_content_language,
     dialogue_language_display,
@@ -32,8 +39,6 @@ _PHRASES: dict[str, dict[str, str]] = {
         "says_offscreen": '{who}, heard offscreen, says: "{line}".',
         "voice_says": 'A voice says: "{line}".',
         "audio": "Audio: {bits}.",
-        "sound_cues": "Sound: {cues} — diegetic only, no music.",
-        "sound_natural": "Sound: natural diegetic sound of the place and action only — no music.",
         "dialogue_language": "Spoken dialogue is in {name}.",
         "tod_with_lighting": "It is {label}; {lighting}.",
         "tod": "It is {label}.",
@@ -68,8 +73,6 @@ _PHRASES: dict[str, dict[str, str]] = {
         "says_offscreen": "{who}在画外说：“{line}”。",
         "voice_says": "画外音说：“{line}”。",
         "audio": "音乐：{bits}。",
-        "sound_cues": "声音：{cues}，仅现场声，不要配乐。",
-        "sound_natural": "声音：仅保留场景与动作的现场环境声，不要配乐。",
         "dialogue_language": "对白使用{name}。",
         "tod_with_lighting": "时间是{label}；{lighting}。",
         "tod": "时间是{label}。",
@@ -288,19 +291,35 @@ def _speech_lines(
     return [phrase(_PHRASES, lang, "voice_says", line=line)]
 
 
-def _sound_line(cfg: dict[str, Any], lang: str = "en") -> str:
-    """Diegetic sound only — a clip never renders the film score."""
-    if str(cfg.get("audio_policy") or "") == "silent":
-        return ""
-    cues = cfg.get("sfx") if isinstance(cfg.get("sfx"), list) else []
-    cues = [
-        str(c).strip()
-        for c in cues[:3]
-        if str(c).strip() and not _BAD_DIRECTIVE.search(str(c))
-    ]
-    if cues:
-        return phrase(_PHRASES, lang, "sound_cues", cues=list_separator(lang).join(cues))
-    return phrase(_PHRASES, lang, "sound_natural")
+def film_scored_by_music_node(graph: dict[str, Any] | None) -> bool:
+    """A music node feeding compose owns the film score, so no clip may score it."""
+    nodes = [n for n in ((graph or {}).get("nodes") or []) if isinstance(n, dict)]
+    music = {str(n.get("id") or "") for n in nodes if node_pipeline(n) == PIPELINE_MUSIC}
+    music.discard("")
+    if not music:
+        return False
+    compose = {str(n.get("id") or "") for n in nodes if node_pipeline(n) == PIPELINE_COMPOSE}
+    for edge in (graph or {}).get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        if str(edge.get("source") or "") in music and str(edge.get("target") or "") in compose:
+            return True
+    return any(
+        music.intersection(str(item) for item in (node_config(n).get(CONFIG_KEY_INPUTS) or []))
+        for n in nodes
+        if node_pipeline(n) == PIPELINE_COMPOSE
+    )
+
+
+def _music_line(cfg: dict[str, Any], lang: str = "en", graph: dict[str, Any] | None = None) -> str:
+    """A clip never describes a score.
+
+    The film's music is generated once by the music node and mixed in at compose,
+    so a clip that asked for music made the cut jump and doubled the score. The
+    phrase table and the ``clip_scores_film_music`` validator stay in place to
+    catch a legacy prompt that still carries an in-clip score.
+    """
+    return ""
 
 
 def exited_ids(cfg: dict[str, Any] | None) -> list[str]:
@@ -1030,7 +1049,9 @@ def compose_practice_prompt(
     lang_sent = _language_sentence(cfg, lang)
     if lang_sent:
         sentences.append(lang_sent)
-    sentences.append(_sound_line(cfg, lang))
+    music = _music_line(cfg, lang, graph)
+    if music:
+        sentences.append(music)
     look = _style_phrase(cfg)
     if look and not _BAD_DIRECTIVE.search(look):
         sentences.append(sentence(look, lang))
@@ -1224,6 +1245,15 @@ def prompt_respects_practice(
     if str(cfg.get("previous_clip_wan_prompt") or cfg.get("previous_clip_action") or "").strip():
         if not re.search(r"(?i)\b(?:continue|continues|same setting|same placement|same room)\b", text):
             reasons.append("missing_prior_continue")
+    if film_scored_by_music_node(graph):
+        # A clip never writes a score any more, so a hit here is a stale prompt:
+        # match the score label itself rather than a phrase this build emits.
+        labels = [
+            str(_PHRASES[lang].get("audio") or "").split("{bits}")[0].strip().casefold()
+            for lang in _PHRASES
+        ]
+        if any(label and label in text.casefold() for label in labels):
+            reasons.append("clip_scores_film_music")
     # Toolbar user edits are authoritative for beat fidelity; do not force stale clip_action.
     if not honor_user_origin:
         action = str(cfg.get("clip_action") or "").strip()

@@ -21,6 +21,9 @@ import {
 import { asRewardPayload } from '../node_modules/.cache/trajectory-diagnosis/diagnosisTypes.mjs';
 import {
   axisTicks,
+  collectTurnWallRanges,
+  collectTurnWallStarts,
+  collectUserInteractionWallRanges,
   collectWallClockSamples,
   compressedToWall,
   compressSharedTimeline,
@@ -28,10 +31,20 @@ import {
   clampSharedViewport,
   formatAxisClock,
   formatElapsed,
+  formatUserTurnClock,
+  isTeamHarnessNoiseCell,
+  placeUserTurnAxisEdges,
+  USER_TURN_GAP_FRACTION,
+  userTurnDisplayGaps,
+  userTurnGapHalfAxisMs,
+  clipIntervalAgainstGaps,
   mainAgentLastNode,
   otelSpanWallInterval,
   rawOtelSpanInterval,
   rawOtelSpanIntervals,
+  resolveSelectionWallMs,
+  trajectoryRecordCount,
+  trajectoryRecordIntervals,
   sharedWallClockDomain,
   visibleAxisTicks,
   wallToCompressed,
@@ -340,6 +353,183 @@ test('sharedWallClockDomain spans the earliest start and latest end', () => {
   );
 });
 
+test('collectTurnWallStarts keeps the earliest timed cell per numbered turn', () => {
+  assert.deepEqual(collectTurnWallStarts([
+    {
+      turn: 1,
+      groups: [{ cells: [
+        { requestOnly: true, startedAt: 0 },
+        { startedAt: 2_000, timeSeconds: 1 },
+        { startedAt: 1_000, timeSeconds: 0.5 },
+      ] }],
+    },
+    { turn: null, groups: [{ cells: [{ startedAt: 50 }] }] },
+    { turn: 2, groups: [{ cells: [{ startedAt: null }, { startedAt: -1 }] }] },
+    { turn: 3, groups: [{ cells: [{ startedAt: 9_000 }] }] },
+  ]), [
+    { turn: 1, wallMs: 1_000 },
+    { turn: 3, wallMs: 9_000 },
+  ]);
+});
+
+test('collectTurnWallRanges keeps earliest start and latest end per numbered turn', () => {
+  assert.deepEqual(collectTurnWallRanges([
+    {
+      turn: 1,
+      groups: [{ cells: [
+        { startedAt: 1_000, timeSeconds: 0.5 },
+        { startedAt: 2_000, timeSeconds: 1 },
+      ] }],
+    },
+    { turn: 2, groups: [{ cells: [{ startedAt: 9_000, timeSeconds: 2 }] }] },
+  ]), [
+    { turn: 1, startWallMs: 1_000, endWallMs: 3_000 },
+    { turn: 2, startWallMs: 9_000, endWallMs: 11_000 },
+  ]);
+});
+
+test('collectUserInteractionWallRanges merges model turns until the next user prompt', () => {
+  assert.deepEqual(collectUserInteractionWallRanges([
+    {
+      turn: 1,
+      groups: [{ cells: [
+        { kind: 'user', startedAt: 1_000, timeSeconds: 0 },
+        { kind: 'message', startedAt: 1_100, timeSeconds: 1 },
+      ] }],
+    },
+    {
+      turn: 2,
+      groups: [{ cells: [
+        { kind: 'message', startedAt: 3_000, timeSeconds: 2 },
+        { kind: 'tool', startedAt: 5_000, timeSeconds: 1 },
+      ] }],
+    },
+    {
+      turn: 3,
+      groups: [{ cells: [
+        { kind: 'user', messageSource: { kind: 'trajectory_ask_user' }, startedAt: 7_000, timeSeconds: 0 },
+        { kind: 'message', startedAt: 7_500, timeSeconds: 1 },
+      ] }],
+    },
+    {
+      turn: 4,
+      groups: [{ cells: [
+        {
+          kind: 'user',
+          text: '<team-inbound from="member">done</team-inbound>',
+          startedAt: 9_000,
+          timeSeconds: 0,
+        },
+        { kind: 'message', startedAt: 9_500, timeSeconds: 1 },
+      ] }],
+    },
+    {
+      turn: 5,
+      groups: [{ cells: [
+        { kind: 'user', startedAt: 20_000, timeSeconds: 0 },
+        { kind: 'message', startedAt: 21_000, timeSeconds: 1 },
+      ] }],
+    },
+  ]), [
+    { userTurn: 1, startWallMs: 1_000, endWallMs: 10_500 },
+    { userTurn: 2, startWallMs: 20_000, endWallMs: 22_000 },
+  ]);
+});
+
+test('collectUserInteractionWallRanges ignores team-clock and team-event user rows', () => {
+  assert.deepEqual(collectUserInteractionWallRanges([
+    {
+      turn: 4,
+      groups: [{ cells: [
+        { kind: 'user', text: 'please plan the release', startedAt: 1_000, timeSeconds: 0 },
+        { kind: 'message', startedAt: 1_100, timeSeconds: 1 },
+      ] }],
+    },
+    {
+      turn: 5,
+      groups: [{ cells: [
+        { kind: 'user', text: '<team-clock at="17:40"/>', startedAt: 3_000, timeSeconds: 0 },
+        { kind: 'message', startedAt: 3_100, timeSeconds: 1 },
+      ] }],
+    },
+    {
+      turn: 6,
+      groups: [{ cells: [
+        { kind: 'user', inputDetail: '<team-event kind="task-board"/>', startedAt: 5_000, timeSeconds: 0 },
+        { kind: 'tool', startedAt: 5_100, timeSeconds: 1 },
+      ] }],
+    },
+  ]), [
+    { userTurn: 1, startWallMs: 1_000, endWallMs: 6_100 },
+  ]);
+});
+
+test('isTeamHarnessNoiseCell recognizes team envelopes and harness_internal origin', () => {
+  assert.equal(isTeamHarnessNoiseCell({ kind: 'user', text: '<team-clock at="17:40"/>' }), true);
+  assert.equal(isTeamHarnessNoiseCell({ kind: 'user', inputDetail: '<team-inbound/>' }), true);
+  assert.equal(
+    isTeamHarnessNoiseCell({ kind: 'message', messageSource: { origin: 'harness_internal' } }),
+    true,
+  );
+  assert.equal(isTeamHarnessNoiseCell({ kind: 'user', text: 'please continue' }), false);
+  assert.equal(isTeamHarnessNoiseCell({ kind: 'tool', startedAt: 1_000, timeSeconds: 1 }), false);
+});
+
+test('team harness noise does not keep overnight idle on the shared axis', () => {
+  const dayOne = { kind: 'message', startedAt: 0, timeSeconds: 10 };
+  const overnightClock = {
+    kind: 'user',
+    text: '<team-clock at="02:00"/>',
+    startedAt: 50_000,
+    timeSeconds: 400,
+  };
+  const dayTwo = { kind: 'message', startedAt: 1_000_000, timeSeconds: 5 };
+  const withNoise = compressSharedTimeline([dayOne, overnightClock, dayTwo], 2_000_000);
+  assert.ok(withNoise);
+  assert.equal(withNoise.durationMs, 10_000 + 400_000 + 5_000);
+  const filtered = [dayOne, overnightClock, dayTwo].filter(sample => !isTeamHarnessNoiseCell(sample));
+  const withoutNoise = compressSharedTimeline(filtered, 2_000_000);
+  assert.ok(withoutNoise);
+  assert.equal(withoutNoise.durationMs, 15_000);
+  assert.equal(wallToCompressed(withoutNoise, 1_000_000), 10_000);
+});
+
+test('resolveSelectionWallMs keeps turn-end wall time and snaps picks in the gap', () => {
+  const turns = [
+    { turn: 1, startAxisMs: 0, endAxisMs: 10_000, startWallMs: 1_000, endWallMs: 11_000 },
+    { turn: 2, startAxisMs: 10_000, endAxisMs: 15_000, startWallMs: 1_010_000, endWallMs: 1_015_000 },
+  ];
+  const toWall = (axisMs) => (axisMs >= 10_000 ? 1_010_000 : axisMs + 1_000);
+  assert.equal(resolveSelectionWallMs({
+    axisMs: 10_000,
+    role: 'end',
+    turns,
+    toWall,
+    gapHalfAxisMs: 100,
+  }), 11_000);
+  assert.equal(resolveSelectionWallMs({
+    axisMs: 10_000,
+    role: 'start',
+    turns,
+    toWall,
+    gapHalfAxisMs: 100,
+  }), 1_010_000);
+  assert.equal(resolveSelectionWallMs({
+    axisMs: 10_050,
+    role: 'start',
+    turns,
+    toWall,
+    gapHalfAxisMs: 100,
+  }), 1_010_000);
+  assert.equal(resolveSelectionWallMs({
+    axisMs: 9_950,
+    role: 'end',
+    turns,
+    toWall,
+    gapHalfAxisMs: 100,
+  }), 11_000);
+});
+
 test('compressSharedTimeline drops idle gaps shared by every agent', () => {
   const timeline = compressSharedTimeline([
     { startedAt: 0, timeSeconds: 10 },
@@ -381,6 +571,41 @@ test('otelSpanWallInterval reads start/end nanos and collapses a missing end', (
   );
   assert.equal(otelSpanWallInterval({ startTimeUnixNano: 'not-a-number' }), null);
   assert.equal(otelSpanWallInterval({ startTimeUnixNano: msToNano(-1) }), null);
+});
+
+test('trajectoryRecordCount keeps user, assistant and tool rows', () => {
+  const turns = [{
+    groups: [{
+      cells: [
+        { kind: 'system', startedAt: 1_000 },
+        { kind: 'context', startedAt: 1_000 },
+        { kind: 'user', startedAt: 1_000 },
+        { kind: 'context', startedAt: 1_000 },
+        { kind: 'message', startedAt: 2_000, timeSeconds: 1 },
+        { kind: 'tool', startedAt: 3_000, timeSeconds: 1 },
+        { kind: 'message', startedAt: 4_000, timeSeconds: 1 },
+        { kind: 'tool', startedAt: 5_000, timeSeconds: 1 },
+        { kind: 'message', startedAt: 6_000, requestOnly: true },
+        { kind: 'message', startedAt: 7_000, timeSeconds: 1 },
+        { kind: 'tool', startedAt: 8_000, timeSeconds: 1 },
+        { kind: 'message', startedAt: 9_000, timeSeconds: 1 },
+      ],
+    }],
+  }];
+  assert.equal(trajectoryRecordCount(turns), 8);
+  assert.equal(trajectoryRecordIntervals(turns).length, 8);
+  assert.deepEqual(
+    trajectoryRecordIntervals([{
+      groups: [{
+        cells: [
+          { kind: 'context', startedAt: 1_000 },
+          { kind: 'user', startedAt: 1_000 },
+          { kind: 'context', startedAt: 1_000 },
+        ],
+      }],
+    }]),
+    [{ startMs: 1_000, endMs: 1_000 }],
+  );
 });
 
 test('rawOtelSpanIntervals keep every timed raw record and skip unusable ones', () => {
@@ -502,9 +727,83 @@ test('formatElapsed and axis ticks run from 0:00 to the end', () => {
 });
 
 test('formatAxisClock shows local wall-clock time', () => {
-  const stamp = new Date(2026, 9, 23, 14, 5, 9).getTime();
+  const stamp = new Date(2026, 9, 23, 14, 5, 9, 250).getTime();
   assert.equal(formatAxisClock(stamp), '14:05:09');
   assert.equal(formatAxisClock(Number.NaN), '');
+});
+
+test('userTurnGapHalfAxisMs is half of the visible-width fraction', () => {
+  assert.equal(USER_TURN_GAP_FRACTION, 0.02);
+  assert.equal(userTurnGapHalfAxisMs(10_000), 100);
+  assert.equal(userTurnGapHalfAxisMs(0), 0);
+  assert.equal(userTurnGapHalfAxisMs(Number.NaN), 0);
+});
+
+test('placeUserTurnAxisEdges forces a 2% gap between compressed user_turn junctions', () => {
+  const edges = placeUserTurnAxisEdges([
+    {
+      turn: 1,
+      startAxisMs: 0,
+      endAxisMs: 4_000,
+      startWallMs: Date.UTC(2026, 9, 31, 10, 0, 0),
+      endWallMs: Date.UTC(2026, 9, 31, 18, 8, 0),
+    },
+    {
+      turn: 2,
+      startAxisMs: 4_000,
+      endAxisMs: 10_000,
+      startWallMs: Date.UTC(2026, 10, 5, 11, 27, 0),
+      endWallMs: Date.UTC(2026, 10, 5, 11, 54, 0),
+    },
+  ], 10_000);
+  const firstEnd = edges.find(edge => edge.turn === 1 && edge.edge === 'end');
+  const secondStart = edges.find(edge => edge.turn === 2 && edge.edge === 'start');
+  assert.ok(firstEnd);
+  assert.ok(secondStart);
+  assert.equal(firstEnd.displayAxisMs, 3_900);
+  assert.equal(secondStart.displayAxisMs, 4_100);
+  assert.equal(secondStart.displayAxisMs - firstEnd.displayAxisMs, 200);
+});
+
+test('clipIntervalAgainstGaps splits spans that cross a forced user_turn blank', () => {
+  const edges = placeUserTurnAxisEdges([
+    {
+      turn: 1,
+      startAxisMs: 0,
+      endAxisMs: 4_000,
+      startWallMs: 1,
+      endWallMs: 2,
+    },
+    {
+      turn: 2,
+      startAxisMs: 4_000,
+      endAxisMs: 10_000,
+      startWallMs: 3,
+      endWallMs: 4,
+    },
+  ], 10_000);
+  const gaps = userTurnDisplayGaps(edges);
+  assert.deepEqual(gaps, [{ startMs: 3_900, endMs: 4_100 }]);
+  // Main-Agent long model/tool bars typically look like this crossing span.
+  assert.deepEqual(
+    clipIntervalAgainstGaps(3_000, 5_000, gaps),
+    [{ startMs: 3_000, endMs: 3_900 }, { startMs: 4_100, endMs: 5_000 }],
+  );
+  assert.deepEqual(clipIntervalAgainstGaps(3_950, 4_050, gaps), []);
+  assert.deepEqual(clipIntervalAgainstGaps(0, 3_000, gaps), [{ startMs: 0, endMs: 3_000 }]);
+  assert.deepEqual(
+    clipIntervalAgainstGaps(1_000, 1_000, gaps),
+    [{ startMs: 1_000, endMs: 1_000 }],
+  );
+  assert.deepEqual(clipIntervalAgainstGaps(3_900, 3_900, gaps), [{ startMs: 3_900, endMs: 3_900 }]);
+  assert.deepEqual(clipIntervalAgainstGaps(4_000, 4_000, gaps), []);
+  assert.deepEqual(clipIntervalAgainstGaps(Number.NaN, 1_000, gaps), []);
+});
+
+test('formatUserTurnClock puts month-day above the clock', () => {
+  const stamp = new Date(2026, 9, 31, 18, 8, 0).getTime();
+  assert.equal(formatUserTurnClock(stamp), '10-31\n18:08:00');
+  assert.equal(formatUserTurnClock(Number.NaN), '');
 });
 
 test('canSubmitDiagnosis follows scope, busy and running state', () => {

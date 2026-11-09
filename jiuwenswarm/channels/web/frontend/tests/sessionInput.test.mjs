@@ -212,6 +212,56 @@ function addOriginalUser(c, content = 'original question') {
   }));
 }
 
+test('terminal forwarding error settles the current stream without sending queued input', async (context) => {
+  const c = await mount(context);
+  try {
+    const queued = c.queue('keep this queued');
+    c.receive('chat.error', {
+      request_id: 'original', code: 'GATEWAY_FORWARD_FAILED',
+      error: 'Gateway forwarding queue is full', is_complete: true, cron_session_stream: true,
+    });
+    assert.equal(c.runtime().isProcessing, false);
+    assert.equal(c.runtime().isThinking, false);
+    assert.equal(c.runtime().currentStreamId, null);
+    assert.ok(c.runtime().messages.every(message => !message.isStreaming));
+    assert.equal(c.runtime().executionError, 'Gateway forwarding queue is full');
+    assert.ok(c.runtime().taskQueue.some(task => task.id === queued));
+    assert.equal(c.requests().length, 0);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('late forwarding error cannot stop a newer request', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.processing_status', { is_processing: true, request_id: 'newer', execution_id: 'new-execution' });
+    c.receive('chat.error', {
+      request_id: 'original', code: 'GATEWAY_FORWARD_FAILED',
+      error: 'Gateway forwarding queue is full', is_complete: true, execution_id: 'old-execution',
+    });
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.runtime().executionError, null);
+    assert.equal(c.runtime().error, null);
+    assert.equal(c.runtime().activeExecutionId, 'new-execution');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('nonterminal forwarding error does not settle the execution', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.error', {
+      request_id: 'original', code: 'GATEWAY_FORWARD_FAILED',
+      error: 'Gateway forwarding queue is full', is_complete: false,
+    });
+    assert.equal(c.runtime().isProcessing, true);
+  } finally {
+    await c.dispose();
+  }
+});
+
 test('MoA control resume wire frames display while the original execution remains active', async (context) => {
   const c = await mount(context);
   const frames = JSON.parse(readFileSync(new URL('./fixtures/moaControlResume.json', import.meta.url), 'utf8'));

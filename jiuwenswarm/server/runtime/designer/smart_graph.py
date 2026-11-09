@@ -24,8 +24,10 @@ from jiuwenswarm.common.schema.designer_graph import (
     NODE_ROLE_CHARACTER,
     NODE_ROLE_CLIP,
     NODE_ROLE_COMPOSE,
+    NODE_ROLE_MUSIC,
     NODE_ROLE_SCENE,
     NODE_ROLE_STORYBOARD,
+    NODE_TYPE_AUDIO,
     NODE_TYPE_IMAGE,
     NODE_TYPE_TABLE,
     NODE_TYPE_TEXT,
@@ -122,6 +124,40 @@ def _edge(
     if label:
         edge["label"] = label
     return edge
+
+
+def bgm_node_wanted(audio: dict[str, Any], prompt: str, *, can_music: bool) -> bool:
+    """A configured music backend puts a BGM node on every film the user did not want silent or unscored."""
+    from jiuwenswarm.server.runtime.designer.audio_locks import prompt_declines_music
+
+    # Opt-in: a configured backend renders music only when the request asked for it.
+    return (
+        can_music
+        and bool(audio.get("include_music"))
+        and audio.get("policy") != "silent"
+        and not prompt_declines_music(prompt)
+    )
+
+
+def bgm_node(story_name: str, *, inputs: list[str]) -> dict[str, Any]:
+    from jiuwenswarm.common.schema.designer_node_labels import label_music
+
+    return {
+        "id": "n_music",
+        "type": NODE_TYPE_AUDIO,
+        "label": label_music(story_name),
+        "config": {
+            "role": NODE_ROLE_MUSIC,
+            "pipeline": NODE_ROLE_MUSIC,
+            "inputs": list(inputs),
+            "agent_name": label_music(story_name),
+            "kind": "agent",
+            "skill_id": "audio_bed",
+            "tools": ["call_music_model", "read_upstream", "call_model"],
+            "delegate": "agent",
+        },
+        "layout": {"x": 340, "y": 420, "width": 260, "height": 120},
+    }
 
 
 def find_non_contributing_node_ids(graph: DesignerExecutionGraph) -> list[str]:
@@ -1676,7 +1712,8 @@ def build_smart_video_graph(
         prev_shot_by_setting[setting_id] = shot_id
         prev_shot_global = shot_id
 
-    # Audio routing records backend capabilities but keeps sound clip-native.
+    # Dialogue stays clip-native; only the film-wide BGM bed gets its own node,
+    # and only when a music backend is configured.
     from jiuwenswarm.server.runtime.designer.capabilities import detect_audio_backends
 
     backends = detect_audio_backends()
@@ -1684,6 +1721,9 @@ def build_smart_video_graph(
     can_music = bool(backends.get("can_music"))
     # Three separate audio dimensions: speech and diegetic sound are rendered by
     # the clips themselves, music is opt-in and only a film-level score.
+    # One film-level score: the music node renders it and compose mixes it in,
+    # so no clip ever asks the video model for music.
+    music_node = bgm_node_wanted(audio, prompt_text, can_music=can_music)
     audio_plan = {
         "speech": dict(audio.get("speech_intent") or {}) or {
             "include": bool(audio.get("include_speech")),
@@ -1693,7 +1733,8 @@ def build_smart_video_graph(
         "music": {
             "requested": bool(audio.get("include_music")),
             "supported": can_music,
-            "rendered": bool(audio.get("include_music")) and can_music,
+            "rendered": bool(music_node),
+            "node": "n_music" if music_node else "",
             "notes": "",
         },
         "clip_audio": "dialogue + diegetic sound only; a clip never carries music",
@@ -1707,14 +1748,13 @@ def build_smart_video_graph(
         )
         audio_plan["music"]["notes"] = audio_support_note
     audio_plan["note"] = audio_support_note
-    # Keep requested sound in clip-native prompts. Audio generation is not
-    # implemented, so generated graphs must never add speech/music canvas nodes.
+    # Dialogue stays clip-native; the score belongs to the music node only.
     clip_embedded = False
     if audio.get("policy") != "silent":
         want_speech = bool(audio.get("include_speech"))
-        # Music is opt-in and, without a backend, never rendered at all.
-        want_music = bool(audio.get("include_music"))
-        clip_embedded = want_speech or want_music
+        # Only dialogue is clip-native; music is opt-in and generated once by the
+        # music node, which is created below from the same flag.
+        clip_embedded = want_speech
         if clip_embedded:
             from jiuwenswarm.server.runtime.designer.audio_locks import stamp_audio_fields_on_clip_config
 
@@ -1752,6 +1792,10 @@ def build_smart_video_graph(
                 pass
 
     compose_inputs = list(shot_ids)
+    if music_node:
+        nodes.append(bgm_node(story_name, inputs=["n_brief"]))
+        edges.append(_edge("e_brief_music", "n_brief", "n_music"))
+        compose_inputs.append("n_music")
     nodes.append(
         {
             "id": "n_compose",
@@ -1796,7 +1840,7 @@ def build_smart_video_graph(
                 "can_video_audio": bool(backends.get("can_video_audio", True)),
                 "video_audio_model": str(backends.get("video_audio_model") or ""),
                 "speech_nodes": False,
-                "music_nodes": False,
+                "music_nodes": music_node,
                 "music_requested": bool(audio.get("include_music")),
                 "music_supported": bool(can_music),
             },

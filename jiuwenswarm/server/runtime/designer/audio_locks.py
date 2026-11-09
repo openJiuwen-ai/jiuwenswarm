@@ -159,7 +159,7 @@ def infer_bgm_lock(prompt: str, audio: dict[str, Any] | None = None) -> dict[str
     """Film-wide BGM lock (mood/style). Empty instruments ok — model fills tastefully."""
     audio = audio if isinstance(audio, dict) else {}
     existing = audio.get("bgm_lock") if isinstance(audio.get("bgm_lock"), dict) else {}
-    if existing.get("mood") or existing.get("style") or existing.get("rule"):
+    if any(existing.get(key) for key in ("mood", "style", "rule", "user_request")):
         out = {
             "mood": str(existing.get("mood") or "")[:120],
             "style": str(existing.get("style") or "")[:120],
@@ -172,6 +172,9 @@ def infer_bgm_lock(prompt: str, audio: dict[str, Any] | None = None) -> dict[str
                 or "Non-vocal underscore only; never drown dialogue; keep one film score identity."
             )[:280],
         }
+        for key, limit in (("user_request", 280), ("tempo_bpm", 24), ("key", 40)):
+            if str(existing.get(key) or "").strip():
+                out[key] = str(existing[key])[:limit]
         return out
     from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
         current_content_language,
@@ -265,6 +268,29 @@ _NO_DIALOGUE_MARKERS = (
     "不说话",
     "纯视觉",
 )
+# Music off, dialogue may stay.
+_NO_MUSIC_MARKERS = (
+    "no music",
+    "no bgm",
+    "no soundtrack",
+    "no background music",
+    "without music",
+    "without bgm",
+    "不要音乐",
+    "不要配乐",
+    "不要背景音乐",
+    "不要bgm",
+    "无配乐",
+    "无音乐",
+    "无背景音乐",
+    "无bgm",
+)
+
+
+def prompt_declines_music(prompt: str) -> bool:
+    """True when the user asked for silence or explicitly for no music / BGM."""
+    text = (prompt or "").lower()
+    return prompt_requests_full_silence(text) or any(marker in text for marker in _NO_MUSIC_MARKERS)
 
 
 def prompt_requests_full_silence(prompt: str) -> bool:

@@ -114,8 +114,7 @@
       "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
       "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
       "notSelected": "No model",
-      "openModelSettings": "Open Settings",
-      "chatAnthropicUnsupported": "Design does not support a chat model on the Anthropic protocol. In Settings, configure a model that uses the OpenAI protocol and try again."
+      "openModelSettings": "Open Settings"
     },
     "activity": {
       "thinking": "Thinking",
@@ -184,6 +183,7 @@
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
       "duration": "Video duration",
+      "audioDuration": "Audio duration",
       "count": "Count",
       "browseFiles": "Browse files",
       "dropHint": "Or drag into this area",
@@ -200,8 +200,15 @@
     "mediaSettings": {
       "videoTitle": "Video settings",
       "imageTitle": "Image settings",
+      "audioTitle": "Audio settings",
       "durationValue": "{{seconds}}s",
       "durationUnit": "s",
+      "minuteUnit": "min",
+      "secondUnit": "sec",
+      "audioDurationDefault": "Film default duration",
+      "audioDurationMinutes": "{{count}} min",
+      "audioDurationSeconds": "{{count}} sec",
+      "audioDurationBoth": "{{minutes}} min {{seconds}} sec",
       "loading": "Loading generation settings…",
       "loadError": "Could not load generation settings: {{message}}",
       "saveError": "Settings not saved: {{message}}"
@@ -281,7 +288,9 @@
       "deleteConfirmCancel": "Cancel",
       "deleteConfirmOk": "Confirm",
       "resize": "Resize",
-      "resizeHint": "Drag the bottom-right corner to resize this node"
+      "resizeHint": "Drag the bottom-right corner to resize this node",
+      "playAudio": "Play audio",
+      "pauseAudio": "Pause audio"
     },
     "edge": {
       "delete": "Delete connection"
@@ -472,7 +481,38 @@
       "channels": "Channels",
       "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
-      "experimental": "Experimental"
+      "experimental": "Experimental",
+      "appearance": "Appearance"
+    },
+    "appearance": {
+      "uiFont": "Interface font",
+      "uiFontDescription": "Font used for chat, settings and other interface text. Stored on this device only.",
+      "uiFontDefault": "Follow default",
+      "uiFontZhHei": "Chinese sans (Microsoft YaHei / PingFang)",
+      "uiFontZhSong": "Chinese serif (SimSun / Source Han Serif)",
+      "uiFontZhKai": "Chinese Kai (KaiTi / LXGW WenKai)",
+      "uiFontCustom": "Custom",
+      "customFontPlaceholder": "Font names, separated by commas",
+      "customFontHint": "Fonts are matched in order against locally installed fonts. Generic families such as sans-serif and monospace are also allowed.",
+      "fontSize": "Interface font size",
+      "fontSizeDescription": "Scales interface text proportionally. 100% matches the current default.",
+      "fontSizeSmaller": "Smaller (90%)",
+      "fontSizeDefault": "Default (100%)",
+      "fontSizeLarger": "Larger (110%)",
+      "fontSizeLarge": "Large (125%)",
+      "fontSizeXLarge": "Extra large (140%)",
+      "codeFont": "Code font",
+      "codeFontDescription": "Font for monospace content such as code blocks, commands and traces.",
+      "codeFontDefault": "Follow default",
+      "codeFontJetbrainsFira": "JetBrains Mono / Fira Code",
+      "codeFontCascadia": "Cascadia Code",
+      "codeFontCustom": "Custom",
+      "preview": "Preview",
+      "previewBody": "Interface text preview: organizing today's task summary for you.",
+      "previewCodeSample": "npm run build",
+      "resetTitle": "Restore default appearance",
+      "resetDescription": "Clears appearance preferences saved on this device and restores theme defaults.",
+      "resetButton": "Restore defaults"
     },
     "feedback": {
       "loadFailed": "Failed to load settings",
@@ -774,6 +814,7 @@
       "videoConfigTitle": "Configure video understanding model",
       "videoGenConfigTitle": "Configure video generation model",
       "visualGenConfigTitle": "Configure visual generation model",
+      "musicGenConfigTitle": "Configure audio generation model",
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
@@ -1117,6 +1158,10 @@
         "title": "ComfyUI workflow integration",
         "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
       },
+      "music_gen_enabled": {
+        "title": "Audio generation",
+        "description": "Generate background music (BGM) for the design canvas: planning adds a BGM node and compose mixes it in; disabling it keeps the saved model configuration."
+      },
       "progressive_tool_optimize": {
         "title": "Enable tool retrieval optimization",
         "description": "When enabled, the model discovers tools on demand via the tool_search catalogue."
@@ -1281,6 +1326,7 @@
           "vote": "Review vote",
           "revision": "Rework requested",
           "verified": "Review passed",
+          "completed": "Task completed",
           "cancelled": "Task cancelled",
           "escalated": "Review escalated",
           "anomaly": "Dispatch anomaly",
@@ -1301,16 +1347,16 @@
         "cancel": "Cancel",
         "start": "Start",
         "starting": "Starting…",
-        "summary": "{{count}} Agent(s) selected · {{spans}} OTel span(s)",
-        "emptyNodes": "The selection has no complete OTel span to diagnose. Spans that are not fully covered (start and end) were left out.",
+        "summary": "{{count}} Agent(s) selected · {{spans}} node(s)",
+        "emptyNodes": "The selection has no complete trajectory record to diagnose. Records that are not fully covered (start and end) were left out.",
         "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
-        "nodeLimit": "The selection contains {{count}} OTel spans, over the limit of {{limit}}. Narrow the range.",
+        "nodeLimit": "The selection contains {{count}} trajectory records, over the limit of {{limit}}. Narrow the range.",
         "running": "A diagnosis is already in progress",
         "noData": "There is no trajectory to diagnose yet",
         "replay": "Read-only replay cannot be diagnosed; exit replay first"
       },
-      "summary": "{{agents}} Agents · {{spans}} OTel spans",
-      "teamSummary": "{{members}} members · {{completed}}/{{tasks}} tasks completed · {{reviews}} reviews · {{spans}} spans",
+      "summary": "{{agents}} Agents · {{spans}} OTel spans · {{nodes}} node(s)",
+      "teamSummary": "{{members}} members · {{completed}}/{{tasks}} tasks completed · {{reviews}} reviews · {{spans}} OTel spans · {{nodes}} node(s)",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
@@ -1345,6 +1391,7 @@
       "includeAgent": "Selected: {{name}}",
       "includeAgentHint": "Uncheck to clear {{name}}'s current selection",
       "timeAxis": "Time axis",
+      "turnMarker": "Turn {{turn}}",
       "records": "Diagnosis records",
       "noRecords": "No diagnosis yet",
       "delete": "Delete",
@@ -1449,7 +1496,7 @@
       "dimension": "Dimension",
       "requestCount": "{{count}} model requests",
       "objectSteps": "Scope",
-      "objectStepsCount": "{{count}} OTel spans",
+      "objectStepsCount": "{{count}} node(s)",
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
       "objectSummary": "Trajectory summary",
@@ -5024,6 +5071,7 @@
     "title": "Authorization",
     "matchedRule": "Matched rule",
     "titleConfirm": "Confirm action",
+    "unavailable": "This option can't be applied to this request",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
     "skip": "Skip",
@@ -5832,7 +5880,9 @@
       "groupAudience": "The shared content may be visible to all members of the destination group.",
       "audience": "The shared content may be visible to everyone in the destination conversation.",
       "exactMessages": "Review exact messages ({{count}})",
+      "collapseExactMessages": "Hide exact messages ({{count}})",
       "exactArtifacts": "Review exact files and documents ({{count}})",
+      "collapseExactArtifacts": "Hide exact files and documents ({{count}})",
       "fileSize": "File size: {{size}} bytes",
       "created": "Created: {{time}}",
       "createdAt": "Created",
@@ -6069,6 +6119,7 @@
       "welinkCredentialDone": "Done",
       "welinkShowAssistantQr": "Show assistant code",
       "welinkRetry": "Retry",
+      "welinkScanReminder": "This page will advance automatically once binding succeeds. Please keep it open and do not select Cancel.",
       "welinkAssistantWaiting": "Scan the assistant code and confirm",
       "welinkAssistantScan": "Create by scanning",
       "welinkAssistantExisting": "Enter an existing AK/SK",
@@ -6605,6 +6656,12 @@
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
     "generatingTasks": "Generating tasks",
+    "organizationStage": {
+      "starting": "Starting expert teams",
+      "processing": "Processing",
+      "executing": "Experts working",
+      "summarizing": "Summarizing"
+    },
     "counts": {
       "total": "Total",
       "running": "In progress",
@@ -6620,6 +6677,7 @@
     "viewResult": "View task result",
     "sendFailed": "Unable to process this message. Please retry.",
     "sending": "Sending…",
+    "modelLocked": "The model cannot be changed after the group chat starts",
     "processing": "Processing…",
     "mentionPhase": {
       "dispatching": "Received, processing…",

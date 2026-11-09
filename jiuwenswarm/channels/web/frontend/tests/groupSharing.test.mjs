@@ -10,6 +10,9 @@ const browser = new JSDOM('<!doctype html>', { url: 'http://localhost' });
 globalThis.window = browser.window;
 globalThis.document = browser.window.document;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+globalThis.MutationObserver = browser.window.MutationObserver;
+// JSDOM has no layout observer; the scroll-follow effect only adjusts scrollTop.
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 const { createRoot } = await import('react-dom/client');
 const { createJiuwenMateApi } = await import('../node_modules/.cache/group-sharing/jiuwenmateApi.js');
 const { ColleagueWorkspacePage } = await import('../node_modules/.cache/group-sharing/pages/ColleagueWorkspacePage.js');
@@ -39,6 +42,11 @@ const grant = {
   created_at: '2026-10-27T00:01:00Z', status: 'active',
 };
 const snapshot = (approvals = [approval], grants = [grant]) => ({ approvals, grants, conversation_id: 'sharing-approvals' });
+const artifact = {
+  group_id: 'source-a', group_name: 'Source team', platform: 'dingtalk', artifact_id: 'artifact-a',
+  artifact_kind: 'file', title: 'Budget sheet', file_name: 'budget.xlsx', file_size: 2048,
+  url: 'https://example.test/budget.xlsx', snippet: null, created_at: '2026-10-27T00:00:00Z',
+};
 const colleague = {
   id: 'config-web', configId: 'config-web', name: 'Colleague', description: '', persona: '', category: 'custom', tags: [],
   capabilities: { model: '', skills: [], connectors: [], plugins: [], knowledge: [], starterPrompts: [] },
@@ -184,6 +192,30 @@ test('background approval polling keeps cards, expanded content and controls ste
     await act(async () => pending.resolve(snapshot()));
     assert.equal(view.find('card'), card);
     assert.equal(view.find('messages').open, true);
+  } finally { await view.close(); }
+});
+
+test('expanding exact messages and artifacts switches the summary to the collapse label', async () => {
+  const view = await renderWorkspace(snapshot([{ ...approval, artifacts: [artifact] }]));
+  try {
+    await view.click('open');
+    assert.equal(view.find('messages').open, false);
+    assert.equal(view.find('expand').textContent, 'Review exact messages (1)');
+    await view.click('expand');
+    assert.equal(view.find('messages').open, true);
+    assert.equal(view.find('expand').textContent, 'Hide exact messages (1)');
+    await view.poll();
+    assert.equal(view.find('messages').open, true);
+    assert.equal(view.find('expand').textContent, 'Hide exact messages (1)');
+    await view.click('expand');
+    assert.equal(view.find('messages').open, false);
+    assert.equal(view.find('expand').textContent, 'Review exact messages (1)');
+
+    assert.equal(view.find('artifacts').open, false);
+    assert.equal(view.find('artifacts-expand').textContent, 'Review exact files and documents (1)');
+    await view.click('artifacts-expand');
+    assert.equal(view.find('artifacts').open, true);
+    assert.equal(view.find('artifacts-expand').textContent, 'Hide exact files and documents (1)');
   } finally { await view.close(); }
 });
 

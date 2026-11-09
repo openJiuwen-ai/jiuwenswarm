@@ -314,20 +314,20 @@ class TestDispatchTable:
             def list_agents(self) -> list[_ListedAgent]:
                 return [_ListedAgent(name="helper")]
 
-        _install_fake_agent_config_service(_Service)
+        _install_fake_agent_config_service(monkeypatch, _Service)
         ctx, sink = _ctx(ReqMethod.AGENTS_LIST, {"workspace_dir": "/tmp/ws"})
         assert await try_dispatch(ctx) is True
         assert sink.responses[0].ok is True
         assert sink.responses[0].payload == {"agents": [{"name": "helper"}]}
 
 
-def _install_fake_agent_config_service(service_cls: type) -> None:
+def _install_fake_agent_config_service(monkeypatch: pytest.MonkeyPatch, service_cls: type) -> None:
     """挡住真实配置服务。它会连带拉起当前环境里缺的模块。"""
 
     name = "jiuwenswarm.server.runtime.agent_config_service"
     fake = types.ModuleType(name)
     fake.AgentConfigService = service_cls
-    sys.modules[name] = fake
+    monkeypatch.setitem(sys.modules, name, fake)
 
 
 class TestAgentsEnable:
@@ -351,7 +351,7 @@ class TestAgentsEnable:
             async def reload_agents_config(self, config: object, scope: object) -> None:
                 self.calls.append((config, scope))
 
-        _install_fake_agent_config_service(_Service)
+        _install_fake_agent_config_service(monkeypatch, _Service)
         monkeypatch.setattr(agents_handlers, "upsert_subagent_in_config", lambda name, enabled: None)
         monkeypatch.setattr(agents_handlers, "get_config", lambda: {"ok": True})
         manager = _Manager()
