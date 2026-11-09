@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -566,6 +567,10 @@ def enrich_team_spec_for_swarm(
         install_execution_policy(spec.agents["leader"], include_tools=False)
         teammate.rails = [*(teammate.rails or []), RailSpec(type=GROUP_MEMBER_TEMPLATE,
             params={"initial_names": [member["member_name"] for member in group_members]})]
+    # P-B entry-level sandbox injection (design D-20261105-1041 KD1/KD2, §4.0).
+    # Runs after every named entry exists (role bases, AgentGroup roster, group
+    # members) so the whole spec.agents dict is covered by one pass.
+    _build_member_sandbox_specs(config, spec, session_id=session_id)
     logger.info(
         "[swarm.assembly] enriched team spec '%s' "
         "(roles=%s, session=%s, mcps=%d, agent_group=%s)",
@@ -574,6 +579,146 @@ def enrich_team_spec_for_swarm(
         session_id,
         len(mcp_configs),
         agent_group_name,
+    )
+
+
+def _entry_slug(value: str) -> str:
+    """Sanitize one name fragment for use inside a sandbox id / isolation key.
+
+    jiuwenbox validates custom sandbox ids against ``^[0-9a-z_-]+$``
+    (models/sandbox.py). Openjiuwen already constrains member names and
+    roster names to safe alphabets, so this is defense in depth: any stray
+    character (notably ``#`` from binder directory names) degrades to ``-``
+    instead of failing sandbox creation.
+    """
+    slug = re.sub(r"[^0-9a-zA-Z_-]", "-", str(value or ""))
+    slug = slug.strip("-_")
+    return slug[:80] or "entry"
+
+
+def _entry_sandbox_slug(team_name: str, entry_name: str) -> str:
+    """Deterministic isolation-key suffix for one spec entry (P-B granularity)."""
+    return f"entry_{_entry_slug(team_name)}_{_entry_slug(entry_name)}"
+
+
+def _build_member_sandbox_specs(config: Any, spec: Any, *, session_id: str) -> None:
+    """Give every ``spec.agents`` entry its own sandbox SysOperationSpec (P-B).
+
+    Injection condition matrix (design D-20261105-1041 KD7): all branches that
+    leave members on LOCAL are loud except ``sandbox.enabled=false``, which is
+    the expected configuration and stays silent. Each entry gets a distinct
+    deterministic id (``sandbox.entry_<team>_<entry>``) so the openjiuwen
+    registry's one-key-one-id invariant holds without any workaround; runtime
+    derived members (spawn_expert / reviewer / swarmflow worker) inherit their
+    base entry's sysop through openjiuwen's own ``model_copy`` paths.
+
+    Args:
+        config: The resolved ``config.yaml`` mapping (unused here; kept for
+            symmetry with the other assembly helpers and future knobs).
+        spec: The ``TeamAgentSpec`` being enriched (mutated in place).
+        session_id: Active session id, threaded into the team mount context.
+    """
+    from jiuwenswarm.common.config import get_sandbox_endpoint, get_sandbox_runtime
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from openjiuwen.core.sys_operation import OperationMode
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+        _team_context_from_spec,
+        create_sandbox_sysop_card,
+    )
+
+    runtime = get_sandbox_runtime()
+    if not runtime.get("enabled"):
+        return  # expected configuration: silent
+    if is_enterprise():
+        # Known boundary (design §3 non-goal): enterprise team members stay
+        # LOCAL until multi-tenant isolation-key semantics exist. Info-level so
+        # the note is auditable without polluting warning channels.
+        logger.info(
+            "[swarm.assembly] team members stay LOCAL: enterprise sandbox "
+            "isolation is a known boundary (team=%s)",
+            spec.team_name,
+        )
+        return
+
+    endpoint = get_sandbox_endpoint()
+    sandbox_url = str(endpoint.get("url") or "").strip()
+    sandbox_type = str(endpoint.get("type") or "").strip().lower()
+    if not sandbox_url or not sandbox_type:
+        logger.warning(
+            "[swarm.assembly] team members stay LOCAL: sandbox endpoint "
+            "unresolved (type=%s, url=%s) (team=%s)",
+            sandbox_type,
+            sandbox_url,
+            spec.team_name,
+        )
+        return
+    if sandbox_type != "jiuwenbox":
+        logger.warning(
+            "[swarm.assembly] team members stay LOCAL: sandbox type %s "
+            "not supported for team members yet (team=%s)",
+            sandbox_type,
+            spec.team_name,
+        )
+        return
+
+    team_ctx = _team_context_from_spec(spec)
+    if team_ctx is None:
+        logger.warning(
+            "[swarm.assembly] team members stay LOCAL: team context "
+            "unresolvable (team=%s)",
+            spec.team_name,
+        )
+        return
+    team_ctx["session_id"] = str(session_id or "")
+
+    injected: list[str] = []
+    for entry_name, agent_spec in list(spec.agents.items()):
+        entry_slug = _entry_sandbox_slug(spec.team_name, entry_name)
+        card = create_sandbox_sysop_card(
+            sandbox_url,
+            "jiuwenbox",
+            files_runtime=runtime.get("files"),
+            excluded_commands=runtime.get("excluded_commands"),
+            idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
+            idle_check_interval=runtime.get("idle_check_interval"),
+            fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
+            isolation_custom_id=entry_slug,
+            team_context=team_ctx,
+        )
+        if card is None:
+            # create_sandbox_sysop_card already warned with the cause; the
+            # entry stays None (LOCAL) and the loop continues.
+            continue
+        spec.agents[entry_name] = agent_spec.model_copy(
+            update={
+                "sys_operation": SysOperationSpec(
+                    id=f"sandbox.{entry_slug}",
+                    mode=OperationMode.SANDBOX,
+                    gateway_config=card.gateway_config,
+                ),
+            }
+        )
+        injected.append(entry_name)
+
+    # The reviewer spec is built before injection from the teammate entry, so
+    # it does not carry the sysop automatically: hand it the teammate's spec
+    # object so temp reviewers share the teammate container (read-only toolset,
+    # design KD2). Untouched when the teammate entry itself failed to inject.
+    teammate_sysop = (spec.agents.get("teammate").sys_operation
+                      if spec.agents.get("teammate") is not None else None)
+    if teammate_sysop is not None and spec.reviewer_agent is not None:
+        spec.reviewer_agent = spec.reviewer_agent.model_copy(
+            update={"sys_operation": teammate_sysop}
+        )
+
+    logger.info(
+        "[swarm.assembly] team entries share sandbox config: entries=%d "
+        "injected=%s (team=%s)",
+        len(injected),
+        injected,
+        spec.team_name,
     )
 
 
