@@ -3622,6 +3622,9 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     installed: list[object | None] = []
 
     monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", True)
+    for name in ("_shared_checkpointer", "_shared_engine", "_shared_engine_kind"):
+        if hasattr(checkpointer, name):
+            monkeypatch.setattr(checkpointer, name, None)
     monkeypatch.setattr(
         checkpointer,
         "PersistenceCheckpointerProvider",
