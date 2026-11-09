@@ -399,10 +399,8 @@ def apply_compose_character_specs_setting_policy(analysis: dict[str, Any]) -> di
             shot["clip_strategy"] = "compose_from_character_specs"
             shot["same_setting_prior_edit"] = False
             shot["ensemble_master"] = False
-            shot["compose_setting_master"] = True
             shot["is_scene_master"] = True
             compose_actions_by_set[sid] = dict(actions)
-            shot["scene_compose_authority"] = True
             other_sets = [s for s in setting_place if s != sid]
             distinct = (
                 f"NEW SCENE `{sid}` — different scene from {', '.join(other_sets)}. "
@@ -421,9 +419,7 @@ def apply_compose_character_specs_setting_policy(analysis: dict[str, Any]) -> di
             shot["clip_strategy"] = "compose_from_character_specs"
             shot["same_setting_prior_edit"] = False
             shot["ensemble_master"] = False
-            shot["compose_setting_master"] = False
             shot["is_scene_master"] = False
-            shot["scene_compose_authority"] = False
             prior_actions = compose_actions_by_set.get(sid) or {}
             shot["setting_lock"] = {
                 "setting_id": sid,
