@@ -777,6 +777,7 @@
       "archivedTasks": "Archived Tasks",
       "extensions": "Extensions",
       "experimental": "Experimental",
+      "systemPluginRecovery": "System plugin recovery",
       "appearance": "Appearance"
     },
     "appearance": {
@@ -876,6 +877,11 @@
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first."
       },
       "designModeNote": "Design mode doesn't support archiving yet."
+    },
+    "systemPluginRecovery": {
+      "description": "View the latest 50 system plugin state records. Every application startup and each successful install, uninstall, enable, disable, and restore operation is recorded.",
+      "restartNote": "Restore keeps the system plugins currently installed, restores the system plugin enabled states at the selected time, and automatically restarts the background services.",
+      "unavailable": "The system plugin recovery service is unavailable."
     },
     "dialog": {
       "discardTitle": "Discard unsaved changes",
@@ -5771,10 +5777,13 @@
       "install": "Install",
       "uninstall": "Uninstall",
       "reload": "Reload",
+      "enable": "Enable",
+      "disable": "Disable",
       "detail": "View details",
       "enabled": "Enabled",
       "statusActive": "Active",
       "statusInstalled": "Installed",
+      "statusDisabled": "Disabled",
       "statusAvailable": "Not installed",
       "preview": "Preview",
       "previewHint": "Click to enlarge",

@@ -11,6 +11,7 @@ export interface SystemPluginSummary {
   avatar: string | null;
   installed: boolean;
   active: boolean;
+  enabled: boolean;
 }
 
 export interface SystemPluginEvent {

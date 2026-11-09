@@ -12,6 +12,7 @@ import { useSystemPluginStore } from '../../stores/systemPluginStore';
 import { localizedText } from '../../types/localized';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
+import { Switch } from '../Switch';
 import './ConnectorMarket.css';
 
 const README_DIALOG_TITLE_ID = 'system-plugin-readme-dialog-title';
@@ -37,6 +38,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const install = useSystemPluginStore((s) => s.install);
   const uninstall = useSystemPluginStore((s) => s.uninstall);
   const reload = useSystemPluginStore((s) => s.reload);
+  const setEnabled = useSystemPluginStore((s) => s.setEnabled);
   const [loading, setLoading] = useState(!detail);
   const [failed, setFailed] = useState(false);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
@@ -163,11 +165,13 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const description = localizedText(detail.displayDescription, i18n.language);
   const details = localizedText(detail.details, i18n.language);
   const readme = localizedText(detail.readme, i18n.language);
-  const status = detail.active
-    ? t('connectorMarket.systemPlugin.statusActive')
-    : detail.installed
-      ? t('connectorMarket.systemPlugin.statusInstalled')
-      : t('connectorMarket.systemPlugin.statusAvailable');
+  const status = !detail.installed
+    ? t('connectorMarket.systemPlugin.statusAvailable')
+    : !detail.enabled
+      ? t('connectorMarket.systemPlugin.statusDisabled')
+      : detail.active
+        ? t('connectorMarket.systemPlugin.statusActive')
+        : t('connectorMarket.systemPlugin.statusInstalled');
   const busyBlocked = busy || loading;
 
   async function runAction(
@@ -183,6 +187,10 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   async function handleUninstall() {
     setConfirmUninstall(false);
     await runAction(uninstall, onDeleted);
+  }
+
+  async function handleEnabledChange(enable: boolean) {
+    await runAction((packageId) => setEnabled(packageId, enable));
   }
 
   return (
@@ -239,6 +247,18 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
                   <UninstallIcon aria-hidden="true" />
                   {t('connectorMarket.systemPlugin.uninstall')}
                 </button>
+              )}
+              {detail.installed && (
+                <span
+                  data-testid="connector-market-system-plugin-detail-enabled"
+                  title={t(detail.enabled ? 'connectorMarket.systemPlugin.disable' : 'connectorMarket.systemPlugin.enable')}
+                >
+                  <Switch
+                    checked={detail.enabled}
+                    disabled={busyBlocked}
+                    onChange={(enable) => { void handleEnabledChange(enable); }}
+                  />
+                </span>
               )}
             </div>
           }

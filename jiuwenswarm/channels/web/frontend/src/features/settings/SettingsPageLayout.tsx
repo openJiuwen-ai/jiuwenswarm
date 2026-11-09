@@ -203,28 +203,30 @@ export function SettingsPageLayout({
       {sidebar?.isActive !== false && (
         <main className="settings-page__main" data-testid="settings-main">
           <div className="settings-page__content">
-            <header className="settings-page__header" data-testid="settings-header">
-              <div className="settings-page__header-copy">
-                <h1 data-testid="settings-module-title">{t(active.module.titleKey)}</h1>
-                {active.module.descriptionKey ? <p data-testid="settings-module-description">{t(active.module.descriptionKey)}</p> : null}
-              </div>
-              {saveStatus.status === 'saving' ? (
-                <span className="settings-page__status" role="status" data-testid="settings-save-status" data-variant="saving">
-                  <Loading size="sm" aria-label="" />
-                  {t('settingsPanel.feedback.saving')}
-                </span>
-              ) : saveStatus.status === 'saved' ? (
-                <span className="settings-page__status settings-page__status--saved" role="status" data-testid="settings-save-status" data-variant="saved">
-                  <Check size={14} aria-hidden />
-                  {t('settingsPanel.feedback.saved')}
-                </span>
-              ) : saveStatus.status === 'error' && !inlineError ? (
-                <span className="settings-page__status settings-page__status--error" role="alert" data-testid="settings-save-status" data-variant="error">
-                  <CircleAlert size={14} aria-hidden />
-                  {formatSettingsSaveError(saveStatus.error, t)}
-                </span>
-              ) : null}
-            </header>
+            {!active.module.hideHeader ? (
+              <header className="settings-page__header" data-testid="settings-header">
+                <div className="settings-page__header-copy">
+                  <h1 data-testid="settings-module-title">{t(active.module.titleKey)}</h1>
+                  {active.module.descriptionKey ? <p data-testid="settings-module-description">{t(active.module.descriptionKey)}</p> : null}
+                </div>
+                {saveStatus.status === 'saving' ? (
+                  <span className="settings-page__status" role="status" data-testid="settings-save-status" data-variant="saving">
+                    <Loading size="sm" aria-label="" />
+                    {t('settingsPanel.feedback.saving')}
+                  </span>
+                ) : saveStatus.status === 'saved' ? (
+                  <span className="settings-page__status settings-page__status--saved" role="status" data-testid="settings-save-status" data-variant="saved">
+                    <Check size={14} aria-hidden />
+                    {t('settingsPanel.feedback.saved')}
+                  </span>
+                ) : saveStatus.status === 'error' && !inlineError ? (
+                  <span className="settings-page__status settings-page__status--error" role="alert" data-testid="settings-save-status" data-variant="error">
+                    <CircleAlert size={14} aria-hidden />
+                    {formatSettingsSaveError(saveStatus.error, t)}
+                  </span>
+                ) : null}
+              </header>
+            ) : null}
             {loadError && (
               <p role="alert" data-testid="settings-plugin-load-error">
                 {t('webui.settingsLoadFailed')}

@@ -1,0 +1,37 @@
+.system-plugin-recovery {
+  min-height: 0;
+}
+
+.system-plugin-recovery__frame {
+  display: block;
+  width: 100%;
+  min-height: 620px;
+  height: calc(100vh - 184px);
+  border: 0;
+  background: var(--color-surface-base);
+}
+
+.system-plugin-recovery__notice,
+.system-plugin-recovery__loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--color-settings-border);
+  border-radius: 10px;
+  background: var(--color-surface-card);
+}
+
+.system-plugin-recovery__notice {
+  color: var(--color-feedback-danger);
+  border-color: var(--color-border-danger);
+  background: var(--color-feedback-danger-subtle);
+}
+
+.system-plugin-recovery__loading svg {
+  animation: system-plugin-recovery-spin 1s linear infinite;
+}
+
+@keyframes system-plugin-recovery-spin {
+  to { transform: rotate(360deg); }
+}

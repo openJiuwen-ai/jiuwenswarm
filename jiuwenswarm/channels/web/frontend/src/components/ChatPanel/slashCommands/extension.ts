@@ -16,6 +16,7 @@ interface PackageReport {
 interface InstalledCopy {
   package_id: string;
   version: string;
+  domain?: string | null;
   install_path: string;
 }
 
@@ -38,6 +39,7 @@ interface ReportedPackage {
 
 interface LocalPackageState {
   version: string;
+  domain: string | null;
   active: boolean;
   installPath: string;
 }
@@ -144,12 +146,19 @@ function localPackageStates(state: PackageState): {
   const activeRoots = new Set(state.active.map((record) => record.root));
   const installedOnly = state.installed.filter((root) => !activeRoots.has(root));
   for (const record of state.active) {
-    add(record.package_id, { version: record.version, active: true, installPath: record.root });
+    add(record.package_id, { version: record.version, domain: null, active: true, installPath: record.root });
   }
   const unknownPaths: string[] = [];
   for (const path of installedOnly) {
     const record = state.installed_packages?.find((item) => item.install_path === path);
-    if (record) add(record.package_id, { version: record.version, active: false, installPath: path });
+    if (record) {
+      add(record.package_id, {
+        version: record.version,
+        domain: record.domain ?? null,
+        active: false,
+        installPath: path,
+      });
+    }
     else unknownPaths.push(path);
   }
   return { byPackage, unknownPaths };
@@ -182,7 +191,11 @@ function formatState(state: PackageState, t: ExtensionCommandTranslate): string 
     blocks.push(lines.join('\n'));
   }
   for (const [packageId, records] of [...local.byPackage.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-    const lines = [t('extensionCommand.packageId', { packageId })];
+    const domain = records.find((record) => record.domain !== null)?.domain ?? '-';
+    const lines = [
+      t('extensionCommand.packageId', { packageId }),
+      t('extensionCommand.domain', { domain }),
+    ];
     appendRuntimeState(lines, records, null, t);
     blocks.push(lines.join('\n'));
   }

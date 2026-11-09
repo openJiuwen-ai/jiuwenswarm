@@ -13,6 +13,7 @@ import errno
 import hmac
 import http.client
 import io
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -66,6 +67,16 @@ class _BadRequestError(ValueError):
     exception escape the request handler (which drops the connection without a
     response and logs a traceback for every malformed request).
     """
+
+
+def _is_loopback_address(value: object) -> bool:
+    """Return whether a peer address is a loopback IP literal."""
+    if not isinstance(value, str):
+        return False
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 def _get_share_image_export_manager() -> ShareImageExportManager:
@@ -1326,7 +1337,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         ws = self._is_ws_route()
         if not (gateway_api or ws or self._is_api_route() or self._is_file_api_route()
                 or self._is_share_api_route() or self._is_extension_asset_route()
-                or self._is_extension_transfer_route()):
+                or self._is_extension_transfer_route()
+                or path == "/system-plugin-recovery/endpoint"):
             return False
         upstream = self._resolve_enterprise_upstream()
         if upstream is None:
@@ -1359,6 +1371,25 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, "expected websocket upgrade")
             return True
         return False
+
+    def _handle_system_plugin_recovery_endpoint(self) -> None:
+        """Return the private loopback page URL without using extension services."""
+        if self._check_desktop_access():
+            return
+        if not self.desktop_token and not _is_loopback_address(self.client_address[0]):
+            self._write_json(403, {"error": "forbidden"})
+            return
+        try:
+            from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+
+            endpoint = SystemPluginRecovery().endpoint()
+        except Exception:  # noqa: BLE001 - keep the static emergency route isolated
+            self.logger.warning("[SystemPluginRecovery] could not read sidecar endpoint", exc_info=True)
+            endpoint = None
+        if endpoint is None:
+            self._write_json(503, {"error": "recovery_unavailable"})
+            return
+        self._write_json(200, {"url": endpoint})
 
     @staticmethod
     def _is_markdown(path_obj: Path) -> bool:
@@ -2708,6 +2739,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if self._dispatch_office_addins(parsed):
             return
+        if parsed.path == "/system-plugin-recovery/endpoint":
+            self._handle_system_plugin_recovery_endpoint()
+            return
         if parsed.path == "/oauth/hub/callback":
             from jiuwenswarm.channels.web.hub_oauth import complete
 
@@ -2832,6 +2866,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/system-plugin-recovery/endpoint":
+            self._handle_system_plugin_recovery_endpoint()
+            return
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)
             return

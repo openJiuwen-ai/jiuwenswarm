@@ -29,7 +29,11 @@ from jiuwenswarm.extensions_v2.management.catalog import (
 )
 from jiuwenswarm.extensions_v2.management.recovery import query_after_error
 from jiuwenswarm.extensions_v2.management.registry import CODE_MANAGER_NOT_INITIALIZED, ExtensionManager
-from jiuwenswarm.extensions_v2.manifest_io import DOMAIN_AGENT_SERVER
+from jiuwenswarm.extensions_v2.manifest_io import (
+    DOMAIN_AGENT_SERVER,
+    package_domain,
+    read_manifest_document,
+)
 from jiuwenswarm.server.runtime.extension_package_manager import (
     list_package_files,
     read_package_file,
@@ -48,6 +52,7 @@ class _Request:
     package_id: str = ""
     path: str = ""
     scope: str = "catalog"
+    enable: bool | None = None
 
 
 class PackageManagementAdapter(GatewayAdapter):
@@ -61,6 +66,7 @@ class PackageManagementAdapter(GatewayAdapter):
             ReqMethod.EXTENSIONS_V2_INSTALL.value,
             ReqMethod.EXTENSIONS_V2_UNINSTALL.value,
             ReqMethod.EXTENSIONS_V2_RELOAD.value,
+            ReqMethod.EXTENSIONS_V2_SET_ENABLED.value,
             ReqMethod.EXTENSIONS_V2_FILE_LIST.value,
             ReqMethod.EXTENSIONS_V2_FILE_READ.value,
         }
@@ -150,6 +156,8 @@ async def _dispatch(manager: ExtensionManager, method: str, parsed: _Request) ->
         return {"reports": [await manager.uninstall(parsed.package_id)]}
     if method == ReqMethod.EXTENSIONS_V2_RELOAD.value:
         return {"reports": [await manager.reload(parsed.package_id)]}
+    if method == ReqMethod.EXTENSIONS_V2_SET_ENABLED.value:
+        return {"reports": [await manager.set_enabled(parsed.package_id, parsed.enable is True)]}
     return {"state": await manager.query(parsed.package_id or None)}
 
 
@@ -232,6 +240,14 @@ def _parse_request(method: object, params: object) -> _Request:
             raise ValueError("path must be a nonempty string")
         return _Request(package_id=_package_id(params["package_id"]), path=relative.strip())
 
+    if method == ReqMethod.EXTENSIONS_V2_SET_ENABLED.value:
+        if set(params) != {"package_id", "enable"}:
+            raise ValueError("set enabled requires package_id and enable")
+        enable = params.get("enable")
+        if not isinstance(enable, bool):
+            raise ValueError("enable must be a boolean")
+        return _Request(package_id=_package_id(params["package_id"]), enable=enable)
+
     if set(params) - {"package_id"}:
         raise ValueError("only package_id is accepted")
     if method == ReqMethod.EXTENSIONS_V2_QUERY.value and "package_id" not in params:
@@ -311,7 +327,12 @@ def _encode(value: object) -> Any:
         state = {field.name: _encode(getattr(value, field.name)) for field in fields(value)}
         state["package_ids"] = sorted(record.package_id for record in value.packages if record.successful)
         state["installed_packages"] = [
-            {"package_id": root.parent.name, "version": root.name, "install_path": str(root)}
+            {
+                "package_id": root.parent.name,
+                "version": root.name,
+                "domain": _installed_package_domain(root),
+                "install_path": str(root),
+            }
             for root in value.installed
         ]
         return state
@@ -328,3 +349,11 @@ def _encode(value: object) -> Any:
     if value is None or isinstance(value, (str, bool, int, float)):
         return value
     raise TypeError(f"unsupported management result type: {type(value).__name__}")
+
+
+def _installed_package_domain(root: Path) -> str | None:
+    """Read one installed package domain for the slash-command presentation."""
+    try:
+        return package_domain(read_manifest_document(root))
+    except (OSError, UnicodeError, ValueError):
+        return None

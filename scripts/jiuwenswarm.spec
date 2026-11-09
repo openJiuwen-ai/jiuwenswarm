@@ -342,6 +342,7 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.desktop.desktop_app",  # 桌面入口
+    "jiuwenswarm.common.system_plugin_recovery_sidecar",
 ] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules
 hiddenimports += gateway_submodules
 

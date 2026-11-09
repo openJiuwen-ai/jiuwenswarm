@@ -6,9 +6,9 @@
 | --- | --- |
 | 类型 | spec |
 | 编号 / slug | `S_01 / extension-management-facade` |
-| 关联特性 | [F_03](../features/F_03_registry-facade.md) |
+| 关联特性 | [F_03](../features/F_03_registry-facade.md)、[F_34](../features/F_34_system-plugin-enable.md) |
 | 所属模块 | `jiuwenswarm/extensions_v2/management/registry.py` |
-| 最近一次修订日期 | 2026-11-06 |
+| 最近一次修订日期 | 2026-11-08 |
 | 方案状态 | 当前实现契约 |
 
 ## 1. 范围与责任
@@ -41,6 +41,7 @@
 | 安装副本 | `<install_dir>/<package_id>/<version>/` 下的包目录 |
 | generation | 同一包每次成功安装或重载递增的序号 |
 | 未生效副本 | 安装目录中存在、但 `Runtime` 没有生效记录的包 |
+| 禁用副本 | 安装目录中存在且 `manifest.json.enable` 为 `false` 的系统插件；不登记 Handler |
 
 ## 3. 不变量
 
@@ -59,7 +60,7 @@
 | --- | --- | --- |
 | `plan_id` | `str` | 本次计划标识；宿主补偿生成的结果为空串 |
 | `package_id` | `str` | 包标识 |
-| `operation` | `str` | `install` / `reload` / `uninstall` |
+| `operation` | `str` | `install` / `reload` / `uninstall` / `enable` / `disable` |
 | `status` | `"SUCCESS" \| "FAILED"` | 结果状态，无 `SKIPPED` |
 | `previous_generation` | `int \| None` | 操作前 generation |
 | `current_generation` | `int \| None` | 操作后 generation；卸载后为 `None` |
@@ -139,6 +140,7 @@ async def install(paths: Sequence[Path]) -> list[ActivationReport]
 - 一次触发 `package.install`，`paths` 作为同一批来源。
 - 返回顺序与 agent-core 报告顺序一致，不保证与输入顺序一一对应。
 - 报告占用、依赖等待、复制和失败清理由 Core 处理；门面不做全目录差集删除。
+- `manifest.json` 的可选 `enable` 缺失时，Core 按 `true` 处理并写入受管副本；`false` 时安装成功但不登记 Handler。
 
 ### 5.4 启动激活
 
@@ -149,6 +151,7 @@ async def load_installed() -> list[ActivationReport]
 - 只委托 Core.load_installed；Core 从安装根目录完整发现，选择最高合法版本、检查依赖环并稳定排序，最后选择 `agentserver` 的包。
 - 已在本地生效的包跳过；非法声明返回失败报告，独立包继续。全部队列为空时返回空列表。
 - 同 ID 跨域拒绝；另一域依赖未就绪时按配置等待。
+- 禁用副本保留在安装目录中，不参与启动激活。
 
 ### 5.5 卸载
 
@@ -177,7 +180,17 @@ async def query(package_id: str | None = None) -> QueryResult
 
 触发 `package.query`。active/installed 是本地事实，packages 是共享报告快照；指定 ID 时只返回该包，误送其它域会拒绝。无参数时适配器把全部有效成功包 ID 编码为 state.package_ids。
 
-### 5.8 生效包快照
+### 5.8 启用状态
+
+```python
+async def set_enabled(package_id: str, enabled: bool) -> ActivationReport
+```
+
+- `enabled=True` 将最高已安装版本的受管 manifest 写为 `true`，再登记该包 Handler；登记失败时恢复为 `false`。
+- `enabled=False` 先撤销该包 Handler，再将受管 manifest 写为 `false`；不删除安装副本、包数据或版本目录。
+- 包不存在、依赖关系不允许撤销或 Handler 登记失败时返回失败 Report；失败不伪造新的状态。
+
+### 5.9 生效包快照
 
 ```python
 def active_packages() -> tuple[ActivePackageRecord, ...]
@@ -185,7 +198,7 @@ def active_packages() -> tuple[ActivePackageRecord, ...]
 
 同步只读，供界面目录等消费者使用；顺序按 `package_id` 排序。
 
-### 5.9 停机
+### 5.10 停机
 
 ```python
 async def shutdown() -> None

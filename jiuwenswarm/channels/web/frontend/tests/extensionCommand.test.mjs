@@ -150,8 +150,8 @@ test('query supports all packages and one package, with active and inactive dire
     assert.match(output, /package_id：demo.pkg/);
     assert.match(output, /package_id：inactive.pkg/);
     assert.match(output, /版本：2.0.0/);
-    assert.match(output, /运行状态：已生效/);
-    assert.match(output, /运行状态：已安装，未生效/);
+    assert.match(output, /状态：已生效/);
+    assert.match(output, /状态：已安装，未生效/);
     assert.match(output, /安装目录：\/store\/inactive.pkg\/2.0.0/);
     assert.doesNotMatch(output, /AgentServer|代次|generation/);
     assert.equal(output.split(installedPath).length - 1, 1);
@@ -456,7 +456,7 @@ test('query without id displays report details from both domains', async () => {
   assert.match(output, /域：gateway/);
   assert.match(output, /域：agentserver/);
   assert.match(output, /当前生效版本：2.0.0/);
-  assert.match(output, /运行状态：已生效/);
+  assert.match(output, /状态：已生效/);
   assert.ok(output.includes(installedPath));
   assert.doesNotMatch(output, /报告状态|当前进程运行状态/);
   assert.equal(output.split('当前生效版本：2.0.0').length - 1, 1);
@@ -473,6 +473,23 @@ test('query with id merges the report and local facts into one package block', a
   assert.ok(output.includes('2.3.4'));
   assert.ok(output.includes(installedPath));
   assert.match(output, /域：agentserver/);
-  assert.match(output, /运行状态：已生效/);
+  assert.match(output, /状态：已生效/);
   assert.equal(output.split('package_id：demo.pkg').length - 1, 1);
+});
+
+test('query displays the manifest domain for an inactive installed package', async () => {
+  const inactivePath = '/tmp/extensions/inactive.pkg/1.0.0';
+  const stub = requestStub({ state: {
+    active: [],
+    installed: [inactivePath],
+    installed_packages: [{
+      package_id: 'inactive.pkg',
+      version: '1.0.0',
+      domain: 'agentserver',
+      install_path: inactivePath,
+    }],
+  } });
+  const output = await runExtensionCommand('query inactive.pkg', 'session-1', stub.request, translate());
+  assert.match(output, /域：agentserver/);
+  assert.match(output, /状态：已安装，未生效/);
 });

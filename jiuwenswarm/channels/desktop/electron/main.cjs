@@ -61,6 +61,7 @@ const CLOSE_ACTION_QUIT = 'quit';
 // 本机浏览器直开对话页时返回 403。
 const desktopLockToken = randomBytes(32).toString('base64url');
 const browserResolverToken = randomBytes(32).toString('base64url');
+const recoverySessionId = randomUUID();
 const forceManagedBrowser = /^(1|true|yes|on)$/i.test(process.env.JIUWENSWARM_BROWSER_FORCE_MANAGED || '');
 const VITE_DEV_MODE = process.argv.includes('--vite-dev');
 const ELECTRON_CDP_PORT = Number.parseInt(process.env.JIUWENSWARM_ELECTRON_CDP_PORT || '', 10);
@@ -182,6 +183,10 @@ let requestedExitCode = 0;
 const serviceProcesses = new Map();
 // Resolved session port group (null before startWebService / FrontendOnly mode).
 let sessionPorts = null;
+let recoveryRestartSignalPath = '';
+let recoveryRestartWatcher = null;
+let backendRestartInProgress = false;
+const intentionallyStoppedProcesses = new WeakSet();
 
 function repositoryRoot() {
   return path.resolve(__dirname, '..', '..', '..', '..');
@@ -231,7 +236,7 @@ function logStreamFor(name) {
 
 function serviceCommand(name, extraArgs = []) {
   if (app.isPackaged) {
-    const flags = { web: '--desktop-run-web', agent: '--desktop-run-agent', gateway: '--desktop-run-gateway', lifecycle: '--desktop-run-worker-lifecycle' };
+    const flags = { web: '--desktop-run-web', agent: '--desktop-run-agent', gateway: '--desktop-run-gateway', lifecycle: '--desktop-run-worker-lifecycle', recovery: '--extension-recovery-sidecar' };
     const flag = flags[name];
     if (!flag) throw new Error(`Unknown service name: ${name}`);
     return { command: backendExecutable(), args: [flag, ...extraArgs] };
@@ -246,6 +251,7 @@ function serviceCommand(name, extraArgs = []) {
     gateway: 'agent_gateway.app_gateway',
     web: 'jiuwenswarm.channels.web.app_web',
     lifecycle: 'jiuwenswarm.server.supervisor.shutdown',
+    recovery: 'jiuwenswarm.common.system_plugin_recovery_sidecar',
   };
   const moduleName = moduleNames[name];
   if (!moduleName) throw new Error(`Unknown service name: ${name}`);
@@ -321,6 +327,10 @@ function spawnService(name, ports, extraArgs = []) {
   // inject the full session port group so agent/gateway/web agree, and let the
   // children skip workspace preparation because the launcher did it once.
   env.JIUWENSWARM_RUNTIME_WORKSPACE_READY = '1';
+  env.JIUWENSWARM_RECOVERY_SESSION_ID = recoverySessionId;
+  if (recoveryRestartSignalPath) {
+    env.JIUWENSWARM_RECOVERY_RESTART_SIGNAL_PATH = recoveryRestartSignalPath;
+  }
   // 桌面锁定契约(desktop_app._build_child_env): 仅 web 静态服务注入 token,
   // 其他子进程不携带; Vite dev 模式的 web 子进程是 Vite 而非 app_web, 同样不注入。
   if (name === 'web' && !VITE_DEV_MODE) {
@@ -362,6 +372,7 @@ function spawnService(name, ports, extraArgs = []) {
   child.spawnEnvironment = env;
   serviceProcesses.set(name, child);
   child.once('exit', (code, signal) => {
+    if (intentionallyStoppedProcesses.delete(child)) return;
     if (!shuttingDown) {
       console.error(`[electron] ${name} service exited early`, {
         code,
@@ -485,6 +496,14 @@ function watchBackendPair(agentProcess, gatewayProcess) {
       clearInterval(watcher);
       return;
     }
+    if (backendRestartInProgress) return;
+    if (
+      serviceProcesses.get('agent') !== agentProcess
+      || serviceProcesses.get('gateway') !== gatewayProcess
+    ) {
+      clearInterval(watcher);
+      return;
+    }
     const agentExited = agentProcess.exitCode !== null;
     const gatewayExited = gatewayProcess.exitCode !== null;
     if (!agentExited && !gatewayExited) return;
@@ -501,6 +520,107 @@ function watchBackendPair(agentProcess, gatewayProcess) {
       void terminateService(agentProcess).catch(error =>
         console.error('[electron] background service cleanup incomplete', error));
     }
+  }, 250);
+}
+
+async function consumeRecoveryRestartSignal() {
+  if (!recoveryRestartSignalPath) return false;
+  let request;
+  try {
+    request = JSON.parse(await fs.readFile(recoveryRestartSignalPath, 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn('[electron] could not read system plugin recovery restart request', error);
+    }
+    return false;
+  }
+  if (
+    !request
+    || request.session_id !== recoverySessionId
+    || typeof request.not_before !== 'number'
+  ) {
+    await fs.unlink(recoveryRestartSignalPath).catch(() => {});
+    return false;
+  }
+  if (Date.now() / 1000 < request.not_before) return false;
+  await fs.unlink(recoveryRestartSignalPath).catch(() => {});
+  return true;
+}
+
+async function restartBackendServices(ports) {
+  if (backendRestartInProgress || shuttingDown) return false;
+  backendRestartInProgress = true;
+  const agent = serviceProcesses.get('agent');
+  const current = [serviceProcesses.get('gateway'), agent].filter(Boolean);
+  const restarted = [];
+  const deadline = Date.now() + RUNTIME_SHUTDOWN_TIMEOUT_MS;
+  try {
+    for (const child of current) intentionallyStoppedProcesses.add(child);
+    for (const child of current) {
+      await terminateService(child);
+      if (serviceTreeRunning(child)) throw new Error('Recovery service exit was not confirmed');
+    }
+    await shutdownResidentWorker(agent, Math.max(1, deadline - Date.now()));
+    for (const [name, child] of serviceProcesses.entries()) {
+      if (current.includes(child)) serviceProcesses.delete(name);
+    }
+    if (shuttingDown) return false;
+
+    const agentProcess = spawnService('agent', ports);
+    restarted.push(agentProcess);
+    const gatewayProcess = spawnService('gateway', ports);
+    restarted.push(gatewayProcess);
+    await Promise.all([
+      waitForTcp(BACKEND_HOST, ports.agentServer, agentProcess),
+      waitForTcp(BACKEND_HOST, ports.gatewayApi, gatewayProcess),
+    ]);
+    if (shuttingDown) return false;
+    watchBackendPair(agentProcess, gatewayProcess);
+    console.log('[electron] AgentServer and Gateway restarted after system plugin recovery');
+    return true;
+  } catch (error) {
+    console.error('[electron] backend restart after system plugin recovery failed', error);
+    let cleanupComplete = true;
+    for (const child of restarted.slice().reverse()) {
+      intentionallyStoppedProcesses.add(child);
+      try {
+        await terminateService(child);
+        if (serviceTreeRunning(child)) throw new Error('Replacement service exit was not confirmed');
+      } catch (cleanupError) {
+        cleanupComplete = false;
+        console.error('[electron] recovery replacement cleanup incomplete', cleanupError);
+      }
+    }
+    if (restarted.length && cleanupComplete) {
+      try {
+        await shutdownResidentWorker(restarted[0], Math.max(1, deadline - Date.now()));
+      } catch (cleanupError) {
+        console.error('[electron] recovery replacement Worker shutdown incomplete', cleanupError);
+      }
+    }
+    return false;
+  } finally {
+    backendRestartInProgress = false;
+  }
+}
+
+function watchRecoveryRestartRequests(ports) {
+  if (recoveryRestartWatcher) clearInterval(recoveryRestartWatcher);
+  let polling = false;
+  recoveryRestartWatcher = setInterval(() => {
+    if (shuttingDown) {
+      clearInterval(recoveryRestartWatcher);
+      recoveryRestartWatcher = null;
+      return;
+    }
+    if (polling || backendRestartInProgress) return;
+    polling = true;
+    void consumeRecoveryRestartSignal().then(restartRequested => {
+      if (restartRequested) return restartBackendServices(ports);
+      return undefined;
+    }).catch(error => {
+      console.error('[electron] recovery restart request failed', error);
+    }).finally(() => { polling = false; });
   }, 250);
 }
 
@@ -721,9 +841,15 @@ async function startBackendServices({ ports, webProcess, webReady }) {
   let agentProcess = null;
   let gatewayProcess = null;
   if (shuttingDown) return;
+  let recoveryProcess = null;
   try {
     await prepareRuntimeWorkspace();
     if (shuttingDown) return;
+    recoveryRestartSignalPath = path.join(app.getPath('userData'), 'system-plugin-recovery-restart.json');
+    await fs.mkdir(path.dirname(recoveryRestartSignalPath), { recursive: true });
+    await fs.unlink(recoveryRestartSignalPath).catch(() => {});
+    if (shuttingDown) return;
+    recoveryProcess = spawnService('recovery', ports);
     agentProcess = spawnService('agent', ports);
     gatewayProcess = spawnService('gateway', ports);
 
@@ -738,7 +864,7 @@ async function startBackendServices({ ports, webProcess, webReady }) {
   } catch (error) {
     // Quit owns cleanup. A cancelled preparation/readiness wait is not a startup failure.
     if (shuttingDown) return;
-    for (const child of [webProcess, agentProcess, gatewayProcess]) {
+    for (const child of [webProcess, recoveryProcess, agentProcess, gatewayProcess]) {
       if (child) {
         void terminateService(child).catch(error =>
           console.error('[electron] background service cleanup incomplete', error));
@@ -749,6 +875,7 @@ async function startBackendServices({ ports, webProcess, webReady }) {
 
   if (shuttingDown) return;
   watchBackendPair(agentProcess, gatewayProcess);
+  watchRecoveryRestartRequests(ports);
   // 健康启动不产生 failure 记录, 删除空的会话诊断目录避免累积
   // (对齐 desktop_app; 非空目录保留)。
   if (startupDiagnosticsDir) {
@@ -857,9 +984,27 @@ async function terminateService(child) {
   }
 }
 
+async function shutdownResidentWorker(agent, timeoutMs) {
+  const { command, args } = serviceCommand('lifecycle', ['--shutdown-worker', '--timeout', String(timeoutMs / 1000)]);
+  await new Promise((resolve, reject) => {
+    const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent?.spawnEnvironment || process.env });
+    const timer = setTimeout(() => { helper.kill(); reject(new Error('Worker shutdown helper exceeded deadline')); }, timeoutMs + 500);
+    helper.once('error', error => { clearTimeout(timer); reject(error); });
+    helper.once('exit', code => {
+      clearTimeout(timer);
+      if (code !== 0) reject(new Error(`Worker shutdown incomplete (exit=${code})`));
+      else resolve();
+    });
+  });
+}
+
 function stopServices() {
   if (shutdownPromise) return shutdownPromise;
   shuttingDown = true;
+  if (recoveryRestartWatcher) {
+    clearInterval(recoveryRestartWatcher);
+    recoveryRestartWatcher = null;
+  }
   const services = [...serviceProcesses.entries()];
   for (const [name, child] of services) {
     console.log(`[electron] stopping ${name} service tree`, { pid: child.pid });
@@ -880,19 +1025,9 @@ function stopServices() {
     // even when Quit precedes this launch's AgentServer registration.
     if (!isFrontendOnly) {
       const remaining = Math.max(1, deadline - Date.now());
-      const { command, args } = serviceCommand('lifecycle', ['--shutdown-worker', '--timeout', String(remaining / 1000)]);
       const agent = services.find(([name]) => name === 'agent')?.[1];
       try {
-        await new Promise((resolve, reject) => {
-          const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent?.spawnEnvironment || process.env });
-          const timer = setTimeout(() => { helper.kill(); reject(new Error('Worker shutdown helper exceeded deadline')); }, remaining + 500);
-          helper.once('error', error => { clearTimeout(timer); reject(error); });
-          helper.once('exit', code => {
-            clearTimeout(timer);
-            if (code !== 0) reject(new Error(`Worker shutdown incomplete (exit=${code})`));
-            else resolve();
-          });
-        });
+        await shutdownResidentWorker(agent, remaining);
       } catch (error) {
         failure ||= error;
       }
