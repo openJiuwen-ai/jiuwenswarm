@@ -128,6 +128,24 @@ _QUIET_OUTCOMES = frozenset({"unchanged", "chat_request_inflight", "news_unchang
 _WRITTEN_OUTCOMES = frozenset({"written", "already_written"})
 
 
+def _issued_slate_in_scope(
+    payload: Any,
+    *,
+    context_scope: str,
+    project_id: str | None,
+    work_mode: str,
+) -> bool:
+    """Whether an issued slate was written for the scope now being served."""
+
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("context_scope") != context_scope:
+        return False
+    if payload.get("project_id") != project_id:
+        return False
+    return normalize_topic_work_mode(payload.get("work_mode")) == work_mode
+
+
 class _RunRequest(NamedTuple):
     origin: str
     visit_id: str
@@ -1357,7 +1375,8 @@ class TopicService:
             }
         )
 
-    def schedule_news_check(self, visit_id: str) -> asyncio.Task[str] | None:
+    @staticmethod
+    def schedule_news_check(visit_id: str) -> asyncio.Task[str] | None:
         """No-op: hot-news cards ride the ordinary personalized generation batch.
 
         Enable, chat successors, and manual retry already run the hot-news lane
@@ -1689,11 +1708,11 @@ class TopicService:
             )
             if len(rows) == 1 and rows[0].get("session_id") == session_id:
                 payload = rows[0].get("payload")
-                if isinstance(payload, dict) and (
-                    payload.get("context_scope") == context_scope
-                    and payload.get("project_id") == project_id
-                    and normalize_topic_work_mode(payload.get("work_mode"))
-                    == normalized_work_mode
+                if _issued_slate_in_scope(
+                    payload,
+                    context_scope=context_scope,
+                    project_id=project_id,
+                    work_mode=normalized_work_mode,
                 ):
                     issued = payload
         preset_only = not self._accepting_work or self._ark_config is None
