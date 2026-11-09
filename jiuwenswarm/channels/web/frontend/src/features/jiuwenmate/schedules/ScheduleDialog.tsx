@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
+import { CircleAlert, X } from 'lucide-react';
 import { buildCron, fromZonedInput, parseCron, toZonedInput, validateDraft, weekdayName } from './state';
 import type { Schedule, ScheduleDraft } from './types';
 
@@ -120,26 +120,54 @@ export function ScheduleDialog({
   const [form, setForm] = useState<FormState>(() => (plan ? formFromPlan(plan) : blankForm()));
   const executorRef = useRef<HTMLSelectElement>(null);
   const [chosenExecutor, setChosenExecutor] = useState(executorId);
-  const [error, setError] = useState('');
+  // 本地校验错误与提交失败原因分开存：前者随输入实时重算，后者只在再次点「确定」或关闭
+  // 对话框时清除或替换，避免用户改一个无关字段就把服务端给出的失败原因弄丢。
+  const [validationError, setValidationError] = useState('');
+  const [submitError, setSubmitError] = useState('');
   if (!open) return null;
   const draft = toDraft(form, timezone);
+  // 两者实际不会同时存在（提交失败后，本地校验只在再次点「确定」时才重算），一旦同时存在
+  // 优先显示提交失败原因：它带着服务端的信息，更需要用户看到。
+  const error = submitError || validationError;
+  const errorText = (reason: string | null) => (reason ? t(`jiuwenmate.schedule.error.${reason}`) : '');
+  // 只在已经报过本地校验错之后才随输入重算：填到合法即清空，仍不合法则换成当前原因的文案；
+  // 没报过错时不提前提示，避免对话框一打开就是红字。提交失败原因不在这里动。
+  const revalidate = (next: FormState, executor: string) => {
+    if (!validationError) return;
+    setValidationError(errorText(validateDraft(toDraft(next, timezone), executor)));
+  };
   const save = () => {
     const reason = validateDraft(draft, chosenExecutor);
+    // 再次提交即放下上一次的提交失败原因；本地校验不通过时换成校验文案。
+    setSubmitError('');
     if (reason) {
       // The native validity bubble is not shown in every desktop shell, so keep an inline message as well.
-      setError(t(`jiuwenmate.schedule.error.${reason}`));
+      setValidationError(errorText(reason));
+      // 执行者缺失与其它校验失败同一套表现：显示行内提示，只额外把焦点交给该下拉框。
       if (reason === 'executorRequired') executorRef.current?.focus();
       return;
     }
-    setError('');
+    setValidationError('');
     void Promise.resolve(onSubmit(chosenExecutor, draft))
       .then(() => onClose())
       .catch((failure: unknown) => {
         const message = failure instanceof Error ? failure.message : '';
-        setError(message || t('jiuwenmate.schedule.error.required'));
+        setSubmitError(message || t('jiuwenmate.schedule.error.required'));
       });
   };
-  const patch = (next: Partial<FormState>) => setForm((current) => ({ ...current, ...next }));
+  const patch = (partial: Partial<FormState>) => {
+    const merged = { ...form, ...partial };
+    setForm(merged);
+    revalidate(merged, chosenExecutor);
+  };
+  const chooseExecutor = (next: string) => {
+    setChosenExecutor(next);
+    if (next && validationError === t('jiuwenmate.schedule.error.executorRequired')) {
+      setValidationError('');
+      return;
+    }
+    revalidate(form, next);
+  };
   return (
     <div className="jiuwenmate-dialog-backdrop" data-testid="jiuwenmate-schedule-dialog">
       <div className="jiuwenmate-dialog jiuwenmate-schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="jiuwenmate-schedule-dialog-title">
@@ -153,10 +181,7 @@ export function ScheduleDialog({
           {executors ? (
             <label className="jiuwenmate-field">
               <span>{t('jiuwenmate.schedule.executor')}</span>
-              <select ref={executorRef} required value={chosenExecutor} onChange={(event) => {
-                  setChosenExecutor(event.target.value);
-                  if (event.target.value && error === t('jiuwenmate.schedule.error.executorRequired')) setError('');
-                }} data-testid="jiuwenmate-schedule-executor">
+              <select ref={executorRef} required value={chosenExecutor} onChange={(event) => chooseExecutor(event.target.value)} data-testid="jiuwenmate-schedule-executor">
                 <option value="">{t('jiuwenmate.schedule.chooseExecutor')}</option>
                 {executors.map((item) => (
                   <option key={item.id} value={item.id}>{item.name}</option>
@@ -220,11 +245,16 @@ export function ScheduleDialog({
           <div className="jiuwenmate-field">
             <span>{t('jiuwenmate.schedule.effective')}</span>
             <div className="jiuwenmate-schedule-plan">
-              <input type="date" value={form.startsOn} aria-label={t('jiuwenmate.schedule.startsOn')} onChange={(event) => patch({ startsOn: event.target.value })} />
-              <input type="date" value={form.endsOn} aria-label={t('jiuwenmate.schedule.endsOn')} onChange={(event) => patch({ endsOn: event.target.value })} />
+              <input type="date" value={form.startsOn} aria-label={t('jiuwenmate.schedule.startsOn')} onChange={(event) => patch({ startsOn: event.target.value })} data-testid="jiuwenmate-schedule-starts-on" />
+              <input type="date" value={form.endsOn} aria-label={t('jiuwenmate.schedule.endsOn')} onChange={(event) => patch({ endsOn: event.target.value })} data-testid="jiuwenmate-schedule-ends-on" />
             </div>
           </div>
-          {error ? <p role="alert">{error}</p> : null}
+          {error ? (
+            <p className="jiuwenmate-dialog__error" role="alert" data-testid="jiuwenmate-schedule-error">
+              <CircleAlert aria-hidden />
+              <span>{error}</span>
+            </p>
+          ) : null}
         </div>
         <div className="jiuwenmate-dialog__footer">
           <button type="button" className="jiuwenmate-outline-button" onClick={onClose}>{t('jiuwenmate.schedule.cancel')}</button>
