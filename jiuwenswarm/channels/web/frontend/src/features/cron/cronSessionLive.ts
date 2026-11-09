@@ -65,10 +65,6 @@ function rememberLiveSeq(sessionId: string, sequence: number): boolean {
   return true;
 }
 
-function isCronExecutionSession(sessionId: string): boolean {
-  return sessionId.startsWith('cron_') || sessionId.startsWith('__cron__');
-}
-
 /** 历史（或已完成的回复）已覆盖回放时，这些帧仍然要画：提问卡片、错误、执行状态更新；
  * 发文件可能比历史落库更早到 live，也要接着画。 */
 const CRON_LIVE_KEEP_AFTER_HISTORY = new Set([
