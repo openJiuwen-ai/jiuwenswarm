@@ -56,6 +56,36 @@ from jiuwenswarm.runtime.session_provisioner import (
 test_logger = logging.getLogger("tests.runtime_service")
 
 
+def _reset_checkpointer_globals() -> None:
+    from jiuwenswarm.runtime import checkpointer
+
+    checkpointer._shared_checkpointer = None
+    checkpointer._PERSISTENT_CHECKPOINTER_READY = False
+    checkpointer._shared_engine = None
+    checkpointer._shared_engine_kind = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_checkpointer_state():
+    """Reset runtime.checkpointer module globals leaked by per-test stubs.
+
+    ``ensure_persistent_checkpointer()`` stores ``CheckpointerFactory.create()``'s
+    return value into the module-level ``_shared_checkpointer``. Tests that patch
+    ``create`` with a plain-object stub leak that stub past monkeypatch teardown
+    (plain module-global writes are not tracked by monkeypatch), and any later
+    ``ensure`` call while ``_PERSISTENT_CHECKPOINTER_READY`` is still truthy
+    installs the stub via ``set_default_checkpointer`` — cascading
+    ``'object' object has no attribute 'pre_agent_execute'`` into unrelated
+    tests sharing the same xdist worker. Earlier files (e.g.
+    ``test_checkpoint_journal.py``) leak the same way, so the reset runs on
+    both setup and teardown: every test in this file starts from a clean state
+    regardless of what previous files left behind on the worker.
+    """
+    _reset_checkpointer_globals()
+    yield
+    _reset_checkpointer_globals()
+
+
 async def _collect_events(stream) -> list[RuntimeEvent]:
     return [event async for event in stream]
 
@@ -3618,6 +3648,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
         _kv_store=SimpleNamespace(engine=SimpleNamespace(dispose=dispose))
     )
     replacement_checkpointer = object()
+    monkeypatch.setattr(checkpointer, "_shared_checkpointer", None, raising=False)
     create_checkpointer = AsyncMock(return_value=replacement_checkpointer)
     installed: list[object | None] = []
 

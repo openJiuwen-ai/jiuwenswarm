@@ -38,6 +38,16 @@ def _runtime_instance_token() -> str:
     return hashlib.sha256(instance.encode()).hexdigest()[:8]
 
 
+def _make_runtime_dir(base: Path) -> Path:
+    """Create a uid-owned 0o700 runtime dir for the fallback IPC socket."""
+    directory = base / f"jiuwenswarm-runtime-{os.getuid()}"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+        raise RuntimeError("Runtime IPC directory has an unexpected owner")
+    directory.chmod(0o700)
+    return directory
+
+
 def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
@@ -52,12 +62,16 @@ def default_socket_path() -> str:
     path = get_user_workspace_dir() / "run" / sock_name
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
-        directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
-        directory.mkdir(mode=0o700, exist_ok=True)
-        if directory.is_symlink() or directory.stat().st_uid != os.getuid():
-            raise RuntimeError("Runtime IPC directory has an unexpected owner")
-        directory.chmod(0o700)
+
+        directory = _make_runtime_dir(Path(tempfile.gettempdir()))
         path = directory / sock_name
+        # macOS 的 tempfile.gettempdir() 解析为 /var/folders/<32>/T（约 49 字
+        # 节），兜底路径自身仍会超过 AF_UNIX sun_path 预算，worker bind 时抛
+        # "unix socket path is too long" 起不来。退回字面量 /tmp：bind 时内核
+        # 解析符号链接，实际可用。
+        if len(os.fsencode(path)) >= 100:
+            directory = _make_runtime_dir(Path("/tmp"))
+            path = directory / sock_name
     return str(path)
 
 

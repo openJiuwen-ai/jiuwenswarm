@@ -2514,6 +2514,7 @@
 }
 
 .jiuwenmate-chat-approval {
+  --jm-approval-call-inset: 8px;
   display: grid;
   gap: 8px;
   width: min(100%, 520px);
@@ -2532,7 +2533,7 @@
 .jiuwenmate-chat-approval__call {
   display: grid;
   gap: 4px;
-  padding: 8px;
+  padding: var(--jm-approval-call-inset);
   border-radius: 6px;
   background: var(--jm-surface);
 }
@@ -2550,6 +2551,10 @@
 .jiuwenmate-chat-approval__actions {
   display: flex;
   gap: 8px;
+}
+
+.jiuwenmate-chat-approval > .jiuwenmate-chat-approval__actions {
+  padding-inline-start: var(--jm-approval-call-inset);
 }
 
 .jiuwenmate-chat-approval__actions button {
@@ -5422,52 +5427,6 @@
 
 .jiuwenmate-heatmap__cell[aria-pressed='true'] {
   outline: 1px solid var(--jm-text);
-}
-
-.jiuwenmate-heatmap__tooltip {
-  position: absolute;
-  z-index: 20;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  display: grid;
-  gap: 4px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
-  color: var(--jm-text);
-  font-size: 11px;
-  text-align: left;
-  white-space: nowrap;
-  transform: translateX(-50%);
-  pointer-events: none;
-}
-
-.jiuwenmate-heatmap__tooltip[data-edge='end'] {
-  right: 0;
-  left: auto;
-  transform: none;
-}
-
-.jiuwenmate-heatmap__tooltip[data-edge='below'] {
-  top: calc(100% + 6px);
-  bottom: auto;
-}
-
-.jiuwenmate-heatmap__tooltip strong {
-  font-weight: 400;
-}
-
-.jiuwenmate-heatmap__tooltip span {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.jiuwenmate-heatmap__tooltip i {
-  width: 1px;
-  height: 10px;
-  background: var(--jm-border-strong);
 }
 
 .jiuwenmate-heatmap__legend {

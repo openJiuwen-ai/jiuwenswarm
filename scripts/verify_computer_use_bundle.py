@@ -21,7 +21,7 @@ from jiuwenswarm.agents.harness.common.tools.cua_runtime import ReplRuntime
 LOGGER = logging.getLogger(__name__)
 PROBE = """
 import json
-from computer_use.client.connection import Connection
+from computer_use.native.connection import Connection
 from computer_use.paths import native_driver
 connection = Connection(lambda *args: None)
 try:

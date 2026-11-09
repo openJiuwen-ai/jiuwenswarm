@@ -77,6 +77,38 @@ _FORWARD_DRAIN_TIMEOUT = 1.0
 _WORKER_STALL_WARN = 30.0
 _WORKER_STALL_RESTART = 180.0
 
+
+def _bounded_stall_context(value: object) -> dict[str, Any]:
+    """Keep only diagnostic identity and frame locations, never business payloads."""
+    if not isinstance(value, dict):
+        return {}
+
+    def text(raw: object, limit: int = 128) -> str:
+        if not isinstance(raw, str):
+            return ""
+        return "".join(char if char.isprintable() else "?" for char in raw[:limit])
+
+    result: dict[str, Any] = {}
+    for key in ("operation", "task", "request_id", "session_id", "channel_id", "method", "dispatch_id"):
+        if isinstance(value.get(key), str):
+            result[key] = text(value[key])
+    stack = value.get("stack")
+    if isinstance(stack, list):
+        frames = []
+        for frame in stack[:16]:
+            if not isinstance(frame, dict):
+                continue
+            line = frame.get("line")
+            if type(line) is not int or not 0 <= line <= 10_000_000:
+                continue
+            frames.append({
+                "file": text(frame.get("file"), 256),
+                "function": text(frame.get("function")),
+                "line": line,
+            })
+        result["stack"] = frames
+    return result
+
 _GatewayRoute = tuple[Any, asyncio.Lock]
 _ForwardQueue = asyncio.Queue[tuple[dict[str, Any], _GatewayRoute | None]]
 
@@ -159,6 +191,7 @@ class RuntimeSupervisor:
         self._peer_generation: int | None = None
         self._last_rx = 0.0
         self._worker_last_beat = 0.0
+        self._worker_stall_context: dict[str, Any] = {}
         self._stall_warned_at = 0.0
         self._forward_queue: _ForwardQueue | None = None
         self._forward_started = 0.0
@@ -818,6 +851,7 @@ class RuntimeSupervisor:
         self._last_rx = time.monotonic()
         # The hello itself was produced by the Worker's event loop.
         self._worker_last_beat = self._last_rx
+        self._worker_stall_context = {}
         self._stall_warned_at = 0.0
         self._worker_pid = validated_process.pid
         self._worker_create_time = validated_created
@@ -886,6 +920,9 @@ class RuntimeSupervisor:
                 message = await conn.recv()
                 self._last_rx = time.monotonic()
                 await self._handle(message)
+                # Buffered IPC reads may not suspend; let the Gateway writer drain
+                # replay bursts before the next frame fills the bounded queue.
+                await asyncio.sleep(0)
         except (OSError, RuntimeError):
             # Deliver already-received terminal frames on EOF when possible,
             # but never hold Worker recovery behind an unavailable Gateway.
@@ -955,17 +992,39 @@ class RuntimeSupervisor:
             return False
 
     def _log_diagnostics(self, reason: str) -> None:
+        """Keep observation failures out of watchdog and forwarding decisions."""
+        try:
+            self._write_diagnostics(reason)
+        except Exception as exc:  # noqa: BLE001 - diagnostics are best effort
+            try:
+                logger.warning("[Supervisor] runtime diagnostics unavailable; reason=%s error=%s",
+                               reason, type(exc).__name__)
+            except Exception:  # noqa: BLE001 - a broken sink must not block recovery
+                pass
+
+    @staticmethod
+    def _diagnostic_stats(component: Any) -> dict[str, Any]:
+        try:
+            collect = getattr(component, "diagnostics", None)
+            if not callable(collect):
+                return {}
+            result = collect()
+            if not isinstance(result, dict):
+                return {"diagnostics_error": "invalid_result"}
+            return result
+        except Exception as exc:  # noqa: BLE001 - never log exception payloads
+            return {"diagnostics_error": type(exc).__name__}
+
+    def _write_diagnostics(self, reason: str) -> None:
         now = time.monotonic()
-        conn_stats = getattr(self._conn, "diagnostics", None)
-        forward_stats = getattr(self._forwarder, "diagnostics", None)
         stderr_path = getattr(self._process, "stderr_path", None)
         snapshot = {
             "reason": reason,
             "pid": self._worker_pid,
             "generation": self._generation,
             "last_rx_age": now - self._last_rx,
-            "ipc": conn_stats() if callable(conn_stats) else {},
-            "gateway": forward_stats() if callable(forward_stats) else {},
+            "ipc": self._diagnostic_stats(self._conn),
+            "gateway": self._diagnostic_stats(self._forwarder),
             "forward_queued": self._forward_queue.qsize()
             if self._forward_queue is not None
             else 0,
@@ -979,6 +1038,7 @@ class RuntimeSupervisor:
             "worker_loop_beat_age": now - self._worker_last_beat
             if self._worker_last_beat
             else None,
+            "worker_stall_context": self._worker_stall_context,
             "worker_stderr": str(stderr_path) if stderr_path is not None else None,
         }
         logger.warning("[Supervisor] runtime diagnostics: %s", json.dumps(snapshot))
@@ -1169,8 +1229,10 @@ class RuntimeSupervisor:
         age = message.get("loop_beat_age")
         if isinstance(age, (int, float)) and age >= 0:
             self._worker_last_beat = time.monotonic() - float(age)
+            self._worker_stall_context = _bounded_stall_context(message.get("loop_stall"))
         else:
             self._worker_last_beat = time.monotonic()
+            self._worker_stall_context = {}
 
     def _finish_request(self, message: dict[str, Any]) -> None:
         dispatch_id = str(message.get("dispatch_id") or message.get("request_id") or "")
@@ -1424,10 +1486,11 @@ class RuntimeSupervisor:
         if beat_age > _WORKER_STALL_RESTART:
             logger.warning(
                 "[Supervisor] runtime worker business loop stalled %.1fs "
-                "(transport alive); restarting generation=%s pid=%s",
+                "(transport alive); restarting generation=%s pid=%s business=%s",
                 beat_age,
                 self._generation,
                 self._worker_pid,
+                json.dumps(self._worker_stall_context or {"operation": "unknown"}, ensure_ascii=True),
             )
             self._log_diagnostics("worker business loop stalled")
             self._unhealthy_reason = "worker business loop stalled"
@@ -1439,10 +1502,11 @@ class RuntimeSupervisor:
             self._stall_warned_at = now
             logger.warning(
                 "[Supervisor] runtime worker loop unresponsive %.1fs "
-                "(transport alive, waiting up to %.0fs); pid=%s",
+                "(transport alive, waiting up to %.0fs); pid=%s business=%s",
                 beat_age,
                 _WORKER_STALL_RESTART,
                 self._worker_pid,
+                json.dumps(self._worker_stall_context or {"operation": "unknown"}, ensure_ascii=True),
             )
             self._log_diagnostics("worker loop unresponsive")
         return False
@@ -1544,6 +1608,8 @@ class RuntimeSupervisor:
                 raise RuntimeError("Worker PID identity changed during final exit")
             if terminate:
                 process.terminate()
+            # A blocked POSIX loop cannot handle SIGTERM yet. Reserve part of
+            # this deadline to observe forced exit before replacing the Worker.
             grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 2)
             try:
                 process.wait(timeout=max(0.0, grace - time.monotonic()))
