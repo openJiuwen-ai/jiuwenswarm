@@ -1327,6 +1327,8 @@ class AgentWebSocketServer:
         # 当前 Gateway 连接，用于 send_push 主动推送
         self._current_ws: Any = None
         self._current_send_lock: asyncio.Lock | None = None
+        # A mode.get must wait for earlier mode.set requests, including runtime startup.
+        self._mode_request_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         # send_push 无连接告警限流：首条立即告警，之后按窗口汇总
         self._push_no_gateway_suppressed = 0
         self._push_no_gateway_warned_at: float | None = None
@@ -3514,6 +3516,12 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.SESSION_SWITCH:
                 await self._handle_session_switch(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.MODE_SET:
+                await self._handle_mode_set(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.MODE_GET:
+                await self._handle_mode_get(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.SESSION_PLAN_STATUS:
                 await self._handle_session_plan_status(ws, request, send_lock)
@@ -6024,6 +6032,106 @@ class AgentWebSocketServer:
             await send_wire_payload(
                 ws, encode_agent_response_for_wire(response, response_id=request.request_id)
             )
+
+    async def _handle_mode_set(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock,
+    ) -> None:
+        """Commit a TUI Session's explicit execution mode."""
+        from jiuwenswarm.runtime.service import SessionModeSwitchError
+        from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = str(request.session_id or "").strip()
+        expected_mode = params.get("expected_mode")
+        try:
+            if request.channel_id != "tui":
+                raise SessionModeSwitchError("mode.set is only available to TUI", code="BAD_REQUEST")
+            if not session_id or str(params.get("session_id") or "").strip() != session_id:
+                raise SessionModeSwitchError("session_id is required", code="BAD_REQUEST")
+            if expected_mode is not None and not isinstance(expected_mode, str):
+                raise SessionModeSwitchError("expected_mode must be a string", code="BAD_REQUEST")
+            mode = params.get("mode")
+            if not isinstance(mode, str):
+                raise SessionModeSwitchError("mode is required", code="BAD_REQUEST")
+            async with self._mode_request_lock(session_id):
+                runtime = self._execution_runtime()
+                await runtime.start()
+                payload = runtime.switch_session_mode(
+                    session_id=session_id,
+                    target_mode=mode,
+                    expected_mode=expected_mode,
+                    channel_id=request.channel_id,
+                    user_id=str(request.user_id or "").strip(),
+                )
+            response = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True, payload=payload, metadata=request.metadata,
+            )
+        except (SessionModeSwitchError, LifecycleError) as exc:
+            response = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=False, payload={"error": str(exc), "code": exc.code},
+                metadata=request.metadata,
+            )
+        except Exception as exc:
+            logger.exception("[AgentWebSocketServer] mode.set failed: session=%s", session_id)
+            response = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=False, payload={"error": str(exc), "code": "INTERNAL_ERROR"},
+                metadata=request.metadata,
+            )
+        async with send_lock:
+            await send_wire_payload(
+                ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+            )
+
+    async def _handle_mode_get(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock,
+    ) -> None:
+        """Read the authoritative mode after an uncertain TUI switch."""
+        from jiuwenswarm.runtime.service import SessionModeSwitchError
+        from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = str(request.session_id or "").strip()
+        try:
+            if request.channel_id != "tui":
+                raise SessionModeSwitchError("mode.get is only available to TUI", code="BAD_REQUEST")
+            if not session_id or str(params.get("session_id") or "").strip() != session_id:
+                raise SessionModeSwitchError("session_id is required", code="BAD_REQUEST")
+            async with self._mode_request_lock(session_id):
+                payload = AgentRuntime.get_session_mode(
+                    session_id=session_id, user_id=str(request.user_id or "").strip(),
+                )
+            response = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True, payload=payload, metadata=request.metadata,
+            )
+        except (SessionModeSwitchError, LifecycleError) as exc:
+            response = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=False, payload={"error": str(exc), "code": exc.code},
+                metadata=request.metadata,
+            )
+        except Exception as exc:
+            logger.exception("[AgentWebSocketServer] mode.get failed: session=%s", session_id)
+            response = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=False, payload={"error": str(exc), "code": "INTERNAL_ERROR"},
+                metadata=request.metadata,
+            )
+        async with send_lock:
+            await send_wire_payload(
+                ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+            )
+
+    def _mode_request_lock(self, session_id: str) -> asyncio.Lock:
+        """Serialize mode reads after in-flight writes for one Session."""
+        lock = self._mode_request_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._mode_request_locks[session_id] = lock
+        return lock
 
     async def _handle_session_switch(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Translate ``session.switch`` between WebSocket wire and Runtime."""

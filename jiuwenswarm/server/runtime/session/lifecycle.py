@@ -168,8 +168,14 @@ def save_locked(kind: str, resource_id: str, value: dict) -> None:
 
 
 def begin(
-    kind: str, resource_id: str, action: str, *, block_execution: bool = True
+    kind: str,
+    resource_id: str,
+    action: str,
+    *,
+    block_execution: bool = True,
+    initial_phase: str | None = None,
 ) -> dict:
+    """Persist the execution fence and its recoverable operation together."""
     with resource_lock(kind, resource_id):
         value = state(kind, resource_id)
         operation = value.get("operation")
@@ -191,7 +197,7 @@ def begin(
             resource_id=resource_id,
             kind=action,
             status="running",
-            phase="block" if block_execution else "check_sessions",
+            phase=initial_phase or ("block" if block_execution else "check_sessions"),
             generation=generation,
             created_at=now,
             updated_at=now,
@@ -286,6 +292,25 @@ def complete(
         save_locked(kind, resource_id, value)
 
 
+def reject_unaccepted(kind: str, resource_id: str) -> bool:
+    """Release an idle-check fence without publishing a lifecycle result."""
+    with resource_lock(kind, resource_id):
+        value = state(kind, resource_id)
+        operation = value.get("operation") or {}
+        if operation.get("phase") != "check_idle" or operation.get("status") == "completed":
+            return False
+        value.update(blocked=False, write_blocked=False, deleted=False)
+        operation.update(
+            status="completed",
+            phase="not_accepted",
+            retryable=False,
+            stop_pending=False,
+            result={"accepted": False},
+        )
+        save_locked(kind, resource_id, value)
+        return True
+
+
 def logically_deleted(value: dict) -> bool:
     """Whether a Session was accepted for deletion and is only awaiting cleanup."""
     return bool(value.get("deleted"))
@@ -305,6 +330,7 @@ def logically_archived(value: dict) -> bool:
         operation
         and operation.get("kind") == "archive"
         and operation.get("status") != "completed"
+        and operation.get("phase") != "check_idle"
     )
 
 
@@ -520,7 +546,9 @@ def projection(
     if value is None:
         value = state(kind, resource_id)
     operation = value.get("operation")
-    if operation and operation["status"] == "completed":
+    if operation and (
+        operation["status"] == "completed" or operation.get("phase") == "check_idle"
+    ):
         operation = None
     blocked = bool(value.get("blocked"))
     if kind == "session":
@@ -770,6 +798,10 @@ def event_snapshots() -> list[dict]:
         value = read_json(path)
         operation = value.get("operation")
         if not operation:
+            continue
+        if operation.get("phase") == "check_idle" or (
+            operation.get("result") or {}
+        ).get("accepted") is False:
             continue
         kind, resource_id = operation["resource_type"], operation["resource_id"]
         if kind == "project" and operation["kind"] != "delete":

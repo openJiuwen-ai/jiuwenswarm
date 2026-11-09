@@ -13,6 +13,8 @@ The current implementation adds a `work_mode` dimension to isolate regular work 
 
 Expert and expert group chats keep model selections per session. Returning to a session retains its selection, and reloading the page restores it from session metadata. Local choices are also retained when switching sessions before sending a message. The chat selector and outgoing requests use the same model selection. If restoration fails, the page shows an error and temporarily disables sending to avoid using the default model unintentionally.
 
+TUI `/mode` can switch the current execution mode within one Session ID. `metadata.mode` identifies the current executor and work/code profile; `work_mode` remains the original project index. A mode switch does not move history or change `project_id`, `project_dir`, or `work_mode`. Only an explicit project rebind changes that ownership.
+
 ### Core Concepts
 
 | Concept | Description |
@@ -22,7 +24,7 @@ Expert and expert group chats keep model selections per session. Returning to a 
 | **Code project Git capabilities** | Real `code` projects expose Git status, init, branch, Diff, history, monitoring, and discard/redo APIs. Default projects and `work` projects do not expose Git operations |
 | **Pinned sessions** | Detached from project groups and fetched via `project.pinned_sessions`, sorted by `pin_order` ascending |
 | **Pinned projects** | Pinned projects appear first, sorted by `pin_order` ascending |
-| **Immutability** | Once `project_id`, `project_dir`, and `work_mode` are bound to a session, they cannot be changed; no cross-project/cross-mode migration API is provided |
+| **Project binding** | TUI `/mode` preserves the bound `project_id`, `project_dir`, and `work_mode`; project rebinding uses a separate entry point |
 
 ### Communication Convention
 
@@ -105,14 +107,14 @@ Returned by `project.get_sessions` / `project.pinned_sessions`.
 
 ### Mode Values
 
+TUI mode switches store these canonical values; older sessions can still contain legacy aliases.
+
 | Value | Description |
 |-------|-------------|
-| `agent.plan` | Agent planning mode |
-| `agent.fast` | Agent fast mode |
-| `code.plan` | Code planning mode |
-| `code.normal` | Code normal mode |
-| `code.team` | Code team mode |
-| `team` | Team mode |
+| `agent.work.normal` / `agent.work.plan` | Work Agent normal / planning mode |
+| `agent.code.normal` / `agent.code.plan` | Code Agent normal / planning mode |
+| `team.work.normal` / `team.work.plan` | Work Team normal / planning mode |
+| `team.code.normal` / `team.code.plan` | Code Team normal / planning mode |
 
 ---
 
@@ -183,13 +185,13 @@ Adds optional `project_dir`, `project_id`, and `work_mode`. When omitted, behavi
 
 ### session.delete - Delete session
 
-Deletes the session directory and runtime state.
+Rejects a running target with `SESSION_BUSY`. Once accepted, deletion hides the session immediately and cleans up its directory and runtime state in the background.
 
 **Request params:** `session_id` (string, required)
 
-**Response payload:** `{ "session_id": "<deleted session id>" }`
+**Response payload:** `{ "session_id": "<deleted session id>", "accepted": true, "finalizing": true }` for a single target; batch requests return `succeeded_count`, `failed_count`, and per-session `results`.
 
-**Error codes:** `NOT_FOUND`
+**Error codes:** `NOT_FOUND`, `SESSION_BUSY` (target session is running)
 
 ---
 
@@ -304,9 +306,9 @@ Toggles project pin state and compacts pin order.
 
 ### Session lifecycle and project removal
 
-- `session.archive` / `session.unarchive`: `{session_ids:string[]}`, 1–100 IDs; returns `{succeeded_count, failed_count, results}`. The archive result is persisted synchronously and the session leaves the active list immediately; stopping running work, flushing writes and moving the directory happen in the background. The response no longer returns `SESSION_BUSY` and each item carries `accepted`/`finalizing`. Failed background cleanup retries a bounded number of times, then becomes `abandoned` with an error log. Cron/heartbeat execution sessions cannot be archived individually.
+- `session.archive` / `session.unarchive`: `{session_ids:string[]}`, 1–100 IDs; returns `{succeeded_count, failed_count, results}`. Direct archive rejects a running session with `SESSION_BUSY`; accepted archives leave the active list immediately, while flushing writes and moving the directory happen in the background. Each result carries `accepted`/`finalizing`. Failed background cleanup retries a bounded number of times, then becomes `abandoned` with an error log. Cron/heartbeat execution sessions cannot be archived individually.
 - `session.archived.list`: optional `project_id`, `work_mode`, `keyword`, `limit` (default 20, maximum 200), `offset`; returns `{sessions,total,limit,offset,has_more}`. Sorts by `archived_at DESC, session_id ASC`. Each item carries `project_hidden`, marking whether its project has been removed; an archive whose directory move is still pending carries `finalizing`/`stop_pending`.
-- `session.delete`: accepts `session_id` or batch `session_ids`; both active and archived sessions can be permanently deleted. The deleted state is persisted immediately and hidden from every list; stopping running work, flushing writes and removing the directory happen in the background. The response carries `accepted`/`finalizing` and no longer returns `SESSION_BUSY`.
+- `session.delete`: accepts `session_id` or batch `session_ids`; idle active and archived sessions can be permanently deleted. A running target returns `SESSION_BUSY` without starting deletion. Accepted deletions are hidden from every list immediately; flushing writes and removing the directory happen in the background. The response carries `accepted`/`finalizing`. Internal cron cleanup retains its separate behavior for running child sessions.
 - `project.remove`: `{project_id:string}`; hide the project without deleting sessions, cron jobs or the working directory. The Gateway still stops the project's cron jobs first (disables them and cancels in-flight runs; the job records are kept) and aborts the removal if that fails, so a hidden project never has running or firing cron jobs. Running sessions no longer block removal; the AgentServer stops them in the background with a bounded retry budget. Returns `{project_id,hidden:true,affected_sessions,stopped_sessions}`, where `affected_sessions` counts the active conversations hidden with the project (pinned conversations included, cron execution sessions excluded) and `stopped_sessions` lists the running conversations whose background stop was scheduled.
 - `project.restore`: `{project_id:string}`; restore a hidden project. Returns `{project_id,restored:true,work_mode,affected_sessions}`. Stopped cron jobs stay stopped after the restore and must be re-enabled manually. `project.list` / `project.info` accept `include_hidden:true`.
 - `project.sessions.archive`: `{project_id:string}`; archives a snapshot of all eligible active sessions. Running sessions are accepted too; stopping and directory moves happen in the background. Cron jobs stay unchanged.

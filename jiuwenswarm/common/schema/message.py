@@ -96,6 +96,8 @@ _ensure_req_method("JIUWENMATE_DINGTALK_AUTH_CANCEL", "jiuwenmate.dingtalk_auth.
 _ensure_req_method("JIUWENMATE_DINGTALK_AUTH_DISCONNECT", "jiuwenmate.dingtalk_auth.disconnect")
 
 _ensure_req_method("PROMPT_SUGGESTION_CANCEL", "prompt_suggestion.cancel")
+_ensure_req_method("MODE_SET", "mode.set")
+_ensure_req_method("MODE_GET", "mode.get")
 # Dispatch compares this member on every request. The pinned protocol package
 # does not define it, so a missing attribute fails chat and session creation
 # before their own handlers run.
