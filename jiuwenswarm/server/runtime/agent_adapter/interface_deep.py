@@ -56,6 +56,9 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import has
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import unanswered_permission_batch
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import validate_client_tool_answers
 from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import PermissionRailGroup
+from jiuwenswarm.server.runtime.agent_adapter.session_identity import (
+    resolve_cron_session_identity as _resolve_cron_session_identity,
+)
 from jiuwenswarm.server.runtime.mcp.apps import apply_mcp_apps_patch
 from openjiuwen.core.common.exception.errors import AgentError
 from openjiuwen.core.foundation.tool import McpToolCard
@@ -851,43 +854,6 @@ def _model_name_names_selection(model_name: str, selection: ModelSelection) -> b
         if model_name in {model["model_name"], model["alias"]}
     ]
     return len(matches) == 1 and matches[0]["model_id"] == selection.id
-
-
-def _resolve_cron_session_identity(
-    execution_request: Any | None,
-    session_id: str,
-) -> tuple[str, str]:
-    """Resolve the cron owner identity for a session-scoped adapter.
-
-    Identity comes from the authenticated AgentServer request first.  When the
-    adapter is created outside a chat turn (lazy rebuild, resume, sub-agent),
-    the session metadata written by ``session.create`` is the fallback.  The
-    value is only *carried* to the cron tool route; the Gateway remains the
-    authority that validates ownership.
-    """
-    sid = str(session_id or "").strip()
-    user_id = ""
-    if execution_request is not None:
-        user_id = str(getattr(execution_request, "user_id", "") or "").strip()
-    if not user_id and sid:
-        try:
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_session_metadata,
-            )
-
-            metadata = get_session_metadata(sid) or {}
-            user_id = str(metadata.get("user_id") or "").strip()
-            if not user_id:
-                channel_metadata = metadata.get("channel_metadata")
-                if isinstance(channel_metadata, dict):
-                    user_id = str(channel_metadata.get("user_id") or "").strip()
-        except Exception:  # noqa: BLE001 - fallback must not block adapter creation
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] cron owner lookup failed: session_id=%s",
-                sid,
-                exc_info=True,
-            )
-    return sid, user_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -1821,13 +1787,40 @@ class _RuntimeCronToolContext:
         self._fallback_mode: str | None = None
         self._fallback_user_id: str | None = None
 
+    def bind_session(self, *, session_id: str, user_id: str) -> None:
+        """Pin the session owner for tools running without turn contextvars."""
+        sid = str(session_id or "").strip()
+        uid = str(user_id or "").strip()
+        if sid:
+            self._fallback_session_id = sid
+        if not uid:
+            return
+        if self._fallback_user_id and self._fallback_user_id != uid:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] cron owner mismatch on session adapter: "
+                "session_id=%s existing=%s incoming=%s",
+                sid, self._fallback_user_id, uid,
+            )
+            return
+        self._fallback_user_id = uid
+
     def remember_current_binding(self) -> None:
-        self._fallback_channel_id = _CRON_TOOL_CHANNEL_ID.get()
-        self._fallback_session_id = _CRON_TOOL_SESSION_ID.get()
+        # Empty turn bindings cannot erase the pinned owning session/user.
+        channel_id = _CRON_TOOL_CHANNEL_ID.get()
+        if channel_id:
+            self._fallback_channel_id = channel_id
+        session_id = _CRON_TOOL_SESSION_ID.get()
+        if session_id:
+            self._fallback_session_id = session_id
         metadata = _CRON_TOOL_METADATA.get()
-        self._fallback_metadata = dict(metadata) if isinstance(metadata, dict) else None
-        self._fallback_mode = _CRON_TOOL_MODE.get()
-        self._fallback_user_id = _CRON_TOOL_USER_ID.get()
+        if isinstance(metadata, dict) and metadata:
+            self._fallback_metadata = dict(metadata)
+        mode = _CRON_TOOL_MODE.get()
+        if mode:
+            self._fallback_mode = mode
+        user_id = _CRON_TOOL_USER_ID.get()
+        if user_id:
+            self._fallback_user_id = user_id
 
     @property
     def channel_id(self) -> str:
@@ -1837,29 +1830,26 @@ class _RuntimeCronToolContext:
 
     @property
     def session_id(self) -> str | None:
-        if _CRON_TOOL_BOUND.get():
-            return _CRON_TOOL_SESSION_ID.get()
-        return self._fallback_session_id
+        bound = _CRON_TOOL_SESSION_ID.get() if _CRON_TOOL_BOUND.get() else None
+        return bound or self._fallback_session_id
 
     @property
     def metadata(self) -> dict[str, Any] | None:
         if _CRON_TOOL_BOUND.get():
             metadata = _CRON_TOOL_METADATA.get()
-            if isinstance(metadata, dict):
+            if isinstance(metadata, dict) and metadata:
                 return metadata
         return self._fallback_metadata
 
     @property
     def mode(self) -> str | None:
-        if _CRON_TOOL_BOUND.get():
-            return _CRON_TOOL_MODE.get()
-        return self._fallback_mode
+        bound = _CRON_TOOL_MODE.get() if _CRON_TOOL_BOUND.get() else None
+        return bound or self._fallback_mode
 
     @property
     def user_id(self) -> str | None:
-        if _CRON_TOOL_BOUND.get():
-            return _CRON_TOOL_USER_ID.get()
-        return self._fallback_user_id
+        bound = _CRON_TOOL_USER_ID.get() if _CRON_TOOL_BOUND.get() else None
+        return bound or self._fallback_user_id
 
     @property
     def tool_scope(self) -> str:
@@ -1910,6 +1900,13 @@ class JiuWenSwarmDeepAdapter:
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
     SESSION_ADAPTER_RELOAD_RETRY_INTERVAL_SEC = 30.0
     _subagent_runtime_supported: bool = True
+    _PLUGIN_RUNTIME_PROFILE = "work"
+    _TTSE_BANK_PROFILE = "work"
+    _moa_runtime: Any = None
+    _moa_enabled: bool = False
+    _moa_fingerprint: str | None = None
+    _subagent_progress_batches: dict[str, list[str]] = {}
+    _subagent_progress_batches_lock = threading.Lock()
     _RUNTIME_STATE_WRITE_LIMIT = threading.BoundedSemaphore(2)
     # Goal stream bookkeeping (see __init__ for what each one tracks). Declared
     # on the class as well so the goal helpers stay safe to call on an instance
@@ -1986,6 +1983,7 @@ class JiuWenSwarmDeepAdapter:
                 configuration=lambda: get_config(),
                 load_binding=lambda sid: load_persisted_external_harness_binding(sid),
                 persist_binding=lambda sid, binding: persist_external_harness_binding(sid, binding),
+                resolve_cron_identity=lambda request, sid: _resolve_cron_session_identity(request, sid),
             )
         return assembler
 
@@ -21704,7 +21702,7 @@ class JiuWenSwarmDeepAdapter:
 
 
     async def close_moa_runtime(self, *, suppress_errors: bool = False) -> None:
-        runtime = self._moa_runtime
+        runtime = getattr(self, "_moa_runtime", None)
         try:
             if runtime is not None:
                 await runtime.aclose()

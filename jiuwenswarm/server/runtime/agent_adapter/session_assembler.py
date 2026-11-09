@@ -15,6 +15,9 @@ from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.config import get_config
 from agent_gateway.common.mode_matrix import is_team_mode
+from jiuwenswarm.server.client_attachments.registry import conversation_app
+from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import discard_restored_permission_batch
+from jiuwenswarm.server.runtime.agent_adapter.session_identity import resolve_cron_session_identity
 from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
     ExternalHarnessBindingError, load_persisted_external_harness_binding, persist_external_harness_binding,
 )
@@ -36,12 +39,14 @@ class SessionAssembler:
         configuration: Callable = get_config,
         load_binding: Callable = load_persisted_external_harness_binding,
         persist_binding: Callable = persist_external_harness_binding,
+        resolve_cron_identity: Callable = resolve_cron_session_identity,
     ) -> None:
         self._owner = backend
         self._history_io = history_io
         self._configuration = configuration
         self._load_binding = load_binding
         self._persist_binding = persist_binding
+        self._resolve_cron_identity = resolve_cron_identity
         self.adapters: dict[str, Any] = {}
         self.locks: dict[str, asyncio.Lock] = {}
         self.failed_cleanup: dict[str, Any] = {}
@@ -396,7 +401,7 @@ class SessionAssembler:
             # ``getattr`` keeps test doubles that bypass ``__init__`` working.
             cron_context = getattr(adapter, "_runtime_cron_tool_context", None)
             if cron_context is not None:
-                _cron_sid, _cron_uid = _resolve_cron_session_identity(
+                _cron_sid, _cron_uid = self._resolve_cron_identity(
                     execution_request, sid
                 )
                 cron_context.bind_session(
@@ -535,7 +540,6 @@ class SessionAssembler:
                             ),
                         )
                         if restoring_permission:
-                            from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import discard_restored_permission_batch
                             from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueueError
 
                             if not restored:

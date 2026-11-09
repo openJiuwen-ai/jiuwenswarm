@@ -15,6 +15,28 @@ from jiuwenswarm.server.runtime.agent_adapter.model_factory import ModelFactory
 from jiuwenswarm.server.runtime.agent_adapter.session_assembler import SessionAssembler
 
 
+@pytest.mark.parametrize("mode", ["agent", "code"])
+def test_plugin_host_keeps_the_native_session_profile(tmp_path, mode):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+
+    adapter_type = JiuWenSwarmDeepAdapter if mode == "agent" else JiuwenSwarmCodeAdapter
+    adapter = object.__new__(adapter_type)
+    adapter._instance = object()
+    adapter._loaded_plugins = {}
+    adapter._model = object()
+    adapter._default_model_name = "fixture"
+    adapter._config_base_cache = {"fixture": True}
+    adapter._agent_workspace_dir = tmp_path
+    adapter._active_code_config = lambda: adapter._config_base_cache
+
+    host = adapter.get_plugin_runtime_host()
+
+    assert host.profile == ("work" if mode == "agent" else "code")
+    assert host.instance is adapter._instance
+    assert host.agent_data_workspace == tmp_path
+
+
 @pytest.mark.asyncio
 async def test_full_handoff_queue_cannot_block_producer_cleanup():
     blocked, closed = asyncio.Event(), asyncio.Event()
@@ -168,6 +190,41 @@ def make_child():
         _moa_enabled=False,
         _moa_fingerprint=None,
     )
+
+
+@pytest.mark.parametrize(
+    ("request_owner", "metadata", "expected_owner"),
+    [
+        ("alice", {"user_id": "bob"}, "alice"),
+        (None, {"user_id": "bob"}, "bob"),
+        (None, {"channel_metadata": {"user_id": "carol"}}, "carol"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_session_assembly_binds_cron_owner_before_instance_creation(
+    monkeypatch, request_owner, metadata, expected_owner,
+):
+    from jiuwenswarm.server.runtime.session import session_metadata
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _RuntimeCronToolContext
+
+    child = make_child()
+    child._runtime_cron_tool_context = _RuntimeCronToolContext(tool_scope="assembly-test")
+    child._restored_permission_fresh_input = lambda _request: False
+    assembler, _owner = make_assembler(monkeypatch, [child])
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda _sid: metadata)
+    request = SimpleNamespace(
+        user_id=request_owner, params={"model_name": "chosen"}, metadata={},
+    ) if request_owner is not None else None
+
+    async def create(*_args, **_kwargs):
+        context = child._runtime_cron_tool_context
+        assert (context.session_id, context.user_id) == ("cron-owner-session", expected_owner)
+
+    child.create_instance = AsyncMock(side_effect=create)
+
+    assert await assembler.ensure("cron-owner-session", execution_request=request) is child
+    child.create_instance.assert_awaited_once()
+    assert assembler.adapters["cron-owner-session"] is child
 
 
 @pytest.mark.asyncio
@@ -358,7 +415,7 @@ async def test_session_assembly_passes_original_model_authorization_and_refuses_
     monkeypatch,
 ):
     child = make_child()
-    request = SimpleNamespace(params={"model_name": "model:restricted"})
+    request = SimpleNamespace(params={"model_name": "model:restricted"}, metadata={})
     checked = []
 
     def reject_model(*args, **kwargs):

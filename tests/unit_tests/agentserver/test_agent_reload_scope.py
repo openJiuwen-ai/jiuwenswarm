@@ -624,14 +624,6 @@ async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch)
         reconfigure,
     )
     monkeypatch.setattr(server._agent_manager, "reload_agents_config", fake_reload)
-    monkeypatch.setattr(
-        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
-    )
     from jiuwenswarm.server.runtime import opencode_zen as _opencode_zen
 
     monkeypatch.setattr(_opencode_zen, "warm_zen_free_models", AsyncMock())
@@ -673,14 +665,6 @@ async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(
         "stop_all_paused_team_session_runtimes_across_managers",
         stop_paused,
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
-    )
 
     request = AgentRequest(
         request_id="reload-ui",
@@ -715,8 +699,7 @@ async def test_agent_reload_config_handler_applies_proactive_scope_without_agent
 
     monkeypatch.setattr(server._agent_manager, "reload_agents_config", reload_agents)
     monkeypatch.setattr(
-        agents_management_module,
-        "get_config",
+        "jiuwenswarm.common.config.get_config",
         lambda: {"proactive_recommendation": {"enabled": True}},
     )
 
