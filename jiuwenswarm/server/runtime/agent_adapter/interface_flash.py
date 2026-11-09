@@ -914,11 +914,11 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
     def _build_flash_rejected_transaction_retry_rail(self):
         """Build the Flash-only rejected-apply_ops continuation guard."""
-        from jiuwenswarm.agents.harness.flash.rails.rejected_transaction_retry_rail import (
-            RejectedTransactionRetryRail,
-        )
-
         try:
+            from jiuwenswarm.agents.harness.flash.rails.rejected_transaction_retry_rail import (
+                RejectedTransactionRetryRail,
+            )
+
             rail = RejectedTransactionRetryRail()
             logger.info(
                 "[JiuwenSwarmFlashAdapter] RejectedTransactionRetryRail create success"

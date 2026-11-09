@@ -65,7 +65,11 @@ def _tool_ctx(tool_name: str, arguments: dict | None, result: object) -> SimpleN
         tool_call=tool_call,
         tool_name=tool_name,
         tool_args=(
-            {"tool_name": "apply_ops", "arguments": arguments}
+            (
+                arguments
+                if isinstance(arguments, dict) and "tool_name" in arguments
+                else {"tool_name": "apply_ops", "arguments": arguments}
+            )
             if tool_name == "invoke_tool"
             else arguments
         ),
@@ -217,7 +221,11 @@ async def test_real_tool_call_and_truncated_output_are_unchanged() -> None:
 async def test_non_apply_ops_and_unparsed_results_do_not_trigger() -> None:
     rail = _rail()
     await rail.after_tool_call(
-        _tool_ctx("invoke_tool", {"tool_name": "read_file"}, {"result": "ok"})
+        _tool_ctx(
+            "invoke_tool",
+            {"tool_name": "read_file"},
+            _rejected_result(),
+        )
     )
     ctx = _model_ctx()
     await rail.after_model_call(ctx)
@@ -263,11 +271,15 @@ async def test_before_invoke_resets_request_local_state() -> None:
     rail = _rail()
     await rail.after_tool_call(_tool_ctx("invoke_tool", {}, _rejected_result()))
     await rail.after_model_call(_model_ctx())
+    rail._text_hold.used = True
+    rail._text_hold._hold_pending = True
 
     await rail.before_invoke(SimpleNamespace(inputs=SimpleNamespace(), extra={}))
 
     assert rail._rejected_pending is False
     assert rail._retry_nudge_used is False
+    assert rail._text_hold.used is False
+    assert rail._text_hold._hold_pending is False
 
 
 @pytest.mark.asyncio
@@ -332,6 +344,16 @@ def test_parser_accepts_json_string_and_nested_payload_shapes() -> None:
     assert rail._is_rejected_result({"applied": False}) is False
 
 
+def test_parser_does_not_let_an_earlier_non_rejected_payload_mask_a_nested_rejection() -> None:
+    rail = _rail()
+    result = {
+        "result": {"applied": True, "status": "ignored"},
+        "nested": {"result": {"applied": False, "status": "rejected"}},
+    }
+
+    assert rail._is_rejected_result(result) is True
+
+
 def test_flash_adapter_mounts_rail_without_deep_profile_hook(monkeypatch: pytest.MonkeyPatch) -> None:
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
@@ -370,6 +392,24 @@ def test_flash_adapter_mounts_rail_without_deep_profile_hook(monkeypatch: pytest
     assert any(isinstance(rail, RejectedTransactionRetryRail) for rail in rails)
     # The hook is Flash-specific: the shared Deep adapter has no such builder.
     assert not hasattr(JiuWenSwarmDeepAdapter, "_build_flash_rejected_transaction_retry_rail")
+
+
+def test_flash_adapter_returns_none_when_retry_rail_import_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import builtins
+
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    real_import = builtins.__import__
+
+    def fail_retry_rail_import(name, *args, **kwargs):
+        if name == "jiuwenswarm.agents.harness.flash.rails.rejected_transaction_retry_rail":
+            raise RuntimeError("retry rail import unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_retry_rail_import)
+
+    assert adapter._build_flash_rejected_transaction_retry_rail() is None
 
 
 def test_code_and_team_profiles_do_not_declare_flash_retry_rail() -> None:

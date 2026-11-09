@@ -227,11 +227,13 @@ class RejectedTransactionRetryRail(DeepAgentRail):
     @classmethod
     def _is_rejected_result(cls, result: Any) -> bool:
         for payload in cls._payload_dicts(result):
-            if "applied" in payload and "status" in payload:
-                return (
-                    payload.get("applied") is False
-                    and str(payload.get("status", "")).lower() == "rejected"
-                )
+            if (
+                "applied" in payload
+                and "status" in payload
+                and payload.get("applied") is False
+                and str(payload.get("status", "")).lower() == "rejected"
+            ):
+                return True
         return False
 
     @classmethod
