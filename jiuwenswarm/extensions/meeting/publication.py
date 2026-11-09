@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
@@ -144,7 +145,12 @@ class _ScopedTool(TeamTool):
                 return ToolOutput(success=False, error=str(exc))
         return await self._tool.invoke(inputs, **kwargs)
 
-    def render_for_llm(self, output: Any) -> str:
+    def render_for_llm(self, output: ToolOutput) -> str:
+        if self.card.name == "meeting_get_speaker" and output.success:
+            if output.data is None:
+                return "No active meeting speaker."
+            # The SDK redacts the speech's content. The default renderer only reads that field.
+            return json.dumps(output.data, ensure_ascii=False)
         return self._tool.render_for_llm(output)
 
 

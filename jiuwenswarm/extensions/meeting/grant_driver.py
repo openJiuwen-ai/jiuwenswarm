@@ -331,11 +331,15 @@ class MeetingGrantDriver:
                 or self._interruption is not None or self._state.phase not in {"awaiting_playback", "publication_failed"}
             ):
                 return None
-            interruption = (
-                await self.coordinator.interrupt_from_leader(leader, expected_token=expected_token)
-                if leader is not None else
-                await self.coordinator.interrupt_speech(expected_token=expected_token)
-            )
+            if leader is not None:
+                # The member client checks live membership. The meeting's leader name comes from
+                # the Team record, while the SDK can register that same member with the teammate role.
+                state = await self.coordinator.for_member(leader).get_state()
+                if state is None or state.closed:
+                    return None
+                if leader != state.leader_member_name:
+                    raise ValueError("Only the meeting Leader may interrupt through the agent boundary")
+            interruption = await self.coordinator.interrupt_speech(expected_token=expected_token)
             if interruption is None:
                 return None
             self._interruption = interruption
