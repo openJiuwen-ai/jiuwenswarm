@@ -230,6 +230,55 @@ def test_project_cron_binding_and_lifecycle_use_dedicated_urls() -> None:
     assert "ReqMethod.PROJECT_LIFECYCLE: handle_gateway_adapter" in text
 
 
+def test_project_lifecycle_events_feed_uses_fixed_path_without_project_id() -> None:
+    """Gateway ensure_lifecycle_watch 轮询只带 events=True，不能走 {project_id} 路径。"""
+    from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
+        RestAssemblyError,
+        declared_http_routes,
+    )
+
+    feed = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="project.lifecycle",
+            params={"events": True},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    inventory = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="project.lifecycle",
+            params={"inventory": True},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert feed.url == "http://10.0.0.8:8766/api/v1/projects/actions/lifecycle"
+    assert feed.json_body == {"events": True}
+    assert inventory.url == "http://10.0.0.8:8766/api/v1/projects/actions/lifecycle"
+    assert inventory.json_body == {"inventory": True}
+
+    with pytest.raises(RestAssemblyError, match="project_id"):
+        assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="project.lifecycle",
+                params={},
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+
+    routes = declared_http_routes()
+    feed_idx = routes.index(("project.lifecycle", "POST", "/projects/actions/lifecycle"))
+    project_idx = routes.index(
+        ("project.lifecycle", "POST", "/projects/{project_id}/lifecycle")
+    )
+    assert feed_idx < project_idx
+
+
 def test_session_pin_uses_the_dedicated_url() -> None:
     sent = assemble_rest_request(
         E2AEnvelope(

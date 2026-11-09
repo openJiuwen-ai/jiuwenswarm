@@ -24,7 +24,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { FINISHED_EXECUTIONS, groupSessionSentIds, executionResult, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { FINISHED_EXECUTIONS, groupModelLocked, groupSessionSentIds, executionResult, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -112,6 +112,18 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       mentionOptions.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
     }
   }, [mentionMenu, mentionIndex]);
+  const mentionToggle = useRef<HTMLButtonElement>(null);
+  // Clicking anywhere outside the menu closes it; the @ button keeps its own toggle.
+  useEffect(() => {
+    if (!mentionMenu) return undefined;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (mentionOptions.current?.contains(target) || mentionToggle.current?.contains(target))) return;
+      setMentionMenu(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [mentionMenu]);
   const [sending, setSending] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [fileAction, setFileAction] = useState<{ kind: 'rename' | 'delete'; path: string; name: string } | null>(null);
@@ -460,6 +472,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   // 消息下方独立挂「弹动三点」占位气泡（文案随成员当前执行阶段实时变化），谁回复谁的占位消失，
   // 多条提问互不顶替。本页面发出的消息立即占位（切换会话保留）；被 @ 成员有未完成执行时也占位，
   // 刷新后据服务端执行恢复；乐观 pending 阶段不弹。
+  const modelLocked = groupModelLocked(messages, executions, olderOffset > 0);
   const pendingMentionsByMessage = group
     ? pendingMentionReplies(messages, executions, group.members, sessionSentIds)
     : new Map<string, PendingMentionReply[]>();
@@ -602,14 +615,15 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
               </button>)}
             </div>}
             <footer>
-              <button type="button" className="group-chat-icon-button" disabled={sending} onClick={() => {
+              <button ref={mentionToggle} type="button" className="group-chat-icon-button" disabled={sending} onClick={() => {
                 setMentionIndex(0); setMentionMenu(!mentionMenu); textarea.current?.focus();
               }}
                 aria-label={t('groupChat.mention')} title={t('groupChat.mention')} aria-expanded={mentionMenu}
                 data-testid="group-chat-mention"><AtSign size={17} /></button>
               <span className="group-chat-muted" data-testid="group-chat-send-hint">{t('groupChat.sendHint')}</span>
               {modelReady && <ChatModelSelector sessionId={groupId} includeModelGroups={false}
-                disabled={sending || !connected} testIdPrefix="group-chat-model" />}
+                disabled={sending || !connected} locked={modelLocked} lockedTitle={t('groupChat.modelLocked')}
+                testIdPrefix="group-chat-model" />}
               <button type="submit" className="group-chat-send" disabled={!input.trim() || sending || !connected || !modelReady}
                 aria-label={t('groupChat.send')} data-testid="group-chat-send"><Send size={16} /></button>
             </footer>
@@ -657,11 +671,13 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           </h3>
           {group.description && <p data-testid="group-chat-info-description">{group.description}</p>}
         </div>
-        <div className="group-chat-panel-heading"><h3 data-testid="group-chat-members-title">{t('groupChat.members')}</h3>
+        <div className="group-chat-panel-heading"><h3 data-testid="group-chat-members-title">
+          {t('groupChat.members')} ({agentCount + 1})
+        </h3>
           <span>
             <button type="button" className="group-chat-icon-button" onClick={() => setAddingMembers(true)}
               aria-label={t('groupChat.addMembers')} title={t('groupChat.addMembers')}
-              disabled={group.members.length >= 10} data-testid="group-chat-add-members"><Plus size={18} /></button>
+              data-testid="group-chat-add-members"><Plus size={18} /></button>
             <button type="button" className="group-chat-icon-button" aria-label={t('groupChat.searchMembers')}
               title={t('groupChat.searchMembers')} aria-pressed={memberSearch} onClick={() => {
                 setMemberSearch(!memberSearch); setMemberQuery('');

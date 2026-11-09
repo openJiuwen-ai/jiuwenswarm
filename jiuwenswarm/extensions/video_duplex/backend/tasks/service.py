@@ -68,22 +68,14 @@ class TaskService:
         self.pending_interrupts = set()
         self.closed = False
         self.started = False
-        self.active_scopes = set()
         self.lease = portalocker.Lock(str(store.path) + ".owner", timeout=0)
 
-    def start(self, owner=None, session=None):
-        """Recover only the requested conversation before dispatching its queue."""
+    def start(self):
         if self.closed:
             raise RuntimeError("Task service is closed")
-        if (owner is not None or session is not None) and (
-            not isinstance(owner, str) or not isinstance(session, str) or not session
-        ):
-            raise ValueError("Task owner must be a string and conversation is required")
-        if self.started and (owner is None or (owner, session) in self.active_scopes):
+        if self.started:
             return
-        first_start = not self.started
-        if first_start:
-            self.lease.acquire()
+        self.lease.acquire()
         try:
             stopping = set()
             with self.store.transaction() as db:
@@ -107,56 +99,9 @@ class TaskService:
                         task["sequence"] += 1
                         self.store.put(db, task)
         except BaseException:
-            if first_start:
-                self.lease.release()
+            self.lease.release()
             raise
         self.started = True
-        self.active_scopes.update(scopes)
-        self.kick()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            with self.store.transaction() as db:
-                lost = [t for t in self.store.rows(db, owner, session) if t["status"] == "unknown"]
-            for task in lost:
-                self._spawn_reconcile(task, stopped=task["id"] in stopping)
-
-    def _spawn_reconcile(self, task, *, stopped=False):
-        # Kept out of self.cancellations: a probe must not block a real stop.
-        work = asyncio.create_task(
-            self._reconcile(task, stopped=stopped), name="managed-task-reconcile"
-        )
-        self.reconciles.add(work)
-        work.add_done_callback(self.reconciles.discard)
-
-    async def _reconcile(self, task, *, stopped=False):
-        """Ask Core once whether an unknown/cancelling task still runs; end it if not (#5486, #5545)."""
-        probe = getattr(self.executor, "cancel", None)
-        try:
-            gone = await probe(task, probe=True)
-        except Exception:
-            logger.warning("Task reconcile failed for %s", task["id"], exc_info=True)
-            return
-        if not gone:
-            return
-        task = self.store.update(task["id"], lambda t: (
-            (t.update(status="cancelled", output_closed=True, checkpoint_open=False, error="")
-             if stopped else
-             t.update(status="failed", output_closed=True, checkpoint_open=False,
-                      error="执行已中断，未重放"))
-            if t["status"] == "unknown" else None
-        ))
-        await self._notify(task)
-        self.interrupt_settled()
-
-    def interrupt_settled(self, core_session_id=None):
-        """A card was answered or a turn ended: probe held sessions again, then dispatch."""
-        if core_session_id is None:
-            self.pending_interrupts.clear()
-        else:
-            self.pending_interrupts.discard(core_session_id)
         self.kick()
         try:
             loop = asyncio.get_running_loop()
@@ -306,8 +251,6 @@ class TaskService:
         self._prune_reconciliation(tasks)
         active = []
         for task in tasks:
-            if (task["owner"], task["session"]) not in self.active_scopes:
-                continue
             if task["status"] in {"running", "cancelling", "unknown", "waiting_user"} or task["id"] in self.workers:
                 active.append(task)
         # Capacity covers executions owned by this service. Unknown executions
@@ -316,8 +259,6 @@ class TaskService:
             if sum(map(self._holds_capacity, active)) >= self.concurrency:
                 break
             if task["status"] != "queued" or task["id"] in self.workers:
-                continue
-            if (task["owner"], task["session"]) not in self.active_scopes:
                 continue
             if not self._ready(task, tasks, active):
                 continue
@@ -432,11 +373,11 @@ class TaskService:
         )
 
     def submit(self, owner, session, command_id, instruction, request=None):
+        self.start()
         # WebChannel permits an absent user; persist it as an exact empty scope.
         # None remains invalid because store reads use it to mean "all owners".
         if not isinstance(owner, str) or not session:
             raise ValueError("Task owner must be a string and conversation is required")
-        self.start(owner, session)
         if not isinstance(instruction, str) or not instruction.strip():
             raise ValueError("Task instruction is required")
         if len(instruction) > 16000:
@@ -490,11 +431,11 @@ class TaskService:
         return task
 
     def get(self, owner, session, task_id):
-        self.start(owner, session)
+        self.start()
         return self.store.read(task_id, owner, session)
 
     def list(self, owner, session, *, query="", status="", offset=0, limit=50):
-        self.start(owner, session)
+        self.start()
         if not isinstance(offset, int) or offset < 0:
             raise ValueError("Invalid pagination")
         if not isinstance(limit, int) or not 1 <= limit <= 100:
@@ -727,7 +668,7 @@ class TaskService:
     def reorder(
         self, owner, session, task_id, revision, before_id=None, *, command_id=None
     ):
-        self.start(owner, session)
+        self.start()
         with self.store.transaction() as db:
             task = self.store.get(db, task_id, owner, session)
             if command_id is not None:
@@ -794,7 +735,7 @@ class TaskService:
             NATIVE_APPROVAL_SOURCES,
         )
 
-        self.start(owner, session)
+        self.start()
         with self.store.transaction() as db:
             task = self.store.get(db, task_id, owner, session)
             replay, fingerprint = self.store.replay(
@@ -807,20 +748,6 @@ class TaskService:
             if replay:
                 return replay
             interaction = task.get("interaction") or {}
-            if interaction.get("id") == interaction_id and interaction.get("operation_id"):
-                if interaction.get("source") in NATIVE_APPROVAL_SOURCES:
-                    chosen = answers if native_ui else voice_approval_answers(interaction, answers)
-                    chosen = validate_native_approval_answers(interaction, chosen)
-                else:
-                    chosen = validate_answers(interaction, answers)
-                if chosen == interaction.get("answers"):
-                    receipt = dict(
-                        task_id=task_id, operation_id=command_id, state="already_answered",
-                        applied=False, task_state=task["status"],
-                        message="This exact card already has the same recorded answer. Nothing was resubmitted. Report task_state; do not infer continued execution or completion.",
-                    )
-                    self.store.command(db, task, command_id, fingerprint, receipt)
-                    return receipt
             if (
                 task["status"] != "waiting_user"
                 or interaction.get("state") != "pending"
@@ -894,7 +821,7 @@ class TaskService:
         return version
 
     def snapshot(self, owner, session):
-        self.start(owner, session)
+        self.start()
         with self.store.transaction() as db:
             tasks = self.store.rows(db, owner, session)
             all_tasks = self.store.rows(db)

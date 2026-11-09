@@ -6733,21 +6733,9 @@ class AgentWebSocketServer:
                 )
             elif method == "project.lifecycle" and params.get("events"):
                 # Full-directory scan of lifecycle state: keep it off the loop.
-                payload = {"events": await asyncio.to_thread(lc.event_snapshots)}
+                payload = await asyncio.to_thread(lc.events_feed)
             elif method == "project.lifecycle" and params.get("inventory"):
-                from jiuwenswarm.server.runtime.session.project_store import (
-                    list_projects,
-                )
-                payload = {"projects": [dict(project_id=p.project_id,
-                            operation=lc.state("project", p.project_id).get("operation"))
-                            for p in list_projects(include_hidden=True, cache_bust=True)]}
-                known = {item["project_id"] for item in payload["projects"]}
-                directory = lc.get_agent_root_dir() / "lifecycle" / "resources"
-                for path in directory.glob("project_*.json"):
-                    operation = lc.read_json(path).get("operation") or {}
-                    project_id = operation.get("resource_id")
-                    if project_id and project_id not in known and operation.get("status") != "completed":
-                        payload["projects"].append(dict(project_id=project_id, operation=operation))
+                payload = await asyncio.to_thread(lc.inventory_feed)
             elif method == "project.lifecycle":
                 project_id = lc.validate_id(params.get("project_id"))
 

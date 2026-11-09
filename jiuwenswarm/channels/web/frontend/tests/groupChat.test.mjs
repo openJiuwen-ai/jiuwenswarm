@@ -446,3 +446,39 @@ test('pending mention bubbles recover from unfinished executions after a refresh
     [ask('m1', 1000, ['alice'])], [], members, new Set(['client-m1']),
   )), { m1: ['alice:-'] });
 });
+
+test('an organization execution settles every member mentioned in its triggering ask', async () => {
+  const { pendingMentionReplies } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const members = ['alice', 'bob', 'carol'].map((name) => ({ member_name: name, display_name: name }));
+  const ask = (id, at, mentions) => ({
+    message_id: id, client_message_id: `client-${id}`, sender: 'user', content: 'question', timestamp: at, mentions,
+  });
+  const org = (id, owner, createdAt, status) => ({
+    execution_id: id, execution_kind: 'organization', member_name: null, owner_member: owner, created_at: createdAt, status,
+  });
+  const waiting = (pending) => Object.fromEntries([...pending].map(([id, items]) =>
+    [id, items.map((item) => `${item.memberName}:${item.execution?.execution_id ?? '-'}`)]));
+  const sent = new Set(['client-m1', 'client-m2']);
+
+  // Non-owner participants follow the organization card instead of waiting forever as "dispatching".
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice', 'bob'])], [org('o1', 'alice', 2, 'running')], members, sent,
+  )), { m1: ['alice:o1', 'bob:o1'] });
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice', 'bob'])], [org('o1', 'alice', 2, 'completed')], members, sent,
+  )), {});
+  // The organization belongs only to its triggering ask; a member asked separately keeps its own bubble.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice', 'bob']), ask('m2', 1500, ['carol'])],
+    [org('o1', 'alice', 2, 'completed')], members, sent,
+  )), { m2: ['carol:-'] });
+});
+
+test('the group chat model is selectable only before the chat starts', async () => {
+  const { groupModelLocked } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  assert.equal(groupModelLocked([], [], false), false);
+  assert.equal(groupModelLocked([{ message_id: 'm1', sender: 'user', timestamp: 1 }], [], false), true);
+  assert.equal(groupModelLocked([], [{ execution_id: 'e1', status: 'running', created_at: 1 }], false), true);
+  // Older pages not loaded yet still mean the chat has already run.
+  assert.equal(groupModelLocked([], [], true), true);
+});
