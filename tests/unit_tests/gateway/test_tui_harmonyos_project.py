@@ -83,7 +83,9 @@ def test_context_round_trip_persists_tui_project_metadata(
     state_root = tmp_path / "state"
     project.mkdir()
     _write_project(project)
-    monkeypatch.setattr(harmonyos_project, "get_user_workspace_dir", lambda: state_root)
+    monkeypatch.setattr(
+        harmonyos_project, "get_workspace_dir", lambda: state_root / "agent" / "workspace"
+    )
 
     context = inspect_harmonyos_project(project)
     state_path = persist_harmonyos_project_context(context)
@@ -101,7 +103,9 @@ def test_load_refreshes_context_when_descriptor_changes(
     state_root = tmp_path / "state"
     project.mkdir()
     _write_project(project)
-    monkeypatch.setattr(harmonyos_project, "get_user_workspace_dir", lambda: state_root)
+    monkeypatch.setattr(
+        harmonyos_project, "get_workspace_dir", lambda: state_root / "agent" / "workspace"
+    )
 
     original = inspect_harmonyos_project(project)
     persist_harmonyos_project_context(original)
@@ -136,7 +140,9 @@ def test_inspect_fingerprint_uses_the_same_bytes_as_descriptor_parsing(
         "abilities: [{ name: 'OldAbility' }] } }",
         encoding="utf-8",
     )
-    monkeypatch.setattr(harmonyos_project, "get_user_workspace_dir", lambda: state_root)
+    monkeypatch.setattr(
+        harmonyos_project, "get_workspace_dir", lambda: state_root / "agent" / "workspace"
+    )
     real_loads = harmonyos_project.json_repair_loads
     changed_during_parse = False
 
@@ -176,7 +182,9 @@ def test_stale_refresh_failure_is_fail_closed_for_control_paths(
     state_root = tmp_path / "state"
     project.mkdir()
     _write_project(project)
-    monkeypatch.setattr(harmonyos_project, "get_user_workspace_dir", lambda: state_root)
+    monkeypatch.setattr(
+        harmonyos_project, "get_workspace_dir", lambda: state_root / "agent" / "workspace"
+    )
 
     original = inspect_harmonyos_project(project)
     state_path = persist_harmonyos_project_context(original)
@@ -201,7 +209,9 @@ def test_stale_refresh_failure_allows_snapshot_fallback_without_persist(
     state_root = tmp_path / "state"
     project.mkdir()
     _write_project(project)
-    monkeypatch.setattr(harmonyos_project, "get_user_workspace_dir", lambda: state_root)
+    monkeypatch.setattr(
+        harmonyos_project, "get_workspace_dir", lambda: state_root / "agent" / "workspace"
+    )
 
     original = inspect_harmonyos_project(project)
     persist_harmonyos_project_context(original)
@@ -235,7 +245,9 @@ def test_half_written_json5_does_not_overwrite_valid_snapshot(
     state_root = tmp_path / "state"
     project.mkdir()
     _write_project(project)
-    monkeypatch.setattr(harmonyos_project, "get_user_workspace_dir", lambda: state_root)
+    monkeypatch.setattr(
+        harmonyos_project, "get_workspace_dir", lambda: state_root / "agent" / "workspace"
+    )
 
     original = inspect_harmonyos_project(project)
     assert original["selected"]["ability"] == "EntryAbility"

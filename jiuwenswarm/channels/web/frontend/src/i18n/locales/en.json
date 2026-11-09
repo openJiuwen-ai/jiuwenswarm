@@ -74,6 +74,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
+    "teams": "Teams",
     "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -183,6 +184,7 @@
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
       "duration": "Video duration",
+      "audioDuration": "Audio duration",
       "count": "Count",
       "browseFiles": "Browse files",
       "dropHint": "Or drag into this area",
@@ -199,8 +201,15 @@
     "mediaSettings": {
       "videoTitle": "Video settings",
       "imageTitle": "Image settings",
+      "audioTitle": "Audio settings",
       "durationValue": "{{seconds}}s",
       "durationUnit": "s",
+      "minuteUnit": "min",
+      "secondUnit": "sec",
+      "audioDurationDefault": "Film default duration",
+      "audioDurationMinutes": "{{count}} min",
+      "audioDurationSeconds": "{{count}} sec",
+      "audioDurationBoth": "{{minutes}} min {{seconds}} sec",
       "loading": "Loading generation settings…",
       "loadError": "Could not load generation settings: {{message}}",
       "saveError": "Settings not saved: {{message}}"
@@ -280,7 +289,9 @@
       "deleteConfirmCancel": "Cancel",
       "deleteConfirmOk": "Confirm",
       "resize": "Resize",
-      "resizeHint": "Drag the bottom-right corner to resize this node"
+      "resizeHint": "Drag the bottom-right corner to resize this node",
+      "playAudio": "Play audio",
+      "pauseAudio": "Pause audio"
     },
     "edge": {
       "delete": "Delete connection"
@@ -804,6 +815,7 @@
       "videoConfigTitle": "Configure video understanding model",
       "videoGenConfigTitle": "Configure video generation model",
       "visualGenConfigTitle": "Configure visual generation model",
+      "musicGenConfigTitle": "Configure audio generation model",
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
@@ -1147,6 +1159,10 @@
       "comfyui_workflow_enabled": {
         "title": "ComfyUI workflow integration",
         "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
+      },
+      "music_gen_enabled": {
+        "title": "Audio generation",
+        "description": "Generate background music (BGM) for the design canvas: planning adds a BGM node and compose mixes it in; disabling it keeps the saved model configuration."
       },
       "progressive_tool_optimize": {
         "title": "Enable tool retrieval optimization",
@@ -1548,8 +1564,47 @@
       "showTasks": "Show tasks"
     }
   },
+  "teams": {
+    "title": "Team Management",
+    "subtitle": "View existing teams, or stop and delete them",
+    "teamList": "Existing teams",
+    "count": "{{count}} team(s)",
+    "quota": "{{used}} used / {{limit}} limit (default {{default}})",
+    "orgQuota": "Org {{used}} used / {{limit}} limit",
+    "quotaUnavailable": "Quota status unavailable",
+    "createUserFull": "Create failed. A user can have at most {{limit}} teams",
+    "createOrgFull": "Create failed. An organization can have at most {{limit}} teams",
+    "sessionCount": "{{count}} session(s)",
+    "listLabel": "Session for this team: {{title}}",
+    "untitledSession": "Untitled session",
+    "createdAt": "Created {{time}}",
+    "createdAtWithId": "Created {{time}} · …{{suffix}}",
+    "sessionSuffix": "…{{suffix}}",
+    "empty": "No teams",
+    "deleteTeam": "Delete team",
+    "deleting": "Deleting...",
+    "deleteConfirm": "Delete team {{team}}?\nThis will delete the team runtime, linked sessions, and directory.",
+    "stopTeam": "Stop",
+    "stopping": "Stopping...",
+    "humanMembers": "{{count}} human member(s)",
+    "status": {
+      "creating": "Creating",
+      "running": "Running",
+      "paused": "Paused",
+      "stopping": "Stopping",
+      "stopped": "Stopped",
+      "deleted": "Deleted"
+    },
+    "errors": {
+      "loadTeams": "Failed to load teams",
+      "deleteTeam": "Failed to delete team: {{team}}",
+      "stopTeam": "Failed to stop team"
+    }
+  },
   "team": {
     "members": "Team Members",
+    "quotaUsage": "Teams {{used}}/{{limit}}",
+    "orgQuotaUsage": "Org {{used}}/{{limit}}",
     "membersTab": "Team",
     "statusTab": "Status",
     "filesTab": "Files",
@@ -5870,7 +5925,9 @@
       "groupAudience": "The shared content may be visible to all members of the destination group.",
       "audience": "The shared content may be visible to everyone in the destination conversation.",
       "exactMessages": "Review exact messages ({{count}})",
+      "collapseExactMessages": "Hide exact messages ({{count}})",
       "exactArtifacts": "Review exact files and documents ({{count}})",
+      "collapseExactArtifacts": "Hide exact files and documents ({{count}})",
       "fileSize": "File size: {{size}} bytes",
       "created": "Created: {{time}}",
       "createdAt": "Created",
@@ -6644,6 +6701,12 @@
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
     "generatingTasks": "Generating tasks",
+    "organizationStage": {
+      "starting": "Starting expert teams",
+      "processing": "Processing",
+      "executing": "Experts working",
+      "summarizing": "Summarizing"
+    },
     "counts": {
       "total": "Total",
       "running": "In progress",

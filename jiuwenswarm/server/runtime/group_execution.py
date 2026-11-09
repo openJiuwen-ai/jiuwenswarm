@@ -113,6 +113,9 @@ class GroupExecutions:
         status: str,
         phase: str,
         message_id: str | None = None,
+        organization_stage: str | None = None,
+        organization_plan_id: str | None = None,
+        only_if_missing: bool = False,
     ) -> dict:
         """Write one organization card. Re-entry updates that record and never posts."""
         if not isinstance(execution_id, str) or not execution_id:
@@ -122,6 +125,8 @@ class GroupExecutions:
         async with group_lock(self.group_id):
             records = self.read()
             current = records.get(execution_id)
+            if only_if_missing and current is not None:
+                return copy.deepcopy(current)
             if (
                 current is not None
                 and current["status"] in TERMINAL
@@ -145,6 +150,8 @@ class GroupExecutions:
                 "task": task,
                 "status": status,
                 "phase": phase,
+                "organization_stage": organization_stage,
+                "organization_plan_id": organization_plan_id,
                 "progress": {
                     "completed": sum(value == "completed" for value in tasks.values()),
                     "total": len(tasks),
@@ -164,7 +171,7 @@ class GroupExecutions:
                     None if created else current.get("message_id")
                 ),
             }
-            fields = ("status", "phase", "tasks", "task_details", "message_id", "title")
+            fields = ("status", "phase", "organization_stage", "tasks", "task_details", "message_id", "title")
             if not created and all(current.get(key) == record[key] for key in fields):
                 return copy.deepcopy(current)
             records[execution_id] = record
@@ -186,10 +193,20 @@ class GroupExecutions:
         changed = []
         async with group_lock(self.group_id):
             records = self.read()
+            group = read_group(self.group_id) or {}
+            plans = {plan["plan_id"]: plan for plan in group.get("organization_plans", [])}
             for record in records.values():
                 # Organization progress is written by the run itself. A mismatched
                 # writer process must not freeze the card while that run continues.
                 if record.get("execution_kind") == "organization":
+                    # An early card can outlive a failed startup before the Owner
+                    # background exists. Reconcile only its explicit plan binding.
+                    plan = plans.get(record.get("organization_plan_id"), {})
+                    if record["status"] not in TERMINAL and plan.get("status") in {"failed", "expired"}:
+                        record.update(status="failed", phase="failed", organization_stage=None)
+                        record["revision"] += 1
+                        record["updated_at"] = time.time()
+                        changed.append(copy.deepcopy(record))
                     continue
                 if record["status"] in TERMINAL:
                     continue

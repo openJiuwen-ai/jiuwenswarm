@@ -112,48 +112,18 @@ def _chat_models_capability() -> list[dict[str, Any]]:
 
 
 def _audio_backend_configured(kind: str) -> dict[str, Any]:
-    """Detect a music backend from env or config (no network)."""
+    """The ``MUSIC_GEN_*`` slot that ``call_music_model`` drives (no network)."""
     del kind
-    key = (
-        os.environ.get("MUSIC_API_KEY")
-        or os.environ.get("BGM_API_KEY")
-        or os.environ.get("AUDIO_MUSIC_API_KEY")
-        or ""
-    ).strip()
-    model = (
-        os.environ.get("MUSIC_MODEL_NAME")
-        or os.environ.get("BGM_MODEL_NAME")
-        or ""
-    ).strip()
-    block_names = ("music", "bgm", "audio_music")
-    tool = "call_music_model"
+    from jiuwenswarm.server.runtime.designer.music_generation import music_slot
 
-    cfg = get_config() or {}
-    models = cfg.get("models") if isinstance(cfg.get("models"), dict) else {}
-    for name in block_names:
-        block = models.get(name) if isinstance(models, dict) else None
-        if not isinstance(block, dict):
-            continue
-        mc = block.get("model_config") or block.get("model_client_config") or {}
-        if isinstance(mc, dict):
-            if not key:
-                key = resolve_env_vars(str(mc.get("api_key") or "")).strip()
-            if not model:
-                model = resolve_env_vars(str(mc.get("model_name") or "")).strip()
-    # Named chat/default models that look like speech/music also count.
-    for m in list_configured_models():
-        nid = f"{m.get('id') or ''} {m.get('model_name') or ''}".lower()
-        if any(h in nid for h in _MUSIC_NAME_HINTS):
-            if not model:
-                model = str(m.get("model_name") or m.get("id") or "")
-            # Treat presence of a named audio model as available even without a
-            # separate key when the chat stack already has credentials.
-            if not key:
-                key = "named-model"
-            break
-
-    ok = bool(key) and key.lower() not in {"sk-xxxxxxxxx", "your-api-key", ""}
-    return {"available": ok, "model": model or None, "tool": tool if ok else None}
+    slot = music_slot()
+    ok = slot.complete
+    return {
+        "available": ok,
+        "model": slot.model or None,
+        "backend": slot.backend,
+        "tool": "call_music_model" if ok else None,
+    }
 
 
 def detect_audio_backends() -> dict[str, Any]:

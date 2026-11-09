@@ -133,6 +133,13 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('visual_gen_protocol', 'agent', 'text', 'VISUAL_GEN_PROTOCOL'),
   envField('visual_gen_context_window_tokens', 'agent', 'text', 'VISUAL_GEN_CONTEXT_WINDOW_TOKENS'),
   envField('visual_gen_enabled', 'agent', 'boolean', 'VISUAL_GEN_ENABLED'),
+  // Music generation - Design mode BGM slot (call_music_model).
+  envField('music_gen_api_base', 'experimental', 'text', 'MUSIC_GEN_API_BASE'),
+  envField('music_gen_api_key', 'experimental', 'text', 'MUSIC_GEN_API_KEY'),
+  envField('music_gen_model', 'experimental', 'text', 'MUSIC_GEN_MODEL_NAME'),
+  envField('music_gen_provider', 'experimental', 'text', 'MUSIC_GEN_PROVIDER'),
+  envField('music_gen_protocol', 'experimental', 'text', 'MUSIC_GEN_PROTOCOL'),
+  envField('music_gen_enabled', 'experimental', 'boolean', 'MUSIC_GEN_ENABLED'),
 
   yamlField('permissions_enabled', 'security', 'boolean', 'permissions.enabled'),
 
