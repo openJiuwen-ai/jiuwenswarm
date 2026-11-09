@@ -58,6 +58,12 @@ test('SKILL.md file links resolve inside the skill package', () => {
   assert.equal(resolveSkillFileLinkPath('SKILL.md', '#section'), null);
 });
 
+test('decodes encoded paths before validating the skill package boundary', () => {
+  assert.equal(resolveSkillFileLinkPath('SKILL.md', '%2e%2e/outside.md'), null);
+  assert.equal(resolveSkillFileLinkPath('docs/SKILL.md', '..%2f..%2foutside.md'), null);
+  assert.equal(resolveSkillFileLinkPath('SKILL.md', '../outside.md'), null);
+});
+
 test('preview Markdown forwards referenced file clicks instead of navigating the page', async () => {
   let clickedHref = null;
   const root = createRoot(document.getElementById('root'));
