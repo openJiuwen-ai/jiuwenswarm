@@ -8,12 +8,14 @@ deferred 工具经 invoke_tool 嵌套执行不经过 before_tool_call 链路
 exit_plan_mode，Web plan 审批卡静默缺失（issue 5223 E2E 实证）。
 """
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.core.foundation.tool import ToolCard
 
+from jiuwenswarm.agents.harness.common.rails import progressive_tool_rail as ptr
 from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import ProgressiveToolRail
 from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import InvokeToolInput
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -161,15 +163,20 @@ def _context_with_plan_state(rail, cards, plan_mode: str):
 @pytest.mark.asyncio
 async def test_eager_missing_warning_silent_in_normal_mode(caplog):
     """normal 态 plan 工具缺席是 mode rail 设计内过滤 → 不告警。"""
-    import logging
-
     rail = _rail("agent")
     # 输入里无 plan 三工具（模拟 mode rail 已按 normal 过滤）
     cards = [_card("tools_search"), _card("read_file")]
     ctx = _context_with_plan_state(rail, cards, plan_mode="normal")
 
-    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.agents.harness.common.rails.progressive_tool_rail"):
+    # 仓库 caplog 姿势（test_agent_ws_connection_close.py 同款）：
+    # pytest.ini log_cli=true 下 caplog.at_level 靠传播捕获不生效，
+    # 须把 caplog.handler 直接挂到目标 logger。
+    ptr.logger.addHandler(caplog.handler)
+    caplog.set_level(logging.WARNING, logger=ptr.logger.name)
+    try:
         await rail.before_model_call(ctx)
+    finally:
+        ptr.logger.removeHandler(caplog.handler)
 
     assert not any("eager tools missing" in r.message for r in caplog.records)
 
@@ -177,14 +184,16 @@ async def test_eager_missing_warning_silent_in_normal_mode(caplog):
 @pytest.mark.asyncio
 async def test_eager_missing_warning_fires_in_plan_mode(caplog):
     """plan 态 eager 工具缺席即真异常（stale normal 竞速签名）→ 告警。"""
-    import logging
-
     rail = _rail("agent")
     cards = [_card("tools_search"), _card("read_file")]
     ctx = _context_with_plan_state(rail, cards, plan_mode="plan")
 
-    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.agents.harness.common.rails.progressive_tool_rail"):
+    ptr.logger.addHandler(caplog.handler)
+    caplog.set_level(logging.WARNING, logger=ptr.logger.name)
+    try:
         await rail.before_model_call(ctx)
+    finally:
+        ptr.logger.removeHandler(caplog.handler)
 
     warnings = [r for r in caplog.records if "eager tools missing" in r.message]
     assert warnings
