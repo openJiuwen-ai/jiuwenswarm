@@ -337,6 +337,19 @@ def test_tiktoken_fallback_uses_conservative_ratio():
     assert decision.rejected is True
 
 
+def test_family_tokenizer_fallback_uses_conservative_ratio():
+    budget = InputBudget(window=1000)
+    config = InputGuardConfig(enabled=True, max_input_ratio=0.95)
+    fallback = _Counter(source="family_tokenizer_fallback")
+
+    decision = evaluate_input_guard(
+        "测" * 951, config=config, budget=budget, token_counter=fallback
+    )
+
+    assert decision.limit == 950
+    assert decision.rejected is True
+
+
 def test_fixed_costs_reduce_usable_budget():
     budget = InputBudget(window=1000, system_tokens=100, tools_tokens=100, reserved_tokens=100)
     config = InputGuardConfig(
@@ -664,6 +677,72 @@ async def test_static_budget_explicit_reserve_wins():
     assert budget.reserved_tokens == 5_000
 
 
+async def test_model_group_selection_id_is_not_treated_as_model_id():
+    adapter = _root_adapter(window=100_000, max_tokens=20_000)
+    adapter._input_guard_session_model_name = lambda _sid: ""
+    adapter._config_base_cache["models"]["agentos"] = [
+        {
+            "model_id": "grp_1",
+            "model_client_config": {"model_name": "group-model"},
+            "model_config_obj": {"context_window": 5_000, "max_tokens": 0},
+        }
+    ]
+
+    budget, _counter, model = await adapter._input_guard_budget(
+        _request(
+            params={
+                "model_selection": {
+                    "type": "model_group",
+                    "id": "grp_1",
+                    "name": "m-alias",
+                }
+            }
+        ),
+        adapter._input_guard_config(),
+    )
+
+    # A group id/name must not match a concrete model; with no concrete model
+    # the product default window applies.
+    assert model == ""
+    assert budget.window == 262_144
+
+
+async def test_window_uses_session_adapter_override():
+    adapter = _adapter(window=10_000, counter=_Counter())
+    adapter._input_guard_session_model_name = lambda _sid: "unlisted-model"
+    adapter._config_cache = {
+        "input_guard_config": {"enabled": True},
+        "context_engine_config": {},
+    }
+    adapter._selected_model_context_window_tokens = 1_048_576
+
+    budget, _counter, _model = await adapter._input_guard_budget(
+        _request(), adapter._input_guard_config()
+    )
+
+    assert budget.window == 1_048_576
+
+
+async def test_window_override_ignored_when_live_model_differs():
+    adapter = _adapter(window=10_000, counter=_Counter())
+    adapter._input_guard_session_model_name = lambda _sid: "new-model"
+    adapter._config_cache = {
+        "input_guard_config": {"enabled": True},
+        "context_engine_config": {},
+    }
+    adapter._model_request_config = SimpleNamespace(model_name="old-model")
+    adapter._selected_model_context_window_tokens = 131_072
+
+    budget, _counter, model = await adapter._input_guard_budget(
+        _request(), adapter._input_guard_config()
+    )
+
+    # The cached adapter still belongs to the previous model; its captured
+    # window must not be applied to the new one.
+    assert model == "new-model"
+    assert budget.window == 262_144
+
+
 async def test_overhead_cache_feeds_static_path():
     adapter = _adapter(window=10_000, counter=_Counter())
     adapter._last_system_prompt = "x" * 1000
@@ -696,6 +775,51 @@ async def test_overhead_cache_feeds_static_path():
     assert budget.tools_tokens == 0
 
 
+async def test_overhead_cache_keeps_largest_measurement():
+    adapter = _adapter(window=10_000, counter=_Counter())
+    adapter._last_system_prompt = "x" * 1000
+    adapter._input_guard_session_model_name = lambda _sid: "m"
+    adapter._config_base_cache = {
+        "preferred_language": "zh",
+        "models": {
+            "defaults": [
+                {
+                    "is_default": True,
+                    "model_id": "mdl_m",
+                    "model_client_config": {"model_name": "m"},
+                    "model_config_obj": {"context_window": 10_000},
+                }
+            ]
+        },
+    }
+    _enable_adapter(adapter)
+
+    await adapter.check_user_input_guard(_request(), "x" * 10)
+    assert adapter._input_guard_overhead_cache["m"] == 1000
+
+    # A transiently smaller prompt measurement must not replace the larger one.
+    adapter._last_system_prompt = "x" * 400
+    await adapter.check_user_input_guard(_request(), "x" * 10)
+    assert adapter._input_guard_overhead_cache["m"] == 1000
+
+
+async def test_empty_list_tool_info_does_not_fall_back_to_cards():
+    class _EmptyListManager(_AbilityManager):
+        async def list_tool_info(self):
+            return []
+
+    card = SimpleNamespace(name="read_file", description="read a file", input_params={})
+    adapter = _adapter(window=10_000, counter=_Counter(tools_tokens=100))
+    adapter._instance.react_agent.ability_manager = _EmptyListManager([card])
+    adapter._input_guard_tools_cache = None
+
+    tokens = await adapter._input_guard_tools_tokens(
+        adapter._instance.react_agent, _Counter(tools_tokens=100)
+    )
+
+    assert tokens == 0
+
+
 # ---------------------------------------------------------------------------
 # Facade wiring
 # ---------------------------------------------------------------------------
@@ -726,6 +850,32 @@ async def test_facade_helper_invokes_adapter_and_propagates():
         await _check_user_input_guard(_CheckingAdapter(), request, "query")
 
     assert calls == [(request, "query")]
+
+
+async def test_facade_helper_supports_sync_gate():
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _check_user_input_guard,
+    )
+
+    calls = []
+
+    class _SyncAdapter:
+        def check_user_input_guard(self, request, query):
+            calls.append((request, query))
+            raise InputTooLongError(
+                "too long",
+                tokens=10,
+                limit=5,
+                window=5,
+                system_tokens=0,
+                tools_tokens=0,
+                reserved_tokens=0,
+            )
+
+    with pytest.raises(InputTooLongError):
+        await _check_user_input_guard(_SyncAdapter(), _request(), "query")
+
+    assert len(calls) == 1
 
 
 async def test_facade_helper_is_noop_for_adapters_without_the_gate():

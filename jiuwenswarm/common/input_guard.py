@@ -55,11 +55,13 @@ _CJK_RANGES = (
     (0x20000, 0x2FA1F),  # CJK extensions B-F and compatibility supplement
 )
 _STRING_LENGTH_FALLBACK_SOURCE = "string_length_fallback"
-# ``tiktoken_fallback`` uses another model's vocabulary; it is not accurate
-# enough for the tighter precise ratio, so it keeps the conservative one.
+# ``tiktoken_fallback`` borrows another model's vocabulary; the family
+# tokenizer fallback is close but still not the exact model artifact. Both
+# keep the conservative ratio.
 _IMPRECISE_COUNTER_SOURCES = {
     _STRING_LENGTH_FALLBACK_SOURCE,
     "tiktoken_fallback",
+    "family_tokenizer_fallback",
 }
 _CJK_PATTERN = re.compile(
     "[" + "".join(f"{chr(start)}-{chr(end)}" for start, end in _CJK_RANGES) + "]"

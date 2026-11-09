@@ -494,7 +494,11 @@ async def _check_user_input_guard(adapter: Any, request: AgentRequest, query: An
     if not callable(checker):
         return
     try:
-        await checker(request, query)
+        result = checker(request, query)
+        # Adapters currently implement this as a coroutine; accept a sync
+        # implementation too so an extension cannot silently bypass the gate.
+        if inspect.isawaitable(result):
+            await result
     except InputTooLongError:
         raise
     except Exception:  # noqa: BLE001 - the gate must never break a request
@@ -4314,13 +4318,6 @@ class JiuWenSwarm:
         if isinstance(request.params, dict):
             restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
-        if (
-            request.req_method != ReqMethod.COMMAND_GOAL
-            and _should_record_user_history(request.params)
-        ):
-            # Reject before history recording: a rejected message must not be
-            # restored into the model context on the next session warmup.
-            await _check_user_input_guard(adapter, request, query)
 
         mode = request.params.get("mode", "") if isinstance(request.params, dict) else ""
         team_flag = request.params.get("team", False) if isinstance(request.params, dict) else False
@@ -4344,26 +4341,6 @@ class JiuWenSwarm:
                 TEAM_EXECUTION_CONTEXT_METADATA_KEY,
                 None,
             )
-        if (
-            request.req_method != ReqMethod.COMMAND_GOAL
-            and _should_record_user_history(params_for_history)
-        ):
-            await _run_history_io(
-                append_history_record,
-                session_id=session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="user",
-                content=_history_user_content(params_for_history, query),
-                timestamp=time.time(),
-                extra=_history_user_extra(params_for_history),
-                channel_metadata=history_channel_metadata,
-                mode=params_for_history.get("mode", "unknown"),
-            )
-        logger.info(
-            "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
-            request.request_id, request.channel_id, session_id, self._sdk_name,
-        )
 
         rid = request.request_id
         cid = request.channel_id
@@ -4386,6 +4363,34 @@ class JiuWenSwarm:
                 session_id, rid, status=terminal_status, waiting_for_user=waiting_for_user,
                 completion=completion_receipt,
             )
+
+        if (
+            request.req_method != ReqMethod.COMMAND_GOAL
+            and _should_record_user_history(params_for_history)
+        ):
+            # Reject before history recording: a rejected message must not be
+            # restored into the model context on the next session warmup.
+            try:
+                await _check_user_input_guard(adapter, request, query)
+            except InputTooLongError:
+                _schedule_feedback_once("error")
+                raise
+            await _run_history_io(
+                append_history_record,
+                session_id=session_id,
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                role="user",
+                content=_history_user_content(params_for_history, query),
+                timestamp=time.time(),
+                extra=_history_user_extra(params_for_history),
+                channel_metadata=history_channel_metadata,
+                mode=params_for_history.get("mode", "unknown"),
+            )
+        logger.info(
+            "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
+            request.request_id, request.channel_id, session_id, self._sdk_name,
+        )
 
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)

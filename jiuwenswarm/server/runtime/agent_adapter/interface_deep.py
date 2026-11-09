@@ -16032,11 +16032,43 @@ class JiuWenSwarmDeepAdapter:
         then leaves the request unchanged.
         """
         model_name, model_config = self._input_guard_model_config(request)
+        effective = (
+            self
+            if self._is_session_scoped_adapter
+            else self._get_cached_session_adapter(request.session_id)
+        )
+        # Match the sibling call sites (``get_context_usage`` and the usage
+        # fallback) by passing the selected model's captured context window.
+        # The override must come from the session adapter, never from the
+        # root's startup model, or a session on another model is judged with
+        # the wrong window. It is also ignored when the cached adapter still
+        # belongs to a previous model (a model switch before the child is
+        # rebuilt), because then its captured window is the old model's.
+        model_window_override = None
+        if effective is not None:
+            candidate_override = getattr(
+                effective, "_selected_model_context_window_tokens", None
+            )
+            actual_model = ""
+            resolve_name = getattr(effective, "_resolve_model_name", None)
+            if callable(resolve_name):
+                try:
+                    actual_model = str(resolve_name() or "")
+                except Exception:  # noqa: BLE001 - diagnostics must not block
+                    actual_model = ""
+            if not (
+                model_name
+                and actual_model
+                and actual_model != "unknown"
+                and actual_model != model_name
+            ):
+                model_window_override = candidate_override
         try:
             window = resolve_context_window_tokens(
                 model_name,
                 context_engine_config=self._config_cache,
                 model_config_obj=model_config,
+                model_context_window_override=model_window_override,
             )
         except Exception:  # noqa: BLE001
             window = 0
@@ -16061,7 +16093,9 @@ class JiuWenSwarmDeepAdapter:
             ):
                 reserved = raw_max_tokens
 
-        live = await self._input_guard_live_costs(request.session_id, model_name)
+        live = await self._input_guard_live_costs(
+            effective, request.session_id, model_name
+        )
         if live is None:
             cached_overhead = self._input_guard_overhead_cache.get(model_name or "")
             system_tokens = (
@@ -16087,6 +16121,7 @@ class JiuWenSwarmDeepAdapter:
 
     async def _input_guard_live_costs(
         self,
+        adapter: "JiuWenSwarmDeepAdapter | None",
         session_id: str,
         model_name: str,
     ) -> tuple[int, int, Any] | None:
@@ -16099,11 +16134,6 @@ class JiuWenSwarmDeepAdapter:
         static checks can use the real overhead instead of the configured
         estimate.
         """
-        adapter = (
-            self
-            if self._is_session_scoped_adapter
-            else self._get_cached_session_adapter(session_id)
-        )
         if adapter is None:
             return None
         instance = getattr(adapter, "_instance", None)
@@ -16149,7 +16179,12 @@ class JiuWenSwarmDeepAdapter:
         tools_tokens = await adapter._input_guard_tools_tokens(react_agent, token_counter)
         overhead = system_tokens + tools_tokens
         if model_name and overhead > 0:
-            self._input_guard_overhead_cache[model_name] = overhead
+            # Keep the largest measurement seen for this model: the first
+            # live check can run before every rail has contributed its prompt
+            # section, and caching that transiently small value would make the
+            # later static path too lenient. Reload clears this cache.
+            previous = self._input_guard_overhead_cache.get(model_name, 0)
+            self._input_guard_overhead_cache[model_name] = max(previous, overhead)
         return system_tokens, tools_tokens, token_counter
 
     def _input_guard_model_config(
@@ -16160,13 +16195,23 @@ class JiuWenSwarmDeepAdapter:
         params = request.params if isinstance(request.params, dict) else {}
         model_name = ""
         selection_id = ""
+        group_selection = False
         selection = params.get("model_selection")
         if isinstance(selection, dict):
-            model_name = str(
-                selection.get("model_name") or selection.get("name") or ""
-            ).strip()
-            selection_id = str(selection.get("id") or "").strip()
-        if not model_name:
+            selection_type = str(selection.get("type") or "").strip().lower()
+            group_selection = selection_type == "model_group"
+            if not group_selection:
+                model_name = str(
+                    selection.get("model_name") or selection.get("name") or ""
+                ).strip()
+                # ``id`` only identifies a concrete model when the type says so.
+                # A model-group id lives in another id space and must not be
+                # matched against ``model_id``.
+                if selection_type in {"", "model"}:
+                    selection_id = str(selection.get("id") or "").strip()
+        # A group selection names no concrete model; ``model_name`` may carry
+        # the group's display name, so only session metadata can resolve it.
+        if not group_selection and not model_name:
             model_name = str(params.get("model_name") or "").strip()
         if not model_name:
             model_name = self._input_guard_session_model_name(request.session_id)
@@ -16250,14 +16295,16 @@ class JiuWenSwarmDeepAdapter:
             return cached[1]
 
         tools: list[ToolInfo] = []
+        listed = False
         list_tool_info = getattr(manager, "list_tool_info", None)
         if callable(list_tool_info):
             try:
                 tools = list(await list_tool_info() or [])
+                listed = True
             except Exception:  # noqa: BLE001 - guard must never block a request
                 logger.debug("[InputGuard] list_tool_info failed", exc_info=True)
                 tools = []
-        if not tools:
+        if not listed:
             try:
                 cards = list(manager.list() or [])
             except Exception:  # noqa: BLE001
