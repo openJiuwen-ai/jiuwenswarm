@@ -905,3 +905,247 @@ async def test_import_local_rejects_the_legacy_agent_domain(tmp_path, monkeypatc
     assert handled is True
     assert runtime.channel.responses[0]["ok"] is False
     assert runtime.channel.responses[0]["code"] == extension_package_handlers.INVALID_PARAMS_CODE
+
+
+# ── shared install report (production path) ──────────────────────────────────
+
+
+def _report_path(tmp_path: Path) -> Path:
+    return tmp_path / "extension" / "extension_install_report.yaml"
+
+
+async def _reported_manager(tmp_path: Path, runtime: GatewayRuntime | None = None) -> GatewayPackageManager:
+    runtime = runtime or await _runtime(tmp_path)
+    manager = GatewayPackageManager(
+        runtime,
+        tmp_path / "extension_pkgs",
+        report_path=_report_path(tmp_path),
+        poll_interval=0.05,
+        dependency_timeout=5.0,
+        lock_timeout=2.0,
+    )
+    await manager.init()
+    return manager
+
+
+async def test_reported_install_records_generation_and_domain(tmp_path):
+    manager = await _reported_manager(tmp_path)
+    try:
+        reports = await manager.install([_package_zip(tmp_path)])
+
+        assert [report.status for report in reports] == ["SUCCESS"]
+        assert reports[0].current_generation is not None
+        assert manager.query()["active"][0]["generation"] == reports[0].current_generation
+        assert await manager.get_package_domain("demo.gateway") == "gateway"
+        states = await manager._report.read_packages("demo.gateway")
+        assert states["demo.gateway"].active_version == "0.1.0"
+        assert states["demo.gateway"].pending is None
+    finally:
+        await manager.close()
+
+
+async def test_reported_reload_keeps_the_running_copy_on_failure(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        await manager.install([_package_zip(tmp_path)])
+        before = runtime.active_record("demo.gateway")
+        root = manager.gateway_installed("demo.gateway")[0].root
+        (root / "extension.py").write_text(BAD_ENTRY, encoding="utf-8")
+
+        report = await manager.reload("demo.gateway")
+
+        assert report.status == "FAILED"
+        after = runtime.active_record("demo.gateway")
+        assert after is not None
+        assert after.generation == before.generation
+        assert runtime.user_handler_count == 1
+        states = await manager._report.read_packages("demo.gateway")
+        assert states["demo.gateway"].active_version == "0.1.0"
+        assert states["demo.gateway"].pending is None
+    finally:
+        await manager.close()
+
+
+async def test_reported_uninstall_is_refused_while_handlers_run(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        await manager.install([_package_zip(tmp_path)])
+        started, resume = asyncio.Event(), asyncio.Event()
+        original = runtime.intercept
+
+        async def slow(event, ops, next_handler):
+            started.set()
+            await resume.wait()
+            return await next_handler(event)
+
+        root = manager.gateway_installed("demo.gateway")[0].root
+        runtime.unpublish("demo.gateway")
+        runtime.publish(
+            LoadedPackage(package_id="demo.gateway", version="0.1.0", root=root, module_names=(),
+                          handlers=(HandlerDeclaration("gateway.request", slow, {}, "slow"),))
+        )
+        request = asyncio.create_task(original(SimpleNamespace(closed=False), "req", "ping", {}))
+        await started.wait()
+
+        report = await manager.uninstall("demo.gateway")
+
+        assert report.status == "FAILED"
+        assert report.error.code == "EXTENSION_PACKAGE_BUSY"
+        assert manager.gateway_installed("demo.gateway")
+        resume.set()
+        await request
+    finally:
+        await manager.close()
+
+
+async def test_reported_startup_loads_only_gateway_packages(tmp_path):
+    first = await _reported_manager(tmp_path)
+    await first.install([_package_zip(tmp_path)])
+    await first.close()
+    agent_root = tmp_path / "extension_pkgs" / "demo.agent" / "0.1.0"
+    agent_root.mkdir(parents=True)
+    agent_root.joinpath("manifest.json").write_text(json.dumps({
+        "package_type": "extension",
+        "schemaVersion": 1,
+        "package": {"id": "demo.agent", "version": "0.1.0", "domain": "agentserver"},
+        "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+    }), encoding="utf-8")
+    agent_root.joinpath("extension.py").write_text(ENTRY, encoding="utf-8")
+
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        reports = await manager.load_installed()
+
+        assert [(report.package_id, report.status) for report in reports] == [("demo.gateway", "SUCCESS")]
+        assert [package.package_id for package in runtime.active_packages()] == ["demo.gateway"]
+        assert {package.package_id for package in manager.installed()} == {"demo.gateway", "demo.agent"}
+    finally:
+        await manager.close()
+
+
+async def test_reported_uninstall_finishes_after_the_caller_is_cancelled(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        await manager.install([_package_zip(tmp_path)])
+        entered = asyncio.Event()
+        original = runtime.cleanup_package_data
+
+        async def slow_cleanup(package_id: str) -> None:
+            entered.set()
+            await asyncio.sleep(0.1)
+            await original(package_id)
+
+        monkeypatch.setattr(runtime, "cleanup_package_data", slow_cleanup)
+        task = asyncio.create_task(manager.uninstall("demo.gateway"))
+        await entered.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert manager.gateway_installed("demo.gateway") == []
+        assert runtime.active_record("demo.gateway") is None
+        states = await manager._report.read_packages("demo.gateway")
+        state = states.get("demo.gateway")
+        assert state is None or (state.pending is None and state.active_version is None)
+    finally:
+        await manager.close()
+
+
+def _installed_package(tmp_path: Path, package_id: str, domain: str | None) -> Path:
+    root = tmp_path / "extension_pkgs" / package_id / "0.1.0"
+    root.mkdir(parents=True)
+    package: dict[str, str] = {"id": package_id, "version": "0.1.0"}
+    if domain is not None:
+        package["domain"] = domain
+    root.joinpath("manifest.json").write_text(json.dumps({
+        "package_type": "extension",
+        "schemaVersion": 1,
+        "package": package,
+        "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+    }), encoding="utf-8")
+    root.joinpath("extension.py").write_text(ENTRY, encoding="utf-8")
+    return root
+
+
+async def test_reported_startup_rejects_packages_outside_the_host_domains(tmp_path):
+    _installed_package(tmp_path, "demo.gateway", "gateway")
+    _installed_package(tmp_path, "demo.agent", "agentserver")
+    _installed_package(tmp_path, "demo.nodomain", None)
+    _installed_package(tmp_path, "demo.other", "other")
+
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        reports = await manager.load_installed()
+
+        assert [(report.package_id, report.status) for report in reports] == [("demo.gateway", "SUCCESS")]
+        report = manager._report
+        data = report._read()
+        assert sorted(data["startup_order"]) == ["demo.agent", "demo.gateway"]
+        assert {"demo.nodomain", "demo.other"}.isdisjoint(data["packages"])
+        assert {package.package_id for package in manager.installed()} == {
+            "demo.gateway", "demo.agent", "demo.nodomain", "demo.other",
+        }
+        assert [package.package_id for package in runtime.active_packages()] == ["demo.gateway"]
+    finally:
+        await manager.close()
+
+
+async def test_reported_startup_order_is_shared_across_both_domains(tmp_path):
+    _installed_package(tmp_path, "demo.gateway", "gateway")
+    _installed_package(tmp_path, "demo.agent", "agentserver")
+    manager = await _reported_manager(tmp_path)
+    try:
+        await manager.load_installed()
+    finally:
+        await manager.close()
+
+    from openjiuwen.core.extension.install_report import PackageInstallReport
+    from openjiuwen.core.extension.package_manager import PackageManager
+
+    agent_report = PackageInstallReport(_report_path(tmp_path), poll_interval=0.05, dependency_timeout=5.0, lock_timeout=2.0)
+    agent_store = PackageManager(
+        tmp_path / "extension_pkgs", domain="agentserver", allowed_domains=("gateway", "agentserver"),
+    )
+    agent_store.install_report = agent_report
+    await agent_report.open(agent_store.store, domain="agentserver")
+    try:
+        plan = await agent_report.prepare_startup(agent_store)
+
+        assert [(manifest.package_id, manifest.domain) for manifest in plan.ordered] == [
+            ("demo.agent", "agentserver"),
+            ("demo.gateway", "gateway"),
+        ]
+        assert plan.rejected == ()
+    finally:
+        await agent_report.close()
+
+
+async def test_gateway_assembly_survives_an_invalid_configuration(tmp_path, monkeypatch):
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setenv("GATEWAY_PORT", "19002")
+    monkeypatch.setattr(assembly, "_ASSEMBLY", None)
+    conflicting = {
+        "extensions": {
+            "install_dir": str(tmp_path / "shared"),
+            "gateway": {"install_dir": str(tmp_path / "legacy")},
+        }
+    }
+
+    result = await assembly.install_gateway_extensions(Channel(), conflicting)
+
+    assert result is None
+    assert assembly._ASSEMBLY is None
+
+    from jiuwenswarm.gateway.extensions_v2.splash_hint import installed_splash_providers
+
+    def broken_config(*args, **kwargs):
+        raise ValueError("bad config")
+
+    monkeypatch.setattr("jiuwenswarm.gateway.extensions_v2.splash_hint.load_gateway_config", broken_config)
+    assert installed_splash_providers() == []

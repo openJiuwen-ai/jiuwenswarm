@@ -276,6 +276,27 @@ def test_data_dir_is_configurable_and_defaults_under_the_workspace(tmp_path, mon
     assert not os.path.exists(default.data_dir)
 
 
+def test_legacy_install_dir_conflicts_only_with_an_explicit_shared_dir(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    legacy = tmp_path / "legacy"
+
+    with pytest.raises(ValueError, match="extensions.gateway.install_dir"):
+        load_gateway_config({"extensions": {"install_dir": str(shared), "gateway": {"install_dir": str(legacy)}}})
+
+    same = load_gateway_config({"extensions": {"install_dir": str(shared), "gateway": {"install_dir": str(shared)}}})
+    assert same.install_dir == shared.resolve()
+
+    monkeypatch.setenv("EXTENSION_INSTALL_DIR", str(shared))
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.extensions_v2.config.logger.warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    from_env = load_gateway_config({"extensions": {"gateway": {"install_dir": str(legacy)}}})
+    assert from_env.install_dir == shared.resolve()
+    assert any("ignoring extensions.gateway.install_dir" in text for text in warnings)
+
+
 def _gated_package(package_id: str, root: Path, gate: asyncio.Event, entered: asyncio.Event,
                    captured: dict) -> LoadedPackage:
     """``slow`` waits on ``gate`` before writing; ``keep`` hands its Ops to a later caller."""
