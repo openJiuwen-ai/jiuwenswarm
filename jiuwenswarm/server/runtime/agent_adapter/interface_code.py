@@ -1520,6 +1520,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         resolved_channel = str(runtime_config.channel_id or
                                self._resolve_prompt_channel(runtime_config.session_id) or "web").strip() or "web"
         if self._runtime_prompt_rail:
+            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             # Language section (response language) must follow the user's
             # preferred language, not the code-mode "en" which only governs
             # system-prompt scaffolding (time/runtime/env sections).
@@ -1543,7 +1544,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 project_root=str(runtime_paths.project_root),
                 workspace=project_workspace,
             )
-            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             self._runtime_prompt_rail.set_request_system_prompt(
                 runtime_config.request_system_prompt
             )

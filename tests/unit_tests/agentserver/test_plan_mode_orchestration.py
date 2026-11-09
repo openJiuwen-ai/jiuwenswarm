@@ -154,6 +154,7 @@ async def test_prepare_chat_normalizes_agent_request_for_code_workspace() -> Non
         mode="code",
         project_dir="/tmp/code-project",
         sub_mode="normal",
+        session_id=request.session_id,
     )
 
 
@@ -186,6 +187,7 @@ async def test_prepare_chat_defaults_missing_e2a_work_mode() -> None:
         mode="agent",
         project_dir=None,
         sub_mode=None,
+        session_id=request.session_id,
     )
 
 
@@ -254,6 +256,7 @@ async def test_prepare_auto_harness_chat_disables_legacy_project_fallbacks() -> 
         mode="agent",
         project_dir=None,
         sub_mode=None,
+        session_id=request.session_id,
     )
 
 
@@ -327,8 +330,44 @@ async def test_prepare_team_chat_turn_propagates_locked_project_dir() -> None:
         mode="team",
         project_dir="/tmp/locked-project",
         sub_mode=None,
+        session_id=request.session_id,
     )
     manager.wait_for_session_prewarm.assert_awaited_once_with("sess_team_project")
+
+
+@pytest.mark.asyncio
+async def test_prepare_team_chat_keeps_legacy_workspace_fallback() -> None:
+    manager = MagicMock()
+    manager.get_agent = AsyncMock(return_value=MagicMock())
+    manager.wait_for_session_prewarm = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    request = _chat_request(
+        "sess_team_legacy",
+        mode="team",
+        extra_params={"workspace_dir": "/tmp/legacy-team-workspace"},
+    )
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={},
+    ), patch.object(
+        _default,
+        "resolve_request_project_dir",
+        return_value="/tmp/legacy-team-workspace",
+    ) as resolve_project_dir:
+        await _default._prepare_code_mode_chat_turn(
+            _default_ctx(server, request), request, "web", sync_metadata=False,
+        )
+
+    resolve_project_dir.assert_called_once_with(request, include_legacy_fallbacks=True)
+    manager.get_agent.assert_awaited_once_with(
+        channel_id="web",
+        mode="team",
+        project_dir="/tmp/legacy-team-workspace",
+        sub_mode=None,
+        session_id=request.session_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -679,6 +718,7 @@ async def test_tenant_interrupt_continuation_restores_code_route_before_defaults
         mode="code",
         project_dir=metadata["project_dir"],
         sub_mode="normal",
+        session_id=request.session_id,
     )
 
 

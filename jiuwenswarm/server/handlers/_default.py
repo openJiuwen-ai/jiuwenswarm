@@ -741,6 +741,7 @@ async def _prepare_code_mode_chat_turn(
             mode=agent_mode,
             project_dir=project_dir,
             sub_mode=sub_mode,
+            session_id=session_id,
         )
     else:
         agent = await manager.get_agent(
@@ -748,6 +749,7 @@ async def _prepare_code_mode_chat_turn(
             mode=agent_mode,
             project_dir=project_dir,
             sub_mode=sub_mode,
+            session_id=session_id,
         )
     if agent is None:
         raise ValueError("Failed to get agent")

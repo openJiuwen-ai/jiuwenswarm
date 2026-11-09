@@ -423,6 +423,55 @@ async def test_runtime_prompt_binds_execution_paths_in_round_task(
 
 
 @pytest.mark.asyncio
+async def test_projectless_sessions_keep_their_own_execution_paths(tmp_path, monkeypatch) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_runtime_state_path",
+        lambda _session_id: config_dir / "runtime.yaml",
+    )
+    builder = SystemPromptBuilder(language="en")
+    agent = _FakeAgent(builder)
+    rail = RuntimePromptRail(language="en", channel="web")
+    rail.init(agent)
+    first_bound = asyncio.Event()
+    second_bound = asyncio.Event()
+
+    async def run(session_id: str, own_event: asyncio.Event, other_event: asyncio.Event) -> tuple[Path, Path, str]:
+        task_root = tmp_path / session_id
+        work_dir = task_root / "work"
+        outputs_dir = task_root / "outputs"
+        work_dir.mkdir(parents=True)
+        outputs_dir.mkdir()
+        rail.set_session_id(session_id)
+        rail.set_runtime_paths(
+            task_workspace_root=str(task_root),
+            task_work_dir=str(work_dir),
+            task_outputs_dir=str(outputs_dir),
+        )
+        rail.set_execution_paths(cwd=str(work_dir), project_root=str(task_root), workspace=str(task_root))
+        own_event.set()
+        await other_event.wait()
+        ctx = AgentCallbackContext(
+            agent=agent,
+            inputs=None,
+            session=SimpleNamespace(get_session_id=lambda: session_id),
+            extra={},
+        )
+        await rail.before_model_call(ctx)
+        return Path(get_cwd()), Path(get_project_root()), builder.build()
+
+    first, second = await asyncio.gather(
+        run("session-a", first_bound, second_bound),
+        run("session-b", second_bound, first_bound),
+    )
+    assert first[0] == tmp_path / "session-a" / "work"
+    assert first[1] == tmp_path / "session-a"
+    assert second[0] == tmp_path / "session-b" / "work"
+    assert second[1] == tmp_path / "session-b"
+    # Prompt builders are isolated by the manager's per-session Agent cache.
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["agent", "code"])
 async def test_agent_and_code_rounds_rebind_bash_cwd_inside_long_lived_task(
     tmp_path, monkeypatch, mode

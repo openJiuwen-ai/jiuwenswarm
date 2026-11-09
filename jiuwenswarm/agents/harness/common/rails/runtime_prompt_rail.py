@@ -87,16 +87,11 @@ class RuntimePromptRail(DeepAgentRail):
         self._cwd: str | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str | None = None
-        self._task_workspace_root: str | None = None
-        self._task_work_dir: str | None = None
-        self._task_outputs_dir: str | None = None
-        self._execution_cwd: str | None = None
-        self._execution_project_root: str | None = None
-        self._execution_workspace: str | None = None
-        self._execution_paths_revision = 0
-        self._bound_execution_paths_revision: ContextVar[int] = ContextVar(
-            "runtime_prompt_bound_execution_paths_revision",
-            default=-1,
+        self._task_paths_by_session: dict[str, tuple[str | None, str | None, str | None]] = {}
+        self._execution_paths_by_session: dict[str, tuple[str, str, str]] = {}
+        self._bound_execution_paths: ContextVar[tuple[str, str, str] | None] = ContextVar(
+            "runtime_prompt_bound_execution_paths",
+            default=None,
         )
         self._model_name: str = ""
         self._mode: str = ""
@@ -170,9 +165,12 @@ class RuntimePromptRail(DeepAgentRail):
             if isinstance(workspace_dir, str) and workspace_dir.strip()
             else None
         )
-        self._task_workspace_root = str(task_workspace_root or "").strip() or None
-        self._task_work_dir = str(task_work_dir or "").strip() or None
-        self._task_outputs_dir = str(task_outputs_dir or "").strip() or None
+        session_id = self._session_id or ""
+        self._task_paths_by_session[session_id] = (
+            str(task_workspace_root or "").strip() or None,
+            str(task_work_dir or "").strip() or None,
+            str(task_outputs_dir or "").strip() or None,
+        )
 
     def set_model_name(self, model_name: str) -> None:
         """per-request 更新模型名称，作为文件读取失败时的兜底。"""
@@ -186,27 +184,20 @@ class RuntimePromptRail(DeepAgentRail):
         workspace: str,
     ) -> None:
         """Bind request paths in the task that executes an Agent/Code round."""
-        execution_paths = (cwd, project_root, workspace)
-        if execution_paths == (
-            self._execution_cwd,
-            self._execution_project_root,
-            self._execution_workspace,
-        ):
-            return
-        self._execution_cwd, self._execution_project_root, self._execution_workspace = execution_paths
-        self._execution_paths_revision += 1
+        self._execution_paths_by_session[self._session_id or ""] = (cwd, project_root, workspace)
 
-    def _bind_execution_paths(self) -> None:
-        if not all((self._execution_cwd, self._execution_project_root, self._execution_workspace)):
+    def _bind_execution_paths(self, ctx: AgentCallbackContext) -> None:
+        session = getattr(ctx, "session", None)
+        session_id = str(session.get_session_id() or "") if session is not None else ""
+        paths = self._execution_paths_by_session.get(session_id)
+        if not paths and not self._session_id:
+            paths = self._execution_paths_by_session.get("")
+        if not paths or not all(paths):
             return
-        if self._bound_execution_paths_revision.get() == self._execution_paths_revision:
+        if self._bound_execution_paths.get() == paths:
             return
-        init_cwd(
-            self._execution_cwd,
-            project_root=self._execution_project_root,
-            workspace=self._execution_workspace,
-        )
-        self._bound_execution_paths_revision.set(self._execution_paths_revision)
+        init_cwd(paths[0], project_root=paths[1], workspace=paths[2])
+        self._bound_execution_paths.set(paths)
 
     def set_mode(self, mode: str) -> None:
         """per-request 更新运行模式，作为文件读取失败时的兜底。"""
@@ -383,10 +374,10 @@ class RuntimePromptRail(DeepAgentRail):
         return configured_mode
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
-        self._bind_execution_paths()
+        self._bind_execution_paths(ctx)
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
-        self._bind_execution_paths()
+        self._bind_execution_paths(ctx)
         if not self.system_prompt_builder:
             return
 
@@ -403,22 +394,28 @@ class RuntimePromptRail(DeepAgentRail):
         ):
             self.system_prompt_builder.remove_section(name)
 
-        if self._task_workspace_root and self._task_work_dir and self._task_outputs_dir:
+        session = getattr(ctx, "session", None)
+        session_id = str(session.get_session_id() or "") if session is not None else ""
+        task_paths = self._task_paths_by_session.get(session_id)
+        if not task_paths and not self._session_id:
+            task_paths = self._task_paths_by_session.get("")
+        task_workspace_root, task_work_dir, task_outputs_dir = task_paths or (None, None, None)
+        if task_workspace_root and task_work_dir and task_outputs_dir:
             if not self._force_english and self._language == "cn":
                 directory_content = (
                     "# 目录与文件操作边界\n\n## 当前任务目录\n\n"
-                    f"- 当前任务根目录：`{self._task_workspace_root}`\n"
-                    f"- 临时工作目录：`{self._task_work_dir}`\n"
-                    f"- 最终产物目录：`{self._task_outputs_dir}`\n\n"
+                    f"- 当前任务根目录：`{task_workspace_root}`\n"
+                    f"- 临时工作目录：`{task_work_dir}`\n"
+                    f"- 最终产物目录：`{task_outputs_dir}`\n\n"
                     "- 相对路径以临时工作目录为基准。\n"
                     "- 中间文件放入临时工作目录，最终报告、导出文件和其他交付物放入最终产物目录。"
                 )
             else:
                 directory_content = (
                     "# Directory and File-Operation Boundaries\n\n## Current Task Directories\n\n"
-                    f"- Current task root: `{self._task_workspace_root}`\n"
-                    f"- Temporary working directory: `{self._task_work_dir}`\n"
-                    f"- Final deliverables directory: `{self._task_outputs_dir}`\n\n"
+                    f"- Current task root: `{task_workspace_root}`\n"
+                    f"- Temporary working directory: `{task_work_dir}`\n"
+                    f"- Final deliverables directory: `{task_outputs_dir}`\n\n"
                     "- Resolve relative paths against the temporary working directory.\n"
                     "- Put intermediate files in the temporary working directory "
                     "and final deliverables in the final deliverables directory."

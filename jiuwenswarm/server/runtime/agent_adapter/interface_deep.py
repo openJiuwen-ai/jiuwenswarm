@@ -10552,6 +10552,7 @@ class JiuWenSwarmDeepAdapter:
         stage_timer.mark("eternal_conversation")
 
         if self._runtime_prompt_rail:
+            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
             self._runtime_prompt_rail.set_trusted_dirs(
@@ -10572,7 +10573,6 @@ class JiuWenSwarmDeepAdapter:
             )
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
-            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             self._runtime_prompt_rail.set_request_system_prompt(
                 runtime_config.request_system_prompt if bind_request else None
             )
