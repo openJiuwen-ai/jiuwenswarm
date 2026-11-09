@@ -543,12 +543,89 @@ def build_yuanrong_sandbox_status_view() -> dict[str, Any]:
     }
 
 
+def _team_context_from_spec(spec: Any) -> dict[str, str] | None:
+    """Derive the team mount context from a ``TeamAgentSpec``.
+
+    The team home is derived from the workspace root, never hardcoded to the
+    default ``.agent_teams`` layout: group-chat child teams carry their own
+    private workspace root, and distributed deployments may relocate it. An
+    empty or missing ``workspace.root_path`` falls back to the default
+    ``team_home(team_name) / "team-workspace"`` (same expression as the
+    swarm assembly path).
+
+    Returns:
+        ``{"team_name", "session_id", "team_home", "workspace_root"}``,
+        or None when the spec carries no resolvable team identity.
+    """
+    from openjiuwen.agent_teams.paths import team_home
+
+    team_name = str(getattr(spec, "team_name", "") or "").strip()
+    if not team_name:
+        return None
+    workspace = getattr(spec, "workspace", None)
+    raw_root = getattr(workspace, "root_path", None) if workspace is not None else None
+    root_str = str(raw_root or "").strip()
+    try:
+        if root_str:
+            workspace_root = Path(root_str).expanduser().resolve()
+        else:
+            workspace_root = team_home(team_name) / "team-workspace"
+    except OSError as exc:
+        logger.warning(
+            "[sysop_builder] team workspace root resolution failed (team=%s): %s",
+            team_name,
+            exc,
+        )
+        return None
+    # workspace_root is <team_home>/team-workspace (or a relocated equivalent):
+    # the team home is its parent, so group-chat children and relocated roots
+    # derive their own subtree without hardcoding the .agent_teams layout.
+    team_home_dir = workspace_root.parent
+    return {
+        "team_name": team_name,
+        "session_id": "",
+        "team_home": str(team_home_dir),
+        "workspace_root": str(workspace_root),
+    }
+
+
+def _team_mount_intent(team_context: dict[str, str] | None) -> list[tuple[str, str]]:
+    """Type-neutral team mount intent: ``(host_path, "rw")`` pairs.
+
+    Deliberately free of any jiuwenbox/bwrap dialect (design D-20261105-1041
+    §3.1): consumers encode this list into their own create protocol. No mkdir
+    and no existence check here — creation is the encoding side's concern so
+    a missing directory degrades through the bind-mount tolerance path
+    (D-20261104-1000) instead of failing policy construction.
+
+    Covers, for the current team only:
+      - ``<team_home>/workspaces/``            in-team member workspace links
+      - ``<team_home>/team-workspace/``        shared artifacts tree
+      - ``<team_home>/sessions/<sid>/worktrees/`` session-scoped worktrees
+      - ``<team_home>/../jiuwen_team_members/`` dynamic/predefined member
+        real directories (outside the team tree; the in-team entries are
+        only links and link-creation failure retreats to this directory).
+    """
+    if not team_context:
+        return []
+    team_home_dir = Path(team_context["team_home"])
+    session_id = str(team_context.get("session_id") or "").strip() or "default"
+    paths = [
+        team_home_dir / "workspaces",
+        team_home_dir / "team-workspace",
+        team_home_dir / "sessions" / session_id / "worktrees",
+        team_home_dir.parent / "jiuwen_team_members",
+    ]
+    return [(str(p), "rw") for p in paths]
+
+
 def build_filesystem_policy(
     files_runtime: dict[str, Any] | None,
     *,
     project_dir: str | Path | None = None,
     is_code_agent: bool = False,
     startup_mode: str | None = None,
+    team_context: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """build jiuwenbox filesystem policy."""
     del is_code_agent  # retained for caller compatibility
@@ -668,6 +745,24 @@ def build_filesystem_policy(
     if resolved_project is not None:
         _mount_rw_dir(resolved_project)
 
+    # Team member mounts (design D-20261105-1041 KD3): encode the type-neutral
+    # intent into the jiuwenbox dialect. Each intent path is created on demand
+    # (worktrees and member workspaces materialize after card construction);
+    # a directory that cannot be created degrades with a warning instead of
+    # failing the whole policy build (bind-mount tolerance, D-20261104-1000).
+    for intent_host, _intent_mode in _team_mount_intent(team_context):
+        intent_path = Path(intent_host)
+        try:
+            intent_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "[sysop_builder] team mount dir unavailable, skipping: %s (%s)",
+                intent_host,
+                exc,
+            )
+            continue
+        _mount_rw_dir(intent_path)
+
     if effective_startup_mode == "internal":
         config_path = _resolve_config_ro_path()
         if config_path is not None:
@@ -721,6 +816,21 @@ def build_filesystem_policy(
     return {"filesystem_policy": fs_policy}, upload_list
 
 
+def _entry_custom_id(
+    isolation_custom_id: str | None,
+    project_dir: str | Path | None,
+) -> str:
+    """Resolve the isolation custom id: caller-supplied entry id wins over project hash.
+
+    Team entry cards (design D-20261105-1041 KD2) pass a deterministic
+    ``entry_<team>_<entry>`` id so every spec entry maps to its own isolation
+    key; the single-agent path keeps the project-hash derivation unchanged.
+    """
+    if isolation_custom_id:
+        return isolation_custom_id
+    return _sandbox_isolation_custom_id(project_dir)
+
+
 def create_sandbox_sysop_card(
     sandbox_url: str,
     sandbox_type: str,
@@ -733,6 +843,8 @@ def create_sandbox_sysop_card(
     project_dir: str | Path | None = None,
     is_code_agent: bool = False,
     startup_mode: str | None = None,
+    isolation_custom_id: str | None = None,
+    team_context: dict[str, str] | None = None,
 ) -> SysOperationCard | None:
     """Create sandbox SysOperationCard (jiuwenbox or yuanrong)."""
     # 触发 sandbox provider 注册（@SandboxRegistry.provider 装饰器副作用）
@@ -751,7 +863,7 @@ def create_sandbox_sysop_card(
             gateway_config = SandboxGatewayConfig(
                 isolation=SandboxIsolationConfig(
                     container_scope=ContainerScope.CUSTOM,
-                    custom_id=_sandbox_isolation_custom_id(project_dir),
+                    custom_id=_entry_custom_id(isolation_custom_id, project_dir),
                 ),
                 launcher_config=PreDeployLauncherConfig(
                     base_url=sandbox_url,
@@ -809,6 +921,7 @@ def create_sandbox_sysop_card(
             project_dir=project_dir,
             is_code_agent=is_code_agent,
             startup_mode=startup_mode,
+            team_context=team_context,
         )
         extra_params = {
             "policy": policy,
@@ -855,7 +968,7 @@ def create_sandbox_sysop_card(
         if idle_check_interval is not None:
             extra_params["idle_check_interval"] = idle_check_interval
 
-        isolation_custom_id = _sandbox_isolation_custom_id(project_dir)
+        isolation_custom_id = _entry_custom_id(isolation_custom_id, project_dir)
         gateway_config = SandboxGatewayConfig(
             isolation=SandboxIsolationConfig(
                 container_scope=ContainerScope.CUSTOM,
