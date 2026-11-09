@@ -22,7 +22,8 @@ def make_router():
 async def test_idle_preparation_waits_for_foreground_control(monkeypatch):
     instance = make_router()
     calls = []
-    for name in ("session", "project", "config", "history"):
+    monkeypatch.setattr(router, "_prepare_config_service", lambda: calls.append("config"))
+    for name in ("session", "project", "history"):
         monkeypatch.setattr(router, f"_load_{name}_service", lambda n=name: calls.append(n))
     instance._active_controls = 1
     instance.start_control_warmup()
@@ -30,7 +31,7 @@ async def test_idle_preparation_waits_for_foreground_control(monkeypatch):
     assert calls == []
     instance._active_controls = 0
     await asyncio.wait_for(asyncio.shield(instance._control_warmup), 2)
-    assert calls == ["session", "project", "config", "history"]
+    assert calls == ["config", "session", "project", "history"]
     await instance.close_control_warmup()
 
 

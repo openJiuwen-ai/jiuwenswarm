@@ -1,3 +1,4 @@
+import { SETTINGS_CONFIG_CHANGED_EVENT } from './features/settings/services/settingsContract';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
@@ -49,7 +50,7 @@ import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import type { ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
-import { LoadingSpinner, ToastStack, toast } from './components/ui';
+import { Button, LoadingSpinner, ToastStack, toast } from './components/ui';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
 import type { SettingsRequest } from './features/settings/services/settingsContract';
@@ -560,6 +561,9 @@ function AppContent({
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
+  const [configReady, setConfigReady] = useState(false);
+  const configRequestRevisionRef = useRef(0);
+  const modelsRequestRevisionRef = useRef(0);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [restartModalOpen, setRestartModalOpen] = useState(false);
   const [restartSuccess, setRestartSuccess] = useState(false);
@@ -617,6 +621,7 @@ function AppContent({
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
   const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
+  const [modelSetupGuideAvailable, setModelSetupGuideAvailable] = useState(false);
   const [composerFocusNonce, setComposerFocusNonce] = useState(0);
   const [missingSessionId, setMissingSessionId] = useState<string | null>(null);
   const startupUpdateCheckRef = useRef(false);
@@ -2211,11 +2216,30 @@ function AppContent({
     loadSessionMetadataRef.current = loadSessionMetadata;
   }, [loadSessionMetadata]);
 
-  // 获取服务端配置（通过 WS 方法）
+  const handleModelsRefresh = useCallback(async () => {
+    const revision = ++modelsRequestRevisionRef.current;
+    try {
+      const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
+      if (revision !== modelsRequestRevisionRef.current) return;
+      if (resp?.models) {
+        setAvailableModels(resp.models, resp.active_model);
+      }
+      setAvailableModelGroups(parseModelGroups(resp?.model_groups));
+    } catch (error) {
+      if (revision === modelsRequestRevisionRef.current) {
+        console.warn('Failed to refresh models list:', error);
+      }
+    }
+  }, [request, setAvailableModelGroups, setAvailableModels]);
+
+  // Configuration completion is independent of model and execution preparation.
   const fetchConfig = useCallback(async () => {
+    const revision = ++configRequestRevisionRef.current;
+    setConfigError(null);
     try {
       const collaborationRevision = getMultiModelCollaborationRevision();
       const config = await request<Record<string, unknown>>('config.get');
+      if (revision !== configRequestRevisionRef.current) return false;
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryDiagnosisEnabled(
@@ -2233,29 +2257,31 @@ function AppContent({
         multi_model_collaboration_enabled: isMultiModelCollaborationEnabled(),
       });
       setConfigError(null);
+      setConfigReady(true);
+      setModelSetupGuideAvailable(!isEnterprise() && isSetupGuideEnabled(config.setup_guide_enabled));
       if (!modelSetupGuideEvaluatedRef.current) {
         modelSetupGuideEvaluatedRef.current = true;
-        if (!isEnterprise() && (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled))) {
+        if (!isEnterprise() && shouldPreviewModelSetupGuide()) {
           setActiveNav('chat');
           setModelSetupGuideStep(1);
         }
       }
+      return true;
     } catch (error) {
+      if (revision !== configRequestRevisionRef.current) return false;
       console.error('Failed to fetch config:', error);
-      setServerConfig(null);
+      setConfigReady(false);
       setConfigError(t('app.configError'));
+      return false;
     }
-    // 同步获取多模型列表与模型组目录
-    try {
-      const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
-      if (resp?.models) {
-        setAvailableModels(resp.models, resp.active_model);
-      }
-      setAvailableModelGroups(parseModelGroups(resp?.model_groups));
-    } catch (error) {
-      console.warn('Failed to fetch models list:', error);
+  }, [request, t]);
+
+  const refreshConfiguration = useCallback(async () => {
+    if (await fetchConfig()) {
+      setInitialDataLoaded(true);
+      void handleModelsRefresh();
     }
-  }, [request, t, setAvailableModelGroups, setAvailableModels]);
+  }, [fetchConfig, handleModelsRefresh]);
 
   useEffect(() => {
     if (isEnterprise() || !FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
@@ -2336,24 +2362,13 @@ function AppContent({
   }, []);
 
   const handleConfigChanged = useCallback(() => {
-    void fetchConfig();
-  }, [fetchConfig]);
+    window.dispatchEvent(new Event(SETTINGS_CONFIG_CHANGED_EVENT));
+    void refreshConfiguration();
+  }, [refreshConfiguration]);
 
   const handleSettingsHasChangesChange = useCallback((hasChanges: boolean) => {
     settingsHasChangesRef.current = hasChanges;
   }, []);
-
-  const handleModelsRefresh = useCallback(async () => {
-    try {
-      const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
-      if (resp?.models) {
-        setAvailableModels(resp.models, resp.active_model);
-      }
-      setAvailableModelGroups(parseModelGroups(resp?.model_groups));
-    } catch (error) {
-      console.warn('Failed to refresh models list:', error);
-    }
-  }, [request, setAvailableModelGroups, setAvailableModels]);
 
   useEffect(() => {
     const onAuthChanged = (event: Event) => {
@@ -2553,12 +2568,12 @@ function AppContent({
     restartSuccess,
   ]);
 
-  // 连接状态提示：断连期间在右上角挂一条常驻 toast（不自动消失），重连后收起；
-  // 携带业务 id，配置加载/语言切换导致文案变化时原地更新，始终只有一条。
+  // Close startup feedback after the current connection's real config is applied.
   const connectionToastKeyRef = useRef<number | null>(null);
-  const connectionStatusText = serverConfig ? t('connection.connecting') : t('connection.loadingConfig');
+  const showConnecting = !isConnected && serverConfig !== null;
+  const connectionStatusText = showConnecting ? t('connection.connecting') : t('connection.loadingConfig');
   useEffect(() => {
-    if (isConnected) {
+    if (isConnected && (configReady || configError !== null)) {
       if (connectionToastKeyRef.current !== null) {
         toast.close(connectionToastKeyRef.current);
         connectionToastKeyRef.current = null;
@@ -2570,7 +2585,7 @@ function AppContent({
       // data-variant="connecting|loadingConfig"；id 仅作业务去重键，不进 DOM
       id: 'app-connection-toast-message',
       content: (
-        <span data-testid="app-connection-toast-message" data-variant={serverConfig ? 'connecting' : 'loadingConfig'}>
+        <span data-testid="app-connection-toast-message" data-variant={showConnecting ? 'connecting' : 'loadingConfig'}>
           {connectionStatusText}
         </span>
       ),
@@ -2581,7 +2596,7 @@ function AppContent({
       closable: false,
       testId: 'app-connection-toast',
     });
-  }, [isConnected, connectionStatusText]);
+  }, [isConnected, configReady, configError, connectionStatusText, showConnecting]);
 
   useEffect(() => {
     return () => {
@@ -2604,15 +2619,25 @@ function AppContent({
     }, 8000);
   }, [clearProactiveToastTimer, proactiveNotificationMessage, setProactiveNotification]);
 
+  const refreshConfigurationRef = useRef(refreshConfiguration);
   useEffect(() => {
-    if (!isConnected || initialDataLoaded) {
+    refreshConfigurationRef.current = refreshConfiguration;
+  }, [refreshConfiguration]);
+
+  useEffect(() => {
+    if (!isConnected) {
+      configRequestRevisionRef.current += 1;
+      modelsRequestRevisionRef.current += 1;
+      setConfigReady(false);
+      setConfigError(null);
       return;
     }
-    void (async () => {
-      await fetchConfig();
-      setInitialDataLoaded(true);
-    })();
-  }, [fetchConfig, initialDataLoaded, isConnected]);
+    void refreshConfigurationRef.current();
+    return () => {
+      configRequestRevisionRef.current += 1;
+      modelsRequestRevisionRef.current += 1;
+    };
+  }, [isConnected]);
 
   const initialProjectsLoadedRef = useRef(false);
 
@@ -4368,6 +4393,7 @@ function AppContent({
 
   const skipModelSetupGuide = useCallback(() => {
     setModelSetupGuideStep(null);
+    setModelSetupGuideAvailable(false);
 
     void request('config.set', { setup_guide_enabled: 'false' })
       .then(() => {
@@ -4383,6 +4409,7 @@ function AppContent({
 
   const acknowledgeModelSetupGuide = useCallback(() => {
     setModelSetupGuideStep(null);
+    setModelSetupGuideAvailable(false);
 
     void request('config.set', { setup_guide_enabled: 'false' })
       .then(() => {
@@ -4825,6 +4852,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       className={`shell shell--icon-rail ${activeNav === 'agents' ? 'shell--agent-management' : ''}`}
       data-testid="app-shell"
       data-session-id={sessionId}
+      data-config-status={!isConnected ? 'connecting' : configReady ? 'ready' : configError ? 'error' : 'loading'}
     >
       <ApplicationConversationRuntimes sessionId={sessionId} />
       {/* Navigation Sidebar */}
@@ -4870,7 +4898,29 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               <span className="mono"> jiuwenswarm/channels/web/frontend/.env.local </span>
               {t('app.configErrorEnv')} <span className="mono">VITE_API_BASE</span> {t('common.and')} <span className="mono">VITE_WS_BASE</span>.
             </div>
+            <Button
+              type="button"
+              variant="quiet"
+              size="sm"
+              data-testid="app-config-retry"
+              onClick={() => { void refreshConfiguration(); }}
+            >
+              {t('common.retry')}
+            </Button>
           </div>
+        )}
+
+        {activeNav === 'chat' && modelSetupGuideAvailable && modelSetupGuideStep === null && (
+          <Button
+            type="button"
+            variant="quiet"
+            size="sm"
+            className="mb-2 self-end mr-4"
+            data-testid="app-model-setup-entry"
+            onClick={() => { setModelSetupGuideStep(1); }}
+          >
+            {t('modelSetupGuide.open')}
+          </Button>
         )}
 
         {sidebarPeek && sidebarPeek !== 'settings' && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (

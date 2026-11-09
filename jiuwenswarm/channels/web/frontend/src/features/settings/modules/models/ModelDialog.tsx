@@ -64,22 +64,28 @@ function getModelFetchKey(preset: VendorPreset, apiKey: string): string {
 export function ModelDialog({
   model,
   models,
+  modelsLoading,
+  modelsError,
   catalog,
   catalogLoading,
   catalogError,
   saving,
   onClose,
   onSave,
+  onRetryModels,
   onRetryCatalog,
 }: {
   model?: ModelEntry;
   models: ModelEntry[];
+  modelsLoading: boolean;
+  modelsError: string;
   catalog: VendorPresetMap;
   catalogLoading: boolean;
   catalogError: string;
   saving: boolean;
   onClose: () => void;
   onSave: (model: ModelEntry) => Promise<void>;
+  onRetryModels: () => void;
   onRetryCatalog: () => void;
 }) {
   const { t } = useTranslation();
@@ -157,6 +163,10 @@ export function ModelDialog({
       if (next.alias !== current.alias) form.validate('alias');
     },
   });
+
+  const saveDisabled =
+    !isConnected || modelsLoading || Boolean(modelsError) || submitting || saving || testing || fetching ||
+    catalogLoading || Boolean(catalogError) || !catalog.reasoning || (account && openAIAccount.busy);
 
   const describePresetStatus = (targetPreset: VendorPreset | undefined, apiKey: string, options: readonly string[]) => {
     const statusKey = getPresetStatusKey(targetPreset, apiKey, options);
@@ -262,6 +272,7 @@ export function ModelDialog({
   };
 
   const validateAndSave = async () => {
+    if (saveDisabled) return;
     if (Object.keys(errors).length) {
       form.validate();
       return;
@@ -555,16 +566,7 @@ export function ModelDialog({
         title={t(model ? 'settingsPanel.models.editModel' : 'settingsPanel.models.addModel')}
         submitting={closeBlocked}
         confirmLoading={testing}
-        confirmDisabled={
-          !isConnected ||
-          saving ||
-          testing ||
-          fetching ||
-          catalogLoading ||
-          Boolean(catalogError) ||
-          !catalog.reasoning ||
-          (account && openAIAccount.busy)
-        }
+        confirmDisabled={saveDisabled}
         confirmLabel={t(
           testing
             ? 'settingsPanel.models.testingConnection'
@@ -578,14 +580,24 @@ export function ModelDialog({
         onConfirm={() => void validateAndSave()}
         onCancel={requestClose}
       >
-        {catalogLoading ? (
+        {modelsError ? (
           <div
-            className="settings-model-dialog__catalog-status"
-            role="status"
-            aria-live="polite"
-            data-testid="settings-model-dialog-catalog-loading"
+            className="settings-model-dialog__catalog-status settings-model-dialog__catalog-status--error"
+            role="alert"
+            data-testid="settings-model-dialog-models-error"
           >
-            {t('settingsPanel.models.catalogLoading')}
+            <span>
+              {t('settingsPanel.models.modelsLoadFailedDraftAvailable')}
+              <small>{modelsError}</small>
+            </span>
+            <Button
+              size="sm"
+              disabled={!isConnected || modelsLoading || testing || submitting || saving}
+              onClick={onRetryModels}
+              data-testid="settings-model-dialog-models-retry-btn"
+            >
+              {t('settingsPanel.feedback.retry')}
+            </Button>
           </div>
         ) : null}
         {catalogError ? (
@@ -610,7 +622,7 @@ export function ModelDialog({
         ) : null}
         <Form<ModelDraft>
           form={form}
-          disabled={testing || submitting || saving || !catalog.reasoning}
+          disabled={testing || submitting || saving}
           optionalText={t('common.optional')}
           showOptional={false}
           testIdPrefix="settings-model-dialog"

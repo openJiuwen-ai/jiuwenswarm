@@ -71,6 +71,14 @@ def _load_config_service() -> None:
     _HANDLE_CONFIG = handle_config_request
 
 
+def _prepare_config_service() -> None:
+    """Prepare the existing config read path without retaining a stale snapshot."""
+    _load_config_service()
+    from jiuwenswarm.server.control.config_service import get_panel
+
+    get_panel()
+
+
 def _load_history_service() -> None:
     global _HANDLE_HISTORY, _LOAD_HISTORY_QUERY, _LOAD_HISTORY_TODO_SNAPSHOT
     global _LOAD_HISTORY_SESSION_USAGE
@@ -98,9 +106,9 @@ def _load_history_service() -> None:
 
 def _load_control_services() -> None:
     """Load all Control Service handlers. Prefer per-type loaders at dispatch."""
+    _load_config_service()
     _load_session_service()
     _load_project_service()
-    _load_config_service()
     _load_history_service()
 
 
@@ -130,9 +138,9 @@ class MethodRouter:
 
     async def _warm_control_services(self) -> None:
         # Give an already queued connection/request priority over background imports.
-        await asyncio.sleep(0.05)
-        for loader in (_load_session_service, _load_project_service,
-                       _load_config_service, _load_history_service):
+        await asyncio.sleep(0)
+        for loader in (_prepare_config_service, _load_session_service,
+                       _load_project_service, _load_history_service):
             while self._active_controls:
                 await asyncio.sleep(0.01)
             began = time.monotonic()

@@ -198,6 +198,8 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
   const editableModels = useMemo(() => getEditableModels(models), [models]);
   const hasModelsError = Boolean(modelsError);
   const actionsDisabled = !isConnected || modelsLoading || hasModelsError || saving;
+  const addModelDisabled = !isConnected || saving;
+  const modelDialogOpen = dialog !== null;
 
   const applyCatalog = useCallback(
     (parsed: { models: ModelEntry[]; modelGroups: ModelGroup[]; activeModel?: string }) => {
@@ -273,6 +275,10 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
   }, []);
 
   useEffect(() => {
+    if (modelDialogOpen) void loadCatalog();
+  }, [loadCatalog, modelDialogOpen]);
+
+  useEffect(() => {
     void reloadModels();
     return () => {
       modelsRequestId.current += 1;
@@ -295,7 +301,8 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
 
   const openModelDialog = useCallback(
     async (nextDialog: { model?: ModelEntry }) => {
-      void loadCatalog();
+      setCatalogLoading(true);
+      setCatalogError('');
       if (!nextDialog.model?.model_id) {
         setDialog(nextDialog);
         return;
@@ -310,7 +317,7 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         });
       }
     },
-    [loadCatalog, request, showValidationToast, t],
+    [request, showValidationToast, t],
   );
 
   const saveModel = async (
@@ -657,7 +664,7 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
             action={
               <Button
                 variant="primary"
-                disabled={actionsDisabled}
+                disabled={addModelDisabled}
                 onClick={() => void openModelDialog({})}
                 data-testid="settings-models-add-btn"
               >
@@ -750,10 +757,13 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         <ModelDialog
           model={dialog.model}
           models={models}
+          modelsLoading={modelsLoading}
+          modelsError={modelsError}
           catalog={catalog}
           catalogLoading={catalogLoading}
           catalogError={catalogError}
           saving={saving}
+          onRetryModels={() => void reloadModels()}
           onRetryCatalog={() => void loadCatalog()}
           onClose={closeModelDialog}
           onSave={async (next) => {

@@ -384,7 +384,6 @@
       "security": "当前环境的安全策略禁止屏幕共享",
       "unknown": "屏幕采集或画面初始化发生异常，请根据原始错误与诊断编号核对日志"
     },
-    "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。",
     "modelFallback": "视频模型",
     "subtitle": "实时多屏音视频问答",
     "status": {
@@ -758,6 +757,7 @@
       "missingCustomName": "未命名配置",
       "reloadAfterFailure": "重新加载核对",
       "modelsResponseInvalid": "模型列表响应格式不正确，请重试。",
+      "modelsLoadFailedDraftAvailable": "已有模型配置加载失败，填写内容已保留。请重试后保存。",
       "catalogResponseInvalid": "模型提供商目录响应格式不正确，请重试。",
       "catalogLoadingCustomAvailable": "正在加载内置模型提供商；仍可选择“自定义”继续配置。",
       "catalogLoadFailedCustomAvailable": "内置模型提供商加载失败；仍可选择“自定义”继续配置。",
@@ -853,7 +853,6 @@
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
     "experimental": {
-      "computerControl": "电脑操控",
       "taskAsr": "语音转写",
       "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
@@ -893,7 +892,6 @@
       "loadError": "无法读取全双工模型配置",
       "saveError": "无法保存全双工模型配置",
       "notConfigured": "尚未配置全双工模型",
-      "requiredFields": "带 * 的项目为必填项，填写完整后才能保存。已保存的 API 密钥无需重新输入。",
       "dialogTitle": "配置全双工模型",
       "providerLabel": "模型通道",
       "joyaiModelLabel": "JoyAI 模型",
@@ -1142,10 +1140,6 @@
       "rsi_enabled": {
         "title": "启用 RSI",
         "description": "显示侧边栏「RSI」入口，可创建并查看 Harness 优化和产物优化（论文、程序）的 RSI 任务；关闭后隐藏该入口。"
-      },
-      "cua_agent_enabled": {
-        "title": "启用电脑操控",
-        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
