@@ -57,6 +57,8 @@
 - [后端包管理协议](docs/specs/S_02_backend-package-management.md)：`extensions.v2.*` 参数、响应及错误边界。
 - [内置事件开发模板](docs/designs/builtin-event-development-guide.md)：面向 WebClient、Gateway 和 AgentServer 开发者，说明事件、Handler、Ops 登记与真实业务生效；第 3.7 节区分槽位交互与独立内置请求，列出前端、Gateway 转发和 AgentServer 适配器的完整登记入口，第 4.7 节说明 Gateway 渠道事件的往返链路。新增代码标为待实现模板。
 - [系统插件包开发指南](docs/designs/system-plugin-package-guide.md)：面向插件包作者，说明包结构、`manifest.json` 字段写法、`README.md` 生效机制说明与交付前自检。
+- [系统插件启用状态](docs/features/F_34_system-plugin-enable.md)：受管 manifest 的可选 `enable`、启用和禁用边界。
+- [系统插件还原](docs/features/F_35_system-plugin-recovery.md)：启动期还原记录、独立回环恢复页和恢复边界。
 
 新增内置事件或 Handler 时，先阅读内置事件开发模板，再根据涉及的模块查阅规约与特性方案；需要了解完整协作与生命周期时，再查阅详细架构。
 

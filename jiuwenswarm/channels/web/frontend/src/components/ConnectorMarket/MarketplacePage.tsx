@@ -16,6 +16,7 @@ import { pluginPackagesApi } from '../../services/pluginPackagesApi';
 import type { PluginPackageSummary } from '../../types/pluginPackage';
 import { MarketCard } from './MarketCard';
 import { MyMarketCard } from './MyMarketCard';
+import { Switch } from '../Switch';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import type { ConnectorConnectResponse, ConnectorSummary } from '../../types/connector';
@@ -139,7 +140,23 @@ export function MarketplacePage({
   const systemBusyIds = useSystemPluginStore((s) => s.busyIds);
   const systemLoading = useSystemPluginStore((s) => s.loading);
   const installSystemPlugin = useSystemPluginStore((s) => s.install);
-  const reloadSystemPlugin = useSystemPluginStore((s) => s.reload);
+  const setSystemPluginEnabled = useSystemPluginStore((s) => s.setEnabled);
+
+  const systemPluginHeaderAction = (pkg: SystemPluginSummary) => {
+    if (!pkg.installed) return undefined;
+    const action = pkg.enabled
+      ? t('connectorMarket.systemPlugin.disable')
+      : t('connectorMarket.systemPlugin.enable');
+    return (
+      <span data-testid="connector-market-system-plugin-enabled" title={action}>
+        <Switch
+          checked={pkg.enabled}
+          disabled={!!systemBusyIds[pkg.id]}
+          onChange={(enable) => { void setSystemPluginEnabled(pkg.id, enable); }}
+        />
+      </span>
+    );
+  };
 
   useEffect(() => {
     const searchQuery = query.trim();
@@ -652,8 +669,8 @@ export function MarketplacePage({
                       busyKind="install"
                       actionDisabled={!!systemBusyIds[pkg.id]}
                       onOpenDetail={() => onOpenSystemPluginDetail(pkg.id)}
-                      connectedLabel={t('connectorMarket.systemPlugin.detail')}
-                      onConnectedAction={() => onOpenSystemPluginDetail(pkg.id)}
+                      headerAction={systemPluginHeaderAction(pkg)}
+                      hideConnectedAction
                       onQuickInstall={() => { void installSystemPlugin(pkg.id); }}
                       quickAction="install"
                     />
@@ -723,11 +740,8 @@ export function MarketplacePage({
                   canOpenDetail
                   onOpenDetail={() => onOpenSystemPluginDetail(pkg.id)}
                   onQuickAdd={() => { void installSystemPlugin(pkg.id); }}
-                  connectedLabel={t(pkg.active ? 'connectorMarket.systemPlugin.enabled' : 'connectorMarket.systemPlugin.reload')}
-                  onConnectedAction={() => {
-                    if (pkg.active) onOpenSystemPluginDetail(pkg.id);
-                    else void reloadSystemPlugin(pkg.id);
-                  }}
+                  headerAction={systemPluginHeaderAction(pkg)}
+                  hideConnectedAction
                 />
               ))
             : visiblePlugins.map((pkg) => {

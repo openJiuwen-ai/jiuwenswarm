@@ -18,6 +18,7 @@ interface SystemPluginState {
   importPath: (path: string) => Promise<MutationResult>;
   uninstall: (id: string) => Promise<MutationResult>;
   reload: (id: string) => Promise<MutationResult>;
+  setEnabled: (id: string, enable: boolean) => Promise<MutationResult>;
   clearError: () => void;
 }
 
@@ -122,5 +123,6 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
     },
     uninstall: (id) => mutate(id, () => systemPluginApi.uninstall(id)),
     reload: (id) => mutate(id, () => systemPluginApi.reload(id)),
+    setEnabled: (id, enable) => mutate(id, () => systemPluginApi.setEnabled(id, enable)),
   };
 });

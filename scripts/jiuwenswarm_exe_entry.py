@@ -135,6 +135,7 @@ if getattr(sys, "frozen", False):
 
 _DESKTOP_RUN_AGENT = "--desktop-run-agent"
 _DESKTOP_RUN_GATEWAY = "--desktop-run-gateway"
+_EXTENSION_RECOVERY_SIDECAR = "--extension-recovery-sidecar"
 _DESKTOP_PREPARE_RUNTIME_WORKSPACE = "--desktop-prepare-runtime-workspace"
 _DESKTOP_INSTALL_EXTERNAL_CLI = "--desktop-install-external-cli"
 _DESKTOP_RESET_EXTERNAL_CLI_CONFIG = "--desktop-reset-external-cli-config"
@@ -167,6 +168,7 @@ _CHILD_FLAGS = {
     "--desktop-run-web",
     _DESKTOP_RUN_AGENT,
     _DESKTOP_RUN_GATEWAY,
+    _EXTENSION_RECOVERY_SIDECAR,
     _DESKTOP_PREPARE_RUNTIME_WORKSPACE,
     _DESKTOP_INSTALL_EXTERNAL_CLI,
     _DESKTOP_RESET_EXTERNAL_CLI_CONFIG,
@@ -612,6 +614,10 @@ def _dispatch() -> int | None:
     if _pop_flag("--desktop-run-app"):
         from jiuwenswarm.app import main as app_main
         app_main()
+        return None
+    if _pop_flag(_EXTENSION_RECOVERY_SIDECAR):
+        from jiuwenswarm.common.system_plugin_recovery_sidecar import main as recovery_main
+        recovery_main()
         return None
     if _pop_flag("--desktop-run-web"):
         from jiuwenswarm.channels.web.app_web import main as web_main

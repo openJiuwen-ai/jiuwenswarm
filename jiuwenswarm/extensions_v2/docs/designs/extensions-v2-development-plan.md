@@ -635,3 +635,13 @@ EXTV2-09 追加命令的进度如下，原后端验证记录继续保留。
 ## EXTV2-32 AgentServer 按域启动与共享安装报告
 
 负责人：李志远。状态：完成。内容包括 AgentServer 的按域加载、安装报告配置、CLI 查询、页面展示、示例和测试。2026-11-06 的 Extensions V2 全量回归为 1133 项通过、2 项跳过，Web 命令 69 项通过。设计和验收见 [F_32](../features/F_32_domain-install-report.md)。
+
+## EXTV2-34 系统插件启用状态
+
+负责人：李志远。状态：完成。内容包括可选 manifest `enable`、安装副本默认值、按状态加载、系统插件目录与详情页开关。接口和验证见 [F_34](../features/F_34_system-plugin-enable.md)。
+
+## EXTV2-35 系统插件还原
+
+负责人：李志远。状态：完成。内容包括跨启动保留最多 50 条系统插件状态记录、设置页内嵌的独立回环恢复页、
+还原后自动重启 AgentServer 和 Gateway 的边界，以及源码、Wheel、EXE、DMG 和 Electron 启动入口。接口、状态规则和验证见
+[F_35](../features/F_35_system-plugin-recovery.md)。

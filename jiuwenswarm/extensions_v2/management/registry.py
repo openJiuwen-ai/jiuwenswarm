@@ -34,6 +34,7 @@ from openjiuwen.core.extension.management import (
     unbind_context,
 )
 
+from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartOutput
 from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface
 from jiuwenswarm.extensions_v2.management.session_start import SessionStartGate
@@ -148,7 +149,14 @@ class ExtensionManager:
     async def install(self, paths: Sequence[Path]) -> list[ActivationReport]:
         """Delegate package admission, waiting, installation and cleanup to Core."""
         self._require_ready()
-        return list(await self._registry.install(paths))
+        reports = list(await self._registry.install(paths))
+        _record_recovery_change(
+            self.install_dir,
+            self.report_path.parent,
+            "install",
+            reports,
+        )
+        return reports
 
     async def load_installed(self) -> list[ActivationReport]:
         """Pass only the configured root; Core owns discovery and stable ordering."""
@@ -163,6 +171,12 @@ class ExtensionManager:
             report = await self._registry.uninstall(package_id)
         if report.status == "SUCCESS":
             await self._notify_inactive(package_id)
+            _record_recovery_change(
+                self.install_dir,
+                self.report_path.parent,
+                "uninstall",
+                (report,),
+            )
         return report
 
     async def reload(self, package_id: str) -> ActivationReport:
@@ -170,6 +184,23 @@ class ExtensionManager:
 
         self._require_ready()
         return await self._registry.reload(package_id)
+
+    async def set_enabled(self, package_id: str, enabled: bool) -> ActivationReport:
+        """Keep an installed package while changing whether its handlers are active."""
+
+        async with self._operation_lock:
+            self._require_ready()
+            report = await self._registry.set_enabled(package_id, enabled)
+        if report.status == "SUCCESS" and not enabled:
+            await self._notify_inactive(package_id)
+        if report.status == "SUCCESS":
+            _record_recovery_change(
+                self.install_dir,
+                self.report_path.parent,
+                "enable" if enabled else "disable",
+                (report,),
+            )
+        return report
 
     async def query(self, package_id: str | None = None) -> QueryResult:
         """Return the facts agent-core can confirm for this process."""
@@ -274,3 +305,19 @@ class ExtensionManager:
                 StatusCode.EXTENSION_LOAD_FAILED,
                 reason="extension manager is not initialized",
             )
+
+
+def _record_recovery_change(
+    install_dir: Path,
+    data_dir: Path,
+    action: str,
+    reports: Sequence[ActivationReport],
+) -> None:
+    """Persist successful state transitions without changing their result."""
+    package_ids = [report.package_id for report in reports if report.status == "SUCCESS"]
+    if not package_ids:
+        return
+    try:
+        SystemPluginRecovery(install_dir, data_dir).record(action, package_ids)
+    except Exception:  # noqa: BLE001 - recovery history must not break a successful operation
+        logger.warning("[ExtensionsV2] could not record system plugin recovery history", exc_info=True)

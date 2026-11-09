@@ -61,11 +61,14 @@ def _facts(state: Mapping[str, Any]) -> _Facts:
         for record in state.get("active") or []
         if isinstance(record, Mapping) and record.get("package_id")
     }
-    installed = {
-        Path(root).parent.name: Path(root)
-        for root in state.get("installed") or []
-        if isinstance(root, str) and root
-    }
+    installed: dict[str, Path] = {}
+    for root in state.get("installed") or []:
+        if not isinstance(root, str) or not root:
+            continue
+        path = Path(root)
+        current = installed.get(path.parent.name)
+        if current is None or _version_key(path) > _version_key(current):
+            installed[path.parent.name] = path
     return _Facts(active=active, installed=installed)
 
 
@@ -77,17 +80,26 @@ def list_presets(examples_dir: Path, state: Mapping[str, Any]) -> list[dict[str,
 
 
 def list_installed(examples_dir: Path, state: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Return active Gateway packages: installed presets plus uploaded packages."""
+    """Return installed Gateway packages, including ones kept disabled."""
 
     facts = _facts(state)
     presets = {entry.package_id: entry for entry in _scan(examples_dir, exposed_only=False)}
     packages: list[dict[str, Any]] = []
-    for package_id in sorted(facts.active):
-        record = facts.active[package_id]
-        root = record.get("root")
+    package_ids = set(facts.active) | set(facts.installed)
+    for package_id in sorted(package_ids):
+        record = facts.active.get(package_id)
+        roots: list[Path] = []
+        active_root = record.get("root") if record is not None else None
+        if isinstance(active_root, str) and active_root:
+            roots.append(Path(active_root))
+        installed_root = facts.installed.get(package_id)
+        if installed_root is not None and installed_root not in roots:
+            roots.append(installed_root)
         entry = presets.get(package_id)
-        if entry is None and isinstance(root, str):
-            entry = _entry(Path(root))
+        for root in roots:
+            if entry is not None:
+                break
+            entry = _entry(root)
         if entry is not None:
             packages.append(_summary(entry, facts))
     return packages
@@ -185,7 +197,20 @@ def _summary(entry: MarketEntry, facts: _Facts) -> dict[str, Any]:
         "avatar": _avatar(entry.root, display),
         "installed": installed,
         "active": record is not None,
+        "enabled": _enabled(entry, installed_root),
     }
+
+
+def _enabled(entry: MarketEntry, installed_root: Path | None) -> bool:
+    """Read the persisted state from the managed copy when one exists."""
+    if installed_root is None:
+        value = entry.document.get("enable")
+    else:
+        try:
+            value = read_manifest_document(installed_root).get("enable")
+        except (OSError, UnicodeError, ValueError):
+            value = entry.document.get("enable")
+    return value if isinstance(value, bool) else True
 
 
 def _display(document: Mapping[str, Any]) -> Mapping[str, Any]:

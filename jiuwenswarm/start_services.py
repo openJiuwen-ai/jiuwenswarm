@@ -20,6 +20,7 @@ The ``debug`` mode is a developer shortcut handled by
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import signal
@@ -27,6 +28,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early
@@ -617,10 +619,16 @@ def _start_process(
 
 def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
     """Terminate all running processes gracefully."""
+    process_trees: dict[str, list[Any] | None] = {}
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] terminating {name} (pid={proc.pid})")
-            proc.terminate()
+            targets = _capture_process_tree(proc)
+            process_trees[name] = targets
+            if targets is None:
+                proc.terminate()
+            else:
+                _signal_process_tree(targets)
 
     deadline = time.time() + 8
     while time.time() < deadline:
@@ -631,7 +639,44 @@ def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] killing {name} (pid={proc.pid})")
-            proc.kill()
+            targets = process_trees.get(name)
+            if targets is None:
+                if not _terminate_process_tree(proc, force=True):
+                    proc.kill()
+            else:
+                _signal_process_tree(targets, force=True)
+
+
+def _capture_process_tree(process: subprocess.Popen[bytes]) -> list[Any] | None:
+    """Capture a launcher and its current descendants before ending the launcher."""
+    try:
+        import psutil
+
+        root = psutil.Process(process.pid)
+        return [*reversed(root.children(recursive=True)), root]
+    except psutil.Error:
+        return None
+
+
+def _signal_process_tree(targets: list[Any], *, force: bool = False) -> None:
+    """Signal a previously captured process tree, ignoring already-exited targets."""
+    import psutil
+
+    for target in targets:
+        with contextlib.suppress(psutil.Error):
+            if force:
+                target.kill()
+            else:
+                target.terminate()
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes], *, force: bool = False) -> bool:
+    """Stop one launcher and every descendant it currently owns."""
+    targets = _capture_process_tree(process)
+    if targets is None:
+        return False
+    _signal_process_tree(targets, force=force)
+    return True
 
 
 def _resolve_runtime_ports() -> dict[str, int]:

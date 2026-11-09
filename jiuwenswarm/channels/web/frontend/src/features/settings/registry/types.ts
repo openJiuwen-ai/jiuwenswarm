@@ -79,6 +79,8 @@ export interface SettingsModuleDefinition {
   id: SettingsModuleId;
   titleKey: I18nKey;
   descriptionKey?: I18nKey;
+  /** The module renders its own page title and introductory content. */
+  hideHeader?: boolean;
   icon: ElementType;
   source?: SettingsSource;
   sections: readonly SettingsSectionDefinition[];

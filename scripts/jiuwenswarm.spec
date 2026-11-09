@@ -306,6 +306,7 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
+    "jiuwenswarm.common.system_plugin_recovery_sidecar",
 ] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + team_kv_cache_hiddenimports + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）

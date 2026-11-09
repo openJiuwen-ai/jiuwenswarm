@@ -50,6 +50,32 @@ def test_child_env_is_scoped_to_current_startup_session(
     assert json.loads(env["JIUWENSWARM_START_CMD"]) == ["workswarm.exe"]
 
 
+def test_desktop_process_cleanup_stops_descendants_before_launcher(desktop_app, monkeypatch) -> None:
+    import psutil
+
+    stopped: list[int] = []
+
+    class _Process:
+        def __init__(self, pid: int, children=()):
+            self.pid = pid
+            self._children = list(children)
+
+        def children(self, *, recursive: bool):
+            assert recursive
+            return self._children
+
+        def terminate(self):
+            stopped.append(self.pid)
+
+    worker = _Process(300)
+    front = _Process(200)
+    launcher = _Process(100, [front, worker])
+    monkeypatch.setattr(psutil, "Process", lambda pid: launcher)
+
+    assert desktop_app._psutil_terminate(100) is True
+    assert stopped == [300, 200, 100]
+
+
 def test_start_process_persists_child_stdout_and_stderr(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
@@ -335,6 +361,92 @@ def test_process_started_during_shutdown_is_terminated(
     assert "web" not in runtime.processes
 
 
+def test_recovery_restart_only_replaces_the_backend_pair(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+
+    class _Process:
+        def poll(self):
+            return None
+
+        def wait(self, timeout):
+            del timeout
+            return 0
+
+    old_agent = _Process()
+    old_gateway = _Process()
+    web = _Process()
+    runtime.processes.update(agent=old_agent, gateway=old_gateway, web=web)
+    terminated = []
+    started = []
+    readiness = []
+    monkeypatch.setattr(desktop_app, "_terminate_process_tree", terminated.append)
+    monkeypatch.setattr(desktop_app, "_ensure_process_running", lambda *_args: None)
+    monkeypatch.setattr(runtime, "_preflight_gateway_singleton", lambda: None)
+    monkeypatch.setattr(
+        desktop_app,
+        "_wait_for_tcp",
+        lambda _host, port, _timeout, *, process: readiness.append((port, process)),
+    )
+
+    def start(name, _command):
+        started.append(name)
+        return _Process()
+
+    monkeypatch.setattr(runtime, "_start_managed_process", start)
+
+    runtime._restart_backend_processes()
+
+    assert terminated == [old_gateway, old_agent]
+    assert started == ["agent", "gateway"]
+    assert [port for port, _process in readiness] == [
+        runtime.ports["agent_server"],
+        runtime.backend_port,
+    ]
+    assert web not in terminated
+
+
+def test_recovery_restart_continues_after_forced_termination_timeout(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+
+    class _StubbornProcess:
+        pid = 1234
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout):
+            raise desktop_app.subprocess.TimeoutExpired("backend", timeout)
+
+    class _StartedProcess:
+        def poll(self):
+            return None
+
+    old_gateway = _StubbornProcess()
+    runtime.processes.update(gateway=old_gateway)
+    killed = []
+    started = []
+    monkeypatch.setattr(desktop_app, "_terminate_process_tree", lambda *_args: None)
+    monkeypatch.setattr(desktop_app, "_kill_process_tree", killed.append)
+    monkeypatch.setattr(desktop_app, "_ensure_process_running", lambda *_args: None)
+    monkeypatch.setattr(desktop_app, "_wait_for_tcp", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_preflight_gateway_singleton", lambda: None)
+
+    def start(name, _command):
+        started.append(name)
+        return _StartedProcess()
+
+    monkeypatch.setattr(runtime, "_start_managed_process", start)
+
+    runtime._restart_backend_processes()
+
+    assert killed == [old_gateway]
+    assert started == ["agent", "gateway"]
+
+
 def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
@@ -343,6 +455,7 @@ def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
     agent_process = types.SimpleNamespace(poll=lambda: None)
     gateway_process = types.SimpleNamespace(poll=lambda: None)
     web_process = types.SimpleNamespace(poll=lambda: None)
+    recovery_process = types.SimpleNamespace(poll=lambda: None)
     peer_terminated = threading.Event()
     terminated = []
 
@@ -356,6 +469,7 @@ def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
             "agent": agent_process,
             "gateway": gateway_process,
             "web": web_process,
+            "recovery": recovery_process,
         }[name],
     )
     monkeypatch.setattr(desktop_app, "_ensure_process_running", lambda *_args: None)
@@ -387,6 +501,7 @@ def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
         id(agent_process),
         id(gateway_process),
         id(web_process),
+        id(recovery_process),
     }
 
 
@@ -413,6 +528,7 @@ def test_start_services_reports_web_ready_when_backend_fails_at_same_time(
     agent_process = types.SimpleNamespace(poll=lambda: None)
     gateway_process = types.SimpleNamespace(poll=lambda: None)
     web_process = types.SimpleNamespace(poll=lambda: None)
+    recovery_process = types.SimpleNamespace(poll=lambda: None)
     web_ready = threading.Event()
     callback_calls: list[str] = []
 
@@ -426,6 +542,7 @@ def test_start_services_reports_web_ready_when_backend_fails_at_same_time(
             "agent": agent_process,
             "gateway": gateway_process,
             "web": web_process,
+            "recovery": recovery_process,
         }[name],
     )
     monkeypatch.setattr(desktop_app, "_ensure_process_running", lambda *_args: None)

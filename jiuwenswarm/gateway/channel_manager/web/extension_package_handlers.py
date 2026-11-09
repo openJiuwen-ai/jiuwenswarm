@@ -51,6 +51,7 @@ MANAGEMENT_METHODS = frozenset(
         ReqMethod.EXTENSIONS_V2_INSTALL.value,
         ReqMethod.EXTENSIONS_V2_UNINSTALL.value,
         ReqMethod.EXTENSIONS_V2_RELOAD.value,
+        ReqMethod.EXTENSIONS_V2_SET_ENABLED.value,
     }
 )
 INVALID_PARAMS_CODE = "INVALID_PARAMS"
@@ -103,6 +104,7 @@ def register_extension_package_handlers(channel: Any, resolve_client: Callable[[
         ReqMethod.EXTENSIONS_V2_INSTALL,
         ReqMethod.EXTENSIONS_V2_UNINSTALL,
         ReqMethod.EXTENSIONS_V2_RELOAD,
+        ReqMethod.EXTENSIONS_V2_SET_ENABLED,
         ReqMethod.EXTENSIONS_V2_FILE_LIST,
         ReqMethod.EXTENSIONS_V2_FILE_READ,
     ):
@@ -279,6 +281,20 @@ async def _handle_locally(
     package_id = params.get("package_id")
     if not isinstance(package_id, str) or not manager.owns(package_id):
         return False
+    if method is ReqMethod.EXTENSIONS_V2_SET_ENABLED:
+        if not isinstance(params.get("enable"), bool):
+            await _respond(
+                channel,
+                ws,
+                req_id,
+                ok=False,
+                error="set enabled requires package_id and boolean enable",
+                code=INVALID_PARAMS_CODE,
+            )
+            return True
+        report = await manager.set_enabled(package_id, params["enable"])
+        await _respond(channel, ws, req_id, ok=True, payload={"reports": [_encode(report)]})
+        return True
     operation = manager.uninstall if method is ReqMethod.EXTENSIONS_V2_UNINSTALL else manager.reload
     report = await operation(package_id)
     await _respond(channel, ws, req_id, ok=True, payload={"reports": [_encode(report)]})

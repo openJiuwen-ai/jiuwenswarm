@@ -219,6 +219,83 @@ def test_keyboard_interrupt_returns_130_and_terminates_children(monkeypatch, clo
     assert all(proc.terminated for _, proc in spawned)
 
 
+def test_requested_restart_restarts_only_selected_children(monkeypatch, clock):
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {
+            "recovery": [(None, 0)],
+            "agentserver": [(None, 0), (None, 0)],
+            "gateway": [(None, 0), (None, 0)],
+        },
+    )
+    requested = True
+    captured: list[list[str]] = []
+    reaped: list[tuple[int, float]] = []
+
+    def capture(children):
+        captured.append([child.name for child in children])
+        return [(4321, 1.0)]
+
+    monkeypatch.setattr(process_supervision, "_capture_lingering_descendants", capture)
+    monkeypatch.setattr(
+        process_supervision,
+        "_terminate_lingering_descendants",
+        lambda identities: reaped.extend(identities),
+    )
+
+    def restart_requested() -> bool:
+        nonlocal requested
+        if not requested:
+            return False
+        requested = False
+        return True
+
+    clock.interrupt_at = 1.0
+    assert supervise(
+        {"recovery": ["recovery"], **_COMMANDS},
+        {},
+        restart_requested=restart_requested,
+        restart_names=frozenset({"agentserver", "gateway"}),
+        terminate_descendants_on_restart=frozenset({"agentserver"}),
+    ) == 130
+
+    assert [name for name, _ in spawned] == [
+        "recovery", "agentserver", "gateway", "agentserver", "gateway"
+    ]
+    assert spawned[1][1].terminated
+    assert spawned[2][1].terminated
+    assert captured == [["agentserver"], ["recovery", "agentserver", "gateway"]]
+    assert reaped == [(4321, 1.0), (4321, 1.0)]
+
+
+def test_unmatched_restart_request_keeps_the_supervisor_polling(monkeypatch, clock):
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {"agentserver": [(None, 0)], "gateway": [(None, 0)]},
+    )
+    requested = True
+
+    def restart_requested() -> bool:
+        nonlocal requested
+        if not requested:
+            return False
+        requested = False
+        return True
+
+    clock.interrupt_at = 0.5
+    assert supervise(
+        _COMMANDS,
+        {},
+        restart_requested=restart_requested,
+        restart_names=frozenset({"missing"}),
+    ) == 130
+
+    assert [name for name, _ in spawned] == ["agentserver", "gateway"]
+    assert clock.now >= process_supervision._POLL_INTERVAL
+
+
 @pytest.mark.parametrize(
     ("platform", "returncode", "expected"),
     [
@@ -319,7 +396,7 @@ def test_posix_respawn_kills_the_dead_childs_process_group(monkeypatch, clock):
     assert supervise(_COMMANDS, {"start_new_session": True}) == 0
 
     dead_pid = spawned[0][1].pid
-    assert killpg_calls == [(dead_pid, signal.SIGKILL)]
+    assert killpg_calls == [(dead_pid, process_supervision._SIGKILL)]
 
 
 def test_posix_respawn_without_own_session_skips_killpg(monkeypatch, clock):
@@ -354,6 +431,9 @@ def test_win32_respawn_kills_verified_descendants_only(monkeypatch, clock):
     class _Victim:
         def __init__(self, pid: int) -> None:
             self.pid = pid
+
+        def create_time(self) -> float:
+            return _Dead.create_time_value
 
         def kill(self) -> None:
             killed.append(self.pid)

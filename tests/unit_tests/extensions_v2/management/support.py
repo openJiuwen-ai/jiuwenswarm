@@ -106,6 +106,7 @@ def write_package(
     *,
     module_source: str | None = None,
     requires: Sequence[tuple[str, str]] = (),
+    enable: bool | None = None,
     module: str = "extension.py",
     write_module: bool = True,
 ) -> Path:
@@ -137,6 +138,8 @@ def write_package(
                 for required_id, specifier in requires
             ]
         }
+    if enable is not None:
+        manifest["enable"] = enable
     (package / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     if write_module:
         entry = package / module

@@ -22,7 +22,7 @@ from jiuwenswarm.gateway.channel_manager.web import extension_package_handlers
 from jiuwenswarm.gateway.extensions_v2 import assembly
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
-from jiuwenswarm.gateway.extensions_v2.management.catalog import package_detail
+from jiuwenswarm.gateway.extensions_v2.management.catalog import list_installed, package_detail
 from jiuwenswarm.gateway.extensions_v2.management.registry import GatewayPackageManager
 from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
@@ -103,15 +103,19 @@ def _package_zip(
     domain: str = "gateway",
     version: str = "0.1.0",
     entry: str = ENTRY,
+    enable: bool | None = None,
 ) -> Path:
     source = tmp_path / "src" / package_id / version
     source.mkdir(parents=True)
-    manifest = json.dumps({
+    manifest_document = {
         "package_type": "extension",
         "schemaVersion": 1,
         "package": {"id": package_id, "version": version, "domain": domain},
         "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
-    })
+    }
+    if enable is not None:
+        manifest_document["enable"] = enable
+    manifest = json.dumps(manifest_document)
     (source / "manifest.json").write_text(manifest, encoding="utf-8")
     (source / "extension.py").write_text(entry, encoding="utf-8")
     archive = tmp_path / f"{package_id}-{version}.zip"
@@ -172,7 +176,10 @@ def test_detail_omits_missing_preview_and_readme(tmp_path):
 async def _runtime(tmp_path: Path) -> GatewayRuntime:
     runtime = GatewayRuntime(
         channel=Channel(),
-        config=GatewayExtensionConfig(install_dir=tmp_path / "extension_pkgs"),
+        config=GatewayExtensionConfig(
+            install_dir=tmp_path / "extension_pkgs",
+            recovery_data_dir=tmp_path / "extension",
+        ),
     )
     await runtime.start()
     return runtime
@@ -189,6 +196,7 @@ async def test_gateway_package_install_publish_and_uninstall(tmp_path):
     assert [package.package_id for package in runtime.active_packages()] == ["demo.gateway"]
     state = manager.query()
     assert state["installed_packages"][0]["package_id"] == "demo.gateway"
+    assert state["installed_packages"][0]["domain"] == "gateway"
     assert state["active"][0]["version"] == "0.1.0"
 
     report = await manager.uninstall("demo.gateway")
@@ -305,6 +313,59 @@ async def test_modules_stay_until_running_handlers_finish(tmp_path):
     finally:
         sys.modules.pop(module_name, None)
         await runtime.shutdown()
+async def test_gateway_disabled_package_keeps_the_copy_without_publishing(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+
+    reports = await manager.install([_package_zip(tmp_path, enable=False)])
+
+    assert [report.status for report in reports] == ["SUCCESS"]
+    assert runtime.user_handler_count == 0
+    assert manager.owns("demo.gateway")
+
+    enabled = await manager.set_enabled("demo.gateway", True)
+
+    assert enabled.status == "SUCCESS"
+    assert runtime.user_handler_count == 1
+    disabled = await manager.set_enabled("demo.gateway", False)
+    assert disabled.status == "SUCCESS"
+    assert runtime.user_handler_count == 0
+
+
+async def test_installing_a_disabled_copy_releases_an_active_gateway_package(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+    await manager.install([_package_zip(tmp_path / "enabled")])
+    assert runtime.user_handler_count == 1
+
+    reports = await manager.install([_package_zip(tmp_path / "disabled", version="0.2.0", enable=False)])
+
+    assert [report.status for report in reports] == ["SUCCESS"]
+    assert runtime.user_handler_count == 0
+    manifest = json.loads(
+        (tmp_path / "extension_pkgs" / "demo.gateway" / "0.2.0" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["enable"] is False
+
+
+async def test_reload_of_a_disabled_gateway_package_succeeds_without_enabling_it(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+    await manager.install([_package_zip(tmp_path, enable=False)])
+
+    report = await manager.reload("demo.gateway")
+
+    assert report.status == "SUCCESS"
+    assert report.error is None
+    assert runtime.user_handler_count == 0
+    manifest = json.loads(
+        (tmp_path / "extension_pkgs" / "demo.gateway" / "0.1.0" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["enable"] is False
 
 
 async def test_agent_package_is_rejected_without_copying(tmp_path):
@@ -623,6 +684,54 @@ async def test_catalog_lists_gateway_presets_before_any_install(tmp_path, monkey
     assert handled is True
     payload = runtime.channel.responses[0]["payload"]
     assert [package["id"] for package in payload["packages"]] == ["demo.gateway"]
+
+
+def test_catalog_skips_an_active_record_without_a_string_root(tmp_path):
+    packages = list_installed(tmp_path, {"active": [{"package_id": "demo.gateway", "root": None}]})
+
+    assert packages == []
+
+
+async def test_catalog_lists_disabled_installed_gateway_package(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
+    await runtime.packages.install([_package_zip(tmp_path, enable=False)])
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_CATALOG, {"scope": "mine"}
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["payload"]["packages"] == [
+        {
+            "id": "demo.gateway",
+            "version": "0.1.0",
+            "displayName": {"zh": "demo.gateway", "en": "demo.gateway"},
+            "displayDescription": {"zh": "", "en": ""},
+            "tags": [],
+            "avatar": None,
+            "installed": True,
+            "active": False,
+            "enabled": False,
+        }
+    ]
+
+
+async def test_set_enabled_accepts_proxy_metadata_fields(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    await runtime.packages.install([_package_zip(tmp_path, enable=False)])
+
+    handled = await _handle(
+        runtime,
+        extension_package_handlers.ReqMethod.EXTENSIONS_V2_SET_ENABLED,
+        {"package_id": "demo.gateway", "enable": True, "session_id": "session-1"},
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["ok"] is True
+    assert runtime.user_handler_count == 1
 
 
 async def test_show_answers_for_an_uninstalled_gateway_preset(tmp_path, monkeypatch):

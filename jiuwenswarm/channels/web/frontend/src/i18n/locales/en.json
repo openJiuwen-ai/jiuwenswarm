@@ -476,7 +476,8 @@
       "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental",
-      "extensions": "Extensions"
+      "extensions": "Extensions",
+      "systemPluginRecovery": "System plugin recovery"
     },
     "extensions": {
       "description": "Startup splashes provided by extensions: play order and which ones play",
@@ -545,6 +546,11 @@
         "sessionRestoreFailed": "Failed to restore the conversation. Refresh and try again.",
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first."
       }
+    },
+    "systemPluginRecovery": {
+      "description": "View the latest 50 system plugin state records. Every application startup and each successful install, uninstall, enable, disable, and restore operation is recorded.",
+      "restartNote": "Restore keeps the system plugins currently installed, restores the system plugin enabled states at the selected time, and automatically restarts the background services.",
+      "unavailable": "The system plugin recovery service is unavailable."
     },
     "dialog": {
       "discardTitle": "Discard unsaved changes",
@@ -4901,10 +4907,13 @@
       "install": "Install",
       "uninstall": "Uninstall",
       "reload": "Reload",
+      "enable": "Enable",
+      "disable": "Disable",
       "detail": "View details",
       "enabled": "Enabled",
       "statusActive": "Active",
       "statusInstalled": "Installed",
+      "statusDisabled": "Disabled",
       "statusAvailable": "Not installed",
       "preview": "Preview",
       "previewHint": "Click to enlarge",

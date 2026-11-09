@@ -57,7 +57,11 @@ class StateIndex:
 
 def build_state_index(state: Any) -> StateIndex:
     active = {record.package_id: record for record in state.active}
-    installed = {root.parent.name: root for root in state.installed}
+    installed: dict[str, Path] = {}
+    for root in state.installed:
+        current = installed.get(root.parent.name)
+        if current is None or _version_key(root) > _version_key(current):
+            installed[root.parent.name] = root
     return StateIndex(active=active, installed=installed)
 
 
@@ -111,16 +115,18 @@ def list_catalog(examples_dir: Path, state: Any, *, domain: str | None = None) -
 
 
 def list_mine(examples_dir: Path, state: Any, *, domain: str | None = None) -> list[dict[str, Any]]:
-    """Return active packages: installed presets plus uploaded packages."""
+    """Return installed packages, including ones currently kept disabled."""
 
     index = build_state_index(state)
     examples = {
         entry.package_id: entry for entry in scan_examples(examples_dir, exposed_only=False, domain=domain)
     }
     packages: list[dict[str, Any]] = []
-    for package_id in sorted(index.active):
-        record = index.active[package_id]
-        entry = examples.get(package_id) or entry_from_root(record.root)
+    package_ids = set(index.active) | set(index.installed)
+    for package_id in sorted(package_ids):
+        record = index.active.get(package_id)
+        root = record.root if record is not None else index.installed[package_id]
+        entry = examples.get(package_id) or entry_from_root(root)
         if entry is not None and (domain is None or entry.domain == domain):
             packages.append(_summary(entry, index))
     return packages
@@ -215,6 +221,7 @@ def _summary(entry: MarketEntry, index: StateIndex) -> dict[str, Any]:
     display = _display(document)
     record = index.active.get(entry.package_id)
     installed_root = index.installed.get(entry.package_id)
+    managed_root = record.root if record is not None else installed_root
     installed = record is not None or installed_root is not None
     return {
         "id": entry.package_id,
@@ -225,7 +232,20 @@ def _summary(entry: MarketEntry, index: StateIndex) -> dict[str, Any]:
         "avatar": _avatar(entry.root, display),
         "installed": installed,
         "active": record is not None,
+        "enabled": _enabled(entry, managed_root),
     }
+
+
+def _enabled(entry: MarketEntry, installed_root: Path | None) -> bool:
+    """Read the persisted state from the managed copy when one exists."""
+    if installed_root is None:
+        value = entry.document.get("enable")
+    else:
+        try:
+            value = read_manifest_document(installed_root).get("enable")
+        except (OSError, UnicodeError, ValueError):
+            value = entry.document.get("enable")
+    return value if isinstance(value, bool) else True
 
 
 def _display(document: Mapping[str, Any]) -> Mapping[str, Any]:
