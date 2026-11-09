@@ -11,6 +11,9 @@ import { checkPropValue } from './checkPropValue.ts';
 import { isRecord, jsonByteLength, readNonEmptyString, utf8ByteLength } from './utils.ts';
 import { validateFormStructure } from './formStructure.ts';
 
+/** 只能作为整棵渲染树根、不能嵌套的组件。 */
+export const ROOT_ONLY_COMPONENTS: readonly string[] = ['Panel', 'Iframe', 'MediaSurface'];
+
 const actionArgRule: WebUIPropRule = {
   kind: 'lazy',
   get: () => ({
@@ -76,7 +79,7 @@ function normalizeNode(
   if (!rule) {
     return protocolReject('UNKNOWN_COMPONENT', `component not registered: ${component}`);
   }
-  if ((component === 'Panel' || component === 'Iframe') && depth !== 1) {
+  if (ROOT_ONLY_COMPONENTS.includes(component) && depth !== 1) {
     return protocolReject('SCHEMA_ERROR', `${component} is only allowed at the tree root`);
   }
 

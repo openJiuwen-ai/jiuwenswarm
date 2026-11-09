@@ -6,6 +6,13 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Hex text of ``bytes`` random bytes; works outside secure contexts, unlike crypto.randomUUID. */
+export function randomHex(bytes = 16): string {
+  const values = new Uint8Array(bytes);
+  globalThis.crypto.getRandomValues(values);
+  return Array.from(values, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export function utf8ByteLength(value: string): number {
   return textEncoder.encode(value).length;
 }

@@ -21,6 +21,8 @@ import { WebUIAvatar } from './webuiAvatar/WebUIAvatar.tsx';
 import { WebUIForm, WebUIFormItem } from './webuiForm/WebUIForm.tsx';
 import { WebUIDropdown } from './webuiDropdown/WebUIDropdown.tsx';
 import { WebUIIcon } from './webuiIcon/WebUIIcon.tsx';
+import { WebUIMediaSurface } from './webuiMediaSurface/WebUIMediaSurface.tsx';
+import { WebUIFileImport } from './webuiFileImport/WebUIFileImport.tsx';
 
 export function createComponentRendererRegistry() {
   return createRendererRegistry({
@@ -47,6 +49,8 @@ export function createComponentRendererRegistry() {
     'Form.Item': WebUIFormItem,
     Dropdown: WebUIDropdown,
     Icon: WebUIIcon,
+    MediaSurface: WebUIMediaSurface,
+    FileImport: WebUIFileImport,
   });
 }
 

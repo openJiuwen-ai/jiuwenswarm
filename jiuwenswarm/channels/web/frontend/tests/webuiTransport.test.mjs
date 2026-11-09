@@ -111,7 +111,7 @@ function createFakeClient(initialState = 'ready') {
   };
 }
 
-test('web client transport subscribes to the three frames and connection state', () => {
+test('web client transport subscribes to the render and appearance frames and connection state', () => {
   const client = createFakeClient();
   const transport = createWebClientTransport(client);
   const received = [];
@@ -120,12 +120,14 @@ test('web client transport subscribes to the three frames and connection state',
     onRenderFrame: (payload) => received.push(['render', payload]),
     onClearFrame: (payload) => received.push(['clear', payload]),
     onErrorFrame: (payload) => received.push(['error', payload]),
+    onAppearanceFrame: (payload) => received.push(['appearance', payload]),
     onConnectionStateChange: (state) => states.push(state),
   });
 
   client.emit('webui.render', { revision: 1 });
   client.emit('webui.render.clear', { revision: 2 });
   client.emit('webui.render.error', { code: 'SCHEMA_ERROR' });
+  client.emit('webui.appearance', { package_id: 'pkg.theme', revision: 1, appearance: null });
   client.changeState('connecting');
   client.changeState('ready');
 
@@ -133,14 +135,15 @@ test('web client transport subscribes to the three frames and connection state',
     ['render', { revision: 1 }],
     ['clear', { revision: 2 }],
     ['error', { code: 'SCHEMA_ERROR' }],
+    ['appearance', { package_id: 'pkg.theme', revision: 1, appearance: null }],
   ]);
   assert.deepEqual(states, ['disconnected', 'connected']);
   assert.equal(transport.getConnectionState(), 'connected');
 
   off();
-  assert.equal(client.offCalls, 5);
+  assert.equal(client.offCalls, 6);
   client.emit('webui.render', { revision: 3 });
-  assert.equal(received.length, 3);
+  assert.equal(received.length, 4);
 });
 
 test('web client transport builds the dispatch request and parses the receipt', async () => {
@@ -187,7 +190,7 @@ test('trusted client declarations configure the capability host and unsubscribe 
   capabilities.configure = () => { throw new Error('configuration rejected'); };
   assert.doesNotThrow(() => client.emit('client.declarations', {}));
   off();
-  assert.equal(client.offCalls, 7);
+  assert.equal(client.offCalls, 8);
   client.emit('client.declarations', snapshot);
   client.emit('client.operation', {});
   assert.equal(calls.length, 2);
@@ -268,5 +271,5 @@ test('package change subscription coexists with client capability validation and
     ['operation', { operation: 'example' }],
   ]);
   off();
-  assert.equal(client.offCalls, 7);
+  assert.equal(client.offCalls, 8);
 });

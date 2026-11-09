@@ -1,0 +1,1 @@
+export { extensionsModule } from './definition';

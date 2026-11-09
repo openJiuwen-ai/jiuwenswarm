@@ -14,10 +14,12 @@ export interface WebUITransportHandlers {
   onClearFrame: (payload: unknown) => void;
   onErrorFrame: (payload: unknown) => void;
   onConnectionStateChange: (state: WebUIConnectionState) => void;
+  /** `webui.appearance` payloads (Gateway S_08); validated by the runtime. */
+  onAppearanceFrame?: (payload: unknown) => void;
 }
 
 export interface WebUIDispatchRequest {
-  event: 'ui.ready' | WebUIComponentEvent;
+  event: 'ui.ready' | 'ui.closed' | WebUIComponentEvent;
   target: WebUINormalizedTarget;
   payload: Record<string, unknown>;
 }

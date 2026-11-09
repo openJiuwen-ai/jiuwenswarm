@@ -306,3 +306,55 @@ test('package change notification preserves the host notifyReady opt-out', async
   owner.release();
   runtime.dispose();
 });
+
+const appearanceFrame = (revision, appearance, packageId = 'pkg.theme') => ({ package_id: packageId, revision, appearance });
+
+test('appearance frames apply in revision order and ignore malformed payloads', () => {
+  const { transport, runtime } = setup();
+  let notifications = 0;
+  runtime.subscribeAppearance(() => { notifications += 1; });
+  transport.injectAppearanceFrame(appearanceFrame(2, { accent: '#b45309' }));
+  assert.deepEqual(runtime.getAppearance(), { packageId: 'pkg.theme', revision: 2, appearance: { accent: '#b45309' } });
+  for (const payload of [
+    appearanceFrame(1, { accent: '#2f6fae' }),
+    appearanceFrame(2, { accent: '#2f6fae' }),
+    appearanceFrame(3, { accent: 'red' }),
+    appearanceFrame(3, {}),
+    { ...appearanceFrame(3, { accent: '#2f6fae' }), extra: true },
+    { revision: 3, appearance: null },
+    appearanceFrame(0, null),
+    appearanceFrame(3.5, null),
+    'webui.appearance',
+  ]) transport.injectAppearanceFrame(payload);
+  assert.equal(runtime.getAppearance().appearance.accent, '#b45309');
+  assert.equal(notifications, 1);
+  transport.injectAppearanceFrame(appearanceFrame(3, { accent: '#2f6fae' }, 'pkg.other'));
+  assert.equal(runtime.getAppearance().packageId, 'pkg.other');
+  transport.injectAppearanceFrame(appearanceFrame(4, null, 'pkg.other'));
+  assert.equal(runtime.getAppearance(), null);
+  assert.equal(notifications, 3);
+});
+
+test('appearance survives a reconnect only when a provider re-applies it', async () => {
+  const { transport, runtime } = setup();
+  const handle = runtime.mountSlot('sess-1', DEMO_SLOT);
+  await handle.notifyReady();
+  transport.injectAppearanceFrame(appearanceFrame(5, { surface: 'translucent' }));
+
+  transport.setConnectionState('disconnected');
+  assert.equal(runtime.getAppearance().revision, 5, 'kept while disconnected');
+  transport.injectAppearanceFrame(appearanceFrame(9, null));
+  assert.equal(runtime.getAppearance().revision, 5, 'frames are not accepted while disconnected');
+  transport.setConnectionState('connected');
+  // Revisions restart with the new connection.
+  transport.injectAppearanceFrame(appearanceFrame(1, { accent: '#b45309' }));
+  await flush();
+  assert.deepEqual(runtime.getAppearance().appearance, { accent: '#b45309' });
+
+  transport.setConnectionState('disconnected');
+  transport.setConnectionState('connected');
+  await flush();
+  assert.equal(runtime.getAppearance(), null, 'no provider re-applied after the reconnect readies settled');
+  handle.release();
+  runtime.dispose();
+});

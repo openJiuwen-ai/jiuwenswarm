@@ -16,7 +16,9 @@ from jiuwenswarm.gateway.extensions_v2.models import GatewayRequestOutput
 from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
 from jiuwenswarm.gateway.extensions_v2.webui.http import attach_browser_routes
-from jiuwenswarm.gateway.extensions_v2.webui.models import RenderNode, RenderTarget, UiActionOutput, UiRenderInput
+from jiuwenswarm.gateway.extensions_v2.webui.models import (
+    RenderMode, RenderNode, RenderTarget, UiActionOutput, UiRenderInput,
+)
 
 PACKAGE = "test.browser-controls"
 
@@ -311,3 +313,30 @@ async def test_package_asset_cors_is_scoped_to_file_responses(tmp_path, method, 
     if source == "active":
         assert response.headers["cache-control"] == "no-store"
         assert response.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_frames_a_render_causes_carry_the_activation_that_rendered(tmp_path):
+    """Render, error and clear frames name the calling activation; the transport takes it from the CORE handler."""
+    sent: dict = {}
+
+    async def action(event, ops, next_handler):
+        target = event.event_input.target
+        sent["render"] = await ops.ui.render(UiRenderInput(target=target, root=RenderNode(component="Button",
+                                                                                         props={"value": "Done"})))
+        sent["error"] = await ops.ui.render(UiRenderInput(target=target, root=RenderNode(component="NoSuchComponent")))
+        sent["clear"] = await ops.ui.render(UiRenderInput(target=target, mode=RenderMode.CLEAR))
+        return UiActionOutput(accepted=True, status="applied")
+
+    runtime = await _runtime(tmp_path, action=action)
+    try:
+        ws = SimpleNamespace(closed=False)
+        params = await _click_params(runtime, ws, "application.entry")
+        runtime.channel.events.clear()
+        await runtime.intercept(ws, "action", "webui.dispatch", params)
+        generation = runtime.browser.generations[PACKAGE]
+        names = {"webui.render", "webui.render.error", "webui.render.clear"}
+        frames = {item["event"]: item["payload"] for item in runtime.channel.events if item["event"] in names}
+        assert set(frames) == names, runtime.channel.events
+        assert {name: frame.get("activation_generation") for name, frame in frames.items()} == dict.fromkeys(names, generation)
+    finally:
+        await runtime.shutdown()
