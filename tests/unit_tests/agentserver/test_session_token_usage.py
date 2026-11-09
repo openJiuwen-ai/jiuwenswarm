@@ -1,10 +1,16 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.server.runtime.session import session_token_usage as usage
 from jiuwenswarm.server.runtime.session.session_token_usage import (
     SessionTokenUsageLedger,
     classify_usage_owner,
@@ -99,6 +105,40 @@ def test_concurrent_agents_do_not_lose_session_token_updates(tmp_path):
     assert snapshot["others"]["input_tokens"] == 136
     assert snapshot["others"]["output_tokens"] == 152
     assert snapshot["others"]["calls_total"] == 16
+
+
+def test_usage_retries_wal_switch_while_reader_holds_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep both records when an open reader delays a switch to WAL."""
+    SessionTokenUsageLedger(tmp_path, "session", journal_mode="DELETE").record("first", "main", 1, 1)
+    db = tmp_path / "session_token_usage.sqlite3"
+    ledger = SessionTokenUsageLedger(tmp_path, "session")
+    connect = ledger._connect
+
+    def connect_without_busy_wait() -> sqlite3.Connection:
+        connection = connect()
+        connection.execute("PRAGMA busy_timeout = 0")
+        return connection
+
+    with closing(sqlite3.connect(db)) as reader:
+        reader.execute("BEGIN")
+        reader.execute("SELECT revision FROM usage_state").fetchone()
+
+        def release_reader(_delay: float) -> None:
+            assert reader.in_transaction
+            reader.rollback()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ledger, "_connect", connect_without_busy_wait)
+            patch.setattr(usage, "sleep", release_reader)
+            ledger.record("second", "main", 2, 3)
+        assert not reader.in_transaction
+
+    assert ledger.snapshot()["main"]["input_tokens"] == 3
+    with closing(sqlite3.connect(db)) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 
 def test_usage_owner_groups_leader_as_main_and_team_or_nested_agents_as_others():
