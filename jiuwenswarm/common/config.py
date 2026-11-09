@@ -261,6 +261,8 @@ def get_config():
     config_base = _read_with_retry(get_config_file())
     # resolve_env_vars 和 _normalize_config 只操作内存数据，在锁外执行以缩短锁持有时间
     config_base = resolve_env_vars(config_base)
+    # Share the default across Gateway, AgentServer and their locale consumers.
+    config_base.setdefault("preferred_language", "en")
     _normalize_config(config_base)
 
     from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
