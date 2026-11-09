@@ -1,8 +1,14 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { LoaderCircle, UsersRound, VolumeX, X } from 'lucide-react';
+import { ChevronDown, LoaderCircle, RotateCw, Square, UsersRound, VolumeX, X } from 'lucide-react';
 import type { ApplicationPluginTaskInputActionProps } from '../../../channels/web/frontend/src/applicationPlugins/types';
 import { useAdaptiveTooltip } from '../../../channels/web/frontend/src/hooks/useAdaptiveTooltip';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../../channels/web/frontend/src/components/ui/DropdownMenu/DropdownMenu';
 import {
   setTeamMeetingEnabled,
   useTeamMeetingEnabled,
@@ -19,6 +25,7 @@ export function TaskMeetingAction({ fallback, sessionId }: ApplicationPluginTask
     multiline: true,
   });
   const snapshot = useMeetingSnapshot();
+  const [controlsOpen, setControlsOpen] = useState(false);
   const active = snapshot.sessionId === sessionId;
   const requested = active && snapshot.enabled;
   const status =
@@ -30,6 +37,14 @@ export function TaskMeetingAction({ fallback, sessionId }: ApplicationPluginTask
   const teamReady = !!sessionId && sessionId !== 'new' && active && snapshot.teamExists;
   const needsTeam =
     !teamReady && !requested && status !== 'starting' && status !== 'closing' && status !== 'cleanup_failed';
+
+  useEffect(() => {
+    setControlsOpen(false);
+  }, [sessionId]);
+  useEffect(() => {
+    if (status === 'idle') setControlsOpen(false);
+    else if (status === 'failed' || status === 'cleanup_failed') setControlsOpen(true);
+  }, [status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,80 +108,147 @@ export function TaskMeetingAction({ fallback, sessionId }: ApplicationPluginTask
   ]
     .filter(Boolean)
     .join('\n');
+  const stopLabel = t(
+    status === 'cleanup_failed'
+      ? 'meeting.task.retryCleanup'
+      : status === 'closing'
+        ? 'meeting.task.closing'
+        : 'meeting.task.stop',
+  );
+  const canStopAudio = status === 'active' && ['loading', 'playing'].includes(snapshot.playback);
+  const dismissFailure = () => {
+    if (requested) stopMeeting();
+    else publishMeeting({ state: 'idle', error: undefined });
+  };
   return (
     <>
-      {(enabled || status === 'closing' || status === 'cleanup_failed') && (
+      {(enabled || status !== 'idle') && (
         <div className="task-meeting-actions" data-testid="chat-panel-meeting-controls" data-variant={status}>
-          <button
-            type="button"
-            className={`chat-input-btn task-meeting-action is-${status}`}
-            data-tooltip={statusDescription}
-            {...tooltipHandlers}
-            aria-label={statusDescription}
-            aria-pressed={requested}
-            aria-busy={status === 'starting' || status === 'closing'}
-            disabled={status === 'closing' || needsTeam}
-            data-testid="chat-panel-input-meeting"
-            data-variant={status}
-            onClick={toggle}
-          >
-            {status === 'starting' || status === 'closing' ? (
-              <LoaderCircle className="chat-input-btn-icon task-meeting-spinner" aria-hidden="true" />
-            ) : (
-              <UsersRound className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
-            )}
-          </button>
-          {tooltip}
-          {status === 'failed' && (
-            <>
-              <span className="sr-only" role="alert" data-testid="chat-panel-meeting-activation-error">
-                {activationError}
-              </span>
+          <DropdownMenu open={controlsOpen} onOpenChange={setControlsOpen}>
+            <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="chat-input-btn task-meeting-action"
-                title={t('meeting.task.stop')}
-                aria-label={t('meeting.task.stop')}
-                data-testid="chat-panel-meeting-cancel-enable"
+                className={`chat-input-btn task-meeting-action is-${status}`}
+                data-tooltip={controlsOpen ? undefined : statusDescription}
+                {...tooltipHandlers}
+                aria-label={status === 'idle' ? title : `${t('meeting.controls.title')}: ${t(`meeting.panel.states.${status}`)}`}
+                aria-pressed={requested}
+                aria-busy={status === 'starting' || status === 'closing'}
+                disabled={status === 'idle' && needsTeam}
+                data-testid="chat-panel-input-meeting"
+                data-variant={status}
                 onClick={() => {
-                  if (requested) stopMeeting();
-                  else publishMeeting({ state: 'idle', error: undefined });
+                  if (status === 'idle') toggle();
                 }}
               >
-                <X className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
+                {status === 'starting' || status === 'closing' ? (
+                  <LoaderCircle className="chat-input-btn-icon task-meeting-spinner" aria-hidden="true" />
+                ) : (
+                  <UsersRound className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
+                )}
+                {status !== 'idle' && (
+                  <>
+                    <span className="task-meeting-action__label" data-testid="chat-panel-meeting-trigger-status">
+                      {t(`meeting.panel.states.${status}`)}
+                    </span>
+                    <ChevronDown className="task-meeting-action__chevron" size={12} aria-hidden="true" />
+                  </>
+                )}
               </button>
-            </>
-          )}
-          {status === 'cleanup_failed' && (
-            <span className="sr-only" role="status" data-testid="chat-panel-meeting-cleanup-error">
-              {t('meeting.errors.cleanupFailed')}
-              {snapshot.error ? ` ${snapshot.error}` : ''}
-            </span>
-          )}
-          {status === 'active' && snapshot.playback !== 'idle' && (
-            <span
-              className="sr-only"
-              role="status"
-              data-testid="chat-panel-meeting-playback"
-              data-variant={snapshot.playback}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side="top"
+              align="end"
+              className="task-meeting-layer"
+              data-testid="chat-panel-meeting-layer"
+              data-variant={status}
             >
-              {playbackStatus}
-            </span>
-          )}
-          {status === 'active' && (
-            <>
-              <button
-                type="button"
-                className="chat-input-btn task-meeting-action"
-                title={t('meeting.stopPlayback')}
-                aria-label={t('meeting.stopPlayback')}
-                data-testid="chat-panel-input-meeting-stop-audio"
-                onClick={stopMeetingAudio}
-              >
-                <VolumeX className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
-              </button>
-            </>
-          )}
+              <div className="task-meeting-layer__header">
+                <div className="task-meeting-layer__heading">
+                  <UsersRound size={17} aria-hidden="true" />
+                  <strong data-testid="chat-panel-meeting-layer-title">{t('meeting.controls.title')}</strong>
+                </div>
+                <DropdownMenuItem
+                  className="task-meeting-layer__minimize"
+                  aria-label={t('meeting.controls.minimize')}
+                  title={t('meeting.controls.minimize')}
+                  icon={<ChevronDown size={16} />}
+                  data-testid="chat-panel-meeting-minimize"
+                >
+                  <span className="sr-only">{t('meeting.controls.minimize')}</span>
+                </DropdownMenuItem>
+              </div>
+              <div className="task-meeting-layer__body">
+                <span
+                  className="task-meeting-layer__status"
+                  role="status"
+                  data-testid="chat-panel-meeting-layer-status"
+                  data-variant={status}
+                >
+                  <span className="task-meeting-layer__dot" aria-hidden="true" />
+                  {t(`meeting.panel.states.${status}`)}
+                </span>
+                {status === 'active' && (
+                  <p
+                    className="task-meeting-layer__message"
+                    role="status"
+                    data-testid="chat-panel-meeting-playback"
+                    data-variant={snapshot.playback}
+                  >
+                    {snapshot.playback === 'idle' ? t('meeting.panel.noSpeaker') : playbackStatus}
+                  </p>
+                )}
+                {status === 'failed' && (
+                  <p className="task-meeting-layer__error" role="alert" data-testid="chat-panel-meeting-activation-error">
+                    {activationError}
+                  </p>
+                )}
+                {status === 'cleanup_failed' && (
+                  <p className="task-meeting-layer__error" role="alert" data-testid="chat-panel-meeting-cleanup-error">
+                    {t('meeting.errors.cleanupFailed')}
+                    {snapshot.error ? ` ${snapshot.error}` : ''}
+                  </p>
+                )}
+              </div>
+              <div className="task-meeting-layer__actions" data-testid="chat-panel-meeting-layer-controls">
+                {status === 'active' && (
+                  <DropdownMenuItem
+                    className="task-meeting-layer__control"
+                    icon={<VolumeX size={18} />}
+                    disabled={!canStopAudio}
+                    onSelect={stopMeetingAudio}
+                    data-testid="chat-panel-input-meeting-stop-audio"
+                  >
+                    {t('meeting.stopPlayback')}
+                  </DropdownMenuItem>
+                )}
+                {status === 'failed' && (
+                  <DropdownMenuItem
+                    className="task-meeting-layer__control"
+                    icon={<RotateCw size={18} />}
+                    disabled={!teamReady}
+                    onSelect={toggle}
+                    data-testid="chat-panel-meeting-retry-enable"
+                  >
+                    {t('meeting.task.retryEnable')}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  className="task-meeting-layer__control"
+                  danger
+                  icon={status === 'closing'
+                    ? <LoaderCircle size={16} className="task-meeting-spinner" />
+                    : status === 'failed' ? <X size={18} /> : <Square size={15} />}
+                  disabled={status === 'closing'}
+                  onSelect={status === 'failed' ? dismissFailure : stopMeeting}
+                  data-testid="chat-panel-meeting-layer-end"
+                >
+                  {stopLabel}
+                </DropdownMenuItem>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {tooltip}
         </div>
       )}
       {fallback}

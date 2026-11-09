@@ -1,5 +1,9 @@
 {
   "meeting": {
+    "controls": {
+      "title": "Meeting controls",
+      "minimize": "Hide meeting controls"
+    },
     "panel": {
       "title": "Meeting",
       "addressedAgents": "Agents currently addressed by the meeting",

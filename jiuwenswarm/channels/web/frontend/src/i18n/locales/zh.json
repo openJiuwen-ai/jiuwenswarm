@@ -1,5 +1,9 @@
 {
   "meeting": {
+    "controls": {
+      "title": "会议控制",
+      "minimize": "收起会议控制"
+    },
     "panel": {
       "title": "会议",
       "addressedAgents": "会议当前提及的智能体",
