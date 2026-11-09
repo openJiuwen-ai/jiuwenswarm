@@ -303,6 +303,42 @@ def _spatial_geography_lock_patch(graph: DesignerExecutionGraph) -> list[str]:
         + "; ".join(f"{k}={v}" for k, v in lock.items() if str(v).strip())
     )[:500]
 
+    # The film-wide lock describes ONE setting. Never stamp it onto a node of
+    # a different setting — resolve per-setting first, then fall back to the
+    # node's own scene entry instead of leaking another setting's geography.
+    by_setting = (
+        meta.get("spatial_lock_by_setting")
+        if isinstance(meta.get("spatial_lock_by_setting"), dict)
+        else {}
+    )
+    scene_name_by_id = {
+        str(s.get("id") or "").strip(): str(s.get("name") or "").strip()
+        for s in (analysis.get("scenes") or [])
+        if isinstance(s, dict) and str(s.get("id") or "").strip()
+    }
+    scene_desc_by_id = {
+        str(s.get("id") or "").strip(): str(s.get("description") or "").strip()
+        for s in (analysis.get("scenes") or [])
+        if isinstance(s, dict) and str(s.get("id") or "").strip()
+    }
+    lock_setting_name = str(lock.get("setting") or "").strip().casefold()
+
+    def _lock_for(cfg: dict[str, Any]) -> dict[str, Any]:
+        sid = str(cfg.get("setting_id") or "").strip()
+        if sid and isinstance(by_setting.get(sid), dict):
+            return dict(by_setting[sid])
+        node_scene_name = scene_name_by_id.get(sid, "").casefold() if sid else ""
+        if sid and node_scene_name and lock_setting_name and node_scene_name != lock_setting_name:
+            derived = {
+                "setting": sid,
+                "architecture": scene_desc_by_id.get(sid) or "one coherent interior",
+            }
+            for key in ("static_rule", "crowd_rule"):
+                if str(lock.get(key) or "").strip():
+                    derived[key] = str(lock[key])
+            return derived
+        return lock
+
     ids = {
         str(item.get("id") or "")
         for item in (graph.get("nodes") or [])
@@ -316,7 +352,7 @@ def _spatial_geography_lock_patch(graph: DesignerExecutionGraph) -> list[str]:
         nid = str(node.get("id") or "")
         if role not in {"scene", "clip", "brief", "storyboard"}:
             continue
-        cfg["spatial_lock"] = lock
+        cfg["spatial_lock"] = _lock_for(cfg)
         is_sub_scene = role == "scene" and nid != "n_scene"
         if is_sub_scene and "n_scene" in ids and not cfg.get("master_scene_node_id"):
             cfg["master_scene_node_id"] = "n_scene"
@@ -1632,28 +1668,9 @@ class Director:
         analysis = ensure_audio_locks_on_analysis(analysis, user_prompt)
         analysis = apply_shot_scope(analysis, user_prompt)
         shots = list(analysis.get("clips") or shots)
-        # The storyboard schema keeps crowd_spec optional for model reliability, so
-        # decide any shot the model left undecided before the graph is built.
-        try:
-            from jiuwenswarm.server.runtime.designer.script_analysis import (
-                apply_shot_crowds,
-                decide_shot_crowds,
-                shot_has_crowd,
-                shots_missing_crowd,
-            )
-
-            if shots_missing_crowd(shots):
-                decided_before = sum(1 for s in shots if isinstance(s, dict) and shot_has_crowd(s))
-                decided = await decide_shot_crowds(shots, timeout_sec=60.0)
-                if decided:
-                    apply_shot_crowds(shots, decided)
-                    analysis["clips"] = shots
-                    decided_after = sum(
-                        1 for s in shots if isinstance(s, dict) and shot_has_crowd(s)
-                    )
-                    meta["crowd_decided_by_llm"] = decided_after - decided_before
-        except Exception:  # noqa: BLE001 — crowd decision is best-effort
-            logger.warning("crowd decision pass skipped", exc_info=True)
+        # Crowd is setting-level state established by the storyboard's first
+        # shot of each setting; later shots inherit it in clip_policy. No
+        # separate per-shot decision pass runs here.
         if shots and not user_declined_speech(user_prompt):
             has_line = any(
                 is_spoken_line(str(s.get("speech_line") or ""))
@@ -2201,6 +2218,19 @@ class Director:
             prompt = prompt + f"\nIDENTITY character specs (do not invent faces): {', '.join(character_spec_ids)}"
             notes.append("inject_identity_character_specs")
             changed = True
+
+        # Group plate gate: a plate for a shared-look group must show distinct
+        # people, not one face cloned across the declared headcount.
+        if role == "character" and str(cfg.get("cast_form") or "").strip().lower() == "group":
+            low = prompt.lower()
+            if "distinct" not in low and "各不相同" not in prompt:
+                prompt += (
+                    "\nGROUP PLATE: draw the declared headcount as distinct people — "
+                    "varied faces, ages, and postures within one shared costume family; "
+                    "no two share the same face."
+                )
+                notes.append("inject_group_plate_variation")
+                changed = True
 
         # Prior clip: short consistency note only (never paste full prior generate.prompt).
         prior_clip_action = str(cfg.get("previous_clip_action") or "").strip()
