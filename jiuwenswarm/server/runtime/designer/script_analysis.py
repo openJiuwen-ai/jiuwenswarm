@@ -1271,7 +1271,21 @@ _CAST_GROUP_NOUN_RE = re.compile(
     r"|一族|一伙|一帮|一班|一批|成群)"
 )
 
-_CAST_CN_COUNT_RE = re.compile(r"[两二三四五六七八九十百千数几]+\s*[个位名人群队组批伙帮]")
+# Chinese headcount: number + classifier. A classifier on its own is not a
+# headcount - "三个货架" counts shelves and "三组数据" counts datasets - so the
+# match only stands when the counted noun is a person, like the English tail check.
+_CAST_CN_COUNT_RE = re.compile(
+    r"([两二三四五六七八九十百千数几]+)"
+    r"\s*([个位名人群队组批伙帮])"
+)
+# "位" and "名" only ever count people; the other classifiers need a person noun.
+_CAST_CN_PERSON_CLASSIFIERS = "位名"
+_CAST_CN_PERSON_RE = re.compile(
+    r"(人|们|男|女|老年|孩子|孩童|学生|工人|农民|士兵"
+    r"|警察|医生|护士|顾客|客人|游客|旅客|路人|行人|观众|听众"
+    r"|记者|演员|歌手|舞者|乐手|队员|成员|员工|同事|朋友|家人"
+    r"|居民|市民|村民|运动员|志愿者|表演者|骑士|侍卫|侍女|仆人|掌柜|店小二)"
+)
 
 _CAST_OF_RE = re.compile(r"(?i)\bof\s+$")
 
@@ -1284,9 +1298,10 @@ _CAST_COUNT_WORD_RE = re.compile(
 
 def _cast_group_size(text: str) -> str:
     """Headcount cue, ignoring ages (``aged fifty to seventy-five``)."""
-    cn = _CAST_CN_COUNT_RE.search(text)
-    if cn:
-        return re.sub(r"\s+", "", cn.group(0))
+    for cn in _CAST_CN_COUNT_RE.finditer(text):
+        tail = text[cn.end():cn.end() + 4]
+        if cn.group(2) in _CAST_CN_PERSON_CLASSIFIERS or _CAST_CN_PERSON_RE.match(tail):
+            return re.sub(r"\s+", "", cn.group(0))
     for match in _CAST_COUNT_WORD_RE.finditer(text):
         # A bare number is only a headcount when people follow it, or when it
         # counts the collective just named ("a family of four").

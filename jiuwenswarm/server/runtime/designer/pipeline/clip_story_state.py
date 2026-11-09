@@ -485,6 +485,7 @@ _STORY_STATE_PHRASES: dict[str, dict[str, str]] = {
         "crowd_off_camera": "Extras are off-camera elsewhere in the setting.",
         "crowd_exited": "The area is clear of the earlier crowd — they already left.",
         "crowd_empty": "The setting is empty of extras.",
+        "crowd_returned": "The earlier crowd has returned to the scene.",
         "crowd_density": "{hold}, density {density}.",
     },
     "zh": {
@@ -494,6 +495,7 @@ _STORY_STATE_PHRASES: dict[str, dict[str, str]] = {
         "crowd_off_camera": "群众演员在场景中的别处，不在镜头内。",
         "crowd_exited": "此前的人群已经离开，这片区域空了下来。",
         "crowd_empty": "场景中没有群众演员。",
+        "crowd_returned": "此前离开的人群又回到了场景中。",
         "crowd_density": "{hold}，密度：{density}。",
     },
 }
@@ -564,7 +566,9 @@ def infer_crowd_state(
             disposition = "unspecified"
 
     if present is None and disposition != "unspecified":
-        present = disposition in {"in_frame", "background_hold", "off_camera"}
+        # "returned" means the group is back on screen, matching the derivation
+        # in clip_policy._crowd_lock_for_setting for the same declaration.
+        present = disposition in {"in_frame", "background_hold", "off_camera", "returned"}
 
     lang = current_content_language()
     hold = str(crowd.get("hold") or "").strip()
@@ -577,7 +581,7 @@ def infer_crowd_state(
     needs_density = (
         bool(hold)
         and bool(density)
-        and disposition in {"in_frame", "background_hold"}
+        and disposition in {"in_frame", "background_hold", "returned"}
         and density.lower() not in hold.lower()
     )
     if needs_density:

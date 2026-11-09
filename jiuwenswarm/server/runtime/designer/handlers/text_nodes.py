@@ -335,22 +335,34 @@ def _sync_style_authority(text: str, ctx: NodeExecutionContext) -> None:
 
 
 def _audio_plan_instruction(plan: dict[str, Any]) -> str:
-    """Tell the brief author the three audio dimensions, and what is unsupported."""
+    """Tell the brief author the three audio dimensions, and what is unsupported.
+
+    Every line follows the plan instead of assuming speech and diegetic sound: a
+    silent or mime request sets ``speech.include``/``sfx.include`` to false, and
+    telling the author to promise dialogue would contradict that request.
+    """
     music = plan.get("music") if isinstance(plan.get("music"), dict) else {}
-    lines = [
-        "Audio plan (authoritative — do not promise anything else):",
-        "- Speech: narration / dialogue in the locked language.",
-        "- Diegetic sound: room tone and action sound only.",
-    ]
+    speech = plan.get("speech") if isinstance(plan.get("speech"), dict) else {}
+    sfx = plan.get("sfx") if isinstance(plan.get("sfx"), dict) else {}
+    lines = ["Audio plan (authoritative: do not promise anything else):"]
+    speech_off = speech.get("include") is False or str(speech.get("kind") or "") == "none"
+    if speech_off:
+        lines.append("- Speech: none - no dialogue, no narration, no voice-over.")
+    else:
+        lines.append("- Speech: narration / dialogue in the locked language.")
+    if sfx.get("include") is False:
+        lines.append("- Diegetic sound: none - no room tone, no effects, no ambience.")
+    else:
+        lines.append("- Diegetic sound: room tone and action sound only.")
     if music.get("requested") and music.get("supported"):
         lines.append("- Music: one film-level score, mixed after the clips are joined.")
     elif music.get("requested"):
         lines.append(
-            "- Music: NOT SUPPORTED in this build — say so explicitly in the brief's "
-            "Audio section; the film carries narration/dialogue and diegetic sound only."
+            "- Music: NOT SUPPORTED in this build; say so explicitly in the brief's "
+            "Audio section, the film carries no score."
         )
     else:
-        lines.append("- Music: none; clips carry dialogue and diegetic sound only.")
+        lines.append("- Music: none.")
     return "\n".join(lines) + "\n"
 
 
