@@ -1324,9 +1324,6 @@ def _normalize_llm_analysis(
                 "description": desc,
             }
         )
-    if not norm_scenes:
-        # Derive placeholder scenes from shot setting_ids after the shot loop if needed.
-        norm_scenes = []
     norm_shots: list[dict[str, Any]] = []
     for i, sh in enumerate(shots, start=1):
         if not isinstance(sh, dict):
@@ -1384,7 +1381,8 @@ def _normalize_llm_analysis(
         crowd = _normalize_shot_crowd(
             sh.get("crowd_spec") if isinstance(sh.get("crowd_spec"), dict) else sh.get("crowd_lock")
         )
-        setting_id = str(sh.get("setting_id") or sh.get("scene_id") or f"set_{i}").strip()
+        only_scene = norm_scenes[0]["id"] if len(norm_scenes) == 1 else f"set_{i}"
+        setting_id = str(sh.get("setting_id") or sh.get("scene_id") or only_scene).strip()
         # Prefer on_screen as the drawn cast for this shot.
         cids = list(on_screen) or cids
         entry: dict[str, Any] = {
@@ -1433,18 +1431,14 @@ def _normalize_llm_analysis(
 
         entry["title"] = derive_clip_name(entry, fallback_index=i)
         norm_shots.append(entry)
-    if not norm_scenes and norm_shots:
-        seen: dict[str, dict[str, Any]] = {}
-        for sh in norm_shots:
-            sid = str(sh.get("setting_id") or "").strip() or "set_1"
-            seen.setdefault(sid, sh)
-        norm_scenes = []
-        for sid, first in seen.items():
-            # The shot carries its setting text under these keys; the older
-            # name was never part of a shot entry, so the fallback was always "".
-            place = str(first.get("setting_description") or first.get("setting") or "").strip()
-            norm_scenes.append({"id": sid, "name": place, "description": place})
     if not norm_shots:
+        return None
+    # Every shot's setting must be a named scene: the scene image and the clip
+    # binding are built from it, and there is no honest place to invent here.
+    named_scene_ids = {sc["id"] for sc in norm_scenes if sc["name"]}
+    unnamed = sorted({str(sh["setting_id"]) for sh in norm_shots} - named_scene_ids)
+    if unnamed:
+        logger.warning("Designer analysis has shots without a named scene: %s", ", ".join(unnamed))
         return None
     audio = parsed.get("audio") if isinstance(parsed.get("audio"), dict) else base.get("audio")
     try:

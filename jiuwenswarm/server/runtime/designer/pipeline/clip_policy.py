@@ -329,7 +329,7 @@ def apply_compose_character_specs_setting_policy(analysis: dict[str, Any]) -> di
     for sid, sc in scene_by_id.items():
         # The scene name is a short place label; the description is prose. The
         # video prompt quotes the name, so prefer it over the description.
-        place = str(sc.get("name") or sc.get("description") or sid).strip()
+        place = str(sc.get("name") or sc.get("description") or "").strip()
         if place:
             setting_place[sid] = place[:280]
 

@@ -1192,14 +1192,15 @@ def build_smart_video_graph(
             (first_shot or {}).get("action") or (first_shot or {}).get("clip_prompt") or ""
         )[:280]
         opening_cast = ", ".join(ensemble_names) or "named cast"
+        from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
+            compose_scene_specs_prompt,
+            visual_place_name,
+        )
+
         tod: dict[str, str] = {}
         try:
             from jiuwenswarm.server.runtime.designer.pipeline.axis_locks import (
                 infer_time_of_day_lock,
-            )
-            from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
-                compose_scene_specs_prompt,
-                visual_place_name,
             )
 
             tod = infer_time_of_day_lock(
@@ -1214,24 +1215,23 @@ def build_smart_video_graph(
                 tod["time_of_day"] = str(scene_specs_setting.get("time_of_day"))
             if isinstance(scene_specs_setting, dict) and scene_specs_setting.get("lighting"):
                 tod["lighting"] = str(scene_specs_setting.get("lighting"))
-            place_name = visual_place_name(
-                (scene_specs_setting or {}).get("scene_name")
-            ) or visual_place_name(env_desc)
-            seed_cfg = {
-                "role": NODE_ROLE_SCENE,
-                "setting_id": sid,
-                "scene_specs": {
-                    **(scene_specs_setting or {}),
-                    "scene_name": place_name,
-                },
-                "spatial_lock": shot_spatial_scene,
-                "time_of_day_lock": tod,
-                "style_lock": dict(film_style) if isinstance(film_style, dict) else {},
-            }
-            scene_prompt = compose_scene_specs_prompt(cfg=seed_cfg, graph=None, seed="")
         except Exception:  # noqa: BLE001
             tod = {}
-            scene_prompt = "One empty setting. The setting is empty. One clear image."
+        place_name = visual_place_name(
+            (scene_specs_setting or {}).get("scene_name")
+        ) or visual_place_name(env_desc)
+        seed_cfg = {
+            "role": NODE_ROLE_SCENE,
+            "setting_id": sid,
+            "scene_specs": {
+                **(scene_specs_setting or {}),
+                "scene_name": place_name,
+            },
+            "spatial_lock": shot_spatial_scene,
+            "time_of_day_lock": tod,
+            "style_lock": dict(film_style) if isinstance(film_style, dict) else {},
+        }
+        scene_prompt = compose_scene_specs_prompt(cfg=seed_cfg, graph=None, seed="")
         _ = (opening_cast, opening_action, ensemble_nids, lock_line_scene)
         scene_inputs = ["n_brief"]
         nodes.append(
@@ -1488,7 +1488,8 @@ def build_smart_video_graph(
         layout_bits = (
             f"Reference shot, setting {setting_id}: character sheets {solo_ref_list} "
             f"for {cast_who}, then scene specs {scene_nid or 'scene'} as the room. "
-            "Place those people into that empty room for THIS storyboard shot. "
+            "Place those people into that scene for THIS storyboard shot. "
+            "The image-number binding is appended to the video call by the system. "
             "Keep the film STYLE LOCK. "
         )
         if not first_of_setting:
