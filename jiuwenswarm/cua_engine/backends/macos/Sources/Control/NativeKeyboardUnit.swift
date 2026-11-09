@@ -112,7 +112,7 @@ import ApplicationServices
         }
         let continuity = NativeReceiverContinuity(element: element, window: window, state: initial)
         let recipient = try BackgroundEvents.keyboardRecipient(mapping())
-        func validateReceiver() throws {
+        let validateReceiver: @MainActor () throws -> Void = {
             try check()
             try self.checkEnabled()
             let current = try self.sample()

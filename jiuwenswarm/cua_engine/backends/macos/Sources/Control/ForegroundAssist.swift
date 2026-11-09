@@ -72,7 +72,7 @@ struct ForegroundAssist {
         let app = target.application
         let pid = app.processIdentifier
         let native = try nativeWindow(pid, window)
-        func checkPreparation() throws {
+        let checkPreparation: @MainActor () throws -> Void = {
             try RequestDiagnostics.checkCancellation()
             try target.validate(input: true)
             guard let info = WindowServerInfo.window(window),

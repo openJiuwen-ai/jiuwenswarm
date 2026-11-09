@@ -933,7 +933,7 @@ import ApplicationServices
                     if let receiver = contract.receiver {
                         try op.retainInputReference(receiver.reference) { self.state.applications.retainNode(receiver.reference) }
                     }
-                    @MainActor func checkBoundary() throws {
+                    let checkBoundary: @MainActor () throws -> Void = {
                         try op.check(write: true)
                         let attachedMenuAction: Bool
                         if case .action = contract.unit { attachedMenuAction = true } else { attachedMenuAction = false }
@@ -953,11 +953,11 @@ import ApplicationServices
                         try op.check(write: true)
                         try RequestDiagnostics.checkCancellation()
                     }
-                    @MainActor func checkSelection() throws {
+                    let checkSelection: @MainActor () throws -> Void = {
                         try self.selections[op.token]!.check(contract.basis,
                             scope: self.isDesktop(binding.wire) ? self.state.desktop.scope : binding.wire["surface"] as! String)
                     }
-                    @MainActor func markDispatch() throws {
+                    let markDispatch: @MainActor () throws -> Void = {
                         try op.check(write: true)
                         if receipt.dispatch == "notDispatched" { try checkSelection() }
                         try RequestDiagnostics.checkCancellation()
@@ -965,7 +965,7 @@ import ApplicationServices
                         op.recordInputDispatch()
                         self.state.recordEffect()
                     }
-                    @MainActor func beforeDispatch() throws {
+                    let beforeDispatch: @MainActor () throws -> Void = {
                         try checkBoundary()
                         try markDispatch()
                     }

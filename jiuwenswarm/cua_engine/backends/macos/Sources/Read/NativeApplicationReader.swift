@@ -107,7 +107,11 @@ final class NativeApplicationReader {
                   ProcessInfo.processInfo.systemUptime < surfaceDeadline {
                 let node = pending[index]; index += 1
                 try RequestDiagnostics.checkCancellation()
-                if scanned.contains(where: { CFEqual($0, node) }) { continue }
+                var alreadyScanned = false
+                for candidate in scanned {
+                    if CFEqual(candidate, node) { alreadyScanned = true; break }
+                }
+                if alreadyScanned { continue }
                 scanned.append(node)
                 for child in AXAccess.elements(node, kAXChildrenAttribute, limit: 128) ?? [] {
                     if ProcessInfo.processInfo.systemUptime >= surfaceDeadline { break }
