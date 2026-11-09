@@ -269,7 +269,8 @@ export function ColleagueWorkspacePage({
     conversationList.loaded && !conversationList.error,
   );
   const activeConversationId =
-    picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records.find((item) => item.agentId === agentId)?.id ?? freshId) : '';
+    picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records.find((item) =>
+      item.agentId === agentId && item.id !== SHARING_CONVERSATION_ID)?.id ?? freshId) : '';
   const colleaguePlans = schedules.filter((plan) => plan.agentId === colleagueId);
   const activePlan = colleaguePlans.find((plan) => plan.id === scheduleId) ?? colleaguePlans[0] ?? null;
   const chatConversationId = state.recordTab === 'schedules' && activePlan ? activePlan.conversationId : activeConversationId;
@@ -352,6 +353,7 @@ export function ColleagueWorkspacePage({
         if (primed) {
           const newest = flat
             .filter((item) => {
+              if (item.id === SHARING_CONVERSATION_ID) return false;
               const previous = known.get(`${item.agentId}:${item.id}`);
               return previous === undefined || item.updatedAt > previous;
             })
