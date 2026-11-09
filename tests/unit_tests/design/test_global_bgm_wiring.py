@@ -56,3 +56,26 @@ def test_no_clip_prompt_ever_asks_for_music() -> None:
         assert "solo piano and strings" not in prompt
         assert "Audio:" not in prompt
         assert "音乐：" not in prompt
+
+
+def test_clip_prompt_forbids_a_score_instead_of_leaving_sound_unspecified() -> None:
+    # A native-audio video model fills an unspecified track with a music bed, so a
+    # clip prompt without any audio direction scored itself — which is what showed
+    # up as "BGM in the clips" once the music node failed.
+    for graph in ({}, _SCORED_GRAPH):
+        prompt = compose_practice_prompt(cfg=_MUSIC_CFG, graph=graph, action=_MUSIC_CFG["clip_action"])
+        assert "no music" in prompt
+        assert "no score" in prompt
+        assert "no ambient music bed" in prompt
+
+
+def test_clip_prompt_names_diegetic_cues_and_stays_silent_on_request() -> None:
+    cfg = {**_MUSIC_CFG, "sfx": ["wind in the barley", "a distant dog"]}
+    prompt = compose_practice_prompt(cfg=cfg, graph=_SCORED_GRAPH, action=cfg["clip_action"])
+    assert "wind in the barley" in prompt
+    assert "no score" in prompt
+
+    silent = {**_MUSIC_CFG, "audio_policy": "silent"}
+    silent_prompt = compose_practice_prompt(cfg=silent, graph=_SCORED_GRAPH, action=silent["clip_action"])
+    assert "silent" in silent_prompt.lower()
+    assert "no music" in silent_prompt

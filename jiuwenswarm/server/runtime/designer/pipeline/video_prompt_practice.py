@@ -39,6 +39,14 @@ _PHRASES: dict[str, dict[str, str]] = {
         "says_offscreen": '{who}, heard offscreen, says: "{line}".',
         "voice_says": 'A voice says: "{line}".',
         "audio": "Audio: {bits}.",
+        "sound_diegetic_only": (
+            "Sound: diegetic sound of this shot only — action sound and room tone; "
+            "no music, no score, no underscore, no ambient music bed."
+        ),
+        "sound_cues_only": (
+            "Sound: {cues} only; no music, no score, no underscore, no ambient music bed."
+        ),
+        "sound_silent": "Sound: silent — no dialogue, no effects, no music.",
         "dialogue_language": "Spoken dialogue is in {name}.",
         "tod_with_lighting": "It is {label}; {lighting}.",
         "tod": "It is {label}.",
@@ -73,6 +81,9 @@ _PHRASES: dict[str, dict[str, str]] = {
         "says_offscreen": "{who}在画外说：“{line}”。",
         "voice_says": "画外音说：“{line}”。",
         "audio": "音乐：{bits}。",
+        "sound_diegetic_only": "声音：仅本镜头的现场音（动作声与环境底噪）；不要配乐、不要背景音乐、不要氛围音床。",
+        "sound_cues_only": "声音：仅{cues}；不要配乐、不要背景音乐、不要氛围音床。",
+        "sound_silent": "声音：静音，无对白、无音效、无音乐。",
         "dialogue_language": "对白使用{name}。",
         "tod_with_lighting": "时间是{label}；{lighting}。",
         "tod": "时间是{label}。",
@@ -320,6 +331,27 @@ def _music_line(cfg: dict[str, Any], lang: str = "en", graph: dict[str, Any] | N
     catch a legacy prompt that still carries an in-clip score.
     """
     return ""
+
+
+def _sound_line(cfg: dict[str, Any], lang: str = "en") -> str:
+    """The one audio direction every clip gets: diegetic sound, never a score.
+
+    A native-audio video model fills an unspecified track on its own, and it
+    reaches for a music bed first — so a clip prompt that says nothing about
+    sound ends up scoring itself. When the film's music node then fails, that
+    improvised bed is the only music in the cut and reads as BGM that leaked
+    into the clips. Naming the negative explicitly keeps the track diegetic.
+    """
+    if str(cfg.get("audio_policy") or "") == "silent":
+        return phrase(_PHRASES, lang, "sound_silent")
+    cues = [
+        str(c).strip()
+        for c in (cfg.get("sfx") if isinstance(cfg.get("sfx"), list) else [])
+        if str(c).strip() and not _BAD_DIRECTIVE.search(str(c))
+    ][:3]
+    if cues:
+        return phrase(_PHRASES, lang, "sound_cues_only", cues=list_separator(lang).join(cues))
+    return phrase(_PHRASES, lang, "sound_diegetic_only")
 
 
 def exited_ids(cfg: dict[str, Any] | None) -> list[str]:
@@ -1052,6 +1084,9 @@ def compose_practice_prompt(
     music = _music_line(cfg, lang, graph)
     if music:
         sentences.append(music)
+    sound = _sound_line(cfg, lang)
+    if sound:
+        sentences.append(sound)
     look = _style_phrase(cfg)
     if look and not _BAD_DIRECTIVE.search(look):
         sentences.append(sentence(look, lang))
