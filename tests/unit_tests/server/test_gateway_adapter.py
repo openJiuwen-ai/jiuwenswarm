@@ -631,6 +631,9 @@ class TestSessionAdapter:
         )
 
         class _Session:
+            async def release(self):
+                return True
+
             async def release_kvc(self):
                 evict_calls.append(
                     {
@@ -700,6 +703,9 @@ class TestSessionAdapter:
         )
 
         class _Session:
+            async def release(self):
+                return True
+
             async def release_kvc(self):
                 return True
 
@@ -736,6 +742,9 @@ class TestSessionAdapter:
         )
 
         class _Session:
+            async def release(self):
+                return True
+
             async def release_kvc(self):
                 return True
 

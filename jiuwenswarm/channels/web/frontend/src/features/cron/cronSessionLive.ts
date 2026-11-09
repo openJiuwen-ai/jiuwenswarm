@@ -25,6 +25,9 @@ import { useChatStore } from '../../stores/chatStore';
 import { useCronStore } from '../../stores/cronStore';
 import { normalizeFinalContent } from '../../utils/finalContent';
 import { getGatewayHttpBase, getWebTransport } from '../../utils/env';
+import { isCronExecutionSession } from './cronProcessingGuard';
+
+export { isCronExecutionSession, shouldKeepLocalCronProcessing } from './cronProcessingGuard';
 
 /** 执行过程里要画到会话页上的帧。和网关放进直播的那一组一致。 */
 const CRON_LIVE_EVENTS = new Set([
