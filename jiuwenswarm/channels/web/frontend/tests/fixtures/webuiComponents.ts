@@ -44,7 +44,4 @@ export { SettingsServicesProvider } from '../../src/features/settings/services/S
 export { panelNavigation, requestPanelOpen } from '../../src/features/webui/client/panelNavigation.ts';
 export { useWebUIPanels } from '../../src/features/webui/react/useWebUIPanels.tsx';
 export * as transfersModule from '../../src/features/webui/transfers/index.ts';
-export * as applicationSettingsModule from '../../src/features/webui/applicationSettings/index.ts';
 export { WebUIUploadContext } from '../../src/features/webui/renderer/adapters/webuiFileImport/uploadContext.ts';
-export { SplashProviderSettings } from '../../src/features/settings/modules/extensions/SplashProviderSettings.tsx';
-export { extensionsModule } from '../../src/features/settings/modules/extensions/definition.ts';

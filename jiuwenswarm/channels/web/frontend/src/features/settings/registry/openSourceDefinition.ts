@@ -10,7 +10,6 @@ import { archivedTasksModule } from '../modules/archivedTasks';
 import { voiceModule } from '../modules/voice/definition';
 import { experimentalModule } from '../modules/experimental';
 import { appearanceModule } from '../modules/appearance';
-import { extensionsModule } from '../modules/extensions';
 import { systemPluginRecoveryModule } from '../modules/systemPluginRecovery';
 
 export const openSourceSettingsPageDefinition = createSettingsPageDefinition({
@@ -26,7 +25,6 @@ export const openSourceSettingsPageDefinition = createSettingsPageDefinition({
     channelsModule,
     personalContextSettingsModule,
     archivedTasksModule,
-    extensionsModule,
     experimentalModule,
     appearanceModule,
     systemPluginRecoveryModule,
