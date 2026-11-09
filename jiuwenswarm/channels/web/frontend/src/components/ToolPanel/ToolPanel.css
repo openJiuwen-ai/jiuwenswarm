@@ -14,6 +14,17 @@
   border-bottom: 1px solid var(--color-border-default);
 }
 
+.tool-panel-expanded,
+.tool-panel-floating {
+  background: var(--color-surface-workspace);
+}
+
+.tool-panel-expanded-content,
+.tool-panel-collapsed-content,
+.collapsible-section__header {
+  background: var(--color-surface-workspace-layer);
+}
+
 .tool-panel-floating {
   position: fixed;
   top: 68px;
@@ -26,6 +37,19 @@
   border-radius: 16px;
   box-shadow: 0 2px 16px 0 rgba(0, 0, 0, 0.08);
   z-index: 30;
+  isolation: isolate;
+}
+
+/* Keep fixed-position menus anchored to the viewport while frosting the panel. */
+.tool-panel-floating::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-backdrop-filter: var(--effect-surface-floating-backdrop);
+  backdrop-filter: var(--effect-surface-floating-backdrop);
 }
 
 .tool-panel-floating > .tool-panel-collapsed-content > div:not(:last-child) {
@@ -109,7 +133,7 @@
   text-align: left;
   font-size: 0.75rem;
   color: var(--color-text-secondary);
-  background: var(--color-surface-card);
+  background: var(--color-surface-workspace-layer);
   transition: color 0.2s ease;
   cursor: pointer;
   padding-bottom: 8px;

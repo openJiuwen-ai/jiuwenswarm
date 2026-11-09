@@ -561,8 +561,8 @@ export function ToolPanel({
     const testId = isTeam ? 'tool-panel-expanded-team' : 'tool-panel-expanded-single-agent';
 
     return (
-      <div data-testid={testId} className="bg-panel h-full overflow-hidden flex-1 flex flex-col min-w-[512px]">
-        <div className="h-full bg-panel flex flex-col overflow-hidden">
+      <div data-testid={testId} className="tool-panel-expanded h-full overflow-hidden flex-1 flex flex-col min-w-[512px]">
+        <div className="tool-panel-expanded-content h-full flex flex-col overflow-hidden">
           <ExpandedPanel
             activeTab={selectedPluginPanel?.key ?? nativePanelTab}
             onTabChange={handlePanelTabChange}
@@ -961,10 +961,10 @@ export function ToolPanel({
     <div
       ref={floatingPanelRef}
       data-testid="tool-panel-collapsed"
-      className="bg-panel py-0 tool-panel-floating pl-6 pr-4"
+      className="py-0 tool-panel-floating pl-6 pr-4"
     >
       <div
-        className="tool-panel-collapsed-content bg-panel flex min-w-0 flex-col"
+        className="tool-panel-collapsed-content flex min-w-0 flex-col"
         data-testid="tool-panel-collapsed-content"
       >
         {collapsedSections.map(section => (

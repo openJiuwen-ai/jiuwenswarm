@@ -93,7 +93,7 @@ export function CollapsibleSection({
   return (
     <div data-testid={dataTestId} className="collapsible-section flex flex-col">
       <div
-        className={`collapsible-section__header flex w-full shrink-0 items-center justify-between bg-card ${collapsed ? 'py-6' : 'pt-6 pb-4'}`}
+        className={`collapsible-section__header flex w-full shrink-0 items-center justify-between ${collapsed ? 'py-6' : 'pt-6 pb-4'}`}
         data-testid={`${dataTestId}-header`}
         onClick={showCollapseButton ? handleToggleCollapse : undefined}
         style={showCollapseButton ? { cursor: 'pointer' } : undefined}

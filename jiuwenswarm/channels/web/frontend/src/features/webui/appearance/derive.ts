@@ -21,7 +21,7 @@ const SURFACE_GROUPS = {
   page: ['--color-surface-page', '--color-surface-page-accent', '--color-extension-section-surface'],
   side: ['--color-sidebar-surface', '--color-settings-nav-surface', '--color-surface-chrome', '--color-rsi-canvas-bg'],
   panel: ['--color-surface-content', '--color-surface-panel', '--color-rsi-page-bg'],
-  card: ['--color-surface-card', '--color-surface-elevated', '--color-chat-composer-surface'],
+  card: ['--color-surface-card', '--color-surface-elevated'],
 } as const;
 export const SURFACE_BASE_VARIABLES: readonly string[] = Object.values(SURFACE_GROUPS).flat();
 
@@ -142,6 +142,7 @@ export function buildAppearanceCss(appearance: WebUIAppearance, bases: SurfaceBa
         // stay readable over text and popovers stay nearly opaque. Components only consume these variables.
         '--color-surface-workspace': rgba(card, opacity * 0.7),
         '--color-surface-workspace-layer': 'transparent',
+        '--color-chat-composer-context-surface': 'transparent',
         '--color-surface-floating': rgba(floating, 0.9),
         '--effect-surface-floating-backdrop': 'blur(24px) saturate(1.3)',
         '--color-surface-popover': rgba(card, 0.97),

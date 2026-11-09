@@ -85,7 +85,7 @@ r、g、b 为 0～255 的整数，a 为 0～1 的数，逗号两侧可有空格�
 | 页面底色（`--color-surface-page`、`--color-surface-page-accent`、`--color-extension-section-surface`） | o × 0.42 |
 | 侧栏与导航（`--color-sidebar-surface`、`--color-settings-nav-surface`、`--color-surface-chrome`、`--color-rsi-canvas-bg`） | o × 0.7 |
 | 内容与面板（`--color-surface-content`、`--color-surface-panel`、`--color-rsi-page-bg`） | min(1, o + 0.02) |
-| 卡片与输入（`--color-surface-card`、`--color-surface-elevated`、`--color-chat-composer-surface`） | min(1, o + 0.08) |
+| 卡片（`--color-surface-card`、`--color-surface-elevated`） | min(1, o + 0.08) |
 | 外壳（`--color-surface-shell`） | 透明 |
 
 主题按角色提供的表面变量同样只在根上覆盖：
@@ -94,12 +94,17 @@ r、g、b 为 0～255 的整数，a 为 0～1 的数，逗号两侧可有空格�
 | --- | --- |
 | `--color-surface-workspace`（大面积工作区容器） | 卡片基色 × o × 0.7 |
 | `--color-surface-workspace-layer`（叠在工作区上的内层） | 透明 |
+| `--color-chat-composer-context-surface`（新建任务输入框的项目上下文外层） | 透明；不透明模式沿用次要操作区底色 |
 | `--color-surface-floating`（浮起的侧栏与设置导航） | 侧栏基色 × 0.9 |
 | `--effect-surface-floating-backdrop`（浮起侧栏的磨砂） | `blur(24px) saturate(1.3)`，不透明模式为 `none` |
 | `--color-surface-popover`（菜单、对话框、抽屉与提示） | 卡片基色 × 0.97 |
 
 宿主另使页面根与应用根透明。外观样式只写这些变量，不出现任何业务组件的类名；各组件消费变量（主题文件中定义默认值），
 新增弹出层只需使用 `--color-surface-popover`。全部文本变量不变。
+
+聊天输入框的 `--color-chat-composer-surface` 引用 `--color-surface-workspace`，与工作区使用相同的表面规则。
+右侧工具面板的外层使用工作区表面，内层和分节标题使用 `--color-surface-workspace-layer`，避免多层半透明底色
+叠加后接近纯白；浮起的工具面板使用 `--effect-surface-floating-backdrop` 保持背景动画上的文字可读。
 
 ## 4. 下行帧
 
