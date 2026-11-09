@@ -83,10 +83,12 @@
 
 包被释放（卸载、重载、发布失败前的替换）时，运行时除注销 Handler 外，还向浏览器发送该包各应用级实例的清除帧
 （原因 `released`，并预留该版本号，之后的渲染从更高版本开始），并撤销该包作为提供者的外观（[S_08](S_08_appearance.md)）。
-这些通知在释放后异步发送；本机 CLI 的 install 与 reload 成功后，先等待通知发出，再广播 `extensions.v2.installed`，
-已挂载的槽位据此重新发送 `ui.ready`。设计与验证见 [F_11](../features/F_11_controlled-appearance.md)。
+这些通知在释放后异步发送；Web 管理入口的 import / install / reload 与本机 CLI 的 install / reload 成功后，先等待释放通知发出，再广播 `extensions.v2.installed`，
+已挂载的槽位据此重新发送 `ui.ready`。包管理响应以 `ui_notified` 单独标明通知是否送达；通知失败不改写已提交的安装结果。设计与验证见 [F_11](../features/F_11_controlled-appearance.md)。
 管理门面卸载、重载或覆盖安装一个活动包之前，先以 `removed` 关闭它正在播放的开场并通知 `ui.closed`
 （[S_10 第 5 节](S_10_application-settings.md)）；包释放同时作废它的导入与下载凭据并删除临时导入目录。
+`application.presentation` 同样使用实例清除通知：Web Client 释放入口并关闭对应的原生形态窗口，恢复仍在运行的工作台。
+其沙箱、会话动作与窗口代次契约见 [S_11](S_11_application-presentation.md)；不增加 AgentServer 的桌宠事件或 Ops。
 
 重载与安装新版本分两步切换。准备（`prepare`）校验新版本，并逐个试注册它的 Handler：试注册使用不执行插件代码的占位 Handler，
 在同一个同步步骤中注册后立即注销，因此没有事件链能匹配到它，准备期间新版本不在总线上。准备成功后才关闭旧版本正在播放的开场，

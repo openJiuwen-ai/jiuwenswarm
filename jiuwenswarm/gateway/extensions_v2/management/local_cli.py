@@ -13,6 +13,7 @@ from typing import Any
 from openjiuwen.core.extension.errors import OperationError
 
 from jiuwenswarm.common.extension_cli import LocalControl, source_domain
+from jiuwenswarm.gateway.extensions_v2.management.notifications import notify_installed
 
 
 async def start_local_cli(runtime: Any) -> LocalControl:
@@ -61,13 +62,7 @@ async def start_local_cli(runtime: Any) -> LocalControl:
             payload = {"reports": [_encode(report) for report in reports]}
             succeeded = [report.package_id for report in reports if report.status == "SUCCESS"]
             if action in ("install", "reload") and succeeded:
-                # Released views are cleared before mounted slots ask the new activation for ready.
-                await runtime.browser.settle()
-                try:
-                    await runtime.channel.broadcast_event("extensions.v2.installed", {"package_ids": succeeded})
-                    payload["ui_notified"] = True
-                except Exception:  # noqa: BLE001 - keep the successful installation report
-                    payload["ui_notified"] = False
+                payload["ui_notified"] = await notify_installed(runtime, succeeded)
             return {"ok": True, "payload": payload}
         except Exception:  # noqa: BLE001 - the CLI must preserve an uncertain mutation result
             result = _error("INTERNAL_ERROR", "包管理结果未确认。")

@@ -10,6 +10,7 @@ does not enable them, so the two files intentionally diverge here.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Mapping
@@ -76,6 +77,12 @@ _FILE_NODE: dict[str, Any] = obj({
     "loaded": BOOL, "truncated": BOOL,
 }, "key", "title", "path", "kind")
 
+_JSON_VALUE: dict[str, Any] = union(
+    TEXT, BOOL, NUMBER, NIL,
+    array({"kind": "lazy", "get": lambda: _JSON_VALUE}),
+    {"kind": "record", "value": {"kind": "lazy", "get": lambda: _JSON_VALUE}},
+)
+
 # The same rule vocabulary as catalog/types.ts, without UI adapters or callbacks.
 COMPONENT_RULES: dict[str, dict[str, Any]] = {
     "Box": {"props": {
@@ -104,7 +111,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "icon": token(*WEBUI_ICON_NAMES), "iconPlacement": token("start", "end"), "aria-label": LOCALIZED_TEXT, "form": FIELD_NAME,
     }, "events": {"ui.click": {"kind": "record", "value": TEXT}}},
     "Input": {"props": {
-        **INPUT_PROPS, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
+        **INPUT_PROPS, "ariaLabel": LOCALIZED_TEXT, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
         "allowClear": BOOL, "showCount": BOOL, "type": token("text", "email", "tel", "url", "password"),
         "readOnly": BOOL, "autoComplete": TEXT,
     }, "events": {
@@ -116,7 +123,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "ariaLabel": LOCALIZED_TEXT, "size": COMPACT_SIZE, "checkedChildren": TEXT, "unCheckedChildren": TEXT,
     }, "events": {name: obj({"checked": BOOL}, "checked") for name in ("ui.click", "ui.change")}},
     "Select": {"props": {
-        **INPUT_PROPS, "options": array(obj({"value": OPTION_VALUE, "label": TEXT, "disabled": BOOL}, "value", "label")),
+        **INPUT_PROPS, "ariaLabel": LOCALIZED_TEXT, "options": array(obj({"value": OPTION_VALUE, "label": LOCALIZED_TEXT, "disabled": BOOL}, "value", "label")),
         "value": union(OPTION_VALUE, NIL, array(OPTION_VALUE)),
         "defaultValue": union(OPTION_VALUE, NIL, array(OPTION_VALUE)), "placeholder": TEXT, "allowClear": BOOL,
         "mode": token("multiple", "tags"), "maxCount": {"kind": "number", "integer": True, "min": 1},
@@ -229,9 +236,18 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "loop": BOOL, "muted": BOOL, "dim": {"kind": "number", "min": 0, "max": 0.9},
         "blur": {"kind": "number", "min": 0, "max": 40}, "opacity": {"kind": "number", "min": 0.1, "max": 1},
     }, "required": ("kind", "src", "title")},
+    "ApplicationSurface": {"props": {
+        "src": TEXT, "title": LOCALIZED_TEXT,
+        "width": {"kind": "number", "integer": True, "min": 160, "max": 960},
+        "height": {"kind": "number", "integer": True, "min": 120, "max": 960},
+        "config": {"kind": "record", "value": _JSON_VALUE},
+    }, "required": ("src", "title")},
     # Host-mediated import (S_10 section 6); the data is the host-issued upload id.
     "FileImport": {"props": {
-        "label": {"kind": "string", "minBytes": 1, "maxBytes": 200}, "accept": array(TEXT),
+        "label": union({"kind": "string", "minBytes": 1, "maxBytes": 200}, obj({
+            "zh": {"kind": "string", "minBytes": 1, "maxBytes": 200},
+            "en": {"kind": "string", "minBytes": 1, "maxBytes": 200},
+        }, "zh", "en")), "accept": array(TEXT),
         "multiple": BOOL, "directory": BOOL, "disabled": BOOL,
     }, "required": ("label",), "events": {"ui.change": obj({"upload_id": TEXT}, "upload_id")}},
 }
@@ -563,7 +579,8 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     if component in ("Panel", "MediaSurface") and not props["title"].strip():
         return "title is required"
     if component == "FileImport":
-        if not props["label"].strip():
+        labels = props["label"].values() if isinstance(props["label"], Mapping) else (props["label"],)
+        if not all(label.strip() for label in labels):
             return "label is required"
         accept = props.get("accept")
         if accept is not None and (not 1 <= len(accept) <= 16 or not all(FILE_SUFFIX.fullmatch(item) for item in accept)
@@ -575,6 +592,14 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         key in props and not valid_media_url(props[key]) for key in ("src", "poster")
     ):
         return "invalid media URL"
+    if component == "ApplicationSurface":
+        titles = [props["title"]] if isinstance(props["title"], str) else props["title"].values()
+        if any(not title.strip() or len(title.encode("utf-8")) > 200 for title in titles):
+            return "invalid ApplicationSurface title"
+        if not valid_media_url(props["src"]):
+            return "invalid ApplicationSurface URL"
+        if len(json.dumps(props.get("config", {}), ensure_ascii=False, allow_nan=False).encode("utf-8")) > 16 * 1024:
+            return "ApplicationSurface config exceeds 16 KiB"
     if component == "Iframe":
         title = props["title"]
         titles = [title] if isinstance(title, str) else list(title.values())

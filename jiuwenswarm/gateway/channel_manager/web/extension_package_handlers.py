@@ -40,6 +40,7 @@ from jiuwenswarm.gateway.extensions_v2.management.catalog import (
     package_detail,
     resolve_install_source,
 )
+from jiuwenswarm.gateway.extensions_v2.management.notifications import notify_installed
 from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
 
 MANAGEMENT_METHODS = frozenset(
@@ -143,7 +144,7 @@ async def _handle_locally(
             params=params,
             session_id=session_id,
             user_id=user_id,
-            manager=manager,
+            runtime=runtime if enabled else None,
             resolve_client=resolve_client,
         )
         return True
@@ -264,6 +265,7 @@ async def _handle_locally(
             )
             return True
         reports = await manager.install(paths)
+        ui_notified = await notify_installed(runtime, [report.package_id for report in reports if report.status == "SUCCESS"])
         await _respond(
             channel,
             ws,
@@ -272,6 +274,7 @@ async def _handle_locally(
             payload={
                 "reports": [_encode(report) for report in reports],
                 "installed_packages": manager.query()["installed_packages"],
+                "ui_notified": ui_notified,
             },
         )
         return True
@@ -310,7 +313,10 @@ async def _handle_locally(
             code=OPERATION_FAILED_CODE,
         )
         return True
-    await _respond(channel, ws, req_id, ok=True, payload={"reports": [_encode(report)]})
+    payload = {"reports": [_encode(report)]}
+    if method is ReqMethod.EXTENSIONS_V2_RELOAD and report.status == "SUCCESS":
+        payload["ui_notified"] = await notify_installed(runtime, [report.package_id])
+    await _respond(channel, ws, req_id, ok=True, payload=payload)
     return True
 
 
@@ -322,7 +328,7 @@ async def _import_local(
     params: Mapping[str, Any],
     session_id: str | None,
     user_id: str | None,
-    manager: Any | None,
+    runtime: Any | None,
     resolve_client: Callable[[], Any],
 ) -> None:
     """Install one local package as a Gateway extension, an Agent extension or an Agent plugin."""
@@ -350,23 +356,24 @@ async def _import_local(
         )
         return
     if domain == DOMAIN_GATEWAY:
-        if manager is None:
+        if runtime is None:
             await _respond(
                 channel, ws, req_id, ok=False, error="gateway extensions are disabled", code=INVALID_PARAMS_CODE
             )
             return
-        reports = await manager.install([path])
+        reports = await runtime.packages.install([path])
         failed = next((report for report in reports if report.status != "SUCCESS"), None)
         if failed is not None:
             message = getattr(getattr(failed, "error", None), "message", None) or "package install failed"
             await _respond(channel, ws, req_id, ok=False, error=str(message), code="INSTALL_FAILED")
             return
+        ui_notified = await notify_installed(runtime, [report.package_id for report in reports])
         await _respond(
             channel,
             ws,
             req_id,
             ok=True,
-            payload={"kind": "extension", "reports": [_encode(report) for report in reports]},
+            payload={"kind": "extension", "reports": [_encode(report) for report in reports], "ui_notified": ui_notified},
         )
         return
 

@@ -3039,7 +3039,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.20"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?branch=release%2Fv0.1.20.post3#c48b5bbd9d39ad70e708fa3e5e522ece422e423a" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?branch=release%2Fv0.1.20.post3#91df05d0640ead0e4595de772a56f88a9314b4e7" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },

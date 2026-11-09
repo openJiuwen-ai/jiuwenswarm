@@ -93,6 +93,7 @@ SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
         "application.background": _slot("single", SlotScope.APPLICATION),
         "application.splash": _slot("single", SlotScope.APPLICATION),
         "application.settings": _slot("list", SlotScope.APPLICATION),
+        "application.presentation": _slot("list", SlotScope.APPLICATION),
     }
 )
 

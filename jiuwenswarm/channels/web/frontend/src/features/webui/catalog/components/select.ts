@@ -4,10 +4,11 @@ import {
 } from './shared.ts';
 
 const optionValue = union(text, number);
+import { localizedTextRule } from './localizedText.ts';
 const selection = union(optionValue, nil, array(optionValue));
 export const selectRule = component('Select', {
-  ...inputProps,
-  options: array(object({ value: optionValue, label: text, disabled: bool }, ['value', 'label'])),
+  ...inputProps, ariaLabel: localizedTextRule,
+  options: array(object({ value: optionValue, label: localizedTextRule, disabled: bool }, ['value', 'label'])),
   value: selection, defaultValue: selection,
   placeholder: text, allowClear: bool, mode: token('multiple', 'tags'), maxCount: integer(1),
   maxTagCount: union(integer(), token('responsive')), showSearch: bool,

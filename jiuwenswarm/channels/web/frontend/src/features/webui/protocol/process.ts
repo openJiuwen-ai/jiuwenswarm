@@ -108,6 +108,10 @@ export function processRenderFrame(
     return tree;
   }
   const rootComponent = tree.value.tree.component;
+  if (rootComponent === 'ApplicationSurface' && (!target.value.packageId
+    || !(tree.value.tree.props.src as string).startsWith(`/extension-assets/${target.value.packageId}/`))) {
+    return protocolReject('SCHEMA_ERROR', 'ApplicationSurface must use its own package assets');
+  }
   const slot = catalog.getSlot(target.value.slotId);
   const slotRootComponents: readonly string[] = slot?.rootComponents ?? [];
   if (slot?.strictRoot) {

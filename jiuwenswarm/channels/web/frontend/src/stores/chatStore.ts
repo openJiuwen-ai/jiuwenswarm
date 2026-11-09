@@ -203,6 +203,8 @@ export interface ChatRuntime {
   isNewSession: boolean;
   currentStreamContent: string;
   currentStreamId: string | null;
+  /** Latest complete public final, before message-segment deduplication. */
+  lastFinalReply: { content: string; userMessageId: string | null; requestId?: string } | null;
   outputPhaseId?: string;
   /** 本轮是否已按工具边界分段（chat.final 去重）。 */
   assistantStreamSplit: boolean;
@@ -272,6 +274,7 @@ function createEmptyRuntime(): ChatRuntime {
     isNewSession: false,
     currentStreamContent: '',
     currentStreamId: null,
+    lastFinalReply: null,
     assistantStreamSplit: false,
     reasoningSegments: [],
     reasoningInputBoundaryPending: false,
@@ -350,6 +353,7 @@ interface ChatState {
   addMessage: (sessionId: string, message: Message) => void;
   replaceHistoryMessages: (sessionId: string, messages: Message[]) => void;
   updateMessage: (sessionId: string, id: string, updates: Partial<Message>) => void;
+  setLastFinalReply: (sessionId: string, content: string, requestId?: string) => void;
   appendStreamContent: (sessionId: string, content: string, streamKey?: string) => void;
   appendReasoning: (
     sessionId: string,
@@ -582,6 +586,23 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           },  
         },
       };
+    });
+  },
+
+  setLastFinalReply: (sessionId, content, requestId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const inputs = runtime.messages.filter((message) => message.role === 'user');
+      const lastInput = inputs.at(-1);
+      const user = requestId
+        ? inputs.find((message) => message.inputRequestId === requestId || message.outputOrder?.requestId === requestId)
+        : lastInput?.inputRequestId === undefined ? lastInput : undefined;
+      const previousInput = inputs.find((message) => message.id === runtime.lastFinalReply?.userMessageId);
+      if (user && previousInput && inputs.indexOf(user) < inputs.indexOf(previousInput)) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: {
+        ...runtime, lastFinalReply: content ? { content, userMessageId: user?.id ?? null, requestId } : null,
+      } } };
     });
   },
 
@@ -1844,6 +1865,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             messages: [],
+            lastFinalReply: null,
             currentStreamContent: '',
             currentStreamId: null,
             streamBuffers: new Map(),

@@ -396,7 +396,7 @@ function saveModeToStorage(mode: AgentMode) {
 
 const DEFAULT_MODE: AgentMode = 'agent';
 
-function normalizeAgentMode(mode: unknown): AgentMode {
+export function normalizeAgentMode(mode: unknown): AgentMode {
   if (typeof mode !== 'string') return DEFAULT_MODE;
   if (isTeamAgentMode(mode)) return 'team';
   // 后端 session.mode 可能是新命名 `agent.{work|code}.plan`，先剥掉 plan 后缀
