@@ -1,6 +1,6 @@
 # WebUI 组件目录与渲染适配
 
-建档日期：2026-10-30。最近修订：2026-11-05。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
+建档日期：2026-10-30。最近修订：2026-11-09。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
 Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)，作为插件侧、后端和前端共同遵循的属性定义；
 本次核对完整字段、嵌套结构、事件、默认值和功能影响，并将后续变更顺序写入仓库规则。
 实施及验证记录在本文件维护；属性清单只在 S_17 维护，现有规则代码继续负责执行，尚无自动生成链路。
@@ -10,7 +10,7 @@ Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../.
 ## 背景与范围
 
 组件目录集中描述组件属性、事件数据和槽位规则，供校验器及其他消费者查询。
-目录包含 24 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown`、`Icon`、`Form`、`Form.Item` 与 `MediaSurface`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
+目录包含 26 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown`、`Icon`、`Form`、`Form.Item`、`MediaSurface`、`FileImport` 与 `ApplicationSurface`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`application.presentation`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
 实际显示仍取决于渲染器注册和页面挂载。
 
 ## 方案与取舍
@@ -403,3 +403,5 @@ WebUIBackgroundHost 在 WebUIAppRoot 中全窗口底层挂载该槽位。行为�
   test:webui-events 93、test:webui-transport 9，均为 0 失败。
 - `npm run build` 成功（tsc 与 vite build）。
 - 内置浏览器验证了图片、视频、超时回退与清除；HTML 页面的双向消息、错误回退与减少动态在 Chromium 157 无头模式中验证，记录见 F_10。
+
+应用形态组件由专用入口适配器和主窗口会话桥接承载，沙箱页面由插件提供；契约见 [S_11](../../../../../../../../gateway/extensions_v2/docs/specs/S_11_application-presentation.md)，实施和真实 DMG 验收见 [F_15](../../../../../../../../gateway/extensions_v2/docs/features/F_15_application-presentation.md)。

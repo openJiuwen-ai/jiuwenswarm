@@ -291,6 +291,9 @@ cp "$DESKTOP_DIR/browser_download_bubble.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/share_image_export.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/display_media_picker.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/preload.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/application_presentation.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/application_transition.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/presentation_preload.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/target_mcp_wrapper.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/macos_update.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/install_macos_update.sh" "$APP_DIR/"
@@ -369,7 +372,7 @@ if [ ! -d "$APP_DIR/node_modules/@playwright/mcp" ]; then
     exit 1
 fi
 
-REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs browser_panels.cjs
+REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs application_presentation.cjs application_transition.cjs presentation_preload.cjs browser_panels.cjs
     app_market_windows.cjs app_market_resources.cjs share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
     browser_downloads.cjs browser_download_bubble.cjs dist/bubble.html
     macos_update.cjs install_macos_update.sh package.json dist/index.html

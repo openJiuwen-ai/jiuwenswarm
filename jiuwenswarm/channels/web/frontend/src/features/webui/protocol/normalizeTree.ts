@@ -12,7 +12,7 @@ import { isRecord, jsonByteLength, readNonEmptyString, utf8ByteLength } from './
 import { validateFormStructure } from './formStructure.ts';
 
 /** 只能作为整棵渲染树根、不能嵌套的组件。 */
-export const ROOT_ONLY_COMPONENTS: readonly string[] = ['Panel', 'Iframe', 'MediaSurface'];
+export const ROOT_ONLY_COMPONENTS: readonly string[] = ['Panel', 'Iframe', 'MediaSurface', 'ApplicationSurface'];
 
 const actionArgRule: WebUIPropRule = {
   kind: 'lazy',

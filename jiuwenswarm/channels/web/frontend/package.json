@@ -18,6 +18,7 @@
     "test:skill-detail-description": "node --test tests/skillDetailDescription.test.mjs",
     "test:skillpack-install": "esbuild src/components/SkillPanel/skillPackInstall.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/skillpack-install/skillPackInstall.mjs && node --test tests/skillPackInstall.test.mjs",
     "test:office-addins": "node --test tests/officeAddins.test.mjs",
+    "test:application-presentation": "esbuild tests/fixtures/applicationPresentation.ts --bundle --packages=external --platform=node --format=esm --define:import.meta.env={} --outfile=node_modules/.cache/application-presentation/protocol.mjs && node --test tests/applicationPresentation.test.mjs tests/presentationTransitions.test.mjs",
     "test:update-panel": "esbuild src/components/UpdatePanel/index.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/update-panel/index.mjs && node --test tests/updatePanel.test.mjs",
     "test:model-refresh": "esbuild src/features/settings/modules/models/useModelRefreshStatus.ts --bundle --packages=external --platform=node --format=esm --outdir=node_modules/.cache/model-refresh && node --test tests/modelRefreshStatus.test.mjs tests/modelRefreshUi.test.mjs",
     "test:group-chat": "esbuild src/features/groupChat/state.ts src/multi-session/routing/route.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/group-chat --define:import.meta.env={} && node --test tests/groupChat.test.mjs",

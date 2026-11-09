@@ -1762,5 +1762,40 @@
       }
     },
     "valid": false
-  }
+  },
+  {
+    "name": "application.presentation accepts its package-owned surface",
+    "slot": "application.presentation",
+    "root": { "component": "ApplicationSurface", "props": {
+      "src": "/extension-assets/pkg.contract/g1/presentation.html",
+      "title": { "zh": "应用形态", "en": "Application forms" },
+      "width": 300, "height": 440, "config": { "poses": ["idle", "tool"] }
+    } },
+    "valid": true
+  },
+  {
+    "name": "application.presentation rejects foreign package assets",
+    "slot": "application.presentation",
+    "root": { "component": "ApplicationSurface", "props": {
+      "src": "/extension-assets/foreign/g1/presentation.html", "title": "Form"
+    } },
+    "valid": false
+  },
+  {
+    "name": "ApplicationSurface rejects fractional window sizes",
+    "root": { "component": "ApplicationSurface", "props": {
+      "src": "/extension-assets/pkg.contract/g1/presentation.html", "title": "Form", "width": 320.5
+    } },
+    "valid": false
+  },
+  {
+    "name": "application.presentation rejects ordinary content roots",
+    "slot": "application.presentation",
+    "root": { "component": "Box" },
+    "valid": false
+  },
+  {"name": "file import localized label", "root": {"component": "FileImport", "props": {"label": {"zh": "导入", "en": "Import"}}}, "valid": true},
+  {"name": "select localized labels", "root": {"component": "Select", "props": {"ariaLabel": {"zh": "颜色", "en": "Color"}, "options": [{"value": "dark", "label": {"zh": "深色", "en": "Dark"}}]}}, "valid": true},
+  {"name": "input localized accessible name", "root": {"component": "Input", "props": {"ariaLabel": {"zh": "署名", "en": "Signature"}}}, "valid": true},
+  {"name": "incomplete translated import label", "root": {"component": "FileImport", "props": {"label": {"zh": "导入"}}}, "valid": false}
 ]

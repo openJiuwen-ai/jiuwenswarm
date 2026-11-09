@@ -1,12 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Select, type SelectProps } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
+import { useTranslation } from 'react-i18next';
+import type { LocalizedText } from '../../../catalog/components/localizedText.ts';
+import { resolveLocalizedText, useLocalizedText } from '../../useLocalizedText.ts';
 
 type Selection = string | number | (string | number)[] | null;
 export function WebUISelect({ node, context, emit, appearance }: WebUIAdapterProps) {
-  const p = node.props as Pick<SelectProps<Selection>, 'options' | 'value' | 'defaultValue' | 'mode' | 'disabled'
+  const { i18n } = useTranslation();
+  const p = node.props as Pick<SelectProps<Selection>, 'value' | 'defaultValue' | 'mode' | 'disabled'
     | 'placeholder' | 'allowClear' | 'size' | 'maxCount' | 'variant' | 'status' | 'maxTagCount'>
-    & { showSearch: boolean; ariaLabel?: string };
+    & { showSearch: boolean; ariaLabel?: LocalizedText; options: { value: string | number; label: LocalizedText; disabled?: boolean }[] };
+  const ariaLabel = useLocalizedText(p.ariaLabel);
+  const options = p.options.map(option => ({ ...option, label: resolveLocalizedText(option.label, i18n.resolvedLanguage ?? i18n.language) }));
   const [value, setValue] = useState<Selection>(p.value !== undefined ? p.value : p.defaultValue ?? (p.mode ? [] : null));
   useEffect(() => {
     if (p.value !== undefined) setValue(p.value);
@@ -14,7 +20,7 @@ export function WebUISelect({ node, context, emit, appearance }: WebUIAdapterPro
   const disabled = p.disabled || !context.connected;
   return <Select<Selection>
     className={appearance?.className} style={appearance?.style}
-    data-testid="webui-select" aria-label={p.ariaLabel} options={p.options} value={value} mode={p.mode}
+    data-testid="webui-select" aria-label={ariaLabel} options={options} value={value} mode={p.mode}
     disabled={disabled} placeholder={p.placeholder} allowClear={p.allowClear} size={p.size} maxCount={p.maxCount}
     variant={p.variant} status={p.status} maxTagCount={p.maxTagCount}
     showSearch={p.showSearch ? { optionFilterProp: 'label', onSearch: (searchValue) => {
