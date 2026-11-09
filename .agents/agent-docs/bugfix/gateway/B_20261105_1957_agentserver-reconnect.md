@@ -4,7 +4,7 @@ title: 接入 AgentServer 重启后的 Gateway 重连修复
 type: B
 author: yandong1109
 author_email: yandong@huawei.com
-modules: [pyproject.toml, tests/unit_tests/gateway, tests/integration]
+modules: [pyproject.toml, tests/unit_tests/gateway, tests/unit_tests/agentserver, tests/unit_tests/runtime, tests/integration]
 files:
   - pyproject.toml
   - uv.lock
@@ -12,6 +12,8 @@ files:
   - tests/unit_tests/gateway/test_cron_scheduler.py
   - tests/unit_tests/gateway/test_cron_snapshot_retirement.py
   - tests/integration/test_session_steering_sdk.py
+  - tests/unit_tests/agentserver/test_a4p_split_process.py
+  - tests/unit_tests/runtime/test_runtime_service.py
 designs: []
 design_note: 修复既有传输恢复路径，通过独立 Gateway 仓交付，无独立架构设计。
 ---
@@ -160,3 +162,40 @@ cff3b1b9 导出的 Gateway 源码（其余依赖保持同一锁定环境），�
 
 本次未修改 Worker 启动预算或运行时恢复策略；平台全量 CI、AI 检视及讨论解决
 仍以新提交的实际结果为准，不用定向回归或基线失败归属替代门禁。
+
+
+## 2026-11-09 处理全量 CI 的测试适配与隔离失败
+
+11 月 6 日 15:52 的 CI 对应 cd12d25b6，UT 为 24214 passed、139 skipped、39 failed。
+原重连五文件 86 项全部通过；失败与上文扩展集成测试的 5 项不同，不能混用归因。
+
+- 1 项位于 test_a4p_split_process.py：跨进程测试替代了 _push_cron_command_ack，
+  但 ack 替身未接收新依赖新增的 session_id，子进程 TypeError 后父进程报 EOFError / BrokenPipeError。
+  这是此前消费端适配遗漏，现补齐关键字参数并将 session_id 传入 E2A 信封。
+- 其余 38 项位于 test_gateway_adapter.py（2 项）和 test_prompt_suggestion.py（36 项）。
+  Runtime 的 test_dispose_error_resets_checkpointer_state_and_reinitializes 仅隔离了
+  _PERSISTENT_CHECKPOINTER_READY，却将 object() 留在 _shared_checkpointer。
+  若此前已完成真实初始化，测试退出后 READY 恢复为 true，后续 session runtime 初始化
+  会将此占位对象重新装入 SDK factory，导致缺少 release / pre_agent_execute 等方法。
+  修正污染源测试，使用 monkeypatch 同时隔离并恢复共享检查点及共享引擎状态。
+
+最小因果复现：先完成真实检查点初始化，再按「故障注入单测 → 会话删除 → 推荐提示」
+顺序运行，修正前为 1 passed、2 failed，报错与 CI 一致。
+ACK 单测在原候选也复现了同一 session_id TypeError。
+修正后在相同锁定依赖环境（Python 3.11.16；Gateway 66df2594）先初始化真实检查点，
+按以下顺序运行四个完整文件，337 passed in 29.29s：
+
+1. tests/unit_tests/agentserver/test_a4p_split_process.py
+2. tests/unit_tests/runtime/test_runtime_service.py
+3. tests/unit_tests/server/test_gateway_adapter.py
+4. tests/unit_tests/test_prompt_suggestion.py
+
+测试使用 pytest --asyncio-mode=auto -q --tb=short，关闭 log_cli。
+其中跨进程用例以 spawn 启动实际子进程；推荐提示用例保持原有可控模型替身和页面输出断言。
+未放宽业务断言、修改运行时代码或变更依赖；未执行本地全量 2 万余项测试，平台需对新提交复验。
+
+依赖决策：本 PR 继续使用官方已合入且冷安装验证通过的完整 SHA。
+当前官方 develop 也使用固定 Gateway SHA，uv/pip 均支持这种 VCS 依赖。
+未来正式发布可改为版本约束与锁文件配合；branch=develop 配合受控更新 uv.lock 也能固定
+uv 安装，但 pip/已构建 wheel 不读取 tool.uv.sources 或本项目 uv.lock，不能只改第 247 行
+就认为所有安装路径都保留同一版本。不在本次 UT 修复中改变整个项目的依赖发布策略。

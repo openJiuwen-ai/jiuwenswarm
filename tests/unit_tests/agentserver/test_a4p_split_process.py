@@ -35,10 +35,11 @@ def _gateway_process(connection, directory):
         )
         handler._cron_controller = controller
 
-        async def ack(*, command_id, data, user_id=None):
+        async def ack(*, command_id, data, user_id=None, session_id=None):
             envelope = e2a_from_agent_fields(
                 request_id=command_id, channel_id="", req_method=ReqMethod.CRON_COMMAND_ACK,
                 params={"command_id": command_id, "data": data}, user_id=user_id,
+                session_id=session_id,
             )
             connection.send(json.dumps(envelope.to_dict()))
 

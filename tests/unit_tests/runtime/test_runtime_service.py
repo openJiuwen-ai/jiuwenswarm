@@ -3621,6 +3621,11 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     create_checkpointer = AsyncMock(return_value=replacement_checkpointer)
     installed: list[object | None] = []
 
+    # Restore the cached instance as well as readiness after this test. Otherwise
+    # a later runtime startup can reinstall the placeholder into the SDK factory.
+    monkeypatch.setattr(checkpointer, "_shared_checkpointer", stale_checkpointer)
+    monkeypatch.setattr(checkpointer, "_shared_engine", None)
+    monkeypatch.setattr(checkpointer, "_shared_engine_kind", None)
     monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", True)
     monkeypatch.setattr(
         checkpointer,
