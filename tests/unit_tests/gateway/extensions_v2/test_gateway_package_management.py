@@ -104,6 +104,7 @@ def _package_zip(
     version: str = "0.1.0",
     entry: str = ENTRY,
     enable: bool | None = None,
+    requires: dict | None = None,
 ) -> Path:
     source = tmp_path / "src" / package_id / version
     source.mkdir(parents=True)
@@ -115,6 +116,8 @@ def _package_zip(
     }
     if enable is not None:
         manifest_document["enable"] = enable
+    if requires is not None:
+        manifest_document["requires"] = requires
     manifest = json.dumps(manifest_document)
     (source / "manifest.json").write_text(manifest, encoding="utf-8")
     (source / "extension.py").write_text(entry, encoding="utf-8")
@@ -926,6 +929,128 @@ async def _reported_manager(tmp_path: Path, runtime: GatewayRuntime | None = Non
     )
     await manager.init()
     return manager
+
+
+async def test_reported_disable_and_enable_keep_copy_and_settle_report(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        assert (await manager.install([_package_zip(tmp_path)]))[0].status == "SUCCESS"
+        root = manager.gateway_installed("demo.gateway")[0].root
+        for enabled in (False, True):
+            report = await manager.set_enabled("demo.gateway", enabled)
+            assert report.status == "SUCCESS"
+            assert report.operation == ("enable" if enabled else "disable")
+            assert runtime.user_handler_count == int(enabled)
+            assert root.exists()
+            assert json.loads((root / "manifest.json").read_text(encoding="utf-8"))["enable"] is enabled
+            state = (await manager._report.read_packages("demo.gateway")).get("demo.gateway")
+            if enabled:
+                assert state is not None
+                assert state.pending is None
+                assert state.active_version == "0.1.0"
+            else:
+                assert state is None
+    finally:
+        await manager.close()
+        await runtime.shutdown()
+
+
+async def test_reported_disable_rejects_active_dependents_without_side_effects(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    released = []
+    manager._on_released = released.append
+    try:
+        sources = [
+            _package_zip(tmp_path),
+            _package_zip(tmp_path, package_id="demo.consumer", requires={
+                "packages": [{"id": "demo.gateway", "version": ">=0.1.0"}],
+            }),
+        ]
+        assert all(report.status == "SUCCESS" for report in await manager.install(sources))
+        before = runtime.active_record("demo.gateway")
+        root = manager.gateway_installed("demo.gateway")[0].root
+        original = (root / "manifest.json").read_bytes()
+
+        report = await manager.set_enabled("demo.gateway", False)
+
+        assert report.status == "FAILED"
+        assert report.error.code == "EXTENSION_PACKAGE_IN_USE"
+        assert runtime.active_record("demo.gateway") == before
+        assert runtime.user_handler_count == 2
+        assert (root / "manifest.json").read_bytes() == original
+        assert released == []
+        assert (await manager._report.read_packages("demo.gateway"))["demo.gateway"].pending is None
+
+        assert (await manager.set_enabled("demo.consumer", False)).status == "SUCCESS"
+        assert (await manager.set_enabled("demo.gateway", False)).status == "SUCCESS"
+        consumer_root = manager.gateway_installed("demo.consumer")[0].root
+        original = (consumer_root / "manifest.json").read_bytes()
+        report = await manager.set_enabled("demo.consumer", True)
+        assert report.status == "FAILED"
+        assert report.error.code == "EXTENSION_DEPENDENCY_NOT_MET"
+        assert runtime.user_handler_count == 0
+        assert (consumer_root / "manifest.json").read_bytes() == original
+        state = (await manager._report.read_packages("demo.consumer"))["demo.consumer"]
+        assert state.pending is None
+        assert state.active_version is None
+    finally:
+        await manager.close()
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_reported_enabled_write_failure_keeps_previous_state(tmp_path, monkeypatch, enabled):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        await manager.install([_package_zip(tmp_path)])
+        if enabled:
+            assert (await manager.set_enabled("demo.gateway", False)).status == "SUCCESS"
+        before = runtime.active_record("demo.gateway")
+        root = manager.gateway_installed("demo.gateway")[0].root
+        original = (root / "manifest.json").read_bytes()
+
+        def fail_write(*args):
+            raise OSError("manifest write failed")
+
+        monkeypatch.setattr(manager._store, "set_enabled", fail_write)
+        report = await manager.set_enabled("demo.gateway", enabled)
+
+        assert report.status == "FAILED"
+        assert runtime.active_record("demo.gateway") == before
+        assert runtime.user_handler_count == int(not enabled)
+        assert (root / "manifest.json").read_bytes() == original
+        state = (await manager._report.read_packages("demo.gateway"))["demo.gateway"]
+        assert state.pending is None
+        assert state.active_version == (None if enabled else "0.1.0")
+    finally:
+        await manager.close()
+        await runtime.shutdown()
+
+
+async def test_reported_failed_enable_restores_disabled_manifest(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        await manager.install([_package_zip(tmp_path)])
+        assert (await manager.set_enabled("demo.gateway", False)).status == "SUCCESS"
+        root = manager.gateway_installed("demo.gateway")[0].root
+        (root / "extension.py").write_text(BAD_ENTRY, encoding="utf-8")
+
+        report = await manager.set_enabled("demo.gateway", True)
+
+        assert report.status == "FAILED"
+        assert report.error.code == "EXTENSION_LOAD_FAILED"
+        assert runtime.user_handler_count == 0
+        assert json.loads((root / "manifest.json").read_text(encoding="utf-8"))["enable"] is False
+        state = (await manager._report.read_packages("demo.gateway"))["demo.gateway"]
+        assert state.pending is None
+        assert state.active_version is None
+    finally:
+        await manager.close()
+        await runtime.shutdown()
 
 
 async def test_reported_install_records_generation_and_domain(tmp_path):

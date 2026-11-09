@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { createClientCapabilityHost, createGatewayFetch, isPluginResourceURL, resolvePluginResourceURL, browserClientCapabilities, webClient, gitWatchClient } from '../node_modules/.cache/webui-client/client.mjs';
+import { createClientCapabilityHost, createGatewayFetch, isPluginResourceURL, resolvePluginResourceURL, browserClientCapabilities, webClient, gitWatchClient, systemPluginApi } from '../node_modules/.cache/webui-client/client.mjs';
 
 class Storage {
   data = new Map(); reads = 0;
@@ -417,6 +417,158 @@ test('context and caller cancellation discard bytes already queued in the HTTP b
 });
 
 const turn = () => new Promise((resolve) => setImmediate(resolve));
+async function withPluginClient(run) {
+  const originalWindow = globalThis.window;
+  const originalWebSocket = globalThis.WebSocket;
+  class Socket {
+    static OPEN = 1;
+    static instance;
+    readyState = 0;
+    sent = [];
+    listeners = new Map();
+    constructor() {
+      Socket.instance = this;
+      queueMicrotask(() => { this.readyState = Socket.OPEN; this.onopen(); });
+    }
+    addEventListener(event, handler) {
+      const handlers = this.listeners.get(event) ?? [];
+      handlers.push(handler); this.listeners.set(event, handlers);
+    }
+    send(raw) { this.sent.push(JSON.parse(raw)); }
+    receive(message) { this.onmessage({ data: JSON.stringify(message) }); }
+    close(code = 1000) {
+      this.readyState = 3; this.onclose({ code });
+      for (const handler of this.listeners.get('close') ?? []) handler({ code });
+    }
+  }
+  globalThis.window = { location: { protocol: 'https:', host: 'gateway.test', href: 'https://gateway.test/' },
+    localStorage: new Storage(), setTimeout, clearTimeout };
+  globalThis.WebSocket = Socket;
+  const host = browserClientCapabilities;
+  try {
+    await webClient.connect();
+    host.configure(declarations([websocket])); await turn();
+    await run(Socket.instance, host);
+  } finally {
+    host.setInvocationWaiter(() => Promise.resolve());
+    await webClient.disconnect(); host.invalidate(); await turn();
+    if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow;
+    globalThis.WebSocket = originalWebSocket;
+  }
+}
+
+for (const [name, read, payload, expected] of [
+  ['catalog', () => systemPluginApi.catalog('catalog'), { packages: [{ package_id: 'one' }] }, [{ package_id: 'one' }]],
+  ['mine', () => systemPluginApi.catalog('mine'), { packages: [] }, []],
+  ['show', () => systemPluginApi.show('pkg.one'), { package: { package_id: 'pkg.one' } }, { package_id: 'pkg.one' }],
+]) {
+  test(`plugin ${name} waits for ready and retries with a fresh request and credential`, async () => {
+    await withPluginClient(async (socket, host) => {
+      const pending = read(); await turn();
+      const first = socket.sent[0];
+      let finish;
+      host.setInvocationWaiter(() => new Promise((resolve) => { finish = resolve; }));
+      assert.equal(host.acceptOperation(operation({ credential: 'new' })), true);
+      await turn();
+      assert.equal(socket.sent.length, 1, 'no retry while the context is changing');
+      finish(); await turn();
+      assert.equal(socket.sent.length, 2);
+      const retry = socket.sent[1];
+      assert.notEqual(retry.id, first.id);
+      assert.equal(retry.method, first.method);
+      assert.deepEqual(retry.params, first.params);
+      assert.deepEqual(retry.request_context, { headers: { Authorization: 'Bearer new' } });
+      socket.receive({ type: 'res', id: retry.id, ok: true, payload });
+      assert.deepEqual(await pending, expected);
+    });
+  });
+}
+
+test('plugin reads retry at most once and preserve ordinary errors', async () => {
+  await withPluginClient(async (socket, host) => {
+    const pending = systemPluginApi.show('pkg.one');
+    const rejected = assert.rejects(pending, (error) => error.code === 'CONTEXT_CHANGED');
+    await turn(); host.configure(declarations([websocket])); await turn();
+    assert.equal(socket.sent.length, 2);
+    host.configure(declarations([websocket])); await rejected; await turn();
+    assert.equal(socket.sent.length, 2);
+    const denied = systemPluginApi.catalog('mine');
+    const deniedResult = assert.rejects(denied, (error) => error.code === 'AUTH_REQUIRED');
+    await turn();
+    socket.receive({ type: 'res', id: socket.sent[2].id, ok: false,
+      code: 'AUTH_REQUIRED', error: 'login required' });
+    await deniedResult; await turn();
+    assert.equal(socket.sent.length, 3);
+  });
+});
+
+test('plugin context waits release subscriptions and timers on ready and timeout', async () => {
+  await withPluginClient(async (socket, host) => {
+    const subscribe = host.subscribe;
+    const timers = new Map();
+    let active = 0;
+    host.subscribe = (listener) => {
+      active++;
+      const off = subscribe(listener);
+      return () => { active--; off(); };
+    };
+    window.setTimeout = (callback) => { const id = Symbol(); timers.set(id, callback); return id; };
+    window.clearTimeout = (id) => { timers.delete(id); };
+    try {
+      for (const timeout of [false, true]) {
+        const pending = systemPluginApi.catalog('catalog');
+        const rejected = timeout ? assert.rejects(pending, (error) => error.code === 'CONTEXT_CHANGED') : null;
+        await turn();
+        host.suspendConnection(); await turn();
+        assert.equal(active, 1);
+        assert.equal(timers.size, 1);
+        if (timeout) {
+          [...timers.values()][0](); await rejected;
+        } else {
+          host.configure(declarations([websocket])); await turn();
+          socket.receive({ type: 'res', id: socket.sent.at(-1).id, ok: true, payload: { packages: [] } });
+          assert.deepEqual(await pending, []);
+        }
+        assert.equal(active, 0);
+        assert.equal(timers.size, 0);
+      }
+    } finally {
+      host.subscribe = subscribe;
+      window.setTimeout = setTimeout; window.clearTimeout = clearTimeout;
+    }
+  });
+});
+
+test('plugin reads do not retry with unavailable declarations', async () => {
+  await withPluginClient(async (socket, host) => {
+    const pending = systemPluginApi.show('pkg.one');
+    const rejected = assert.rejects(pending, (error) => error.code === 'CONTEXT_CHANGED');
+    await turn();
+    assert.throws(() => host.configure({}));
+    await rejected; await turn();
+    assert.equal(socket.sent.length, 1);
+  });
+});
+
+for (const [name, write] of [
+  ['enable', () => systemPluginApi.setEnabled('pkg.one', true)],
+  ['disable', () => systemPluginApi.setEnabled('pkg.one', false)],
+  ['install', () => systemPluginApi.install('pkg.one')],
+  ['import', () => systemPluginApi.importPath('/package')],
+  ['uninstall', () => systemPluginApi.uninstall('pkg.one')],
+  ['reload', () => systemPluginApi.reload('pkg.one')],
+]) {
+  test(`plugin ${name} is never replayed after context cancellation`, async () => {
+    await withPluginClient(async (socket, host) => {
+      const pending = write();
+      const rejected = assert.rejects(pending, (error) => error.code === 'CONTEXT_CHANGED');
+      await turn(); host.configure(declarations([websocket]));
+      await rejected; await turn();
+      assert.equal(socket.sent.length, 1);
+    });
+  });
+}
+
 const reloadOperation = (extra = {}) => operation(undefined, { method: 'page.reload', params: {}, ...extra });
 async function setupReload(options = {}) {
   const app = await setup([], options);
