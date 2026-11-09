@@ -2389,6 +2389,113 @@ async def _initialize_team_agent_db(
         return False
 
 
+def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
+    """Re-encode team entry sandbox specs against THIS node's config (KD6).
+
+    The leader-side enrich built every entry's ``SysOperationSpec`` from the
+    LEADER's sandbox endpoint; serialized as-is, a remote teammate would point
+    its members at the leader's jiuwenbox. This gate runs on the teammate
+    process right before the spawn payload is cut: entry ids stay on the same
+    deterministic derivation (same team, same entry names) while
+    ``base_url``/mounts re-resolve locally, so each node runs its own
+    containers (registry and provider cache are process-local; equal ids never
+    collide across nodes).
+
+    Degradation matrix mirrors the leader side (design KD7): ``enabled=false``
+    silent; enterprise known-boundary info; endpoint unresolved or unsupported
+    type → loud warning, members stay LOCAL — or, when
+    ``sandbox.team_fail_closed`` is set, the member is rejected instead.
+
+    Idempotent: re-running only recomputes the same values.
+    """
+    from jiuwenswarm.common.config import (
+        get_sandbox_endpoint,
+        get_sandbox_runtime,
+        get_sandbox_team_fail_closed,
+    )
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    runtime = get_sandbox_runtime()
+    if not runtime.get("enabled"):
+        return  # expected configuration: silent
+    if is_enterprise():
+        logger.info(
+            "[RemoteMemberBootstrap] team members stay LOCAL: enterprise "
+            "sandbox isolation is a known boundary (team=%s)",
+            getattr(spec, "team_name", ""),
+        )
+        return
+
+    endpoint = get_sandbox_endpoint()
+    sandbox_url = str(endpoint.get("url") or "").strip()
+    sandbox_type = str(endpoint.get("type") or "").strip().lower()
+    if not sandbox_url or not sandbox_type or sandbox_type != "jiuwenbox":
+        reason = (
+            f"endpoint unresolved (type={sandbox_type}, url={sandbox_url})"
+            if not sandbox_url or not sandbox_type
+            else f"sandbox type {sandbox_type} not supported for team members yet"
+        )
+        if get_sandbox_team_fail_closed():
+            raise RuntimeError(
+                f"teammate refuses unsandboxed members (sandbox.team_fail_closed=true): {reason}"
+            )
+        logger.warning(
+            "[RemoteMemberBootstrap] team members stay LOCAL: %s (team=%s)",
+            reason,
+            getattr(spec, "team_name", ""),
+        )
+        return
+
+    from jiuwenswarm.agents.swarm.assembly import _entry_sandbox_slug
+    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+        _team_context_from_spec,
+        create_sandbox_sysop_card,
+    )
+    from openjiuwen.core.sys_operation import OperationMode
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    team_ctx = _team_context_from_spec(spec)
+    if team_ctx is None:
+        logger.warning(
+            "[RemoteMemberBootstrap] team members stay LOCAL: team context "
+            "unresolvable (team=%s)",
+            getattr(spec, "team_name", ""),
+        )
+        return
+    team_ctx["session_id"] = str(session_id or "")
+
+    for entry_name, agent_spec in list(spec.agents.items()):
+        entry_slug = _entry_sandbox_slug(str(getattr(spec, "team_name", "")), entry_name)
+        card = create_sandbox_sysop_card(
+            sandbox_url,
+            "jiuwenbox",
+            files_runtime=runtime.get("files"),
+            excluded_commands=runtime.get("excluded_commands"),
+            idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
+            idle_check_interval=runtime.get("idle_check_interval"),
+            fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
+            isolation_custom_id=entry_slug,
+            team_context=team_ctx,
+        )
+        if card is None:
+            continue  # builder already warned; entry stays LOCAL
+        spec.agents[entry_name] = agent_spec.model_copy(
+            update={
+                "sys_operation": SysOperationSpec(
+                    id=f"sandbox.{entry_slug}",
+                    mode=OperationMode.SANDBOX,
+                    gateway_config=card.gateway_config,
+                ),
+            }
+        )
+    logger.info(
+        "[RemoteMemberBootstrap] rebuilt team entry sandbox specs from local "
+        "config (entries=%d, team=%s)",
+        len(spec.agents),
+        getattr(spec, "team_name", ""),
+    )
+
+
 async def _ensure_dynamic_member_execution_loop(
     *,
     session_id: str,
@@ -2531,6 +2638,12 @@ async def _ensure_dynamic_member_execution_loop(
         if not leader_member_name:
             leader_spec = getattr(spec_obj, "leader", None)
             leader_member_name = str(getattr(leader_spec, "member_name", "") or "").strip()
+        # Re-encode the serialized leader-side sandbox specs against THIS
+        # process' config before the payload crosses into the member loop
+        # (design D-20261105-1041 KD6): each entry keeps the deterministic
+        # entry id (same derivation on both nodes) while base_url and mounts
+        # resolve locally, so the member runs in a container on its own node.
+        _rebuild_member_sandbox_gate(spec_obj, session_id=sid)
         payload = {
             "spec": spec_obj.model_dump(mode="json"),
             "context": teammate_ctx.model_dump(mode="json"),

@@ -3908,6 +3908,21 @@ def get_sandbox_runtime() -> dict[str, Any]:
     return _ensure_sandbox_runtime_shape(raw)
 
 
+def get_sandbox_team_fail_closed() -> bool:
+    """Read ``sandbox.team_fail_closed`` (default False).
+
+    When True, a distributed teammate whose local sandbox is unavailable is
+    rejected at bootstrap instead of degrading to LOCAL execution (design
+    D-20261105-1041 KD7): security-sensitive deployments refuse unsandboxed
+    remote members rather than warning.
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return False
+    return bool(sandbox.get("team_fail_closed", False))
+
+
 # ``preserve_file_sharing_mode`` 当前合法取值集合 = ``{"mount"}``; 空值表示
 # "未配置, 按默认走"。
 _VALID_PRESERVE_FILE_SHARING_MODES = ("mount",)
