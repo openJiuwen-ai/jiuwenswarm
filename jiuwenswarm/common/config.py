@@ -3645,16 +3645,15 @@ def migrate_config_from_template(
 
         # Deep merge: template provides defaults, user values preserved.
         # user_data is updated in place, which keeps comments and formatting.
-        template_extensions = template_data.get("extensions")
-        if (
-            "extensions" in user_data
-            and user_data["extensions"] is None
-            and isinstance(template_extensions, dict)
-            and template_extensions.get("extension_dirs") == "${EXTENSION_DIRS:-jiuwenswarm/extensions}"
-            and _has_local_team_config(user_data)
-        ):
-            # Environment-driven markers can resolve differently after a child reloads its dotenv files.
-            user_data["extensions"] = {}
+        if "extensions" in user_data and user_data["extensions"] is None:
+            template_extensions = template_data.get("extensions")
+            if (
+                isinstance(template_extensions, dict)
+                and template_extensions.get("extension_dirs") == "${EXTENSION_DIRS:-jiuwenswarm/extensions}"
+                and _has_local_team_config(user_data)
+            ):
+                # Environment-driven markers can resolve differently after a child reloads its dotenv files.
+                user_data["extensions"] = {}
         changes = _deep_merge(template_data, user_data, prune=prune)
 
         # Guard against an empty result overwriting a valid user config
