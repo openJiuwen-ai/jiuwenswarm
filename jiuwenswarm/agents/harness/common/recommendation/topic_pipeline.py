@@ -4178,6 +4178,15 @@ def _default_context_snapshot(
         if context_scope == GLOBAL_NEW_CHAT_SCOPE
         else ()
     )
+    completed_session_prefixes: list[CompletedSessionPrefix] = []
+    for session_id in sorted(completed_prefix_by_session):
+        if not _scope_matches(project_by_session.get(session_id), context_scope):
+            continue
+        if not _work_mode_matches(
+            work_mode_by_session.get(session_id), normalized_work_mode
+        ):
+            continue
+        completed_session_prefixes.append(completed_prefix_by_session[session_id])
     return V6ContextSnapshot(
         state=scoped_state,
         context_scope=context_scope,
@@ -4226,15 +4235,7 @@ def _default_context_snapshot(
                 project_by_session=project_by_session,
             )
         ),
-        completed_session_prefixes=tuple(
-            completed_prefix_by_session[session_id]
-            for session_id in sorted(completed_prefix_by_session)
-            if _scope_matches(project_by_session.get(session_id), context_scope)
-            and _work_mode_matches(
-                work_mode_by_session.get(session_id),
-                normalized_work_mode,
-            )
-        ),
+        completed_session_prefixes=tuple(completed_session_prefixes),
         state_maintenance_receipt=dict(state_receipt),
     )
 
@@ -4270,17 +4271,19 @@ def _news_only_successor(
         for candidate_id in (receipt.get("lineage") or {}).get("candidate_ids") or ():
             replaced.add(str(candidate_id))
 
+    replaced_ids = {str(item) for item in replaced if item is not None}
+
     def kept(candidate_ids: Iterable[Any]) -> bool:
         ids = {str(value) for value in candidate_ids}
-        return not ids or not ids <= {str(item) for item in replaced if item is not None}
+        return not ids or not ids <= replaced_ids
 
-    kept_predecessor = [
-        card
-        for card in predecessor_cards
-        if str(card["card_id"]) not in {str(item) for item in replaced if item is not None}
-        and not is_cold_start_card(card)
-        and not card_is_news(card)
-    ]
+    kept_predecessor: list[Mapping[str, Any]] = []
+    for card in predecessor_cards:
+        if str(card["card_id"]) in replaced_ids:
+            continue
+        if is_cold_start_card(card) or card_is_news(card):
+            continue
+        kept_predecessor.append(card)
     news_id = str(news["candidate_id"])
     trigger_key = predecessor["generation_trigger_key"]
     evidence_receipt = news.get("evidence_receipt")

@@ -454,7 +454,8 @@ def build_ark_stage_invoker(
                 refusal = getattr(message, "refusal", None)
                 content = getattr(message, "content", None)
             else:
-                assert model is not None
+                if model is None:
+                    raise RuntimeError("recommendation model is not configured")
                 invoke_kwargs: dict[str, Any] = {
                     "temperature": config.effective_temperature,
                     "top_p": config.effective_top_p,
