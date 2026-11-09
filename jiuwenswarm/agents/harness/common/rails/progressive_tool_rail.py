@@ -954,19 +954,42 @@ class ProgressiveToolRail(DeepAgentRail):
         # （如 AgentModeRail 按陈旧 mode 过滤）或注册丢失——只告警不回注：
         # 盲目回注会绕过 85 号 mode rail 的过滤语义（normal 态重新外泄
         # plan 工具）。
-        missing_eager = sorted(
-            name for name in self.eager_tools if name and name not in input_tool_names
-        )
-        if missing_eager:
-            logger.warning(
-                "%s eager tools missing from filter input: %s "
-                "(upstream tool-list rewrite or registration loss suspected)",
-                _LOG_PREFIX,
-                missing_eager,
+        #
+        # 仅 plan 态校验（评审 2026-11-09）：normal 态 enter/exit_plan_mode
+        # 由 AgentModeRail 按设计过滤、switch_mode 由 WorkAgentModeRail 过滤，
+        # 缺席是预期行为，全态比对会在热路径每轮固定误报、淹没真信号。
+        # plan 态三个 eager 工具均应可见，缺席即真异常（stale normal 竞速
+        # 丢失恰好落在该窗口）。读不了 plan 态时不校验，宁漏不误。
+        if self._plan_mode_active_for_check(agent, ctx):
+            missing_eager = sorted(
+                name for name in self.eager_tools if name and name not in input_tool_names
             )
+            if missing_eager:
+                logger.warning(
+                    "%s eager tools missing from filter input: %s "
+                    "(upstream tool-list rewrite or registration loss suspected)",
+                    _LOG_PREFIX,
+                    missing_eager,
+                )
 
         if lazy_load_active:
             await self._add_navigation_section(ctx)
+
+    @staticmethod
+    def _plan_mode_active_for_check(agent: Any, ctx: Any) -> bool:
+        """会话是否处于 plan 态（eager 缺席校验的前置条件）。
+
+        与 ``AgentModeRail`` 同一读取路径（``agent.load_state(session).
+        plan_mode``）；读不到状态一律 False——校验是告警防线，宁漏不误。
+        """
+        session = getattr(ctx, "session", None)
+        if session is None or agent is None:
+            return False
+        try:
+            plan_mode = agent.load_state(session).plan_mode
+        except Exception:  # noqa: BLE001
+            return False
+        return getattr(plan_mode, "mode", "") == "plan"
 
     def _order_tools_by_eager_list(self, tools: list[Any]) -> list[Any]:
         """Stable-sort filtered tools to match ``self.eager_tools`` order."""

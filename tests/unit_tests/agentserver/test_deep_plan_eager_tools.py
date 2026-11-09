@@ -135,3 +135,57 @@ async def test_plan_eager_additions_do_not_bypass_disabled_tools():
         None, InvokeToolInput(tool_name="exit_plan_mode", arguments={})
     )
     assert result["success"] is False
+
+
+# ── ②号防线：eager 缺席告警仅 plan 态生效（评审 2026-11-09）────────────────
+
+
+def _context_with_plan_state(rail, cards, plan_mode: str):
+    """ctx 带会话 plan 态：agent.load_state(session).plan_mode.mode 可注入。"""
+    agent = SimpleNamespace(
+        model_name="glm-5",
+        ability_manager=SimpleNamespace(list=lambda: list(cards)),
+        system_prompt_builder=None,
+        load_state=lambda session: SimpleNamespace(  # noqa: ARG005
+            plan_mode=SimpleNamespace(mode=plan_mode)
+        ),
+    )
+    rail.init(agent)
+    return SimpleNamespace(
+        agent=agent,
+        session=SimpleNamespace(),
+        inputs=SimpleNamespace(tools=list(cards)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_eager_missing_warning_silent_in_normal_mode(caplog):
+    """normal 态 plan 工具缺席是 mode rail 设计内过滤 → 不告警。"""
+    import logging
+
+    rail = _rail("agent")
+    # 输入里无 plan 三工具（模拟 mode rail 已按 normal 过滤）
+    cards = [_card("tools_search"), _card("read_file")]
+    ctx = _context_with_plan_state(rail, cards, plan_mode="normal")
+
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.agents.harness.common.rails.progressive_tool_rail"):
+        await rail.before_model_call(ctx)
+
+    assert not any("eager tools missing" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_eager_missing_warning_fires_in_plan_mode(caplog):
+    """plan 态 eager 工具缺席即真异常（stale normal 竞速签名）→ 告警。"""
+    import logging
+
+    rail = _rail("agent")
+    cards = [_card("tools_search"), _card("read_file")]
+    ctx = _context_with_plan_state(rail, cards, plan_mode="plan")
+
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.agents.harness.common.rails.progressive_tool_rail"):
+        await rail.before_model_call(ctx)
+
+    warnings = [r for r in caplog.records if "eager tools missing" in r.message]
+    assert warnings
+    assert "enter_plan_mode" in warnings[0].getMessage()
