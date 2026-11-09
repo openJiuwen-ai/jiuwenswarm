@@ -20,7 +20,9 @@ REPL_DESCRIPTION = (
     "task. Await operations sequentially. Use print_image for screenshots and explicitly read "
     "to verify actions. Use references and coordinates from this tool; inspect a returned "
     "image before choosing coordinates in a later call. After errors, observe before retrying "
-    "actions that may already have executed."
+    "actions that may already have executed. If the native session is retired or requires "
+    "computer_use_reset, use cua_repl_reset, then recreate variables and observe. Ordinary "
+    "Python errors do not require resetting the session."
 )
 
 
@@ -100,6 +102,47 @@ class CuaReplTool(Tool):
     @staticmethod
     def _error(detail):
         return ToolOutput(success=False, data={"content": detail}, error=detail)
+
+    async def stream(self, inputs, **kwargs):
+        yield await self.invoke(inputs, **kwargs)
+
+
+class CuaReplResetTool(Tool):
+    """Expose the engine's explicit reset without accepting or replaying code."""
+
+    def __init__(self, repl: CuaReplTool, owner: str):
+        super().__init__(ToolCard(
+            id=owner + ".cua_repl_reset", name="cua_repl_reset",
+            description=(
+                "Reset a retired or unusable cua_repl session and wait for native cleanup. "
+                "Clears Python variables, App/Window/Element handles and observations; does not "
+                "undo completed actions or replay code. After success, recreate variables in "
+                "cua_repl and observe before deciding what remains. If cleanup is pending, "
+                "retry this reset; no REPL code is allowed until cleanup is confirmed."
+            ),
+            input_params={"type": "object", "properties": {}, "additionalProperties": False},
+            parallel_safe=False, stateless=False, idempotent=True,
+        ))
+        # Follow the existing tool when its rail replaces a delegated runtime.
+        self.repl = repl
+
+    async def invoke(self, inputs: Any, **kwargs):
+        if not isinstance(inputs, dict) or inputs:
+            return self.repl._error("cua_repl_reset expects an empty object. No reset or code was executed.")
+        runtime = self.repl.runtime
+        try:
+            async with desktop_lane().acquire(recovery_owner=runtime):
+                result = convert_result(await runtime.reset())
+                if result.success:
+                    self.repl.last_failed_code, self.repl.same_failures = None, 0
+                return result
+        except asyncio.CancelledError as cancelled:
+            try:
+                await asyncio.shield(runtime.close())
+            finally:
+                raise cancelled
+        except Exception as error:
+            return self.repl._error(str(error) + " No code was executed or replayed.")
 
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)
