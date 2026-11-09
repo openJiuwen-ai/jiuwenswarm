@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-06 |
+| 最近修订 | 2026-11-07 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md) |
 
@@ -165,10 +165,10 @@ EXE、DMG 使用现有后端程序的 `extension` 分发，参数与结果使用
 | 命令参数 | 语义 |
 | --- | --- |
 | `install <ZIP>` | 读取最终 ZIP 的 ID、版本与 `package.domain`，再交给对应的运行宿主安装 |
-| `query [package_id]` | 查询选定宿主；缺省 domain 为 agentserver |
-| `reload <package_id>` | 从选定宿主的安装副本重载 |
-| `uninstall <package_id>` | 卸载选定宿主中的包 |
-| `--domain agentserver/gateway` | install 与 ZIP 声明必须一致；其它操作用于选择宿主 |
+| `query [package_id]` | 无包 ID 时合并两个宿主的状态；有包 ID 时按包归属查询 |
+| `reload <package_id>` | 按包归属从安装副本重载 |
+| `uninstall <package_id>` | 按包归属卸载包或未生效副本 |
+| `--domain agentserver/gateway` | install 与 ZIP 声明必须一致；其它操作可显式指定宿主 |
 | `--json` | 结构化输出；当前默认也输出 JSON |
 | `--timeout <seconds>` | 每次本机请求的超时，缺省为配置的依赖等待上限加 30 秒，必须为正的有限数 |
 | `--server-path <ZIP>` | 宿主已可读取的绝对路径；不执行上传 |
@@ -185,6 +185,11 @@ Gateway 与 AgentServer 分别保存自己的记录，位置为数据目录下�
 本机入口只接受四种管理操作，校验随机密钥、实例标识与包的 domain 后，调用已装配的管理器。
 该入口供当前操作系统账号使用，不提供远程用户授权；Web 请求继续使用原登录和路由规则。
 关闭入口时撤销连接记录，旧连接信息不能用于重新启动的宿主。
+
+未传 `--domain` 时，本机 CLI 与 Web `/extension` 使用相同的路由语义：install 按 ZIP 的
+`package.domain` 选择宿主；无参数 query 汇总 Gateway 和 AgentServer 状态；带包 ID 的 query、reload 和
+uninstall 先检查 Gateway 是否拥有安装副本，否则由 AgentServer 处理。显式 `--domain` 保留为调用方固定
+选择宿主的兼容入口。
 
 ### 5.2 结果与失败
 

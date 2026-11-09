@@ -26,6 +26,7 @@ class SystemPromptPriority(IntEnum):
 
     # Tool, skill, and orchestration policy.
     TOOLS = 30
+    EXTENSION_PACKAGE_MANAGEMENT = 32
     SKILLS = 40
     SYMPHONY = 42
     TTSE_FACTS_TIPS = 43
@@ -88,6 +89,7 @@ _SECTION_PRIORITIES = MappingProxyType({
     "identity": SystemPromptPriority.IDENTITY,
     "safety": SystemPromptPriority.SAFETY,
     "tools": SystemPromptPriority.TOOLS,
+    "extension_package_management": SystemPromptPriority.EXTENSION_PACKAGE_MANAGEMENT,
     "skills": SystemPromptPriority.SKILLS,
     "ttse_facts_tips": SystemPromptPriority.TTSE_FACTS_TIPS,
     "memory": SystemPromptPriority.MEMORY,
