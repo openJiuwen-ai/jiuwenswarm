@@ -263,7 +263,6 @@ async def test_busy_session_gives_up_after_retries(monkeypatch):
     assert run_stream.await_count == 0
     assert pec._pending == {}
 
-@pytest.mark.asyncio
 
 @pytest.mark.asyncio
 async def test_resolve_language_prefers_agent_builder(monkeypatch):
