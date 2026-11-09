@@ -65,6 +65,7 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     SandboxInfo,
     YuanrongAgentApiError,
+    YuanrongAgentCreateUncertainError,
     YuanrongAgentDeleteRejectedError,
     YuanrongAgentGenerationMismatchError,
     YuanrongAgentNotFoundError,
@@ -4321,7 +4322,7 @@ async def test_mismatched_replacement_generation_stays_pending(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("recovered", [False, True])
-async def test_ambiguous_create_timeout_never_blindly_reposts(tmp_path, recovered):
+async def test_ambiguous_create_timeout_replays_only_the_same_name(tmp_path, recovered):
     (tmp_path / 'u1').mkdir()
     posts = []
 
@@ -4331,13 +4332,13 @@ async def test_ambiguous_create_timeout_never_blindly_reposts(tmp_path, recovere
 
         async def create_sandbox(self, **kwargs):
             posts.append(kwargs)
-            raise YuanrongAgentTimeoutError('response lost')
+            if len(posts) == 1 or not recovered:
+                raise YuanrongAgentTimeoutError('response lost')
+            return SandboxInfo(deterministic_agent_instance_id('default', kwargs['name']))
 
         async def wait_until_running(self, candidate, *, expected_generation, deadline):
             assert candidate == deterministic_agent_instance_id('default', posts[0]['name'])
             assert expected_generation == posts[0]['env_vars'][AGENT_GENERATION_ENV]
-            if not recovered:
-                raise YuanrongAgentNotVisibleError('not visible')
             return {'status': 'running'}
 
         async def disconnect(self):
@@ -4356,7 +4357,9 @@ async def test_ambiguous_create_timeout_never_blindly_reposts(tmp_path, recovere
         else:
             with pytest.raises(AgentRebuildPending):
                 await manager.get_or_create_agent('u1', 'jiuwenswarm', creator=router._create_agent)
-        assert len(posts) == 1
+        # The replay never mints a new generation that could orphan the first POST.
+        assert len(posts) == 2
+        assert posts[1] == posts[0]
     finally:
         await router.shutdown()
 
@@ -4665,24 +4668,68 @@ async def test_create_that_was_not_sent_can_be_retried(recovery_router):
         await router.shutdown()
 
 
-async def test_uncertain_create_remains_pending_until_visible_without_reposting(recovery_router):
+@pytest.mark.parametrize("failures", [1, 3])
+@pytest.mark.parametrize("error", [
+    YuanrongAgentTimeoutError("response lost"),
+    # A definite rejection (e.g. workspace not prepared) also arrives as an
+    # uncertain HTTP 500 with an empty body.
+    YuanrongAgentCreateUncertainError("create agent result uncertain: http_status=500"),
+])
+async def test_uncertain_create_is_replayed_with_the_same_name(recovery_router, failures, error):
     router, frontend, _ = recovery_router()
-    frontend.create_sandbox.side_effect = YuanrongAgentTimeoutError("response lost")
-    frontend.wait_until_running.side_effect = [
-        YuanrongAgentNotVisibleError("not visible"),
-        YuanrongAgentNotVisibleError("still not visible"),
-        {"status": "running"},
-    ]
-    try:
-        for _ in range(3):
-            with pytest.raises(AgentRebuildPending):
-                await _create_recovery_runtime(router)
-            frontend.create_sandbox.assert_awaited_once()
+    posts = []
 
-        instance_id = deterministic_agent_instance_id("default", frontend.create_sandbox.await_args.kwargs["name"])
-        assert (await _create_recovery_runtime(router)).info.sandbox_id == instance_id
-        frontend.create_sandbox.assert_awaited_once()
-        assert [call.args for call in frontend.wait_until_running.await_args_list] == [(instance_id,)] * 3
+    async def create(**kwargs):
+        posts.append(kwargs)
+        if len(posts) <= failures:
+            raise error
+        return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
+
+    frontend.create_sandbox.side_effect = create
+    try:
+        for count in range(1, failures + 1):
+            with pytest.raises(AgentRebuildPending, match="unknown"):
+                await _create_recovery_runtime(router)
+            assert len(posts) == count  # Each request replays instead of only polling.
+
+        runtime = await _create_recovery_runtime(router)
+        # Same name, payload and generation: the backend deduplicates by name.
+        assert len(posts) == failures + 1
+        assert all(post == posts[0] for post in posts)
+        instance_id = deterministic_agent_instance_id("default", posts[0]["name"])
+        assert runtime.info.sandbox_id == instance_id
+        assert [call.args for call in frontend.wait_until_running.await_args_list] == [(instance_id,)]
+        lifecycle = router._sandbox_lifecycles.get("user+jiuwenswarm")
+        assert lifecycle is None or lifecycle.attempt is None
+    finally:
+        await router.shutdown()
+
+
+async def test_rejected_replay_retires_the_name_and_starts_a_new_generation(recovery_router):
+    router, frontend, _ = recovery_router()
+    posts = []
+
+    async def create(**kwargs):
+        posts.append(kwargs)
+        if len(posts) == 1:
+            raise YuanrongAgentTimeoutError("response lost")
+        if len(posts) == 2:
+            raise YuanrongAgentApiError("agent API failed: http_status=400")
+        return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
+
+    frontend.create_sandbox.side_effect = create
+    try:
+        with pytest.raises(AgentRebuildPending, match="unknown"):
+            await _create_recovery_runtime(router)
+        with pytest.raises(AgentRebuildPending, match="rejected"):
+            await _create_recovery_runtime(router)
+        assert posts[1] == posts[0]
+        retired_id = deterministic_agent_instance_id("default", posts[0]["name"])
+        assert (retired_id,) in [call.args for call in frontend.delete_sandbox.await_args_list]
+
+        runtime = await _create_recovery_runtime(router)
+        assert posts[2]["name"] != posts[0]["name"]
+        assert runtime.info.sandbox_id == deterministic_agent_instance_id("default", posts[2]["name"])
     finally:
         await router.shutdown()
 
