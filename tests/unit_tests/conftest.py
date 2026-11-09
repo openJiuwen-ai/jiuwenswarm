@@ -22,6 +22,7 @@ import asyncio
 import os
 import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -173,36 +174,22 @@ def pytest_runtest_setup(item) -> None:
         _utils.get_agent_workspace_dir = _REAL_GET_AGENT_WORKSPACE_DIR
 
 
-def _close_orphaned_event_loop() -> None:
-    """Close a current-thread event loop left over after a test.
+@pytest.fixture(scope="session")
+def event_loop_policy(
+    event_loop_policy: asyncio.AbstractEventLoopPolicy,
+) -> Iterator[asyncio.AbstractEventLoopPolicy]:
+    """Prevent implicit loop creation before pytest-asyncio enters its runner."""
+    if sys.version_info >= (3, 14):
+        yield event_loop_policy
+        return
 
-    Sync tests calling ``asyncio.run()`` reset the current loop to ``None``
-    (``asyncio.Runner.close`` -> ``set_event_loop(None)``). The next async
-    test then makes pytest-asyncio's scoped-runner fixture call
-    ``asyncio.get_event_loop()`` while swapping loop policies, which silently
-    *creates* a loop that nobody ever closes. A later ``asyncio.run()``
-    dereferences that orphan and its ``__del__`` raises "unclosed event
-    loop" during whichever test happens to be running
-    (PytestUnraisableExceptionWarning, promoted to an error by
-    ``filterwarnings = error``). Closing the orphan deterministically after
-    every test removes the GC-timing flake.
-    """
+    # pytest-asyncio looks up the current loop before installing its runner.
+    # On older Python versions, a fresh policy may create an unowned loop on
+    # that lookup. Explicitly start with no current loop in an isolated policy.
+    policy = asyncio.DefaultEventLoopPolicy()
+    policy.set_event_loop(None)
+    asyncio.set_event_loop_policy(policy)
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        return
-    if loop.is_running():
-        return
-    if not loop.is_closed():
-        loop.close()
-    asyncio.set_event_loop(None)
-
-
-@pytest.hookimpl(wrapper=True, tryfirst=True)
-def pytest_runtest_teardown(item, nextitem):
-    # tryfirst + wrapper: run after all fixture finalizers, so the
-    # pytest-asyncio scoped runner has already exited and restored (if any)
-    # the orphaned loop as the current one.
-    result = yield
-    _close_orphaned_event_loop()
-    return result
+        yield policy
+    finally:
+        asyncio.set_event_loop_policy(event_loop_policy)
