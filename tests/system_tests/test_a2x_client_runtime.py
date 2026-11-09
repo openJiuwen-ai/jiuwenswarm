@@ -157,6 +157,9 @@ class _FakeAbilityManager:
     def remove(self, name: str) -> None:
         self.cards = [card for card in self.cards if getattr(card, "name", "") != name]
 
+    def teardown_tools(self) -> None:
+        self.cards.clear()
+
 
 async def _create_adapter_and_run_chat(config_base: dict) -> SimpleNamespace:
     """Create adapter, run one chat turn via interaction attach/send_input path.
@@ -178,11 +181,17 @@ async def _create_adapter_and_run_chat(config_base: dict) -> SimpleNamespace:
         card=SimpleNamespace(id="jiuwenswarm", name="main_agent"),
         ensure_initialized=AsyncMock(),
         start=AsyncMock(),
+        stop=AsyncMock(),
         register_rail=AsyncMock(),
         unregister_rail=AsyncMock(),
-        react_agent=SimpleNamespace(register_callback=AsyncMock()),
+        react_agent=SimpleNamespace(
+            register_callback=AsyncMock(),
+            context_engine=SimpleNamespace(get_context=MagicMock(return_value=None)),
+        ),
         attach_output=AsyncMock(return_value=_FakeInteractionStream()),
         send_input=AsyncMock(),
+        is_invoke_active=False,
+        active_round=None,
         goal_manager=None,
         # A real DeepAgent always carries one, and the adapter registers its
         # session-stable tools through it while preparing the turn.
