@@ -88,19 +88,21 @@ test('composition resolves three levels regardless of declaration order and isol
   assert.equal(JSON.stringify(base), before);
 });
 
-test('a Gateway extension menu after the host Extensions module lands right after it (Gateway S_10)', () => {
+test('Gateway plugin settings work without a native Extensions menu (Gateway S_10)', () => {
   const module = (id) => ({ id, titleKey: id, icon: 'svg', sections: [{ id: 'main', items: [{ id: `${id}-native`, component: 'custom', render: () => null }] }] });
   const accessPolicy = { evaluate: () => ({ level: 'editable' }) };
-  const base = { id: 'test', compositionMode: 'base', accessPolicy, modules: ['general', 'extensions', 'experimental'].map(module) };
+  const base = { id: 'test', compositionMode: 'base', accessPolicy, modules: ['general', 'experimental'].map(module) };
   const item = (id) => ({ id, component: 'custom', render: () => null });
-  const result = composePluginSettings(base, [
-    { kind: 'menu', value: { id: 'theme::menu', titleKey: 'theme', icon: 'svg', sections: [] }, location: { after: 'extensions' } },
-    { kind: 'section', value: { id: 'theme::section', items: [] }, location: { menu: 'theme::menu' } },
-    { kind: 'item', value: item('theme::main'), location: { menu: 'theme::menu', section: 'theme::section' } },
-  ]);
-  assert.deepEqual(ids(result.definition.modules), ['general', 'extensions', 'theme::menu', 'experimental']);
-  assert.deepEqual(ids(result.definition.modules[2].sections[0].items), ['theme::main']);
-  assert.deepEqual(result.errors, []);
+  for (const location of [{}, { after: 'extensions' }]) {
+    const result = composePluginSettings(base, [
+      { kind: 'menu', value: { id: 'theme::menu', titleKey: 'theme', icon: 'svg', sections: [] }, location },
+      { kind: 'section', value: { id: 'theme::section', items: [] }, location: { menu: 'theme::menu' } },
+      { kind: 'item', value: item('theme::main'), location: { menu: 'theme::menu', section: 'theme::section' } },
+    ]);
+    assert.deepEqual(ids(result.definition.modules), ['general', 'experimental', 'theme::menu']);
+    assert.deepEqual(ids(result.definition.modules[2].sections[0].items), ['theme::main']);
+    assert.deepEqual(result.errors, []);
+  }
 });
 
 test('catalog validates location and translations and canonicalizes package order', () => {

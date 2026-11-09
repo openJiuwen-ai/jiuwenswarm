@@ -469,29 +469,7 @@
       "personalContext": "知识",
       "archivedTasks": "已归档的任务",
       "experimental": "实验功能",
-      "extensions": "扩展",
       "systemPluginRecovery": "系统插件还原"
-    },
-    "extensions": {
-      "description": "扩展提供的启动开场：播放顺序与停用",
-      "unavailable": "扩展服务未连接",
-      "loading": "正在读取…",
-      "splash": {
-        "title": "启动开场",
-        "orderTitle": "播放顺序",
-        "description": "多个扩展提供开场时，按此顺序依次播放。停用只影响开场，不影响该扩展的背景与配色。",
-        "empty": "没有提供开场的扩展。",
-        "skippable": "可跳过，最长 {{seconds}} 秒",
-        "notSkippable": "不可跳过，最长 {{seconds}} 秒",
-        "moveUp": "上移 {{name}}",
-        "moveDown": "下移 {{name}}",
-        "toggle": "播放 {{name}} 的开场",
-        "defaultOrder": "当前为默认顺序：当前外观所属的扩展优先，其余按安装顺序。",
-        "customOrder": "当前为自定义顺序。",
-        "reset": "恢复默认顺序",
-        "loadFailed": "无法读取开场设置",
-        "saveFailed": "保存开场设置失败"
-      }
     },
     "feedback": {
       "loadFailed": "设置加载失败",

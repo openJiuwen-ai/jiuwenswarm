@@ -6,8 +6,8 @@
 | --- | --- |
 | 类型 | spec |
 | 编号 / slug | `S_10 / application-settings` |
-| 所属模块 | Gateway `webui/`（设置槽位、宿主方法、开场偏好、导入与导出）、`management/`（包释放前关闭开场）；`channels/web/app_web.py`（导入与导出的转发）；Web 前端 `features/settings/`（“扩展”模块与插件设置项）与 `features/webui/`（`FileImport`、导入导出服务、开场顺序） |
-| 最近一次修订日期 | 2026-11-07 |
+| 所属模块 | Gateway `webui/`（设置槽位、宿主方法、开场偏好、导入与导出）、`management/`（包释放前关闭开场）；`channels/web/app_web.py`（导入与导出的转发）；Web 前端 `features/settings/`（插件设置贡献）与 `features/webui/`（`FileImport`、导入导出服务、开场顺序） |
+| 最近一次修订日期 | 2026-11-09 |
 | 契约状态 | 已实现（2026-11-05 修订：导入与导出对远程浏览器同样开放；2026-11-06 修订：插件设置页在设置导航中单独成项；2026-11-07 修订：标题取 `display.name` 并按语言显示；插件设置改用 S_18 共享目录，移除 `application.settings.page` 与 `webui.settings.pages`） |
 | 关联文档 | [F_13](../features/F_13_application-settings-page.md)、[S_09 启动门控与开场](S_09_startup-splash.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_01 运行时](S_01_gateway-extension-runtime.md)、[S_17 组件属性](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) §4.25 |
 
@@ -36,7 +36,7 @@ manifest `ui.items` 中 `slot=application.settings`，`kind` 为 menu / section 
     "apiVersion": 1,
     "items": [
       { "type": "web.slot.contribution", "slot": "application.settings", "id": "menu", "kind": "menu",
-        "location": { "after": "extensions" }, "title": { "zh": "主题背景", "en": "Theme background" }, "icon": "image" },
+        "location": {}, "title": { "zh": "主题背景", "en": "Theme background" }, "icon": "image" },
       { "type": "web.slot.contribution", "slot": "application.settings", "id": "section", "kind": "section",
         "location": { "menu": "workswarm-theme::menu" }, "title": { "zh": "主题", "en": "Themes" } },
       { "type": "web.slot.contribution", "slot": "application.settings", "id": "page",
@@ -52,7 +52,7 @@ manifest `ui.items` 中 `slot=application.settings`，`kind` 为 menu / section 
 | 字段校验 | 与 AgentServer `parse_settings` 相同；两侧共用 `tests/fixtures/settings_contribution_cases.json`。不合法时包发布失败。`instanceKey` 的规则与渲染、交互、文件导入相同（[S_02 第 4 节](S_02_ui-render.md)），可以声明的键在 Gateway 上都能渲染、交互和导入 |
 | 范围 | Gateway 配置项必须显式声明 `scope: "application"`（S_18 的缺省值是 session，Gateway 不寻址会话） |
 | 目录 | `webui.settings.catalog` 由 Gateway 先取 AgentServer 的目录，再追加 Gateway 活动包的声明，`revision` 覆盖两者；没有 Gateway 声明时原样返回 AgentServer 的应答。AgentServer 目录取不到时整次请求失败，浏览器保留上次目录并提示（S_18 第 4 节） |
-| 位置 | 按 S_18 的 location 规则合成；插件菜单通常写 `location.after: "extensions"`，排在宿主“扩展”模块之后。“扩展”模块只含宿主功能（第 4 节的开场顺序与停用） |
+| 位置 | 按 S_18 的 location 规则合成；宿主不预置“扩展”设置菜单或启动开场设置页。插件可声明自己的菜单，或向已有菜单、分类贡献配置项。菜单使用 `location: {}` 时追加；旧声明中的 `after: "extensions"` 按 S_18 的缺失锚点规则追加，不建立空的宿主菜单 |
 | 分派 | `application.settings` 与 AgentServer 包共用。Gateway 只认领 `package_id` 属于 Gateway 活动包、且实例键是该包已声明配置项的帧，其余照常转发给 AgentServer |
 | 交互 | 挂载时发送 `ui.ready`（载荷为空对象）；该帧与之后的交互都经 `gateway.request`，受请求策略约束，不是平台帧。设置页只在门控开放之后可达（S_09 第 5 节） |
 
