@@ -1285,6 +1285,7 @@
           "vote": "Review vote",
           "revision": "Rework requested",
           "verified": "Review passed",
+          "completed": "Task completed",
           "cancelled": "Task cancelled",
           "escalated": "Review escalated",
           "anomaly": "Dispatch anomaly",
