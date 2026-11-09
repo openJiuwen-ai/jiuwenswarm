@@ -1019,6 +1019,39 @@ def _equipment_workspace(agent_workspace: Path | None = None) -> Path:
     return agent_workspace if agent_workspace is not None else get_agent_workspace_dir()
 
 
+def _usable_agent_group_home(*, agent_workspace: Path | None = None) -> Path | None:
+    """Home a prompt or a write may use, or None when enterprise has no real tenant.
+
+    Personal edition uses the domain data root. Enterprise uses the bound
+    tenant root only when the key is not the empty-identity default
+    (``build_tenant_key()``). Unbound and default-key calls return None.
+    """
+    if agent_workspace is not None:
+        return agent_workspace.parent.parent
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not is_enterprise():
+        return get_domain_data_dir()
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_paths import build_tenant_key
+
+    root = TenantContext.current_tenant_root()
+    key = TenantContext.current_tenant_key()
+    if root is None or not key or key == build_tenant_key():
+        return None
+    return root
+
+
+def _reject_unscoped_agent_group_write() -> None:
+    """Refuse agent-group mutations that would land in a shared or default home."""
+    if _usable_agent_group_home() is not None:
+        return
+    raise AgentGroupPackageError(
+        "agent_group requires a bound tenant",
+        "AGENT_GROUP_TENANT_REQUIRED",
+    )
+
+
 def _agent_group_home(*, agent_workspace: Path | None = None) -> Path:
     """Home directory that owns ``.agent_teams/agent_groups``.
 
@@ -1027,6 +1060,8 @@ def _agent_group_home(*, agent_workspace: Path | None = None) -> Path:
     tenant ``domain/workspace_{tk}``. ``get_domain_data_dir()`` is always the
     default domain and would drop the tenant, so it is only the personal
     fallback. An unbound enterprise call must not fall back to that default.
+    Reads still resolve the default tenant key; writes use
+    ``_reject_unscoped_agent_group_write``.
     """
     if agent_workspace is not None:
         return agent_workspace.parent.parent
@@ -4085,6 +4120,7 @@ def create_agent_group(params: dict) -> dict:
     """Create an uninstalled AgentGroup definition under .agent_teams."""
     from openjiuwen.agent_teams.experts import load_agent_group_package
 
+    _reject_unscoped_agent_group_write()
     if not isinstance(params, dict):
         raise ValueError("invalid params")
     for forbidden in ("model", "mcps", "pluginNames", "apiKey", "apiBase", "path"):
@@ -4539,6 +4575,7 @@ def import_agent_template(params: dict) -> dict:
 
 def import_agent_group(params: dict) -> dict:
     """Import and install one AgentGroup definition."""
+    _reject_unscoped_agent_group_write()
     result = _import_package_from_path(
         params,
         kind=_AGENT_GROUP_KIND,
@@ -4634,6 +4671,7 @@ def install_agent_group(params: dict) -> None:
     """Install a validated AgentGroup definition."""
     from openjiuwen.agent_teams.experts import load_agent_group_package
 
+    _reject_unscoped_agent_group_write()
     package_id = _lifecycle_package_id(params, "agent_group")
     _require_package_allowed("agent_group", package_id)
     resolved = _resolve_agent_group_definition_dir(package_id)
@@ -4652,19 +4690,19 @@ def install_agent_group(params: dict) -> None:
 
 
 def ensure_builtin_agent_groups_installed() -> list[str]:
-    """Install every AgentGroup shipped on the packaged shelf that was never seeded.
+    """Install shelf AgentGroups that were never seeded.
 
-    Personal edition seeds at process start, into the single data root.
-    Enterprise has no tenant at process start, so that call returns without
-    touching the shared data root. A shelf package is seeded once per home
-    (recorded in ``.builtin_seeded``); an explicit uninstall is respected
-    instead of being undone by the next seed. A broken shelf entry is
-    logged, never raised. A local package of the same name wins.
+    Personal edition seeds at process start, into the single domain data root.
+    A shelf package is seeded once on that root (recorded in ``.builtin_seeded``);
+    an explicit uninstall is respected instead of being undone by the next seed.
+    Enterprise never seeds builtin agent groups, whether or not a tenant is
+    bound. Groups there come from plaza installs. Returning here avoids writing
+    the shared domain root. A broken shelf entry is logged, never raised.
+    A local package of the same name wins.
     """
     from jiuwenswarm.enterprise.edition import is_enterprise
-    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
-    if is_enterprise() and TenantContext.current_tenant_root() is None:
+    if is_enterprise():
         return []
     marker_path = _kind_root(_AGENT_GROUP_KIND) / ".builtin_seeded"
     try:
@@ -4810,6 +4848,7 @@ def uninstall_agent_template(params: dict) -> None:
 
 def uninstall_agent_group(params: dict) -> None:
     """Uninstall an AgentGroup definition without touching runtime Teams."""
+    _reject_unscoped_agent_group_write()
     requested_id = _lifecycle_package_id(params, "agent_group")
     store = _hub_install_state_store(_AGENT_GROUP_KIND)
     record = store.get(requested_id) or store.get_by_package_id(requested_id)

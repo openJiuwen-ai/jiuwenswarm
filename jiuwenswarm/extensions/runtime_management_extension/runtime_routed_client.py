@@ -789,9 +789,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                         )
                         if new_route_id:
                             touch_state["route_id"] = new_route_id
-                self._ensure_deferred_keepalive(
-                    chunk, session_id, touch_state["route_id"]
-                )
+                self._ensure_deferred_keepalive(chunk, session_id, touch_state)
                 yield chunk
         finally:
             if keepalive_task is not None:
@@ -812,12 +810,13 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self,
         chunk: AgentResponseChunk,
         session_id: str,
-        route_id: str,
+        touch_state: dict[str, str],
     ) -> None:
         """短请求结束后，按当前会话号继续 touch。
 
         这个客户端只在 ``GATEWAY_AGENT_CLIENT_MODE=runtime`` 时注册，个人版走 WebSocket，不会进到这里。
         只认 ``chat.processing_status_deferred``。同一个号已有循环时不重开；停掉之后下一次 deferred 再拉起来。
+        循环持有 ``touch_state``，每次 touch 前读最新 route id。流内保活恢复亲和后写入的新 id 会在下一轮生效。
         """
         payload = chunk.payload if isinstance(chunk.payload, dict) else None
         if not isinstance(payload, dict):
@@ -827,14 +826,14 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         if self._touch_interval_seconds <= 0:
             return
         session_id = (session_id or "").strip()
-        route_id = (route_id or "").strip()
+        route_id = str(touch_state.get("route_id") or "").strip()
         if not session_id or not route_id:
             return
         current = self._session_keepalives.get(session_id)
         if current is not None and not current.done():
             return
         task = asyncio.create_task(
-            self._deferred_keepalive_loop(session_id, route_id),
+            self._deferred_keepalive_loop(session_id, touch_state),
             name=f"runtime-deferred-touch:{session_id[:24]}",
         )
         self._session_keepalives[session_id] = task
@@ -843,7 +842,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             session_id,
         )
 
-    async def _deferred_keepalive_loop(self, session_id: str, route_id: str) -> None:
+    async def _deferred_keepalive_loop(
+        self, session_id: str, touch_state: dict[str, str]
+    ) -> None:
         """只 touch。失败不重新 route，避免把还在跑的团队挪到另一台 Pod。"""
         interval = self._touch_interval_seconds
         try:
@@ -851,6 +852,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 await asyncio.sleep(interval)
                 if self._session_keepalives.get(session_id) is not asyncio.current_task():
                     return
+                route_id = str(touch_state.get("route_id") or "").strip()
+                if not route_id:
+                    continue
                 touched = await self._touch_quiet(session_id, route_id)
                 if self._session_keepalives.get(session_id) is not asyncio.current_task():
                     return

@@ -479,3 +479,36 @@ async def test_open_stream_still_restores_affinity(monkeypatch):
     assert len(route.route_calls) >= 2
     assert client._session_keepalives == {}
     await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_deferred_touches_route_id_restored_after_it_starts(monkeypatch):
+    """deferred 启动后，流内恢复写入的新 route id 在下一轮 touch 生效，且不重新 route。"""
+    import jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client as routed
+
+    _patch_authorize(monkeypatch)
+    route = _FakeRoute()
+    client = RuntimeRoutedAgentClient(
+        route_client=route,
+        http_client=_DeferredHttp(),
+        touch_interval_seconds=0.05,
+    )
+    touch_state = {"route_id": "route-old"}
+    sleeps = {"n": 0}
+
+    async def _sleep_then_restore(_delay: float) -> None:
+        sleeps["n"] += 1
+        touch_state["route_id"] = "route-new"
+        if sleeps["n"] > 1:
+            raise asyncio.CancelledError
+        return None
+
+    monkeypatch.setattr(routed.asyncio, "sleep", _sleep_then_restore)
+    task = asyncio.create_task(
+        client._deferred_keepalive_loop("sess-cron-1", touch_state)
+    )
+    client._session_keepalives["sess-cron-1"] = task
+    await asyncio.gather(task, return_exceptions=True)
+    assert route.touch_calls == [("sess-cron-1", "route-new")]
+    assert route.route_calls == []
+    assert client._session_keepalives.get("sess-cron-1") is task

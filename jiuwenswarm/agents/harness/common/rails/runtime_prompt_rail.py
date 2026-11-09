@@ -37,7 +37,6 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_infra_data_dir,
     get_runtime_state_path,
-    get_domain_data_dir,
     logger,
 )
 
@@ -580,9 +579,25 @@ class RuntimePromptRail(DeepAgentRail):
             installed_agent_templates_dir = (
                 installed_workspace_dir / "plugins" / "agent_templates" / "local"
             )
-            installed_agent_groups_dir = (
-                get_domain_data_dir() / ".agent_teams" / "agent_groups" / "local"
+            from jiuwenswarm.server.runtime.extension_package_manager import (
+                _usable_agent_group_home,
             )
+
+            agent_group_home = _usable_agent_group_home()
+            if agent_group_home is None:
+                installed_agent_groups_line = ""
+            else:
+                installed_agent_groups_dir = (
+                    agent_group_home / ".agent_teams" / "agent_groups" / "local"
+                )
+                if not self._force_english and self._language == "cn":
+                    installed_agent_groups_line = (
+                        f"- 已安装的专家团存放在：`{installed_agent_groups_dir}`\n"
+                    )
+                else:
+                    installed_agent_groups_line = (
+                        f"- Installed Agent groups: `{installed_agent_groups_dir}`\n"
+                    )
             installed_plugin_packages_dir = (
                 installed_workspace_dir / "plugins" / "plugin_packages" / "local"
             )
@@ -748,7 +763,7 @@ class RuntimePromptRail(DeepAgentRail):
                     "### 已安装扩展资产\n\n"
                     f"- 已安装的 Skill 根目录：`{installed_skills_dir}`\n"
                     f"- 已安装的专家模板存放在：`{installed_agent_templates_dir}`\n"
-                    f"- 已安装的专家团存放在：`{installed_agent_groups_dir}`\n"
+                    f"{installed_agent_groups_line}"
                     f"- 已安装的插件包存放在：`{installed_plugin_packages_dir}`\n"
                     f"- 已安装的 MCP 存放在：`{installed_mcp_hub_dir}`\n\n"
                     "### 目录使用规则\n\n"
@@ -773,7 +788,7 @@ class RuntimePromptRail(DeepAgentRail):
                     "### Installed Extension Assets\n\n"
                     f"- Installed Skill root: `{installed_skills_dir}`\n"
                     f"- Installed Agent templates: `{installed_agent_templates_dir}`\n"
-                    f"- Installed Agent groups: `{installed_agent_groups_dir}`\n"
+                    f"{installed_agent_groups_line}"
                     f"- Installed plugin packages: `{installed_plugin_packages_dir}`\n"
                     f"- Installed MCPs: `{installed_mcp_hub_dir}`\n\n"
                     "### Directory Usage Rules\n\n"
