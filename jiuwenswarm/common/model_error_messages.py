@@ -248,7 +248,9 @@ def humanize_model_error(error: Any, *, api_base: str = "") -> str | None:
         "network": _NETWORK_MESSAGE,
         "server": _SERVER_MESSAGE,
     }
-    return messages[kind] if kind else None
+    # 类别由规则表生成，仍用 get() 取值：日后新增类别却漏配提示时返回 None，
+    # 让调用方保留原始错误处理，而不是抛出 KeyError 打断用户提示。
+    return messages.get(kind) if kind else None
 
 
 def user_facing_model_error(
