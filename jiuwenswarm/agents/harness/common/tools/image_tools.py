@@ -9,9 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastmcp import FastMCP
-from google import genai
-from google.genai import types
+# google.genai (~676ms, pulls google.auth/grpc/etc.) and fastmcp (~206ms) are
+# imported lazily inside ``_invoke_gemini_vision`` — the only call site — so
+# they are never paid on the startup/import critical path of whoever first
+# imports this module (the whole swarm chain blocks on it otherwise). The old
+# module-level ``mcp = FastMCP("vision-mcp-server")`` binding was dead code:
+# never referenced, tools register via openjiuwen.core.foundation.tool.
 from openai import OpenAI
 from openjiuwen.core.foundation.tool import McpServerConfig, tool
 from openjiuwen.core.runner import Runner
@@ -29,8 +32,6 @@ from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_veri
 logger = logging.getLogger(__name__)
 
 _SANDBOX_MARKER = "home/user"
-
-mcp = FastMCP("vision-mcp-server")
 
 
 class _PathHelper:
@@ -168,6 +169,11 @@ async def _invoke_gemini_vision(src: str, q: str) -> str:
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     if not gemini_key:
         return "[ERROR]: GEMINI_API_KEY is not configured for Gemini vision."
+
+    # Deferred from module level — paid only on the (rare) Gemini vision path,
+    # never on the startup/import critical path.
+    from google import genai
+    from google.genai import types
 
     try:
         mime = _MimeResolver.from_path(src)

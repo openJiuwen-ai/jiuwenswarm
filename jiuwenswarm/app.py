@@ -34,7 +34,8 @@ _parsed_dotenv_path = get_parsed_dotenv()
 
 
 cleanup_stale_openjiuwen_descs()
-prepare_runtime_workspace(cleanup_stale_descs=False)
+if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
+    prepare_runtime_workspace(cleanup_stale_descs=False)
 
 _env_file = get_env_file()
 load_dotenv_runtime(dotenv_path=_env_file, override=True)
