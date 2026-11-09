@@ -15,6 +15,7 @@ from jiuwenswarm.agents.harness.common.prompt.cua_task_prompt import (
     build_cua_task_prompt,
     build_cua_unavailable_prompt,
 )
+from jiuwenswarm.common.cua_config import is_cua_backend_available
 
 
 class BrowserTaskPromptRail(SubagentRail):
@@ -27,10 +28,8 @@ class BrowserTaskPromptRail(SubagentRail):
         enable_subagent_runtime: bool = False,
         cua_agent_enabled: bool = False,
     ) -> None:
-        # Enabled in config but unavailable means the model rejects image
-        # input: the adapter skipped mounting it, or the request model in use
-        # now does.
         self._cua_agent_enabled = cua_agent_enabled
+        self._cua_backend_available = cua_agent_enabled and is_cua_backend_available()
         self._channel: str | None = None
         self._deep_agent: object | None = None
         super().__init__(
@@ -74,7 +73,9 @@ class BrowserTaskPromptRail(SubagentRail):
                 build_cua_task_prompt(language, browser_available=has_browser)
             )
         elif self._cua_agent_enabled:
-            sections.append(build_cua_unavailable_prompt(language))
+            sections.append(
+                build_cua_unavailable_prompt(language, backend_available=self._cua_backend_available)
+            )
         if not sections:
             return None
         return "\n\n".join(sections)
