@@ -890,6 +890,8 @@
       "videoSectionTitle": "视频模型",
       "saveSettings": "保存设置",
       "loadError": "无法读取全双工模型配置",
+      "extensionUnavailable": "全双工扩展未加载，请检查实例配置中的扩展搜索目录。",
+      "httpRouteUnavailable": "当前 HTTP 连接不支持读取全双工设置。",
       "saveError": "无法保存全双工模型配置",
       "notConfigured": "尚未配置全双工模型",
       "dialogTitle": "配置全双工模型",
