@@ -21,6 +21,25 @@ def _accepted(row: dict) -> bool:
     return row["status"] == "COMPLETED" and (row.get("review") or {}).get("review_status") == "ACCEPTED"
 
 
+def _swarmflow_control(name: str, resume_id: Any, action: Any) -> bool:
+    """Allow pause or stop cleanup without reading organization state."""
+    if name != "swarmflow" or not isinstance(resume_id, str):
+        return False
+    if not resume_id.strip() or not isinstance(action, str):
+        return False
+    return action.strip() in {"pause", "stop"}
+
+
+def _needs_repair(row: dict, repaired: set) -> bool:
+    """An original child still needs a linked repair."""
+    if row.get("repairs_task_id") or row["task_id"] in repaired:
+        return False
+    if row["status"] == "FAILED":
+        return True
+    review = (row.get("review") or {}).get("review_status")
+    return review in {"REJECTED", "NEEDS_REVISION"}
+
+
 def _covered(rows: list[dict]) -> bool:
     repaired = {row["repairs_task_id"] for row in rows if row.get("repairs_task_id") and _accepted(row)}
     return bool(rows) and all(
@@ -51,12 +70,16 @@ class GroupOrganizationLifecycleRail(DeepAgentRail):
         pool = getattr(self.backend, "org_task_manager", None)
         if pool is None:
             return None
-        plan = next((
-            item for item in group_organization_plans(self.session_id)
-            if item.get("status") in {"pending", "running"}
-            and self.member_name in item.get("members", [])
-            and organization_id_for_plan(item, self.session_id) == pool.organization_id
-        ), None)
+        plan = None
+        for item in group_organization_plans(self.session_id):
+            if item.get("status") not in {"pending", "running"}:
+                continue
+            if self.member_name not in item.get("members", []):
+                continue
+            if organization_id_for_plan(item, self.session_id) != pool.organization_id:
+                continue
+            plan = item
+            break
         if plan is None:
             return None
         root = await pool.get_task(_root_task_id(plan["plan_id"]))
@@ -79,9 +102,12 @@ class GroupOrganizationLifecycleRail(DeepAgentRail):
         if state is None:
             return
         plan, _pool, root, rows = state
-        snapshot = [{key: row.get(key) for key in (
+        fields = (
             "task_id", "status", "required_capabilities", "assignment", "review", "repairs_task_id",
-        )} for row in rows]
+        )
+        snapshot = []
+        for row in rows:
+            snapshot.append({key: row.get(key) for key in fields})
         content = (
             "Current organization task state (not the private team's task board): "
             + json.dumps({"root_task_id": root.task_id, "root_status": str(root.status), "children": snapshot},
@@ -97,11 +123,13 @@ class GroupOrganizationLifecycleRail(DeepAgentRail):
             content += (
                 "Create expert tasks in dependency order; downstream tasks may be created after upstream outputs "
                 "are ready. Before final aggregation, check the full request and every mentioned expert's work, "
-                "including tasks not yet created. Accepted existing children alone do not mean the request is complete. "
+                "including tasks not yet created. Accepted existing children alone do not mean the "
+                "request is complete. "
                 "Review COMPLETED children whose review is PENDING using org_review_task and their "
                 "organization IDs. Read their outputs with org_view_child_tasks and explicitly choose "
                 "ACCEPTED, NEEDS_REVISION, or REJECTED based on the requirements; private-team review does not count. "
-                "For a FAILED, REJECTED, or NEEDS_REVISION child, use org_create_task(repairs_task_id=<original child ID>) "
+                "For a FAILED, REJECTED, or NEEDS_REVISION child, use "
+                "org_create_task(repairs_task_id=<original child ID>) "
                 "and keep its required_capabilities. A v2/v3 name alone never repairs the original. "
                 "Claim and start your own repair before resuming private work. Do not repeatedly expand "
                 "verification work. When all sources are accepted (including accepted repairs), complete "
@@ -127,8 +155,7 @@ class GroupOrganizationLifecycleRail(DeepAgentRail):
         action = arguments.get("action")
         # Match SwarmflowTool's control branch. Cleanup must remain available
         # after task failure, even when the organization database cannot be read.
-        if (name == "swarmflow" and isinstance(resume_id, str) and resume_id.strip()
-                and isinstance(action, str) and action.strip() in {"pause", "stop"}):
+        if _swarmflow_control(name, resume_id, action):
             return
         try:
             state = await self._round()
@@ -207,7 +234,10 @@ class GroupOrganizationLifecycleRail(DeepAgentRail):
         # SwarmChat owns the direct per-expert decomposition; Core still owns
         # nested task, repair eligibility, authorization and atomic transitions.
         if not arguments.get("parent_task_id"):
-            return f"This request already has root {root.task_id}. Create expert children under that root, not another root."
+            return (
+                f"This request already has root {root.task_id}. "
+                "Create expert children under that root, not another root."
+            )
         capabilities = arguments.get("required_capabilities")
         allowed = [f"group-member:{member}" for member in plan["members"]]
         if not isinstance(capabilities, list) or len(capabilities) != 1 or capabilities[0] not in allowed:
@@ -223,10 +253,7 @@ class GroupOrganizationLifecycleRail(DeepAgentRail):
         if any(row["task_id"] == arguments.get("task_id") for row in siblings):
             return None  # Preserve Core's idempotent create semantics.
         repaired = {row["repairs_task_id"] for row in siblings if row.get("repairs_task_id") and _accepted(row)}
-        unresolved = [row["task_id"] for row in siblings
-                      if not row.get("repairs_task_id") and row["task_id"] not in repaired
-                      and (row["status"] == "FAILED"
-                           or (row.get("review") or {}).get("review_status") in {"REJECTED", "NEEDS_REVISION"})]
+        unresolved = [row["task_id"] for row in siblings if _needs_repair(row, repaired)]
         if unresolved and arguments.get("repairs_task_id") not in unresolved:
             return (
                 "This expert has unresolved failed/rejected organization children: " + ", ".join(unresolved)
@@ -258,6 +285,10 @@ def organization_lifecycle_spec(member_name: str) -> RailSpec:
     return RailSpec(type=POLICY, params={"member_name": member_name})
 
 
-@harness_element(kind=ElementKind.RAIL, name=POLICY, description="Keep SwarmChat organization task lifecycle consistent.")
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=POLICY,
+    description="Keep SwarmChat organization task lifecycle consistent.",
+)
 def build_organization_lifecycle(params: dict, context: Any) -> GroupOrganizationLifecycleRail:
     return GroupOrganizationLifecycleRail(get_team_backend(context), context.session_id, params["member_name"])
