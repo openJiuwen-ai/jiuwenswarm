@@ -3265,6 +3265,7 @@ test('translucent preset uses theme bases, concrete colors and only applies with
   assert.equal(variables['--color-sidebar-surface'], 'rgba(1, 2, 3, 0.56)');
   assert.equal(variables['--color-surface-panel'], 'rgba(255, 255, 255, 0.82)');
   assert.equal(variables['--color-surface-card'], 'rgba(250, 250, 250, 0.88)');
+  assert.equal(variables['--color-chat-composer-surface'], undefined, 'the composer inherits the workspace role');
   assert.equal(variables['--color-surface-shell'], 'transparent');
   assert.equal(variables['--color-surface-popover'], undefined);
   assert.ok(Object.keys(variables).every((name) => !name.startsWith('--color-text')));
@@ -3277,6 +3278,7 @@ test('translucent preset uses theme bases, concrete colors and only applies with
   assert.match(css, /--color-surface-popover:rgba\(250, 250, 250, 0\.97\)/);
   assert.match(css, /--color-surface-workspace:rgba\(250, 250, 250, 0\.56\)/);
   assert.match(css, /--color-surface-workspace-layer:transparent/);
+  assert.match(css, /--color-chat-composer-context-surface:transparent/);
   assert.match(css, /--color-surface-floating:rgba\(1, 2, 3, 0\.9\)/);
   assert.match(css, /--effect-surface-floating-backdrop:blur\(24px\) saturate\(1\.3\)/);
   assert.doesNotMatch(css.replace(/:root[^{]*\{/g, '{'), /\.[a-z][a-z0-9_-]*[\s,{]/, 'no business selectors');
