@@ -59,6 +59,8 @@ export interface WebError extends Error {
   code?: string;
   requestId?: string;
   retriable?: boolean;
+  /** The HTTP client could not map this method to a local REST route. */
+  httpRouteMissing?: true;
   /**
    * 失败响应的 payload 原样透传（此前 webClient.resolvePending 只取 message.error 拼成
    * Error，payload 整个丢弃）。专家与插件装备-前端接口_v2.md §1.6.3 的 install 两阶段流程

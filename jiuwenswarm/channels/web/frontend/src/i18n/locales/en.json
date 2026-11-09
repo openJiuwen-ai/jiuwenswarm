@@ -892,6 +892,8 @@
       "videoSectionTitle": "Video model",
       "saveSettings": "Save settings",
       "loadError": "Unable to load full-duplex model settings",
+      "extensionUnavailable": "The full-duplex extension is unavailable. Check the extension search directories in the instance configuration.",
+      "httpRouteUnavailable": "The current HTTP connection does not support reading full-duplex settings.",
       "saveError": "Unable to save full-duplex model settings",
       "notConfigured": "Full-duplex model is not configured",
       "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again.",
