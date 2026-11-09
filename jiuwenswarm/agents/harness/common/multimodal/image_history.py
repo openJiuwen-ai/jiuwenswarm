@@ -457,6 +457,58 @@ def _slot_image_part(slot: dict[str, Any]) -> Any:
     return None
 
 
+def rewrite_orphan_attached_markers(messages: list[Any]) -> int:
+    """把「attached 状态行还在、像素块已被搬走」的孤儿标记改写为 ``omitted``。
+
+    通用压缩器(DialogueCompressor 等纯文本摘要)搬走图像块时不认识
+    attached/omitted 契约,会把 ``[image #n attached]`` 原样留在摘要文本里——
+    消费端(附件计数 / read_file 重读护栏)按标记判定"像素已提供",模型既没有
+    像素又被禁止取回,图片彻底不可得(2026-11-08 换模型回程事故)。这里按
+    **消息作用域**核对:消息 content 里一个 image 块都没有、却残留 attached
+    状态行 → 逐行改写为 ``omitted: compacted``;块还在的消息不动。改写就地
+    生效(与 ``_apply_image_evictions`` 的就地语义一致),幂等——已是 omitted
+    的行不重复处理。
+
+    Returns:
+        改写的标记行数(0 = 没有孤儿)。
+    """
+    rewritten = 0
+    for message in messages:
+        content = _message_content(message)
+        if not isinstance(content, list):
+            continue
+        if any(is_image_content_block(part) for part in content):
+            # 像素块还在(整条消息作用域):标记与块仍配对,不是孤儿。
+            continue
+        new_parts: list[Any] = []
+        message_hit = False
+        for part in content:
+            text = _text_from_content_part(part)
+            if text is None:
+                new_parts.append(part)
+                continue
+            rebuilt: list[str] = []
+            hit = 0
+            for line in text.splitlines():
+                match = _IMAGE_ATTACHED_LINE_RE.match(line.strip())
+                if match:
+                    rebuilt.append(
+                        _build_image_state_line(int(match.group(1)), "omitted", "compacted")
+                    )
+                    hit += 1
+                else:
+                    rebuilt.append(line)
+            if hit:
+                message_hit = True
+                rewritten += hit
+                new_parts.append(_part_with_text(part, "\n".join(rebuilt)))
+            else:
+                new_parts.append(part)
+        if message_hit:
+            _set_message_content(message, new_parts)
+    return rewritten
+
+
 def _replace_attached_state_line(part: Any, index: int) -> Any:
     """把文本 part 里的 ``[image #n attached]`` 行改写成 ``omitted``，保留其它行。
 
