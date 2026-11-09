@@ -4,7 +4,13 @@
 
 Similar to Claude Code's canUseTool mechanism:
 - Allows Read/Grep/Glob tools (unrestricted)
-- Allows Bash read-only commands (ls, cat, git status, etc.)
+- Allows Bash only when every shell segment is a whitelisted read-only
+  command (see ``READ_ONLY_BASH_COMMANDS``); a command whose options can write
+  or execute is either left out of that whitelist (``file``) or filtered by
+  option prefix (``git``, ``find``). Prefix filtering only keeps the explicit
+  flags out - it does not make those commands exec-free, because repository
+  configuration can still run programs (see the residual list in
+  ``_is_read_only_bash_command``). Anything else is denied
 - Allows Write/Edit only in memory_dir
 - Denies other tools by setting ctx.extra["_skip_tool"] = True
 
@@ -15,6 +21,8 @@ but runtime restriction prevents unauthorized tool use.
 from __future__ import annotations
 
 import logging
+import re
+import shlex
 from pathlib import Path
 from typing import Any, Dict
 
@@ -33,7 +41,20 @@ UNRESTRICTED_READ_TOOLS = (
     "search",
 )
 
-# Bash commands that are read-only (allowed)
+# Bash commands whose ordinary invocations only read (or print). A command
+# whose options can write or execute is handled separately: either it is not
+# whitelisted at all (``file``), or ``_is_read_only_segment`` filters its
+# options (``git``, ``find``). Filtering options does not close the command's
+# config-driven execution paths - the list of those still open lives in
+# ``_is_read_only_bash_command``.
+#
+# ``file`` is absent because of its option space, not its command name:
+# ``file -C``/``--compile`` compiles a magic database and writes
+# ``<source>.mgc``. A prefix blacklist cannot cover that - short options
+# cluster (``file -bC -m src``) and long options abbreviate
+# (``file --compil -m src``), and both still write the compiled file with
+# file 5.41. The extraction sub-agent keeps ``read_file``/``grep``/``glob``/
+# ``list_files``/``search``, so it loses nothing it needs here.
 READ_ONLY_BASH_COMMANDS = (
     "ls",
     "cat",
@@ -41,16 +62,109 @@ READ_ONLY_BASH_COMMANDS = (
     "tail",
     "grep",
     "find",
-    "git status",
-    "git log",
-    "git diff",
-    "git show",
+    "git",
     "pwd",
     "echo",
     "wc",
     "stat",
-    "file",
 )
+
+# Subcommands allowed right after the ``git`` command name.
+READ_ONLY_GIT_SUBCOMMANDS = ("status", "log", "diff", "show")
+
+# Shell tokens that separate commands. Every other token made only of shell
+# control characters (``|&``, ``&>>``, ``>&``, ``<>``, ``>|``, ``(`` ...) is
+# rejected, so redirects and subshells cannot ride along with a read command.
+_COMMAND_SEPARATORS = frozenset({";", "&&", "||", "|", "&"})
+_SHELL_CONTROL_CHARS = frozenset(";&|<>()")
+
+# Options that turn an otherwise read-only command into a writer or an executor.
+# ``--textconv`` is only a defensive match next to ``--ext-diff``: git runs the
+# textconv filter configured for the repository by default in ``diff``/``log``/
+# ``show``, and only an explicit ``--no-textconv`` turns that off, which this
+# gate cannot inject - so rejecting the flag does not make the command exec-free.
+_FORBIDDEN_OPTION_PREFIXES = ("--output", "--ext-diff", "--textconv")
+_FIND_FORBIDDEN_OPTION_PREFIXES = ("-delete", "-exec", "-ok", "-fprint", "-fls")
+
+# Leading ``NAME=value`` prefix: ``PATH=/tmp ls`` runs a different binary.
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _split_command_segments(command: str) -> list[list[str]] | None:
+    """Split a shell command into per-command token segments.
+
+    Args:
+        command: Raw bash command string (already stripped, single line).
+
+    Returns:
+        One token list per command, or None when the command cannot be
+        tokenized or uses a shell operator that is not a plain separator.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token and all(char in _SHELL_CONTROL_CHARS for char in token):
+            if token not in _COMMAND_SEPARATORS:
+                return None
+            if current:
+                segments.append(current)
+            current = []
+            continue
+        current.append(token)
+    if current:
+        segments.append(current)
+    return segments or None
+
+
+def _segment_command_name(tokens: list[str]) -> str:
+    """Return the lower-cased executable name of a segment.
+
+    ``_is_read_only_segment`` rejects a path-qualified head before calling this,
+    and ``shlex`` has already stripped quoting, so the head is the bare command
+    name; only the Windows ``.exe`` suffix is normalized away.
+    """
+    name = tokens[0].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def _is_read_only_segment(tokens: list[str]) -> bool:
+    """Check whether a single shell segment only reads.
+
+    Args:
+        tokens: Tokens of one command segment.
+
+    Returns:
+        True when the segment is a whitelisted read-only command.
+    """
+    if not tokens:
+        return False
+    # Quoting is gone after tokenizing, so a quoted ``"$(cmd)"`` is
+    # indistinguishable from a plain argument; reject any substitution marker.
+    if any("$" in token or "`" in token for token in tokens):
+        return False
+    head = tokens[0]
+    if _ENV_ASSIGNMENT_RE.match(head):
+        return False
+    if "/" in head or "\\" in head:
+        return False
+    if any(token.startswith(_FORBIDDEN_OPTION_PREFIXES) for token in tokens[1:]):
+        return False
+
+    name = _segment_command_name(tokens)
+    if name == "git":
+        return len(tokens) > 1 and tokens[1].lower() in READ_ONLY_GIT_SUBCOMMANDS
+    if name == "find":
+        if any(token.startswith(_FIND_FORBIDDEN_OPTION_PREFIXES) for token in tokens[1:]):
+            return False
+    return name in READ_ONLY_BASH_COMMANDS
 
 
 class AutoMemoryToolRestrictionRail(AgentRail):
@@ -200,33 +314,48 @@ class AutoMemoryToolRestrictionRail(AgentRail):
         return tool_name.lower() in (t.lower() for t in UNRESTRICTED_READ_TOOLS)
 
     def _is_read_only_bash_command(self, tool_args: Dict[str, Any]) -> bool:
-        """Check if bash command is read-only.
+        """Check whether a bash command only reads.
+
+        The command is split on shell separators and *every* segment has to be
+        a whitelisted read-only command invoked by its bare name. Anything the
+        rail cannot prove read-only is denied: multi-line commands, redirects
+        and other control operators, command substitution (``$``/backtick),
+        ``NAME=value`` prefixes, path-qualified command names, ``git`` global
+        options and ``find`` write/exec actions. ``file`` is not whitelisted at
+        all: ``-C``/``--compile`` writes a compiled magic database, and its
+        options can be clustered or abbreviated, so no prefix list covers them.
+
+        Some execution paths of the whitelisted ``git`` sub-commands come from
+        repository configuration rather than from the command line, so option
+        filtering cannot close them and they stay open:
+
+        - ``diff.external`` and ``diff.<driver>.command`` (a driver selected by
+          ``.gitattributes``): ``git diff`` runs them with no option of its own.
+          ``log -p``/``show`` do not - they only do it under ``--ext-diff``,
+          which is rejected above (git 2.50.1, measured);
+        - the textconv filter, on by default for ``diff``/``log``/``show`` and
+          only disabled by an explicit ``--no-textconv`` that this gate cannot
+          inject;
+        - ``core.fsmonitor``, run by ``status`` and by ``diff`` once the
+          worktree is dirty.
 
         Args:
             tool_args: Tool arguments containing 'command' field.
 
         Returns:
-            True if the command is read-only (no file modification).
+            True if the whole command is read-only (no file modification).
         """
         command = tool_args.get("command", "")
-        if not command:
+        if not isinstance(command, str):
+            return False
+        command = command.strip()
+        if not command or "\n" in command or "\r" in command:
             return False
 
-        # Check against read-only command patterns
-        command_lower = command.lower()
-        for allowed_cmd in READ_ONLY_BASH_COMMANDS:
-            if allowed_cmd.lower() in command_lower:
-                return True
-
-        # Also check for explicit read-only flags
-        # e.g., "git status --porcelain" is safe
-        if any(
-            flag in command_lower
-            for flag in ("--status", "--list", "--show", "--print", "--read")
-        ):
-            return True
-
-        return False
+        segments = _split_command_segments(command)
+        if not segments:
+            return False
+        return all(_is_read_only_segment(segment) for segment in segments)
 
     def _is_in_memory_dir(self, tool_args: Dict[str, Any]) -> bool:
         """Check if the target path is within memory_dir.
