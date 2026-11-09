@@ -26,9 +26,9 @@ from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
 )
 
 
-def _fake_agent() -> SimpleNamespace:
+def _fake_agent(language: str = "cn") -> SimpleNamespace:
     return SimpleNamespace(
-        system_prompt_builder=SystemPromptBuilder(language="cn"),
+        system_prompt_builder=SystemPromptBuilder(language=language),
         prompt_attachment_manager=PromptAttachmentManager(),
         deep_config=SimpleNamespace(enable_read_image_multimodal=True),
     )
@@ -130,6 +130,27 @@ def test_attachment_no_pixels_routes_by_capability() -> None:
 
     legacy = rail._build_image_state_attachment(enabled=False, images_sent=0)
     assert "visual_question_answering 等图片理解工具" in legacy
+    assert "read_file" not in legacy
+
+
+def test_attachment_no_pixels_routes_by_capability_en() -> None:
+    """0 张时按能力分流(en):enabled 指路 read_file,disabled 保留 VQA 兜底。
+
+    回归焦点:能力分流曾只改 cn 分支,en 分支保持旧两分——enabled + 0 张时
+    附件仍写 "call a vision tool",与能力段 capability_en("call read_file on
+    it")互相矛盾,英文会话被推回视觉工具老路。
+    """
+
+    rail = MultimodalImageRail(enable_image_multimodal=True)
+    rail.init(_fake_agent(language="en"))
+
+    native = rail._build_image_state_attachment(enabled=True, images_sent=0)
+    assert "0 images" in native
+    assert "read_file" in native
+    assert "visual_question_answering" not in native
+
+    legacy = rail._build_image_state_attachment(enabled=False, images_sent=0)
+    assert "visual_question_answering" in legacy
     assert "read_file" not in legacy
 
 

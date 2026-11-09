@@ -311,6 +311,17 @@ class MultimodalImageRail(DeepAgentRail):
                     "- Read text, watermarks and IDs in the image from the pixels you received."
                 )
                 return "\n".join(parts)
+            if enabled:
+                # 原生模型 + 本轮 0 张：与 cn 分支同构。指路 read_file 重读原文件——
+                # 若写"call a vision tool"会与能力段（capability_en：native input,
+                # call read_file on it）互相矛盾，把模型推回视觉工具老路。
+                return (
+                    "# Images In This Request\n\n"
+                    "- This request carries 0 images as image content (no pixels were attached).\n"
+                    "- When you need to inspect an image file (including images referenced in "
+                    "earlier messages but omitted by compaction), call read_file on it; the "
+                    "pixels will enter your context directly as image content."
+                )
             return (
                 "# Images In This Request\n\n"
                 "- This request carries 0 images as image content (no pixels were attached).\n"
