@@ -77,6 +77,16 @@ uv run pytest tests/unit_tests/ --no-cov
 
 `pytest-xdist` 不在默认依赖中。未安装时，`-p` 回退为串行执行。
 
+### IPC 背压与 Worker 超时验收
+
+常规 UT 在 `test_ipc_backpressure.py` 中使用缩短的测试阈值，仍启动真实 Worker 子进程并通过真实 IPC 和 WebSocket 注入故障。验收默认生产阈值时，在 Linux 和 Windows 分别运行同一测试文件。测试会按平台选择适用的传输场景。
+
+```bash
+JIUWENSWARM_IPC_PRODUCTION_TIMINGS=1 uv run pytest tests/unit_tests/agentserver/test_ipc_backpressure.py
+```
+
+在 PowerShell 中，先运行 `$env:JIUWENSWARM_IPC_PRODUCTION_TIMINGS = "1"`，再运行 `uv run pytest tests/unit_tests/agentserver/test_ipc_backpressure.py`。验收结束后清除该环境变量即可恢复常规 UT 的测试阈值。
+
 ## 前端测试
 
 ```bash

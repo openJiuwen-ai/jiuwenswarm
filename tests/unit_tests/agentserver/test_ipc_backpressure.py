@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Exercise IPC under real OS backpressure and executor saturation."""
+"""Exercise IPC under real OS backpressure and executor saturation.
+
+Set JIUWENSWARM_IPC_PRODUCTION_TIMINGS=1 to use the original timing windows
+with the same fault injection and assertions.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +18,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +35,14 @@ from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor import runtime_supervisor as supervisor_module
 from jiuwenswarm.server.supervisor import worker_process as process_module
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
+
+
+_TIMING_SCALE = 1.0 if os.environ.get("JIUWENSWARM_IPC_PRODUCTION_TIMINGS") == "1" else 0.2
+
+
+def _seconds(production_seconds: float) -> float:
+    """Scale test timing while leaving the production defaults intact."""
+    return production_seconds * _TIMING_SCALE
 
 
 @asynccontextmanager
@@ -368,7 +381,8 @@ async def _worker(mode, tmp_path, monkeypatch, *, max_restarts=0):
         "import os, sys\n"
         "if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):\n"
         "    from diagnostic_worker import configure\n"
-        "    configure(os.environ['JIUWENSWARM_DIAGNOSTIC_WORKER_MODE'])\n",
+        "    configure(os.environ['JIUWENSWARM_DIAGNOSTIC_WORKER_MODE'],\n"
+        "              timing_scale=float(os.environ['JIUWENSWARM_DIAGNOSTIC_TIMING_SCALE']))\n",
         encoding="utf-8",
     )
     python_paths = [str(bootstrap), str(fixture.parent), str(root)]
@@ -376,6 +390,19 @@ async def _worker(mode, tmp_path, monkeypatch, *, max_restarts=0):
         python_paths.append(os.environ["PYTHONPATH"])
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(python_paths))
     monkeypatch.setenv("JIUWENSWARM_DIAGNOSTIC_WORKER_MODE", mode)
+    monkeypatch.setenv("JIUWENSWARM_DIAGNOSTIC_TIMING_SCALE", str(_TIMING_SCALE))
+    for name in (
+        "_HEARTBEAT_TIMEOUT",
+        "_WATCHDOG_INTERVAL",
+        "_WORKER_STALL_WARN",
+        "_WORKER_STALL_RESTART",
+        "_FORWARD_TIMEOUT",
+    ):
+        monkeypatch.setattr(supervisor_module, name, _seconds(getattr(supervisor_module, name)))
+    if _TIMING_SCALE < 1:
+        # The real Worker starts sampling business context at 5 seconds.
+        # Leave a pong between that point and the shortened 6-second warning.
+        monkeypatch.setattr(supervisor_module, "_HEARTBEAT_INTERVAL", 0.5)
     endpoint = (
         str(tmp_path / "worker.pipe")
         if os.name == "nt"
@@ -548,14 +575,15 @@ async def test_real_worker_survives_blocked_logging_and_exits_before_sink_recove
                 assert first["phase"] == "logging_pending"
                 assert first["first_seconds"] < 2
                 assert first["log_thread"] == "worker-log-writer"
-                await asyncio.sleep(31)
-                assert supervisor._last_rx > began + 25
+                async with asyncio.timeout(_seconds(34)):
+                    while supervisor._last_rx <= began + _seconds(25):
+                        await asyncio.sleep(0.02)
                 assert supervisor._restart_count == 0
                 assert supervisor.worker_pid == pid and process.returncode is None
                 final = json.loads(await asyncio.wait_for(client.recv(), 10))
                 await asyncio.wait_for(dispatch, 2)
                 assert final["phase"] == "final" and final["sink_pending"]
-                assert final["blocked_seconds"] >= 36
+                assert final["blocked_seconds"] >= _seconds(36)
         assert "heartbeat timed out" not in caplog.text
         assert "worker loop unresponsive" not in caplog.text
         exit_started = time.monotonic()
@@ -565,7 +593,7 @@ async def test_real_worker_survives_blocked_logging_and_exits_before_sink_recove
         assert exit_seconds < 5
         (tmp_path / "acceptance.json").write_text(json.dumps({
             "case": "blocked_log_sink", "pid": pid, "restarts": supervisor._restart_count,
-            "transport_timeout_seconds": 30, "blocked_seconds": final["blocked_seconds"],
+            "transport_timeout_seconds": _seconds(30), "blocked_seconds": final["blocked_seconds"],
             "first_response_seconds": first["first_seconds"], "shutdown_seconds": exit_seconds,
             "exit_code": process.returncode, "stderr": str(process.stderr_path),
         }, indent=2), encoding="utf-8")
@@ -595,8 +623,9 @@ async def test_real_worker_survives_busy_pools_timeout_and_reconnect(
                         )
                     )
                     try:
-                        await asyncio.sleep(11)
-                        assert "Gateway forwarding timed out" in caplog.text
+                        async with asyncio.timeout(_seconds(10) + 3):
+                            while "Gateway forwarding timed out" not in caplog.text:
+                                await asyncio.sleep(0.02)
                         assert (
                             supervisor._restart_count == 0
                             and process.returncode is None
@@ -612,7 +641,7 @@ async def test_real_worker_survives_busy_pools_timeout_and_reconnect(
                             encoding="utf-8"
                         ).splitlines()[0]
                     )
-                    assert snapshot["gateway"]["lock_wait_seconds"] >= 9.5
+                    assert snapshot["gateway"]["lock_wait_seconds"] >= _seconds(9.5)
                     assert snapshot["ipc"]["last_tx_age"] is not None
                     assert snapshot["ipc"]["last_rx_age"] is not None
                     await _traffic(supervisor, gateway, client, 200)
@@ -620,9 +649,10 @@ async def test_real_worker_survives_busy_pools_timeout_and_reconnect(
                 async with ws_connect(url) as client:
                     await asyncio.wait_for(attached.wait(), 2)
                     await _traffic(supervisor, gateway, client, 200)
-                    await asyncio.sleep(max(0, 36 - (time.monotonic() - started)))
+                    async with asyncio.timeout(_seconds(40)):
+                        while supervisor._last_rx <= started + _seconds(36):
+                            await asyncio.sleep(0.02)
                     assert all(not blocker.done() for blocker in blockers)
-                    assert supervisor._last_rx > started + 25
                     assert (
                         supervisor._restart_count == 0 and supervisor.worker_pid == pid
                     )
@@ -633,8 +663,8 @@ async def test_real_worker_survives_busy_pools_timeout_and_reconnect(
                 {
                     "case": "busy_pools_and_gateway_timeout",
                     "pid": pid,
-                    "busy_seconds": 36,
-                    "heartbeat_timeout": 30,
+                    "busy_seconds": _seconds(36),
+                    "heartbeat_timeout": _seconds(30),
                     "ordered_frames": 420,
                     "reconnect": "passed",
                     "restarts": 0,
@@ -676,8 +706,9 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
 
                 # No business frames are emitted during this interval, so
                 # last_rx advancing beyond 25 seconds demonstrates heartbeats.
-                await asyncio.sleep(31)
-                assert supervisor._last_rx > started + 25
+                async with asyncio.timeout(_seconds(34)):
+                    while supervisor._last_rx <= started + _seconds(25):
+                        await asyncio.sleep(0.02)
                 assert supervisor.worker_pid == pid and process.returncode is None
                 assert supervisor._restart_count == 0
                 assert supervisor._readiness.state is ReadinessState.AGENT_READY
@@ -686,7 +717,7 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
                 await asyncio.wait_for(dispatch, 3)
                 assert final["phase"] == "final"
                 assert final["unknown"] and final["probe_pending"]
-                assert final["probe_seconds"] >= 35
+                assert final["probe_seconds"] >= _seconds(35)
                 assert final["probe_calls"] == final["probe_threads"] == 1
                 assert final["probe_daemon"]
                 assert final["rails"] == 12 and final["rounds"] >= 30
@@ -703,7 +734,7 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
             "pid": pid,
             "hook": "RuntimePromptRail.before_model_call",
             "first_round_seconds": first["first_round_seconds"],
-            "heartbeat_timeout": 30,
+            "heartbeat_timeout": _seconds(30),
             "restarts": 0,
             "terminal_received": True,
             "worker_exit_code": process.returncode,
@@ -749,8 +780,7 @@ async def test_real_missing_heartbeats_triggers_transport_watchdog(
                 assert process.returncode is None, (
                     "Fault injection must reach a live child with missing pongs"
                 )
-                await asyncio.wait_for(dispatch, 39)
-                assert time.monotonic() - started >= 29.5
+                await asyncio.wait_for(dispatch, _seconds(30) + 9)
                 assert "runtime worker heartbeat timed out" in caplog.text
                 assert supervisor._readiness.state is ReadinessState.FAILED
                 assert await process.wait(timeout=10) is not None, (
@@ -759,11 +789,11 @@ async def test_real_missing_heartbeats_triggers_transport_watchdog(
                 failure = json.loads(await asyncio.wait_for(client.recv(), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
                 stderr = process.stderr_path.read_text(encoding="utf-8")
-                assert "Timeout (0:00:25)" in stderr
+                assert f"Timeout ({timedelta(seconds=_seconds(25))})" in stderr
                 dump = supervisor._last_dump_path.read_text(encoding="utf-8")
                 assert "ASYNCIO TASKS" in dump and "THREAD STACKS" in dump
                 snapshot = json.loads(dump.splitlines()[0])
-                assert snapshot["last_rx_age"] >= 30
+                assert snapshot["last_rx_age"] >= _seconds(30)
                 assert snapshot["ipc"]["last_tx_age"] is not None
                 assert snapshot["worker_stderr"] == str(process.stderr_path)
                 assert "event_loop_lag_seconds" in snapshot
@@ -810,7 +840,6 @@ async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
                 ))]
                 assert json.loads(await asyncio.wait_for(client.recv(), 3))["phase"] == "freezing"
                 began = time.monotonic()
-                await asyncio.sleep(0.5)
                 for index in range(3):
                     request = _request(8)
                     request.session_id = f"queued-session-{index}"
@@ -826,21 +855,22 @@ async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
 
                 receiver = asyncio.create_task(receive())
                 try:
-                    await asyncio.wait_for(asyncio.gather(*tasks), 80)
+                    await asyncio.wait_for(asyncio.gather(*tasks), _seconds(60) + 20)
                     async with asyncio.timeout(3):
                         while sum(frame.get("phase") == "final" for frame in frames) < 3:
                             await asyncio.sleep(0.01)
-                    assert time.monotonic() - began >= 55
+                    assert time.monotonic() - began >= _seconds(55)
                     assert supervisor.worker_pid == pid and process.returncode is None
                     assert supervisor._restart_count == 0
                     assert "heartbeat timed out" not in caplog.text
                     assert not any("runtime worker closed" in json.dumps(frame) for frame in frames)
                     stderr = process.stderr_path.read_text(encoding="utf-8")
-                    assert "Timeout (0:00:25)" in stderr and "dispatch_parsed_request" in stderr
+                    assert f"Timeout ({timedelta(seconds=_seconds(25))})" in stderr
+                    assert "dispatch_parsed_request" in stderr
                     (tmp_path / "acceptance.json").write_text(json.dumps({
                         "case": "queued_sessions_during_stall", "pid": pid,
                         "transport": transport,
-                        "stall_seconds": 60, "heartbeat_timeout": 30, "sessions": 4,
+                        "stall_seconds": _seconds(60), "heartbeat_timeout": _seconds(30), "sessions": 4,
                         "later_requests_completed": 3, "restarts": 0,
                         "stderr": str(process.stderr_path), "native_stack_dump": True,
                     }, indent=2), encoding="utf-8")
@@ -881,8 +911,8 @@ async def test_real_freeze_worker_survives_loop_stall(tmp_path, monkeypatch, cap
                     == "freezing"
                 )
                 started = time.monotonic()
-                await asyncio.wait_for(dispatch, 90)
-                assert time.monotonic() - started >= 55, "loop really froze"
+                await asyncio.wait_for(dispatch, _seconds(60) + 30)
+                assert time.monotonic() - started >= _seconds(55), "loop really froze"
                 assert supervisor.worker_pid == pid
                 assert supervisor._restart_count == 0
                 assert process.returncode is None
@@ -934,8 +964,8 @@ async def test_real_sustained_stall_replaces_worker(
                     == "freezing"
                 )
                 started = time.monotonic()
-                await asyncio.wait_for(dispatch, 60)
-                assert time.monotonic() - started >= 35
+                await asyncio.wait_for(dispatch, _seconds(40) + 20)
+                assert time.monotonic() - started >= _seconds(35)
                 assert "business loop stalled" in caplog.text
                 assert "heartbeat timed out" not in caplog.text
                 failure = json.loads(await asyncio.wait_for(client.recv(), 3))
@@ -988,17 +1018,17 @@ async def test_real_loopback_180_second_stall_logs_business_before_replacing_wor
                 ))
                 assert json.loads(await asyncio.wait_for(client.recv(), 3))["phase"] == "freezing"
                 began = time.monotonic()
-                await asyncio.wait_for(dispatch, 205)
+                await asyncio.wait_for(dispatch, _seconds(200) + 5)
                 elapsed = time.monotonic() - began
-                assert 175 <= elapsed < 205
+                assert _seconds(175) <= elapsed < _seconds(200) + 5
                 assert "heartbeat timed out" not in caplog.text
-                warning = [record.getMessage() for record in caplog.records
-                           if "worker loop unresponsive" in record.getMessage()]
-                restart = [record.getMessage() for record in caplog.records
-                           if "business loop stalled" in record.getMessage()
-                           and "business=" in record.getMessage()]
-                assert warning and restart
-                for message in (warning[0], restart[0]):
+                messages = [record.getMessage() for record in caplog.records]
+                warning = next(message for message in messages if "worker loop unresponsive" in message)
+                restart = next(
+                    message for message in messages if "business loop stalled" in message and "business=" in message
+                )
+                assert messages.index(warning) < messages.index(restart)
+                for message in (warning, restart):
                     business = json.loads(message.split("business=", 1)[1])
                     assert business["request_id"] == request.request_id
                     assert business["session_id"] == request.session_id
@@ -1015,7 +1045,7 @@ async def test_real_loopback_180_second_stall_logs_business_before_replacing_wor
                     "old_creation_time": creation_time, "old_exit_code": process.returncode,
                     "new_pid": supervisor.worker_pid, "elapsed_seconds": elapsed,
                     "request_id": request.request_id, "session_id": request.session_id,
-                    "warning": warning[0], "restart": restart[0],
+                    "warning": warning, "restart": restart,
                     "fresh_request": "passed", "stderr": str(process.stderr_path),
                 }, indent=2), encoding="utf-8")
 
@@ -1109,7 +1139,7 @@ async def test_real_websocket_send_backpressure_reports_send_timeout(
                         gateway["lock"],
                     )
                 )
-                async with asyncio.timeout(15):
+                async with asyncio.timeout(_seconds(10) + 5):
                     while "Gateway forwarding timed out" not in caplog.text:
                         await asyncio.sleep(0.05)
                 snapshot = json.loads(
@@ -1117,7 +1147,7 @@ async def test_real_websocket_send_backpressure_reports_send_timeout(
                         0
                     ]
                 )
-                assert snapshot["gateway"]["ws_send_seconds"] >= 9.5
+                assert snapshot["gateway"]["ws_send_seconds"] >= _seconds(9.5)
                 assert snapshot["gateway"]["lock_wait_seconds"] < 0.5
                 assert supervisor._restart_count == 0 and process.returncode is None
                 assert supervisor._readiness.state is ReadinessState.AGENT_READY
