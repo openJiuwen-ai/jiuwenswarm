@@ -48,7 +48,7 @@ import ApplicationServices
                  applicationPID: pid_t, check: @escaping @MainActor () throws -> Void,
                  onDispatch: @escaping @MainActor () throws -> Void, onPosted: @escaping @MainActor () -> Void,
                  onCleanupUnknown: @escaping () -> Void) async throws -> Bool {
-        func validate() throws {
+        let validate: @MainActor () throws -> Void = {
             try check()
             guard contract() == selection else {
                 throw DriverError("replacement editing/selection contract changed", code: .inputUnavailable)
@@ -76,14 +76,14 @@ import ApplicationServices
             if attempt < 11 { try await Task.sleep(for: .milliseconds(25)) }
         }
         var contentStarted = false
-        func beforeContent() throws {
+        let beforeContent: @MainActor () throws -> Void = {
             try validate()
             if !contentStarted, snapshot()?.full != true {
                 throw DriverError("the target does not have a confirmed full-text selection; no replacement text sent",
                                   code: .inputUnavailable)
             }
         }
-        func posted() { contentStarted = true; onPosted() }
+        let posted: @MainActor () -> Void = { contentStarted = true; onPosted() }
         if text.isEmpty {
             try await Input.preparedKey("BackSpace", recipient: recipient, validate: beforeContent,
                 onDispatch: onDispatch, onPosted: posted, onCleanupUnknown: onCleanupUnknown)

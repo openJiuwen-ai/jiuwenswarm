@@ -3976,3 +3976,34 @@ test('WebUISplashGate plays a requested preview over the open workspace', async 
     rootElement.remove();
   }
 });
+
+test('resource controls change visible and accessible labels with the host language', async () => {
+  const transport = splashTransport({});
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const previousLanguage = i18n.language;
+  const view = await mounted(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+    createElement(WebUIHost, { slotId: SETTINGS_SLOT, scope: 'application', packageId: 'pkg.theme', instanceKey: 'main' })));
+  try {
+    const tree = { component: 'Box', children: [
+      { component: 'Input', props: { ariaLabel: { zh: '署名', en: 'Signature' } } },
+      { component: 'Select', props: { ariaLabel: { zh: '颜色', en: 'Appearance' }, value: 'dark',
+        options: [{ value: 'dark', label: { zh: '深色', en: 'Dark' } }] } },
+      { component: 'FileImport', props: { label: { zh: '导入资源', en: 'Import resource' } }, events: { 'ui.change': { id: 'import' } } },
+    ] };
+    await act(async () => { await i18n.changeLanguage('en'); transport.render('pkg.theme', tree, SETTINGS_SLOT); });
+    await act(async () => settle());
+    assert.ok(view.container.querySelector('[aria-label="Signature"]'));
+    assert.ok(view.container.querySelector('[aria-label="Appearance"]'));
+    assert.match(view.container.textContent, /Dark/);
+    assert.equal(view.container.querySelector('[data-testid="webui-file-import-btn"]').textContent, 'Import resource');
+    await act(async () => i18n.changeLanguage('zh'));
+    assert.ok(view.container.querySelector('[aria-label="署名"]'));
+    assert.ok(view.container.querySelector('[aria-label="颜色"]'));
+    assert.match(view.container.textContent, /深色/);
+    assert.equal(view.container.querySelector('[data-testid="webui-file-import-btn"]').textContent, '导入资源');
+  } finally {
+    await view.unmount(); runtime.dispose();
+    await act(async () => i18n.changeLanguage(previousLanguage));
+  }
+});

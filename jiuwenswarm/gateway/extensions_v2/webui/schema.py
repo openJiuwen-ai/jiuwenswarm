@@ -44,10 +44,13 @@ _SLOT_ROOT_COMPONENTS: Mapping[str, tuple[str, ...]] = {
     "task.function.main": ("Iframe",),
     "application.background": ("MediaSurface",),
     "application.splash": ("MediaSurface",),
+    "application.presentation": ("ApplicationSurface",),
 }
-_ROOT_ONLY_COMPONENTS: frozenset[str] = frozenset({"Panel", "Iframe", "MediaSurface"})
+_ROOT_ONLY_COMPONENTS: frozenset[str] = frozenset({"Panel", "Iframe", "MediaSurface", "ApplicationSurface"})
 # Slots whose root must be one of their dedicated root components.
-_STRICT_ROOT_SLOTS: frozenset[str] = frozenset({"conversation.panel.right", "application.background", "application.splash"})
+_STRICT_ROOT_SLOTS: frozenset[str] = frozenset({
+    "conversation.panel.right", "application.background", "application.splash", "application.presentation",
+})
 
 
 def _fail(message: str, code: str = CODE_SCHEMA_ERROR) -> ValidationReport:
@@ -164,6 +167,10 @@ def validate_request(request: UiRenderInput) -> ValidationReport:
     if not report.ok:
         return report
     slot_roots = _SLOT_ROOT_COMPONENTS.get(request.target.slot_id, ())
+    if request.root.component == "ApplicationSurface":
+        prefix = f"/extension-assets/{request.target.package_id}/"
+        if not request.target.package_id or not request.root.props["src"].startswith(prefix):
+            return _fail("ApplicationSurface must use its own package assets")
     if request.target.slot_id in _STRICT_ROOT_SLOTS:
         if request.root.component not in slot_roots:
             return _fail(f"{request.target.slot_id} requires one of: {', '.join(slot_roots)}")

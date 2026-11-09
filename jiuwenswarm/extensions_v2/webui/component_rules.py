@@ -87,7 +87,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "icon": token(*WEBUI_ICON_NAMES), "iconPlacement": token("start", "end"), "aria-label": LOCALIZED_TEXT,
     }, "events": {"ui.click": NO_DATA}},
     "Input": {"props": {
-        **INPUT_PROPS, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
+        **INPUT_PROPS, "ariaLabel": LOCALIZED_TEXT, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
         "allowClear": BOOL, "showCount": BOOL, "type": token("text", "email", "tel", "url", "password"),
         "readOnly": BOOL,
     }, "events": {
@@ -100,7 +100,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "ariaLabel": LOCALIZED_TEXT, "size": COMPACT_SIZE, "checkedChildren": TEXT, "unCheckedChildren": TEXT,
     }, "events": {name: obj({"checked": BOOL}, "checked") for name in ("ui.click", "ui.change")}},
     "Select": {"props": {
-        **INPUT_PROPS, "options": array(obj({"value": OPTION_VALUE, "label": TEXT, "disabled": BOOL}, "value", "label")),
+        **INPUT_PROPS, "ariaLabel": LOCALIZED_TEXT, "options": array(obj({"value": OPTION_VALUE, "label": LOCALIZED_TEXT, "disabled": BOOL}, "value", "label")),
         "value": union(OPTION_VALUE, NIL, array(OPTION_VALUE)),
         "defaultValue": union(OPTION_VALUE, NIL, array(OPTION_VALUE)), "placeholder": TEXT, "allowClear": BOOL,
         "mode": token("multiple", "tags"), "maxCount": {"kind": "number", "integer": True, "min": 1},

@@ -739,7 +739,7 @@ interface UseWebSocketReturn {
     options?: { newInput?: string }
   ) => Promise<boolean>;
   pause: (sessionId: string) => Promise<void>;
-  cancel: (sessionId: string) => Promise<void>;
+  cancel: (sessionId: string) => Promise<boolean>;
   supplement: (sessionId: string, newInput: string) => Promise<void>;
   resume: (sessionId: string) => Promise<void>;
   switchMode: (sessionId: string, mode: AgentMode) => Promise<void>;
@@ -2088,6 +2088,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       useChatStore.getState().addMessage(sessionId, {
         id: userMessageId,
         role: 'user',
+        inputRequestId: null,
         content: displayedContent,
         mediaItems,
         timestamp: new Date().toISOString(),
@@ -2241,6 +2242,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // 登记乐观 user 气泡的单号：runtime.accepted 到达时按单号回填服务端权威
           // 时间戳（见 optimisticUserBubblesRef 注释与 runtime.accepted 处理器）。
           onRequestId: (requestId) => {
+            useChatStore.getState().updateMessage(sessionId, userMessageId, { inputRequestId: requestId });
             const registry = optimisticUserBubblesRef.current;
             // 兜底清理：accepted 丢失（发送失败/断连）时登记项不会被消费，限制驻留规模
             if (registry.size >= 64) {
@@ -2270,6 +2272,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setProcessing(sessionId, false);
         useChatStore.getState().setThinking(sessionId, false);
         const errorMsg = webError.message || t('network.sendMessageFailed');
+        useChatStore.getState().updateMessage(sessionId, userMessageId, { inputOutcome: 'failed' });
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().addMessage(sessionId, {
           id: prefixedMessageId('error-'),
@@ -2550,15 +2553,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const cancel = useCallback(
     async (sessionId: string) => {
+      const user = [...(useChatStore.getState().getRuntime(sessionId)?.messages ?? [])]
+        .reverse().find((message) => message.role === 'user');
       try {
         const ownerOnly = Boolean(organizationOwnerStopTarget(sessionId));
         const succeeded = await interrupt(sessionId, 'cancel');
         if (succeeded && !ownerOnly) {
+          if (user) useChatStore.getState().updateMessage(sessionId, user.id, { inputOutcome: 'stopped' });
           useSubagentStore.getState().markRunningSubagentsCancelled(sessionId);
         }
+        return succeeded;
       } catch (error) {
         const webError = error as WebError;
         onErrorRef.current?.(webError.message || t('network.cancelFailed'));
+        return false;
       }
     },
     [interrupt, t]
@@ -3700,6 +3708,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             handleTtsPlayback(sessionId, assistantMsgId, content);
           }
           return;
+        }
+
+        if (currentMode !== 'team') {
+          useChatStore.getState().setLastFinalReply(sessionId, content, getPayloadRequestId(payload) || readOutputOrder(payload)?.requestId);
         }
 
         const teamLeaderMessageToFinalize =

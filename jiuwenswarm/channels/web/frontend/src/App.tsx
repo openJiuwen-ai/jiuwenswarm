@@ -138,8 +138,11 @@ import {
   useCronStore,
   useSubagentStore,
   usePersonalContextStore,
+  useTeamSelectorStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
+import { ApplicationPresentationHost } from './features/webui/presentation/ApplicationPresentationHost';
+import type { PresentationConversation } from './features/webui/presentation/protocol';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import {
   NEW_CONVERSATION_ID,
@@ -3415,10 +3418,9 @@ function AppContent({
 
   const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
     const currentSessionId = sessionIdRef.current;
-    if (!currentSessionId) return;
+    if (!currentSessionId) return false;
     if (options?.queuedTaskId) {
-      await sendMessage(content, currentSessionId, mediaItems, options);
-      return;
+      return sendMessage(content, currentSessionId, mediaItems, options);
     }
     const currentState = useSessionStore.getState();
     const currentRuntime = currentState.getRuntime(currentSessionId);
@@ -3438,16 +3440,16 @@ function AppContent({
       })
     ) {
       toast.open({ content: t('chat.modelSelector.collaborationDisabled'), variant: 'error' });
-      return;
+      return false;
     }
     if (currentSessionId === NEW_CONVERSATION_ID) {
       const persistCommand = parsePersistSessionCommand(content);
       if (persistCommand.persistSession && !persistCommand.content) {
         window.alert(t('persistSession.textRequired'));
-        return;
+        return false;
       }
       const messageContent = persistCommand.content;
-      if (creatingSessionRef.current) return;
+      if (creatingSessionRef.current) return false;
       creatingSessionRef.current = true;
       useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, true);
       if (isDesignLanding) {
@@ -3471,6 +3473,7 @@ function AppContent({
             projectId: created.projectId,
             sessionId: created.sessionId,
           });
+          return true;
         } catch (error) {
           const code = error instanceof Error ? error.message : '';
           const referenceError = code === 'image_limit'
@@ -3488,6 +3491,7 @@ function AppContent({
             content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
             variant: 'error',
           });
+          return false;
         } finally {
           creatingSessionRef.current = false;
           useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
@@ -3521,6 +3525,7 @@ function AppContent({
         project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
         work_mode: baseWorkContext.work_mode,
       };
+      let accepted: boolean | undefined;
       try {
         const createParams: Record<string, unknown> = {
           create_token: generateUuidV4(),
@@ -3648,6 +3653,7 @@ function AppContent({
           setGoalObjective(newSid, messageContent);
         } else {
           const sent = await sendMessage(messageContent, newSid, mediaItems);
+          accepted = sent;
           if (!sent) {
             useChatStore.getState().setInputValue(newSid, messageContent);
           }
@@ -3666,7 +3672,7 @@ function AppContent({
       } finally {
         creatingSessionRef.current = false;
       }
-      return;
+      return accepted;
     }
     disposeInFlightHistoryHandles(currentSessionId);
     const sent = await sendMessage(content, currentSessionId, mediaItems);
@@ -3680,6 +3686,7 @@ function AppContent({
     } else {
       useChatStore.getState().setInputValue(currentSessionId, content);
     }
+    return sent;
   }, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
 
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
@@ -3724,6 +3731,16 @@ function AppContent({
     void supplement(currentSessionId, trimmed);
   }, [supplement]);
 
+  const cancelAgentConversation = useCallback((targetSessionId: string) => {
+    const runtime = useChatStore.getState().getRuntime(targetSessionId);
+    if (useSessionStore.getState().getRuntime(targetSessionId)?.mode === 'agent' && runtime?.taskQueue.length) {
+      useChatStore.getState().setQueuePaused(targetSessionId, true);
+    }
+    const pending = cancel(targetSessionId);
+    if (useGoalStore.getState().runtimes[targetSessionId]?.goal?.status === 'active') void pauseGoal(targetSessionId);
+    return pending;
+  }, [cancel, pauseGoal]);
+
   const handleCancel = useCallback(() => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) return;
@@ -3739,16 +3756,8 @@ function AppContent({
       if (isGoalActive) void pauseGoal(currentSessionId);
       return;
     }
-    // agent 模式下有队列任务时，暂停队列自动发送
-    if (mode === 'agent') {
-      const runtime = useChatStore.getState().getRuntime(currentSessionId);
-      if (runtime && runtime.taskQueue.length > 0) {
-        useChatStore.getState().setQueuePaused(currentSessionId, true);
-      }
-    }
-    void cancel(currentSessionId);
-    if (isGoalActive) void pauseGoal(currentSessionId);
-  }, [cancel, mode, pause, pauseGoal]);
+    void cancelAgentConversation(currentSessionId);
+  }, [cancel, cancelAgentConversation, mode, pause, pauseGoal]);
 
   /**
    * 删除目标：active 时除了清目标，还要顺带结束当前会话输出——复用停止按钮同一套中断调用
@@ -3961,6 +3970,23 @@ function AppContent({
     },
     [performSessionRestore],
   );
+
+  const preparePresentationConversation = useCallback(async (conversation: PresentationConversation | null) => {
+    if (!conversation) return;
+    if (conversation.sessionId === NEW_CONVERSATION_ID) {
+      await handleNewSession({
+        initialInputValue: useChatStore.getState().getRuntime(NEW_CONVERSATION_ID)?.inputValue ?? '',
+        preserveProject: true,
+        forceMode: 'agent',
+      });
+      return;
+    }
+    const workspace = useWorkspaceStore.getState();
+    const target = [...Object.values(workspace.projectSessions).flat(), ...workspace.pinnedSessions,
+      ...useSessionStore.getState().sessions].find((item) => item.session_id === conversation.sessionId);
+    await handleRestoreSession(conversation.sessionId, target?.mode, target);
+    if (sessionIdRef.current !== conversation.sessionId) throw new Error('TARGET_INACTIVE');
+  }, [handleNewSession, handleRestoreSession]);
 
   const handleOpenContinuedFromSession = useCallback(
     (sourceSessionId: string): void => {
@@ -4509,6 +4535,18 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       data-session-id={sessionId}
     >
       <ApplicationConversationRuntimes sessionId={sessionId} />
+      <ApplicationPresentationHost sessionId={sessionId} connected={isConnected}
+        onSelect={preparePresentationConversation}
+        onSend={async (conversation, text) => {
+          if (conversation.sessionId === NEW_CONVERSATION_ID) {
+            const accepted = await handleSendMessage(text);
+            return { accepted: accepted === true, conversationKey: sessionIdRef.current };
+          }
+          const accepted = await sendMessage(text, conversation.sessionId);
+          return { accepted, conversationKey: conversation.conversationKey };
+        }}
+        onStop={(conversation) => cancelAgentConversation(conversation.sessionId)}
+        onWorkspace={preparePresentationConversation} />
       {/* Navigation Sidebar */}
       <SessionSidebar
         webUIReady={initialDataLoaded && isConnected}

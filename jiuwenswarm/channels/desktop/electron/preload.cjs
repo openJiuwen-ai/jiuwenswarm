@@ -20,6 +20,26 @@ const launchId = (() => {
 
 const desktopApi = Object.freeze({
   isElectron: true,
+  presentation: Object.freeze({
+    open: config => invoke('desktop:presentation:open', config),
+    update: (key, payload) => invoke('desktop:presentation:update', key, payload),
+    close: key => invoke('desktop:presentation:close', key),
+    transitionWorkspace: (key, options) => invoke('desktop:presentation:transition-workspace', key, options),
+    respond: (generation, result) => invoke('desktop:presentation:respond', generation, result),
+    resize: (key, width, height) => invoke('desktop:presentation:resize', key, width, height),
+    move: (key, deltaX, deltaY) => invoke('desktop:presentation:move', key, deltaX, deltaY),
+    hitTest: (key, interactive) => invoke('desktop:presentation:hit-test', key, interactive),
+    onRequest: callback => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('desktop:presentation:request', listener);
+      return () => ipcRenderer.removeListener('desktop:presentation:request', listener);
+    },
+    onClosed: callback => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('desktop:presentation:closed', listener);
+      return () => ipcRenderer.removeListener('desktop:presentation:closed', listener);
+    },
+  }),
   launchId,
   apiBase: frontendOnly ? 'http://127.0.0.1:19000' : '',
   wsBase: frontendOnly ? 'ws://127.0.0.1:19000' : '',

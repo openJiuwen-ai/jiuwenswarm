@@ -617,6 +617,9 @@ Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destinati
 Copy-Item -Path (Join-Path $DesktopDir "share_image_export.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "display_media_picker.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "preload.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "application_presentation.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "application_transition.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "presentation_preload.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "target_mcp_wrapper.cjs") -Destination $AppDir -Force
 
 # Copy logo for window icon
@@ -723,6 +726,9 @@ $RequiredFiles = @(
     (Join-Path $AppDir "browser_download_bubble.cjs"),
     (Join-Path $AppDir "display_media_picker.cjs"),
     (Join-Path $AppDir "preload.cjs"),
+    (Join-Path $AppDir "application_presentation.cjs"),
+    (Join-Path $AppDir "application_transition.cjs"),
+    (Join-Path $AppDir "presentation_preload.cjs"),
     (Join-Path $AppDir "dist\index.html"),
     (Join-Path $AppDir "dist\bubble.html"),
     (Join-Path $AppDir "node_modules\@playwright\mcp\package.json"),

@@ -7,7 +7,7 @@ import Foundation
     private let post: (Event) -> Void
     private let canRelease: () -> Bool
     private let skipped: () -> Void
-    private let settle: () async -> Void
+    private let settle: @MainActor () async -> Void
     private let settleUnpaired: Bool
     private var held: [Event] = []
     private var released = false
@@ -15,7 +15,7 @@ import Foundation
     init(source: AnyObject? = nil, post: @escaping (Event) -> Void, canRelease: @escaping () -> Bool,
          skipped: @escaping () -> Void = {},
          settleUnpaired: Bool = false,
-         settle: @escaping () async -> Void = PairedInput.settleDelivery) {
+         settle: @escaping @MainActor () async -> Void = PairedInput.settleDelivery) {
         self.source = source
         self.post = post; self.canRelease = canRelease; self.skipped = skipped; self.settle = settle
         self.settleUnpaired = settleUnpaired
@@ -37,7 +37,7 @@ import Foundation
         released = true
     }
 
-    func run<Value>(_ operation: () async throws -> Value) async throws -> Value {
+    func run<Value>(_ operation: @MainActor () async throws -> Value) async throws -> Value {
         do {
             try Task.checkCancellation()
             let result = try await operation()

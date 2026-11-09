@@ -1719,6 +1719,11 @@
       "free": "Limited-time Free Models",
       "getFreeModels": "Get limited-time free models",
       "addModel": "Add Custom Model/Model Group",
+      "errors": {
+        "CONVERSATION_BUSY": "Wait for this conversation to finish before changing models.",
+        "MODEL_UNAVAILABLE": "This model is unavailable. Choose another model.",
+        "TARGET_INACTIVE": "This conversation is unavailable. Choose another conversation."
+      },
       "selectionFailed": "Model selection could not be applied. Please choose again.",
       "empty": "No models available. Add a model in Settings first.",
       "placeholder": "Select Model",
@@ -5407,6 +5412,28 @@
   },
   "webuiSplash": {
     "holdToSkip": "Hold Space to skip"
+  },
+  "webuiPresentation": {
+    "enter": "Open {{title}}",
+    "opening": "Opening desktop form…",
+    "desktopRequired": "Application forms require the desktop app",
+    "newConversation": "New conversation",
+    "openFailed": "Unable to open the desktop form. The workspace is still available.",
+    "updateFailed": "Unable to update the desktop form. Check the connection in the workspace.",
+    "actionFailed": "The action did not complete. Check the conversation status.",
+    "restored": "The desktop form ended and the workspace was restored",
+    "errors": {
+      "DISCONNECTED": "Disconnected. Return to the workspace.",
+      "TARGET_INACTIVE": "This conversation is unavailable. Select another one.",
+      "CONVERSATION_BUSY": "This conversation is running or awaiting confirmation. Complete the current action first.",
+      "SEND_FAILED": "Sending was not confirmed. Check the conversation before sending again.",
+      "REQUEST_CONFLICT": "This request id was reused with different content. The action was rejected.",
+      "STALE_REQUEST": "This request expired. The action was not repeated.",
+      "MODEL_UNAVAILABLE": "This model is unavailable. Choose another model.",
+      "REPLY_CHANGED": "The reply changed. Collapse and expand to read it again.",
+      "REQUEST_BUSY": "Actions are still in progress. Try again shortly."
+    },
+    "choose": "Switch application form"
   },
   "webuiIframe": {
     "pluginPage": "Plugin page",

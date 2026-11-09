@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
+const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, screen, session, shell, Tray, WebContentsView } = require('electron');
 const { spawn, execFile, execFileSync } = require('node:child_process');
 const { randomBytes, randomUUID } = require('node:crypto');
 const { inspect } = require('node:util');
@@ -13,6 +13,7 @@ const { pipeline } = require('node:stream/promises');
 const { reserveLoopbackPortSync, waitForOwnedCdpTarget } = require('./cdp_port.cjs');
 const { createShareImageExporter } = require('./share_image_export.cjs');
 const { registerDisplayMediaHandler } = require('./display_media_picker.cjs');
+const { createApplicationPresentation } = require('./application_presentation.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
@@ -144,6 +145,7 @@ if (cdpPort > 0) {
 }
 
 let mainWindow = null;
+let applicationPresentation = null;
 let tray = null;
 let closePromptPromise = null;
 let quitRequested = false;
@@ -3136,10 +3138,12 @@ function registerIpcHandlers() {
 }
 
 async function createMainWindow() {
+  const initialArea = process.platform === 'darwin' ? screen.getPrimaryDisplay().workAreaSize : { width: 1600, height: 1000 };
   mainWindow = new BrowserWindow({
     title: 'WorkSwarm',
-    width: 1600,
-    height: 1000,
+    width: Math.min(1600, initialArea.width),
+    height: Math.min(1000, initialArea.height),
+    enableLargerThanScreen: true,
     minWidth: 1100,
     minHeight: 720,
     backgroundColor: '#0f172a',
@@ -3151,9 +3155,18 @@ async function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  applicationPresentation = createApplicationPresentation({
+    BrowserWindow, ipcMain, screen, getMainWindow: () => mainWindow,
+    preload: path.join(__dirname, 'presentation_preload.cjs'),
+  });
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) applicationPresentation?.close('workspace_navigation');
+  });
+  mainWindow.webContents.on('render-process-gone', () => applicationPresentation?.close('workspace_renderer_gone'));
   registerDisplayMediaHandler({
     session: mainWindow.webContents.session,
     desktopCapturer,
@@ -3180,6 +3193,8 @@ async function createMainWindow() {
     setTimeout(emitLayoutInvalidated, 0);
   });
   mainWindow.on('closed', () => {
+    applicationPresentation?.dispose();
+    applicationPresentation = null;
     // 主窗口关闭即应用退出(单窗口):显式回收下载气泡视图,避免依赖退出兜底。
     downloadBubble?.destroy();
     mainWindow = null;
@@ -3285,6 +3300,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => {
     if (!mainWindow) return;
+    if (applicationPresentation?.restore()) return;
     if (process.platform === 'win32') {
       showAndMaximizeMainWindow();
       return;
@@ -3327,6 +3343,7 @@ process.on('message', message => {
 
 app.on('before-quit', event => {
   quitRequested = true;
+  applicationPresentation?.close('shutdown', false);
   if (shutdownComplete) return;
   event.preventDefault();
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
@@ -3341,6 +3358,7 @@ app.on('before-quit', event => {
 });
 app.on('activate', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (applicationPresentation?.restore()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();

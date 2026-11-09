@@ -26,6 +26,7 @@ interface Window {
   /** Set by desktop_app.py when OS file-drag accept handlers are injected. */
   __JIUWEN_DESKTOP_DND__?: boolean;
   jiuwenDesktop?: import('./types/electron').JiuwenElectronDesktopApi;
+  jiuwenPresentation?: import('./features/webui/presentation/protocol').PresentationWindowApi;
   pywebview?: {
     api?: {
       paste_clipboard?: () => Promise<void>;

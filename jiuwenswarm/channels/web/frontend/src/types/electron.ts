@@ -57,6 +57,7 @@ export interface ElectronBubbleAnchorRect {
 
 export interface JiuwenElectronDesktopApi {
   readonly isElectron: true;
+  readonly presentation?: import('../features/webui/presentation/protocol').PresentationNativeApi;
   /** One identifier per application start, shared by its windows (Gateway S_09). */
   readonly launchId?: string;
   readonly apiBase?: string;

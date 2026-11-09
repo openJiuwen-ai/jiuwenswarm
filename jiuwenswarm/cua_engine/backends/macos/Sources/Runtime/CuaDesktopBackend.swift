@@ -202,7 +202,7 @@ import ImageIO
         else { try validateText(value.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\t", with: "")) }
         try checkInput(target, keyboard: true); try BackgroundTarget.validateReleasedInput()
         guard let recipient = DesktopCapture.destination() else { throw DriverError("keyboard recipient unavailable", code: .inputUnavailable) }
-        func check() throws { try checkInput(target, keyboard: true); try recipient.validate(DesktopCapture.destination()) }
+        let check: @MainActor () throws -> Void = { try self.checkInput(target, keyboard: true); try recipient.validate(DesktopCapture.destination()) }
         func key(_ chord: String) async throws {
             try await Input.preparedKey(chord, recipient: nil, validate: check,
                 onDispatch: { self.state.recordEffect() }, onPosted: {}, onCleanupUnknown: {})

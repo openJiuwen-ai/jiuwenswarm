@@ -5,11 +5,11 @@
 | 项 | 说明 |
 | --- | --- |
 | 类型 | 目标设计；产品决策已确认，宿主能力部分实现，现状见第 5 节 |
-| 最近一次修订日期 | 2026-11-05 |
+| 最近一次修订日期 | 2026-11-09 |
 | 责任人 | Song Haoran |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/`，并涉及 `jiuwenswarm/channels/web/`（`app_web.py` 与前端 `features/webui/`）及 `jiuwenswarm/channels/desktop/electron/` |
-| 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md)、[F_09 包存储与数据目录](../features/F_09_package-store-and-data.md)、[F_10 媒体容器与应用背景](../features/F_10_media-surface-and-background.md)、[F_11 受控外观](../features/F_11_controlled-appearance.md)、[F_12 启动门控与开场](../features/F_12_startup-gate-and-splash.md)、[F_13 应用级设置页](../features/F_13_application-settings-page.md)、[F_14 开场预览](../features/F_14_splash-preview.md) |
-| 开发安排 | [Gateway 特性开发计划](extensions-v2-development-plan.md) 中的 `EXTV2-GW-07`～`EXTV2-GW-13` |
+| 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md)、[F_09 包存储与数据目录](../features/F_09_package-store-and-data.md)、[F_10 媒体容器与应用背景](../features/F_10_media-surface-and-background.md)、[F_11 受控外观](../features/F_11_controlled-appearance.md)、[F_12 启动门控与开场](../features/F_12_startup-gate-and-splash.md)、[F_13 应用级设置页](../features/F_13_application-settings-page.md)、[F_14 开场预览](../features/F_14_splash-preview.md)、[F_15 应用形态](../features/F_15_application-presentation.md) |
+| 开发安排 | [Gateway 特性开发计划](extensions-v2-development-plan.md) 中的 `EXTV2-GW-07`～`EXTV2-GW-15` |
 | 关联文档 | [运行时规约](../specs/S_01_gateway-extension-runtime.md)、[渲染规约](../specs/S_02_ui-render.md)、[浏览器桥接规约](../specs/S_06_local-browser-bridge.md)、[S_17 组件 Props 规约](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) |
 | 关键假设与待确认项 | 见第 1.3 节及各 feature；agent-core 锁定版本与当前导入不一致的问题记录在开发计划第 6 节 |
 
@@ -172,5 +172,6 @@ stateDiagram-v2
 | EXTV2-GW-11 | 启动门控与开场队列（[F_12](../features/F_12_startup-gate-and-splash.md)、[S_09](../specs/S_09_startup-splash.md)） | 已实现，单元与浏览器验证通过 |
 | EXTV2-GW-12 | 应用级设置页、开场顺序与停用、文件导入与导出（[F_13](../features/F_13_application-settings-page.md)、[S_10](../specs/S_10_application-settings.md)） | 已实现，单元与浏览器验证通过 |
 | EXTV2-GW-13 | 开场预览（[F_14](../features/F_14_splash-preview.md)、[S_09](../specs/S_09_startup-splash.md) 第 3.3 节） | 已实现，单元与浏览器验证通过 |
+| EXTV2-GW-15 | 应用形态、受控会话桥接与透明窗口（[F_15](../features/F_15_application-presentation.md)、[S_11](../specs/S_11_application-presentation.md)） | 进度见开发计划；详细验收证据见 F_15 |
 
-负责人、进度与验证证据以[开发计划](extensions-v2-development-plan.md)为唯一维护位置。
+负责人和进度以[开发计划](extensions-v2-development-plan.md)为唯一维护位置；详细验证证据在对应 feature 维护。

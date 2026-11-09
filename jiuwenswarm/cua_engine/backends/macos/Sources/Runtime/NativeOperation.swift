@@ -163,7 +163,7 @@ import Foundation
 
     /// Async collection also retains the operation until the native await has
     /// stopped. Expiry cannot release its references underneath a live capture.
-    func observe<T>(_ body: () async throws -> T) async throws -> T {
+    func observe<T>(_ body: @MainActor () async throws -> T) async throws -> T {
         try check()
         guard !busy else { throw DriverError("another native unit is running", code: .invalidRequest) }
         busy = true
@@ -178,7 +178,7 @@ import Foundation
 
     /// The result contains the unit's effect journal even on native failure.
     /// Protocol validation happens before admission; unit failures are values.
-    func execute(step: Int64, payload: Data, body: () async -> [String: Any]) async throws -> [String: Any] {
+    func execute(step: Int64, payload: Data, body: @MainActor () async -> [String: Any]) async throws -> [String: Any] {
         // A duplicate completed step can be retrieved after finish/expiry. It
         // must never re-enter a native API, including after result eviction.
         switch steps.begin(id: step, request: payload) {

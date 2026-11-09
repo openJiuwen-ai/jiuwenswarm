@@ -71,7 +71,7 @@ import CoreGraphics
         let recipient = try desktop.keyboardDestination(ref)
         var completed = false
         defer { if completed { desktop.inputFinished(ref) } else { desktop.inputFailed() } }
-        func validate() throws {
+        let validate: @MainActor () throws -> Void = {
             try boundary(); try check()
             try recipient.validate(DesktopCapture.destination())
         }

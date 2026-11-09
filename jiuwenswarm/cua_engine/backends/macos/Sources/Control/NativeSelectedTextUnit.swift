@@ -55,7 +55,7 @@ import ApplicationServices
                  onDispatch: @escaping @MainActor () throws -> Void,
                  onPosted: @escaping @MainActor () -> Void) async throws -> Bool {
         try validateText(text)
-        func ready() throws {
+        let ready: @MainActor () throws -> Void = {
             try validate(expected, check: check)
             guard try readiness(expected).ready else {
                 throw DriverError("native editor receiver or selection changed; no further text sent", code: .inputUnavailable)

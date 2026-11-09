@@ -1703,6 +1703,11 @@
       "free": "限时免费模型",
       "getFreeModels": "获取限时免费模型",
       "addModel": "添加自定义模型/模型组",
+      "errors": {
+        "CONVERSATION_BUSY": "会话正在运行，请结束当前操作后切换模型",
+        "MODEL_UNAVAILABLE": "这个模型已不可用，请重新选择",
+        "TARGET_INACTIVE": "这个会话已不可用，请重新选择"
+      },
       "selectionFailed": "模型选择未能生效，请重新选择",
       "empty": "暂无可用模型，请先在设置中添加模型",
       "placeholder": "选择模型",
@@ -5379,6 +5384,28 @@
   },
   "webuiSplash": {
     "holdToSkip": "长按空格跳过"
+  },
+  "webuiPresentation": {
+    "enter": "进入{{title}}",
+    "opening": "正在打开桌面形态…",
+    "desktopRequired": "请在桌面客户端使用应用形态",
+    "newConversation": "新对话",
+    "openFailed": "桌面形态未能打开，工作台仍可继续使用",
+    "updateFailed": "桌面形态更新失败，请返回工作台检查连接",
+    "actionFailed": "操作未完成，请检查会话状态",
+    "restored": "桌面形态已结束，工作台已恢复",
+    "errors": {
+      "DISCONNECTED": "连接已断开，请返回工作台",
+      "TARGET_INACTIVE": "这个会话已不可用，请重新选择",
+      "CONVERSATION_BUSY": "会话正在运行或等待确认，请先完成当前操作",
+      "SEND_FAILED": "发送未确认成功，请检查对话后再决定是否重发",
+      "REQUEST_CONFLICT": "请求编号重复且内容不同，操作已拒绝",
+      "STALE_REQUEST": "请求已过期，操作未重复执行",
+      "MODEL_UNAVAILABLE": "这个模型已不可用，请重新选择",
+      "REPLY_CHANGED": "回复已更新，请重新展开查看",
+      "REQUEST_BUSY": "操作尚在执行，请稍后再试"
+    },
+    "choose": "切换应用形态"
   },
   "webuiIframe": {
     "pluginPage": "插件页面",

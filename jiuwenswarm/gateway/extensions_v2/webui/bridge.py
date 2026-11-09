@@ -37,7 +37,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.settings_contributions import SETTI
 from jiuwenswarm.gateway.extensions_v2.webui.transfers import TransferManager
 
 SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background", "application.splash",
-                   SETTINGS_SLOT})
+                   "application.presentation", SETTINGS_SLOT})
 SPLASH_SLOT = "application.splash"
 #: Display-only slots whose lifecycle frames bypass request policy (S_09 section 3).
 PLATFORM_SLOTS = frozenset({"application.background", SPLASH_SLOT})

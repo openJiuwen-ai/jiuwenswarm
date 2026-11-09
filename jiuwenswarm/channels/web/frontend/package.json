@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:application-presentation": "esbuild tests/fixtures/applicationPresentation.ts --bundle --packages=external --platform=node --format=esm --define:import.meta.env={} --outfile=node_modules/.cache/application-presentation/protocol.mjs && node --test tests/applicationPresentation.test.mjs tests/presentationTransitions.test.mjs",
     "test:update-panel": "esbuild src/components/UpdatePanel/index.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/update-panel/index.mjs && node --test tests/updatePanel.test.mjs",
     "test:panel-pages": "node scripts/build-panel-pages.mjs && node --test tests/panelPagesReact.test.mjs",
     "test:webui-client": "esbuild tests/fixtures/webuiClient.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/webui-client/client.mjs --define:import.meta.env={} && node --test tests/webuiClient.test.mjs",

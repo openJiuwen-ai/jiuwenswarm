@@ -14,6 +14,7 @@ import './styles/foundation.css'
 import './styles/themes/default/light.css'
 import './index.css'
 import './features/a2ui/a2ui.css'
+import { PresentationWindow } from './features/webui/presentation/PresentationWindow.tsx';
 
 // Durable desktop drop bridge — must exist before ChatPanel mounts / effect cleanup.
 installDesktopLocalFilesBridge();
@@ -47,6 +48,11 @@ function resolveOpenSourceSettingsRequest(request: SettingsRequest): SettingsReq
 }
 
 const runnerQuery = new URLSearchParams(window.location.search)
+const presentationWindow = runnerQuery.get('application-presentation') === '1' && !!window.jiuwenPresentation;
+if (presentationWindow) {
+  document.documentElement.setAttribute('data-application-presentation', '');
+  document.getElementById('workswarm-neutral')?.remove();
+}
 const browserRunner = window.location.pathname === '/share-export-runner' && runnerQuery.get('client') === '1'
 const runnerSessionId = window.location.pathname === '/share-export-runner'
   ? runnerQuery.get('session_id')?.trim() || null
@@ -60,7 +66,7 @@ if (runnerJobId || runnerSessionId) document.getElementById('workswarm-neutral')
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <A2UIProvider onAction={handleA2UIAction}>
-    {browserRunner || runnerJobId || runnerSessionId ? (
+    {presentationWindow ? <PresentationWindow /> : browserRunner || runnerJobId || runnerSessionId ? (
       <ShareImageExportRunner
         jobId={runnerJobId}
         sessionId={runnerSessionId}

@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Input, type InputProps } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
+import type { LocalizedText } from '../../../catalog/components/localizedText.ts';
+import { useLocalizedText } from '../../useLocalizedText.ts';
 
 export function WebUIInput({ node, context, emit, appearance, fieldControl }: WebUIAdapterProps) {
   const p = node.props as Pick<InputProps, 'value' | 'defaultValue' | 'placeholder' | 'disabled' | 'maxLength'
-    | 'allowClear' | 'showCount' | 'size' | 'variant' | 'type' | 'readOnly' | 'status' | 'autoComplete'> & { ariaLabel?: string };
+    | 'allowClear' | 'showCount' | 'size' | 'variant' | 'type' | 'readOnly' | 'status' | 'autoComplete'> & { ariaLabel?: LocalizedText };
+  const ariaLabel = useLocalizedText(p.ariaLabel);
   const controlled = fieldControl?.onChange !== undefined;
   const [localValue, setValue] = useState(String(p.value ?? p.defaultValue ?? ''));
   const value = controlled ? String(fieldControl?.value ?? '') : localValue;
@@ -25,7 +28,7 @@ export function WebUIInput({ node, context, emit, appearance, fieldControl }: We
     className={appearance?.className} style={appearance?.style}
     id={fieldControl?.id} aria-invalid={fieldControl?.['aria-invalid']}
     aria-describedby={fieldControl?.['aria-describedby']} aria-required={fieldControl?.['aria-required']}
-    data-testid="webui-input" aria-label={p.ariaLabel} value={value} placeholder={p.placeholder}
+    data-testid="webui-input" aria-label={ariaLabel} value={value} placeholder={p.placeholder}
     disabled={disabled} readOnly={p.readOnly} maxLength={p.maxLength} allowClear={p.allowClear}
     showCount={p.showCount} size={p.size} variant={p.variant} type={p.type} status={p.status} autoComplete={p.autoComplete}
     onCompositionStart={() => { composing.current = true; compositionCommit.current = null; }}
