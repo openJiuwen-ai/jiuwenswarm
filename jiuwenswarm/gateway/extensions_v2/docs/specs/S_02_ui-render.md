@@ -8,7 +8,7 @@
 | 编号 / slug | `S_02 / ui-render` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/webui/`、`event_types/webui.py`、`handler_ops/ui.py` |
 | 设计依据 | [详细架构第 6 节](../designs/extensions-v2-architecture.md)、AgentServer [F_06](../../../../extensions_v2/docs/features/F_06_render-service.md) |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-07 |
 | 契约状态 | 已实现；本文是 Gateway 侧 `ui.render` 与 Ops 契约的唯一维护位置 |
 
 本文维护 Gateway 侧渲染的对外契约：事件与 Ops 形状、槽位表、组件目录、下行帧、尺寸上限与错误码。平台不预置任何视图：`ui.render` 只负责校验并投递扩展包提交的树。与 AgentServer 同名的模型保持字段一致；差异只在第 6 节列出的必要项。
@@ -38,6 +38,11 @@
 
 `ui.render` 事件链与调用方所在的 `gateway.request` 链相互独立；调用方的返回值不受渲染结果影响。
 
+`GatewayRuntime` 中的渲染 Ops 绑定发放它的包激活与浏览器连接，而非调用时恰好所在的 Handler。
+当前激活的 Ops 可在 Handler 返回后继续渲染；原激活被释放或连接关闭后返回 `rejected`。
+宿主在 Ops 入口与 CORE 取得实例锁后分别核对原调用方，事件链或实例锁中的等待不能把旧调用转交给新激活。
+发送期间发生释放或断线时，不恢复已退休实例的快照，也不回退为清除帧预留的版本号。
+
 ## 3. 槽位契约
 
 Gateway 只接受自己能按 WebSocket 寻址的槽位：
@@ -46,8 +51,11 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 | --- | --- | --- | --- |
 | `application.entry` | `application` | `single` | 首屏整页宿主槽位，前端常驻挂载 |
 | `application.sidebar.footer` | `application` | `list` | 侧边栏底部列表槽位，可同时容纳多个包的内容 |
+| `application.background` | `application` | `single` | 全窗口底层背景，只接受 `MediaSurface` 根；宿主策略与消息协议见 [S_07](S_07_media-surface.md) |
+| `application.splash` | `application` | `single` | 启动开场，只接受 `MediaSurface` 根；声明、时机与平台帧见 [S_09](S_09_startup-splash.md) |
+| `application.settings` | `application` | `list` | 与 AgentServer 共用的设置槽位；Gateway 只渲染其包按 S_18 声明的 application 范围配置项，接受普通组件树；见 [S_10](S_10_application-settings.md) |
 
-槽位是通用能力：任何 Gateway 包都可以渲染这两个槽位，平台不规定其内容。未知槽位返回 `SCHEMA_ERROR`。会话槽位由 AgentServer 渲染，Gateway 侧一律拒绝。
+槽位是通用能力：任何 Gateway 包都可以渲染这些槽位，平台不规定其内容。未知槽位返回 `SCHEMA_ERROR`。会话槽位由 AgentServer 渲染，Gateway 侧一律拒绝。
 
 ## 4. 目标与实例键
 
@@ -60,6 +68,10 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 - `connection_id` 由 Gateway 从实际 WebSocket 注入，前端不下发；前端携带且与调用方不一致时拒绝。
 - 下行 `target` 不包含 `connection_id`，`application` 目标也不包含 `session_id`。
 - `package_id`、`instance_key`、`connection_id` 各限 200 字节；字段不得含 `|`，不得含首尾空白。
+- **实例键规则唯一：** 上一条对 `instance_key` 的要求（字符串、不含 `|`、无首尾空白、UTF-8 编码后不超过 200 字节）同样用于
+  `application.settings` 声明的 `instanceKey`（另要求非空，与 AgentServer S_18 一致）、`webui.dispatch` 与显示型槽位生命周期帧的
+  `target.instance_key`，以及 `webui.upload.begin` 的目标（[S_10](S_10_application-settings.md)）。实现为
+  `webui/models.py` 的 `valid_instance_key()`；空键表示没有声明实例键的槽位的默认实例。
 
 ## 5. 上限与下行帧
 
@@ -83,6 +95,10 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 
 投递返回 `True` 只表示帧已交给渠道，不代表浏览器已应用。
 
+包释放、宿主关闭或容量淘汰实例时，清除帧也占用一个版本号；同一连接内该目标再次渲染必须高于清除版本。
+前端对所有 application 目标保留已接受的清除版本下限：即使从未收到对应渲染或本地槽位已卸载，
+也拒绝版本小于等于该下限的渲染与错误帧。同连接重挂载不清除下限；新连接或请求上下文重置后重新建立。
+
 ## 6. 与 AgentServer 的必要差异
 
 组件属性、嵌套字段、children 和事件数据统一遵循
@@ -91,7 +107,7 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 
 | 差异 | 原因 |
 | --- | --- |
-| 槽位表只含两个 application 槽位 | Gateway 不渲染会话槽位，避免与 AgentServer 双写同一实例 |
+| 槽位表只含 application 槽位 | Gateway 不渲染会话槽位，避免与 AgentServer 双写同一实例 |
 | 传输层按 `ws_id` 直接 `send_event` | Gateway 拥有 socket，不经过 AgentServer 推送通道 |
 | 连接事实来自 `SessionContext.metadata` | Gateway 没有 AgentServer 的 contextvar 调用上下文 |
 | `Form` / `Form.Item`、`Button.form`、布局与富菜单扩展 | Gateway 页面支持表单和富菜单；AgentServer 保持其组件子集；`Input` 不带 `name` |

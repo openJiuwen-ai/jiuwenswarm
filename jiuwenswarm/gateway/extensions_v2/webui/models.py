@@ -25,6 +25,33 @@ def _empty_props() -> Mapping[str, Any]:
     return MappingProxyType({})
 
 
+#: Byte limit of every render target string (S_02).
+MAX_TARGET_BYTES = 200
+
+
+def valid_instance_key(value: Any, *, required: bool = False) -> bool:
+    """Apply the single instance-key rule shared by declarations, renders, interactions and imports.
+
+    A key is a string without ``|`` and without surrounding whitespace, encodable
+    as UTF-8 in at most 200 bytes. The empty key addresses a slot's default
+    instance; settings declarations pass ``required=True`` because their key
+    names a page. The rule matches AgentServer S_18 and ``validate_target``.
+
+    Args:
+        value: The candidate key, as received.
+        required: Refuse the empty key.
+
+    Returns:
+        True when the key may address an instance.
+    """
+    if not isinstance(value, str) or "|" in value or value != value.strip() or (required and not value):
+        return False
+    try:
+        return len(value.encode("utf-8")) <= MAX_TARGET_BYTES
+    except UnicodeError:
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class RenderTarget:
     """Render instance identity.
@@ -131,6 +158,48 @@ class UiActionOutput:
     accepted: bool
     status: str
     code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UiAppearanceInput:
+    """``ui.appearance``: submit, or revoke with ``None``, the caller's appearance on its connection (S_08).
+
+    ``package_id`` names the calling package for USER handlers to match and inspect; the host takes
+    the caller itself from the operation, not from this input (S_01 section 4).
+    """
+
+    package_id: str
+    appearance: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UiDownloadInput:
+    """``ui.download``: offer one file of the caller's data directory to its connection (S_10 section 7)."""
+
+    package_id: str
+    path: str = ""
+    filename: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UiSplashPreviewInput:
+    """``ui.splash.preview``: replay the caller's splash once on its connection (S_09 section 3.3)."""
+
+    package_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class HostActionOutput:
+    """Answer of a host action chain.
+
+    ``status`` is ``rejected`` (with ``code`` and ``message``) when the host refused the call; a USER
+    handler that takes the call over returns its own status, for example ``denied`` with a code.
+    """
+
+    status: str
+    revision: int | None = None
+    code: str | None = None
+    message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

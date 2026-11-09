@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import sys
+import types
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,8 +21,10 @@ from openjiuwen.core.extension import ExtensionFailure
 from jiuwenswarm.gateway.channel_manager.web import extension_package_handlers
 from jiuwenswarm.gateway.extensions_v2 import assembly
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
+from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
 from jiuwenswarm.gateway.extensions_v2.management.catalog import package_detail
 from jiuwenswarm.gateway.extensions_v2.management.registry import GatewayPackageManager
+from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
 
 
@@ -193,6 +198,115 @@ async def test_gateway_package_install_publish_and_uninstall(tmp_path):
     assert manager.installed() == []
 
 
+HELPER_ENTRY = """\
+from .helpers import ANSWER
+
+
+class Extension:
+    def register(self, registrar):
+        async def handler(event, ops, next_handler):
+            return await next_handler(event)
+
+        registrar.register_event_handler("gateway.request", handler, {}, "user")
+
+
+def create_extension():
+    return Extension()
+"""
+
+
+def _helper_package_zip(folder: Path, answer: str) -> Path:
+    """demo.gateway 0.1.0 whose entry imports a sibling module holding ``answer``."""
+    source = folder / "src"
+    source.mkdir(parents=True)
+    (source / "manifest.json").write_text(json.dumps({
+        "schemaVersion": 1, "package_type": "extension",
+        "package": {"id": "demo.gateway", "version": "0.1.0", "domain": "gateway"},
+        "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+    }), encoding="utf-8")
+    (source / "extension.py").write_text(HELPER_ENTRY, encoding="utf-8")
+    (source / "helpers.py").write_text(f"ANSWER = {answer!r}\n", encoding="utf-8")
+    archive = folder / "demo.gateway-0.1.0.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for file in source.iterdir():
+            bundle.write(file, file.name)
+    return archive
+
+
+async def test_reinstalling_the_same_version_loads_fresh_submodules(tmp_path):
+    """Each load uses new module names, so a reinstall at the same path never reuses cached sibling modules."""
+    runtime = await _runtime(tmp_path)
+    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+    try:
+        for answer in ("first", "second"):
+            reports = await manager.install([_helper_package_zip(tmp_path / answer, answer)])
+            assert [report.status for report in reports] == ["SUCCESS"]
+            [package] = runtime.active_packages()
+            assert package.handlers[0].handler.__globals__["ANSWER"] == answer
+            assert (await manager.uninstall("demo.gateway")).status == "SUCCESS"
+    finally:
+        await runtime.shutdown()
+
+
+def _package_modules(package) -> list[str]:
+    roots = package.module_names
+    return [name for name in sys.modules if any(name == root or name.startswith(root + ".") for root in roots)]
+
+
+async def test_released_loads_leave_sys_modules(tmp_path):
+    """Loads no longer accumulate: each release drops the modules of its own load (S_01 invariant 11)."""
+    runtime = await _runtime(tmp_path)
+    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+    loads = []
+    try:
+        for index in range(6):
+            reports = await manager.install([_helper_package_zip(tmp_path / f"load{index}", f"answer{index}")])
+            assert [report.status for report in reports] == ["SUCCESS"]
+            [package] = runtime.active_packages()
+            assert len(_package_modules(package)) >= 2  # entry package and the helpers submodule
+            loads.append(package)
+            assert (await manager.uninstall("demo.gateway")).status == "SUCCESS"
+            assert _package_modules(package) == []
+        assert all(_package_modules(package) == [] for package in loads)
+
+        await manager.install([_helper_package_zip(tmp_path / "reload", "kept")])
+        assert (await manager.reload("demo.gateway")).status == "SUCCESS"
+        [current] = runtime.active_packages()
+        assert _package_modules(current) and all(_package_modules(package) == [] for package in loads)
+    finally:
+        await runtime.shutdown()
+    assert _package_modules(current) == []
+
+
+async def test_modules_stay_until_running_handlers_finish(tmp_path):
+    runtime = await _runtime(tmp_path)
+    started, resume = asyncio.Event(), asyncio.Event()
+    root = tmp_path / "slow"
+    root.mkdir()
+    module_name = "jiuwenswarm_gateway_ext_test_slow"
+    sys.modules[module_name] = types.ModuleType(module_name)
+
+    async def slow(event, ops, next_handler):
+        started.set()
+        await resume.wait()
+        return await next_handler(event)
+
+    package = LoadedPackage(package_id="demo.slow", version="1.0.0", root=root, module_names=(module_name,),
+                            handlers=(HandlerDeclaration("gateway.request", slow, {}, "slow"),))
+    try:
+        runtime.publish(package)
+        request = asyncio.create_task(runtime.intercept(SimpleNamespace(closed=False), "req", "ping", {}))
+        await started.wait()
+        runtime.unpublish("demo.slow")
+        assert module_name in sys.modules, "a running handler keeps its modules"
+        resume.set()
+        await request
+        assert module_name not in sys.modules
+    finally:
+        sys.modules.pop(module_name, None)
+        await runtime.shutdown()
+
+
 async def test_agent_package_is_rejected_without_copying(tmp_path):
     runtime = await _runtime(tmp_path)
     manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
@@ -346,6 +460,34 @@ async def test_local_cli_uses_live_gateway_manager(tmp_path, monkeypatch):
         assert code == 0 and result["verification_status"] == "SUCCESS"
         result, code = await cli.execute(cli.parser().parse_args(["uninstall", "demo.gateway", "--domain", "gateway"]))
         assert code == 0 and not result["active"] and runtime.user_handler_count == 0
+    finally:
+        await service.close()
+        await runtime.shutdown()
+
+
+async def test_local_cli_reload_asks_mounted_slots_for_ready(tmp_path, monkeypatch):
+    """Reload retires the old activation's views, so browsers must ask the new one to render (F_11)."""
+    from jiuwenswarm.channels.cli import extension as cli
+    from jiuwenswarm.gateway.extensions_v2.management.local_cli import start_local_cli
+
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setenv("GATEWAY_PORT", "19001")
+    runtime = await _runtime(tmp_path)
+    broadcasts = []
+
+    async def broadcast_event(event, payload, **_):
+        broadcasts.append((event, payload))
+
+    runtime.channel.broadcast_event = broadcast_event
+    service = await start_local_cli(runtime)
+    archive = _package_zip(tmp_path)
+    try:
+        await cli.execute(cli.parser().parse_args(["install", str(archive), "--json"]))
+        result, code = await cli.execute(cli.parser().parse_args(["reload", "demo.gateway", "--domain", "gateway"]))
+        assert code == 0 and result["verification_status"] == "SUCCESS"
+        assert broadcasts == [("extensions.v2.installed", {"package_ids": ["demo.gateway"]})] * 2
+        await cli.execute(cli.parser().parse_args(["uninstall", "demo.gateway", "--domain", "gateway"]))
+        assert len(broadcasts) == 2
     finally:
         await service.close()
         await runtime.shutdown()

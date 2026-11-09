@@ -28,20 +28,26 @@ from jiuwenswarm.gateway.extensions_v2.webui.constants import (
 )
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import COMPONENT_RULES, finite_number, validate_props
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
+    MAX_TARGET_BYTES,
     RenderFrame,
     RenderMode,
     RenderNode,
     RenderTarget,
     UiRenderInput,
     ValidationReport,
+    valid_instance_key,
 )
 
 _SLOT_ROOT_COMPONENTS: Mapping[str, tuple[str, ...]] = {
     "conversation.panel.right": ("Panel", "Iframe"),
     "application.menu.main": ("Iframe",),
     "task.function.main": ("Iframe",),
+    "application.background": ("MediaSurface",),
+    "application.splash": ("MediaSurface",),
 }
-_ROOT_ONLY_COMPONENTS: frozenset[str] = frozenset({"Panel", "Iframe"})
+_ROOT_ONLY_COMPONENTS: frozenset[str] = frozenset({"Panel", "Iframe", "MediaSurface"})
+# Slots whose root must be one of their dedicated root components.
+_STRICT_ROOT_SLOTS: frozenset[str] = frozenset({"conversation.panel.right", "application.background", "application.splash"})
 
 
 def _fail(message: str, code: str = CODE_SCHEMA_ERROR) -> ValidationReport:
@@ -98,7 +104,10 @@ def validate_target(target: RenderTarget) -> ValidationReport:
 
     if not isinstance(target, RenderTarget):
         return _fail("target must be a RenderTarget")
-    for name in ("session_id", "slot_id", "package_id", "instance_key", "scope", "connection_id"):
+    if not valid_instance_key(target.instance_key):
+        # The same rule as settings declarations, interactions and file imports.
+        return _fail("invalid target.instance_key")
+    for name in ("session_id", "slot_id", "package_id", "scope", "connection_id"):
         value = getattr(target, name)
         if not isinstance(value, str) or "|" in value or value != value.strip():
             return _fail(f"invalid target.{name}")
@@ -119,10 +128,9 @@ def validate_target(target: RenderTarget) -> ValidationReport:
         return _fail("target.session_id is required")
     for field_name, value in (
         ("package_id", target.package_id),
-        ("instance_key", target.instance_key),
         ("connection_id", target.connection_id),
     ):
-        if len(value.encode("utf-8")) > 200:
+        if len(value.encode("utf-8")) > MAX_TARGET_BYTES:
             return _fail(f"target.{field_name} too long")
     return _OK
 
@@ -156,9 +164,9 @@ def validate_request(request: UiRenderInput) -> ValidationReport:
     if not report.ok:
         return report
     slot_roots = _SLOT_ROOT_COMPONENTS.get(request.target.slot_id, ())
-    if request.target.slot_id == "conversation.panel.right":
+    if request.target.slot_id in _STRICT_ROOT_SLOTS:
         if request.root.component not in slot_roots:
-            return _fail(f"right panel requires one of: {', '.join(slot_roots)}")
+            return _fail(f"{request.target.slot_id} requires one of: {', '.join(slot_roots)}")
     elif request.root.component in _ROOT_ONLY_COMPONENTS and request.root.component not in slot_roots:
         return _fail(f"{request.root.component} is only allowed in slots that accept it as the render root")
     return _OK
@@ -261,7 +269,7 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
     if not report.ok:
         return report
 
-    if node.component in {"Panel", "Iframe"} and depth > 1:
+    if node.component in _ROOT_ONLY_COMPONENTS and depth > 1:
         return _fail(f"{node.component} is only allowed at the tree root")
     if node.component == "Panel" and not node.children:
         return _fail("Panel requires body children")

@@ -1,0 +1,311 @@
+[
+  {
+    "name": "accent only",
+    "appearance": {
+      "accent": "#b45309"
+    },
+    "valid": true
+  },
+  {
+    "name": "uppercase accent",
+    "appearance": {
+      "accent": "#B45309"
+    },
+    "valid": true
+  },
+  {
+    "name": "translucent with opacity",
+    "appearance": {
+      "surface": "translucent",
+      "surfaceOpacity": 0.8
+    },
+    "valid": true
+  },
+  {
+    "name": "translucent default opacity",
+    "appearance": {
+      "surface": "translucent"
+    },
+    "valid": true
+  },
+  {
+    "name": "opaque surface",
+    "appearance": {
+      "surface": "opaque"
+    },
+    "valid": true
+  },
+  {
+    "name": "opacity at lower bound",
+    "appearance": {
+      "surface": "translucent",
+      "surfaceOpacity": 0.3
+    },
+    "valid": true
+  },
+  {
+    "name": "opacity at upper bound",
+    "appearance": {
+      "surface": "translucent",
+      "surfaceOpacity": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "every field",
+    "appearance": {
+      "accent": "#2f6fae",
+      "surface": "translucent",
+      "surfaceOpacity": 0.86,
+      "tokens": {
+        "--color-scrollbar-thumb": "rgba(180, 83, 9, .3)",
+        "--color-sidebar-nav-active": "rgba(214,140,30,0.14)",
+        "--color-sidebar-nav-active-hover": "#d68c1e33",
+        "--color-conversation-active-surface": "rgb(214, 140, 30)",
+        "--color-chat-accent-subtle": "#abc",
+        "--color-action-primary-subtle": "rgba(0, 0, 0, 1)",
+        "--color-action-primary-glow": "rgba(255, 255, 255, 0)",
+        "--color-border-accent": "rgba(1, 2, 3, 1.0)"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "empty object",
+    "appearance": {},
+    "valid": false
+  },
+  {
+    "name": "not an object",
+    "appearance": "#b45309",
+    "valid": false
+  },
+  {
+    "name": "array",
+    "appearance": [],
+    "valid": false
+  },
+  {
+    "name": "unknown field",
+    "appearance": {
+      "accent": "#b45309",
+      "stylesheet": "body{}"
+    },
+    "valid": false
+  },
+  {
+    "name": "short accent",
+    "appearance": {
+      "accent": "#b45"
+    },
+    "valid": false
+  },
+  {
+    "name": "accent with alpha",
+    "appearance": {
+      "accent": "#b4530980"
+    },
+    "valid": false
+  },
+  {
+    "name": "named accent",
+    "appearance": {
+      "accent": "orange"
+    },
+    "valid": false
+  },
+  {
+    "name": "rgb accent",
+    "appearance": {
+      "accent": "rgb(180, 83, 9)"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown surface",
+    "appearance": {
+      "surface": "glass"
+    },
+    "valid": false
+  },
+  {
+    "name": "opacity without translucent",
+    "appearance": {
+      "surfaceOpacity": 0.8
+    },
+    "valid": false
+  },
+  {
+    "name": "opacity with opaque",
+    "appearance": {
+      "surface": "opaque",
+      "surfaceOpacity": 0.8
+    },
+    "valid": false
+  },
+  {
+    "name": "opacity below range",
+    "appearance": {
+      "surface": "translucent",
+      "surfaceOpacity": 0.29
+    },
+    "valid": false
+  },
+  {
+    "name": "opacity above range",
+    "appearance": {
+      "surface": "translucent",
+      "surfaceOpacity": 1.01
+    },
+    "valid": false
+  },
+  {
+    "name": "boolean opacity",
+    "appearance": {
+      "surface": "translucent",
+      "surfaceOpacity": true
+    },
+    "valid": false
+  },
+  {
+    "name": "string opacity",
+    "appearance": {
+      "surface": "translucent",
+      "surfaceOpacity": "0.8"
+    },
+    "valid": false
+  },
+  {
+    "name": "empty tokens",
+    "appearance": {
+      "tokens": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "token outside whitelist",
+    "appearance": {
+      "tokens": {
+        "--color-text-primary": "#000000"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "surface token",
+    "appearance": {
+      "tokens": {
+        "--color-surface-card": "#ffffff"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "prototype token name",
+    "appearance": {
+      "tokens": {
+        "__proto__": "#ffffff"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "var() value",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "var(--color-text-primary)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "url() value",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "url(x.png)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "named color value",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "red"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "channel above 255",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "rgb(256, 0, 0)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "alpha above 1",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "rgba(0, 0, 0, 1.5)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "rgb with alpha",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "rgb(0, 0, 0, 0.5)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "rgba without alpha",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "rgba(0, 0, 0)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "percent channel",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "rgb(10%, 0, 0)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "tab inside rgb",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "rgb(0,\t0, 0)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "injection attempt",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": "#fff;background:url(x)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "non-string token value",
+    "appearance": {
+      "tokens": {
+        "--color-scrollbar-thumb": 3
+      }
+    },
+    "valid": false
+  }
+]

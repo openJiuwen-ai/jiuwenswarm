@@ -32,7 +32,7 @@
   line-height: 18px;
   border: 1px solid var(--color-toast-border);
   border-radius: var(--radius-md);
-  background: var(--color-surface-elevated);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
   pointer-events: auto;
   animation: ui-toast-rise 0.18s ease-out;

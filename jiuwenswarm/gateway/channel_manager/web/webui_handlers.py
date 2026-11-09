@@ -4,6 +4,8 @@
 
 ``webui.dispatch`` 是上行 ui.* 事件的唯一入口，参数与回执由 AgentServer 的
 ``WebUIDispatchAdapter`` 处理；Gateway 只做薄代理（与 designer_handlers 同形）。
+``webui.settings.catalog`` 取 AgentServer 的目录后追加 Gateway 域包的设置声明
+（AgentServer S_18、Gateway S_10 第 2 节），两侧各自列出自己的包。
 """
 
 from __future__ import annotations
@@ -17,8 +19,16 @@ logger = logging.getLogger(__name__)
 
 _WEBUI_METHODS: tuple[tuple[ReqMethod, float | None], ...] = (
     (ReqMethod.WEBUI_DISPATCH, 30.0),
-    (ReqMethod.WEBUI_SETTINGS_CATALOG, 30.0),
 )
+_CATALOG_TIMEOUT_SECONDS = 30.0
+
+
+def _gateway_settings() -> list[dict]:
+    """Settings declarations of active Gateway packages; empty without the extension runtime."""
+    from jiuwenswarm.gateway.extensions_v2.assembly import get_gateway_runtime
+
+    runtime = get_gateway_runtime()
+    return runtime.browser.settings_contributions() if runtime is not None else []
 
 
 def register_webui_handlers(channel, resolve_client):
@@ -51,6 +61,28 @@ def register_webui_handlers(channel, resolve_client):
             )
 
         channel.register_method(req_method.value, handler)
+
+    def settings_catalog(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.gateway.extensions_v2.webui.settings_contributions import merge_catalog
+
+        ws_id = str(getattr(ws, "_jiuwen_ws_id", "") or "").strip()
+        # Same proxy as before; on success the Gateway appends its own packages (S_18, Gateway S_10 section 2).
+        return proxy_unary_request(
+            channel=channel,
+            agent_client=resolve_client(),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.WEBUI_SETTINGS_CATALOG,
+            label=ReqMethod.WEBUI_SETTINGS_CATALOG.value,
+            timeout_seconds=_CATALOG_TIMEOUT_SECONDS,
+            metadata={"ws_id": ws_id} if ws_id else None,
+            transform_payload=lambda payload: merge_catalog(payload, _gateway_settings()),
+        )
+
+    channel.register_method(ReqMethod.WEBUI_SETTINGS_CATALOG.value, settings_catalog)
 
     async def on_disconnect(ws, session_ids):
         del session_ids

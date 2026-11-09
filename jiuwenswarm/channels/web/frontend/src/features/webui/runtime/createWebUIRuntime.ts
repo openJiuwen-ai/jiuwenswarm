@@ -18,8 +18,9 @@ import type {
   WebUINormalizedTarget,
 } from '../contracts/normalized.ts';
 import { createProtocolPipeline } from '../protocol/process.ts';
+import { readAppearanceFrame, type WebUIAppearanceFrame } from '../appearance/appearance.ts';
 import type { WebUIProtocol } from '../protocol/process.ts';
-import type { WebUIConnectionState, WebUITransportHandlers } from '../transport/types.ts';
+import type { WebUIConnectionState, WebUIDispatchReceipt, WebUITransportHandlers } from '../transport/types.ts';
 import type {
   WebUIInstanceDispatch,
   WebUIInstanceSnapshot,
@@ -57,7 +58,8 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   const protocol: WebUIProtocol = options.protocol ?? createProtocolPipeline(catalog, options.limits);
 
   const records = new Map<string, InstanceRecord>();
-  const clearedEntries = new Map<string, number>();
+  // Clear revisions outlive local instances and mounts, until the connection/request context ends.
+  const clearedRevisions = new Map<string, number>();
   let entryContextChanged = false;
   /** 挂载区 -> 实例键集合，范围订阅只关心成员变化。 */
   const scopeIndex = new Map<string, Set<string>>();
@@ -76,6 +78,12 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   let ownerCounter = 0;
   let version = 0;
   let connectionState: WebUIConnectionState = transport.getConnectionState();
+  // Appearance follows the connection: revisions restart with each connection, and a contribution
+  // kept through a disconnect is dropped if no provider re-applies it after the reconnect readies.
+  let appearance: WebUIAppearanceFrame | null = null;
+  let appearanceRevision = 0;
+  let appearanceStale = false;
+  const appearanceListeners = new Set<Listener>();
   let unsubscribeTransport: (() => void) | null = null;
   let started = false;
   let disposed = false;
@@ -185,7 +193,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   function commitRenderFrame(frame: WebUINormalizedRenderFrame): void {
     adoptEntryContext(frame.target);
     const key = webUIInstanceKey(frame.target);
-    if (frame.target.slotId === 'application.entry' && frame.revision <= (clearedEntries.get(key) ?? -1)) return;
+    if (frame.target.scope === 'application' && frame.revision <= (clearedRevisions.get(key) ?? -1)) return;
     const existing = records.get(key);
     if (existing && frame.revision <= existing.lastRenderRevision) {
       return;
@@ -224,8 +232,9 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     if (existing && frame.revision < existing.lastRenderRevision) {
       return;
     }
-    if (frame.target.slotId === 'application.entry') {
-      clearedEntries.set(key, Math.max(frame.revision, clearedEntries.get(key) ?? -1));
+    if (frame.target.scope === 'application') {
+      if (frame.revision <= (clearedRevisions.get(key) ?? -1)) return;
+      clearedRevisions.set(key, frame.revision);
     }
     if (!existing) {
       if (frame.target.scope === 'application') {
@@ -245,6 +254,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   function commitErrorFrame(frame: WebUINormalizedErrorFrame): void {
     adoptEntryContext(frame.target);
     const key = webUIInstanceKey(frame.target);
+    if (frame.target.scope === 'application' && frame.revision <= (clearedRevisions.get(key) ?? -1)) return;
     const existing = records.get(key);
     const error = { code: frame.code, message: frame.message };
     if (existing) {
@@ -280,6 +290,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   }
 
   function acceptsTarget(target: WebUINormalizedTarget): boolean {
+    if (target.scope === 'application' && connectionState !== 'connected') return false;
     if (!entryContextChanged && target.slotId === 'application.entry' && [...records.values()].some((record) =>
       record.target.slotId === target.slotId && record.key !== webUIInstanceKey(target))) return false;
     if (target.scope !== 'application') {
@@ -339,12 +350,26 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         commitErrorFrame(result.value);
       }
     },
+    onAppearanceFrame(payload) {
+      if (disposed || connectionState !== 'connected') {
+        return;
+      }
+      const frame = readAppearanceFrame(payload);
+      if (!frame || frame.revision <= appearanceRevision) {
+        return;
+      }
+      appearanceRevision = frame.revision;
+      appearanceStale = false;
+      setAppearance(frame.appearance ? frame : null);
+    },
     onConnectionStateChange(state) {
       if (disposed || state === connectionState) {
         return;
       }
       connectionState = state;
       if (state !== 'connected') {
+        appearanceRevision = 0;
+        appearanceStale = appearance !== null;
         nodeBindings.clear();
         for (const owner of owners.values()) {
           if (owner.scope === 'application') {
@@ -355,10 +380,38 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       refreshConnectedFlag();
       notifyAll();
       if (state === 'connected') {
-        void reportReadyAfterReconnect();
+        clearedRevisions.clear();
+        void reportReadyAfterReconnect().then(() => {
+          if (!disposed && appearanceStale && connectionState === 'connected') {
+            appearanceStale = false;
+            setAppearance(null);
+          }
+        });
       }
     },
   };
+
+  async function notifyClosed(instanceKey: string, reason: string): Promise<WebUIDispatchReceipt | null> {
+    const record = records.get(instanceKey);
+    if (disposed || !record || connectionState !== 'connected') {
+      return null;
+    }
+    try {
+      return await transport.dispatch({
+        event: 'ui.closed',
+        target: { ...record.target, scope: 'application' },
+        payload: { reason, revision: record.snapshot.revision },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  function setAppearance(next: WebUIAppearanceFrame | null): void {
+    if (next === appearance) return;
+    appearance = next;
+    for (const listener of [...appearanceListeners]) listener();
+  }
 
   async function sendReady(owner: MountedOwner, instanceKey: string, packageId?: string): Promise<void> {
     if (
@@ -675,7 +728,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       unsubscribeTransport = null;
     }
     records.clear();
-    clearedEntries.clear();
+    clearedRevisions.clear();
     scopeIndex.clear();
     scopeOwners.clear();
     owners.clear();
@@ -685,12 +738,14 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     scopeVersions.clear();
     globalListeners.clear();
     nodeBindings.clear();
+    appearance = null;
+    appearanceListeners.clear();
     version += 1;
   }
 
   function resetRequestContext(): void {
     nodeBindings.clear();
-    clearedEntries.clear();
+    clearedRevisions.clear();
     entryContextChanged = true;
     for (const record of [...records.values()]) {
       if (record.target.slotId === 'application.entry') continue;
@@ -765,5 +820,11 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     resetRequestContext,
     refreshContributions,
     getConnectionState: () => connectionState,
+    getAppearance: () => appearance,
+    notifyClosed,
+    subscribeAppearance: (listener) => {
+      appearanceListeners.add(listener);
+      return () => appearanceListeners.delete(listener);
+    },
   };
 }

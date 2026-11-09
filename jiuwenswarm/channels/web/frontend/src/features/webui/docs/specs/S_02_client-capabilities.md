@@ -1,6 +1,6 @@
 # Web 浏览器能力与请求绑定
 
-最近修订：2026-11-04。本文维护前端接口；配套 Gateway 浏览器桥接与登录示例分别提交。
+最近修订：2026-11-07。本文维护前端接口；配套 Gateway 浏览器桥接与登录示例分别提交。
 
 ## 接入边界
 
@@ -108,9 +108,19 @@ client.declarations.packages 仅列出参与浏览器能力的包，不是所有
 请求上下文变化时移除旧 WebUI 贡献；新上下文就绪后，已挂载的非 entry 插槽重新上报 ui.ready。
 该流程只恢复插件贡献，不重置业务 Store，也不自动刷新整个页面。
 
+应用级实例清除后的版本下限由运行时持有，与本地实例及槽位挂载分离。entry、background、splash、settings 等
+所有 application 目标收到有效清除后，版本小于等于清除版本的渲染与错误帧都被忽略，清除先于首个渲染到达时同样成立。
+同连接释放并重挂槽位仍保留下限；新连接进入 connected 或请求上下文重置时清除旧下限，以接受新作用域重新开始的版本。
+未连接时不接收 application 帧。本规则不改变会话级帧的现有处理，也不替代客户端能力包的激活代次校验。
+
 Client declarations enumerate participating capability packages rather than the complete WebUI catalog.
 Ordinary frames retain the existing UI validation. Participating frames require their declared activation generation,
 and a generation-tagged frame without a matching declaration is rejected.
 Images are mounted after their bound resource becomes available; invalidation of their resource scope removes old images and revokes their URLs before reloading.
 After the new request context is ready, mounted non-entry slots send ui.ready again to restore their contributions.
 This does not reset business stores or reload the page automatically.
+
+All application targets retain an accepted clear revision independently of local records and mounts. Render and error
+frames at or below that revision are ignored, including when the clear arrives first. Remounting retains the floor;
+a new connected transport or request-context reset clears it. Application frames are rejected while disconnected.
+Session frame handling and capability-package activation validation remain unchanged.

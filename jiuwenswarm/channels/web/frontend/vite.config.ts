@@ -1863,10 +1863,10 @@ export default defineConfig({
     port: frontendPort,
     strictPort: true,
     proxy: {
-      '/extension-assets': {
-        target: webTarget,
-        changeOrigin: true,
-      },
+      // Gateway platform routes: package assets, file imports and one-time exports (Gateway S_06, S_10).
+      ...Object.fromEntries(['/extension-assets', '/extension-uploads', '/extension-downloads'].map((prefix) => [
+        prefix, { target: webTarget, changeOrigin: true },
+      ])),
       ...(hubOAuthBroker ? {
         '/marketplace-oauth/hub': { target: hubOAuthBroker },
         '/oauth/hub': { target: hubOAuthBroker },

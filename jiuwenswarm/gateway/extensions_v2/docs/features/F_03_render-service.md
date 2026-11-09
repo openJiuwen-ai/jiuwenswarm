@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-GW-03 `ui.render` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/webui/`、`event_types/webui.py`、`handler_ops/ui.py` |
 | 设计依据 | [详细架构第 7 节](../designs/extensions-v2-architecture.md)、[渲染规约](../specs/S_02_ui-render.md)、AgentServer [F_06](../../../../extensions_v2/docs/features/F_06_render-service.md) |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-07 |
 | 方案状态 | 已实现，单元验证通过 |
 
 ## 1. 问题与目标
@@ -75,6 +75,8 @@ flowchart LR
 | --- | --- | --- |
 | `application.entry` | `single` | 首屏整页宿主，适合登录页、全屏设置等 |
 | `application.sidebar.footer` | `list` | 侧边栏底部列表，多个包可并存 |
+
+2026-11-05 修订：新增 `application.background`（single，只接受 `MediaSurface` 根），方案见 [F_10](F_10_media-surface-and-background.md)；本节其余内容为 GW-03 时的历史记录。
 
 `package_id` 由可信调用包归属注入，包不得指定其他包；`instance_key` 由包决定，同一 `(slot_id, package_id, instance_key)` 只对应一个实例，重复渲染只增加 revision。
 
@@ -147,6 +149,8 @@ sequenceDiagram
 插件可以拒绝请求或自行应答；凭据校验与允许哪些匿名交互均属于插件策略。旧认证门禁已移除，非接入目标继续沿通用请求链处理。
 浏览器操作、请求绑定、资源及生命周期的通用契约见 [S_06](../specs/S_06_local-browser-bridge.md)。
 
+2026-11-05 修订：上行接入的参与范围由客户端能力包扩大为所有应用级 UI 包（仅声明应用级槽位即可），请求绑定与客户端操作仍限于客户端能力包，见 [F_08](F_08_application-packages-and-assets.md)。
+
 ## 5. 异常与边界
 
 | 情况 | 行为 |
@@ -207,3 +211,18 @@ Box 数值 gap、Dropdown 展示触发器、重复表单字段及本地输入事
 Gateway 不开放 Dropdown.icon，不生成图标白名单；前端与 AgentServer 原有图标能力保持不变。
 前端与 Gateway 共同执行 28 组契约向量；Gateway 另验证 icon 属性被拒绝。精简后 Gateway extensions_v2 的 108 项测试通过，包含 10 项登录示例安装测试。
 此前契约对齐时未修改认证门禁，异常处理测试使用有效 header。后续旧门禁清理已移除这一依赖，当前渲染测试无需认证 header；变更与本次验证见 [F_02](F_02_gateway-request-and-auth-gate.md)。
+
+## 2026-11-07 渲染生命周期修订与验证
+
+原先的浏览器桥接检查依赖当前 Handler 上下文，不能约束 Handler 返回后保存的旧 Ops；检查后等待实例锁也可能跨越包释放。
+现在 Ops 发起调用时捕获原激活与连接的宿主校验函数，通过调用作用域传到 CORE，在取得实例锁后再核对。
+发送返回时再次核对激活和注册表实例身份；已退休实例不走失败回滚，避免覆盖释放时预留的清除版本。
+容量淘汰也预留清除版本，使前端通用的清除版本下限不会误拦之后的有效渲染。公开语义见 [S_02](../specs/S_02_ui-render.md)。
+
+`test_gateway_appearance.py` 新增 6 项：当前与释放后的捕获 Ops、两个在途/排队发送场景（含发送失败）、
+容量淘汰后重现；前端 `test:webui-components` 新增 6 项覆盖 background、splash、settings 的旧渲染与错误帧、
+清除先到、重挂载、有效更高版本、断线与重连。旧实现可复现旧 Ops、排队渲染和旧帧复活，
+淘汰场景也可复现新版本等于清除版本（2）的错误。
+
+最终相关后端回归 913 通过、1 跳过；前端组件、运行时、客户端、传输、插件设置与契约共 605 项通过。
+执行范围、环境和限制统一记录在开发计划的本轮台账。本轮未重做浏览器、打包版或桌面冷启动验证。

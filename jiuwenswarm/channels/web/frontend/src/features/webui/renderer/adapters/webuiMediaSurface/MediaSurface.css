@@ -1,0 +1,35 @@
+.webui-media-surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.webui-media-surface__layer {
+  position: absolute;
+  inset: 0;
+}
+
+.webui-media-surface__media {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+/* Blur filters the media behind this layer, so the media keeps its size and edges stay opaque. */
+.webui-media-surface__blur {
+  position: absolute;
+  inset: 0;
+  -webkit-backdrop-filter: blur(var(--webui-media-surface-blur));
+  backdrop-filter: blur(var(--webui-media-surface-blur));
+}
+
+/* Dimming darkens the media in both themes; it is not a theme surface. */
+.webui-media-surface__dim {
+  position: absolute;
+  inset: 0;
+  background: #000;
+}

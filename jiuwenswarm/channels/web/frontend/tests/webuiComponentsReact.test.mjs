@@ -63,6 +63,8 @@ const {
   useWebUIPanels,
   WebUINavigationHost,
   WebUIPageHost,
+  WebUIBackgroundHost,
+  WebUIAppearanceHost, appearanceModule, splashModule, WebUISplashGate,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
@@ -2320,6 +2322,354 @@ test('application footer mounts without a session and follows the published sing
   } finally { await app.close(); }
 });
 
+const backgroundScope = {
+  scope: 'application', slot_id: 'application.background', package_id: 'pkg.theme', instance_key: 'main',
+};
+const surfaceAsset = (name) => `/extension-assets/pkg.theme/g1/${name}`;
+const surface = (props) => ({ component: 'MediaSurface', props: { title: 'Theme', ...props } });
+const surfaceToken = (iframe) => /#webui-surface-token=([0-9a-f]{32})$/.exec(iframe.getAttribute('src'))?.[1];
+async function postSurface(source, data) {
+  await act(async () => window.dispatchEvent(new window.MessageEvent('message', { data, source })));
+}
+const surfaceMessage = (token, event) => ({ type: 'webui.surface', version: 1, token, event });
+
+test('MediaSurface renders image, video and sandboxed pages with the host media policy', async () => {
+  const app = await setup(surface({ kind: 'image', src: surfaceAsset('bg.png') }), backgroundScope);
+  try {
+    const root = app.container.querySelector('[data-testid="webui-media-surface"]');
+    assert.equal(root.dataset.variant, 'image');
+    assert.equal(root.getAttribute('aria-hidden'), 'true');
+    assert.equal(root.style.opacity, '1');
+    const image = root.querySelector('[data-testid="webui-media-surface-image"]');
+    assert.equal(image.getAttribute('src'), surfaceAsset('bg.png'));
+    assert.equal(image.style.objectFit, 'cover');
+    assert.equal(image.style.objectPosition, 'center');
+    assert.equal(root.querySelector('[data-testid="webui-media-surface-dim"]'), null);
+
+    await app.replace(surface({ kind: 'video', src: surfaceAsset('loop.mp4'), poster: surfaceAsset('poster.jpg'),
+      fit: 'contain', position: 'top', loop: false, muted: false, dim: 0.4, blur: 10, opacity: 0.5 }), 2);
+    const video = app.container.querySelector('[data-testid="webui-media-surface-video"]');
+    assert.equal(video.muted, true, 'the background ignores muted=false');
+    assert.equal(video.loop, false);
+    assert.equal(video.autoplay, true);
+    assert.equal(video.hasAttribute('playsinline'), true);
+    assert.equal(video.hasAttribute('controls'), false);
+    assert.equal(video.getAttribute('poster'), surfaceAsset('poster.jpg'));
+    assert.equal(video.style.objectFit, 'contain');
+    assert.equal(video.style.objectPosition, 'top');
+    const layer = video.parentElement;
+    // The blur layer filters the media behind it; the media layer itself keeps its size and style.
+    assert.equal(layer.getAttribute('style'), null);
+    const blur = app.container.querySelector('[data-testid="webui-media-surface-blur"]');
+    assert.equal(blur.style.getPropertyValue('--webui-media-surface-blur'), '10px');
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-dim"]').style.opacity, '0.4');
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface"]').style.opacity, '0.5');
+
+    await app.replace(surface({ kind: 'html', src: surfaceAsset('scene/index.html#scene=1'),
+      poster: surfaceAsset('poster.jpg') }), 3);
+    const iframe = app.container.querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.equal(iframe.getAttribute('sandbox'), 'allow-scripts');
+    assert.equal(iframe.getAttribute('allow'), '', 'a background page gets no autoplay delegation, so it cannot start sound');
+    assert.equal(iframe.getAttribute('referrerpolicy'), 'no-referrer');
+    assert.equal(iframe.getAttribute('tabindex'), '-1');
+    assert.equal(iframe.getAttribute('title'), 'Theme');
+    assert.match(iframe.getAttribute('src'), /^\/extension-assets\/pkg\.theme\/g1\/scene\/index\.html#scene=1&webui-surface-token=[0-9a-f]{32}$/);
+    assert.equal(iframe.dataset.variant, 'loading');
+    assert.equal(iframe.style.opacity, '0', 'the page keeps rendering while transparent');
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-poster"]'));
+  } finally { await app.close(); }
+});
+
+test('MediaSurface accepts only messages from its frame that carry the current token', async (context) => {
+  const app = await setup(surface({ kind: 'html', src: surfaceAsset('scene.html'), poster: surfaceAsset('poster.jpg') }),
+    backgroundScope);
+  try {
+    const iframe = app.container.querySelector('[data-testid="webui-media-surface-frame"]');
+    const frameWindow = iframe.contentWindow;
+    const token = surfaceToken(iframe);
+    assert.ok(frameWindow && token);
+    const posted = [];
+    context.mock.method(frameWindow, 'postMessage', (message, targetOrigin) => posted.push({ message, targetOrigin }));
+    for (const [source, data] of [
+      [frameWindow, surfaceMessage('0'.repeat(32), 'ready')],
+      [window, surfaceMessage(token, 'ready')],
+      [null, surfaceMessage(token, 'ready')],
+      [frameWindow, { ...surfaceMessage(token, 'ready'), version: 2 }],
+      [frameWindow, { ...surfaceMessage(token, 'ready'), type: 'webui.other' }],
+      [frameWindow, surfaceMessage(token, 'play')],
+      [frameWindow, surfaceMessage(token, 'heartbeat')],
+      [frameWindow, surfaceMessage(token, 'complete')],
+      [frameWindow, 'ready'],
+    ]) await postSurface(source, data);
+    assert.equal(iframe.dataset.variant, 'loading');
+    assert.equal(posted.length, 0);
+
+    await postSurface(frameWindow, surfaceMessage(token, 'ready'));
+    assert.equal(iframe.dataset.variant, 'ready');
+    assert.equal(iframe.style.opacity, '1');
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-poster"]'), null);
+    assert.deepEqual(posted.at(-1), { targetOrigin: '*', message: { type: 'webui.surface', version: 1, event: 'start',
+      context: { role: 'background', visible: true, reducedMotion: false, locale: i18n.language } } });
+
+    await postSurface(frameWindow, surfaceMessage(token, 'error'));
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-frame"]'), null);
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-poster"]'));
+
+    await app.replace(surface({ kind: 'html', src: surfaceAsset('next.html') }), 2);
+    const next = app.container.querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.notEqual(surfaceToken(next), token, 'each iframe receives a fresh token');
+    assert.equal(iframe.isConnected, false, 'switching removes the previous page right away, so its audio stops');
+    await postSurface(next.contentWindow, surfaceMessage(token, 'ready'));
+    assert.equal(next.dataset.variant, 'loading');
+    await postSurface(next.contentWindow, surfaceMessage(surfaceToken(next), 'ready'));
+    assert.equal(next.dataset.variant, 'ready');
+  } finally { await app.close(); }
+});
+
+test('MediaSurface falls back to the poster after the ready timeout and keeps videos paused while hidden', async (context) => {
+  const timers = [];
+  const originalSetTimeout = window.setTimeout.bind(window);
+  context.mock.method(window, 'setTimeout', (callback, delay, ...args) => {
+    if (delay !== 15000) return originalSetTimeout(callback, delay, ...args);
+    timers.push(callback);
+    return -timers.length;
+  });
+  const app = await setup(surface({ kind: 'html', src: surfaceAsset('slow.html'), poster: surfaceAsset('poster.jpg') }),
+    backgroundScope);
+  const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+  try {
+    assert.equal(timers.length, 1);
+    await act(async () => timers[0]());
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-frame"]'), null);
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-poster"]'));
+
+    await app.replace(surface({ kind: 'video', src: surfaceAsset('loop.mp4') }), 2);
+    const video = app.container.querySelector('[data-testid="webui-media-surface-video"]');
+    const paused = context.mock.method(video, 'pause', () => undefined);
+    const played = context.mock.method(video, 'play', () => Promise.resolve());
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    await act(async () => document.dispatchEvent(new window.Event('visibilitychange')));
+    assert.equal(paused.mock.callCount(), 1);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    await act(async () => document.dispatchEvent(new window.Event('visibilitychange')));
+    assert.equal(played.mock.callCount(), 1);
+  } finally {
+    if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
+    else delete document.visibilityState;
+    await app.close();
+  }
+});
+
+test('MediaSurface shows only the poster under reduced motion when one is provided', async () => {
+  const matchMedia = window.matchMedia;
+  window.matchMedia = (query) => ({ ...matchMedia(query), matches: query === '(prefers-reduced-motion: reduce)' });
+  const app = await setup(surface({ kind: 'video', src: surfaceAsset('loop.mp4'), poster: surfaceAsset('poster.jpg') }),
+    backgroundScope);
+  try {
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-video"]'), null);
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-poster"]'));
+    await app.replace(surface({ kind: 'html', src: surfaceAsset('scene.html'), poster: surfaceAsset('poster.jpg') }), 2);
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-frame"]'), null);
+    await app.replace(surface({ kind: 'video', src: surfaceAsset('loop.mp4') }), 3);
+    const video = app.container.querySelector('[data-testid="webui-media-surface-video"]');
+    assert.equal(video.autoplay, false, 'without a poster the video stays on its first frame');
+    await app.replace(surface({ kind: 'html', src: surfaceAsset('scene.html') }), 4);
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-frame"]'));
+  } finally {
+    window.matchMedia = matchMedia;
+    await app.close();
+  }
+});
+
+test('WebUIBackgroundHost mounts application.background below the UI and marks the document while shown', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const marker = () => document.documentElement.getAttribute('data-webui-background');
+  try {
+    await act(async () => root.render(createElement(WebUIBackgroundHost, { runtime, registry: componentRendererRegistry })));
+    const host = container.querySelector('[data-testid="webui-background-host"]');
+    assert.equal(host.hasAttribute('inert'), true);
+    assert.equal(host.getAttribute('aria-hidden'), 'true');
+    assert.equal(marker(), null);
+    const ready = transport.dispatches.find((request) => request.event === 'ui.ready');
+    assert.equal(ready.target.slotId, 'application.background');
+    assert.equal(ready.target.scope, 'application');
+
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'image', src: surfaceAsset('bg.png') }), 1,
+      backgroundScope)));
+    assert.ok(host.querySelector('[data-testid="webui-media-surface"]'));
+    assert.equal(marker(), null, 'nothing is shown while the image loads');
+    await act(async () => host.querySelector('[data-testid="webui-media-surface-image"]')
+      .dispatchEvent(new window.Event('load')));
+    assert.equal(marker(), 'active');
+
+    await act(async () => transport.injectRenderFrame(frame({ component: 'Box', props: {} }, 2, backgroundScope)));
+    assert.ok(host.querySelector('[data-testid="webui-media-surface"]'), 'an invalid root keeps the last valid frame');
+
+    await act(async () => transport.injectClearFrame({ target: backgroundScope, revision: 3 }));
+    assert.equal(host.querySelector('[data-testid="webui-media-surface"]'), null);
+    assert.equal(marker(), null);
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+    assert.equal(marker(), null);
+  }
+});
+
+test('background updates with the same page keep it running and only restyle it', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const changes = [];
+  const observer = new MutationObserver(() => changes.push(document.documentElement.getAttribute('data-webui-background')));
+  try {
+    await act(async () => root.render(createElement(WebUIBackgroundHost, { runtime, registry: componentRendererRegistry })));
+    const page = surfaceAsset('scene/index.html');
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: page, dim: 0.1 }), 1, backgroundScope)));
+    const first = container.querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.ok(first);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-webui-background'] });
+
+    // A slider drag re-renders the same page with new dim and blur values.
+    for (const [revision, dim, blur] of [[2, 0.2, 0], [3, 0.35, 4], [4, 0.5, 8]]) {
+      await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: page, dim, blur }), revision,
+        backgroundScope)));
+    }
+    const current = container.querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.equal(current === first, true, 'the running page is not reloaded');
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-dim"]').style.opacity, '0.5');
+    assert.equal(container.querySelector('.webui-media-surface__layer').getAttribute('style'), null,
+      'blur never changes the size the page is laid out in');
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-blur"]').style
+      .getPropertyValue('--webui-media-surface-blur'), '8px');
+    assert.deepEqual(changes, [], 'the document stays marked while the background updates');
+
+    // A poster that failed stays hidden for that address only; a later frame may bring a new one.
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: page, poster: surfaceAsset('a.png') }),
+      5, backgroundScope)));
+    const broken = container.querySelector('[data-testid="webui-media-surface-poster"]');
+    await act(async () => broken.dispatchEvent(new window.Event('error')));
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-poster"]'), null);
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: page, poster: surfaceAsset('b.png') }),
+      6, backgroundScope)));
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-poster"]')?.getAttribute('src'), surfaceAsset('b.png'));
+
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'html', src: surfaceAsset('other/index.html') }), 7,
+      backgroundScope)));
+    assert.equal(container.querySelector('[data-testid="webui-media-surface-frame"]') === first, false, 'a new page loads anew');
+    // Only the background keeps its instance mounted; the splash restarts with every frame.
+    assert.equal(runtime.getCatalog().getSlot('application.background').rerender, 'keep-mounted');
+    assert.equal(runtime.getCatalog().getSlot('application.splash').rerender, undefined);
+  } finally {
+    observer.disconnect();
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+  }
+});
+
+async function mountBackground() {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(createElement(WebUIBackgroundHost, { runtime, registry: componentRendererRegistry })));
+  let revision = 0;
+  return {
+    container,
+    find: (part) => container.querySelector(`[data-testid="webui-media-surface-${part}"]`),
+    show: (props) => act(async () => transport.injectRenderFrame(frame(surface(props), ++revision, backgroundScope))),
+    async reconnect() {
+      await act(async () => transport.setConnectionState('disconnected'));
+      await act(async () => transport.setConnectionState('connected'));
+    },
+    async close() {
+      await act(async () => root.unmount());
+      runtime.dispose();
+      container.remove();
+    },
+  };
+}
+
+const fire = (element, type) => act(async () => element.dispatchEvent(new window.Event(type)));
+
+test('failed background media load again once the browser reconnects; healthy media stay mounted', async () => {
+  const app = await mountBackground();
+  try {
+    const video = { kind: 'video', src: surfaceAsset('a.mp4'), poster: surfaceAsset('p.png') };
+    await app.show(video);
+    await fire(app.find('video'), 'error');
+    assert.equal(app.find('video'), null);
+    assert.ok(app.find('poster'), 'the poster replaces the failed video');
+    await app.show({ ...video, dim: 0.3 });
+    assert.equal(app.find('video'), null, 'a frame with the same address does not retry it');
+    await app.reconnect();
+    await app.show(video);
+    assert.ok(app.find('video'), 'the failed video loads again after a reconnect');
+
+    const page = { kind: 'html', src: surfaceAsset('scene/index.html') };
+    await app.show(page);
+    const first = app.find('frame');
+    const token = surfaceToken(first);
+    await postSurface(first.contentWindow, surfaceMessage(token, 'error'));
+    assert.equal(app.find('frame'), null);
+    await app.show({ ...page, blur: 4 });
+    assert.equal(app.find('frame'), null);
+    await app.reconnect();
+    await app.show(page);
+    const retried = app.find('frame');
+    assert.ok(retried, 'the failed page loads again after a reconnect');
+    assert.notEqual(surfaceToken(retried), token, 'the new iframe gets a fresh token');
+
+    await postSurface(retried.contentWindow, surfaceMessage(surfaceToken(retried), 'ready'));
+    await app.reconnect();
+    await app.show({ ...page, dim: 0.2 });
+    assert.equal(app.find('frame') === retried, true, 'a reconnect does not reload a page that works');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the background is active only while it shows a picture', async () => {
+  const marker = () => document.documentElement.getAttribute('data-webui-background');
+  const app = await mountBackground();
+  try {
+    await app.show({ kind: 'image', src: surfaceAsset('a.png') });
+    assert.equal(marker(), null, 'a loading image shows nothing yet');
+    await fire(app.find('image'), 'error');
+    assert.equal(marker(), null, 'a failed image without a poster shows nothing');
+
+    await app.show({ kind: 'image', src: surfaceAsset('b.png'), poster: surfaceAsset('p.png') });
+    await fire(app.find('image'), 'error');
+    assert.equal(marker(), null);
+    await fire(app.find('poster'), 'load');
+    assert.equal(marker(), 'active', 'the poster that replaces a failed image is a picture');
+
+    await app.show({ kind: 'video', src: surfaceAsset('c.mp4') });
+    assert.equal(marker(), 'active', 'content loading after a switch keeps the previous state');
+    await fire(app.find('video'), 'loadeddata');
+    assert.equal(marker(), 'active', 'a decoded first frame is a picture, playing or paused');
+    await fire(app.find('video'), 'error');
+    assert.equal(marker(), null, 'a failed video without a poster shows nothing');
+
+    await app.show({ kind: 'html', src: surfaceAsset('scene.html') });
+    const page = app.find('frame');
+    assert.equal(marker(), null, 'a page that is not ready shows nothing');
+    await postSurface(page.contentWindow, surfaceMessage(surfaceToken(page), 'ready'));
+    assert.equal(marker(), 'active');
+  } finally {
+    await app.close();
+    assert.equal(marker(), null);
+  }
+});
+
 test('a new request context can replace the blocking entry without exposing the old view', async () => {
   const target = { scope: 'application', slot_id: 'application.entry', package_id: 'pkg.demo', instance_key: 'old' };
   const transport = createMockTransport();
@@ -2872,5 +3222,899 @@ test('one settings tree mounts application and session items with independent id
     runtime.dispose();
     container.remove();
     for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
+const appearanceCases = JSON.parse(readFileSync(new URL('./fixtures/gatewayAppearanceCases.json', import.meta.url), 'utf8'));
+for (const { name, appearance, valid } of appearanceCases) {
+  test(`Gateway appearance contract: ${name}`, () => {
+    const result = appearanceModule.validateAppearance(appearance);
+    if (valid) assert.deepEqual(result, appearance);
+    else assert.equal(result, null);
+  });
+}
+
+test('accent derivation keeps white button text readable and lets tokens override', () => {
+  const { accentVariables, parseColor, contrastRatio, buildAppearanceCss } = appearanceModule;
+  const white = [255, 255, 255];
+  for (const accent of ['#b45309', '#2f6fae', '#0d8f72', '#ffdd00', '#ffffff', '#000000', '#17b893']) {
+    const variables = accentVariables(accent);
+    const strong = parseColor(variables['--color-action-primary']);
+    assert.ok(contrastRatio(strong, white) >= 4.5, `${accent} strong ${variables['--color-action-primary']}`);
+    assert.ok(contrastRatio(parseColor(variables['--color-action-primary-hover']), white) >= 3, `${accent} hover`);
+    assert.equal(variables['--color-action-primary-rgb'], strong.join(', '));
+    assert.equal(variables['--color-text-link'], variables['--color-action-primary']);
+    assert.equal(variables['--color-border-accent-rgb'], parseColor(accent).join(', '));
+  }
+  // A dark enough accent is used as given.
+  assert.equal(accentVariables('#2f6fae')['--color-action-primary'], '#2f6fae');
+  const css = buildAppearanceCss({ accent: '#b45309', tokens: { '--color-action-primary-subtle': '#ff000020' } }, {});
+  assert.match(css, /--color-action-primary-subtle:#ff000020/);
+  assert.doesNotMatch(css, /--color-action-primary-subtle:rgba/);
+  assert.doesNotMatch(css, /data-webui-background/, 'opaque appearances add no translucent rules');
+});
+
+test('translucent preset uses theme bases, concrete colors and only applies with a background', () => {
+  const { buildAppearanceCss, readSurfaceBases, translucentVariables } = appearanceModule;
+  const bases = readSurfaceBases((name) => (name === '--color-surface-card' ? ' #fafafa' : name === '--color-sidebar-surface' ? 'rgb(1, 2, 3)' : 'var(--x)'));
+  assert.deepEqual(bases['--color-surface-card'], [250, 250, 250]);
+  assert.deepEqual(bases['--color-sidebar-surface'], [1, 2, 3]);
+  assert.deepEqual(bases['--color-surface-page'], [245, 247, 249], 'unreadable bases fall back to the default theme');
+  const variables = translucentVariables(0.8, bases);
+  assert.equal(variables['--color-surface-page'], 'rgba(245, 247, 249, 0.336)');
+  assert.equal(variables['--color-sidebar-surface'], 'rgba(1, 2, 3, 0.56)');
+  assert.equal(variables['--color-surface-panel'], 'rgba(255, 255, 255, 0.82)');
+  assert.equal(variables['--color-surface-card'], 'rgba(250, 250, 250, 0.88)');
+  assert.equal(variables['--color-surface-shell'], 'transparent');
+  assert.equal(variables['--color-surface-popover'], undefined);
+  assert.ok(Object.keys(variables).every((name) => !name.startsWith('--color-text')));
+  const css = buildAppearanceCss({ surface: 'translucent', surfaceOpacity: 0.8 }, bases);
+  assert.doesNotMatch(css, /calc\(/);
+  for (const rule of css.split('\n')) {
+    assert.match(rule, /\[data-webui-surface='translucent'\]\[data-webui-background='active'\]/, rule);
+  }
+  // Only role variables of the theme are overridden; no component class appears in the sheet.
+  assert.match(css, /--color-surface-popover:rgba\(250, 250, 250, 0\.97\)/);
+  assert.match(css, /--color-surface-workspace:rgba\(250, 250, 250, 0\.56\)/);
+  assert.match(css, /--color-surface-workspace-layer:transparent/);
+  assert.match(css, /--color-surface-floating:rgba\(1, 2, 3, 0\.9\)/);
+  assert.match(css, /--effect-surface-floating-backdrop:blur\(24px\) saturate\(1\.3\)/);
+  assert.doesNotMatch(css.replace(/:root[^{]*\{/g, '{'), /\.[a-z][a-z0-9_-]*[\s,{]/, 'no business selectors');
+  assert.match(buildAppearanceCss({ surface: 'translucent' }, bases), /rgba\(245, 247, 249, 0\.361\)/, 'default opacity 0.86');
+});
+
+test('WebUIAppearanceHost writes the contribution layer and removes it on revoke and unmount', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const html = document.documentElement;
+  const style = () => document.getElementById('webui-appearance');
+  html.setAttribute('data-theme', 'default'); html.setAttribute('data-color-mode', 'light');
+  try {
+    await act(async () => root.render(createElement(WebUIAppearanceHost, { runtime })));
+    assert.equal(style(), null);
+    await act(async () => transport.injectAppearanceFrame({ package_id: 'pkg.theme', revision: 1,
+      appearance: { accent: '#b45309', surface: 'translucent', surfaceOpacity: 0.6 } }));
+    assert.match(style().textContent, /--color-action-primary:#b45309/);
+    assert.match(style().textContent, /rgba\(245, 247, 249, 0\.252\)/);
+    assert.equal(html.getAttribute('data-webui-surface'), 'translucent');
+    const firstWrite = html.getAttribute('data-webui-appearance');
+    assert.ok(firstWrite);
+
+    // A theme change recomputes the layer and announces a new write to theme observers.
+    await act(async () => { html.setAttribute('data-color-mode', 'dark'); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.notEqual(html.getAttribute('data-webui-appearance'), firstWrite);
+    assert.equal(html.getAttribute('data-color-mode'), 'dark', 'the host never changes the color mode');
+
+    await act(async () => transport.injectAppearanceFrame({ package_id: 'pkg.theme', revision: 2, appearance: null }));
+    assert.equal(style(), null);
+    assert.equal(html.hasAttribute('data-webui-appearance'), false);
+    assert.equal(html.hasAttribute('data-webui-surface'), false);
+    assert.equal(html.getAttribute('data-color-mode'), 'dark');
+
+    await act(async () => transport.injectAppearanceFrame({ package_id: 'pkg.theme', revision: 3, appearance: { accent: '#2f6fae' } }));
+    assert.equal(html.getAttribute('data-webui-surface'), 'opaque');
+    await act(async () => root.unmount());
+    assert.equal(style(), null, 'unmounting the host removes the layer');
+  } finally {
+    runtime.dispose();
+    container.remove();
+    html.setAttribute('data-color-mode', 'light');
+  }
+});
+
+// ── Startup splash (Gateway F_12) ────────────────────────────────────────────
+
+const splashSurface = (src) => ({ component: 'MediaSurface', props: { kind: 'html', src, title: 'Boot' } });
+
+function splashTransport(answers, { connected = true } = {}) {
+  const handlers = new Set();
+  const dispatches = [];
+  let state = connected ? 'connected' : 'disconnected';
+  let revision = 0;
+  const target = (packageId, slot = 'application.splash') => ({
+    scope: 'application', slot_id: slot, package_id: packageId, instance_key: 'main',
+  });
+  const transport = {
+    dispatches,
+    subscribe(handler) { handlers.add(handler); return () => handlers.delete(handler); },
+    getConnectionState: () => state,
+    setConnectionState(next) { state = next; for (const handler of handlers) handler.onConnectionStateChange(next); },
+    render(packageId, root, slot) {
+      revision += 1;
+      for (const handler of handlers) {
+        handler.onRenderFrame({ target: target(packageId, slot), schema_version: 1, revision, mode: 'replace', root });
+      }
+    },
+    clear(packageId) {
+      revision += 1;
+      for (const handler of handlers) handler.onClearFrame({ target: target(packageId), revision });
+    },
+    async dispatch(request) {
+      dispatches.push(request);
+      if (request.event !== 'ui.ready' || request.target.slotId !== 'application.splash') {
+        return { accepted: true, status: request.event === 'ui.closed' ? 'closed' : 'ready' };
+      }
+      const answer = answers[request.target.packageId] ?? 'unhandled';
+      if (answer === 'hang') return new Promise(() => undefined);
+      if (answer === 'play') {
+        transport.render(request.target.packageId, splashSurface(`/extension-assets/${request.target.packageId}/g/boot.html`));
+        return { accepted: true, status: 'playing' };
+      }
+      return answer === 'skip' ? { accepted: true, status: 'skipped' } : { accepted: false, status: 'unhandled' };
+    },
+  };
+  return transport;
+}
+
+function fakeTimers() {
+  let now = 0;
+  let sequence = 0;
+  const pending = new Map();
+  return {
+    set(callback, ms) { sequence += 1; pending.set(sequence, { at: now + ms, callback }); return sequence; },
+    clear(handle) { pending.delete(handle); },
+    async advance(ms) {
+      now += ms;
+      for (const [handle, timer] of [...pending].sort((left, right) => left[1].at - right[1].at)) {
+        if (timer.at <= now && pending.has(handle)) { pending.delete(handle); timer.callback(); await settle(); }
+      }
+      await settle();
+    },
+  };
+}
+
+async function settle() {
+  for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function splashLaunch(completed = false) {
+  return { id: 'launch-1', completed, firstVisit: true, marks: 0, markCompleted() { this.completed = true; this.marks += 1; } };
+}
+
+const providerList = (...entries) => ({ providers: entries.map(([packageId, skippable = false, max = 60000]) => ({
+  package_id: packageId, skippable, max_duration_ms: max,
+})) });
+
+function splashSetup({ answers = {}, providers = providerList(), hint = 'candidates', launch = splashLaunch(), preferred, connected } = {}) {
+  const transport = splashTransport(answers, { connected });
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const timers = fakeTimers();
+  const requests = [];
+  const controller = splashModule.createSplashController({
+    runtime, launch, timers, preferredProvider: preferred, reducedMotion: () => false,
+    hint: async () => hint,
+    requestProviders: async () => { requests.push('providers'); return providers; },
+  });
+  const phases = [];
+  controller.subscribe(() => phases.push(`${controller.getState().phase}:${controller.getState().provider?.packageId ?? ''}`));
+  const readies = () => transport.dispatches.filter((request) => request.event === 'ui.ready').map((request) => request.target.packageId);
+  const closes = () => transport.dispatches.filter((request) => request.event === 'ui.closed')
+    .map((request) => [request.target.packageId, request.payload.reason, request.payload.revision]);
+  return { transport, runtime, timers, controller, requests, phases, readies, closes, launch };
+}
+
+test('splash provider lists are validated and the appearance provider plays first', () => {
+  const { parseProviders, orderProviders } = splashModule;
+  const providers = parseProviders({ providers: [
+    { package_id: 'pkg.a', skippable: true, max_duration_ms: 9500 },
+    { package_id: 'pkg.b', skippable: false, max_duration_ms: 90000 },
+    { package_id: 'pkg.a', skippable: false, max_duration_ms: 1000 },
+    { package_id: '', skippable: true, max_duration_ms: 1000 },
+    { package_id: 'pkg.c', skippable: 'yes', max_duration_ms: 1000 },
+    { package_id: 'pkg.d', skippable: true, max_duration_ms: 1.5 },
+    'pkg.e',
+  ] });
+  assert.deepEqual(providers, [
+    { packageId: 'pkg.a', skippable: true, maxDurationMs: 9500 },
+    { packageId: 'pkg.b', skippable: false, maxDurationMs: 60000 },
+  ]);
+  assert.deepEqual(orderProviders(providers, 'pkg.b').map((provider) => provider.packageId), ['pkg.b', 'pkg.a']);
+  assert.deepEqual(orderProviders(providers, 'pkg.z').map((provider) => provider.packageId), ['pkg.a', 'pkg.b']);
+  assert.deepEqual(orderProviders(providers, 'pkg.b', true).map((provider) => provider.packageId), ['pkg.a', 'pkg.b'],
+    'a saved order is final');
+  assert.deepEqual(parseProviders(null), []);
+});
+
+test('splash gate opens at once for a completed launch or a hint without candidates', async () => {
+  for (const options of [{ launch: splashLaunch(true) }, { hint: 'none' }]) {
+    const app = splashSetup(options);
+    await app.controller.start();
+    assert.equal(app.controller.getState().phase, 'open');
+    assert.equal(app.phases[0], 'open:', 'the gate opens before the Gateway answers');
+    assert.deepEqual(app.requests, options.hint ? ['providers'] : [], 'a "none" hint is still confirmed with the Gateway');
+    assert.deepEqual(app.readies(), []);
+    app.controller.dispose(); app.runtime.dispose();
+  }
+  assert.equal(window.localStorage.getItem('workswarm.splash.expected'), '0');
+});
+
+test('after a "none" hint a splash the Gateway lists waits for the next start', async () => {
+  const app = splashSetup({ hint: 'none', answers: { 'pkg.a': 'play' }, providers: providerList(['pkg.a']) });
+  await app.controller.start();
+  assert.equal(app.phases[0], 'open:', 'the workspace is not held back by the hint');
+  assert.deepEqual(app.requests, ['providers']);
+  assert.deepEqual(app.readies(), [], 'an open workspace is never covered by a late splash');
+  assert.deepEqual(app.phases, ['open:'], 'the gate stays open');
+  assert.equal(window.localStorage.getItem('workswarm.splash.expected'), '1', 'the next start shows the neutral layer');
+  app.controller.dispose(); app.runtime.dispose();
+  window.localStorage.removeItem('workswarm.splash.expected');
+});
+
+test('splash queue plays providers in order, skips non-players and closes each played splash once', async () => {
+  const app = splashSetup({
+    answers: { 'pkg.a': 'play', 'pkg.b': 'play', 'pkg.skip': 'skip', 'pkg.none': 'unhandled' },
+    providers: providerList(['pkg.a', true], ['pkg.skip'], ['pkg.b', false], ['pkg.none']),
+    preferred: 'pkg.b',
+  });
+  const done = app.controller.start();
+  await settle();
+  assert.deepEqual(app.readies(), ['pkg.b']);
+  assert.equal(app.controller.getState().phase, 'playing');
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.b');
+  const readyPayload = app.transport.dispatches[0].payload;
+  assert.deepEqual(readyPayload, { launch_id: 'launch-1', first_visit: true, reduced_motion: false, preview: false });
+
+  app.controller.skip();
+  await settle();
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.b', 'a non-skippable splash ignores skip');
+  app.controller.surfaceEvent('ready');
+  app.controller.surfaceEvent('complete');
+  await settle();
+  assert.deepEqual(app.readies(), ['pkg.b', 'pkg.a']);
+  app.controller.surfaceEvent('ready');
+  app.controller.skip();
+  await done;
+  assert.deepEqual(app.readies(), ['pkg.b', 'pkg.a', 'pkg.skip', 'pkg.none']);
+  const closes = app.closes();
+  assert.deepEqual(closes.map(([packageId, reason]) => [packageId, reason]), [['pkg.b', 'complete'], ['pkg.a', 'skip']]);
+  assert.ok(closes.every(([, , revision]) => Number.isInteger(revision) && revision > 0));
+  assert.equal(app.controller.getState().phase, 'open');
+  assert.equal(app.launch.marks, 1);
+  assert.equal(window.localStorage.getItem('workswarm.splash.played'), '1');
+  assert.equal(window.localStorage.getItem('workswarm.splash.expected'), '1');
+  app.runtime.dispose();
+});
+
+test('splash time limits end preparation and playback without blocking the gate', async () => {
+  window.localStorage.removeItem('workswarm.splash.played');
+  const app = splashSetup({
+    answers: { 'pkg.hang': 'hang', 'pkg.slow': 'play', 'pkg.silent': 'play', 'pkg.long': 'play', 'pkg.cleared': 'play' },
+    providers: providerList(['pkg.hang'], ['pkg.slow'], ['pkg.silent'], ['pkg.long', false, 4000], ['pkg.cleared']),
+  });
+  const done = app.controller.start();
+  await settle();
+  assert.equal(app.controller.getState().phase, 'preparing');
+  await app.timers.advance(splashModule.SPLASH_TIMEOUTS.answer);      // no answer from pkg.hang
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.slow');
+  await app.timers.advance(splashModule.SPLASH_TIMEOUTS.mediaReady);  // pkg.slow never became ready
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.silent');
+  app.controller.surfaceEvent('ready');
+  await app.timers.advance(4000);
+  app.controller.surfaceEvent('heartbeat');
+  await app.timers.advance(4000);
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.silent', 'heartbeats keep a splash alive');
+  await app.timers.advance(splashModule.SPLASH_TIMEOUTS.heartbeat);  // heartbeats stopped
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.long');
+  app.controller.surfaceEvent('ready');
+  for (let elapsed = 0; elapsed < 4000; elapsed += 1000) {
+    app.controller.surfaceEvent('heartbeat');
+    await app.timers.advance(1000);                                   // reaches the declared maximum
+  }
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.cleared');
+  app.transport.clear('pkg.cleared');                                 // the provider ends its own splash
+  await done;
+  assert.deepEqual(app.closes().map(([packageId, reason]) => [packageId, reason]),
+    [['pkg.slow', 'timeout'], ['pkg.silent', 'timeout'], ['pkg.long', 'timeout']]);
+  assert.equal(app.controller.getState().phase, 'open');
+  assert.equal(window.localStorage.getItem('workswarm.splash.played'), null, 'no splash was watched to its end');
+  app.runtime.dispose();
+});
+
+test('splash gate stops waiting for an unreachable Gateway', async () => {
+  for (const [hint, wait] of [['unknown', splashModule.SPLASH_TIMEOUTS.connectUnknown], ['candidates', splashModule.SPLASH_TIMEOUTS.connectHinted]]) {
+    const app = splashSetup({ hint, connected: false, providers: providerList(['pkg.a']), answers: { 'pkg.a': 'play' } });
+    const done = app.controller.start();
+    await settle();
+    assert.equal(app.controller.getState().phase, 'deciding');
+    await app.timers.advance(wait - 1);
+    assert.equal(app.controller.getState().phase, 'deciding');
+    await app.timers.advance(1);
+    await done;
+    assert.equal(app.controller.getState().phase, 'open');
+    assert.deepEqual(app.requests, []);
+    app.runtime.dispose();
+  }
+  const app = splashSetup({ hint: 'candidates', connected: false, providers: providerList(['pkg.a']), answers: { 'pkg.a': 'skip' } });
+  const done = app.controller.start();
+  await settle();
+  app.transport.setConnectionState('connected');
+  await done;
+  assert.deepEqual(app.readies(), ['pkg.a'], 'the queue starts once the Gateway connects');
+  app.runtime.dispose();
+});
+
+test('WebUISplashGate shows the splash backdrop while it waits after a candidates hint', async () => {
+  // Without a first-paint layer (the last start expected no splash), the look follows the hint while deciding.
+  for (const [hint, look] of [['candidates', 'neutral'], ['unknown', 'plain']]) {
+    const transport = splashTransport({}, { connected: false });
+    const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+    runtime.start();
+    const rootElement = document.createElement('div'); rootElement.id = 'root'; document.body.append(rootElement);
+    const reactRoot = createRoot(rootElement);
+    const overlay = () => document.querySelector('[data-testid="webui-splash"]');
+    try {
+      await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+        createElement(WebUISplashGate, { launch: splashLaunch(), timers: fakeTimers(), hint: async () => hint,
+          requestProviders: async () => providerList(['pkg.theme']) }, createElement('main', null, 'Workspace')))));
+      await act(async () => settle());
+      assert.equal(overlay().dataset.variant, 'deciding', `${hint}: still waiting for the Gateway`);
+      assert.equal(overlay().dataset.look, look, `${hint}: look while deciding`);
+      assert.equal(!!overlay().querySelector('[data-testid="webui-splash-neutral"]'), look === 'neutral');
+    } finally {
+      await act(async () => reactRoot.unmount());
+      runtime.dispose();
+      rootElement.remove();
+    }
+  }
+});
+
+test('WebUISplashGate holds the workspace and entry until the queue ends and skips on a held Space', async () => {
+  const transport = splashTransport({ 'pkg.theme': 'play' });
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const rootElement = document.createElement('div'); rootElement.id = 'root'; document.body.append(rootElement);
+  const neutral = document.createElement('div'); neutral.id = 'workswarm-neutral'; document.body.append(neutral);
+  const reactRoot = createRoot(rootElement);
+  const launch = splashLaunch();
+  const overlay = () => document.querySelector('[data-testid="webui-splash"]');
+  try {
+    await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+      createElement(WebUISplashGate, { launch, hint: async () => 'candidates',
+        requestProviders: async () => providerList(['pkg.theme', true, 9500]) },
+        createElement(WebUIEntryHost, null, createElement('main', { 'data-testid': 'workspace' }, 'Workspace'))))));
+    assert.equal(document.getElementById('workswarm-neutral'), null, 'the gate takes over the first-paint layer');
+    assert.equal(overlay().dataset.look, 'neutral');
+    assert.equal(rootElement.hasAttribute('inert'), true);
+    assert.ok(!rootElement.contains(overlay()), 'the splash layer lives outside the inert root');
+
+    // A login entry rendered during the splash waits for the gate.
+    await act(async () => transport.render('pkg.login', { component: 'Text', props: { value: 'Sign in' } }, 'application.entry'));
+    await act(async () => settle());
+    assert.equal(overlay().dataset.variant, 'playing');
+    assert.equal(document.querySelector('[data-testid="webui-entry-host"]').open, false);
+    const frame = overlay().querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.ok(frame, 'the splash surface plays inside the overlay');
+    assert.equal(frame.getAttribute('allow'), 'autoplay', 'a splash may play its sound');
+    const token = surfaceToken(frame);
+    await postSurface(frame.contentWindow, surfaceMessage(token, 'ready'));
+    assert.ok(overlay().querySelector('[data-testid="webui-splash-skip"]'));
+    assert.match(overlay().querySelector('[data-testid="webui-splash-skip-label"]').textContent, /空格|Space/);
+
+    await act(async () => window.dispatchEvent(new window.KeyboardEvent('keydown', { code: 'Space', bubbles: true })));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+    await act(async () => window.dispatchEvent(new window.KeyboardEvent('keyup', { code: 'Space', bubbles: true })));
+    assert.ok(overlay(), 'releasing early does not skip');
+    await act(async () => window.dispatchEvent(new window.KeyboardEvent('keydown', { code: 'Space', bubbles: true })));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 1000)));
+    await act(async () => settle());
+
+    assert.equal(overlay(), null);
+    assert.equal(rootElement.hasAttribute('inert'), false);
+    assert.equal(document.querySelector('[data-testid="webui-entry-host"]').open, true, 'the entry shows after the gate');
+    const closed = transport.dispatches.filter((request) => request.event === 'ui.closed');
+    assert.deepEqual(closed.map((request) => [request.target.packageId, request.payload.reason]), [['pkg.theme', 'skip']]);
+    assert.equal(launch.marks, 1);
+  } finally {
+    await act(async () => reactRoot.unmount());
+    runtime.dispose();
+    rootElement.remove();
+    document.getElementById('workswarm-neutral')?.remove();
+  }
+});
+
+function sessionEntries() {
+  return Object.fromEntries(Object.keys(window.sessionStorage).map((key) => [key, window.sessionStorage.getItem(key)]));
+}
+
+function openTab(entries = {}) {
+  window.sessionStorage.clear();
+  for (const [key, value] of Object.entries(entries)) window.sessionStorage.setItem(key, value);
+}
+
+/** Runs the first-paint script of index.html; true when it keeps the neutral layer. */
+function neutralLayerKept() {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1])
+    .find((body) => body.includes('workswarm-neutral'));
+  const neutral = document.createElement('div'); neutral.id = 'workswarm-neutral'; document.body.append(neutral);
+  try {
+    // The page script uses the bare storage globals of a browser window.
+    new Function('window', 'document', 'localStorage', 'sessionStorage', script)(
+      window, document, window.localStorage, window.sessionStorage);
+    return document.getElementById('workswarm-neutral') !== null;
+  } finally {
+    document.getElementById('workswarm-neutral')?.remove();
+  }
+}
+
+test('each browser tab keeps its own splash completion through reloads', () => {
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  const sessionBefore = sessionEntries();
+  try {
+    window.localStorage.setItem(splashModule.SPLASH_EXPECTED_KEY, '1');
+    openTab();
+    const first = splashModule.resolveLaunch();
+    assert.equal(first.completed, false);
+    assert.equal(neutralLayerKept(), true);
+    first.markCompleted();
+    const firstTab = sessionEntries();
+
+    openTab();  // a second tab starts its own launch and finishes its splash
+    const second = splashModule.resolveLaunch();
+    assert.notEqual(second.id, first.id);
+    assert.equal(second.completed, false);
+    second.markCompleted();
+
+    openTab(firstTab);  // the first tab reloads
+    const reloaded = splashModule.resolveLaunch();
+    assert.equal(reloaded.id, first.id);
+    assert.equal(reloaded.completed, true, 'the other tab did not overwrite this tab\'s record');
+    assert.equal(neutralLayerKept(), false, 'the first-paint script reads the same record');
+
+    openTab();  // a fresh tab still plays
+    assert.equal(splashModule.resolveLaunch().completed, false);
+  } finally {
+    openTab(sessionBefore);
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
+test('desktop windows of one start share the completion and a new start plays again', () => {
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  const sessionBefore = sessionEntries();
+  try {
+    window.localStorage.setItem(splashModule.SPLASH_EXPECTED_KEY, '1');
+    window.jiuwenDesktop = { launchId: 'desktop-start-1' };
+    openTab();
+    const main = splashModule.resolveLaunch('desktop-start-1');
+    assert.equal(main.completed, false);
+    main.markCompleted();
+    openTab();  // another window of the same start
+    assert.equal(splashModule.resolveLaunch('desktop-start-1').completed, true);
+    assert.equal(neutralLayerKept(), false);
+    window.jiuwenDesktop = { launchId: 'desktop-start-2' };
+    assert.equal(splashModule.resolveLaunch('desktop-start-2').completed, false);
+    assert.equal(neutralLayerKept(), true);
+  } finally {
+    delete window.jiuwenDesktop;
+    openTab(sessionBefore);
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
+// ── Application settings and file transfers (Gateway F_13) ───────────────────
+
+const {
+  transfersModule, applicationSettingsModule, WebUIUploadContext, SplashProviderSettings,
+  extensionsModule,
+} = await import('../node_modules/.cache/webui-components/components.mjs');
+
+// Gateway packages render their settings items in the shared settings slot (AgentServer S_18).
+const SETTINGS_SLOT = 'application.settings';
+const importTree = (props = { label: 'Import theme', accept: ['.zip'] }) => ({ component: 'Box', children: [
+  { component: 'FileImport', props, events: { 'ui.change': { id: 'import' } } },
+] });
+
+function settingsRequest(handler) {
+  const calls = [];
+  return { calls, request: async (method, params) => { calls.push([method, params]); return handler(method, params); } };
+}
+
+async function mounted(element) {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(element));
+  await act(async () => settle());
+  return { container, async unmount() { await act(async () => root.unmount()); container.remove(); } };
+}
+
+test('application settings answers are validated and the shown order follows the saved choice', () => {
+  const { parseSplashSettings, displayedProviders, movedOrder, toggledDisabled } = applicationSettingsModule;
+  // Manifest display.name arrives as { zh, en }; both languages are required and extra fields are dropped.
+  assert.deepEqual(parseSplashSettings({ customized: false, providers: [
+    { package_id: 'pkg.l', title: { zh: '主题背景', en: 'Theme background', extra: 1 }, skippable: true,
+      max_duration_ms: 9500, enabled: true },
+    { package_id: 'pkg.m', title: { zh: '只有中文' }, skippable: true, max_duration_ms: 9500, enabled: true },
+  ] }).providers.map((provider) => provider.title), [{ zh: '主题背景', en: 'Theme background' }]);
+  const settings = parseSplashSettings({ customized: false, providers: [
+    { package_id: 'pkg.a', title: 'A', skippable: true, max_duration_ms: 9500, enabled: true },
+    { package_id: 'pkg.b', title: 'B', skippable: false, max_duration_ms: 60000, enabled: false },
+    { package_id: 'pkg.c', title: 'C', skippable: false, max_duration_ms: 60000, enabled: true },
+    { package_id: 'pkg.d', title: 'D', skippable: false, max_duration_ms: 1.5, enabled: true },
+  ] });
+  assert.deepEqual(settings.providers.map((provider) => provider.packageId), ['pkg.a', 'pkg.b', 'pkg.c']);
+  assert.equal(parseSplashSettings({ providers: [] }), null);
+  assert.deepEqual(displayedProviders(settings, 'pkg.c').map((provider) => provider.packageId), ['pkg.c', 'pkg.a', 'pkg.b']);
+  assert.deepEqual(displayedProviders({ ...settings, customized: true }, 'pkg.c').map((provider) => provider.packageId),
+    ['pkg.a', 'pkg.b', 'pkg.c']);
+  assert.deepEqual(movedOrder(settings.providers, 'pkg.b', -1), ['pkg.b', 'pkg.a', 'pkg.c']);
+  assert.equal(movedOrder(settings.providers, 'pkg.a', -1), null);
+  assert.equal(movedOrder(settings.providers, 'pkg.c', 1), null);
+  assert.deepEqual(toggledDisabled(settings.providers, 'pkg.a', false), ['pkg.a', 'pkg.b']);
+  assert.deepEqual(toggledDisabled(settings.providers, 'pkg.b', true), []);
+});
+
+test('a saved splash order plays as saved instead of putting the appearance provider first', async () => {
+  const app = splashSetup({
+    answers: { 'pkg.a': 'skip', 'pkg.b': 'skip' },
+    providers: { ...providerList(['pkg.a'], ['pkg.b']), customized: true },
+    preferred: 'pkg.b',
+  });
+  await app.controller.start();
+  assert.deepEqual(app.readies(), ['pkg.a', 'pkg.b']);
+  assert.equal(splashModule.parseCustomized({ customized: 'yes' }), false);
+  assert.equal(splashModule.parseCustomized({ customized: true }), true);
+  app.runtime.dispose();
+});
+
+test('upload service starts from the current frame, sends each file and returns the ticket', async () => {
+  const transport = splashTransport({});
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const handle = runtime.mountSlot('', SETTINGS_SLOT, { packageId: 'pkg.theme', instanceKey: 'main', notifyReady: false });
+  transport.render('pkg.theme', importTree(), SETTINGS_SLOT);
+  const key = runtime.getScopeSnapshot('', SETTINGS_SLOT).instanceKeys[0];
+  const id = 'a'.repeat(32);
+  const requests = [];
+  const puts = [];
+  const service = transfersModule.createUploadService({
+    runtime,
+    request: async (method, params) => { requests.push([method, params]); return { upload_id: id, url: `/extension-uploads/${id}/` }; },
+    put: async (url, body) => { puts.push([url, body.size]); return 204; },
+  });
+  const progress = [];
+  const files = transfersModule.describePickedFiles([
+    { name: 'theme one.json', webkitRelativePath: 'hive/theme one.json', size: 2 },
+    { name: '媒体.png', webkitRelativePath: 'hive/媒体.png', size: 3 },
+  ]).map((file) => ({ ...file, body: new Blob(['x'.repeat(file.size)]) }));
+  try {
+    assert.equal(await service.upload(key, '0.0', files, (step) => progress.push(step.sentBytes)), id);
+    assert.deepEqual(requests, [['webui.upload.begin', {
+      target: { scope: 'application', slot_id: SETTINGS_SLOT, package_id: 'pkg.theme', instance_key: 'main' },
+      node_key: '0.0', revision: runtime.getInstance(key).frame.revision,
+      files: [{ path: 'hive/theme one.json', size: 2 }, { path: 'hive/媒体.png', size: 3 }],
+    }]]);
+    assert.deepEqual(puts, [
+      [`/extension-uploads/${id}/hive/theme%20one.json`, 2], [`/extension-uploads/${id}/hive/%E5%AA%92%E4%BD%93.png`, 3],
+    ]);
+    assert.deepEqual(progress, [0, 2, 5]);
+    const failing = (request, put) => transfersModule.createUploadService({ runtime, request, put });
+    const ticket = async () => ({ upload_id: id, url: `/extension-uploads/${id}/` });
+    await assert.rejects(failing(async () => { throw Object.assign(new Error('large'), { code: 'UPLOAD_TOO_LARGE' }); },
+      async () => 204).upload(key, '0.0', files), { code: 'UPLOAD_TOO_LARGE' });
+    await assert.rejects(failing(async () => ({ upload_id: id, url: '/elsewhere/' }), async () => 204)
+      .upload(key, '0.0', files), { code: 'UPLOAD_FAILED' });
+    await assert.rejects(failing(ticket, async () => 403).upload(key, '0.0', files), { code: 'UPLOAD_FAILED' });
+    await assert.rejects(failing(ticket, async () => { throw new Error('offline'); }).upload(key, '0.0', files),
+      { code: 'UPLOAD_FAILED' });
+    await assert.rejects(service.upload('missing', '0.0', files), { code: 'TARGET_INACTIVE' });
+  } finally {
+    handle.release();
+    runtime.dispose();
+  }
+});
+
+test('FileImport uploads picked files through the host service and emits the ticket', async () => {
+  const transport = splashTransport({});
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const id = 'b'.repeat(32);
+  const calls = [];
+  let outcome = 'ok';
+  const service = {
+    async upload(instanceKey, nodeKey, files, onProgress) {
+      calls.push([nodeKey, files.map((file) => [file.path, file.size])]);
+      onProgress?.({ sentBytes: 1, totalBytes: 2 });
+      if (outcome !== 'ok') throw new transfersModule.WebUIUploadError(outcome);
+      return id;
+    },
+  };
+  const view = await mounted(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+    createElement(WebUIUploadContext.Provider, { value: service },
+      createElement(WebUIHost, { slotId: SETTINGS_SLOT, scope: 'application', packageId: 'pkg.theme', instanceKey: 'main' }))));
+  const find = (testId) => view.container.querySelector(`[data-testid="${testId}"]`);
+  const pick = async (files) => {
+    const input = find('webui-file-import-input');
+    Object.defineProperty(input, 'files', { configurable: true, value: files });
+    await act(async () => input.dispatchEvent(new window.Event('change', { bubbles: true })));
+    await act(async () => settle());
+  };
+  try {
+    await act(async () => transport.render('pkg.theme', importTree(), SETTINGS_SLOT));
+    await act(async () => settle());
+    assert.equal(find('webui-file-import-input').getAttribute('accept'), '.zip');
+    assert.equal(find('webui-file-import-input').multiple, false);
+    assert.equal(find('webui-file-import-btn').textContent, 'Import theme');
+    assert.equal(find('webui-file-import-btn').disabled, false);
+    await pick([new window.File(['zip!'], 'aurora.zip')]);
+    assert.deepEqual(calls, [['0.0', [['aurora.zip', 4]]]]);
+    assert.deepEqual(transport.dispatches.filter((request) => request.event === 'ui.change')
+      .map((request) => request.payload.data), [{ upload_id: id }]);
+    assert.equal(find('webui-file-import').dataset.variant, 'done');
+    outcome = 'UPLOAD_TOO_LARGE';
+    await pick([new window.File(['zip!'], 'big.zip')]);
+    assert.equal(find('webui-file-import').dataset.variant, 'error');
+    assert.match(find('webui-file-import-status').textContent, /太大|too large/);
+    assert.equal(transport.dispatches.filter((request) => request.event === 'ui.change').length, 1);
+    await act(async () => transport.render('pkg.theme', importTree({ label: 'Import folder', directory: true }), SETTINGS_SLOT));
+    await act(async () => settle());
+    assert.equal(find('webui-file-import-input').hasAttribute('webkitdirectory'), true);
+    assert.equal(find('webui-file-import-input').multiple, true);
+  } finally {
+    await view.unmount();
+    runtime.dispose();
+  }
+});
+
+test('FileImport stays disabled without a host import service', async () => {
+  const transport = splashTransport({});
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const view = await mounted(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+    createElement(WebUIHost, { slotId: SETTINGS_SLOT, scope: 'application', packageId: 'pkg.theme', instanceKey: 'main' })));
+  try {
+    await act(async () => transport.render('pkg.theme', importTree(), SETTINGS_SLOT));
+    await act(async () => settle());
+    assert.equal(view.container.querySelector('[data-testid="webui-file-import-btn"]').disabled, true);
+  } finally {
+    await view.unmount();
+    runtime.dispose();
+  }
+});
+
+test('download offers are validated and go to the desktop dialog or a download link', async () => {
+  const { readDownloadOffer, startDownload } = transfersModule;
+  const good = { package_id: 'pkg.theme', url: `/extension-downloads/${'c'.repeat(32)}`, filename: '备份.zip', size: 12 };
+  assert.deepEqual(readDownloadOffer(good), { packageId: 'pkg.theme', url: good.url, filename: '备份.zip', size: 12 });
+  for (const bad of [
+    { ...good, url: 'https://example.invalid/x' }, { ...good, url: '/extension-assets/a/b/c' }, { ...good, filename: '../x' },
+    { ...good, filename: ' ' }, { ...good, size: -1 }, { ...good, package_id: '' }, null,
+  ]) assert.equal(readDownloadOffer(bad), null, JSON.stringify(bad));
+  const offer = readDownloadOffer(good);
+  const saved = [];
+  await startDownload(offer, { desktopDownload: async (url, name) => saved.push([url, name]), document });
+  assert.deepEqual(saved, [[good.url, '备份.zip']]);
+  const clicks = [];
+  const listener = (event) => {
+    if (!(event.target instanceof window.HTMLAnchorElement)) return;
+    clicks.push([event.target.getAttribute('href'), event.target.download]);
+    event.preventDefault();
+  };
+  document.addEventListener('click', listener);
+  try {
+    await startDownload(offer, { document });
+  } finally {
+    document.removeEventListener('click', listener);
+  }
+  assert.deepEqual(clicks, [[good.url, '备份.zip']]);
+  assert.equal(document.querySelector('a[download]'), null);
+});
+
+test('Extensions settings lists splash providers and saves order, switches and reset', async () => {
+  window.localStorage.setItem('workswarm.appearance.provider', 'pkg.b');
+  let state = { customized: false, providers: [
+    { package_id: 'pkg.a', title: 'Aurora', skippable: true, max_duration_ms: 9500, enabled: true },
+    { package_id: 'pkg.b', title: 'Hive', skippable: false, max_duration_ms: 60000, enabled: true },
+  ] };
+  const services = settingsRequest((method, params) => {
+    if (method === 'webui.splash.settings.update' && 'order' in params) {
+      state = params.order === null ? { ...state, customized: false }
+        : { customized: true, providers: params.order.map((id) => state.providers.find((item) => item.package_id === id)) };
+    }
+    if (method === 'webui.splash.settings.update' && 'disabled' in params) {
+      state = { ...state, providers: state.providers.map((item) => ({ ...item, enabled: !params.disabled.includes(item.package_id) })) };
+    }
+    return state;
+  });
+  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
+    request: services.request }, createElement(SplashProviderSettings, { disabled: false })));
+  const all = (testId) => [...view.container.querySelectorAll(`[data-testid="${testId}"]`)];
+  const items = () => all('settings-extensions-splash-item').map((node) => node.dataset.variant);
+  const control = (testId, packageId) => all(testId).find((node) => node.dataset.variant === packageId);
+  const click = async (node) => { await act(async () => node.click()); await act(async () => settle()); };
+  try {
+    assert.deepEqual(items(), ['pkg.b', 'pkg.a'], 'without a saved order the appearance provider is shown first');
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-order"]').dataset.variant, 'default');
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-reset-btn"]'), null);
+    assert.equal(control('settings-extensions-splash-up-btn', 'pkg.b').disabled, true);
+    assert.match(all('settings-extensions-splash-item')[1].closest('.setting-row').textContent, /可跳过，最长 10 秒|Skippable, up to 10 s/);
+
+    await click(control('settings-extensions-splash-down-btn', 'pkg.b'));
+    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { order: ['pkg.a', 'pkg.b'] }]);
+    assert.deepEqual(items(), ['pkg.a', 'pkg.b']);
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-order"]').dataset.variant, 'custom');
+
+    await click(control('settings-extensions-splash-switch', 'pkg.a'));
+    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { disabled: ['pkg.a'] }]);
+    assert.equal(control('settings-extensions-splash-switch', 'pkg.a').getAttribute('aria-checked'), 'false');
+
+    await click(view.container.querySelector('[data-testid="settings-extensions-splash-reset-btn"]'));
+    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { order: null }]);
+    assert.deepEqual(items(), ['pkg.b', 'pkg.a']);
+  } finally {
+    await view.unmount();
+    window.localStorage.removeItem('workswarm.appearance.provider');
+  }
+});
+
+test('Extensions settings reports a failed save and keeps the previous state', async () => {
+  const state = { customized: false, providers: [
+    { package_id: 'pkg.a', title: 'Aurora', skippable: true, max_duration_ms: 9500, enabled: true },
+  ] };
+  const services = settingsRequest((method) => {
+    if (method === 'webui.splash.settings.update') throw Object.assign(new Error('write failed'), { code: 'SETTINGS_WRITE_FAILED' });
+    return state;
+  });
+  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
+    request: services.request }, createElement(SplashProviderSettings, { disabled: false })));
+  const toggle = () => view.container.querySelector('[data-testid="settings-extensions-splash-switch"]');
+  try {
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-save-error"]'), null);
+    await act(async () => toggle().click());
+    await act(async () => settle());
+    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { disabled: ['pkg.a'] }]);
+    assert.ok(view.container.querySelector('[data-testid="settings-extensions-splash-save-error"]'));
+    assert.equal(toggle().getAttribute('aria-checked'), 'true', 'the switch shows the state that is still saved');
+  } finally {
+    await view.unmount();
+  }
+});
+
+test('Extensions settings shows localized plugin names in the interface language', async () => {
+  const services = settingsRequest(() => ({ customized: false, providers: [
+    { package_id: 'pkg.l', title: { zh: '主题背景', en: 'Theme background' }, skippable: true, max_duration_ms: 9500,
+      enabled: true },
+  ] }));
+  const previousLanguage = i18n.language;
+  await act(async () => i18n.changeLanguage('zh'));
+  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
+    request: services.request }, createElement(SplashProviderSettings, { disabled: false })));
+  const name = () => view.container.querySelector('[data-testid="settings-extensions-splash-item"]').textContent;
+  try {
+    assert.equal(name(), '主题背景');
+    await act(async () => i18n.changeLanguage('en'));
+    assert.equal(name(), 'Theme background');
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-up-btn"]').getAttribute('aria-label'),
+      i18n.t('settingsPanel.extensions.splash.moveUp', { name: 'Theme background' }));
+  } finally {
+    await view.unmount();
+    await act(async () => i18n.changeLanguage(previousLanguage));
+  }
+});
+
+test('Extensions settings shows its empty and disconnected states', async () => {
+  const offline = settingsRequest(() => ({ providers: [], customized: false }));
+  let view = await mounted(createElement(SettingsServicesProvider, { isConnected: false, connectionState: 'closed',
+    request: offline.request }, createElement(SplashProviderSettings, { disabled: false })));
+  assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-status"]').dataset.variant, 'disconnected');
+  assert.deepEqual(offline.calls, []);
+  await view.unmount();
+  const empty = settingsRequest(() => ({ providers: [], customized: false }));
+  view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
+    request: empty.request }, createElement(SplashProviderSettings, { disabled: false })));
+  assert.ok(view.container.querySelector('[data-testid="settings-extensions-splash-empty"]'));
+  await view.unmount();
+});
+
+test('the Extensions module keeps only host features', () => {
+  assert.deepEqual(extensionsModule.sections.map((section) => section.id), ['extensions-splash']);
+});
+
+// ── Splash preview (Gateway F_14) ────────────────────────────────────────────
+
+test('splash preview plays one provider after the gate opened and leaves launch records alone', async () => {
+  const app = splashSetup({ answers: { 'pkg.a': 'play' }, launch: splashLaunch(true) });
+  await app.controller.start();
+  assert.equal(app.controller.getState().phase, 'open');
+  const marks = app.launch.marks;
+  window.localStorage.removeItem('workswarm.splash.played');
+  const provider = splashModule.parseSplashPlay({ package_id: 'pkg.a', skippable: true, max_duration_ms: 9500 });
+  assert.deepEqual(provider, { packageId: 'pkg.a', skippable: true, maxDurationMs: 9500 });
+  for (const bad of [{ package_id: '' }, { package_id: 'pkg.a', skippable: 'yes', max_duration_ms: 1 }, null]) {
+    assert.equal(splashModule.parseSplashPlay(bad), null);
+  }
+  try {
+    const done = app.controller.preview(provider);
+    await settle();
+    assert.equal(app.controller.getState().phase, 'playing');
+    assert.deepEqual(app.readies(), ['pkg.a']);
+    assert.deepEqual(app.transport.dispatches[0].payload,
+      { launch_id: 'launch-1', first_visit: false, reduced_motion: false, preview: true });
+    assert.equal(await app.controller.preview(provider), false, 'a second preview waits for none and is ignored');
+    app.controller.surfaceEvent('ready');
+    app.controller.skip();
+    assert.equal(await done, true);
+    assert.deepEqual(app.closes().map(([packageId, reason]) => [packageId, reason]), [['pkg.a', 'skip']]);
+    assert.equal(app.controller.getState().phase, 'open');
+    assert.equal(app.launch.marks, marks, 'the launch is not completed again');
+    assert.equal(window.localStorage.getItem('workswarm.splash.played'), null, 'the device record is unchanged');
+  } finally {
+    app.runtime.dispose();
+  }
+});
+
+test('splash preview is ignored while the startup queue still runs', async () => {
+  const app = splashSetup({ answers: { 'pkg.a': 'hang' }, providers: providerList(['pkg.a']) });
+  const started = app.controller.start();
+  await settle();
+  assert.equal(app.controller.getState().phase, 'preparing');
+  assert.equal(await app.controller.preview({ packageId: 'pkg.b', skippable: true, maxDurationMs: 9500 }), false);
+  assert.deepEqual(app.readies(), ['pkg.a']);
+  app.controller.dispose();
+  app.runtime.dispose();
+  await Promise.race([started, settle()]);
+});
+
+test('WebUISplashGate plays a requested preview over the open workspace', async () => {
+  const transport = splashTransport({ 'pkg.theme': 'play' });
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const rootElement = document.createElement('div'); rootElement.id = 'root'; document.body.append(rootElement);
+  const reactRoot = createRoot(rootElement);
+  const listeners = new Set();
+  const subscribePreview = (listener) => { listeners.add(listener); return () => listeners.delete(listener); };
+  const overlay = () => document.querySelector('[data-testid="webui-splash"]');
+  try {
+    await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+      createElement(WebUISplashGate, { launch: splashLaunch(true), hint: async () => 'none',
+        requestProviders: async () => providerList(), subscribePreview },
+        createElement('main', { 'data-testid': 'workspace' }, 'Workspace')))));
+    await act(async () => settle());
+    assert.equal(overlay(), null);
+    assert.equal(rootElement.hasAttribute('inert'), false);
+    assert.equal(listeners.size, 1);
+
+    await act(async () => { for (const listener of listeners) listener({ package_id: 'pkg.theme', skippable: true, max_duration_ms: 9500 }); });
+    await act(async () => settle());
+    assert.equal(overlay().dataset.variant, 'playing');
+    assert.equal(rootElement.hasAttribute('inert'), true, 'the workspace takes no input during the preview');
+    const frame = overlay().querySelector('[data-testid="webui-media-surface-frame"]');
+    const token = surfaceToken(frame);
+    await postSurface(frame.contentWindow, surfaceMessage(token, 'ready'));
+    await postSurface(frame.contentWindow, surfaceMessage(token, 'complete'));
+    await act(async () => settle());
+    assert.equal(overlay(), null);
+    assert.equal(rootElement.hasAttribute('inert'), false);
+    const closed = transport.dispatches.filter((request) => request.event === 'ui.closed');
+    assert.deepEqual(closed.map((request) => [request.target.packageId, request.payload.reason]), [['pkg.theme', 'complete']]);
+  } finally {
+    await act(async () => reactRoot.unmount());
+    runtime.dispose();
+    rootElement.remove();
   }
 });

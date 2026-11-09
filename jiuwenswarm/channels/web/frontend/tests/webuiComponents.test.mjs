@@ -12,9 +12,49 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   componentRendererRegistry, componentCatalog, createProtocolPipeline, WebUISchemaRenderer,
   assertCatalogMatchesRegistry, WebUIBox, resolveBoxLayout, webUIInstanceKey,
+  createWebUIRuntime, createMockTransport,
 } from '../node_modules/.cache/webui-components/components.mjs';
 
 const pipeline = createProtocolPipeline(componentCatalog);
+
+for (const slot of ['application.background', 'application.splash', 'application.settings']) {
+  for (const hadFrame of [false, true]) {
+    test(`${slot} keeps the clear revision when the previous frame existed=${hadFrame}`, () => {
+      const transport = createMockTransport();
+      const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+      const target = { session_id: '', scope: 'application', connection_id: 'browser-1',
+        slot_id: slot, package_id: 'pkg.theme', instance_key: 'main' };
+      const frame = (revision) => ({ target, revision, mode: 'replace', schema_version: 1,
+        root: slot === 'application.settings' ? { component: 'Box', children: [] }
+          : { component: 'MediaSurface', props: { kind: 'image', src: '/extension-assets/pkg.theme/g1/a.png', title: 'Theme' } } });
+      runtime.start();
+      let mount = runtime.mountSlot('', slot, { notifyReady: false });
+      try {
+        if (hadFrame) transport.injectRenderFrame(frame(1));
+        transport.injectClearFrame({ target, revision: 2, reason: 'released' });
+        transport.injectRenderFrame(frame(1));
+        transport.injectErrorFrame({ target, revision: 1, code: 'DELIVERY_FAILED', message: 'old error' });
+        assert.deepEqual(runtime.getScopeSnapshot('', slot).instanceKeys, []);
+        mount.release();
+        mount = runtime.mountSlot('', slot, { notifyReady: false });
+        transport.injectRenderFrame(frame(2));
+        assert.deepEqual(runtime.getScopeSnapshot('', slot).instanceKeys, [], 'remounting does not reset the server revision');
+        transport.injectRenderFrame(frame(3));
+        assert.equal(runtime.getScopeSnapshot('', slot).instanceKeys.length, 1, 'a newer activation can render');
+        transport.injectClearFrame({ target, revision: 4, reason: 'released' });
+        transport.setConnectionState('disconnected');
+        transport.injectRenderFrame(frame(3));
+        assert.deepEqual(runtime.getScopeSnapshot('', slot).instanceKeys, []);
+        transport.setConnectionState('connected');
+        transport.injectRenderFrame(frame(1));
+        assert.equal(runtime.getScopeSnapshot('', slot).instanceKeys.length, 1, 'a new connection may restart revisions');
+      } finally {
+        mount.release();
+        runtime.dispose();
+      }
+    });
+  }
+}
 
 test('Divider title sources and vertical titles follow the shared props contract', () => {
   const child = { component: 'Text', props: { value: 'Title' } };
@@ -34,9 +74,12 @@ test('Divider title sources and vertical titles follow the shared props contract
 });
 
 const gatewayCases = JSON.parse(readFileSync(new URL('./fixtures/webuiGatewayCases.json', import.meta.url), 'utf8'));
-for (const { name, root, valid } of gatewayCases) {
+for (const { name, root, valid, slot } of gatewayCases) {
   test(`Gateway component contract: ${name}`, () => {
-    assert.equal(pipeline.processRenderFrame(renderFrame(root)).ok, valid);
+    // Slot cases check root placement on an application slot as the Gateway does.
+    const options = slot
+      ? { target: { scope: 'application', slot_id: slot, package_id: 'pkg.contract', instance_key: 'main' } } : {};
+    assert.equal(pipeline.processRenderFrame(renderFrame(root, options)).ok, valid);
   });
 }
 

@@ -8,11 +8,35 @@ import asyncio
 from types import MappingProxyType
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
+from urllib.parse import quote
 from openjiuwen.core.events import Event, SessionContext
 
 from jiuwenswarm.gateway.extensions_v2.assembly import get_gateway_runtime
 from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, GatewayRequestInput, GatewayRequestOutput
+from jiuwenswarm.gateway.extensions_v2.webui.bridge import ASSET_PREFIX
+from jiuwenswarm.gateway.extensions_v2.webui.transfers import DOWNLOAD_PREFIX, UPLOAD_PREFIX
+
+# Assets are documents of an opaque origin even when opened directly, so they
+# can never read the frontend's storage or act as the signed-in page. The
+# sandbox keeps the abilities the Iframe component grants (forms, popups,
+# modals, downloads) but never allow-same-origin; sandboxed pages fetch other
+# assets cross-origin, hence the CORS header.
+CORS_HEADERS = MappingProxyType({"Access-Control-Allow-Origin": "*"})
+ASSET_HEADERS = MappingProxyType({
+    **CORS_HEADERS,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads",
+})
+#: Exports are saved, never rendered (S_10 section 7.2).
+DOWNLOAD_HEADERS = MappingProxyType({
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox",
+})
+#: Ticket routes: the one-time ticket decides access instead of request policy.
+TICKET_PREFIXES = (UPLOAD_PREFIX, DOWNLOAD_PREFIX)
 
 
 def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) -> None:
@@ -22,6 +46,10 @@ def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) ->
     async def extension_http(request: Request, call_next):
         runtime = runtime_provider()
         if runtime is None or not runtime.browser.enabled:
+            return await call_next(request)
+        if request.url.path.startswith(TICKET_PREFIXES):
+            # Imports and exports carry one-time tickets issued to a connection whose
+            # request the policy already continued; the ticket decides access.
             return await call_next(request)
         context = MappingProxyType({"headers": dict(request.headers)})
         request_input = GatewayRequestInput(
@@ -51,16 +79,32 @@ def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) ->
         return JSONResponse({"code": "UNSUPPORTED_HTTP_ROUTE"}, status_code=400)
 
     async def package_asset(package_id: str, generation: str, path: str):
-        headers = {"Access-Control-Allow-Origin": "*"}
         runtime = runtime_provider()
         if runtime is None:
-            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=headers)
+            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=dict(CORS_HEADERS))
         try:
             resource = runtime.browser.asset_file(package_id, generation, path)
         except (ValueError, StopIteration):
-            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=headers)
-        return FileResponse(
-            resource, headers={**headers, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-        )
+            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=dict(CORS_HEADERS))
+        return FileResponse(resource, headers=dict(ASSET_HEADERS))
 
-    app.add_api_route("/extension-assets/{package_id}/{generation}/{path:path}", package_asset, methods=["GET", "HEAD"])
+    app.add_api_route(ASSET_PREFIX + "{package_id}/{generation}/{path:path}", package_asset, methods=["GET", "HEAD"])
+
+    async def upload_file(upload_id: str, path: str, request: Request):
+        runtime = runtime_provider()
+        if runtime is None:
+            return JSONResponse({"code": "NOT_FOUND"}, status_code=404)
+        status = await runtime.browser.transfers.receive(upload_id, path, request.stream())
+        return Response(status_code=status, headers={"Cache-Control": "no-store"})
+
+    async def download_file(token: str, request: Request):
+        runtime = runtime_provider()
+        offer = None if runtime is None else runtime.browser.transfers.download(token, consume=request.method == "GET")
+        if offer is None:
+            return JSONResponse({"code": "NOT_FOUND"}, status_code=404)
+        headers = {**DOWNLOAD_HEADERS,
+                   "Content-Disposition": f"attachment; filename*=UTF-8''{quote(offer.filename, safe='')}"}
+        return FileResponse(offer.path, media_type="application/octet-stream", headers=headers)
+
+    app.add_api_route(UPLOAD_PREFIX + "{upload_id}/{path:path}", upload_file, methods=["PUT"])
+    app.add_api_route(DOWNLOAD_PREFIX + "{token}", download_file, methods=["GET", "HEAD"])

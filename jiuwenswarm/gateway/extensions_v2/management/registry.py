@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -155,7 +155,7 @@ class GatewayPackageManager:
         async with self._lock:
             reports: list[ActivationReport] = []
             for path in paths:
-                reports.append(self._install_one(Path(path)))
+                reports.append(await self._install_one(Path(path)))
             return reports
 
     async def reload(self, package_id: str) -> ActivationReport:
@@ -170,7 +170,7 @@ class GatewayPackageManager:
                     operation_error(StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED, package_id=package_id),
                 )
             try:
-                self._runtime.publish(load_gateway_package(root))
+                await self._switch(load_gateway_package(root))
             except Exception as exc:  # noqa: BLE001 - one bad package must surface as a report
                 logger.exception("[GatewayExtensions] cannot reload %s", package_id)
                 return _failure(
@@ -181,36 +181,97 @@ class GatewayPackageManager:
             return _success(package_id, "reload")
 
     async def uninstall(self, package_id: str) -> ActivationReport:
-        """Release the handlers and delete every installed copy of one package."""
+        """Release the handlers and delete every installed copy of one package.
+
+        Refused with ``EXTENSION_PACKAGE_BUSY`` while a handler or data call of
+        the package is in flight, so data is never deleted under a running call.
+        """
 
         async with self._lock:
-            versions = self.gateway_installed(package_id)
-            released = self._runtime.unpublish(package_id)
-            if not versions and not released:
-                return _failure(
-                    package_id,
-                    "uninstall",
-                    operation_error(StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED, package_id=package_id),
-                )
-            failure: OperationError | None = None
-            for package in versions:
-                try:
-                    await _remove_installed(self._store, package)
-                except ExtensionFailure as exc:
-                    failure = exc.as_error()
-                    logger.warning("[GatewayExtensions] cannot delete %s: %s", package.root, exc)
-            if self._on_released is not None:
-                try:
-                    self._on_released(package_id)
-                except Exception:  # noqa: BLE001 - view cleanup must not fail management
-                    logger.exception("[GatewayExtensions] release cleanup failed for %s", package_id)
-            if failure is not None:
-                return _failure(package_id, "uninstall", failure)
-            return _success(package_id, "uninstall")
+            try:
+                # A busy package keeps everything; nothing has changed yet.
+                self._runtime.require_idle(package_id)
+            except ExtensionFailure as exc:
+                return _failure(package_id, "uninstall", exc.as_error())
+            # Closing the splash is the commit point: from there the uninstall runs to its end
+            # even if the caller is cancelled (S_01 section 3.2).
+            return await _run_to_end(self._finish_uninstall(package_id))
+
+    async def _finish_uninstall(self, package_id: str) -> ActivationReport:
+        """Close the splash, stop the package, delete its data and copies (after the commit point)."""
+
+        versions = self.gateway_installed(package_id)
+        try:
+            # The check repeats right before unpublishing because closing the splash
+            # awaits (a call started meanwhile still keeps the package, though its
+            # splash has closed).
+            await self._close_splashes(package_id)
+            released = self._runtime.stop_package(package_id)
+        except ExtensionFailure as exc:
+            return _failure(package_id, "uninstall", exc.as_error())
+        if not versions and not released:
+            return _failure(
+                package_id,
+                "uninstall",
+                operation_error(StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED, package_id=package_id),
+            )
+        try:
+            # Data goes first: if it cannot be removed the copies stay, so
+            # a repeated uninstall can retry instead of reporting "not installed".
+            await self._runtime.cleanup_package_data(package_id)
+        except Exception as exc:  # noqa: BLE001 - surface as a report and keep the copies
+            logger.warning("[GatewayExtensions] cannot delete data of %s: %s", package_id, exc)
+            return _failure(
+                package_id,
+                "uninstall",
+                operation_error(StatusCode.EXTENSION_DATA_WRITE_FAILED, reason=str(exc)),
+            )
+        failure: OperationError | None = None
+        for package in versions:
+            try:
+                await _remove_installed(self._store, package)
+            except ExtensionFailure as exc:
+                failure = exc.as_error()
+                logger.warning("[GatewayExtensions] cannot delete %s: %s", package.root, exc)
+        if self._on_released is not None:
+            try:
+                self._on_released(package_id)
+            except Exception:  # noqa: BLE001 - view cleanup must not fail management
+                logger.exception("[GatewayExtensions] release cleanup failed for %s", package_id)
+        if failure is not None:
+            return _failure(package_id, "uninstall", failure)
+        return _success(package_id, "uninstall")
 
     # ── internals ─────────────────────────────────────────────────────────
 
-    def _install_one(self, path: Path) -> ActivationReport:
+    async def _switch(self, package) -> None:
+        """Replace the running version by ``package``, or leave it running (S_01 section 3.2).
+
+        Preparing validates the new version and checks that its handlers can be registered;
+        it does not await, so a failure there changes nothing. Closing the running splash is
+        the commit point: it already changes what browsers show, so from there the switch
+        runs to its end (commit, or abort when the commit fails or the runtime stopped) even
+        if the caller is cancelled, and the cancellation is raised afterwards.
+        """
+
+        prepared = self._runtime.prepare(package)
+        await _run_to_end(self._finish_switch(prepared))
+
+    async def _finish_switch(self, prepared) -> None:
+        try:
+            await self._close_splashes(prepared.package.package_id)
+            self._runtime.commit(prepared)
+        except BaseException:
+            self._runtime.abort(prepared)
+            raise
+
+    async def _close_splashes(self, package_id: str) -> None:
+        """Tell a package its playing splash ends before its handlers go away (S_10 section 5)."""
+
+        if self._runtime.is_active_package(package_id):
+            await self._runtime.browser.close_splashes(package_id, "removed")
+
+    async def _install_one(self, path: Path) -> ActivationReport:
         package_id = ""
         try:
             with self._store.open_source(path) as opened:
@@ -225,14 +286,22 @@ class GatewayPackageManager:
                 "install",
                 operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
             )
+        package = None
         try:
-            self._runtime.publish(load_gateway_package(root))
-        except Exception as exc:  # noqa: BLE001 - roll back the copy we just made
+            package = load_gateway_package(root)
+            await self._switch(package)
+        except BaseException as exc:
+            # The copy stays only if the switch committed (a cancellation after the commit
+            # point still completes it); otherwise it must not be enabled at the next start.
+            current = self._runtime.current_activation(package_id)
+            if package is None or current is None or current.package is not package:
+                try:
+                    self._store.remove_installed(package_id, root.name)
+                except ExtensionFailure:
+                    logger.exception("[GatewayExtensions] cannot roll back %s", root)
+            if not isinstance(exc, Exception):
+                raise
             logger.exception("[GatewayExtensions] cannot publish %s", package_id)
-            try:
-                self._store.remove_installed(package_id, root.name)
-            except ExtensionFailure:
-                logger.exception("[GatewayExtensions] cannot roll back %s", root)
             return _failure(
                 package_id,
                 "install",
@@ -245,6 +314,32 @@ class GatewayPackageManager:
         if not versions:
             return None
         return max(versions, key=lambda package: _version_key(package.version)).root
+
+
+async def _run_to_end(operation: Awaitable[Any]) -> Any:
+    """Await ``operation`` past every cancellation of the caller, then re-raise the first one.
+
+    Used after a management operation's commit point, where stopping halfway would leave
+    browsers and packages in a state no version describes. Like agent-core's
+    ``run_file_operation``, it keeps waiting until the task has really finished (a repeated
+    cancellation must not detach it) and reads its result so a failure is logged, not lost.
+    """
+
+    task = asyncio.ensure_future(operation)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as cancelled:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001 - read below; the cancellation is what propagates
+                break
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("[GatewayExtensions] management operation failed after its caller was cancelled",
+                         exc_info=task.exception())
+        raise cancelled
 
 
 def _success(package_id: str, operation: str) -> ActivationReport:

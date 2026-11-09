@@ -19,6 +19,7 @@ from typing import Any
 
 from jiuwenswarm.gateway.extensions_v2.webui.constants import MAX_INSTANCES_PER_SESSION, SlotScope
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
+    ClearFrame,
     RenderFrame,
     RenderMode,
     RenderNode,
@@ -148,6 +149,31 @@ class ActiveRenderRegistry:
         """Drop all instances owned by an unloaded package."""
 
         return self._drop_matching(lambda target: target.package_id == package_id)
+
+    def retire_package(self, package_id: str) -> tuple[ClearFrame, ...]:
+        """Drop a released package's instances and reserve the revision of their clear frames.
+
+        A later render of the same target, for example after a reload, then starts
+        above the clear frame the browser has already accepted.
+        """
+
+        frames: list[ClearFrame] = []
+        for instance in self.drop_package(package_id):
+            revision = instance.revision + 1
+            self._revisions[instance.target.key] = (instance.target, revision)
+            frames.append(ClearFrame(target=instance.target, revision=revision, reason="released"))
+        return tuple(frames)
+
+    def retire_instance(self, target: RenderTarget, reason: str) -> ClearFrame | None:
+        """Drop one instance and reserve the revision of its clear frame, like ``retire_package``."""
+
+        instance = self._instances.get(target.key)
+        if instance is None:
+            return None
+        self.drop_instance(target)
+        revision = instance.revision + 1
+        self._revisions[target.key] = (instance.target, revision)
+        return ClearFrame(target=instance.target, revision=revision, reason=reason)
 
     def drop_connection(self, connection_id: str) -> tuple[RenderInstance, ...]:
         """Release application instances without touching any chat session."""

@@ -60,7 +60,9 @@ async def start_local_cli(runtime: Any) -> LocalControl:
                 reports = [await operation(package_id)]
             payload = {"reports": [_encode(report) for report in reports]}
             succeeded = [report.package_id for report in reports if report.status == "SUCCESS"]
-            if action == "install" and succeeded:
+            if action in ("install", "reload") and succeeded:
+                # Released views are cleared before mounted slots ask the new activation for ready.
+                await runtime.browser.settle()
                 try:
                     await runtime.channel.broadcast_event("extensions.v2.installed", {"package_ids": succeeded})
                     payload["ui_notified"] = True

@@ -18,6 +18,10 @@ from typing import Any
 EVENT_GATEWAY_REQUEST = "gateway.request"
 EVENT_UI_RENDER = "ui.render"
 EVENT_GATEWAY_DISCONNECT = "gateway.disconnect"
+#: Host actions a package asks for through Ops; each runs as its own chain with a CORE default.
+EVENT_UI_APPEARANCE = "ui.appearance"
+EVENT_UI_DOWNLOAD = "ui.download"
+EVENT_UI_SPLASH_PREVIEW = "ui.splash.preview"
 
 #: The single upstream WebUI method that carries browser ui.* events.
 WEBUI_DISPATCH_METHOD = "webui.dispatch"
