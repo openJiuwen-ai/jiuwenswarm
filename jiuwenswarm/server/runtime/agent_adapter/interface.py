@@ -90,6 +90,7 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_context import MemoryHookContext
+from jiuwenswarm.common.input_guard import InputTooLongError
 from jiuwenswarm.common.schema.agent import (
     AgentRequest,
     AgentResponse,
@@ -477,6 +478,30 @@ def _person_drove_turn(request: AgentRequest, *, is_team_mode: bool) -> bool:
     return is_external_user_authored_dispatch(
         request.params, channel_id=request.channel_id, request_method=request.req_method, metadata=request.metadata,
     )
+
+
+def _check_user_input_guard(adapter: Any, request: AgentRequest, query: Any) -> None:
+    """Ask the adapter to reject one input that cannot fit its model window.
+
+    Runs before the user turn is written to history, so a rejected message is
+    never restored into the context on the next session warmup. Adapters that
+    do not implement the gate (for example external harnesses) are unaffected.
+
+    Only :class:`InputTooLongError` propagates. Any other failure is logged
+    and ignored: this gate is an optimization, never a new failure mode.
+    """
+    checker = getattr(adapter, "check_user_input_guard", None)
+    if not callable(checker):
+        return
+    try:
+        checker(request, query)
+    except InputTooLongError:
+        raise
+    except Exception:  # noqa: BLE001 - the gate must never break a request
+        logger.warning(
+            "[JiuWenSwarm] input guard check failed; continuing request",
+            exc_info=True,
+        )
 
 
 def _should_record_user_history(params: Any) -> bool:
@@ -3573,6 +3598,11 @@ class JiuWenSwarm:
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         if _should_record_user_history(request.params):
+            try:
+                _check_user_input_guard(adapter, request, query)
+            except InputTooLongError:
+                _schedule_feedback_once("error")
+                raise
             await _run_history_io(
                 append_history_record,
                 session_id=session_id,
@@ -4284,6 +4314,13 @@ class JiuWenSwarm:
         if isinstance(request.params, dict):
             restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
+        if (
+            request.req_method != ReqMethod.COMMAND_GOAL
+            and _should_record_user_history(request.params)
+        ):
+            # Reject before history recording: a rejected message must not be
+            # restored into the model context on the next session warmup.
+            _check_user_input_guard(adapter, request, query)
 
         mode = request.params.get("mode", "") if isinstance(request.params, dict) else ""
         team_flag = request.params.get("team", False) if isinstance(request.params, dict) else False

@@ -503,6 +503,14 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     CircuitBreakerRail,
     CircuitBreakerConfig,
 )
+from jiuwenswarm.common.input_guard import (  # noqa: E402
+    InputBudget,
+    InputGuardConfig,
+    InputTooLongError,
+    estimate_text_tokens,
+    evaluate_input_guard,
+    parse_input_guard_config,
+)
 from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
@@ -1997,6 +2005,9 @@ class JiuWenSwarmDeepAdapter:
         self._enterprise_config_resource_id: str | None = None
         self._config_base_cache: dict[str, Any] | None = None
         self._config_cache: dict[str, Any] = {}
+        # ``(registry_revision, tokens)`` for the input-length gate. Tools are
+        # re-counted only when the ability registry changes.
+        self._input_guard_tools_cache: tuple[Any, int] | None = None
         self._filesystem_rail: SysOperationRail | None = None
         self._skill_rail: SkillUseRail | None = None
         self._stream_event_rail: JiuSwarmStreamEventRail | None = None
@@ -15901,6 +15912,343 @@ class JiuWenSwarmDeepAdapter:
             raise RootPermissionQueueError(
                 "permission_continuation_discard_failed"
             ) from cancel_error
+
+    def check_user_input_guard(self, request: AgentRequest, query: Any) -> None:
+        """Reject one user input that can never fit the model input budget.
+
+        The check runs before the turn is recorded, so a rejected message
+        never reaches the context or the history-restore path. It is
+        deliberately fail-open: a disabled config, an unresolved window, or a
+        counting error lets the request continue to the SDK prompt-too-long
+        recovery. Only a confidently oversized input is rejected.
+        """
+        if request.req_method is not ReqMethod.CHAT_SEND:
+            return
+        if not isinstance(query, str) or not query.strip():
+            return
+        params = request.params if isinstance(request.params, dict) else {}
+        # Reuse the host's canonical "a person authored this dispatch" check:
+        # it excludes Heartbeat automation, internal sources, log_as_user=false,
+        # interrupt resumes and COMMAND_GOAL. Those turns must keep the SDK's
+        # own failure path instead of a user-facing rejection.
+        from jiuwenswarm.server.runtime.agent_adapter.interface import (
+            is_external_user_authored_dispatch,
+        )
+
+        if not is_external_user_authored_dispatch(
+            params,
+            channel_id=request.channel_id,
+            request_method=request.req_method,
+            metadata=request.metadata,
+        ):
+            return
+
+        config = self._input_guard_config()
+        if not config.enabled:
+            return
+        prepared = self._input_guard_budget(request, config)
+        if prepared is None:
+            return
+        budget, token_counter, model_name = prepared
+        decision = evaluate_input_guard(
+            query,
+            config=config,
+            budget=budget,
+            token_counter=token_counter,
+        )
+        log_fields = (
+            "session=%s tokens=%s limit=%s window=%s system=%s tools=%s "
+            "reserved=%s model=%s"
+        )
+        log_args = (
+            request.session_id,
+            decision.tokens,
+            decision.limit,
+            decision.window,
+            decision.system_tokens,
+            decision.tools_tokens,
+            decision.reserved_tokens,
+            model_name or "unknown",
+        )
+        if decision.reason == "budget_exhausted":
+            # The fixed prompt/tool cost already fills the window. This is a
+            # model-context configuration problem, not a user-input problem;
+            # let the request proceed and surface it through the normal path.
+            logger.warning("[InputGuard] budget exhausted; " + log_fields, *log_args)
+            return
+        if not decision.rejected:
+            logger.info("[InputGuard] pass " + log_fields, *log_args)
+            return
+
+        logger.warning("[InputGuard] reject " + log_fields, *log_args)
+        message = config.message(
+            self._input_guard_language(),
+            tokens=decision.tokens,
+            limit=decision.limit,
+        )
+        raise InputTooLongError(
+            message,
+            tokens=decision.tokens,
+            limit=decision.limit,
+            window=decision.window,
+            system_tokens=decision.system_tokens,
+            tools_tokens=decision.tools_tokens,
+            reserved_tokens=decision.reserved_tokens,
+        )
+
+    def _input_guard_config(self) -> InputGuardConfig:
+        react_config = self._config_cache if isinstance(self._config_cache, dict) else {}
+        return parse_input_guard_config(react_config.get("input_guard_config"))
+
+    def _input_guard_language(self) -> str:
+        config_base = self._config_base_cache if isinstance(self._config_base_cache, dict) else {}
+        return str(config_base.get("preferred_language") or "zh").strip().lower()
+
+    def _input_guard_budget(
+        self,
+        request: AgentRequest,
+        config: InputGuardConfig,
+    ) -> tuple[InputBudget, Any, str] | None:
+        """Resolve the window/fixed-cost budget, token counter, and model name.
+
+        The window and the output reserve always come from the model selected
+        for this session. The system prompt / tool token counts come from the
+        live session instance when it is bound to that same model; otherwise
+        ``fixed_overhead_tokens`` stands in for them. Keeping window and
+        reserve on the configured model avoids using the root adapter's
+        startup model before the session context is synchronized.
+
+        Returns ``None`` only when the window cannot be resolved; the caller
+        then leaves the request unchanged.
+        """
+        model_name, model_config = self._input_guard_model_config(request)
+        try:
+            window = resolve_context_window_tokens(
+                model_name,
+                context_engine_config=self._config_cache,
+                model_config_obj=model_config,
+            )
+        except Exception:  # noqa: BLE001
+            window = 0
+        if window <= 0:
+            logger.info(
+                "[InputGuard] window unresolved; skipping session=%s",
+                request.session_id,
+            )
+            return None
+
+        reserved = config.reserved_output_tokens
+        if reserved <= 0 and isinstance(model_config, dict):
+            raw_max_tokens = model_config.get("max_tokens")
+            if (
+                isinstance(raw_max_tokens, int)
+                and not isinstance(raw_max_tokens, bool)
+                and raw_max_tokens > 0
+            ):
+                reserved = raw_max_tokens
+
+        live = self._input_guard_live_costs(request.session_id, model_name)
+        if live is None:
+            system_tokens = config.fixed_overhead_tokens
+            tools_tokens = 0
+            token_counter = None
+        else:
+            system_tokens, tools_tokens, token_counter = live
+
+        return (
+            InputBudget(
+                window=window,
+                system_tokens=system_tokens,
+                tools_tokens=tools_tokens,
+                reserved_tokens=reserved,
+            ),
+            token_counter,
+            model_name,
+        )
+
+    def _input_guard_live_costs(
+        self,
+        session_id: str,
+        model_name: str,
+    ) -> tuple[int, int, Any] | None:
+        """Return live system/tool token counts from the session adapter.
+
+        Only the cached session child is usable: the root adapter may hold an
+        instance built with the startup default model, whose prompt and tool
+        set do not describe this session. A model mismatch falls back to the
+        fixed overhead.
+        """
+        adapter = (
+            self
+            if self._is_session_scoped_adapter
+            else self._get_cached_session_adapter(session_id)
+        )
+        if adapter is None:
+            return None
+        instance = getattr(adapter, "_instance", None)
+        if instance is None:
+            return None
+        react_agent = getattr(instance, "react_agent", None)
+        if react_agent is None:
+            return None
+
+        actual_model = adapter._resolve_model_name()
+        if (
+            model_name
+            and actual_model
+            and actual_model != "unknown"
+            and actual_model != model_name
+        ):
+            logger.info(
+                "[InputGuard] live adapter model=%s does not match session model=%s; "
+                "using fixed overhead",
+                actual_model,
+                model_name,
+            )
+            return None
+
+        token_counter = None
+        engine = getattr(react_agent, "context_engine", None)
+        if engine is not None:
+            try:
+                context = engine.get_context(session_id=session_id)
+            except Exception:  # noqa: BLE001 - guard must never block a request
+                logger.debug("[InputGuard] context lookup failed", exc_info=True)
+                context = None
+            if context is not None:
+                try:
+                    token_counter = context.token_counter()
+                except Exception:  # noqa: BLE001
+                    logger.debug("[InputGuard] token counter unavailable", exc_info=True)
+                    token_counter = None
+
+        return (
+            estimate_text_tokens(adapter._get_agent_system_prompt(), token_counter),
+            adapter._input_guard_tools_tokens(react_agent, token_counter),
+            token_counter,
+        )
+
+    def _input_guard_model_config(
+        self,
+        request: AgentRequest,
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Resolve the selected model name and its ``model_config_obj``."""
+        params = request.params if isinstance(request.params, dict) else {}
+        model_name = ""
+        selection_id = ""
+        selection = params.get("model_selection")
+        if isinstance(selection, dict):
+            model_name = str(
+                selection.get("model_name") or selection.get("name") or ""
+            ).strip()
+            selection_id = str(selection.get("id") or "").strip()
+        if not model_name:
+            model_name = str(params.get("model_name") or "").strip()
+        if not model_name:
+            model_name = self._input_guard_session_model_name(request.session_id)
+        if not model_name:
+            resolved = self._resolve_model_name()
+            model_name = "" if resolved == "unknown" else resolved
+
+        config_base = self._config_base_cache if isinstance(self._config_base_cache, dict) else {}
+        models = config_base.get("models")
+        if not isinstance(models, dict):
+            return model_name, None
+        sections: list[list[Any]] = []
+        defaults = models.get("defaults")
+        if isinstance(defaults, list):
+            sections.append(defaults)
+        for key, value in models.items():
+            if key != "defaults" and isinstance(value, list):
+                sections.append(value)
+
+        # ``model_selection`` from the UI is ``{"type": "model", "id": ...}``,
+        # not a model name. Resolve that id against every configured model
+        # section; a group selection cannot be resolved statically and falls
+        # back to the product default window.
+        for entries in sections:
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                model_client_config = entry.get("model_client_config")
+                model_client_config = (
+                    model_client_config if isinstance(model_client_config, dict) else {}
+                )
+                entry_model_name = str(model_client_config.get("model_name") or "").strip()
+                entry_alias = str(entry.get("alias") or "").strip()
+                entry_id = str(entry.get("model_id") or "").strip()
+                if selection_id and entry_id == selection_id:
+                    model_config = entry.get("model_config_obj")
+                    return (
+                        model_name or entry_alias or entry_model_name,
+                        model_config if isinstance(model_config, dict) else None,
+                    )
+                if model_name and model_name in {entry_model_name, entry_alias}:
+                    model_config = entry.get("model_config_obj")
+                    return model_name, model_config if isinstance(model_config, dict) else None
+        return model_name, None
+
+    @staticmethod
+    def _input_guard_session_model_name(session_id: str) -> str:
+        """Return the model selected for ``session_id`` from session metadata."""
+        try:
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                get_session_metadata,
+            )
+
+            metadata = get_session_metadata(session_id, enable_writeback=False)
+        except Exception:  # noqa: BLE001 - guard must never block a request
+            logger.debug("[InputGuard] session metadata lookup failed", exc_info=True)
+            return ""
+        if not isinstance(metadata, dict):
+            return ""
+        return str(metadata.get("model") or "").strip()
+
+    def _input_guard_tools_tokens(self, react_agent: Any, token_counter: Any) -> int:
+        """Count the tool definitions attached to the next model call.
+
+        The result is memoized per ability-registry revision: tool sets change
+        on MCP/skill installs, not per message.
+        """
+        if token_counter is None:
+            return 0
+        manager = getattr(react_agent, "ability_manager", None)
+        if manager is None:
+            return 0
+        revision = getattr(manager, "registry_revision", None)
+        cached = self._input_guard_tools_cache
+        if cached is not None and revision is not None and cached[0] == revision:
+            return cached[1]
+
+        try:
+            cards = list(manager.list() or [])
+        except Exception:  # noqa: BLE001
+            logger.debug("[InputGuard] tool list failed", exc_info=True)
+            return 0
+        tools: list[ToolInfo] = []
+        for card in cards:
+            to_tool_info = getattr(card, "to_tool_info", None)
+            if callable(to_tool_info):
+                try:
+                    tools.append(to_tool_info())
+                    continue
+                except Exception:  # noqa: BLE001 - skip an unrenderable card
+                    logger.debug("[InputGuard] to_tool_info failed", exc_info=True)
+            if hasattr(card, "name") and hasattr(card, "description"):
+                tools.append(
+                    ToolInfo(
+                        name=card.name,
+                        description=card.description or "",
+                        parameters=getattr(card, "input_params", {}),
+                    )
+                )
+        try:
+            tokens = int(token_counter.count_tools(tools)) if tools else 0
+        except Exception:  # noqa: BLE001
+            logger.debug("[InputGuard] tool token count failed", exc_info=True)
+            tokens = 0
+        self._input_guard_tools_cache = (revision, tokens)
+        return tokens
 
     async def _prepare_root_input_dispatch(
         self,
