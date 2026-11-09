@@ -1343,7 +1343,8 @@ export const ChatPanel = React.memo(function ChatPanel({
   const readyWhileHiddenRef = useRef(false);
   const [topicStarterErrorKey, setTopicStarterErrorKey] = useState<string | null>(null);
   // Disabled still shows packaged cold-start cards; personalized generation waits on the switch.
-  const visibleTopicSlate = dynamicSlate?.visitId === topicStarterVisitId
+  const topicStartersEnabled = !isEnterprise();
+  const visibleTopicSlate = topicStartersEnabled && dynamicSlate?.visitId === topicStarterVisitId
     ? dynamicSlate.slate : null;
   const visibleTopicSlateId = visibleTopicSlate?.slateId;
   const acceptingDynamicRef = useRef(false);
@@ -1722,7 +1723,7 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   // 空白全局新建页回到前台、以及开在前台时每 30 分钟：让后台检查资讯，页面本身不等待结果。
   useEffect(() => {
-    if (!isConnected || hasConversation || topicStarterProjectId) return;
+    if (!topicStartersEnabled || !isConnected || hasConversation || topicStarterProjectId) return;
     const checkNews = () => {
       if (document.hidden || !acceptingDynamicRef.current) return;
       void webRequest('topic_starters.foreground', { context_scope: 'global_new_chat', visit_id: topicStarterVisitIdRef.current }).catch(() => undefined);
@@ -1742,9 +1743,10 @@ export const ChatPanel = React.memo(function ChatPanel({
       document.removeEventListener('visibilitychange', handleVisibility);
       if (timer !== null) window.clearInterval(timer);
     };
-  }, [hasConversation, isConnected, topicStarterProjectId]);
+  }, [hasConversation, isConnected, topicStarterProjectId, topicStartersEnabled]);
 
   useEffect(() => {
+    if (!topicStartersEnabled) return;
     const handleTopicPageVisibility = () => {
       const visible = document.visibilityState === 'visible';
       setPageVisible(visible);
@@ -1756,7 +1758,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     };
     document.addEventListener('visibilitychange', handleTopicPageVisibility);
     return () => document.removeEventListener('visibilitychange', handleTopicPageVisibility);
-  }, []);
+  }, [topicStartersEnabled]);
 
   useLayoutEffect(() => {
     const el = scrollContainerRef.current;
@@ -1869,23 +1871,28 @@ export const ChatPanel = React.memo(function ChatPanel({
     [sendTopicStarterEvent],
   );
 
-  useEffect(() => useChatStore.subscribe((state, previous) => {
-    if (!activeSessionId || hasConversation || state.activeSessionId !== activeSessionId) return;
-    const input = state.runtimes[activeSessionId]?.inputValue;
-    const previousInput = previous.runtimes[activeSessionId]?.inputValue;
-    if (previousInput && !input && !visibleTopicSlateRef.current && !acceptingDynamicRef.current) {
-      interactedRecommendationVisitRef.current = null;
-      acceptingDynamicRef.current = true;
-      setRecommendationRefresh(value => value + 1);
-    }
-  }), [activeSessionId, hasConversation]);
+  useEffect(() => {
+    if (!topicStartersEnabled) return;
+    return useChatStore.subscribe((state, previous) => {
+      if (!activeSessionId || hasConversation || state.activeSessionId !== activeSessionId) return;
+      const input = state.runtimes[activeSessionId]?.inputValue;
+      const previousInput = previous.runtimes[activeSessionId]?.inputValue;
+      if (previousInput && !input && !visibleTopicSlateRef.current && !acceptingDynamicRef.current) {
+        interactedRecommendationVisitRef.current = null;
+        acceptingDynamicRef.current = true;
+        setRecommendationRefresh(value => value + 1);
+      }
+    });
+  }, [activeSessionId, hasConversation, topicStartersEnabled]);
 
   // v6 展示只读预计算池，后台 Ark 配置与会话回答模型相互独立。因此新欢迎页
   // WebChannel ready 后立即请求，不等待模型列表，也不把会话 model_name 传给 Topic Starter。
   // 连接恢复会重新进入该 effect，避免页面先启动时的一次失败永久留下静态入口。
   useEffect(() => {
-    acceptingDynamicRef.current = Boolean(activeSessionId && !hasConversation && interactedRecommendationVisitRef.current !== topicStarterVisitId);
-    if (!isConnected || !activeSessionId || hasConversation) {
+    acceptingDynamicRef.current = topicStartersEnabled && Boolean(
+      activeSessionId && !hasConversation && interactedRecommendationVisitRef.current !== topicStarterVisitId,
+    );
+    if (!topicStartersEnabled || !isConnected || !activeSessionId || hasConversation) {
       return;
     }
     const requestSessionId = activeSessionId;
@@ -1975,7 +1982,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       unsubscribeReady();
       unsubscribeControl();
     };
-  }, [activeSessionId, hasConversation, isConnected, topicStarterProjectId, topicStarterVisitId, recommendationRefresh]);
+  }, [activeSessionId, hasConversation, isConnected, topicStarterProjectId, topicStarterVisitId, recommendationRefresh, topicStartersEnabled]);
 
 
   useEffect(() => {
@@ -2617,7 +2624,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onClearGoal={onClearGoal}
                 />
               </div>
-              <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
+              {topicStartersEnabled && <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
                   <div
                     className="chat-suggestions__title"
@@ -2670,7 +2677,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                     />
                   );
                 })}
-              </div>
+              </div>}
               {isGroupCreateWelcome && (
                 <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">
                   <span className="chat-welcome__capability">
