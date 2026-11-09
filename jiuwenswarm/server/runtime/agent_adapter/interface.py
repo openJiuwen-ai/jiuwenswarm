@@ -480,7 +480,7 @@ def _person_drove_turn(request: AgentRequest, *, is_team_mode: bool) -> bool:
     )
 
 
-def _check_user_input_guard(adapter: Any, request: AgentRequest, query: Any) -> None:
+async def _check_user_input_guard(adapter: Any, request: AgentRequest, query: Any) -> None:
     """Ask the adapter to reject one input that cannot fit its model window.
 
     Runs before the user turn is written to history, so a rejected message is
@@ -494,7 +494,7 @@ def _check_user_input_guard(adapter: Any, request: AgentRequest, query: Any) -> 
     if not callable(checker):
         return
     try:
-        checker(request, query)
+        await checker(request, query)
     except InputTooLongError:
         raise
     except Exception:  # noqa: BLE001 - the gate must never break a request
@@ -3599,7 +3599,7 @@ class JiuWenSwarm:
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         if _should_record_user_history(request.params):
             try:
-                _check_user_input_guard(adapter, request, query)
+                await _check_user_input_guard(adapter, request, query)
             except InputTooLongError:
                 _schedule_feedback_once("error")
                 raise
@@ -4320,7 +4320,7 @@ class JiuWenSwarm:
         ):
             # Reject before history recording: a rejected message must not be
             # restored into the model context on the next session warmup.
-            _check_user_input_guard(adapter, request, query)
+            await _check_user_input_guard(adapter, request, query)
 
         mode = request.params.get("mode", "") if isinstance(request.params, dict) else ""
         team_flag = request.params.get("team", False) if isinstance(request.params, dict) else False

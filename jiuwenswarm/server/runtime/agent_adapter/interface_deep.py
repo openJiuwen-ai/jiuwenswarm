@@ -2008,6 +2008,9 @@ class JiuWenSwarmDeepAdapter:
         # ``(registry_revision, tokens)`` for the input-length gate. Tools are
         # re-counted only when the ability registry changes.
         self._input_guard_tools_cache: tuple[Any, int] | None = None
+        # Last live ``system + tools`` measurement per model name. Used by the
+        # static path when no session child is available.
+        self._input_guard_overhead_cache: dict[str, int] = {}
         self._filesystem_rail: SysOperationRail | None = None
         self._skill_rail: SkillUseRail | None = None
         self._stream_event_rail: JiuSwarmStreamEventRail | None = None
@@ -13439,6 +13442,12 @@ class JiuWenSwarmDeepAdapter:
         self._config_base_cache = config_base.copy()
         self._refresh_multimodal_configs(config_base)
         self._config_cache = config_base.get("react", {}).copy()
+        # Prompt/tool sets may have changed. Drop the guard's derived caches
+        # (and the prompt cache shared with context usage) so it never judges
+        # the next request against the previous configuration.
+        self._last_system_prompt = ""
+        self._input_guard_tools_cache = None
+        self._input_guard_overhead_cache.clear()
         return config_base
 
     async def _apply_multimodal_reload_snapshot(
@@ -15913,7 +15922,7 @@ class JiuWenSwarmDeepAdapter:
                 "permission_continuation_discard_failed"
             ) from cancel_error
 
-    def check_user_input_guard(self, request: AgentRequest, query: Any) -> None:
+    async def check_user_input_guard(self, request: AgentRequest, query: Any) -> None:
         """Reject one user input that can never fit the model input budget.
 
         The check runs before the turn is recorded, so a rejected message
@@ -15946,7 +15955,7 @@ class JiuWenSwarmDeepAdapter:
         config = self._input_guard_config()
         if not config.enabled:
             return
-        prepared = self._input_guard_budget(request, config)
+        prepared = await self._input_guard_budget(request, config)
         if prepared is None:
             return
         budget, token_counter, model_name = prepared
@@ -16004,7 +16013,7 @@ class JiuWenSwarmDeepAdapter:
         config_base = self._config_base_cache if isinstance(self._config_base_cache, dict) else {}
         return str(config_base.get("preferred_language") or "zh").strip().lower()
 
-    def _input_guard_budget(
+    async def _input_guard_budget(
         self,
         request: AgentRequest,
         config: InputGuardConfig,
@@ -16013,8 +16022,9 @@ class JiuWenSwarmDeepAdapter:
 
         The window and the output reserve always come from the model selected
         for this session. The system prompt / tool token counts come from the
-        live session instance when it is bound to that same model; otherwise
-        ``fixed_overhead_tokens`` stands in for them. Keeping window and
+        live session instance when it is bound to that same model; otherwise a
+        per-model measurement cached by an earlier live check is used, then
+        ``fixed_overhead_tokens`` as the last resort. Keeping window and
         reserve on the configured model avoids using the root adapter's
         startup model before the session context is synchronized.
 
@@ -16038,7 +16048,11 @@ class JiuWenSwarmDeepAdapter:
             return None
 
         reserved = config.reserved_output_tokens
-        if reserved <= 0 and isinstance(model_config, dict):
+        if (
+            reserved <= 0
+            and config.use_model_max_tokens_as_reserve
+            and isinstance(model_config, dict)
+        ):
             raw_max_tokens = model_config.get("max_tokens")
             if (
                 isinstance(raw_max_tokens, int)
@@ -16047,9 +16061,14 @@ class JiuWenSwarmDeepAdapter:
             ):
                 reserved = raw_max_tokens
 
-        live = self._input_guard_live_costs(request.session_id, model_name)
+        live = await self._input_guard_live_costs(request.session_id, model_name)
         if live is None:
-            system_tokens = config.fixed_overhead_tokens
+            cached_overhead = self._input_guard_overhead_cache.get(model_name or "")
+            system_tokens = (
+                cached_overhead
+                if isinstance(cached_overhead, int) and cached_overhead > 0
+                else config.fixed_overhead_tokens
+            )
             tools_tokens = 0
             token_counter = None
         else:
@@ -16066,7 +16085,7 @@ class JiuWenSwarmDeepAdapter:
             model_name,
         )
 
-    def _input_guard_live_costs(
+    async def _input_guard_live_costs(
         self,
         session_id: str,
         model_name: str,
@@ -16076,7 +16095,9 @@ class JiuWenSwarmDeepAdapter:
         Only the cached session child is usable: the root adapter may hold an
         instance built with the startup default model, whose prompt and tool
         set do not describe this session. A model mismatch falls back to the
-        fixed overhead.
+        fixed overhead. A successful measurement is cached per model so later
+        static checks can use the real overhead instead of the configured
+        estimate.
         """
         adapter = (
             self
@@ -16122,11 +16143,14 @@ class JiuWenSwarmDeepAdapter:
                     logger.debug("[InputGuard] token counter unavailable", exc_info=True)
                     token_counter = None
 
-        return (
-            estimate_text_tokens(adapter._get_agent_system_prompt(), token_counter),
-            adapter._input_guard_tools_tokens(react_agent, token_counter),
-            token_counter,
+        system_tokens = estimate_text_tokens(
+            adapter._get_agent_system_prompt(), token_counter
         )
+        tools_tokens = await adapter._input_guard_tools_tokens(react_agent, token_counter)
+        overhead = system_tokens + tools_tokens
+        if model_name and overhead > 0:
+            self._input_guard_overhead_cache[model_name] = overhead
+        return system_tokens, tools_tokens, token_counter
 
     def _input_guard_model_config(
         self,
@@ -16204,11 +16228,16 @@ class JiuWenSwarmDeepAdapter:
             return ""
         return str(metadata.get("model") or "").strip()
 
-    def _input_guard_tools_tokens(self, react_agent: Any, token_counter: Any) -> int:
+    async def _input_guard_tools_tokens(
+        self,
+        react_agent: Any,
+        token_counter: Any,
+    ) -> int:
         """Count the tool definitions attached to the next model call.
 
-        The result is memoized per ability-registry revision: tool sets change
-        on MCP/skill installs, not per message.
+        Uses the same ``list_tool_info`` surface as the model call so MCP and
+        deferred tools are counted exactly once. Falls back to the card list
+        only when that surface is unavailable. Memoized per registry revision.
         """
         if token_counter is None:
             return 0
@@ -16220,34 +16249,46 @@ class JiuWenSwarmDeepAdapter:
         if cached is not None and revision is not None and cached[0] == revision:
             return cached[1]
 
-        try:
-            cards = list(manager.list() or [])
-        except Exception:  # noqa: BLE001
-            logger.debug("[InputGuard] tool list failed", exc_info=True)
-            return 0
         tools: list[ToolInfo] = []
-        for card in cards:
-            to_tool_info = getattr(card, "to_tool_info", None)
-            if callable(to_tool_info):
-                try:
-                    tools.append(to_tool_info())
-                    continue
-                except Exception:  # noqa: BLE001 - skip an unrenderable card
-                    logger.debug("[InputGuard] to_tool_info failed", exc_info=True)
-            if hasattr(card, "name") and hasattr(card, "description"):
-                tools.append(
-                    ToolInfo(
-                        name=card.name,
-                        description=card.description or "",
-                        parameters=getattr(card, "input_params", {}),
+        list_tool_info = getattr(manager, "list_tool_info", None)
+        if callable(list_tool_info):
+            try:
+                tools = list(await list_tool_info() or [])
+            except Exception:  # noqa: BLE001 - guard must never block a request
+                logger.debug("[InputGuard] list_tool_info failed", exc_info=True)
+                tools = []
+        if not tools:
+            try:
+                cards = list(manager.list() or [])
+            except Exception:  # noqa: BLE001
+                logger.debug("[InputGuard] tool list failed", exc_info=True)
+                cards = []
+            for card in cards:
+                to_tool_info = getattr(card, "to_tool_info", None)
+                if callable(to_tool_info):
+                    try:
+                        tools.append(to_tool_info())
+                        continue
+                    except Exception:  # noqa: BLE001 - skip an unrenderable card
+                        logger.debug("[InputGuard] to_tool_info failed", exc_info=True)
+                if hasattr(card, "name") and hasattr(card, "description"):
+                    tools.append(
+                        ToolInfo(
+                            name=card.name,
+                            description=card.description or "",
+                            parameters=getattr(card, "input_params", {}),
+                        )
                     )
-                )
         try:
             tokens = int(token_counter.count_tools(tools)) if tools else 0
         except Exception:  # noqa: BLE001
             logger.debug("[InputGuard] tool token count failed", exc_info=True)
             tokens = 0
-        self._input_guard_tools_cache = (revision, tokens)
+        # ``list_tool_info`` may materialize MCP cards and advance the revision.
+        self._input_guard_tools_cache = (
+            getattr(manager, "registry_revision", revision),
+            tokens,
+        )
         return tokens
 
     async def _prepare_root_input_dispatch(

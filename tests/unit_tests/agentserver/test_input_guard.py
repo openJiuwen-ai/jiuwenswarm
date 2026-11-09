@@ -62,6 +62,16 @@ class _AbilityManager:
     def list(self):
         return list(self._cards)
 
+    async def list_tool_info(self):
+        return [
+            SimpleNamespace(
+                name=getattr(card, "name", ""),
+                description=getattr(card, "description", "") or "",
+                parameters=getattr(card, "input_params", {}),
+            )
+            for card in self._cards
+        ]
+
 
 class _ReactAgent:
     def __init__(self, *, context, manager):
@@ -95,6 +105,7 @@ def _adapter(*, window: int = 10_000, counter=None, cards=None):
     adapter._model_request_config = None
     adapter._last_system_prompt = ""
     adapter._input_guard_tools_cache = None
+    adapter._input_guard_overhead_cache = {}
     adapter._input_guard_session_model_name = lambda _sid: ""
     adapter._instance = _Instance(
         context=_Context(window=window, counter=counter),
@@ -125,8 +136,10 @@ def test_config_defaults_to_disabled():
 
     assert config.enabled is False
     assert config.max_input_ratio == 0.95
+    assert config.precise_max_input_ratio == 0.99
     assert config.max_input_tokens == 0
     assert config.reserved_output_tokens == 0
+    assert config.use_model_max_tokens_as_reserve is False
     assert config.fixed_overhead_tokens == 30_000
     assert config.message_zh == DEFAULT_MESSAGE_ZH
     assert config.message_en == DEFAULT_MESSAGE_EN
@@ -172,6 +185,22 @@ def test_config_ignores_unknown_keys():
     config = parse_input_guard_config({"enabled": True, "unknown": 1})
 
     assert config.enabled is True
+
+
+def test_config_parses_precise_ratio_and_reserve_switch():
+    config = parse_input_guard_config(
+        {"precise_max_input_ratio": 0.99, "use_model_max_tokens_as_reserve": "true"}
+    )
+
+    assert config.precise_max_input_ratio == 0.99
+    assert config.use_model_max_tokens_as_reserve is True
+
+
+@pytest.mark.parametrize("raw", [0, 1.1, "bad"])
+def test_config_rejects_invalid_precise_ratio(raw):
+    config = parse_input_guard_config({"precise_max_input_ratio": raw})
+
+    assert config.precise_max_input_ratio == 0.99
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +270,9 @@ def test_disabled_config_never_rejects():
 
 def test_boundary_equal_passes_and_one_over_rejects():
     budget = InputBudget(window=1000)
-    config = InputGuardConfig(enabled=True, max_input_ratio=0.95)
+    config = InputGuardConfig(
+        enabled=True, max_input_ratio=0.95, precise_max_input_ratio=0.95
+    )
 
     assert evaluate_input_guard(
         "x" * 950, config=config, budget=budget, token_counter=_Counter()
@@ -263,9 +294,54 @@ def test_absolute_limit_wins_when_smaller():
     assert decision.rejected is True
 
 
+def test_precise_counter_uses_precise_ratio():
+    budget = InputBudget(window=1000)
+    config = InputGuardConfig(enabled=True, max_input_ratio=0.95)
+
+    decision = evaluate_input_guard(
+        "x" * 990, config=config, budget=budget, token_counter=_Counter()
+    )
+
+    assert decision.limit == 990
+    assert decision.rejected is False
+    assert evaluate_input_guard(
+        "x" * 991, config=config, budget=budget, token_counter=_Counter()
+    ).rejected is True
+
+
+def test_heuristic_counter_uses_conservative_ratio():
+    budget = InputBudget(window=1000)
+    config = InputGuardConfig(enabled=True, max_input_ratio=0.95)
+
+    decision = evaluate_input_guard(
+        "测" * 950, config=config, budget=budget, token_counter=None
+    )
+
+    assert decision.limit == 950
+    assert decision.rejected is False
+    assert evaluate_input_guard(
+        "测" * 951, config=config, budget=budget, token_counter=None
+    ).rejected is True
+
+
+def test_tiktoken_fallback_uses_conservative_ratio():
+    budget = InputBudget(window=1000)
+    config = InputGuardConfig(enabled=True, max_input_ratio=0.95)
+    fallback = _Counter(source="tiktoken_fallback")
+
+    decision = evaluate_input_guard(
+        "测" * 951, config=config, budget=budget, token_counter=fallback
+    )
+
+    assert decision.limit == 950
+    assert decision.rejected is True
+
+
 def test_fixed_costs_reduce_usable_budget():
     budget = InputBudget(window=1000, system_tokens=100, tools_tokens=100, reserved_tokens=100)
-    config = InputGuardConfig(enabled=True, max_input_ratio=0.95)
+    config = InputGuardConfig(
+        enabled=True, max_input_ratio=0.95, precise_max_input_ratio=0.95
+    )
 
     decision = evaluate_input_guard(
         "x" * 700, config=config, budget=budget, token_counter=_Counter()
@@ -319,67 +395,67 @@ def _enable_adapter(adapter, **overrides) -> None:
     adapter._config_cache = config
 
 
-def test_adapter_rejects_oversized_input_with_formatted_message():
+async def test_adapter_rejects_oversized_input_with_formatted_message():
     adapter = _adapter(window=1000, counter=_Counter())
     _enable_adapter(adapter)
 
     with pytest.raises(InputTooLongError) as exc_info:
-        adapter.check_user_input_guard(_request(), "x" * 1000)
+        await adapter.check_user_input_guard(_request(), "x" * 1000)
 
     error = exc_info.value
     assert error.tokens == 1000
-    assert error.limit == 950
+    assert error.limit == 990
     assert "1,000" in str(error)
-    assert "950" in str(error)
+    assert "990" in str(error)
     assert "已拦截" in str(error)
 
 
-def test_adapter_passes_input_within_limit():
+async def test_adapter_passes_input_within_limit():
     adapter = _adapter(window=1000, counter=_Counter())
     _enable_adapter(adapter)
 
-    adapter.check_user_input_guard(_request(), "x" * 900)
+    await adapter.check_user_input_guard(_request(), "x" * 900)
 
 
-def test_adapter_is_noop_when_disabled():
+async def test_adapter_is_noop_when_disabled():
     adapter = _adapter(window=1000, counter=_Counter())
     adapter._config_cache = {"input_guard_config": {"enabled": False}}
 
-    adapter.check_user_input_guard(_request(), "x" * 10_000)
+    await adapter.check_user_input_guard(_request(), "x" * 10_000)
 
 
-def test_adapter_skips_non_chat_methods():
+async def test_adapter_skips_non_chat_methods():
     adapter = _adapter(window=1000, counter=_Counter())
     _enable_adapter(adapter)
 
-    adapter.check_user_input_guard(
+    await adapter.check_user_input_guard(
         _request(req_method=ReqMethod.CHAT_CANCEL), "x" * 10_000
     )
 
 
-def test_adapter_skips_non_text_queries():
+async def test_adapter_skips_non_text_queries():
     adapter = _adapter(window=1000, counter=_Counter())
     _enable_adapter(adapter)
 
-    adapter.check_user_input_guard(_request(), {"type": "interactive"})
-    adapter.check_user_input_guard(_request(), "   ")
+    await adapter.check_user_input_guard(_request(), {"type": "interactive"})
+    await adapter.check_user_input_guard(_request(), "   ")
 
 
-def test_adapter_skips_permission_and_client_tool_resume():
+async def test_adapter_skips_permission_and_client_tool_resume():
     adapter = _adapter(window=1000, counter=_Counter())
     _enable_adapter(adapter)
 
-    adapter.check_user_input_guard(
+    await adapter.check_user_input_guard(
         _request(params={"source": "permission_interrupt", "answers": [{"id": "1"}]}),
         "x" * 10_000,
     )
-    adapter.check_user_input_guard(
+    await adapter.check_user_input_guard(
         _request(params={"source": "client_tool_interrupt"}),
         "x" * 10_000,
     )
 
 
-def test_adapter_skips_automation_and_internal_turns():
+async def test_adapter_skips_automation_and_internal_turns():
     adapter = _adapter(window=1000, counter=_Counter())
     _enable_adapter(adapter)
 
@@ -389,22 +465,22 @@ def test_adapter_skips_automation_and_internal_turns():
         {"log_as_user": False},
         {"attach_goal": True},
     ):
-        adapter.check_user_input_guard(_request(params=params), "x" * 10_000)
+        await adapter.check_user_input_guard(_request(params=params), "x" * 10_000)
 
 
-def test_adapter_budget_exhausted_does_not_reject(caplog):
+async def test_adapter_budget_exhausted_does_not_reject(caplog):
     adapter = _adapter(window=1000, counter=_Counter())
     # system prompt is counted through the counter; make it fill the window.
     adapter._last_system_prompt = "s" * 1000
     _enable_adapter(adapter)
 
     with caplog.at_level("WARNING"):
-        adapter.check_user_input_guard(_request(), "x" * 100)
+        await adapter.check_user_input_guard(_request(), "x" * 100)
 
     assert "budget exhausted" in caplog.text
 
 
-def test_adapter_tools_tokens_counted_once_per_registry_revision():
+async def test_adapter_tools_tokens_counted_once_per_registry_revision():
     calls = {"tools": 0}
 
     class _CountingCounter(_Counter):
@@ -416,13 +492,13 @@ def test_adapter_tools_tokens_counted_once_per_registry_revision():
     adapter = _adapter(window=10_000, counter=_CountingCounter(), cards=[card])
     _enable_adapter(adapter)
 
-    adapter.check_user_input_guard(_request(), "x" * 10)
-    adapter.check_user_input_guard(_request(), "x" * 10)
+    await adapter.check_user_input_guard(_request(), "x" * 10)
+    await adapter.check_user_input_guard(_request(), "x" * 10)
 
     assert calls["tools"] == 1
 
 
-def test_adapter_skips_when_window_unresolved(monkeypatch):
+async def test_adapter_skips_when_window_unresolved(monkeypatch):
     adapter = _adapter(window=1000, counter=_Counter())
     _enable_adapter(adapter)
     adapter._config_base_cache = {}
@@ -434,7 +510,7 @@ def test_adapter_skips_when_window_unresolved(monkeypatch):
         lambda *args, **kwargs: 0,
     )
 
-    adapter.check_user_input_guard(_request(), "x" * 10_000)
+    await adapter.check_user_input_guard(_request(), "x" * 10_000)
 
 
 def _root_adapter(*, window=100_000, max_tokens=20_000, fixed_overhead=30_000):
@@ -474,39 +550,40 @@ def _root_adapter(*, window=100_000, max_tokens=20_000, fixed_overhead=30_000):
     adapter._model_request_config = None
     adapter._last_system_prompt = ""
     adapter._input_guard_tools_cache = None
+    adapter._input_guard_overhead_cache = {}
     return adapter
 
 
-def test_static_budget_guards_first_message_without_live_instance():
+async def test_static_budget_guards_first_message_without_live_instance():
     adapter = _root_adapter(window=100_000, max_tokens=20_000, fixed_overhead=30_000)
 
-    # usable = 100000 - 30000 - 20000 = 50000; limit = 47500
+    # usable = 100000 - 30000 - 0 = 70000; limit = 66500
     with pytest.raises(InputTooLongError) as exc_info:
-        adapter.check_user_input_guard(
-            _request(params={"model_name": "m"}), "测" * 47_501
+        await adapter.check_user_input_guard(
+            _request(params={"model_name": "m"}), "测" * 66_501
         )
 
-    assert exc_info.value.limit == 47_500
+    assert exc_info.value.limit == 66_500
     assert exc_info.value.window == 100_000
     assert exc_info.value.system_tokens == 30_000
-    assert exc_info.value.reserved_tokens == 20_000
+    assert exc_info.value.reserved_tokens == 0
 
-    adapter.check_user_input_guard(_request(params={"model_name": "m"}), "测" * 47_500)
+    await adapter.check_user_input_guard(_request(params={"model_name": "m"}), "测" * 66_500)
 
 
-def test_static_budget_honours_absolute_limit():
+async def test_static_budget_honours_absolute_limit():
     adapter = _root_adapter(window=1_000_000, max_tokens=0, fixed_overhead=0)
     adapter._config_cache["input_guard_config"]["max_input_tokens"] = 5000
 
     with pytest.raises(InputTooLongError) as exc_info:
-        adapter.check_user_input_guard(
+        await adapter.check_user_input_guard(
             _request(params={"model_name": "m"}), "测" * 5001
         )
 
     assert exc_info.value.limit == 5000
 
 
-def test_static_budget_resolves_model_selection_id():
+async def test_static_budget_resolves_model_selection_id():
     adapter = _root_adapter(window=100_000, max_tokens=20_000)
     adapter._config_base_cache["models"]["defaults"].append(
         {
@@ -517,17 +594,18 @@ def test_static_budget_resolves_model_selection_id():
     )
 
     with pytest.raises(InputTooLongError) as exc_info:
-        adapter.check_user_input_guard(
+        await adapter.check_user_input_guard(
             _request(params={"model_selection": {"type": "model", "id": "mdl_m"}}),
-            "测" * 76_001,
+            "测" * 66_501,
         )
 
     assert exc_info.value.window == 100_000
-    assert exc_info.value.reserved_tokens == 20_000
+    assert exc_info.value.reserved_tokens == 0
 
 
-def test_static_budget_searches_all_model_sections():
+async def test_static_budget_searches_all_model_sections():
     adapter = _root_adapter(window=100_000, max_tokens=20_000)
+    adapter._config_cache["input_guard_config"]["use_model_max_tokens_as_reserve"] = True
     adapter._config_base_cache["models"]["agentos"] = [
         {
             "model_id": "mdl_agent",
@@ -538,7 +616,7 @@ def test_static_budget_searches_all_model_sections():
 
     # usable = 50000 - 30000 - 10000 = 10000; limit = 9500
     with pytest.raises(InputTooLongError) as exc_info:
-        adapter.check_user_input_guard(
+        await adapter.check_user_input_guard(
             _request(params={"model_selection": {"type": "model", "id": "mdl_agent"}}),
             "测" * 9_501,
         )
@@ -547,12 +625,83 @@ def test_static_budget_searches_all_model_sections():
     assert exc_info.value.reserved_tokens == 10_000
 
 
+async def test_static_budget_reserves_nothing_by_default():
+    adapter = _root_adapter(window=100_000, max_tokens=20_000)
+
+    # usable = 100000 - 30000 - 0 = 70000; limit = 66500
+    with pytest.raises(InputTooLongError) as exc_info:
+        await adapter.check_user_input_guard(
+            _request(params={"model_name": "m"}), "测" * 66_501
+        )
+
+    assert exc_info.value.reserved_tokens == 0
+    assert exc_info.value.limit == 66_500
+
+
+async def test_static_budget_opt_in_model_max_tokens_reserve():
+    adapter = _root_adapter(window=100_000, max_tokens=20_000)
+    adapter._config_cache["input_guard_config"]["use_model_max_tokens_as_reserve"] = True
+
+    # usable = 100000 - 30000 - 20000 = 50000; limit = 47500
+    with pytest.raises(InputTooLongError) as exc_info:
+        await adapter.check_user_input_guard(
+            _request(params={"model_name": "m"}), "测" * 47_501
+        )
+
+    assert exc_info.value.reserved_tokens == 20_000
+    assert exc_info.value.limit == 47_500
+
+
+async def test_static_budget_explicit_reserve_wins():
+    adapter = _root_adapter(window=100_000, max_tokens=20_000)
+    adapter._config_cache["input_guard_config"]["reserved_output_tokens"] = 5_000
+    adapter._config_cache["input_guard_config"]["use_model_max_tokens_as_reserve"] = True
+
+    budget, _counter, _model = await adapter._input_guard_budget(
+        _request(params={"model_name": "m"}), adapter._input_guard_config()
+    )
+
+    assert budget.reserved_tokens == 5_000
+
+
+async def test_overhead_cache_feeds_static_path():
+    adapter = _adapter(window=10_000, counter=_Counter())
+    adapter._last_system_prompt = "x" * 1000
+    adapter._input_guard_session_model_name = lambda _sid: "m"
+    adapter._config_base_cache = {
+        "preferred_language": "zh",
+        "models": {
+            "defaults": [
+                {
+                    "is_default": True,
+                    "model_id": "mdl_m",
+                    "model_client_config": {"model_name": "m"},
+                    "model_config_obj": {"context_window": 10_000},
+                }
+            ]
+        },
+    }
+    _enable_adapter(adapter)
+
+    await adapter.check_user_input_guard(_request(), "x" * 10)
+    assert adapter._input_guard_overhead_cache.get("m") == 1000
+
+    adapter._instance = None
+    budget, _counter, model = await adapter._input_guard_budget(
+        _request(), adapter._input_guard_config()
+    )
+
+    assert model == "m"
+    assert budget.system_tokens == 1000
+    assert budget.tools_tokens == 0
+
+
 # ---------------------------------------------------------------------------
 # Facade wiring
 # ---------------------------------------------------------------------------
 
 
-def test_facade_helper_invokes_adapter_and_propagates():
+async def test_facade_helper_invokes_adapter_and_propagates():
     from jiuwenswarm.server.runtime.agent_adapter.interface import (
         _check_user_input_guard,
     )
@@ -560,7 +709,7 @@ def test_facade_helper_invokes_adapter_and_propagates():
     calls = []
 
     class _CheckingAdapter:
-        def check_user_input_guard(self, request, query):
+        async def check_user_input_guard(self, request, query):
             calls.append((request, query))
             raise InputTooLongError(
                 "too long",
@@ -574,12 +723,12 @@ def test_facade_helper_invokes_adapter_and_propagates():
 
     request = _request()
     with pytest.raises(InputTooLongError):
-        _check_user_input_guard(_CheckingAdapter(), request, "query")
+        await _check_user_input_guard(_CheckingAdapter(), request, "query")
 
     assert calls == [(request, "query")]
 
 
-def test_facade_helper_is_noop_for_adapters_without_the_gate():
+async def test_facade_helper_is_noop_for_adapters_without_the_gate():
     from jiuwenswarm.server.runtime.agent_adapter.interface import (
         _check_user_input_guard,
     )
@@ -587,19 +736,19 @@ def test_facade_helper_is_noop_for_adapters_without_the_gate():
     class _PlainAdapter:
         pass
 
-    _check_user_input_guard(_PlainAdapter(), _request(), "query")
+    await _check_user_input_guard(_PlainAdapter(), _request(), "query")
 
 
-def test_facade_helper_swallows_unexpected_errors(caplog):
+async def test_facade_helper_swallows_unexpected_errors(caplog):
     from jiuwenswarm.server.runtime.agent_adapter.interface import (
         _check_user_input_guard,
     )
 
     class _BrokenAdapter:
-        def check_user_input_guard(self, _request, _query):
+        async def check_user_input_guard(self, _request, _query):
             raise RuntimeError("boom")
 
     with caplog.at_level("WARNING"):
-        _check_user_input_guard(_BrokenAdapter(), _request(), "query")
+        await _check_user_input_guard(_BrokenAdapter(), _request(), "query")
 
     assert "input guard check failed" in caplog.text

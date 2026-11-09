@@ -24,9 +24,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 DEFAULT_MAX_INPUT_RATIO = 0.95
+DEFAULT_PRECISE_MAX_INPUT_RATIO = 0.99
 # Default stand-in for system prompt + tool definitions when the live agent
 # instance is not reachable yet (the first message of a session runs on the
-# stateless root adapter). Configurable as ``fixed_overhead_tokens``.
+# stateless root adapter). Configurable as ``fixed_overhead_tokens``; a live
+# measurement is cached per model and preferred on later static paths.
 DEFAULT_FIXED_OVERHEAD_TOKENS = 30_000
 DEFAULT_MESSAGE_ZH = (
     "本次输入约 {tokens} tokens，超过当前模型可用输入上限（约 {limit} tokens），"
@@ -53,6 +55,12 @@ _CJK_RANGES = (
     (0x20000, 0x2FA1F),  # CJK extensions B-F and compatibility supplement
 )
 _STRING_LENGTH_FALLBACK_SOURCE = "string_length_fallback"
+# ``tiktoken_fallback`` uses another model's vocabulary; it is not accurate
+# enough for the tighter precise ratio, so it keeps the conservative one.
+_IMPRECISE_COUNTER_SOURCES = {
+    _STRING_LENGTH_FALLBACK_SOURCE,
+    "tiktoken_fallback",
+}
 _CJK_PATTERN = re.compile(
     "[" + "".join(f"{chr(start)}-{chr(end)}" for start, end in _CJK_RANGES) + "]"
 )
@@ -96,10 +104,17 @@ class InputGuardConfig:
 
     enabled: bool = False
     max_input_ratio: float = DEFAULT_MAX_INPUT_RATIO
+    # A precise tokenizer leaves much less counting error, so it can use a
+    # tighter margin without rejecting inputs that would fit.
+    precise_max_input_ratio: float = DEFAULT_PRECISE_MAX_INPUT_RATIO
     max_input_tokens: int = 0
     reserved_output_tokens: int = 0
+    # Opt-in: reserve the session model's ``max_tokens`` for output. Off by
+    # default because that value is often the model's maximum capability, not
+    # the reserve of the actual request.
+    use_model_max_tokens_as_reserve: bool = False
     # Only used when the live system prompt / tool token counts are not
-    # available (first message of a session). Ignored once they are.
+    # available and no measurement has been cached yet.
     fixed_overhead_tokens: int = DEFAULT_FIXED_OVERHEAD_TOKENS
     message_zh: str = DEFAULT_MESSAGE_ZH
     message_en: str = DEFAULT_MESSAGE_EN
@@ -164,8 +179,14 @@ def parse_input_guard_config(raw: Any) -> InputGuardConfig:
     return InputGuardConfig(
         enabled=_parse_bool(mapping.get("enabled"), False),
         max_input_ratio=_parse_ratio(mapping.get("max_input_ratio"), DEFAULT_MAX_INPUT_RATIO),
+        precise_max_input_ratio=_parse_ratio(
+            mapping.get("precise_max_input_ratio"), DEFAULT_PRECISE_MAX_INPUT_RATIO
+        ),
         max_input_tokens=_parse_non_negative_int(mapping.get("max_input_tokens"), 0),
         reserved_output_tokens=_parse_non_negative_int(mapping.get("reserved_output_tokens"), 0),
+        use_model_max_tokens_as_reserve=_parse_bool(
+            mapping.get("use_model_max_tokens_as_reserve"), False
+        ),
         fixed_overhead_tokens=_parse_non_negative_int(
             mapping.get("fixed_overhead_tokens"), DEFAULT_FIXED_OVERHEAD_TOKENS
         ),
@@ -184,7 +205,7 @@ def estimate_text_tokens(text: str, token_counter: Any = None) -> int:
     """
     if not isinstance(text, str) or not text:
         return 0
-    if _is_precise_counter(token_counter):
+    if is_precise_counter(token_counter):
         try:
             counted = int(token_counter.count(text))
         except Exception:  # noqa: BLE001 - estimation must never block a request
@@ -201,7 +222,11 @@ def evaluate_input_guard(
     budget: InputBudget,
     token_counter: Any = None,
 ) -> InputGuardDecision:
-    """Return the decision for one input. Never raises."""
+    """Return the decision for one input. Never raises.
+
+    A precise counter gets ``precise_max_input_ratio``; the heuristic gets the
+    more conservative ``max_input_ratio``. The absolute cap applies on top.
+    """
     if not config.enabled:
         return _decision(False, 0, 0, budget, "disabled")
 
@@ -210,7 +235,12 @@ def evaluate_input_guard(
     if usable <= 0:
         return _decision(False, tokens, 0, budget, "budget_exhausted")
 
-    limit = int(usable * config.max_input_ratio)
+    ratio = (
+        config.precise_max_input_ratio
+        if is_precise_counter(token_counter)
+        else config.max_input_ratio
+    )
+    limit = int(usable * ratio)
     if config.max_input_tokens > 0:
         limit = min(limit, config.max_input_tokens)
     limit = max(limit, 0)
@@ -239,12 +269,16 @@ def _decision(
     )
 
 
-def _is_precise_counter(counter: Any) -> bool:
+def is_precise_counter(counter: Any) -> bool:
+    """Whether ``counter`` reports model-accurate tokens.
+
+    The string-length fallback (``len // 3``) and a tiktoken fallback that
+    borrows another model's vocabulary are treated as imprecise. Custom
+    counters that do not report a source keep their own result.
+    """
     if counter is None or not callable(getattr(counter, "count", None)):
         return False
-    # Only the known string-length fallback is replaced. Custom counters that
-    # do not report a source keep their own result.
-    return getattr(counter, "measurement_source", "") != _STRING_LENGTH_FALLBACK_SOURCE
+    return getattr(counter, "measurement_source", "") not in _IMPRECISE_COUNTER_SOURCES
 
 
 def _heuristic_text_tokens(text: str) -> int:
@@ -326,11 +360,13 @@ __all__ = [
     "DEFAULT_MAX_INPUT_RATIO",
     "DEFAULT_MESSAGE_EN",
     "DEFAULT_MESSAGE_ZH",
+    "DEFAULT_PRECISE_MAX_INPUT_RATIO",
     "InputBudget",
     "InputGuardConfig",
     "InputGuardDecision",
     "InputTooLongError",
     "estimate_text_tokens",
     "evaluate_input_guard",
+    "is_precise_counter",
     "parse_input_guard_config",
 ]
