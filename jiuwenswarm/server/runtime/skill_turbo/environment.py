@@ -90,6 +90,11 @@ class SkillTurboEnvironment:
         self._soul: str = config.get("soul", "")
         self._tools: dict[str, Any] = {}
         self._tools_loaded: bool = False
+        # 本环境注册进进程级 resource_mgr 的工具 id（send_file_to_user 等
+        # 每请求刷新的 uuid 实例）。环境随 invocation 结束销毁，但实例挂在
+        # 全局注册表上不会自动回收，需在 finally 中 release_registered_tools()
+        # 统一移除，否则每次调用（含 HITL resume）泄漏一个实例（issue #5908）。
+        self._self_registered_tool_ids: set[str] = set()
         self._model_client: Model | None = None
         self._skills: dict[str, Skill] = {}
 
@@ -560,23 +565,21 @@ class SkillTurboEnvironment:
         ctx: "ToolLoaderContext",
         loader: Callable[[Any], list[Any]],
     ) -> None:
-        """按请求刷新 send_file_to_user（移除旧实例后重新注册）。"""
-        removed: list[str] = []
+        """按请求刷新 send_file_to_user（仅刷新本环境绑定，不动父 agent 的全局注册）。
+
+        环境从父 agent 继承的 send_file_to_user 卡片带有父的限定 id
+        （``send_file_to_user_<owner>``），对应实例注册在进程级 resource_mgr
+        中，是父 agent 同一 run 内后续发送文件的唯一凭据。此处严禁调用
+        ``Runner.resource_mgr.remove_tool`` 移除它——技能管道结束后父 agent
+        再发文件会报 instance not found（issue #5908）。这里只把继承卡片
+        从本环境工具表弹出让位，全局注册表交由下方注册的技能自有实例补充。
+        """
+        unbound: list[str] = []
         for name in list(self._tools.keys()):
             if not name.startswith("send_file_to_user"):
                 continue
-            card = self._tools.pop(name)
-            tool_id = getattr(card, "id", None)
-            if tool_id:
-                try:
-                    Runner.resource_mgr.remove_tool(tool_id)
-                except Exception as exc:
-                    logger.warning(
-                        "[SkillTurboEnvironment] remove send_file tool failed id=%s: %s",
-                        tool_id,
-                        exc,
-                    )
-            removed.append(name)
+            self._tools.pop(name)
+            unbound.append(name)
 
         tools = loader(ctx)
         for tool in tools:
@@ -584,7 +587,11 @@ class SkillTurboEnvironment:
             if card is None:
                 continue
             tool_id = getattr(card, "id", None)
-            if tool_id and Runner.resource_mgr.get_tool(tool_id) is not None:
+            # 白名单准入（[[B_07]] 决策 1）：仅当该 id 是本环境自注册的旧实例
+            # 才允许 remove 换新。若以"全局已存在"为判定，一旦 loader 将来
+            # 传入父限定 id，这里会 1:1 重演 #5908 误删父实例；非白名单 id
+            # 走 add 的重复注册 Err 路径（下方 is_err 防护接住）。
+            if tool_id and tool_id in self._self_registered_tool_ids:
                 try:
                     Runner.resource_mgr.remove_tool(tool_id)
                 except Exception as exc:
@@ -594,7 +601,7 @@ class SkillTurboEnvironment:
                         exc,
                     )
             try:
-                Runner.resource_mgr.add_tool(tool)
+                add_result = Runner.resource_mgr.add_tool(tool)
             except Exception as exc:
                 logger.warning(
                     "[SkillTurboEnvironment] register send_file tool failed: %s",
@@ -602,14 +609,46 @@ class SkillTurboEnvironment:
                     exc_info=True,
                 )
                 continue
+            # add_tool/remove_tool 是 Result 风格（不抛异常）：重复 id 等失败
+            # 静默返回 Err。此时不得记账/绑定——否则 release 会试图回收一个
+            # 并未注册的 id，executor 按本环境绑定解析实例也会得到 None。
+            if add_result.is_err():
+                logger.warning(
+                    "[SkillTurboEnvironment] register send_file tool failed: %s",
+                    getattr(add_result, "error_message", add_result),
+                )
+                continue
+            if tool_id:
+                self._self_registered_tool_ids.add(tool_id)
             self.register_tool(card)
 
-        if tools or removed:
+        if tools or unbound:
             logger.info(
-                "[SkillTurboEnvironment] send_file refresh removed=%s registered=%d",
-                removed,
+                "[SkillTurboEnvironment] send_file refresh unbound=%s registered=%d",
+                unbound,
                 len(tools),
             )
+
+    def release_registered_tools(self) -> None:
+        """回收本环境注册进进程级 resource_mgr 的工具实例。
+
+        SkillTurbo 每次 invocation（含 HITL resume）都会新建环境并为
+        send_file_to_user 注册一个 uuid id 的新实例；该实例挂在进程级
+        注册表上，不随环境对象销毁而回收，长期运行持续累积（issue #5908）。
+        在调用方 finally 中调用本方法统一移除；重复调用安全。
+        """
+        if not self._self_registered_tool_ids:
+            return
+        for tool_id in list(self._self_registered_tool_ids):
+            try:
+                Runner.resource_mgr.remove_tool(tool_id)
+            except Exception as exc:
+                logger.debug(
+                    "[SkillTurboEnvironment] release tool ignored id=%s: %s",
+                    tool_id,
+                    exc,
+                )
+        self._self_registered_tool_ids.clear()
 
     # ────────────────────── 私有加载逻辑 ──────────────────────
 

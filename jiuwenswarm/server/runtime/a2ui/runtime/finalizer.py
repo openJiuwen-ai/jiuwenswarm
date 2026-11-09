@@ -96,6 +96,7 @@ class A2UIResponseFinalizer:
             request_id: str,
             repair_call: RepairCall | None,
             max_repair_attempts: int = 2,
+            channel: str | None = None,
     ) -> A2UIFinalizationResult:
         _ = request_id
         if not should_finalize_a2ui_content(content):
@@ -138,11 +139,25 @@ class A2UIResponseFinalizer:
                 invalid_content=repaired_content,
                 validation_error=last_error,
                 user_query=str(user_query or ""),
+                channel=channel,
             )
             response = repair_call(prompt)
             if inspect.isawaitable(response):
                 response = await response
-            repaired_content = _coerce_model_message_content(response)
+            model_output = _coerce_model_message_content(response)
+            if not model_output.strip():
+                # 空输出（如适配器无模型可修 → 返回 None → 强制成 ""）不得按成功修复处理：
+                # validate("") 因无 a2ui 块而恒真，会把"修复失败"伪装成 status=repaired、
+                # finalized=空串；下游 interface 对空 finalized 跳过 suppress 扣发的
+                # chat.final 重发，整块表单静默丢失、落库只剩 probe 残留。
+                last_error = "repair returned empty content"
+                logger.info(
+                    "A2UI finalizer repair attempt returned empty: request_id=%s attempt=%d",
+                    request_id,
+                    _attempt,
+                )
+                continue
+            repaired_content = model_output
             validation = spec.validate_response(repaired_content)
             logger.info(
                 "A2UI finalizer repair attempt complete: request_id=%s attempt=%d valid=%s",

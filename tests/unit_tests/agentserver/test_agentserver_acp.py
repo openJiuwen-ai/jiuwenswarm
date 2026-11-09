@@ -29,6 +29,7 @@ from jiuwenswarm.server.handlers import bootstrap as bootstrap_module  # noqa: F
 from jiuwenswarm.server.handlers import team as team_module
 from jiuwenswarm.server.handlers import session as session_handlers
 from jiuwenswarm.server.handlers import team as team_handlers
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
 
 def _all_patch_targets():
@@ -348,7 +349,7 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
     "parser",
     [
         parse_stream_chunk,
-        getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk"),
+        _parse_stream_chunk,
     ],
     ids=["shared_stream_parser", "deep_adapter_parser"],
 )
@@ -418,7 +419,7 @@ def test_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
 
 
 def test_interface_deep_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
-    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parse_chunk = _parse_stream_chunk
     raw_output = {
         "success": True,
         "result": "# Skill Branch Explore",
@@ -468,7 +469,7 @@ def test_parse_stream_chunk_does_not_lift_top_level_skill_tree_to_raw_output():
 
 
 def test_interface_deep_parse_stream_chunk_does_not_lift_top_level_skill_tree_to_raw_output():
-    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parse_chunk = _parse_stream_chunk
     parsed = parse_chunk(
         types.SimpleNamespace(
             type="tool_result",
@@ -512,7 +513,7 @@ def test_parse_stream_chunk_preserves_symphony_status_payload():
 
 
 def test_interface_deep_parse_stream_chunk_preserves_symphony_status_payload():
-    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parse_chunk = _parse_stream_chunk
     parsed = parse_chunk(
         types.SimpleNamespace(
             type="chat.symphony_status",
@@ -943,8 +944,41 @@ async def test_officeclaw_session_create_persists_explicit_adapter(
         (sessions_root / manager.session_id / "metadata.json").read_text(encoding="utf-8"),
     )
     assert metadata["mode"] == metadata["adapter_mode"] == expected
+    assert metadata.get("todo_initialized") is (False if expected == "flash" else None)
     assert prewarm.await_args.kwargs["mode"] == expected
     assert prewarm.await_args.kwargs["adapter_mode"] == expected
+
+
+@pytest.mark.asyncio
+async def test_direct_channel_flash_session_create_records_todo_origin(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.server.handlers import _shared
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        check_todo_initialization,
+    )
+
+    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": False}})
+    server = AgentWebSocketServerHarness()
+    manager = FakeAgentManager(session_id="direct_flash_create")
+    server.set_agent_manager_for_test(manager)
+    monkeypatch.setattr(server, "_tenant_pool", lambda: types.SimpleNamespace(
+        prewarm_session_in_background=AsyncMock(),
+    ))
+    fake_ws = FakeWebSocket()
+    sessions_root = tmp_path / "sessions"
+    patch_shared_name(monkeypatch, "encode_agent_response_for_wire", fake_encode_agent_response_for_wire)
+    patch_session_roots(monkeypatch, sessions_root)
+    request = AgentRequest(
+        request_id="direct-flash-create", channel_id="chat-service", req_method=ReqMethod.SESSION_CREATE,
+        params={"create_token": "direct-flash", "mode": "flash"},
+    )
+    await server.handle_session_create_for_test(fake_ws, request, asyncio.Lock())
+    assert fake_ws.sent[0]["ok"] is True
+    path = sessions_root / manager.session_id / "metadata.json"
+    assert json.loads(path.read_text())["todo_initialized"] is False
+    check_todo_initialization(manager.session_id, file_exists=False, committing=True, sessions_root=sessions_root)
+    assert json.loads(path.read_text())["todo_initialized"] is True
 
 
 @pytest.mark.asyncio
@@ -3692,8 +3726,10 @@ async def test_wait_for_terminal_exit_completed_result_sets_should_retry_false(m
 
 
 def test_build_context_processor_rail_uses_summary_offloader_config(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.deep import context_assembly
+
     monkeypatch.setattr(
-        interface_deep_module,
+        context_assembly,
         "ContextProcessorRail",
         FakeContextProcessorRail,
     )
@@ -3726,8 +3762,10 @@ def test_build_context_processor_rail_uses_summary_offloader_config(monkeypatch)
 
 
 def test_build_context_processor_rail_prefers_summary_offloader_config(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.deep import context_assembly
+
     monkeypatch.setattr(
-        interface_deep_module,
+        context_assembly,
         "ContextProcessorRail",
         FakeContextProcessorRail,
     )
@@ -3753,8 +3791,10 @@ def test_build_context_processor_rail_prefers_summary_offloader_config(monkeypat
 
 
 def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.deep import context_assembly
+
     monkeypatch.setattr(
-        interface_deep_module,
+        context_assembly,
         "ContextProcessorRail",
         FakeContextProcessorRail,
     )
@@ -3781,8 +3821,10 @@ def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
 
 
 def test_build_context_assemble_rail_returns_context_assemble_rail_instance(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.deep import context_assembly
+
     monkeypatch.setattr(
-        interface_deep_module,
+        context_assembly,
         "ContextAssembleRail",
         FakeContextAssembleRail,
     )
@@ -3797,7 +3839,7 @@ def test_build_context_assemble_rail_returns_context_assemble_rail_instance(monk
     "parser",
     [
         parse_stream_chunk,
-        interface_deep_module.JiuWenSwarmDeepAdapter._parse_stream_chunk,
+        interface_deep_module._parse_stream_chunk,
     ],
     ids=["shared", "deep-adapter"],
 )
@@ -3812,7 +3854,7 @@ def test_parse_stream_chunk_emits_empty_final_marker_after_streamed_content(pars
         },
     )
 
-    if parser is interface_deep_module.JiuWenSwarmDeepAdapter._parse_stream_chunk:
+    if parser is interface_deep_module._parse_stream_chunk:
         # Deep adapter needs the already-streamed text to decide trailer-only
         # vs drain-rescue when has_streamed was set by tiny/blank deltas.
         parsed = parser(
@@ -3837,7 +3879,7 @@ def test_deep_parse_keeps_final_body_when_stream_flag_lacks_visible_text():
             }
         },
     )
-    parsed = interface_deep_module.JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = interface_deep_module._parse_stream_chunk(
         chunk,
         _has_streamed_content=True,
         _streamed_text="",

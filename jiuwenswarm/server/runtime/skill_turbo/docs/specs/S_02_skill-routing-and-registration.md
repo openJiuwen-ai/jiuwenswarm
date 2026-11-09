@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / skill-routing-and-registration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（environment.py、planner.py、skill_meta.py、turbo_package_loader.py、tools_loader.py、skill_turbo_tools.py） |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-11-03 |
 | 关联 feature | F_03_multi-deliverable-todo-guide.md；F_05_enable-turbo-switch.md |
 
 ## 范围 / 边界
@@ -53,12 +53,14 @@
 10. **技能清单绝不闪断**：外部源扫描失败时沿用 `_last_good_entries`（进程级）最近一次成功清单；清单缓存 TTL 60s（`_ENTRIES_CACHE_TTL_SECONDS`，key = 根目录集合 frozenset）。清单为空时指南整段不注入（`remove_section`），禁止注入"暂无可用技能"式空引导。
 11. **query 契约**：`skill_acceleration_exec` 的 query 是对**单个任务**的忠实总结——严格基于用户原话与对话上下文，仅做凝练与指代消解，不得扩写脑补（如擅自罗列章节大纲）；多任务必须逐个串行调用，严禁并行。
 12. **workspace_base 显式性**：`inputs["workspace_base"]` 仅当 `request_metadata["output_dir"]` 非空时设置；**禁止任何 agent workspace 兜底**（产物路径跑偏的直接来源）。
-13. **工具执行按全局 tool_id 现取 + 请求级路由**：`environment.get_tool_function` 从 `Runner.resource_mgr` 现取实例（全局 tool_id 后注册覆盖前者）；携带 session 路由的工具（send_file_to_user）执行期必须从请求级 ContextVar 解析，**禁止依赖实例字段**。因此 `load_send_file_tools` 每请求单独刷新（先 remove 旧 tool_id 再 add）。
+13. **工具执行按全局 tool_id 现取 + 请求级路由**：`environment.get_tool_function` 从 `Runner.resource_mgr` 现取实例（全局 tool_id 后注册覆盖前者）；携带 session 路由的工具（send_file_to_user）执行期必须从请求级 ContextVar 解析，**禁止依赖实例字段**。因此 `load_send_file_tools` 每请求单独刷新（弹出让位本环境绑定；对全局注册表的 remove 仅限环境自注册旧实例，**严禁移除继承的父实例**，[[B_07]]）。
 14. **mtime 计算失败 = 禁用缓存**：`_compute_skill_codes_mtime` 失败返回 0.0，缓存 key 不匹配 → 每次强制重扫。
 15. **enable_for_models 与 vendor_map 互不影响**：前者是 DeepAgent 层 ProgressiveToolRail 的工具懒加载白名单，后者是 thinking 注入的模型白名单（见"接口契约"末节）；新模型接入必须**同时核对两处**。
 16. **PlanGenerationError 是无 raise 点的已导出符号**：定义于 planner.py 并经 `__init__.py` re-export，但当前代码无任何抛出点（plan 失败统一返回 None 走降级）。设计不得假设其被抛出，捕获它属于死代码。
 17. **多交付物待办清单强制引导**：指南（`skill_prompt_rail._build_skill_turbo_guide_text`，中英双语同步）规定：单轮需要多份交付物（多次调用 `skill_acceleration_exec`）时，必须先 `todo_create` 建外层待办清单（每份交付物一项），逐项执行——**串行契约：等 `todo_create` 返回成功后（下一轮）再调用 `skill_acceleration_exec`，逐项推进同理（`todo_modify` 等返回成功再 exec），严禁把清单编排与加速通道放在同一批并行调用**；当前项交付成功后立即 `todo_modify`（action=update）把当前项标 `completed`、下一项标 `in_progress`；清单未清空前不得向用户做最终总结，全部完成后一次性统一总结。架构依据：外层 todo 激活（task_execution_rail `_ACTIVE_TASK_ID` 非空）时入口才走 outer_todo 分支（跳过内部 task.* 事件、chat.* 归外层 todo 步骤 segment，分支见 skill_turbo_tools 入口拦截），无 todo 连跑时各次交付的内部任务互相顶替（实证 case：单轮两份 PPT 无 todo 连跑，交付总结一份被下游分拣丢弃、一份过时补发错位）；**同轮并行 `todo_create` + `skill_acceleration_exec` 还会因 `_ACTIVE_TASK_ID` 尚未设置触发入口 gate 误判 forwarded、turbo Stage 快照顶掉 taskProgress 槽位（竞态实证与机制层兜底见 [[S_08]] 边界 case 21、bugfix/B_03）——串行契约从行为层直接消除该竞态触发路径**。与 N11 互补：N11 约束多次调用的形态（逐个串行），本条约束外层状态编排（先建清单 + 串行推进）。指南成功段与 `_PPT_DELIVERY_SUMMARY_*_HINT` / todo_close_nudge 的"先单独调 `todo_modify` 标 `completed`"措辞契约保持一致，改动须同步三处。
 18. **enable_turbo 单一跳过点**：外部 turbo 技能的启停开关 = `{skill_root}/{external_name}/turbo/meta.json` 的 `enable_turbo` 字段（技能级，一次判定管该技能全部 turbo_codes），唯一判定点在 `discover_external_turbo_skills`：显式 `false`（`meta.get("enable_turbo") is False`，严格布尔）= 发现阶段即 `continue`，单一跳过点同时决定两个下游——不注册进 environment 路由池（planner 无匹配 → SkillTurboNotHandled → interface 层降级标准流程）、不进 `_collect_skill_entries` 源二（工具描述与指南清单）；缺省 / `true` / 任何非 `False` 值 = 启用（向后兼容，未声明字段的既有技能零行为变化）。只作用于外部 turbo 发现路径，内置 skill_codes 扫描不读该字段（[[F_05]]）。
+
+19. **Flash 加速优先适用于全部可见 Turbo 技能**：以工具当前描述中的技能准确名称和支持范围为准，包含 Word / Excel，不限于 PPT。普通请求、文字指定和前端选择均优先加速；用户指定其他技能不得被替换。工具不可用、技能关闭、任务不支持或用户要求标准流程时仍走原生加载。PPT 模板与选区排除只约束 PPT 请求，不得用 Word / Excel 的模板路径或“修改要求”等通用词触发 PPT 降级（[[B_06]]）。
 
 ## 接口契约
 
@@ -78,7 +80,7 @@ class SkillTurboPlanner:
 - `match_skill` 内部前置检查（任一命中 → None）：无注册 skill；`model_client` 缺失。
 - LLM 调用必须是**流式**（`client.stream`）：部分模型服务对非流式调用存在路由注册限制（触发 429 Route missed），流式规避。
 - 解析经 `extract_llm_json`，期望结构 `{"skill_name": str|null, "confidence": float, "reason": str}`。
-- 路由 system prompt（`_build_route_messages`）当前内嵌 **PPT 准入规则 5 条**（新建空白 / 主题生成整套 / 文档转 PPT / 调整大纲文案逻辑重生成 / 以旧 PPT 为参考重做新版）与**排除规则 6 条**（寒暄问答 / 纯总结 / 普通文章 / 仅图片 / 直接编辑原 PPT / 调度类诉求即便提及 PPT 也判 null。曾有第 7 条 `__skill_turbo_prior_artifacts__` 增量判定，因字段注入随 bbc64b25c 删除成孤儿规则而移除，残留产物的 fresh 拦截由工具层守卫承接，见 [[F_01]]）。新增技能家族时必须把规则重构为按 skill 组织的准入/排除结构，不允许继续堆叠单技能段落。
+- 路由 system prompt（`_build_route_messages`）先按每个已注册技能的 description / match_keywords 和目标产物独立匹配。后续 PPT 准入 5 条与排除 6 条仅限制 PPT 候选；排除 PPT 后仍检查 Word / Excel 等其他技能，全部不适配才返回 null。调度类请求不代表当前立即执行。不得恢复已删除的 `__skill_turbo_prior_artifacts__` 孤儿规则，残留产物的 fresh 拦截归 [[F_01]]。
 
 ### skill_meta 模块（skill_meta.py，无引擎内部依赖、可独立测试）
 
@@ -129,8 +131,9 @@ def get_tool_function(self, tool_name) -> Callable | None
 - `@tool(name="skill_acceleration_exec", stateless=True)`，函数名 `skill_turbo(query: str)`；每次调用新建 SkillTurbo 实例（请求隔离）。
 - **超时豁免**：`card.properties["resilience"] = {"timeout_s": None}` 豁免 AbilityManager 默认 300s 工具超时（PPT 流水线常超），仍受 `MAX_TOOL_CALL_TIMEOUT_HARD_LIMIT`（3600s）硬上限约束。
 - **两块临时入口拦截**（均标注删除方式，属待退役层）：
-  - `[TEMP-TEMPLATE-BYPASS]`（skill_turbo_tools.py:828-856）：正则匹配"模板（目录/主文件/路径）+ 绝对路径"或字段名（模板目录路径 / 模板主文件路径 / pack_dir）→ 返回 `success=false` 引导走 skill_tool 标准流程；
-  - `[REGION-EDIT-BYPASS]`（skill_turbo_tools.py:858-886）：query 命中 `region_edit.REGION_EDIT_KEYWORDS`（12 个选区/编辑关键词，含空格与无空格两种 class 写法）→ 拦截。
+  - 两块仅在 query 含 PPT / PPTX / PowerPoint / 幻灯片 / 演示文稿标识时启用；Word / Excel 请求中的通用模板和编辑用语不属于 PPT 信号。此处仍为启发式兜底，原始请求及上下文的语义判断由指南和 planner 承担。
+  - `[TEMP-TEMPLATE-BYPASS]`：PPT 请求中正则匹配"模板（目录/主文件/路径）+ 绝对路径"或字段名（模板目录路径 / 模板主文件路径 / pack_dir）→ 返回 `success=false` 引导走 skill_tool 标准流程；
+  - `[REGION-EDIT-BYPASS]`：PPT 请求命中 `region_edit.REGION_EDIT_KEYWORDS` → 拦截。
   - 两块均为**语义层启发式**，可被 LLM 措辞变化击穿；主防线在 SkillTurboPromptRail 的排除提示词（[[S_09]]），两层引用**同一词源** `region_edit.REGION_EDIT_KEYWORDS`，禁止各写一份关键词。
 
 ### enable_for_models 与 vendor_map（易混点，必须区分）
@@ -138,7 +141,7 @@ def get_tool_function(self, tool_name) -> Callable | None
 | 维度 | enable_for_models | vendor_map |
 |---|---|---|
 | 机制 | DeepAgent 层 ProgressiveToolRail 工具**懒加载**白名单（`progressive_tool_rail.py` 构造参数，`_is_lazy_load_enabled_for_model`） | thinking 参数**注入**的模型白名单（`common/thinking/vendor_map.py`） |
-| 配置 | `config.yaml react.tool_lazy_load.enable_for_models`，当前默认 `["glm"]` | 代码内 GLM-5.x 窄正则（防误匹配 glm-4 / glm-50）+ DeepSeek keyword 全版本 |
+| 配置 | `config.yaml react.tool_lazy_load.enable_for_models`，当前默认 `["glm", "deepseek"]` | 代码内 GLM-5.x 窄正则（防误匹配 glm-4 / glm-50）+ DeepSeek keyword 全版本 |
 | 匹配语义 | **空白名单 = 全部模型启用懒加载**；非空对 model_name 做小写子串匹配，不匹配 → 懒加载整体 bypass（全部工具常驻） | 白名单外模型不注入 thinking kwargs |
 | 影响 | 不影响 thinking | 不影响工具加载 |
 
@@ -240,7 +243,7 @@ SkillTurboPromptRail 每次 `before_model_call` 调 `refresh_skill_acceleration_
 | filesystem | `_load_oj_filesystem` | `sys_operation` 非 None（ReadFile/WriteFile/EditFile/ListDir/Glob/Grep） |
 | bash | `_load_oj_bash` | `sys_operation` 非 None（BashTool） |
 
-`load_send_file_tools`：前提 `request_id and session_id`；**正典装载条件是 `config.channels[channel].send_file_allowed` 能力位**（新增 channel 一律配置该开关）。代码现状另有 `channel == "officeclaw"` 历史兼容旁路（tools_loader.py，待删除的历史遗留，勿写成正典契约、勿在新 channel 上依赖）；**每请求 remove + add**。
+`load_send_file_tools`：前提 `request_id and session_id`；**正典装载条件是 `config.channels[channel].send_file_allowed` 能力位**（新增 channel 一律配置该开关）。代码现状另有 `channel == "officeclaw"` 历史兼容旁路（tools_loader.py，待删除的历史遗留，勿写成正典契约、勿在新 channel 上依赖）；**每请求刷新：弹出让位本环境绑定 + add 环境自有实例；remove 仅限自注册旧实例，严禁移除继承的父实例（[[B_07]]）**。
 
 ### P9 resume 旁路
 
@@ -262,7 +265,7 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 | 10 | 外部源扫描瞬时失败 | `_last_good_entries` 兜底，清单不闪断为"暂无"；ToolCard 并发最后写生效（per-user sidecar 内目录一致，无实际冲突） | test_description_refresh（last-good 用例） |
 | 11 | `reload()` 不清类级缓存 | 目录变更靠 mtime 快照失效兜住；但旧 key 永久驻留（无淘汰），长驻进程内存缓慢增长面 | 无 |
 | 12 | tool_info.json 多实例同路径 | 最后写者胜；CodeGen 可能读到其它实例的 schema，编排须保证工具集一致 | test_environment_export_tool_info |
-| 13 | 路由规则单技能硬编码 | PPT 准入/排除写死在 system prompt；新技能家族接入须重构规则结构，否则规则互相污染 | 无（结构性债务） |
+| 13 | Word / Excel 与 PPT 同时注册 | 按各技能元数据及目标产物独立匹配，PPT 排除不排除其他技能 | Flash 多技能装配、显式选择、planner 与入口拦截回归 |
 | 14 | PlanGenerationError | 已定义 + re-export 但无 raise 点；按死符号对待，不得在其 except 分支上堆积逻辑 | 无（死符号） |
 | 15 | model_client 缺失 | 路由直接 None（仅 warning），后续表现为"无匹配"降级 | test_planner_route_retry（TestPlannerPrechecks） |
 | 16 | 空 task / 空 query | plan 前置检查返回 None 降级 | test_planner_route_retry（TestPlannerPrechecks） |
@@ -284,7 +287,7 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 - **改 skill_root 解析** → 必查 `resolve_agent_registered_skill_dirs` 三级顺序与请求级绑定时序（绑定晚于解析则首目录取错）。
 - **改扫描缓存结构** → 必保 mtime 快照失效语义 + 缓存命中路径仍执行 `ensure_turbo_package` 幂等重注册，二者缺一即"已缓存但 import 失败"。
 - **改 plan_code 形态** → 必同步 [[S_03]] validator 前缀白名单与 `_safe_import`（双重强制），以及 `ensure_packages_for_plan_code` 的 import 正则（[[S_05]]）。
-- **改 send_file 装载** → 必保每请求 remove + add 与请求级 ContextVar 路由；引入任何依赖实例字段的工具前先评估并发覆盖面。
+- **改 send_file 装载** → 必保每请求刷新语义（remove 仅限环境自注册旧实例、严禁移除继承父实例，[[B_07]]）与请求级 ContextVar 路由；引入任何依赖实例字段的工具前先评估并发覆盖面。
 - **改 query 契约 / 工具描述文案** → 必保 `_render_tool_description` 与指南清单同一次扫描产出（不变量 9）；单任务串行约束在描述与 docstring 双处声明。
 - **改指南规则文案** → 中英双语两分支同步改（`_build_skill_turbo_guide_text` cn/en）；成功段"先单独调 `todo_modify`"与 `_PPT_DELIVERY_SUMMARY_*_HINT`、todo_close_nudge 的措辞契约不得破坏（回归测试：`test_task_execution_todo_close_nudge.py::test_skill_turbo_success_hint_closes_todo_before_summary` + `test_skill_prompt_multi_deliverable_todo.py`）。
 - **改 enable_turbo 开关语义** → 必查单一跳过点（`discover_external_turbo_skills`）不分离——在 environment / skill_turbo_tools 侧另设过滤会造成注册池与描述清单漂移；同步不变量 18 与边界 case 17-19。

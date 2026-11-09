@@ -18,7 +18,6 @@ class SkillManagerHarness(SkillManager):
 
     def register_imported_skill(self, name: str, origin: str):
         self._add_local_skill({"name": name, "origin": origin, "source": "local"})
-        self._refresh_agent_data_indexes()
 
 
 class _FakeClawHubResponse:

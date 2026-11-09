@@ -246,6 +246,11 @@ async def handle_agent_reload_config(ctx: RequestContext) -> None:
 
         refresh_openai_response_assembly_patch()
 
+        try:
+            await ctx.services.sync_sandbox_runtime()
+        except Exception:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] sync sandbox runtime failed")
+
         # Hot-reload ProactiveEngine config if available
         should_reload_proactive = not reload_scopes or bool(reload_scopes & {"model", "proactive", "agent_runtime"})
         if ctx.services.proactive_engine is not None and should_reload_proactive:

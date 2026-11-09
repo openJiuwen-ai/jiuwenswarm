@@ -43,6 +43,21 @@ def bind_tenant_workspace_dirs(
     )
 
 
+def bind_jiuwenclaw_workspace(workspace: str | Path) -> TenantContextTokens:
+    """Bind one agent workspace and the two parents above it.
+
+    ``workspace`` is ``.../agent/jiuwenclaw_workspace``. Distributed team
+    rebuilds pass this explicitly so bank resolution does not fall back to
+    ``service_default`` when the request ContextVar is unset.
+    """
+    ws = Path(workspace)
+    return bind_tenant_workspace_dirs(
+        jiuwenclaw_workspace=str(ws),
+        agent_root=str(ws.parent),
+        tenant_root=str(ws.parent.parent),
+    )
+
+
 def reset_tenant_workspace_dirs(token: TenantContextTokens) -> None:
     """Reset tenant workspace bindings."""
     _TENANT_JIUWENCLAW_WS_CV.reset(token.jiuwenclaw_ws)

@@ -10,16 +10,20 @@ import pytest
 
 pytest.importorskip("openjiuwen.harness.subagent_runtime")
 
+from openjiuwen.core.foundation.tool import ToolCard
 from openjiuwen.harness.subagent_runtime.control import SubagentControl
 from openjiuwen.harness.subagent_runtime.models import (
     ResumeResult,
     SubagentStatus,
     SubagentStatusKind,
+    WaitResult,
 )
 from openjiuwen.harness.subagent_runtime.status import StatusChannel
 from openjiuwen.harness.subagent_runtime.status_events import (
     build_subagent_updated_payload,
 )
+from openjiuwen.harness.tools.base_tool import ToolOutput
+from openjiuwen.harness.tools.subagent.subagent_tools import SubagentWaitTool
 
 from jiuwenswarm.agents.harness.common.tools.subagent_compat import (
     CompatibleSubagentControl,
@@ -316,3 +320,30 @@ async def test_evict_drops_mirror_state_when_parent_evict_fails(
     assert "sub-1" not in control._mirror_reasoning_text  # pylint: disable=protected-access
     assert "sub-1" not in control._mirror_reasoning_flushed_at  # pylint: disable=protected-access
     assert "sub-1" not in control._mirror_reasoning_frames  # pylint: disable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_wait_hands_errored_reason_to_parent(monkeypatch: pytest.MonkeyPatch) -> None:
+    reason = "已达到最大思考轮数（100/100），任务未完成。"
+
+    async def _wait(_self: SubagentControl, subagent_ids: list[str], timeout_ms: int = 0) -> WaitResult:
+        return WaitResult(
+            statuses={
+                "done": SubagentStatus.completed("answer"),
+                "failed": SubagentStatus.errored(reason + "x" * 3000),
+                "silent": SubagentStatus.errored(""),
+            },
+            results={"done": "answer"}, output_files={}, timed_out=False,
+        )
+
+    monkeypatch.setattr(SubagentControl, "wait", _wait)
+    result = await object.__new__(CompatibleSubagentControl).wait(["done", "failed", "silent"], timeout_ms=10)
+    tool = SubagentWaitTool(ToolCard(name="subagent_wait", description="wait"), parent_agent=None)
+    rendered = tool.render_for_llm(ToolOutput(success=True, data={
+        "statuses": {sid: status.kind.value for sid, status in result.statuses.items()},
+        "results": dict(result.results), "output_files": {}, "timed_out": False,
+    }))
+    assert result.results["done"] == "answer"
+    assert f"error: {reason}" in rendered
+    assert len(result.results["failed"]) < 2100
+    assert "silent" not in result.results

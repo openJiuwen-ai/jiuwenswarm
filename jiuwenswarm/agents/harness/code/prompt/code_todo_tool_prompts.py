@@ -34,7 +34,7 @@ Do NOT create one todo per file unless the user explicitly asks for file-level t
 
 ## Usage
 
-Call once before substantive work. Prefer todo_create in parallel with the first write/bash when possible — avoid a todo-only first round.
+Create only when a new plan is needed. Continue or adjust an active plan with todo_modify; explicitly pass plan_action=new/rebuild to replace it. Prefer todo_create in parallel with the first write/bash when possible — avoid a todo-only first round.
 
 {"tasks": [{"id": "backend", "content": "Implement Flask backend", "activeForm": "Implementing Flask backend", "description": "app.py, SQLite scores API, static routes"}, {"id": "verify", "content": "Verify end-to-end", "activeForm": "Verifying end-to-end", "description": "Run app, exercise APIs, confirm game loads"}]}
 """.strip()
@@ -66,7 +66,7 @@ Update todo items for the current session.
 - cancel / delete: remove items that are no longer needed
 - insert_after / insert_before: only for mid-plan scope changes, not file-by-file progress
 
-To replace the entire plan, call todo_create instead of many inserts.
+To replace the entire plan, call todo_create with plan_action=new/rebuild. Continue or adjust an active plan with todo_modify.
 
 Do not create a new todo for each file written or each verification command.
 """.strip()
@@ -100,6 +100,7 @@ def get_code_todo_create_input_params() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
+            "plan_action": {"type": "string", "enum": ["new", "rebuild"]},
             "tasks": {
                 "type": "array",
                 "description": (

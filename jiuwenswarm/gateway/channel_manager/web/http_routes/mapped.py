@@ -212,6 +212,18 @@ _LOCALE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+_SENSITIVE_MASK_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/sensitive-mask", "sensitive_mask.get_conf",
+        "sensitive-mask", "读网页回答脱敏开关和正则列表",
+    ),
+    WebHttpMappedRoute(
+        "PUT", "/sensitive-mask", "sensitive_mask.set_conf",
+        "sensitive-mask", "写网页回答脱敏开关和正则列表",
+        accept_body=True,
+    ),
+)
+
 _CRON_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     WebHttpMappedRoute(
         "GET", "/cron/jobs", "cron.job.list",
@@ -339,6 +351,7 @@ SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_A2A_OUTBOUND_ROUTES,
     *_MODELS_ROUTES,
     *_LOCALE_ROUTES,
+    *_SENSITIVE_MASK_ROUTES,
     *_CRON_ROUTES,
     *_IM_HOSTING_ROUTES,
 )
@@ -855,7 +868,10 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
     WebHttpMappedRoute(
         "GET", "/workspace/usage", "workspace.usage", "workspace",
-        "查询本人工作区用量与配额状态", query_keys=_TENANT_QUERY,
+        "查询本人工作区用量与配额状态",
+        # force_refresh 必须透传，否则 Agent 只会读缓存/默认 0 用量。
+        query_keys=_TENANT_QUERY + ("session_id", "force_refresh"),
+        bind_session_param=True,
     ),
     WebHttpMappedRoute(
         "DELETE", "/workspace/entries", "workspace.entries.delete", "workspace",

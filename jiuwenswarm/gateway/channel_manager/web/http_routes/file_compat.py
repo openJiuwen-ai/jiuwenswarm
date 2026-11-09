@@ -18,7 +18,6 @@ from jiuwenswarm.gateway.channel_manager.web.file_http import (
     build_share_snapshot,
     content_disposition,
     default_file_http_roots,
-    generate_agent_data,
     guess_mime,
     is_download_path_allowed,
     list_files,
@@ -93,7 +92,6 @@ def catalog_file_compat_entries() -> list[dict[str, Any]]:
         ("GET", "/file-api/download", "token 或 OBS 代理下载"),
         ("GET", "/file-api/ws-debug-config", "WS 调试读"),
         ("POST", "/file-api/ws-debug-config", "WS 调试写"),
-        ("POST", "/file-api/rebuild-agent-data", "重建 agent-data"),
         ("POST", "/file-api/upload-obs", "企业 MinIO 上传"),
         ("POST", "/file-api/push", "企业本地落盘+token"),
         ("GET", "/share-api/snapshot", "分享 snapshot"),
@@ -371,18 +369,6 @@ def register_file_compat_routes(app: FastAPI) -> None:
         request.app.state.ws_disable_compress = flag
         logger.info("[file_http] ws disable compress updated: %s", flag)
         return _json(200, {"ok": True, "wsDisableCompress": flag})
-
-    @app.post(
-        "/file-api/rebuild-agent-data",
-        tags=[_OPENAPI_TAG],
-        summary="重建 agent-data.json",
-    )
-    async def rebuild_agent_data(request: Request) -> JSONResponse:
-        try:
-            generate_agent_data(_roots(request.app).project_root)
-        except Exception as exc:  # noqa: BLE001
-            return _json(500, {"error": "rebuild_failed", "detail": str(exc)})
-        return _json(200, {"ok": True})
 
     @app.post(
         "/file-api/upload-obs",

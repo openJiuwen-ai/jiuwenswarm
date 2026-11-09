@@ -63,6 +63,13 @@ class ChatSendParams(TypedDict, total=False):
     supports_user_interaction: NotRequired[bool]
     """客户端是否能处理 ask_user 等用户交互。缺省为 True，兼容现有客户端。"""
 
+    eternal_conversation_enabled: NotRequired[bool]
+    """DEPRECATED：旧 Session 的一次性迁移字段。
+
+    新客户端必须在 ``session.create`` 发送 ``persist_session``；本字段不能覆盖
+    已初始化 Session 的权威值。
+    """
+
     plan_entry_source: NotRequired[str]
     """plan 模式入口来源（internal use）。"""
 

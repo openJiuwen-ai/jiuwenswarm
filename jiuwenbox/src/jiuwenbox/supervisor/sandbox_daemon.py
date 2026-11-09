@@ -65,10 +65,13 @@ from __future__ import annotations
 import contextlib
 import datetime
 import errno
+import hashlib
 import json
 import logging
 import os
+import secrets
 import socket
+import stat as stat_module
 import struct
 import subprocess
 import sys
@@ -92,6 +95,7 @@ REQUEST_TYPE_EXEC = "exec"
 REQUEST_TYPE_SHUTDOWN = "shutdown"
 REQUEST_TYPE_WRITE_FILE = "write_file"
 REQUEST_TYPE_READ_FILE = "read_file"
+REQUEST_TYPE_FILE_SNAPSHOT = "file_snapshot"
 REQUEST_TYPE_LIST_DIR = "list_dir"
 REQUEST_TYPE_EXEC_BACKGROUND = "exec_background"
 REQUEST_TYPE_BG_STATUS = "bg_status"
@@ -347,6 +351,337 @@ def _os_error_response(exc: OSError, fallback: str = "io_error") -> dict[str, An
         "errno": exc.errno or 0,
         "stderr": exc.strerror or str(exc),
     }
+
+
+def _snapshot_read(path: str, directory_fd: int | None = None) -> tuple[dict, bytes]:
+    kwargs = {"dir_fd": directory_fd} if directory_fd is not None else {}
+    name = os.path.basename(path) if directory_fd is not None else path
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        before = os.stat(name, follow_symlinks=False, **kwargs)
+        if not stat_module.S_ISREG(before.st_mode) or before.st_nlink > 1:
+            raise OSError(errno.EINVAL, "Snapshot target must be a regular, non-hardlinked file")
+        fd = os.open(name, flags, mode=0o600, **kwargs)
+    except FileNotFoundError:
+        return {"exists": False, "content_sha256": hashlib.sha256(b"").hexdigest()}, b""
+    try:
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            info = os.fstat(stream.fileno())
+            if not stat_module.S_ISREG(info.st_mode) or info.st_nlink > 1:
+                raise OSError(errno.EINVAL, "Snapshot target must be a regular, non-hardlinked file")
+            if info.st_size > MAX_FILE_BYTES:
+                raise OSError(errno.EFBIG, "Snapshot exceeds file size limit")
+            content = stream.read(MAX_FILE_BYTES + 1)
+            if len(content) > MAX_FILE_BYTES:
+                raise OSError(errno.EFBIG, "Snapshot exceeds file size limit")
+    finally:
+        os.close(fd)
+    return {"exists": True, "content_sha256": hashlib.sha256(content).hexdigest()}, content
+
+
+@contextlib.contextmanager
+def _snapshot_lock(path: str, timeout: float):
+    """Stable sibling lock: replacing the target inode must not replace its lock."""
+    parent = os.path.dirname(path)
+    directory_fd = None
+    if os.name != "nt":
+        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, mode=0o600)
+    kwargs = {"dir_fd": directory_fd} if directory_fd is not None else {}
+    name = (
+        ".jbx-cas-"
+        + hashlib.sha256(os.path.normcase(os.path.basename(path)).encode()).hexdigest()[:24]
+        + ".lock"
+    )
+    lock_path = name if directory_fd is not None else os.path.join(parent, name)
+    fd = None
+    locked = False
+    try:
+        full_lock_path = os.path.join(parent, name)
+        if os.path.normcase(os.path.realpath(full_lock_path)) != os.path.normcase(full_lock_path):
+            raise OSError(errno.EINVAL, "Snapshot lock must not be a symbolic link")
+        fd = os.open(
+            lock_path,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            0o600,
+            **kwargs,
+        )
+        info = os.fstat(fd)
+        if not stat_module.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError(errno.EINVAL, "Unsafe snapshot lock file")
+        current = os.stat(lock_path, follow_symlinks=False, **kwargs)
+        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            raise OSError(errno.EINVAL, "Snapshot lock was replaced before locking")
+        # Windows permits locking beyond EOF; initializing before locking races
+        # another process already holding the first-byte lock.
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Snapshot lock timed out") from exc
+                time.sleep(0.01)
+        current = os.stat(lock_path, follow_symlinks=False, **kwargs)
+        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            raise OSError(errno.EINVAL, "Snapshot lock was replaced")
+        yield directory_fd
+    finally:
+        try:
+            if fd is not None:
+                try:
+                    if locked:
+                        if os.name == "nt":
+                            import msvcrt
+
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+        finally:
+            if directory_fd is not None:
+                os.close(directory_fd)
+
+
+def _snapshot_read_access_acl(fd: int) -> bytes | None:
+    if sys.platform != "linux":
+        return None
+    try:
+        return os.getxattr(fd, "system.posix_acl_access")
+    except OSError as exc:
+        if exc.errno not in (errno.ENODATA, errno.ENOTSUP):
+            raise
+        return None
+
+
+def _snapshot_restore_access_acl(fd: int, acl: bytes | None) -> None:
+    if sys.platform != "linux":
+        return
+    if acl is not None:
+        os.setxattr(fd, "system.posix_acl_access", acl)
+    else:
+        # The temporary inode must not gain a default ACL absent from the target.
+        try:
+            os.removexattr(fd, "system.posix_acl_access")
+        except OSError as exc:
+            if exc.errno not in (errno.ENODATA, errno.ENOTSUP):
+                raise
+
+
+def _snapshot_copy_windows_security(source: str, destination: str) -> None:
+    """Preserve owner/group/DACL and its inheritance policy before publication."""
+    import ctypes
+    from ctypes import wintypes
+
+    api = ctypes.WinDLL("advapi32", use_last_error=True)
+    get = api.GetNamedSecurityInfoW
+    get.argtypes = [wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD, *([ctypes.POINTER(ctypes.c_void_p)] * 5)]
+    get.restype = wintypes.DWORD
+    put = api.SetNamedSecurityInfoW
+    put.argtypes = [wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD, *([ctypes.c_void_p] * 4)]
+    put.restype = wintypes.DWORD
+    owner, group, dacl, descriptor = (ctypes.c_void_p() for _ in range(4))
+    information = 7  # OWNER | GROUP | DACL
+    error = get(str(source), 1, information, ctypes.byref(owner), ctypes.byref(group),
+                ctypes.byref(dacl), None, ctypes.byref(descriptor))
+    if error:
+        raise ctypes.WinError(error)
+    try:
+        control, revision = wintypes.WORD(), wintypes.DWORD()
+        get_control = api.GetSecurityDescriptorControl
+        get_control.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD)]
+        get_control.restype = wintypes.BOOL
+        if not get_control(descriptor, ctypes.byref(control), ctypes.byref(revision)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        information |= 0x80000000 if control.value & 0x1000 else 0x20000000
+        if control.value & 0x0400:  # SE_DACL_AUTO_INHERITED
+            error = put(str(destination), 1, information, owner, group, dacl, None)
+            if error:
+                raise ctypes.WinError(error)
+        else:
+            # The named getter can annotate legacy ACEs as inherited. Read the
+            # raw descriptor so copying it does not change their future behavior.
+            get_raw = api.GetFileSecurityW
+            get_raw.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+                                wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+            get_raw.restype = wintypes.BOOL
+            needed = wintypes.DWORD()
+            get_raw(str(source), 7, None, 0, ctypes.byref(needed))
+            if not needed.value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            raw = ctypes.create_string_buffer(needed.value)
+            if not get_raw(str(source), 7, raw, needed.value, ctypes.byref(needed)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            put_legacy = api.SetFileSecurityW
+            put_legacy.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+            put_legacy.restype = wintypes.BOOL
+            if not put_legacy(str(destination), information, raw):
+                raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        free = ctypes.WinDLL("kernel32").LocalFree
+        free.argtypes = [ctypes.c_void_p]
+        free.restype = ctypes.c_void_p
+        free(descriptor)
+
+
+def _snapshot_replace(
+    path: str, content: bytes, directory_fd: int | None, permissions: int
+) -> None:
+    parent, leaf = os.path.dirname(path), os.path.basename(path)
+    kwargs = {"dir_fd": directory_fd} if directory_fd is not None else {}
+    target = leaf if directory_fd is not None else path
+    parent_identity = os.stat(parent)
+    existing = None
+    existing_acl = None
+    try:
+        # Atomic replacement must not bypass an existing file's write permission.
+        fd = os.open(
+            target,
+            os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            **kwargs,
+        )
+        try:
+            existing = os.fstat(fd)
+            if not stat_module.S_ISREG(existing.st_mode) or existing.st_nlink > 1:
+                raise OSError(errno.EINVAL, "Unsafe snapshot target")
+            existing_acl = _snapshot_read_access_acl(fd)
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        pass
+    name = f".{leaf}-{secrets.token_hex(12)}.tmp"
+    temporary = name if directory_fd is not None else os.path.join(parent, name)
+    fd = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        **kwargs,
+    )
+    owned = os.fstat(fd)
+    published = False
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            if (
+                hasattr(os, "fchown")
+                and existing is not None
+                and (owned.st_uid, owned.st_gid) != (existing.st_uid, existing.st_gid)
+            ):
+                os.fchown(stream.fileno(), existing.st_uid, existing.st_gid)
+            if existing is not None:
+                _snapshot_restore_access_acl(stream.fileno(), existing_acl)
+            mode = stat_module.S_IMODE(existing.st_mode) if existing is not None else permissions
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), mode)
+        if os.name == "nt" and existing is not None:
+            _snapshot_copy_windows_security(path, temporary)
+        current = os.stat(parent)
+        if (current.st_dev, current.st_ino) != (parent_identity.st_dev, parent_identity.st_ino):
+            raise OSError(errno.EINVAL, "Snapshot parent changed")
+        if os.path.normcase(os.path.realpath(path)) != os.path.normcase(path):
+            raise OSError(errno.EINVAL, "Snapshot path changed during publication")
+        if directory_fd is not None:
+            opened = os.fstat(directory_fd)
+            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                raise OSError(errno.EINVAL, "Snapshot parent changed before write")
+            os.replace(temporary, target, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        else:
+            os.replace(temporary, target)
+        published = True
+    finally:
+        if not published:
+            try:
+                info = os.stat(temporary, follow_symlinks=False, **kwargs)
+                if (info.st_dev, info.st_ino) == (owned.st_dev, owned.st_ino):
+                    os.unlink(temporary, **kwargs)
+            except FileNotFoundError:
+                pass
+
+
+def file_snapshot_operation(header: dict, content: bytes = b"") -> tuple[dict, bytes]:
+    """One sandbox-owned read or CAS. No host-path translation or exec fallback."""
+    try:
+        operation = header.get("operation")
+        if operation not in {"read", "compare_replace"}:
+            raise ValueError("Unsupported snapshot operation")
+        supplied = header.get("path")
+        if not isinstance(supplied, str) or not supplied or not os.path.isabs(supplied):
+            raise ValueError("Snapshot path must be absolute")
+        path = os.path.abspath(supplied)
+        if os.name == "nt" and path.startswith(("\\\\.\\", "\\??\\")):
+            raise ValueError("Snapshot device paths are not supported")
+        if os.path.normcase(os.path.realpath(path)) != os.path.normcase(path):
+            raise ValueError("Snapshot path must not traverse symbolic links or reparse points")
+        options = header.get("options") or {}
+        if not isinstance(options, dict):
+            raise TypeError("Snapshot options must be an object")
+        expected = options.get("expected_exists")
+        digest = options.get("expected_content_sha256")
+        if expected is not None and not isinstance(expected, bool):
+            raise ValueError("expected_exists must be boolean")
+        valid_digest = digest is None or (
+            isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+        )
+        if not valid_digest:
+            raise ValueError("expected_content_sha256 must be a SHA256 hex digest")
+        if operation == "read":
+            metadata, raw = _snapshot_read(path)
+            if not metadata["exists"] and not options.get("missing_ok", False):
+                return {"ok": False, "error": "not_found"}, b""
+            return {"ok": True, **metadata, "content_size": len(raw)}, raw
+        if expected is None or digest is None:
+            raise ValueError("Conditional write requires existence and content hash")
+        if len(content) > MAX_FILE_BYTES:
+            raise ValueError("Snapshot exceeds file size limit")
+        timeout = float(options.get("lock_timeout", 30))
+        if not 0 <= timeout <= 30:
+            raise ValueError("lock_timeout must be between 0 and 30 seconds")
+        permissions = int(options.get("permissions", "644"), 8)
+        if not 0 <= permissions <= 0o777:
+            raise ValueError("Invalid snapshot permissions")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _snapshot_lock(path, timeout) as directory_fd:
+            metadata, _ = _snapshot_read(path, directory_fd)
+            if not metadata["exists"] and options.get("create_if_not_exist") is False:
+                return {"ok": False, "error": "not_found"}, b""
+            if expected != metadata["exists"] or digest != metadata["content_sha256"]:
+                return {"ok": False, "error": "conflict"}, b""
+            _snapshot_replace(path, content, directory_fd, permissions)
+        return {"ok": True, "atomic_replace": True, "content_size": len(content)}, b""
+    except TimeoutError as exc:
+        return {"ok": False, "error": "lock_timeout", "stderr": str(exc)}, b""
+    except (ValueError, TypeError) as exc:
+        return {"ok": False, "error": "bad_request", "stderr": str(exc)}, b""
+    except OSError as exc:
+        return _os_error_response(exc), b""
+
+
+def _handle_file_snapshot(conn: socket.socket, header: dict[str, Any]) -> None:
+    size = header.get("content_size", 0)
+    if type(size) is not int or size < 0 or size > MAX_FILE_BYTES:
+        _send_response(conn, {"ok": False, "error": "bad_request"})
+        return
+    content = _recv_exact(conn, size) if size else b""
+    response, raw = file_snapshot_operation(header, content)
+    _send_response(conn, response)
+    if response.get("ok") and header.get("operation") == "read":
+        _send_frame(conn, raw)
 
 
 def _handle_write_file(conn: socket.socket, header: dict[str, Any]) -> None:
@@ -1030,6 +1365,8 @@ def _handle_connection(conn: socket.socket, state: DaemonState) -> None:
             _handle_write_file(conn, header)
         elif request_type == REQUEST_TYPE_READ_FILE:
             _handle_read_file(conn, header)
+        elif request_type == REQUEST_TYPE_FILE_SNAPSHOT:
+            _handle_file_snapshot(conn, header)
         elif request_type == REQUEST_TYPE_LIST_DIR:
             _handle_list_dir(conn, header)
         elif request_type == REQUEST_TYPE_EXEC_BACKGROUND:

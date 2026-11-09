@@ -4,29 +4,107 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
 
 from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.session.stream import OutputSchema
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.prompts.sections.todo import build_todo_section
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.schema.task import TodoStatus
+from openjiuwen.harness.tools.todo_store import (
+    bind_todo_batch,
+    prepare_todo_batch,
+    reset_todo_binding,
+    snapshot_from_result,
+)
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
-    _todo_close_nudge_message,
     is_todo_close_nudge,
 )
 from jiuwenswarm.agents.harness.common.rails.todo_close_gate import TodoCloseGate
+from jiuwenswarm.agents.harness.common.tools.todo_resume import is_persistent_todo
 from jiuwenswarm.agents.harness.flash.tools.flash_todo import (
     _TODO_NAME_REPLACEMENTS,
     _UNIFIED_TODO_NAME,
     UnifiedTodoTool,
 )
+from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+from jiuwenswarm.common.utils import get_agent_sessions_dir
+from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
+    RefusalScrubGate,
+    is_canned_refusal_text,
+)
 
 logger = logging.getLogger(__name__)
+
+# 网关把 deepseek 的完成替换成这句时，正文往往只有 chat.final。
+# 非 team 前端不渲染 chat.final，回答气泡是空的。命中后改写成可见正文。
+# 文案之外还要求：无 reasoning、无缓存命中——真回答很少三项同时成立。
+# 没有进行中的待办时，原文不会进 todo hold，要靠 RefusalScrubGate 先挂住再丢。
+MODEL_REFUSAL_BODY = "模型拒绝回答这个问题，任务已停止。请更换模型，或调整问题后再试。"
+
+
+def _usage_value(usage: Any, name: str, default: Any = None) -> Any:
+    if usage is None:
+        return default
+    if isinstance(usage, dict):
+        return usage.get(name, default)
+    return getattr(usage, name, default)
+
+
+def _has_no_reasoning(response: Any) -> bool:
+    if str(getattr(response, "reasoning_content", None) or "").strip():
+        return False
+    tokens = _usage_value(getattr(response, "usage_metadata", None), "reasoning_tokens", 0)
+    try:
+        return int(tokens or 0) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _has_no_cache_hit(response: Any) -> bool:
+    usage = getattr(response, "usage_metadata", None)
+    cache_read = _usage_value(usage, "cache_read_tokens", None)
+    if cache_read is not None:
+        try:
+            return int(cache_read) == 0
+        except (TypeError, ValueError):
+            return False
+    try:
+        return int(_usage_value(usage, "cache_tokens", 0) or 0) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def is_canned_model_refusal(response: Any) -> bool:
+    """True for the short gateway stub: canned text, no reasoning, no cache hit."""
+    if response is None:
+        return False
+    if not is_canned_refusal_text(getattr(response, "content", None)):
+        return False
+    if not _has_no_reasoning(response):
+        return False
+    return _has_no_cache_hit(response)
+
+
+def bind_todo_lifecycle(tool):
+    """Bind the host's session record to the SDK transaction boundary."""
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        check_todo_initialization,
+    )
+
+    async def guard(session_id, snapshot, *, committing=False):
+        root = get_agent_sessions_dir()
+        await asyncio.to_thread(check_todo_initialization, session_id, file_exists=snapshot.exists,
+                                committing=committing, sessions_root=root)
+
+    tool.snapshot_guard = guard
 
 
 class FlashTodoRail(DeepAgentRail):
@@ -38,10 +116,9 @@ class FlashTodoRail(DeepAgentRail):
       rewritten to the unified action form.
     - No outer-task-loop hooks (no after_task_iteration): TaskPlan sync /
       advance reminders are intentionally dropped.
-    - Close nudge (``TodoCloseGate``): once this invoke has created or modified
-      todos, a text-only ending while an item is still in_progress is swapped
-      for one internal ``todo`` call asking the model to close it — otherwise
-      the frontend task list stays "in progress" after delivery.
+    - Close nudge (``TodoCloseGate``): after a successful Todo mutation in this
+      invoke, unfinished execution tasks get one bounded continuation prompt.
+      A later text-only ending states the remaining work without changing it.
 
     Concurrency safety: registration goes through ``add_ability`` alone, which
     rebinds the resource-manager entry with ``refresh=True`` atomically (later
@@ -58,7 +135,10 @@ class FlashTodoRail(DeepAgentRail):
         self.engines: dict = {}
         self._agent: Any = None
         self._close_gate = TodoCloseGate(_UNIFIED_TODO_NAME)
+        self._refusal_scrub = RefusalScrubGate()
         self._open_todos: list[tuple[str, dict[str, Any]]] = []
+        self._unfinished_todos: list[tuple[str, dict[str, Any]]] = []
+        self._todo_revision = -1
         self._warned_unknown_iteration = False
 
     def init(self, agent) -> None:
@@ -117,6 +197,8 @@ class FlashTodoRail(DeepAgentRail):
             ),
         }
         self.engines = engines
+        for engine in engines.values():
+            bind_todo_lifecycle(engine)
         unified_tool = UnifiedTodoTool(engines, language, agent_id)
 
         try:
@@ -152,14 +234,40 @@ class FlashTodoRail(DeepAgentRail):
             logger.warning("[FlashTodoRail] uninit failed: %s", exc)
 
     async def before_invoke(self, ctx) -> None:
+        reset_todo_binding()
+        if "create" in self.engines and ctx.session is not None:
+            self.engines["create"].reset_invoke_marker(ctx.session.get_session_id())
         self._close_gate.reset()
+        self._refusal_scrub.reset()
         self._open_todos = []
+        self._unfinished_todos = []
+        self._todo_revision = -1
 
     async def before_model_call(self, ctx) -> None:
         self._inject_todo_section()
-        await self._close_gate.arm(ctx.session, can_nudge=self._can_nudge(ctx))
+        if self._waiting_or_stopped(ctx):
+            return
+        can_nudge = self._can_nudge(ctx)
+        await self._close_gate.arm(ctx.session, can_nudge=can_nudge)
+        # 待办 hold 会吞掉整段正文。它没挂上时（不能催办，或催办已经用过），
+        # 只挂住仍可能是拒答的短前缀，避免原文和停止提示拼在一起。
+        if not can_nudge or self._close_gate.used:
+            await self._refusal_scrub.arm(ctx.session)
 
     async def after_model_call(self, ctx) -> None:
+        prepare_todo_batch(ctx)
+        if self._waiting_or_stopped(ctx):
+            await self._close_gate.finish(ctx.session, dropped=False)
+            await self._refusal_scrub.finish(ctx.session, dropped=False)
+            return
+        if self._replace_canned_refusal(ctx):
+            # 先丢掉挂起的拒答原文，再写提示。顺序反了会被同一次 hold 一起丢掉。
+            await self._close_gate.finish(ctx.session, dropped=True)
+            await self._refusal_scrub.finish(ctx.session, dropped=True)
+            # 进行中的待办会把后续正文收进任务卡。先收口，停止提示才落在回答气泡。
+            await self._close_open_task_segment(ctx.session)
+            await self._emit_refusal_body(ctx.session)
+            return
         dropped = False
         try:
             dropped = self._close_gate.attach(
@@ -167,18 +275,42 @@ class FlashTodoRail(DeepAgentRail):
             )
             if dropped:
                 logger.info(
-                    "[FlashTodoRail] todo close nudge: open=%s",
-                    [todo_id for todo_id, _ in self._open_todos],
+                    "[FlashTodoRail] todo close nudge: unfinished=%s",
+                    [todo_id for todo_id, _ in self._unfinished_todos],
                 )
         finally:
             await self._close_gate.finish(ctx.session, dropped=dropped)
+            await self._refusal_scrub.finish(ctx.session, dropped=False)
+        response = getattr(ctx.inputs, "response", None)
+        if dropped or ctx.session is None:
+            return
+        if int(getattr(ctx.inputs, "react_iteration", 0) or 0) <= 0 or not self._unfinished_todos:
+            return
+        if response is None or getattr(response, "tool_calls", None):
+            return
+        if (getattr(response, "finish_reason", None) == "length"
+                or not str(getattr(response, "content", "") or "").strip()):
+            return
+        remaining = ", ".join(f"{todo_id} ({meta['status']})" for todo_id, meta in self._unfinished_todos)
+        suffix = f"\n\n本轮仍未完成的待办：{remaining}。这些待办尚未确认完成，本轮执行已结束。"
+        response.content += suffix
+        await self._write_control(ctx.session, "llm_output", {"content": suffix, "result_type": "answer"})
 
     async def before_tool_call(self, ctx) -> None:
+        bind_todo_batch(ctx, self.engines.get("modify"))
         if not isinstance(ctx.inputs, ToolCallInputs) or not is_todo_close_nudge(ctx.inputs.tool_call):
             return
-        msg = _todo_close_nudge_message(self._open_todos)
-        for old, new in _TODO_NAME_REPLACEMENTS:
-            msg = msg.replace(old, new)
+        remaining = "\n".join(
+            f"- id={todo_id} status={meta['status']} content={meta.get('content', '')}"
+            for todo_id, meta in self._unfinished_todos
+        )
+        msg = (
+            "[TODO_CLOSE_REQUIRED] 本轮仍有未完成的工作。能继续时请实际调用工具执行，"
+            "真实完成后再用 todo(action=modify) 更新状态；不要只更新状态来冒充完成。"
+            "如果需要用户补充信息、确认或确实无法继续，请明确说明阻塞及未完成内容，保留真实状态。"
+            "这次只提醒一次。上一轮正文未送达用户，下一轮应完整回复，不能引用它。\n"
+            + remaining
+        )
         ctx.extra["_skip_tool"] = True
         ctx.inputs.tool_result = msg
         ctx.inputs.tool_msg = ToolMessage(
@@ -192,10 +324,130 @@ class FlashTodoRail(DeepAgentRail):
             return
         if _todo_action(ctx.inputs.tool_args) not in ("create", "modify"):
             return
-        self._open_todos = await self._load_open_todos(ctx.session)
+        result = ctx.inputs.tool_result
+        if (getattr(ctx, "exception", None) is not None or result is None
+                or getattr(result, "success", True) is False):
+            return
+        snapshot = snapshot_from_result(ctx.inputs.tool_result)
+        if snapshot is not None:
+            if snapshot.revision < self._todo_revision:
+                return
+            self._todo_revision = snapshot.revision
+            rows = snapshot.todos
+        else:
+            items = await self._load_todo_items(ctx.session)
+            if items is None:
+                return
+            rows = [{"id": item.id, "content": item.content,
+                     "status": getattr(item.status, "value", item.status),
+                     "meta_data": getattr(item, "meta_data", None)} for item in items]
+        self._open_todos = [(row["id"], {"content": row.get("content", "")})
+                            for row in rows if row.get("status") == "in_progress"]
+        self._unfinished_todos = [
+            (row["id"], {"content": row.get("content", ""), "status": row["status"]})
+            for row in rows if row.get("status") in ("pending", "in_progress") and not is_persistent_todo(row)
+        ]
+
+    def _replace_canned_refusal(self, ctx) -> bool:
+        response = getattr(ctx.inputs, "response", None)
+        if response is None:
+            return False
+        if getattr(response, "tool_calls", None):
+            return False
+        if not is_canned_model_refusal(response):
+            return False
+        response.content = MODEL_REFUSAL_BODY
+        response.tool_calls = []
+        ctx.request_force_finish({
+            "output": MODEL_REFUSAL_BODY,
+            "result_type": "answer",
+        })
+        logger.info("[FlashTodoRail] canned model refusal; writing the notice into the answer body")
+        return True
+
+    async def _close_open_task_segment(self, session: Any) -> None:
+        if session is None or not self._open_todos:
+            return
+        open_todos = list(self._open_todos)
+        if not await self._persist_cancel_open_todos(session, open_todos):
+            return
+        self._open_todos = []
+        rows = await self._refusal_todo_rows(session)
+        if rows is not None:
+            await self._write_control(session, "todo.updated", {"todos": rows})
+        for todo_id, meta in open_todos:
+            await self._write_control(session, "task.complete", {
+                "task_id": f"todo:{todo_id}",
+                "task_content": str(meta.get("content") or ""),
+                "status": "skipped",
+                "duration_ms": 0,
+                "source": "todo",
+            })
+
+    async def _persist_cancel_open_todos(self, session: Any, open_todos: list) -> bool:
+        modify = self.engines.get("modify")
+        ids = [todo_id for todo_id, _ in open_todos]
+        if modify is None or not ids:
+            logger.warning("[FlashTodoRail] refusal cancel skipped: no modify engine")
+            return False
+        try:
+            result = await modify.invoke({"action": "cancel", "ids": ids}, session=session)
+        except Exception as exc:
+            logger.warning("[FlashTodoRail] refusal cancel failed: %s", exc)
+            return False
+        message = str(result.get("message") or "") if isinstance(result, dict) else ""
+        if not message.startswith("Successfully cancelled"):
+            logger.warning("[FlashTodoRail] refusal cancel rejected: %s", message)
+            return False
+        return True
+
+    async def _refusal_todo_rows(self, session: Any) -> list[dict[str, Any]] | None:
+        """Snapshot after cancel. Cancelled rows stay out, matching history replay."""
+        items = await self._load_todo_items(session)
+        if items is None:
+            return None
+        return format_todos_for_frontend(items)
+
+    async def _load_todo_items(self, session: Any) -> list[Any] | None:
+        list_engine = self.engines.get("list")
+        if list_engine is None:
+            return None
+        try:
+            return await list_engine.load_todos(session.get_session_id())
+        except Exception as exc:
+            logger.debug("[FlashTodoRail] load todos for refusal close failed: %s", exc)
+            return None
+
+    @staticmethod
+    async def _write_control(session: Any, stream_type: str, payload: dict[str, Any]) -> None:
+        try:
+            await session.write_stream(OutputSchema(type=stream_type, index=0, payload=payload))
+        except Exception as exc:
+            logger.warning("[FlashTodoRail] %s failed: %s", stream_type, exc)
+
+    @staticmethod
+    async def _emit_refusal_body(session: Any) -> None:
+        if session is None:
+            return
+        try:
+            await session.write_stream(OutputSchema(
+                type="llm_output",
+                index=0,
+                payload={"content": MODEL_REFUSAL_BODY, "result_type": "answer"},
+            ))
+        except Exception as exc:
+            logger.warning("[FlashTodoRail] refusal body stream failed: %s", exc)
 
     def _can_nudge(self, ctx) -> bool:
-        return ctx.session is not None and bool(self._open_todos) and self._has_rounds_to_close_and_reply(ctx)
+        return (not self._waiting_or_stopped(ctx) and ctx.session is not None
+                and bool(self._unfinished_todos) and self._has_rounds_to_close_and_reply(ctx))
+
+    @staticmethod
+    def _waiting_or_stopped(ctx) -> bool:
+        if getattr(ctx, "exception", None) is not None or getattr(ctx, "has_force_finish_request", False):
+            return True
+        get_state = getattr(getattr(ctx, "session", None), "get_state", None)
+        return callable(get_state) and bool(get_state(INTERRUPTION_KEY))
 
     def _has_rounds_to_close_and_reply(self, ctx) -> bool:
         iteration = int(getattr(ctx.inputs, "react_iteration", 0) or 0)
@@ -211,21 +463,6 @@ class FlashTodoRail(DeepAgentRail):
                 )
             return False
         return iteration <= max_iterations - 2
-
-    async def _load_open_todos(self, session) -> list[tuple[str, dict[str, Any]]]:
-        list_engine = self.engines.get("list")
-        if session is None or list_engine is None:
-            return []
-        try:
-            items = await list_engine.load_todos(session.get_session_id())
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[FlashTodoRail] load todos for close nudge failed: %s", exc)
-            return []
-        return [
-            (item.id, {"content": item.content})
-            for item in items
-            if item.status == TodoStatus.IN_PROGRESS
-        ]
 
     def _inject_todo_section(self) -> None:
         """Inject the todo anchor section with unified tool names."""
@@ -268,4 +505,4 @@ def _todo_action(tool_args: Any) -> str:
     return str(tool_args.get("action") or "").strip().lower()
 
 
-__all__ = ["FlashTodoRail"]
+__all__ = ["MODEL_REFUSAL_BODY", "FlashTodoRail", "is_canned_model_refusal"]

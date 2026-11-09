@@ -20,7 +20,7 @@ def _client_with_outputs(outputs: list[list[str]]) -> tuple[MagicMock, list[dict
     """构建按调用次序返回 outputs 的 fake model client，并记录每次收到的 messages。"""
     calls: list[dict] = []
 
-    async def stream(messages):
+    async def stream(messages, **_kwargs):
         idx = len(calls)
         calls.append(messages)
         for piece in outputs[min(idx, len(outputs) - 1)]:
@@ -97,7 +97,7 @@ class TestMatchSkillRouteRetry:
         """首次流调用抛异常（如网络抖动），重试成功 → 路由成功。"""
         calls: list[dict] = []
 
-        async def flaky_stream(messages):
+        async def flaky_stream(messages, **_kwargs):
             calls.append(messages)
             if len(calls) == 1:
                 raise ConnectionError("network blip")
@@ -111,6 +111,28 @@ class TestMatchSkillRouteRetry:
 
         assert skill is not None and skill.name == "ppt"
         assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,query", [
+    ("docx", "编辑 Word 报告，修改要求：使用正式语气"),
+    ("xlsx", "按模板生成 Excel 月度预算工作簿"),
+])
+async def test_office_route_retains_scope_independently_of_ppt_rules(name, query):
+    output = json.dumps({"skill_name": name, "confidence": 0.95, "reason": "匹配任务产物"})
+    client, calls = _client_with_outputs([[output]])
+    env = _env(client)
+    env.skills[name] = SimpleNamespace(name=name, description=query, match_keywords=[name])
+    skill = await SkillTurboPlanner(env).match_skill(query)
+    assert skill is env.skills[name]
+    assert len(calls) == 1
+    system = calls[0][0]["content"]
+    payload = json.loads(calls[0][1]["content"])
+    assert "PPT 准入与排除规则仅约束 PPT 候选" in system
+    assert "只有全部不适配时才返回 skill_name=null" in system
+    assert payload["task"] == query
+    assert {item["name"] for item in payload["registered_skills"]} == {"ppt", name}
+    assert next(item for item in payload["registered_skills"] if item["name"] == name)["description"] == query
 
 
 class TestPlannerPrechecks:

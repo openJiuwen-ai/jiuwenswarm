@@ -8,6 +8,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _extract_followup_prompt
 
 
 @pytest.mark.anyio
@@ -454,7 +455,7 @@ def test_agent_slash_followup_prompt_extraction_accepts_all_evolution_followups(
     }
 
     assert (
-        JiuWenSwarmDeepAdapter._extract_followup_prompt(result)  # pylint: disable=protected-access
+        _extract_followup_prompt(result)  # pylint: disable=protected-access
         == "review and continue code-runner"
     )
 
@@ -468,7 +469,8 @@ def _adapter_ready_for_followup_execution(monkeypatch: pytest.MonkeyPatch) -> Ji
     model = SimpleNamespace(model_config=SimpleNamespace(model_name="test-model"))
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda _model_name="": True)
     monkeypatch.setattr(adapter, "_bind_runtime_cron_context", lambda **_kwargs: None)
-    monkeypatch.setattr(adapter, "_reset_runtime_cron_context", lambda _tokens: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._reset_runtime_cron_context", lambda _tokens: None)
     monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: model)
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
     monkeypatch.setattr(adapter, "_mark_session_active", lambda _session_id: None)
@@ -607,14 +609,14 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
         ("acp", None, None, "workspace_acp"),
     ],
 )
-async def test_team_stream_injects_image_tool_context_for_non_vision_model(
+async def test_team_stream_keeps_image_reference_for_non_vision_model(
     monkeypatch,
     channel_id,
     service_id,
     agent_id,
     expected_workspace_key,
 ):
-    """Team mode must preserve the same local-image tool context as agent mode."""
+    """Team mode must preserve the same local-image reference lines as agent mode."""
     adapter = JiuWenSwarmDeepAdapter()
     adapter._instance = SimpleNamespace()  # pylint: disable=protected-access
     adapter._is_session_scoped_adapter = True  # pylint: disable=protected-access
@@ -665,11 +667,35 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(
         is_stream=True,
     )
 
-    async for _ in adapter.process_message_stream_impl(request, {"query": "解析图片内容"}):
-        pass
+    chunks = []
+    async for chunk in adapter.process_message_stream_impl(
+        request, {"query": "解析图片内容"}
+    ):
+        chunks.append(chunk)
 
-    assert "jiuwenswarm_image_tool_context" in captured["query"]
+    # 非视觉模型：query 保留 [image #n] 引用行（可按原文件出图）；
+    # 原生 vs VQA 的多模态策略由 MultimodalImageRail 按模型能力写入系统提示，
+    # 不再向 query 注入 jiuwenswarm_image_tool_context 工具上下文。
+    assert "jiuwenswarm_image_tool_context" not in captured["query"]
     assert "agent/sessions/sess-team-image/uploads/persisted.png" in captured["query"]
+
+    # 团队路径与单代理路径一致：解析为不支持原生图片时下发 fallback notice，
+    # 且本次请求绑定的图片快照在请求结束后复位。
+    notices = [
+        chunk.payload
+        for chunk in chunks
+        if isinstance(getattr(chunk, "payload", None), dict)
+        and chunk.payload.get("notice_type") == "image_tool_fallback"
+    ]
+    assert len(notices) == 1
+    assert notices[0]["image_count"] == 1
+    assert notices[0]["request_id"] == "req-team-image"
+
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files,
+    )
+
+    assert current_multimodal_image_files() == []
     from jiuwenswarm.common.utils import resolve_tenant_sessions_dir
     from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
@@ -677,7 +703,18 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(
         request
     )
     assert tenant_workspace_key == expected_workspace_key
-    assert captured["runtime_context"] == {
+    runtime_context = dict(captured["runtime_context"])
+    # 上传清单随请求传进 team_helpers：leader 的 rail 只能在成员侧读到它
+    # （adapter 的 self._instance 属性镜像到不了 team 成员）。
+    assert runtime_context.pop("image_files") == [
+        {
+            "type": "image",
+            "filename": "persisted.png",
+            "path": "agent/sessions/sess-team-image/uploads/persisted.png",
+            "mime_type": "image/png",
+        }
+    ]
+    assert runtime_context == {
         "config_base": tenant_config,
         "sessions_root": resolve_tenant_sessions_dir(
             tenant_workspace_key,

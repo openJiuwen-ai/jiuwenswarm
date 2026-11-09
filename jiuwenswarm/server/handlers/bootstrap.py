@@ -17,6 +17,7 @@ from jiuwenswarm.common.mode_matrix import NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE, is_default_project_id
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
+    _agent_workspace_dir_for_request,
     _background_session_kvc_tasks,
     _log_background_session_kvc_failure,
     _sessions_dir_for_request,
@@ -356,18 +357,37 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 bind_quota_identity,
                 reset_quota_identity,
             )
+            from jiuwenswarm.server.runtime.tenant_context import (
+                bind_tenant_workspace_dirs,
+                reset_tenant_workspace_dirs,
+            )
 
             identity = web_routing_identity(
                 request.metadata if isinstance(request.metadata, dict) else None
             )
-            quota_tokens = bind_quota_identity(
-                user_id=identity.get("user_id", ""),
-                group_id=identity.get("group_id", ""),
-                bot_id=identity.get("bot_id", ""),
-            )
+            # 与正常 Agent 请求一致：先绑真实租户根，再查配额。
+            # 只 bind_quota_identity 时会回退到 workspace_default 的 0 用量缓存，
+            # 正数配额超限仍会放行 session.create。
+            # bind 必须落在 try 内并与 reset 成对（S_07 N8），避免半程异常残留 ContextVar。
+            tenant_tokens = None
+            quota_tokens = None
             try:
+                ws = _agent_workspace_dir_for_request(request)
+                agent_root = ws.parent
+                tenant_root = agent_root.parent
+                tenant_tokens = bind_tenant_workspace_dirs(
+                    jiuwenclaw_workspace=str(ws),
+                    agent_root=str(agent_root),
+                    tenant_root=str(tenant_root),
+                )
+                quota_tokens = bind_quota_identity(
+                    user_id=identity.get("user_id", ""),
+                    group_id=identity.get("group_id", ""),
+                    bot_id=identity.get("bot_id", ""),
+                )
                 init_session_metadata(
                     session_id=session_id,
+                    new_todo_object=adapter_mode == "flash",
                     channel_id=channel_id,
                     user_id=params.get("user_id", ""),
                     title=params.get("title", ""),
@@ -395,7 +415,10 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 await ctx.sink.send_wire(wire)
                 return
             finally:
-                reset_quota_identity(quota_tokens)
+                if quota_tokens is not None:
+                    reset_quota_identity(quota_tokens)
+                if tenant_tokens is not None:
+                    reset_tenant_workspace_dirs(tenant_tokens)
             ctx.services.agent_manager.activate_session_prewarm(session_id)
 
             # team prepare 必须在 ack 前完成，避免首条 chat.send 与分布式切换竞态；

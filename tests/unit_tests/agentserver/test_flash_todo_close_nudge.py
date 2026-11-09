@@ -6,7 +6,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall, UsageMetadata
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from openjiuwen.harness.schema.task import TodoStatus
 
@@ -15,12 +15,17 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
 )
 from jiuwenswarm.agents.harness.common.rails.todo_close_gate import TodoCloseGate
 from jiuwenswarm.agents.harness.flash.rails import flash_todo_rail
-from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
+from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import (
+    MODEL_REFUSAL_BODY,
+    FlashTodoRail,
+    is_canned_model_refusal,
+)
 
 
 class _FakeSession:
     def __init__(self, *, fail_writes: int = 0) -> None:
         self.events: list[str] = []
+        self.payloads: list[object] = []
         self.fail_writes = fail_writes
 
     def get_session_id(self) -> str:
@@ -31,6 +36,7 @@ class _FakeSession:
             self.fail_writes -= 1
             raise RuntimeError("stream closed")
         self.events.append(str(getattr(schema, "type", "")))
+        self.payloads.append(getattr(schema, "payload", None))
 
 
 class _RecordingHandler(logging.Handler):
@@ -40,6 +46,25 @@ class _RecordingHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(record)
+
+
+class _FakeModify:
+    def __init__(self, engine: "_FakeListEngine", *, fail: bool = False, message: str | None = None) -> None:
+        self.engine = engine
+        self.fail = fail
+        self.message = message
+        self.calls: list[dict] = []
+
+    async def invoke(self, inputs: dict, session=None) -> dict:
+        assert session is not None
+        self.calls.append(inputs)
+        if self.fail:
+            raise RuntimeError("cancel failed")
+        if self.message is not None:
+            return {"message": self.message}
+        for todo_id in inputs["ids"]:
+            self.engine.statuses[todo_id] = TodoStatus.CANCELLED
+        return {"message": f"Successfully cancelled {len(inputs['ids'])} task(s)"}
 
 
 class _FakeListEngine:
@@ -66,20 +91,57 @@ def _todo_ctx(session: _FakeSession, action: str, call_id: str = "call-todo") ->
     return SimpleNamespace(
         session=session,
         inputs=ToolCallInputs(
-            tool_name="todo", tool_args={"action": action}, tool_call=SimpleNamespace(id=call_id)
+            tool_name="todo", tool_args={"action": action}, tool_call=SimpleNamespace(id=call_id),
+            tool_result={"message": "Successfully updated tasks"},
         ),
         extra={},
     )
 
 
-def _model_ctx(session: _FakeSession, content: str, tool_calls: list | None = None, **inputs) -> SimpleNamespace:
-    response = AssistantMessage(content=content, tool_calls=tool_calls or [])
+def _refusal_usage(**overrides) -> UsageMetadata:
+    usage = {
+        "output_tokens": 47,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": None,
+        "cache_tokens": 0,
+    }
+    usage.update(overrides)
+    return UsageMetadata(**usage)
+
+
+def _model_ctx(
+    session: _FakeSession,
+    content: str,
+    tool_calls: list | None = None,
+    *,
+    reasoning_content: str = "",
+    usage_metadata: UsageMetadata | None = None,
+    **inputs,
+) -> SimpleNamespace:
+    response = AssistantMessage(
+        content=content,
+        tool_calls=tool_calls or [],
+        reasoning_content=reasoning_content,
+        usage_metadata=usage_metadata,
+    )
     inputs.setdefault("react_iteration", 1)
-    return SimpleNamespace(session=session, inputs=SimpleNamespace(response=response, **inputs), extra={})
+    ctx = SimpleNamespace(session=session, inputs=SimpleNamespace(response=response, **inputs), extra={}, finished=None)
+
+    def request_force_finish(result: dict) -> None:
+        ctx.finished = result
+
+    ctx.request_force_finish = request_force_finish
+    return ctx
 
 
-async def _final_turn(rail: FlashTodoRail, session: _FakeSession, content: str, **inputs) -> SimpleNamespace:
-    ctx = _model_ctx(session, content, **inputs)
+async def _final_turn(
+    rail: FlashTodoRail,
+    session: _FakeSession,
+    content: str,
+    tool_calls: list | None = None,
+    **inputs,
+) -> SimpleNamespace:
+    ctx = _model_ctx(session, content, tool_calls=tool_calls, **inputs)
     await rail.before_model_call(ctx)
     await rail.after_model_call(ctx)
     return ctx
@@ -104,8 +166,172 @@ async def test_text_ending_with_open_todo_is_nudged_once() -> None:
     session.events.clear()
     again = await _final_turn(rail, session, "模型仍不改状态，这次放行。")
     assert again.inputs.response.tool_calls == []
-    assert again.inputs.response.content == "模型仍不改状态，这次放行。"
-    assert session.events == []
+    assert again.inputs.response.content.startswith("模型仍不改状态，这次放行。")
+    assert "本轮仍未完成的待办：deliver" in again.inputs.response.content
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_release", "llm_output"]
+
+
+_CANNED_REFUSAL = "作为一个人工智能语言模型，我还没学习如何回答这个问题，您可以向我问一些其它的问题，我会尽力帮您解决的。"
+
+
+@pytest.mark.asyncio
+async def test_refusal_after_nudge_is_still_held() -> None:
+    rail, engine = _rail({"deliver": TodoStatus.IN_PROGRESS})
+    rail.engines["modify"] = _FakeModify(engine)
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "modify"))
+    await _final_turn(rail, session, "以下是完成情况概要：PPT 已生成。")
+    assert rail._close_gate.used is True
+
+    session.events.clear()
+    ctx = await _final_turn(rail, session, _CANNED_REFUSAL, usage_metadata=_refusal_usage())
+
+    assert ctx.inputs.response.content == MODEL_REFUSAL_BODY
+    assert ctx.finished == {"output": MODEL_REFUSAL_BODY, "result_type": "answer"}
+    assert session.events[0] == "refusal_scrub_hold"
+    assert "refusal_scrub_drop" in session.events
+    assert "llm_output" in session.events
+    assert engine.statuses["deliver"] == TodoStatus.CANCELLED
+
+
+def _canned_response(**kwargs) -> AssistantMessage:
+    defaults = {
+        "content": _CANNED_REFUSAL,
+        "reasoning_content": "",
+        "usage_metadata": _refusal_usage(),
+        "tool_calls": [],
+    }
+    defaults.update(kwargs)
+    return AssistantMessage(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
+    rail, engine = _rail({
+        "collect": TodoStatus.IN_PROGRESS,
+        "script": TodoStatus.PENDING,
+    })
+    modify = _FakeModify(engine)
+    rail.engines["modify"] = modify
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "create"))
+
+    ctx = await _final_turn(rail, session, _CANNED_REFUSAL, usage_metadata=_refusal_usage())
+
+    assert ctx.inputs.response.tool_calls == []
+    assert ctx.inputs.response.content == MODEL_REFUSAL_BODY
+    assert ctx.finished == {"output": MODEL_REFUSAL_BODY, "result_type": "answer"}
+    assert modify.calls == [{"action": "cancel", "ids": ["collect"]}]
+    assert engine.statuses["collect"] == TodoStatus.CANCELLED
+    assert engine.statuses["script"] == TodoStatus.PENDING
+    assert rail._open_todos == []
+    updated = next(
+        payload for event, payload in zip(session.events, session.payloads)
+        if event == "todo.updated"
+    )
+    assert updated["todos"] == [{
+        "id": "script",
+        "content": "任务 script",
+        "activeForm": "任务 script",
+        "status": "pending",
+    }]
+    assert session.events == [
+        "todo_close_hold",
+        "todo_close_drop",
+        "todo.updated",
+        "task.complete",
+        "llm_output",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_refusal_does_not_announce_cancel_when_persist_fails() -> None:
+    rail, engine = _rail({"collect": TodoStatus.IN_PROGRESS})
+    rail.engines["modify"] = _FakeModify(engine, fail=True)
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "create"))
+
+    ctx = await _final_turn(rail, session, _CANNED_REFUSAL, usage_metadata=_refusal_usage())
+
+    assert ctx.finished["result_type"] == "answer"
+    assert engine.statuses["collect"] == TodoStatus.IN_PROGRESS
+    assert "todo.updated" not in session.events
+    assert "task.complete" not in session.events
+
+
+@pytest.mark.asyncio
+async def test_canned_refusal_without_open_todo_still_writes_the_body() -> None:
+    rail, _ = _rail({})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+
+    ctx = await _final_turn(
+        rail, session, f"  {_CANNED_REFUSAL}\n", usage_metadata=_refusal_usage()
+    )
+
+    assert ctx.inputs.response.content == MODEL_REFUSAL_BODY
+    assert ctx.finished["result_type"] == "answer"
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_drop", "llm_output"]
+
+
+def test_ordinary_or_quoted_text_is_not_a_canned_refusal() -> None:
+    assert is_canned_model_refusal(_canned_response()) is True
+    assert is_canned_model_refusal(_canned_response(content="口播稿已写完。")) is False
+    quoted = "报道原句是：" + _CANNED_REFUSAL + "。这里继续写完核查和口播稿。" * 3
+    assert is_canned_model_refusal(_canned_response(content=quoted)) is False
+
+
+def test_refusal_needs_empty_reasoning_and_no_cache_hit() -> None:
+    assert is_canned_model_refusal(
+        _canned_response(reasoning_content="先核查来源再写稿。")
+    ) is False
+    assert is_canned_model_refusal(
+        _canned_response(usage_metadata=_refusal_usage(reasoning_tokens=12))
+    ) is False
+    assert is_canned_model_refusal(
+        _canned_response(usage_metadata=_refusal_usage(cache_read_tokens=128))
+    ) is False
+    assert is_canned_model_refusal(
+        _canned_response(usage_metadata=_refusal_usage(cache_read_tokens=0))
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_canned_refusal_with_tool_call_is_left_alone() -> None:
+    rail, _ = _rail({"collect": TodoStatus.IN_PROGRESS})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "create"))
+    call = ToolCall(id="call-search", type="function", name="web_flash", arguments="{}")
+
+    ctx = await _final_turn(
+        rail, session, _CANNED_REFUSAL, tool_calls=[call], usage_metadata=_refusal_usage()
+    )
+
+    assert ctx.finished is None
+    assert ctx.inputs.response.tool_calls[0].name == "web_flash"
+    assert "llm_output" not in session.events
+
+@pytest.mark.asyncio
+async def test_refusal_text_with_reasoning_is_not_stopped() -> None:
+    rail, _ = _rail({})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+
+    ctx = await _final_turn(
+        rail,
+        session,
+        _CANNED_REFUSAL,
+        reasoning_content="这段是正常推理。",
+        usage_metadata=_refusal_usage(),
+    )
+
+    assert ctx.finished is None
+    assert ctx.inputs.response.content == _CANNED_REFUSAL
+    assert "llm_output" not in session.events
 
 
 @pytest.mark.asyncio
@@ -142,7 +368,7 @@ async def test_closed_todos_release_text_without_nudge() -> None:
     ctx = await _final_turn(rail, session, "全部完成。")
 
     assert ctx.inputs.response.tool_calls == []
-    assert session.events == []
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_release"]
 
 
 @pytest.mark.asyncio
@@ -155,7 +381,7 @@ async def test_stale_todos_without_write_this_invoke_are_ignored() -> None:
     ctx = await _final_turn(rail, session, "普通问答的回复。")
 
     assert ctx.inputs.response.tool_calls == []
-    assert session.events == []
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_release"]
 
 
 @pytest.mark.asyncio
@@ -190,9 +416,17 @@ async def test_truncated_or_last_iteration_ending_is_not_nudged() -> None:
     for iteration in (4, 5):
         tail = await _final_turn(rail, session, "收尾回复", react_iteration=iteration)
         assert tail.inputs.response.tool_calls == []
-        assert tail.inputs.response.content == "收尾回复"
+        assert tail.inputs.response.content.startswith("收尾回复")
+        assert "本轮仍未完成的待办：deliver" in tail.inputs.response.content
     assert rail._close_gate.used is False
-    assert session.events == []
+    assert session.events == [
+        "refusal_scrub_hold",
+        "refusal_scrub_release",
+        "llm_output",
+        "refusal_scrub_hold",
+        "refusal_scrub_release",
+        "llm_output",
+    ]
 
 
 @pytest.mark.asyncio
@@ -211,8 +445,9 @@ async def test_nudge_needs_rounds_to_close_todo_and_rewrite_reply(max_iterations
         assert session.events == ["todo_close_hold", "todo_close_drop"]
     else:
         assert ctx.inputs.response.tool_calls == []
-        assert ctx.inputs.response.content == "PPT 已生成，下载链接：/files/a.pptx"
-        assert session.events == []
+        assert ctx.inputs.response.content.startswith("PPT 已生成，下载链接：/files/a.pptx")
+        assert "本轮仍未完成的待办：deliver" in ctx.inputs.response.content
+        assert session.events == ["refusal_scrub_hold", "refusal_scrub_release", "llm_output"]
 
 
 @pytest.mark.asyncio
@@ -304,9 +539,17 @@ async def test_unknown_iteration_limit_never_nudges(agent) -> None:
         rail_logger.removeHandler(handler)
         rail_logger.setLevel(old_level)
 
-    assert first.inputs.response.content == "第一次收尾"
+    assert first.inputs.response.content.startswith("第一次收尾")
+    assert "本轮仍未完成的待办：deliver" in first.inputs.response.content
     assert second.inputs.response.tool_calls == []
-    assert session.events == []
+    assert session.events == [
+        "refusal_scrub_hold",
+        "refusal_scrub_release",
+        "llm_output",
+        "refusal_scrub_hold",
+        "refusal_scrub_release",
+        "llm_output",
+    ]
     assert len([r for r in handler.records if "react iteration unknown" in r.getMessage()]) == 1
 
 
@@ -320,4 +563,115 @@ async def test_call_outside_react_loop_is_not_nudged() -> None:
     ctx = await _final_turn(rail, session, "循环外的模型调用", react_iteration=0)
 
     assert ctx.inputs.response.tool_calls == []
+    assert ctx.inputs.response.content == "循环外的模型调用"
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_release"]
+
+
+@pytest.mark.asyncio
+async def test_pending_only_work_gets_one_continuation_then_incomplete_notice() -> None:
+    rail, engine = _rail({"env": TodoStatus.COMPLETED, "pages": TodoStatus.PENDING,
+                          "build": TodoStatus.PENDING})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "modify"))
+    first = await _final_turn(rail, session, "继续更新 pages，然后开始 build。")
+    assert len(first.inputs.response.tool_calls) == 1
+    assert rail._open_todos == []
+    assert rail._close_gate.used is True
+    nudge = _todo_ctx(session, "", call_id=first.inputs.response.tool_calls[0].id)
+    await rail.before_tool_call(nudge)
+    assert nudge.extra["_skip_tool"] is True
+    assert "id=pages status=pending" in nudge.inputs.tool_result
+    assert "实际调用工具执行" in nudge.inputs.tool_result
+    assert "保留真实状态" in nudge.inputs.tool_result
+
+    second = await _final_turn(rail, session, "接下来继续生成。")
+    assert second.inputs.response.tool_calls == []
+    assert "pages (pending)" in second.inputs.response.content
+    assert "build (pending)" in second.inputs.response.content
+    assert "env" not in second.inputs.response.content
+    assert session.payloads[-1]["content"] in second.inputs.response.content
+    assert engine.statuses["pages"] == engine.statuses["build"] == TodoStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_completion_after_nudge_has_no_incomplete_notice() -> None:
+    rail, engine = _rail({"build": TodoStatus.PENDING})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "create"))
+    await _final_turn(rail, session, "开始构建。")
+    engine.statuses["build"] = TodoStatus.COMPLETED
+    await rail.after_tool_call(_todo_ctx(session, "modify"))
+    final = await _final_turn(rail, session, "PPT 已实际生成并保存。")
+    assert final.inputs.response.content == "PPT 已实际生成并保存。"
+    assert final.inputs.response.tool_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", ["interruption", "cancelled", "force_finish"])
+async def test_pending_work_does_not_override_waiting_or_stopped_request(blocked) -> None:
+    import asyncio
+
+    rail, _ = _rail({"build": TodoStatus.PENDING})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "modify"))
+    ctx = _model_ctx(session, "请确认后再继续。")
+    if blocked == "interruption":
+        session.get_state = lambda _key: {"waiting": True}
+    elif blocked == "cancelled":
+        ctx.exception = asyncio.CancelledError()
+    else:
+        ctx.has_force_finish_request = True
+    await rail.before_model_call(ctx)
+    await rail.after_model_call(ctx)
+    assert ctx.inputs.response.content == "请确认后再继续。"
+    assert ctx.inputs.response.tool_calls == []
     assert session.events == []
+    assert rail._close_gate.used is False
+
+
+@pytest.mark.asyncio
+async def test_failed_mutation_does_not_arm_historical_pending_work() -> None:
+    from openjiuwen.harness.tools.base_tool import ToolOutput
+
+    rail, _ = _rail({"old": TodoStatus.PENDING})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    ctx = _todo_ctx(session, "modify")
+    ctx.inputs.tool_result = ToolOutput(success=False, error="invalid arguments")
+    await rail.after_tool_call(ctx)
+    final = await _final_turn(rail, session, "本次操作失败。")
+    assert final.inputs.response.content == "本次操作失败。"
+    assert final.inputs.response.tool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_missing_session_does_not_publish_another_sessions_remaining_work() -> None:
+    rail, _ = _rail({"build": TodoStatus.PENDING})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "modify"))
+    final = await _final_turn(rail, None, "没有会话的模型回复。")
+    assert final.inputs.response.content == "没有会话的模型回复。"
+    assert final.inputs.response.tool_calls == []
+    assert session.events == []
+
+
+@pytest.mark.asyncio
+async def test_saved_reminder_does_not_trigger_execution_nudge() -> None:
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.agents.harness.common.tools.todo_resume import mark_persistent_todo
+
+    rail, engine = _rail({})
+    item = SimpleNamespace(id="later", content="明天提醒", status=TodoStatus.PENDING, meta_data={})
+    mark_persistent_todo(item)
+    engine.load_todos = AsyncMock(return_value=[item])
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "create"))
+    final = await _final_turn(rail, session, "已记下提醒。")
+    assert final.inputs.response.content == "已记下提醒。"
+    assert final.inputs.response.tool_calls == []

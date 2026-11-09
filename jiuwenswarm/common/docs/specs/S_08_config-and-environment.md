@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-11-05 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -28,8 +28,15 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 
 ## 不变量
 
-- **N1 配置缓存双重键**：合并结果按 `(path, mtime_ns)` 缓存（省 ~150ms/次）；
+- **Todo输出配置**：`todo.snapshot_modes`按宿主身份提供者确认的应用`app_id`映射到
+  `legacy`或`versioned`；缺省legacy，不接受请求/模型参数覆盖或按客户端名称自动启用。
+  WS连接建立时固定选择，HTTP请求进入时固定选择；本请求内配置变化不改变输出。
+  实时和历史共用此上下文。既有版本消费者停用增强需先明确状态/连接切换，不能热降级。
+
+- **N1 配置缓存双重键**：合并结果按 `(path, mtime_ns, size)` 缓存（省 ~150ms/次）；
   `get_config()` 按 `(sid, aid)` ns + overlay 内容 hash 做 TTL + 版本号缓存。
+  合并结果只取决于两份 YAML，与环境变量无关：`clear_config_cache(service_id, agent_id)`
+  只清该 ns 的解析缓存，不清合并缓存；无参全量清理才连带清空合并缓存。
   **返回共享引用，消费方禁止原地修改**——要改走 `update_config` / `set_config`。
 - **N2 写回三保险**：portalocker + 原子替换（tmp + os.replace）+ ruamel round-trip
   （保注释保格式）。绕过 `set_config` 直写文件会与锁协议冲突。
@@ -42,9 +49,18 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   Track B = 业务键仅存进程内 `(sid, aid)` tip bag（active ∪ staged，staged 胜）+ 任务
   overlay。**Track B 永不驻留 os.environ**；`export_agent_environ` 是子进程唯一出口
   （含加解密与 `JIUWENCLAW_*` ↔ `JIUWENSWARM_*` 别名互换）。
-- **N6 overlay 绑定即 seal**：`bind_task_env_overlay` 后 miss 即 unset（不回退 tip）；
+- **N6 overlay 绑定即 seal（默认读取面）**：`bind_task_env_overlay` 后，
+  `get_local_config` / `read_env[_if_set]` 的 miss 即 unset（不回退 tip）；
   `_UNBOUND` 哨兵区分"未绑定"与绑定 `{}`。overlay 是任务级 ContextVar，bind/reset
   必须成对。
+
+  显式例外：`read_env_live()` 仅供已声明"可观测请求中 reload"的消费者使用。当前
+  生产消费点仅限 Petal search 的 `PETAL_SEARCH_URL` / `PETAL_SEARCH_HEADERS`：
+  它不读取任务 sealed overlay，而是读取当前 namespace 的 `effective_tip()`。若
+  overlay 已绑定且 live tip miss，仍按 unset 返回 default，不回退 sealed overlay
+  或进程环境变量。该例外不参与 sealed overlay 快照缓存：live read 在每次工具调用
+  时解析 `effective_tip()`，用于观察 staged reload；overlay 快照仍只服务默认读取面，
+  bind/reset 生命周期不变。
 - **N7 tip 联动失效**：tip 写入（`set_os_environ` 等）联动失效 config 的 ns 缓存。
   绕过 local_env_config 直写 `os.environ` 会破坏该联动（且 Track B 值根本不在那）。
 - **N8 空串凭证键不覆盖**：API_KEY 等凭证键空串不覆盖已有值（防"手滑清空密钥"）。
@@ -57,7 +73,12 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - **N11 代理解析顺序与重试**：tip/overlay（无进程回退）→ `os.environ`（Windows 大小写
   不敏感已处理）；NO_PROXY 支持 `*` / 域名后缀 / IP / CIDR；`ProxyError` 自动去代理
   重试（fail-open）；requests 封装 `trust_env=False`（`REQUESTS_CA_BUNDLE` 需显式注入）；
-  `JIUWENSWARM_SSL_VERIFY` 默认开启 TLS。
+  `JIUWENSWARM_SSL_VERIFY` 默认开启 TLS。AgentServer 工具执行绑定 NetGuard 配置 key 时，
+  网页/搜索请求改走受保护传输：仅按 key 调用 PermissionManager；每跳解析并校验完整 DNS
+  快照、固定连接 IP、保留原 Host/SNI 并验证证书，重定向重新检查。该路径强制 TLS
+  校验（保留自定义 CA 路径，旧的免校验开关不生效）；当前代理接口无法保证目标 IP 固定，
+  故显式拒绝代理，禁止失败后自动直连。
+  未绑定此执行上下文的原有请求路径保持上述兼容行为（包括 Gateway）。
 - **N12 affinity 不变量 fail-closed**：affinity 开启 ⇒ release 必 false 且默认 provider
   必为 `AscendAffinity`；请求级互斥冲突直接抛 ValueError。provider 判定链：
   `models.defaults[is_default]` → `models.default` → `react.model_client_config` →
@@ -74,11 +95,17 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   保留原规则。`flash` 保留独立 canonical，并纳入单 Agent 轨迹白名单；尚未实现的
   `flash.*` 在此入口拒绝。续接结合已存 `mode` 与 `adapter_mode` 恢复，保证前台准备与租户池二次解析一致；活跃 Plan 与中断归属优先于新的默认模式。
 
-- **N16 Flash 配置占位符**：模板的 `flash.enabled` 与
-  `flash.skill_selection.enabled` 分别引用 `${JIUWENSWARM_FLASH_ENABLED:-false}`
-  与 `${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}`；两变量属于 Track A，
+- **N16 Flash 配置占位符**：模板的 `flash.enabled`、
+  `flash.skill_selection.enabled`、`flash.evolution.enabled` 与
+  `flash.evolution.skill_sleep.enabled` 分别引用
+  `${JIUWENSWARM_FLASH_ENABLED:-false}`、
+  `${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}`、
+  `${JIUWENSWARM_FLASH_EVOLUTION_ENABLED:-false}` 与
+  `${JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED:-true}`；四变量属于 Track A，
   沙箱启动注入后经统一配置加载解析，`get_config()` 返回布尔值，消费方不再直读环境。
-  旧 YAML / provider 中的布尔值在运行时作为同名占位符的默认值，环境变量可双向覆盖；
+  Flash 在线技能自演进不继承 `react.evolution` 全局开关，默认关闭；SkillSleep
+  独立常驻默认开启，训练是否执行仍由技能级 `selfEvolution` 决定。旧 YAML /
+  provider 中的布尔值在运行时作为同名占位符的默认值，环境变量可双向覆盖；
   未注入时保留原布尔配置。非法字符串关闭开关，不改变其它字段的字符串解析语义。
   配置文件、实例创建/热更新快照及预热均通过 `resolve_config_env_vars` 统一解析。
   原始 YAML、合并缓存及 provider 输入保持不变；重启或清理配置缓存后重新解析。
@@ -91,7 +118,7 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 | `config.py`（~2500 行） | `get_config` / `get_config_raw` / `get_merged_config_dict` / `resolve_env_vars` / `resolve_config_env_vars` / `set_config` / `update_config` / `clear_config_cache` / `CONFIG_YAML_PATH` | N1–N4；各配置段（permissions/models/mcp/teams/hooks）读写 API |
 | `config_provider.py` | `ConfigProvider`（Protocol）/ `register/get/reset_config_provider` / `DefaultConfigProvider` / `AgentConfigContext/Result` / `apply_enterprise_mcp` | N9；配置源由 `JIUWENSWARM_CONFIG_SOURCE` 或 `config.source` 决定 |
 | `path_provider.py` | `PathCategory`（~20 类目录）/ `PathProvider`（Protocol）/ `register/get/reset_path_provider` / `current_path_context` / `bind_path_session_id` | 进程级单例 provider；请求身份 task-local（ContextVar） |
-| `local_env_config.py`（~1340 行） | `SPAWN_ENV_KEYS` / `BUSINESS_MIRROR_KEYS` / `get_local_config` / `read_env[_if_set]` / `set_os_environ` / `export_agent_environ` / `bind_agent_env_ns` / `bind_task_env_overlay` / `effective_tip` | N5–N8 |
+| `local_env_config.py`（~1340 行） | `SPAWN_ENV_KEYS` / `BUSINESS_MIRROR_KEYS` / `get_local_config` / `read_env[_if_set]` / `read_env_live` / `set_os_environ` / `export_agent_environ` / `bind_agent_env_ns` / `bind_task_env_overlay` / `effective_tip` | N5–N8 |
 | `hooks_config.py` | `HookEvent`（17）/ `HooksConfig.match` / `HookMatcher` / `load_hooks_config` / `is_rail_event` / `is_gateway_event` | N10 |
 | `http_proxy_config.py` | `requests_get/post` / `resolve_requests_proxies` / `resolve_httpx_proxy` / `should_bypass_proxy` / `ssl_verify_enabled` | N11 |
 | `kv_cache_affinity_config.py` | `ASCEND_AFFINITY_PROVIDER` / `get_default_model_provider` / `validate_affinity_invariant` / `normalize_affinity_request` / `KVC_CONFIG_KEYS` | N12 |
@@ -104,7 +131,7 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - **tip**：`(session_id, agent_id)` → 生效环境 dict（active ∪ staged，staged 胜）。
 - **overlay**：任务级密封 dict（ContextVar）；`effective_tip = tip ∪ overlay`（overlay
   键存在即覆盖，miss 即 unset）。
-- **config 缓存**：`(path, mtime_ns)` → 合并 dict；`(sid, aid, overlay_hash)` → agent
+- **config 缓存**：`(path, mtime_ns, size)` → 合并 dict；`(sid, aid, overlay_hash)` → agent
   视图 + 版本号。
 - **HooksConfig**：`{events: [{event, matchers}]}`；match 失败静默跳过。
 
@@ -122,6 +149,8 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   `test_config_concurrent_models.py` 全量回归；检查 tip 联动（N7）。
 - 改 `${VAR}` 语义 → 三种形式（无默认 / `:-` / `-`）回归 + Track A/B 读取路径确认。
 - 改 overlay seal 语义 → miss-unset 行为回归（这是防"幽灵配置"的关键）。
+- 扩大 `read_env_live` 消费面 → 必须先确认该配置允许请求中 reload，补 sealed
+  overlay 下读取 staged tip 的回归测试，并同步更新 N6 例外清单。
 - 加 HookEvent → Rail/Gateway 归类 + matcher 语法回归 + hooks 消费方三处
   （user_hook_rail / gateway handler / extensions handler）确认。
 - 改模式归一 → 组合表 / 直解 / legacy 三级矩阵 + `deprecate_mode` None/空串原样铁律 +

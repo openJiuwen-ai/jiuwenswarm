@@ -25,7 +25,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.harness.tools.base_tool import ToolOutput
@@ -34,6 +34,10 @@ from openjiuwen.harness.tools.filesystem import (
     _ReadStateRecord,
     _RawTextState,
     _resolve_tool_file_path,
+)
+
+from jiuwenswarm.agents.harness.common.read_file_image_support import (
+    build_read_file_image_kwargs,
 )
 
 from .flash_file_meta import detect_encoding, record_file_meta
@@ -135,12 +139,16 @@ class FlashReadFileTool(ReadFileTool):
         language: str = "cn",
         agent_id: Optional[str] = None,
         enable_image_multimodal: bool = True,
+        image_multimodal_resolver: Optional[Callable[[], bool]] = None,
     ) -> None:
         super().__init__(
             operation,
             language,
             agent_id=agent_id,
-            enable_image_multimodal=enable_image_multimodal,
+            **build_read_file_image_kwargs(
+                image_multimodal_resolver,
+                enable_image_multimodal=enable_image_multimodal,
+            ),
         )
         lang = language or "cn"
         self.card.description = FLASH_READ_DESCRIPTION.get(

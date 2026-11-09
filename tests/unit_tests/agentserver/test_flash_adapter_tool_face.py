@@ -66,26 +66,47 @@ class _FakeAbilityManager:
 
 
 def test_keep_whitelist_retains_skill_and_security_rails() -> None:
-    """技能链与 disabled_tools 的冷启动表项必须存活（reload 复活点对齐）。"""
+    """技能链、受限自演进与 disabled_tools 的冷启动表项必须存活。"""
     adapter = _bare_adapter(JiuwenSwarmFlashAdapter)
     keep = [
         "_skill_rail",
         "_skill_credential_injection_rail",
         "_skill_active_state_rail",
         "_skill_authorization_rail",
+        "_skill_evolution_rail",
+        "_evolution_interrupt_rail",
+        "_skill_sleep_rail",
         "_disabled_tools_rail",
         "_permission_rail",
         "_filesystem_rail",
         "_skill_turbo_prompt_rail",
     ]
     drop = [
-        "_skill_evolution_rail",
+        "_skill_create_rail",
         "_a2a_outbound_toolkit_rail",
         "_symphony_orchestration_rail",
     ]
     infos = [_RailBuildInfo(name, lambda: None) for name in keep + drop]
     filtered = adapter._filter_rail_infos_by_keep(infos)
     assert [info.attr_name for info in filtered] == keep
+
+
+def test_flash_tool_face_keeps_rail_owned_evolution_tools_only() -> None:
+    """Flash accepts the six rail-owned evolution tools, not SkillCreate/TTSE."""
+    drop_names = JiuwenSwarmFlashAdapter._FLASH_TOOL_CARD_DROP_NAMES
+    rail_owned_evolution_tools = {
+        "prepare_skill_evolution",
+        "evolve_review_task",
+        "list_skill_experiences",
+        "read_skill_experiences",
+        "evolve_skill_experiences",
+        "simplify_skill_experiences",
+    }
+    keep = JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+
+    assert rail_owned_evolution_tools.isdisjoint(drop_names)
+    assert "_skill_create_rail" not in keep
+    assert "_ttse_rail" not in keep
 
 
 # ── react 覆盖（eager_tools 整表替换 / evolution 深合并 / env 告警） ──
@@ -109,6 +130,8 @@ def test_react_override_replaces_eager_tools_and_keeps_siblings() -> None:
 
     assert react["enable_task_loop"] is False
     lazy = react["tool_lazy_load"]
+    # Flash override is the source of truth for flash; config.yaml's
+    # react.tool_lazy_load.eager_tools covers the non-flash deep path.
     assert lazy["eager_tools"] == [
         "web_search",
         "fetch_webpage",
@@ -122,6 +145,7 @@ def test_react_override_replaces_eager_tools_and_keeps_siblings() -> None:
         "skill_tool",
         "skill_complete",
         "todo",
+        "office_claw_list_wishes",
     ]
     assert lazy["enabled"] is True
     assert lazy["subagents"] == {"enabled": True}
@@ -325,6 +349,27 @@ async def test_unified_todo_get_requires_id() -> None:
 
     assert result.success is False
     assert "'id' is required" in result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("todos", [None, {"id": "env", "status": "completed"}])
+async def test_unified_todo_update_requires_array_before_invoking_engine(todos) -> None:
+    engine = _StubTodoEngine()
+    tool = UnifiedTodoTool({"modify": engine}, language="cn")
+    result = await tool.invoke({"action": "modify", "modify_action": "update", "todos": todos,
+                                "id": "env", "status": "completed"}, session="s1")
+    assert result.success is False
+    assert '"todos":[{"id":"env","status":"completed"}]' in result.error
+    assert engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unified_todo_valid_batch_keeps_existing_payload_and_session() -> None:
+    engine = _StubTodoEngine()
+    tool = UnifiedTodoTool({"modify": engine}, language="en")
+    rows = [{"id": "env", "status": "completed"}, {"id": "build", "status": "in_progress"}]
+    await tool.invoke({"action": "modify", "modify_action": "update", "todos": rows}, session="s1")
+    assert engine.calls == [({"action": "update", "todos": rows}, {"session": "s1"})]
 
 
 @pytest.mark.asyncio

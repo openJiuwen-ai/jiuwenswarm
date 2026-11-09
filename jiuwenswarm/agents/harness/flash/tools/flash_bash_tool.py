@@ -23,6 +23,9 @@ from openjiuwen.harness.tools.base_tool import ToolOutput
 from openjiuwen.harness.tools.shell.bash._tool import BashTool
 from openjiuwen.harness.tools.filesystem import _parse_rm_targets
 
+from jiuwenswarm.agents.harness.common.read_file_image_support import (
+    build_read_file_image_kwargs,
+)
 from jiuwenswarm.agents.harness.common.tools.command_tools import (
     _build_subprocess_env,
     _windows_not_found_hint,
@@ -212,7 +215,11 @@ class FlashBashSysOperationRail(SysOperationRail):
         super().init(agent)
         if self.tools is None:
             return
+        from openjiuwen.harness.rails._multimodal import (
+            should_enable_read_image_multimodal,
+        )
         from openjiuwen.harness.tools.filesystem import ReadFileTool
+
         from jiuwenswarm.agents.harness.flash.tools.flash_read_tool import (
             FlashReadFileTool,
         )
@@ -236,8 +243,46 @@ class FlashBashSysOperationRail(SysOperationRail):
             elif isinstance(tool, ReadFileTool) and not isinstance(
                 tool, FlashReadFileTool
             ):
+                # 新 core 的 stock init 会把"调用时求值"的 resolver 装到
+                # _image_multimodal_resolver；替换成 flash 增强版时必须一起继承，否则
+                # read_file 退回 init 期默认值 True——纯文本模型也读像素、切模型不生效。
+                image_resolver = getattr(tool, "_image_multimodal_resolver", None)
+                if not callable(image_resolver):
+                    # 锁定 core（8215f2c 的 enable_image_multimodal 是纯 bool）没有该
+                    # 属性；从 agent 重派生同一 resolver，待 core 合入
+                    # image_multimodal_resolver 后 build_read_file_image_kwargs 才透传它
+                    # （锁定 core 上退回构造时求值的静态 bool，热切换能力未启用）。
+                    def _lock_core_image_resolver() -> bool:
+                        return should_enable_read_image_multimodal(
+                            agent,
+                            self._enable_read_image_multimodal,
+                        )
+
+                    image_resolver = _lock_core_image_resolver
+                if callable(image_resolver):
+                    try:
+                        image_enabled = bool(image_resolver())
+                    except Exception:
+                        image_enabled = bool(
+                            getattr(tool, "enable_image_multimodal", True)
+                        )
+                else:
+                    image_enabled = bool(
+                        getattr(tool, "enable_image_multimodal", True)
+                    )
                 swap_targets.append(
-                    (idx, FlashReadFileTool(self.sys_operation, lang, agent_id))
+                    (
+                        idx,
+                        FlashReadFileTool(
+                            self.sys_operation,
+                            lang,
+                            agent_id,
+                            **build_read_file_image_kwargs(
+                                image_resolver,
+                                enable_image_multimodal=image_enabled,
+                            ),
+                        ),
+                    )
                 )
         for idx, replacement in swap_targets:
             self.tools[idx] = replacement

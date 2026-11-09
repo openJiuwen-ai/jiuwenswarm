@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _get_a2x_config
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
 from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
@@ -197,8 +198,12 @@ async def test_create_instance_registers_blank_agent_for_teammate(monkeypatch: p
         endpoint="http://agent.example/ws",
     )
 
+    from jiuwenswarm.server.runtime.agent_adapter.deep import agent_config_helpers
+
     monkeypatch.setitem(sys.modules, "jiuwenswarm.agents.harness.team.a2x.client", fake_module)
     monkeypatch.setattr(interface_module, "get_config", lambda: config_base)
+    # create_instance 经 _resolve_instance_config_base 读 helpers 内的 get_config 绑定。
+    monkeypatch.setattr(agent_config_helpers, "get_config", lambda: config_base)
 
     with (
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "set_checkpoint", AsyncMock()),
@@ -210,7 +215,6 @@ async def test_create_instance_registers_blank_agent_for_teammate(monkeypatch: p
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_build_configured_subagents",
                      return_value=(None, False)),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "load_user_rails", AsyncMock()),
-        patch.object(interface_module, "init_permission_engine", return_value=None),
         patch.object(
             interface_module,
             "create_deep_agent",
@@ -395,7 +399,6 @@ async def test_create_instance_continues_when_a2x_client_init_fails(monkeypatch:
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_build_configured_subagents",
                      return_value=(None, False)),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "load_user_rails", AsyncMock()),
-        patch.object(interface_module, "init_permission_engine", return_value=None),
         patch.object(interface_module, "create_deep_agent", return_value=created_instance) as create_agent_mock,
     ):
         await adapter.create_instance()
@@ -428,7 +431,7 @@ async def test_reload_reuses_existing_a2x_client_when_config_unchanged(
         ownership_file=False,
     )
     adapter._a2x_client = existing
-    adapter._a2x_config = adapter._get_a2x_config(config_base)
+    adapter._a2x_config = _get_a2x_config(config_base)
 
     monkeypatch.setitem(sys.modules, "jiuwenswarm.agents.harness.team.a2x.client", fake_module)
 
@@ -460,7 +463,7 @@ async def test_reload_keeps_existing_a2x_client_when_unchanged_registration_fail
         ownership_file=False,
     )
     adapter._a2x_client = existing
-    adapter._a2x_config = adapter._get_a2x_config(config_base)
+    adapter._a2x_config = _get_a2x_config(config_base)
 
     monkeypatch.setitem(sys.modules, "jiuwenswarm.agents.harness.team.a2x.client", fake_module)
 

@@ -3,9 +3,9 @@
 
 覆盖核心埋点的验收要点（F153）：
 
-* 合并规则：保留键丢弃（Authorization / x-span-id / thinking 族）、非法值
-  （含 CR/LF 的头、不可序列化的正文字段）跳过、调用方显式值优先、未写的
-  口袋保持原样；
+* 合并规则：保留键丢弃（Authorization / thinking 族）、x-span-id 允许写入、
+  非法值（含 CR/LF 的头、不可序列化的正文字段）跳过、调用方显式值优先、
+  未写的口袋保持原样；
 * 触发链路：invoke / stream 出口触发事件并合并口袋；
 * 失败语义：handler 抛错、registry 未初始化时请求照常发出（零新增字段）；
 * 幂等：独立标志，重复安装不二次包装。
@@ -111,7 +111,7 @@ def test_event_name_is_scoped() -> None:
     assert AgentServerHookEvents.BEFORE_MODEL_HTTP == "agent_server:before_model_http"
 
 
-def test_merge_drops_reserved_and_invalid_values() -> None:
+def test_merge_keeps_span_id_and_drops_reserved_and_invalid_values() -> None:
     from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
 
     kwargs: dict[str, Any] = {}
@@ -119,7 +119,7 @@ def test_merge_drops_reserved_and_invalid_values() -> None:
         headers={
             "x-client": "miniprogram|vivo|trial",
             "Authorization": "Basic evil",
-            "X-SPAN-ID": "evil",  # 保留键按大小写不敏感匹配
+            "X-SPAN-ID": "ext-span-1",  # 扩展可写，宿主不再丢弃
             "x-bad": "a\r\nSet-Cookie: pwn",
             "x-cn": "用户中文原话",  # 非 latin-1 头值会让 httpx 发送时抛错，必须跳过
             "": "empty-name",
@@ -135,9 +135,58 @@ def test_merge_drops_reserved_and_invalid_values() -> None:
     patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
 
     assert kwargs["custom_headers"] == {
-        "x-client": "miniprogram|vivo|trial"
+        "x-client": "miniprogram|vivo|trial",
+        "X-SPAN-ID": "ext-span-1",
     }
     assert kwargs["extra_body"] == {"report_id": "r-1"}
+
+
+def test_merge_span_id_is_case_insensitive_and_caller_wins() -> None:
+    from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+
+    kwargs: dict[str, Any] = {"custom_headers": {"X-SPAN-ID": "caller-span"}}
+    ctx = ModelHttpHookContext(headers={"x-span-id": "ext-span"})
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+
+    # 调用方非空值优先，且不新增第二个大小写变体（否则 httpx 会合并成双值）
+    assert kwargs["custom_headers"] == {"X-SPAN-ID": "caller-span"}
+
+
+def test_merge_span_id_ignores_blank_extension_value() -> None:
+    from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+
+    kwargs: dict[str, Any] = {}
+    ctx = ModelHttpHookContext(headers={"x-span-id": " "})
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+
+    # 扩展空值视为未提供，不写入；留给 MaaS 兜底 uuid
+    assert kwargs["custom_headers"] == {}
+
+
+def test_merge_span_id_replaces_caller_blank_value() -> None:
+    from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+
+    kwargs: dict[str, Any] = {"custom_headers": {"X-SPAN-ID": ""}}
+    ctx = ModelHttpHookContext(headers={"x-span-id": "ext-span"})
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+
+    # 调用方空值无意义：清掉空键，采用扩展的非空值，最终仍只有一个同名键
+    assert kwargs["custom_headers"] == {"x-span-id": "ext-span"}
+
+
+def test_merge_dedupes_any_header_case_insensitively() -> None:
+    from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+
+    # 任意头都按大小写不敏感去重，不需要为每个新增头单独特判
+    kwargs: dict[str, Any] = {"custom_headers": {"X-Client": "caller"}}
+    ctx = ModelHttpHookContext(headers={"x-client": "extension"})
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+    assert kwargs["custom_headers"] == {"X-Client": "caller"}
+
+    # 调用方空值时允许扩展值覆盖，并沿用扩展的键名
+    kwargs = {"custom_headers": {"X-Client": " "}}
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+    assert kwargs["custom_headers"] == {"x-client": "extension"}
 
 
 def test_merge_keeps_caller_values_and_empty_pockets() -> None:
@@ -151,6 +200,138 @@ def test_merge_keeps_caller_values_and_empty_pockets() -> None:
     assert kwargs["custom_headers"]["x-client"] == "caller"
     # 只写 headers 口包不产生 extra_body：正文零变化
     assert "extra_body" not in kwargs
+
+
+# ── purpose（积分对账口径）归一化 ───────────────────────────────────────
+
+
+def test_resolve_purpose_uses_explicit_request_purpose() -> None:
+    for value in (
+        "compaction",
+        "summary",
+        "recap",
+        "rewrite",
+        "deepresearch_rewrite",
+        "skill_turbo",
+        "symphony",
+        "repair",
+    ):
+        assert patch_mod._resolve_model_http_purpose(  # pylint: disable=protected-access
+            {"request_purpose": value}
+        ) == value
+
+
+def test_resolve_purpose_ignores_unknown_value_and_defaults_to_chat() -> None:
+    # 未透传时普通主对话
+    assert patch_mod._resolve_model_http_purpose({}) == "chat"  # pylint: disable=protected-access
+    # 未知值不得穿透给扩展，统一回退 chat
+    assert (  # pylint: disable=protected-access
+        patch_mod._resolve_model_http_purpose({"request_purpose": "bogus"}) == "chat"
+    )
+
+
+def test_resolve_purpose_detects_subagent_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject_mod = pytest.importorskip("openjiuwen.harness.execution_subject")
+    monkeypatch.setattr(
+        subject_mod,
+        "current_execution_subject",
+        lambda: SimpleNamespace(kind="subagent"),
+    )
+    assert patch_mod._resolve_model_http_purpose({}) == "subagent"  # pylint: disable=protected-access
+    # 显式透传值优先于子代理主体的推导
+    assert (  # pylint: disable=protected-access
+        patch_mod._resolve_model_http_purpose({"request_purpose": "recap"}) == "recap"
+    )
+
+
+def test_resolve_purpose_detects_team_subjects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject_mod = pytest.importorskip("openjiuwen.harness.execution_subject")
+    monkeypatch.setattr(
+        subject_mod,
+        "current_execution_subject",
+        lambda: SimpleNamespace(kind="team_leader"),
+    )
+    assert (  # pylint: disable=protected-access
+        patch_mod._resolve_model_http_purpose({}) == "team_leader"
+    )
+    monkeypatch.setattr(
+        subject_mod,
+        "current_execution_subject",
+        lambda: SimpleNamespace(kind="team_member"),
+    )
+    assert (  # pylint: disable=protected-access
+        patch_mod._resolve_model_http_purpose({}) == "team_member"
+    )
+
+
+def test_resolve_purpose_main_agent_subject_defaults_to_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject_mod = pytest.importorskip("openjiuwen.harness.execution_subject")
+    monkeypatch.setattr(
+        subject_mod,
+        "current_execution_subject",
+        lambda: SimpleNamespace(kind="main_agent"),
+    )
+    assert patch_mod._resolve_model_http_purpose({}) == "chat"  # pylint: disable=protected-access
+
+
+def test_invoke_wrapper_exposes_purpose_via_context(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    async def _fake_orig_invoke(self: Any, *args: Any, **kwargs: Any):
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_orig_invoke)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    asyncio.run(
+        oai_mod.OpenAIModelClient.invoke(
+            _fake_client(), messages="hi", request_purpose="recap"
+        )
+    )
+    assert calls[0]["event"] == "agent_server:before_model_http"
+    assert calls[0]["context"].purpose == "recap"
+
+
+def test_invoke_wrapper_defaults_purpose_to_chat(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    async def _fake_orig_invoke(self: Any, *args: Any, **kwargs: Any):
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_orig_invoke)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    asyncio.run(oai_mod.OpenAIModelClient.invoke(_fake_client(), messages="hi"))
+    assert calls[0]["context"].purpose == "chat"
+
+
+def test_stream_wrapper_exposes_purpose_via_context(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    async def _fake_orig_stream(self: Any, *args: Any, **kwargs: Any):
+        yield 1
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "stream", _fake_orig_stream)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    async def _collect() -> None:
+        agen = oai_mod.OpenAIModelClient.stream(
+            _fake_client(), messages="hi", request_purpose="recap"
+        )
+        async for _chunk in agen:
+            pass
+
+    asyncio.run(_collect())
+    assert calls[0]["context"].purpose == "recap"
 
 
 # ── 安装幂等 ─────────────────────────────────────────────────────────
@@ -231,7 +412,7 @@ def test_stream_wrapper_triggers_and_passes_chunks(
     monkeypatch.setattr(oai_mod.OpenAIModelClient, "stream", _fake_orig_stream)
     patch_mod.apply_before_model_http_hook_patch()
 
-    _install_fake_trigger(
+    calls = _install_fake_trigger(
         monkeypatch,
         filler=lambda ctx: ctx.headers.update({"x-client": "miniprogram"}),
     )
@@ -244,6 +425,8 @@ def test_stream_wrapper_triggers_and_passes_chunks(
 
     assert chunks == [1, 2, 3]
     assert recorded[0]["custom_headers"] == {"x-client": "miniprogram"}
+    # stream 包装同样填充 purpose（默认 chat）
+    assert calls[0]["context"].purpose == "chat"
 
 
 def test_generate_image_wrapper_triggers_and_merges(
@@ -261,7 +444,7 @@ def test_generate_image_wrapper_triggers_and_merges(
     )
     patch_mod.apply_before_model_http_hook_patch()
 
-    _install_fake_trigger(
+    calls = _install_fake_trigger(
         monkeypatch,
         filler=lambda ctx: ctx.headers.update(
             {"x-client": "miniprogram|vivo|trial"}
@@ -274,6 +457,8 @@ def test_generate_image_wrapper_triggers_and_merges(
 
     assert result == "image-ok"
     assert recorded[0]["custom_headers"] == {"x-client": "miniprogram|vivo|trial"}
+    # generate_image 包装同样填充 purpose（默认 chat；图像语义值见 F_02 已知遗留）
+    assert calls[0]["context"].purpose == "chat"
 
 
 def test_anthropic_client_is_covered(

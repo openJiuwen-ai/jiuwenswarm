@@ -142,7 +142,14 @@ if not _loaded_logging_yaml:
 
     class _PermissionEngineFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
-            return "[PermissionEngine]" in record.getMessage()
+            if record.name.startswith("agent_shield"):
+                return True
+            msg = record.getMessage()
+            return (
+                "[PermissionEngine]" in msg
+                or "permission.engine." in msg
+                or "permission.manager." in msg
+            )
 
     _perm_filter = _PermissionEngineFilter()
     _common_fh = None
@@ -172,6 +179,15 @@ if not _loaded_logging_yaml:
             _perm_ns_logger.addHandler(_perm_fh)
         _perm_ns_logger.addHandler(_perm_sh)
     _perm_ns_logger.propagate = False
+
+    # W1a: agent_shield 引擎/管理器日志写入 permissions.log
+    _shield_logger = logging.getLogger("agent_shield.tool_permission")
+    _shield_logger.setLevel(logging.INFO)
+    if not _shield_logger.handlers:
+        if _perm_fh is not None:
+            _shield_logger.addHandler(_perm_fh)
+        _shield_logger.addHandler(_perm_sh)
+    _shield_logger.propagate = False
 
 # Load env from user workspace config/.env
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)

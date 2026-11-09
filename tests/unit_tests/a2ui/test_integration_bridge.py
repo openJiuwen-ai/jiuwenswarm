@@ -240,7 +240,13 @@ def test_a2ui_pending_render_delta_stays_open():
 
 
 def test_a2ui_repaired_final_chunk_keeps_session_binding():
-    """The repaired final must replace the pending A2UI bubble in its session."""
+    """The repaired final must replace the pending A2UI bubble in its session.
+
+    §9.1 契约：重发帧带 a2ui_resend=True。suppress 期间 wire 上已流出
+    半截 `<a2ui` + probe 占位（relay 侧 delta 累积）；降级终稿可能不含
+    <a2ui-json> 标签，relay 的 replace_final 原本按标签门控不覆写，残片
+    会留在正文。带 a2ui_resend 标记即声明"这是权威终稿，无条件整段覆写"。
+    """
     from jiuwenswarm.server.runtime.agent_adapter.interface import _make_a2ui_final_chunk
 
     chunk = _make_a2ui_final_chunk(
@@ -254,6 +260,7 @@ def test_a2ui_repaired_final_chunk_keeps_session_binding():
         "event_type": "chat.final",
         "session_id": "sess-a2ui",
         "content": "<a2ui-json>[]</a2ui-json>",
+        "a2ui_resend": True,
     }
 
 
@@ -393,15 +400,13 @@ async def test_finalize_assistant_response_if_a2ui_bypasses_non_web_channel(monk
 
 
 @pytest.mark.asyncio
-async def test_finalize_officeclaw_skips_server_side_repair_and_resend(monkeypatch):
-    """officeclaw (relay-claw) must NOT run server-side A2UI repair/retry/resend.
+async def test_finalize_officeclaw_runs_server_side_repair_and_resend(monkeypatch):
+    """officeclaw (relay-claw) now runs server-side A2UI repair/retry/resend.
 
-    officeclaw completely skips server-side finalize (including validation) — no
-    repair, no retry, no resend. Broken a2ui content is passed through as-is;
-    the frontend does text degradation display (extractTextFromMalformedA2UI
-    regex salvage + invalidA2UIFallback fixed error text — degradation, not
-    JSON repair). Skipping entirely eliminates the timing issue (resend
-    frame after terminal) and the duplicate-block concern.
+    officeclaw 启用 probe + suppress + repair（与 web 对齐）。suppress 扣住原 chat.final
+    + 改写 is_complete，relay-claw 不 break；relay-claw 前端已部署 chat.final a2ui
+    replace_final 覆写（patchMessage({content}=finalized)），覆写掉 delta 累积的
+    <a2ui 前半 + probe 污染。repair 修复破损 JSON，发送 finalized（前端首次收到）。
     """
     import types
 
@@ -446,11 +451,37 @@ async def test_finalize_officeclaw_skips_server_side_repair_and_resend(monkeypat
         retry_without_a2ui_call=retry_without_a2ui_call,
     )
 
+    # officeclaw 现在走 repair（不再跳过）
+    # fake_finalize 原样返回入参，result 应等于 broken_a2ui
     assert result == broken_a2ui
-    assert config_calls == []
-    assert finalize_calls == []
+    assert config_calls == [1]
+    assert len(finalize_calls) == 1
+    # repair_call / retry_without_a2ui_call 传给 finalize 守卫，未被直接调用（fake_finalize 短路）
+    # 但列表不应有遗漏的意外调用
     assert repair_calls == []
     assert retry_calls == []
+
+
+@pytest.mark.parametrize("channel,expected", [
+    ("web", True),
+    ("officeclaw", True),
+    ("feishu", False),
+    (None, False),
+])
+def test_a2ui_probe_channel_whitelist(channel, expected):
+    """白名单回归保护：officeclaw 启用 probe 后不可被误改回去。"""
+    assert integration.is_a2ui_probe_channel(channel) is expected
+
+
+@pytest.mark.parametrize("channel,expected", [
+    ("web", True),
+    ("officeclaw", True),
+    ("feishu", False),
+    (None, False),
+])
+def test_finalize_repair_whitelist(channel, expected):
+    """白名单回归保护：officeclaw 启用 repair 后不可被误改回去。"""
+    assert integration.should_finalize_repair(channel) is expected
 
 
 @pytest.mark.asyncio
@@ -548,3 +579,83 @@ def test_partial_marker_triggers_on_long_dataModel_prefix():
     )
 
     assert _looks_like_partial_a2ui_marker("content\ndataModel") is True
+
+
+def test_suppress_engage_ignores_foreign_frames():
+    """Nested-stream mirror frames must never engage the parent's suppression.
+
+    Regression: a member/skill-node delta whose mirrored text carries a2ui
+    markers used to trip the parent state machine — withholding the parent's
+    stream, emitting a spurious render probe and mixing child text into the
+    finalized answer.
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _a2ui_suppress_should_engage,
+    )
+
+    # Main-chain marker frame engages first-time suppression; foreign does not.
+    assert _a2ui_suppress_should_engage(False, ("prefix", "rest"), False) is True
+    assert _a2ui_suppress_should_engage(False, ("prefix", "rest"), True) is False
+    # No marker: nobody engages.
+    assert _a2ui_suppress_should_engage(False, None, False) is False
+    # Once the parent is suppressing, every frame stays withheld (flag belongs
+    # to the parent turn, not the frame that set it).
+    assert _a2ui_suppress_should_engage(True, None, True) is True
+
+
+def test_foreign_source_predicate_semantics():
+    """chat.delta guards must use the same foreign predicate as reasoning/tool_call."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _is_foreign_stream_source,
+    )
+
+    assert _is_foreign_stream_source({"stream_source_id": "node-7"}) is True
+    assert _is_foreign_stream_source({"stream_source_id": "main"}) is False
+    assert _is_foreign_stream_source({}) is False
+    assert _is_foreign_stream_source(None) is False
+
+
+# ── CR 三连击回归（renquanjia 2026-10-29 #1/#2/#3）：foreign 判定必须前置到
+# probe/split 之前，子流 marker 不得进入父轮 probe 窗口；engage/durable/normal
+# 各路径的父轮 bookkeeping（final_answer_content/durable 缓冲）不得被子流帧改写。
+
+def test_probe_frame_gate_skips_foreign_frames():
+    """CR#2 回归：foreign 帧不得扩展父轮 probe、不得产出 split。
+
+    旧序：split+extend 先算、foreign 后判——子流 chat.delta 含 <a2ui-json> 时
+    marker 滞留父轮 probe（512B 窗口），下一条主链帧 combined=probe+content
+    命中 marker_start<=content_start → split=("",content) → 主链被误 suppress、
+    扣发文本、发 spurious 占位帧。
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.interface import _a2ui_probe_for_frame
+
+    split, probe = _a2ui_probe_for_frame(
+        probe="ok ", content="前文", event_type="chat.delta", enabled=True, foreign=True,
+    )
+    assert split is None
+    assert probe == "ok "  # 子流帧完全不接触父轮 probe
+
+    # foreign 的 marker 帧同样不进 probe
+    split, probe = _a2ui_probe_for_frame(
+        probe="", content="hello <a2ui-json>", event_type="chat.delta", enabled=True, foreign=True,
+    )
+    assert split is None
+    assert probe == ""
+
+    # 主链帧行为不变：marker 产出 split 且 probe 累积
+    split, probe = _a2ui_probe_for_frame(
+        probe="", content="hello <a2ui-json>", event_type="chat.delta", enabled=True, foreign=False,
+    )
+    assert split is not None
+    assert "<a2ui-json>" in probe
+
+
+def test_suppress_engage_gate_semantics_unchanged():
+    """gate 分工锚定：suppress 激活后 foreign 帧仍 withhold（True），
+    未激活时仅非 foreign 且有 split 才 engage。父轮 bookkeeping 守卫在调用点，
+    若未来把 withhold 与 bookkeeping 合并回 gate，本用例会以语义变化提醒。"""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import _a2ui_suppress_should_engage
+
+    assert _a2ui_suppress_should_engage(True, None, True) is True   # suppress 后 foreign 维持扣发
+    assert _a2ui_suppress_should_engage(False, ("", "x"), True) is False  # 未激活时 foreign 不 engage
+    assert _a2ui_suppress_should_engage(False, ("", "x"), False) is True

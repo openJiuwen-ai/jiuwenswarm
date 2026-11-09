@@ -80,6 +80,56 @@ def test_build_report_bundle_rejects_more_than_512_charts_before_writing(tmp_pat
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("infer_count", [32, 104, 512])
+def test_build_report_bundle_preserves_large_infer_sets(tmp_path, infer_count):
+    inferences = [_infer(str(index)) for index in range(infer_count)]
+    bundle = build_report_bundle(
+        _payload(
+            response_content="\n".join(
+                f"[detail {index}](#inference:{index})" for index in range(infer_count)
+            ),
+            infer_messages=inferences,
+        ),
+        tmp_path / "report-v1",
+    )
+
+    assert len(bundle.inference_manifest) == infer_count
+    snapshot = json.loads(serialize_final_result_snapshot(bundle.final_result_snapshot))
+    assert len(snapshot["infer_messages"]) == infer_count
+    for message in snapshot["infer_messages"]:
+        path = tmp_path / message["artifact_path"]
+        assert path.read_bytes() == b"<html>safe</html>"
+        assert message["artifact_path"] in bundle.markdown_text
+        assert "html_base64" not in message
+    assert "(#inference:" not in bundle.markdown_text
+
+
+def test_build_report_bundle_rejects_more_than_512_infer_before_writing(tmp_path):
+    with pytest.raises(ValueError, match="infer_messages exceeds the message count limit"):
+        build_report_bundle(
+            _payload(infer_messages=[_infer(str(index)) for index in range(513)]),
+            tmp_path / "report-v1",
+        )
+
+    assert not list(tmp_path.iterdir())
+
+
+def test_build_report_bundle_rejects_oversized_inference_graphs_before_writing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(bundle_module, "INFERENCE_GRAPH_MAX_BYTES", 1)
+
+    with pytest.raises(
+        ValueError, match="inference_graphs exceeds the UTF-8 byte limit"
+    ):
+        build_report_bundle(
+            _payload(infer_messages=[_infer("one")]),
+            tmp_path / "report-v1",
+        )
+
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize(
     "occupied_kind",
     ["directory", "directory_symlink", "file_symlink", "file_hardlink"],
@@ -245,19 +295,44 @@ def test_build_report_bundle_cleans_only_owned_resources_after_publication_failu
     assert not (chart_dir / "second.png").exists()
 
 
-def test_build_report_bundle_cleans_owned_resources_after_rewrite_failure(tmp_path):
+def test_build_report_bundle_cleans_owned_resources_after_rewrite_failure(
+    tmp_path, monkeypatch
+):
     report_base = tmp_path / "report-v1"
 
-    with pytest.raises(ValueError):
+    def fail_rewrite(*args, **kwargs):
+        raise ValueError("injected chart rewrite failure")
+
+    monkeypatch.setattr(bundle_module, "_rewrite_chart_placeholders", fail_rewrite)
+    with pytest.raises(ValueError, match="injected chart rewrite failure"):
         build_report_bundle(
             _payload(
-                response_content="(#insertChart:../escape)",
+                response_content="(#insertChart:chart-a)",
                 chart_messages=[_chart("chart-a")],
             ),
             report_base,
         )
 
     assert not (tmp_path / "report-v1_charts").exists()
+
+
+@pytest.mark.parametrize("placeholder_id", ["../escape", "图表一", "chart a"])
+def test_build_report_bundle_keeps_invalid_chart_placeholder_as_is(
+    tmp_path, placeholder_id
+):
+    bundle = build_report_bundle(
+        _payload(
+            response_content=(
+                f"(#insertChart:{placeholder_id})\n(#insertChart:chart-a)"
+            ),
+            chart_messages=[_chart("chart-a")],
+        ),
+        tmp_path / "report-v1",
+    )
+
+    assert f"(#insertChart:{placeholder_id})" in bundle.markdown_text
+    assert "![Chart chart-a](report-v1_charts/chart-a.png)" in bundle.markdown_text
+    assert (tmp_path / "report-v1_charts" / "chart-a.png").exists()
 
 
 @pytest.mark.skipif(

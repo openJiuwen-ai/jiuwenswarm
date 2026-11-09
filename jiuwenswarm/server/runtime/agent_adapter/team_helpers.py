@@ -2274,11 +2274,64 @@ async def _start_team_stream_round(
     return request_queue
 
 
+def _bind_round_image_files_to_agent(
+    team_agent: Any, image_files: list[dict[str, Any]]
+) -> bool:
+    """把本轮上传清单写进 live leader harness 的 build context。
+
+    team 运行期跨轮复用：成员 agent 的 spec / build context 在首次创建时就固定，
+    后续轮次的 ``get_swarm_enriched_team_spec`` 返回值不会被 pool 里的 runtime 使用。
+    因此非首轮上传必须写进 **live** harness 的 ``request_metadata``——openjiuwen 每轮
+    从同一 build context 重建 NativeHarness，provider 在 rail 构造时读到的就是新清单。
+    """
+    try:
+        harness = getattr(team_agent, "harness", None)
+        build_context = getattr(harness, "build_context", None)
+        request_metadata = getattr(build_context, "request_metadata", None)
+        if not isinstance(request_metadata, dict):
+            return False
+        from jiuwenswarm.agents.harness.common.multimodal import (
+            store_team_request_image_files,
+        )
+
+        store_team_request_image_files(request_metadata, image_files)
+        return True
+    except Exception:
+        logger.debug(
+            "[TeamHelpers] bind round image files failed: %r", team_agent, exc_info=True
+        )
+        return False
+
+
+def _normalize_round_image_files(image_files: Any) -> list[dict[str, Any]]:
+    """Normalize the adapter-provided upload manifest for the build-context channel."""
+    if not isinstance(image_files, list):
+        return []
+    return [dict(item) for item in image_files if isinstance(item, dict)]
+
+
+async def _bind_round_image_files(
+    team_name: str, image_files: list[dict[str, Any]]
+) -> None:
+    """Refresh the live team runtime's upload manifest for the coming round."""
+    if not team_name:
+        return
+    try:
+        team_agent = await _current_pool_team_agent(team_name)
+    except Exception:
+        team_agent = None
+    if team_agent is not None:
+        _bind_round_image_files_to_agent(team_agent, image_files)
+    # 非 pool 场景（create/cold recover）由 fresh spec 的 build_context 承载，
+    # request_metadata 已在 enrich 前写好；这里无需再处理。
+
+
 async def process_team_message_stream(
     request: Any,
     inputs: dict[str, Any],
     deep_agent: DeepAgent,
     *,
+    image_files: list[dict[str, Any]] | None = None,
     config_base: dict[str, Any] | None = None,
     sessions_root: str | Path | None = None,
     rebuild_skill: Any | None = None,
@@ -2393,6 +2446,15 @@ async def process_team_message_stream(
             request_metadata.setdefault(
                 "enable_routing", request.params.get("enable_routing") is True
             )
+        # 原生图片输入：team 成员拿不到 adapter 的 agent 属性镜像，上传清单要随
+        # build context 到成员侧；这里**覆盖写**（同键可能来自请求 metadata，不能
+        # 被外部值当成可信清单），空列表即清除上一轮残留。
+        round_image_files = _normalize_round_image_files(image_files)
+        from jiuwenswarm.agents.harness.common.multimodal import (
+            store_team_request_image_files,
+        )
+
+        store_team_request_image_files(request_metadata, round_image_files)
         resolved_mode = str(request_metadata.get("mode") or "").strip()
         # Relay-provided model_ref is authoritative for a uniform selection or
         # a member-level auto assignment. A name-only request remains a
@@ -2555,6 +2617,20 @@ async def process_team_message_stream(
                 is_complete=True,
             )
             return
+
+    # 原生图片输入清单绑定：只给"确实会开新一轮"的请求刷新 live build context。
+    # - slash 命令（上方各早退 return）与权限 / ask_user 控制续写都不新开 round：
+    #   控制续写（reuse_active_waiter）只把作答投递给既有 waiter，其 image_files 由
+    #   adapter 传空，若在此覆盖写会把 live 清单清空——该图片轮后续新建的成员
+    #   harness / 上下文溢出重建会读到空清单，`[image #n]` 被判定不在清单内丢弃，
+    #   原生图片输入失效（CR-9634-6）。
+    # - 首轮 / 冷恢复与普通 follow-up 新轮必须绑定，且必须在投递 query
+    #   （team_manager.interact / _start_team_stream_round）之前：openjiuwen 每轮用
+    #   同一 build context 重建 NativeHarness，投递后再写就赶不上本轮成员的 rail 构造。
+    # - 失败早退路径（cancel 拆除在途 / gate_closed / interact 失败）仍会先写入清单，
+    #   与修复前一致；这些请求不新开 round，清单不会被该轮读取，下一轮投递前必再覆盖。
+    if not reuse_active_waiter:
+        await _bind_round_image_files(team_name, round_image_files)
 
     try:
         first_request_source = "first"

@@ -73,12 +73,11 @@ class Scheduler:
         """Build model cache from jiuwenswarm config.yaml (reuse interface_deep logic)."""
         try:
             from jiuwenswarm.common.config import get_config, get_default_models
-            from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+            from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+                _build_model_from_entry as build_model_from_entry,
+            )
 
             config = get_config()
-
-            # Use the same model building method as interface_deep
-            build_model_from_entry = getattr(JiuWenSwarmDeepAdapter, '_build_model_from_entry')
 
             # Build from models.defaults list
             for entry in get_default_models(config):
@@ -87,7 +86,14 @@ class Scheduler:
                 if not model_name:
                     continue
                 mco = entry.get("model_config_obj") or {}
-                self._model_cache[model_name] = build_model_from_entry(mcc, mco)
+                # 与 agent_ws_server / interface_deep 保持一致：模型条目的能力声明
+                # （modalities）必须透传，否则同样配置经 scheduler
+                # 路径构建的缓存会静默丢失看图能力（S_22 铁律 46）。
+                self._model_cache[model_name] = build_model_from_entry(
+                    mcc,
+                    mco,
+                    modalities=entry.get("modalities"),
+                )
 
             # Fallback to legacy format if needed (same as interface_deep._build_model_cache_legacy)
             if not self._model_cache:
@@ -106,7 +112,13 @@ class Scheduler:
                     or react_config.get("model_config_obj")
                     or {}
                 )
-                self._model_cache[model_name] = build_model_from_entry(mcc, mco)
+                self._model_cache[model_name] = build_model_from_entry(
+                    mcc,
+                    mco,
+                    modalities=default_model_config.get("modalities")
+                    if default_model_config.get("modalities") is not None
+                    else react_config.get("modalities"),
+                )
 
             # Set default model (first one)
             if self._model_cache:

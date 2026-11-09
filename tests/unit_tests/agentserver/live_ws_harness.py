@@ -207,7 +207,11 @@ class LiveWsHarness:
     def _serve_ws(self) -> None:
         if self.ws_sock is None:
             return
-        conn, _addr = self.ws_sock.accept()
+        try:
+            conn, _addr = self.ws_sock.accept()
+        except OSError:
+            # Socket closed during teardown (Windows raises WinError 10038).
+            return
         with conn:
             request = b""
             while b"\r\n\r\n" not in request:

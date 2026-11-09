@@ -1637,15 +1637,29 @@ class TeamManager:
         from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
 
         self.apply_team_plan_mode(spec, request_metadata=bootstrap.request_metadata)
-        enrich_team_spec_for_swarm(
-            spec,
-            session_id=session_id,
-            mode=resolved_mode,
-            project_dir=(bootstrap.request_metadata or {}).get("project_dir"),
-            request_id=bootstrap.request_id,
-            channel_id=bootstrap.channel_id,
-            request_metadata=bootstrap.request_metadata,
+        from jiuwenswarm.server.runtime.tenant_context import (
+            bind_jiuwenclaw_workspace,
+            reset_tenant_workspace_dirs,
         )
+
+        workspace_tokens = (
+            bind_jiuwenclaw_workspace(bootstrap.agent_workspace)
+            if bootstrap.agent_workspace
+            else None
+        )
+        try:
+            enrich_team_spec_for_swarm(
+                spec,
+                session_id=session_id,
+                mode=resolved_mode,
+                project_dir=(bootstrap.request_metadata or {}).get("project_dir"),
+                request_id=bootstrap.request_id,
+                channel_id=bootstrap.channel_id,
+                request_metadata=bootstrap.request_metadata,
+            )
+        finally:
+            if workspace_tokens is not None:
+                reset_tenant_workspace_dirs(workspace_tokens)
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 

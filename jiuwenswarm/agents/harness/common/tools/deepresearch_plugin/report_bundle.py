@@ -23,15 +23,19 @@ CHART_PLACEHOLDER_RE = re.compile(r"\(#insertChart:([^)]+)\)")
 SAFE_BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 RESPONSE_CONTENT_MAX_BYTES = 10 * 1024 * 1024
-INFER_MESSAGE_MAX = 20
-# Multi-section SDK reports can contain dozens of charts. Bound their count
-# separately from the per-image and aggregate decoded-byte limits below.
+# Multi-section SDK reports can contain dozens of inference graphs and charts.
+# Bound their counts separately from the per-field base64 and aggregate
+# decoded-byte limits below; the byte limits are the real blast-containment.
+INFER_MESSAGE_MAX = 512
 CHART_MESSAGE_MAX = 512
 BASE64_FIELD_MAX_BYTES = 5 * 1024 * 1024
 DECODED_BINARY_TOTAL_MAX_BYTES = 100 * 1024 * 1024
 CITATION_COUNT_MAX = 10_000
 CITATION_FIELD_MAX_BYTES = 1024 * 1024
 FINAL_RESULT_MAX_BYTES = 64 * 1024 * 1024
+# Aggregate inference graphs JSON is written outside the snapshot byte budget,
+# so bound it independently as well.
+INFERENCE_GRAPH_MAX_BYTES = 64 * 1024 * 1024
 MAX_NESTING_DEPTH = 64
 MAX_CONTAINER_ITEMS = 100_000
 MAX_TOTAL_NODES = 1_000_000
@@ -579,7 +583,15 @@ def _rewrite_chart_placeholders(
     chart_index = {str(item["chart_id"]).strip(): item for item in chart_messages}
 
     def _replace(match: re.Match[str]) -> str:
-        chart_id = _validate_bundle_id(match.group(1), "chart placeholder")
+        # 修复1：占位符 ID 由宽松正则（[^)]+）捕获，可能含中文、斜杠、
+        # 空格等非法字符；不再对它施加 SAFE_BUNDLE_ID_RE 严格校验抛错，
+        # 否则报告文本里一个非法占位符就会让整条报告写入链失败。
+        # chart_ids 内的 ID 均已在 _validate_resources 过严格校验，非法
+        # 占位符 ID 必不在 chart_ids 中，原样保留不会漏替换任何合法图表
+        # （与 _rewrite_inference_links 的容错模式同构）。
+        chart_id = str(match.group(1)).strip()
+        if not chart_id or not SAFE_BUNDLE_ID_RE.fullmatch(chart_id):
+            return match.group(0)
         if chart_id not in chart_ids:
             return match.group(0)
         chart_info = chart_index[chart_id]
@@ -716,6 +728,8 @@ def build_report_bundle(
                 "graphs": graphs,
             }
             graph_bytes = json.dumps(graph_data, ensure_ascii=False).encode("utf-8")
+            if len(graph_bytes) > INFERENCE_GRAPH_MAX_BYTES:
+                raise ValueError("inference_graphs exceeds the UTF-8 byte limit")
             graph_path = groups[0].directory / "inference_graphs.json"
             graph_path.write_bytes(graph_bytes)
             inference_graph_path = f"{groups[0].directory.name}/inference_graphs.json"

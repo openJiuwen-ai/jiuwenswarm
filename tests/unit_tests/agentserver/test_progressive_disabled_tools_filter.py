@@ -141,3 +141,31 @@ def test_build_progressive_rail_passes_disabled_tools():
     )
     assert rail is not None
     assert rail._disabled_tools == {"memory_search", "web_search"}
+
+
+# ─── 从 test_progressive_vision_tool_guard.py 移入：与视觉能力无关，属渐进披露域 ──
+
+
+@pytest.mark.asyncio
+async def test_meta_tools_removed_from_schema_when_lazy_load_bypassed():
+    """lazy-load 旁路时 meta 工具已卸载，但 inputs.tools 仍带着它们，必须摘除。
+
+    回归：不摘会让模型调用得到 "Ability not found: invoke_tool"。
+    """
+    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool", "bash"])
+    rail._lazy_load_active_for_ctx = lambda ctx: False
+    tools = [_card("bash"), _card("tools_search"), _card("invoke_tool")]
+    spb = SimpleNamespace(
+        sections=[], add_section=lambda section: spb.sections.append(section)
+    )
+    agent = SimpleNamespace(
+        ability_manager=SimpleNamespace(list=lambda: list(tools)),
+        system_prompt_builder=spb,
+        deep_config=SimpleNamespace(enable_read_image_multimodal=False),
+    )
+    rail._deep_agent = agent
+    ctx = SimpleNamespace(agent=agent, inputs=SimpleNamespace(tools=list(tools)))
+
+    await rail.before_model_call(ctx)
+
+    assert [tool.name for tool in ctx.inputs.tools] == ["bash"]
