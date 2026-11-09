@@ -7227,7 +7227,11 @@ async def test_main_agent_plan_keeps_progress_without_overwriting_todos(tmp_path
                 {
                     "__deepsearch_status__": "completed",
                     "conversation_id": "C1",
-                    "final_result": {"response_content": "final", "response_content_type": content_type},
+                    "final_result": {
+                        "response_content": "final",
+                        "response_content_type": content_type,
+                        "response_markdown": "# SDK report\n\nMarkdown body.",
+                    },
                 }
             ),
         ]
@@ -7256,6 +7260,7 @@ async def test_main_agent_plan_keeps_progress_without_overwriting_todos(tmp_path
             )
         )
         stack.enter_context(patch.object(dt, "_write_report_html", new=AsyncMock(return_value=str(tmp_path / "r.html"))))
+        stack.enter_context(patch.object(dt, "_get_effective_request_output_dir", return_value=tmp_path))
         scope_token = dt._deepresearch_process_scope_ctx.set(("todo:research", "call-1"))
         token = dt._deepresearch_main_agent_plan_ctx.set(True)
         try:
@@ -7273,7 +7278,14 @@ async def test_main_agent_plan_keeps_progress_without_overwriting_todos(tmp_path
     assert all(item["task_id"] == "todo:research" for item in process)
     assert all(item["stream_source_id"].startswith("deepresearch:call-1:") for item in process)
     assert not any(item.get("event_type") == "chat.file" for item in payloads)
-    assert outcome["report_files"] == [{"path": str(tmp_path / f"r.{extension}"), "name": f"r.{extension}", "mime_type": content_type}]
+    primary, *companions = outcome["report_files"]
+    assert primary == {"path": str(tmp_path / f"r.{extension}"), "name": f"r.{extension}", "mime_type": content_type}
+    if content_type == "text/html":
+        companion, = companions
+        assert companion["mime_type"] == "text/markdown"
+        assert Path(companion["path"]).read_text(encoding="utf-8").strip() == "# SDK report\n\nMarkdown body."
+    else:
+        assert companions == []
     assert outcome["report_prepared"] is True
     assert outcome["report_delivered"] is False
     persist.assert_not_called()
@@ -7305,12 +7317,13 @@ def test_main_agent_process_frames_share_explicit_owner_and_lifecycle_identity(n
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["salvage", "race"])
-async def test_main_agent_recovery_prepares_files_without_frontend_delivery(path):
+async def test_main_agent_recovery_prepares_files_without_frontend_delivery(path, tmp_path):
     send = AsyncMock(return_value=True)
     push = AsyncMock()
     token = dt._deepresearch_main_agent_plan_ctx.set(True)
     try:
-        with patch.object(dt, "WebSocketGatewayPushTransport", return_value=push), \
+        with patch.object(dt, "_get_effective_request_output_dir", return_value=tmp_path), \
+             patch.object(dt, "WebSocketGatewayPushTransport", return_value=push), \
              patch.object(dt, "_locate_salvage_report", return_value={"response_content": "body", "citation_artifacts": {}}), \
              patch.object(dt, "_write_report_artifacts_stream", new=AsyncMock(return_value=({"md": "/out/report.md"}, None, None, None))), \
              patch.object(dt, "_write_report_html", new=AsyncMock(return_value="/out/report.html")):
@@ -7318,13 +7331,18 @@ async def test_main_agent_recovery_prepares_files_without_frontend_delivery(path
                 outcome = await dt._deliver_salvaged_report(route=_race_route(), conversation_id="C1", file_name="report", send=send, reason="test")
             else:
                 outcome = await dt._deliver_race_completed_report(
-                    chunk={"__deepsearch_status__": "completed", "conversation_id": "C1", "final_result": {"response_content": "<html>report</html>", "response_content_type": "text/html"}},
+                    chunk={"__deepsearch_status__": "completed", "conversation_id": "C1", "final_result": {"response_content": "<html>report</html>", "response_content_type": "text/html", "response_markdown": "# SDK report"}},
                     route=_race_route(), conversation_id="C1", file_name="report", secrets=())
     finally:
         dt._deepresearch_main_agent_plan_ctx.reset(token)
     assert outcome["report_prepared"] is True
     assert outcome["report_delivered"] is False
-    assert outcome["report_files"]
+    files = outcome["report_files"]
+    assert [file["mime_type"] for file in files] == (
+        ["text/html", "text/markdown"] if path == "race" else ["text/markdown"]
+    )
+    if path == "race":
+        assert Path(files[1]["path"]).read_text(encoding="utf-8").strip() == "# SDK report"
     assert not any(c.args[0].get("event_type") == "chat.file" for c in send.await_args_list)
     assert not any(c.args[0]["payload"].get("event_type") == "chat.file" for c in push.send_push.await_args_list)
 

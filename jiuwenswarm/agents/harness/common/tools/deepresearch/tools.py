@@ -3689,9 +3689,9 @@ async def _deliver_race_completed_report(
     html_style_reason_code = None
     try:
         if response_content_type == "text/html":
-            artifacts = {
-                "html": await _write_report_html(response_content, file_name)
-            }
+            artifacts = await _write_native_html_artifacts(
+                final_result, file_name, resolved_cid
+            )
         else:
             artifact_result = await _write_report_artifacts_stream(
                 final_result,
@@ -4219,11 +4219,15 @@ async def _consume_stream(
             html_style_reason_code = None
             try:
                 if response_content_type == "text/html":
-                    primary_path = await _await_with_periodic_progress(
-                        _write_report_html(response_content, file_name),
+                    artifacts = await _await_with_periodic_progress(
+                        _write_native_html_artifacts(
+                            final_result,
+                            file_name,
+                            str(chunk.get("conversation_id") or outcome_cid),
+                        ),
                         send_processing_progress,
                     )
-                    artifacts = {"html": primary_path}
+                    primary_path = artifacts["html"]
                 else:
                     artifact_result = await _await_with_periodic_progress(
                         _write_report_artifacts_stream(
@@ -4431,6 +4435,30 @@ async def _consume_stream(
                 state.section_titles.update(titles)
                 state.authoritative_section_indices.update(titles)
     return outcome
+
+
+async def _write_native_html_artifacts(
+    final_result: dict[str, Any], file_name: str, conversation_id: str
+) -> dict[str, str]:
+    """保留 SDK 原生 HTML，并为主 Agent 保存可供后续加工的 Markdown。"""
+    artifacts = {
+        "html": await _write_report_html(final_result["response_content"], file_name)
+    }
+    markdown = final_result.get("response_markdown")
+    if (
+        _deepresearch_main_agent_plan_ctx.get()
+        and isinstance(markdown, str)
+        and markdown.strip()
+    ):
+        markdown_result = {
+            **final_result,
+            "response_content": markdown,
+            "response_content_type": "text/markdown",
+        }
+        artifacts["md"] = await asyncio.to_thread(
+            _write_report_markdown, markdown_result, file_name, conversation_id
+        )
+    return artifacts
 
 
 async def _write_report_html(response_content: str, file_name: str) -> str:
