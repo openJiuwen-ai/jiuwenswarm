@@ -23,31 +23,40 @@ _MAX_BODY_BYTES = 16 * 1024
 _PAGE_STYLE = """
 :root {
   color-scheme: light dark;
-  --background: #f7f8fa;
   --card: #fff;
   --text: #1f2329;
   --muted: #646a73;
   --line: #dfe1e6;
   --primary: #3370ff;
   --danger: #d83931;
+  --disabled-background: #e8eaed;
+  --disabled-text: #8f959e;
+  --record-hover: #f1f5ff;
+  --record-open: #e8efff;
+  --package-background: #f7f8fa;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #17191c;
     --card: #24272b;
     --text: #f3f4f5;
     --muted: #a6abb4;
     --line: #3b4047;
     --primary: #5b8cff;
     --danger: #f26d65;
+    --disabled-background: #3b4047;
+    --disabled-text: #a6abb4;
+    --record-hover: #202b40;
+    --record-open: #253354;
+    --package-background: #1b1f25;
   }
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
   color: var(--text);
-  background: var(--background);
-  font: 14px/1.57 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: transparent;
+  font: 400 14px/1.55 "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  letter-spacing: -0.02em;
 }
 main {
   width: min(920px, calc(100vw - 32px));
@@ -56,8 +65,17 @@ main {
 }
 h1 { margin: 0 0 8px; font-size: 24px; line-height: 32px; }
 p { margin: 0; color: var(--muted); }
-.description { display: grid; gap: 4px; margin-bottom: 24px; }
-#status { min-height: 22px; margin-bottom: 16px; color: var(--muted); }
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+.page-copy { min-width: 0; }
+.description { margin: 0; }
+#status { margin-bottom: 16px; color: var(--muted); }
+#status:empty { display: none; }
 ul {
   display: grid;
   gap: 12px;
@@ -66,30 +84,112 @@ ul {
   list-style: none;
 }
 li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--card);
+  overflow: hidden;
 }
+.record-header { display: flex; align-items: stretch; }
+.record-selector {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  margin: 0 0 0 16px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+.record-selector:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.record-toggle {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: auto;
+  min-width: 0;
+  min-height: 68px;
+  padding: 16px 16px 16px 12px;
+  color: var(--text);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+.record-toggle:hover { background: var(--record-hover); }
+.record-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.record-toggle[aria-expanded="true"] { background: var(--record-open); }
 .copy { min-width: 0; }
 .title { color: var(--text); font-weight: 600; }
 .time { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.chevron {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  margin-left: 16px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--package-background);
+  transition: transform .16s ease;
+}
+.chevron::before {
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  content: '';
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+.record-toggle:hover .chevron { color: var(--primary); border-color: var(--primary); }
+.record-toggle[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+.record-detail {
+  display: none;
+  padding: 16px;
+  border-top: 1px solid var(--line);
+}
+.record-detail.is-open {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 20px;
+}
+.record-detail-copy { min-width: 0; }
+.record-detail-title { margin: 0 0 10px; color: var(--text); font-size: 13px; font-weight: 600; }
+.package-state-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.package-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--package-background);
+  font-size: 12px;
+}
+.package-name { overflow-wrap: anywhere; }
+.package-status { flex: 0 0 auto; color: var(--primary); font-weight: 600; }
+.package-status.is-disabled { color: var(--muted); }
+.empty-state { color: var(--muted); font-size: 13px; }
 button {
   flex: 0 0 auto;
   min-width: 68px;
   height: 32px;
   padding: 0 14px;
   color: #fff;
+  font: inherit;
   border: 0;
   border-radius: 6px;
   background: var(--primary);
   cursor: pointer;
 }
-button:disabled { opacity: .56; cursor: not-allowed; }
+button:disabled {
+  color: var(--disabled-text);
+  background: var(--disabled-background);
+  cursor: not-allowed;
+}
 dialog {
   width: min(420px, calc(100vw - 32px));
   color: var(--text);
@@ -104,6 +204,13 @@ dialog p { margin-bottom: 20px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .dialog-actions .secondary { color: var(--text); border: 1px solid var(--line); background: transparent; }
 .dialog-actions .danger { background: var(--danger); }
+@media (max-width: 560px) {
+  main { width: min(100% - 24px, 920px); padding-top: 28px; }
+  .page-header { align-items: stretch; flex-direction: column; gap: 14px; }
+  .page-header > button { align-self: flex-start; }
+  .record-detail.is-open { grid-template-columns: 1fr; gap: 14px; }
+  .record-detail > button { width: 100%; }
+}
 """
 _PAGE_SCRIPT = """
 <script>
@@ -117,12 +224,42 @@ const confirmTitle = document.querySelector('#confirm-title');
 const confirmDescription = document.querySelector('#confirm-description');
 const confirmCancel = document.querySelector('#confirm-cancel');
 const confirmRestoreButton = document.querySelector('#confirm-restore');
+const restoreButton = document.querySelector('#restore');
+const page = document.querySelector('main');
 let pendingRestore = null;
+let expandedRow = null;
+let previewRequestId = 0;
+let selectedRecordId = null;
+let heightAnimationFrame = null;
 
-function recordTitle(record) {
+function reportContentHeight() {
+  heightAnimationFrame = null;
+  const height = Math.ceil(page.getBoundingClientRect().height);
+  if (height > 0) {
+    window.parent.postMessage({ type: 'jiuwenswarm.system-plugin-recovery.height', height }, '*');
+  }
+}
+
+function scheduleContentHeight() {
+  if (heightAnimationFrame === null) {
+    heightAnimationFrame = window.requestAnimationFrame(reportContentHeight);
+  }
+}
+
+if ('ResizeObserver' in window) {
+  new ResizeObserver(scheduleContentHeight).observe(page);
+}
+window.addEventListener('load', scheduleContentHeight);
+
+function recordAction(record) {
   const names = record.package_ids?.join(', ');
   const action = texts.actions[record.action] || record.action;
-  return names ? `${action}: ${names}` : action;
+  return names ? `${action}${texts.labelSeparator}${names}` : action;
+}
+
+function recordTitle(record) {
+  const time = new Date(record.timestamp).toLocaleString(texts.locale);
+  return `${texts.archivePoint}${texts.labelSeparator}${time}`;
 }
 
 async function load() {
@@ -130,25 +267,133 @@ async function load() {
   const response = await fetch(`${endpoint}/api/history?token=${query}`);
   if (!response.ok) throw new Error('load failed');
   const data = await response.json();
+  expandedRow = null;
+  selectedRecordId = null;
+  restoreButton.disabled = true;
   records.replaceChildren(...data.records.map((record) => row(record)));
 }
 
 function row(record) {
   const item = document.createElement('li');
+  const header = document.createElement('div');
+  const selector = document.createElement('input');
+  const toggle = document.createElement('button');
   const copy = document.createElement('div');
   const name = document.createElement('div');
   const time = document.createElement('div');
-  const button = document.createElement('button');
+  const chevron = document.createElement('span');
+  const detail = document.createElement('div');
+  const detailCopy = document.createElement('div');
+  const detailTitle = document.createElement('p');
+  const packages = document.createElement('div');
+  const detailId = `record-detail-${record.id}`;
+  selector.type = 'radio';
+  selector.name = 'recovery-record';
+  selector.value = record.id;
+  selector.className = 'record-selector';
+  selector.setAttribute('aria-label', `${texts.selectRestorePoint}${texts.labelSeparator}${recordTitle(record)}`);
+  selector.onchange = () => selectRecord(record.id);
+  header.className = 'record-header';
+  toggle.type = 'button';
+  toggle.className = 'record-toggle';
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.setAttribute('aria-controls', detailId);
   copy.className = 'copy';
   name.className = 'title';
   time.className = 'time';
+  chevron.className = 'chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  detail.className = 'record-detail';
+  detail.id = detailId;
+  detailCopy.className = 'record-detail-copy';
+  detailTitle.className = 'record-detail-title';
+  detailTitle.textContent = texts.snapshotTitle;
+  packages.className = 'package-state-list';
   name.textContent = recordTitle(record);
-  time.textContent = new Date(record.timestamp).toLocaleString(texts.locale);
-  button.textContent = texts.restore;
-  button.onclick = () => confirmRestore(record.id, button);
+  time.textContent = recordAction(record);
   copy.append(name, time);
-  item.append(copy, button);
+  toggle.append(copy, chevron);
+  detailCopy.append(detailTitle, packages);
+  detail.append(detailCopy);
+  toggle.onclick = () => toggleDetail(item, toggle, detail, record, packages);
+  header.append(selector, toggle);
+  item.append(header, detail);
   return item;
+}
+
+function selectRecord(recordId) {
+  selectedRecordId = recordId;
+  restoreButton.disabled = false;
+}
+
+function closeDetail(entry) {
+  entry.toggle.setAttribute('aria-expanded', 'false');
+  entry.detail.classList.remove('is-open');
+}
+
+function toggleDetail(item, toggle, detail, record, packages) {
+  if (expandedRow && expandedRow.item !== item) {
+    closeDetail(expandedRow);
+  }
+  const expanding = !expandedRow || expandedRow.item !== item;
+  toggle.setAttribute('aria-expanded', String(expanding));
+  detail.classList.toggle('is-open', expanding);
+  expandedRow = expanding ? { item, toggle, detail } : null;
+  if (expanding) void loadPreview(record.id, packages, detail);
+}
+
+async function loadPreview(recordId, container, detail) {
+  const requestId = String(++previewRequestId);
+  detail.dataset.previewRequestId = requestId;
+  renderPackageMessage(container, texts.loadingPreview);
+  try {
+    const query = encodeURIComponent(token);
+    const recordQuery = encodeURIComponent(recordId);
+    const response = await fetch(`${endpoint}/api/preview?token=${query}&record_id=${recordQuery}`);
+    if (!response.ok) throw new Error('preview failed');
+    const data = await response.json();
+    if (!detail.classList.contains('is-open') || detail.dataset.previewRequestId !== requestId) return;
+    renderPackageStates(container, data.packages);
+  } catch {
+    if (!detail.classList.contains('is-open') || detail.dataset.previewRequestId !== requestId) return;
+    renderPackageMessage(container, texts.previewFailed);
+  }
+}
+
+function renderPackageStates(container, value) {
+  container.replaceChildren();
+  const packages = Array.isArray(value) ? value : [];
+  for (const packageState of packages) {
+    if (!packageState || typeof packageState !== 'object') continue;
+    const packageId = typeof packageState.package_id === 'string' ? packageState.package_id : '';
+    const version = typeof packageState.version === 'string' ? packageState.version : '';
+    const enabled = packageState.enabled === true;
+    if (!packageId || !version) continue;
+    const state = document.createElement('span');
+    const name = document.createElement('span');
+    const stateLabel = document.createElement('span');
+    state.className = 'package-state';
+    name.className = 'package-name';
+    stateLabel.className = `package-status${enabled ? '' : ' is-disabled'}`;
+    name.textContent = `${packageId} ${version}`;
+    stateLabel.textContent = enabled ? texts.enabled : texts.disabled;
+    state.append(name, stateLabel);
+    container.append(state);
+  }
+  if (!container.childElementCount) {
+    const empty = document.createElement('span');
+    empty.className = 'empty-state';
+    empty.textContent = texts.noPackages;
+    container.append(empty);
+  }
+}
+
+function renderPackageMessage(container, message) {
+  container.replaceChildren();
+  const value = document.createElement('span');
+  value.className = 'empty-state';
+  value.textContent = message;
+  container.append(value);
 }
 
 function confirmRestore(id, button) {
@@ -159,6 +404,12 @@ function confirmRestore(id, button) {
   confirmRestoreButton.textContent = texts.restoreAndRestart;
   confirmDialog.showModal();
 }
+
+restoreButton.textContent = texts.restore;
+restoreButton.disabled = true;
+restoreButton.onclick = () => {
+  if (selectedRecordId) confirmRestore(selectedRecordId, restoreButton);
+};
 
 confirmCancel.onclick = () => confirmDialog.close();
 confirmDialog.addEventListener('cancel', () => { pendingRestore = null; });
@@ -218,6 +469,21 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
             return
         if path == f"{_PATH}/api/history":
             self._json({"records": self.server.recovery.records()})
+            return
+        if path == f"{_PATH}/api/preview":
+            record_ids = query.get("record_id")
+            if record_ids is None or len(record_ids) != 1 or not record_ids[0]:
+                self._json({"error": "record_id is required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                packages = self.server.recovery.preview(record_ids[0])
+            except RecoveryRecordNotFound:
+                self._json({"error": "record not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            except (OSError, ValueError):
+                self._json({"error": "recovery preview is unavailable"}, status=HTTPStatus.CONFLICT)
+                return
+            self._json({"packages": packages})
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -330,11 +596,13 @@ def _page(token: str, locale: str) -> str:
 {_PAGE_STYLE}
 </style>
 <main>
-  <h1>{html.escape(texts['title'])}</h1>
-  <div class="description">
-    <p>{html.escape(texts['description'])}</p>
-    <p>{html.escape(texts['restartNote'])}</p>
-  </div>
+  <header class="page-header">
+    <div class="page-copy">
+      <h1>{html.escape(texts['title'])}</h1>
+      <p class="description">{html.escape(texts['description'])}</p>
+    </div>
+    <button id="restore" type="button"></button>
+  </header>
   <div id="status"></div>
   <ul id="records"></ul>
 </main>
@@ -354,16 +622,18 @@ def _texts(locale: str) -> dict[str, object]:
         return {
             "locale": "en",
             "title": "System plugin recovery",
-            "description": (
-                "View the latest 50 system plugin state records. Every application startup and each "
-                "successful install, uninstall, enable, disable, and restore operation is recorded."
-            ),
-            "restartNote": (
-                "Restore keeps the system plugins currently installed, restores the system plugin enabled "
-                "states at the selected time, and automatically restarts the background services."
-            ),
+            "description": "Select a system plugin recovery point from the archive list below.",
             "restore": "Restore",
             "cancel": "Cancel",
+            "archivePoint": "Restore point",
+            "labelSeparator": ": ",
+            "selectRestorePoint": "Select recovery point",
+            "snapshotTitle": "System plugin states after restore",
+            "enabled": "Enabled",
+            "disabled": "Disabled",
+            "noPackages": "No system plugins would remain installed after restore.",
+            "loadingPreview": "Loading plugin states after restore…",
+            "previewFailed": "Could not load the plugin states after restore.",
             "restoreConfirmTitle": "Restore system plugins?",
             "restoreConfirmDescription": (
                 "Restoring will recover the system plugin enabled states at this point and restart the "
@@ -375,7 +645,7 @@ def _texts(locale: str) -> dict[str, object]:
             "restoreFailed": "Restore failed.",
             "loadFailed": "Could not load recovery records.",
             "actions": {
-                "startup": "Application started",
+                "startup": "Started",
                 "install": "Installed",
                 "uninstall": "Uninstalled",
                 "enable": "Enabled",
@@ -386,10 +656,18 @@ def _texts(locale: str) -> dict[str, object]:
     return {
         "locale": "zh-CN",
         "title": "系统插件还原",
-        "description": "查看最近 50 条系统插件状态记录。每次应用启动及成功的安装、卸载、启用、禁用和还原操作都会记录。",
-        "restartNote": "还原会保留当前已安装的系统插件，恢复所选时刻的系统插件启用状态，并自动重启后台服务。",
+        "description": "从下述存档列表中选取系统插件还原点",
         "restore": "还原",
         "cancel": "取消",
+        "archivePoint": "存档点",
+        "labelSeparator": "：",
+        "selectRestorePoint": "选择还原点",
+        "snapshotTitle": "还原后系统插件状态",
+        "enabled": "已启用",
+        "disabled": "已禁用",
+        "noPackages": "还原后没有已安装的系统插件。",
+        "loadingPreview": "正在读取还原后的插件状态…",
+        "previewFailed": "无法读取还原后的插件状态。",
         "restoreConfirmTitle": "确认还原系统插件？",
         "restoreConfirmDescription": "还原将恢复此刻对应的系统插件启用状态，并重启后台，正在处理的任务将中断。",
         "restoreAndRestart": "还原并重启",
@@ -398,7 +676,7 @@ def _texts(locale: str) -> dict[str, object]:
         "restoreFailed": "还原失败。",
         "loadFailed": "无法读取还原记录。",
         "actions": {
-            "startup": "程序启动",
+            "startup": "启动",
             "install": "安装",
             "uninstall": "卸载",
             "enable": "启用",

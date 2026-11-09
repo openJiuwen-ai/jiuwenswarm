@@ -1,14 +1,14 @@
 .system-plugin-recovery {
   min-height: 0;
+  background: transparent;
 }
 
 .system-plugin-recovery__frame {
   display: block;
   width: 100%;
-  min-height: 620px;
-  height: calc(100vh - 184px);
+  min-height: 0;
   border: 0;
-  background: var(--color-surface-base);
+  background: transparent;
 }
 
 .system-plugin-recovery__notice,
