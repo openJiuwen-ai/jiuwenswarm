@@ -37,12 +37,12 @@ def _config_file_candidates() -> list[Path]:
     else:
         data_dir = str(os.getenv("JIUWENSWARM_DATA_DIR") or "").strip()
         if data_dir:
-            candidates.append(Path(data_dir).expanduser() / "config" / "config.yaml")
+            candidates.append(Path(data_dir).expanduser() / "infra" / "config" / "config.yaml")
         else:
             user_home = Path(
                 str(os.getenv("JIUWENSWARM_HOME") or "").strip() or Path.home()
             ).expanduser()
-            candidates.append(user_home / ".jiuwenswarm" / "config" / "config.yaml")
+            candidates.append(user_home / ".jiuwenswarm" / "infra" / "config" / "config.yaml")
 
     package_root = Path(__file__).resolve().parents[2]
     candidates.append(package_root / "resources" / "config.yaml")

@@ -29,7 +29,7 @@ import yaml
 from jiuwenswarm.common.utils import (
     get_agent_skills_dir,
     get_agent_workspace_dir,
-    get_user_workspace_dir,
+    get_domain_data_dir,
     mask_sensitive,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
@@ -1022,10 +1022,12 @@ def _equipment_workspace(agent_workspace: Path | None = None) -> Path:
 def _kind_root(kind: str, *, agent_workspace: Path | None = None) -> Path:
     if kind == _AGENT_GROUP_KIND:
         if agent_workspace is not None:
-            # ``agent_workspace`` is ``<jiuwenswarm-home>/agent/workspace``.
+            # agent_workspace 即 <分区根>/agent/workspace，上溯两级即分区根
+            # （个人版 <root>/domain，企业版租户 domain/workspace_{tk}）；
+            # get_domain_data_dir() 恒为默认 domain，会丢租户归属，不可用。
             home = agent_workspace.parent.parent
         else:
-            home = get_user_workspace_dir()
+            home = get_domain_data_dir()
         return home / ".agent_teams" / _AGENT_GROUP_KIND
     return _equipment_workspace(agent_workspace) / "plugins" / kind
 

@@ -16,11 +16,16 @@ import sys
 from typing import Any
 from urllib.parse import parse_qs
 
+from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from openjiuwen_protocol.e2a.runtime_http_routes import (
+    RUNTIME_HTTP_API_PREFIX as API_PREFIX,
+    RUNTIME_HTTP_STREAM_OVERRIDES,
+    resolve_runtime_http_route,
+)
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
-from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 
 from jiuwenswarm.common.log_context import (
     bind_log_session,
@@ -39,7 +44,6 @@ from jiuwenswarm.server.transports.http_sink import SSESink, UnaryHTTPSink
 logger = logging.getLogger(__name__)
 
 HTTP_CONNECTION_ID = "http"
-API_PREFIX = "/api/v1"
 
 
 class _RequestBodyTooLarge(Exception):
@@ -157,11 +161,11 @@ def build_http_app(app_services: AppServices) -> FastAPI:
         await invoke_unary(ctx, http_chat.handle_http_chat)
         return JSONResponse(ctx.sink.body or {}, status_code=ctx.sink.status_code)
 
-    @app.post(f"{API_PREFIX}/chat/completions")
+    @app.post(f"{API_PREFIX}{resolve_runtime_http_route(ReqMethod.CHAT_SEND.value).path}")
     async def chat_completions(request: Request):
         return await _runtime_chat(app_services, request, ReqMethod.CHAT_SEND)
 
-    @app.post(f"{API_PREFIX}/chat/resume")
+    @app.post(f"{API_PREFIX}{resolve_runtime_http_route(ReqMethod.CHAT_RESUME.value).path}")
     async def chat_resume(request: Request):
         return await _runtime_chat(app_services, request, ReqMethod.CHAT_RESUME)
 
@@ -185,16 +189,15 @@ def _register_declared_routes(app: FastAPI, app_services: AppServices) -> None:
     for method, verb, path in declared_http_routes():
         _add_declared_route(app, app_services, method, verb, path)
     _register_enterprise_expert_routes(app, app_services)
-    history = _handler_for(ReqMethod.HISTORY_GET.value)
-    if history is not None:
-        app.add_api_route(
-            f"{API_PREFIX}/sessions/{{session_id}}/history/stream",
-            _make_method_endpoint(
-                app_services, ReqMethod.HISTORY_GET.value, history, force_stream=True
-            ),
-            methods=["GET"],
-            name="GET /sessions/{session_id}/history/stream",
-        )
+    for method, verb, path in RUNTIME_HTTP_STREAM_OVERRIDES:
+        handler = _handler_for(method)
+        if handler is not None:
+            app.add_api_route(
+                f"{API_PREFIX}{path}",
+                _make_method_endpoint(app_services, method, handler, force_stream=True),
+                methods=[verb],
+                name=f"{verb} {path}",
+            )
 
 
 def _add_declared_route(app: FastAPI, app_services: AppServices, method: str, verb: str, path: str) -> None:
@@ -368,27 +371,53 @@ def _stream_response(ctx: RequestContext, handler) -> StreamingResponse:
 
 
 async def _event_frames(request: Request):
-    """Gateway 长连接：先报 push_ready，再转发本进程 ``send_push`` 的 wire。
+    """Gateway 长连接：先报 push_ready，再转发本进程推送。
 
-    runtime 模式下 Gateway 没有 WebSocket，cron / 主动推送都靠这条 SSE。
+    runtime 模式下 Gateway 没有 WebSocket。cron / 主动推走 ``http_hub``；
+    企业版团队直播另走 ``fanout``。两条队列都挂上，谁先到谁先发。
     """
+    from jiuwenswarm.enterprise.edition import is_enterprise
     from jiuwenswarm.server.gateway_push.http_hub import get_http_push_hub
 
     hub = get_http_push_hub()
-    queue = hub.subscribe()
+    hub_queue = hub.subscribe()
+    team_queue = None
+    if is_enterprise():
+        from jiuwenswarm.enterprise.team.push_fanout import attach
+
+        team_queue = attach()
     try:
         yield _sse_frame({"event_type": "gateway.push_ready"})
         while True:
             if await request.is_disconnected():
                 break
-            try:
-                wire = await asyncio.wait_for(queue.get(), timeout=15.0)
-            except asyncio.TimeoutError:
+            waiters = [asyncio.create_task(hub_queue.get())]
+            if team_queue is not None:
+                waiters.append(asyncio.create_task(team_queue.get()))
+            done, pending = await asyncio.wait(
+                waiters, timeout=15.0, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not done:
                 yield ": keepalive\n\n"
                 continue
-            yield _sse_frame(wire)
+            for task in done:
+                try:
+                    item = task.result()
+                except Exception:
+                    logger.exception("[SessionLive] push queue read failed")
+                    continue
+                if isinstance(item, dict):
+                    yield _sse_frame(item)
     finally:
-        hub.unsubscribe(queue)
+        hub.unsubscribe(hub_queue)
+        if team_queue is not None:
+            from jiuwenswarm.enterprise.team.push_fanout import detach
+
+            detach(team_queue)
 
 
 def _sse_frame(payload: dict[str, Any]) -> str:
@@ -428,8 +457,8 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     """从 Gateway 透传的 ``X-*`` 头重建 ``user_id`` 和 ``metadata``。
 
     Gateway 的 REST 正文只有业务参数。身份在头里：``X-User-Id``、路由三维、
-    企业租户三字段，以及内部扩展头。企业版的专家包允许名单在
-    ``X-Jiuwenswarm-Package-Allowlist``。没有 ``X-User-Id`` 时 ``user_id`` 为空，
+    企业租户三字段，以及内部扩展头。企业版的专家包名单在
+    ``X-Jiuwenswarm-Expert-Packages``。没有 ``X-User-Id`` 时 ``user_id`` 为空，
     表示这次请求按匿名处理，和 WebSocket 入口缺省身份时一样。
     """
     from jiuwenswarm.common.request_identity import (
@@ -476,13 +505,13 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     from jiuwenswarm.enterprise.edition import is_enterprise
 
     if is_enterprise():
-        from openjiuwen_protocol.package_allowlist import (
-            PACKAGE_ALLOWLIST_HEADER_NAME as HEADER_NAME,
-            PACKAGE_ALLOWLIST_METADATA_KEY as GRANT_METADATA_KEY,
-            decode_package_allowlist_header,
+        from jiuwenswarm.common.schema.expert_packages import (
+            HEADER_NAME,
+            METADATA_KEY as GRANT_METADATA_KEY,
+            decode_expert_packages_header,
         )
 
-        metadata[GRANT_METADATA_KEY] = decode_package_allowlist_header(
+        metadata[GRANT_METADATA_KEY] = decode_expert_packages_header(
             request.headers.get(HEADER_NAME)
         )
     user_id = str(identity.get("user_id") or "").strip()

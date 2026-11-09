@@ -8,9 +8,13 @@ import json
 import os
 import re
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
-import uuid
+
+from agent_gateway.common.protocol_methods import ReqMethod
+
+from jiuwenswarm.common.utils import get_logs_dir
 
 from jiuwenswarm.extensions.video_duplex.backend.error_details import duplex_failure
 from jiuwenswarm.extensions.video_duplex.backend import (
@@ -27,11 +31,8 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import (
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import qwen_omni_tools
 from jiuwenswarm.extensions.video_duplex.backend.tasks.prompts import task_receipt_followup
 from jiuwenswarm.extensions.video_duplex.backend.video_files import normalize_file_items
-from jiuwenswarm.server.runtime.session.session_history import append_history_record
-from jiuwenswarm.server.runtime.session.session_metadata import (
-    get_session_metadata,
-    update_session_metadata,
-)
+from .task_adapter import task_agent_query
+
 _ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _LOG_WRITE_LOCK = threading.Lock()
 
@@ -99,24 +100,24 @@ def _append_jsonl(path: Path, event: dict[str, Any]) -> None:
 
 
 def _append_realtime_telemetry(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "realtime-interrupt.jsonl"
+    path = get_logs_dir() / "video" / "realtime-interrupt.jsonl"
     _append_jsonl(path, event)
 
 
 def _append_realtime_session_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "realtime-session.jsonl"
+    path = get_logs_dir() / "video" / "realtime-session.jsonl"
     event = {"server_time": datetime.now(timezone.utc).isoformat(), **event}
     _append_jsonl(path, event)
 
 
 def _append_qwen_realtime_error_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "qwen-realtime-errors.jsonl"
+    path = get_logs_dir() / "video" / "qwen-realtime-errors.jsonl"
     event = {"server_time": datetime.now(timezone.utc).isoformat(), **event}
     _append_jsonl(path, event)
 
 
 def _append_video_event_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "video-live-events.jsonl"
+    path = get_logs_dir() / "video" / "video-live-events.jsonl"
     event = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         **event,
@@ -125,7 +126,7 @@ def _append_video_event_log(event: dict[str, Any]) -> None:
 
 
 def _append_asr_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "asr-results.jsonl"
+    path = get_logs_dir() / "video" / "asr-results.jsonl"
     record = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         **event,
@@ -136,7 +137,7 @@ def _append_asr_log(event: dict[str, Any]) -> None:
 def _append_joyai_log(event: dict[str, Any]) -> None:
     event = dict(event)
     model_raw_content = event.pop("model_raw_content", None)
-    path = Path.home() / ".jiuwenswarm" / "logs" / "joyai-video.jsonl"
+    path = get_logs_dir() / "video" / "joyai-video.jsonl"
     record = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         **event,
@@ -152,7 +153,7 @@ def _append_joyai_log(event: dict[str, Any]) -> None:
     )
     if not raw_content.strip():
         return
-    raw_path = Path.home() / ".jiuwenswarm" / "logs" / "joyai-raw-content.jsonl"
+    raw_path = get_logs_dir() / "video" / "joyai-raw-content.jsonl"
     raw_record = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         "request_id": event.get("request_id", ""),
@@ -698,6 +699,8 @@ def register_video_live_handler(
         await channel.send_response(ws, req_id, ok=True, payload={"logged": True})
 
     async def _append_conversation(ws, req_id, params, session_id):
+        from agent_gateway.channel_manager.web.web_connect import WebChannel
+
         del session_id
         visible_session_id = str(params.get("session_id") or "").strip()
         event_id = str(params.get("event_id") or "").strip()
@@ -804,42 +807,35 @@ def register_video_live_handler(
             extra = {"files": files}
             content = ""
 
-        previous_title: str | None = None
-        metadata = get_session_metadata(visible_session_id, cache_bust=True)
-        if role == "user" and content.strip():
-            # Refresh before history writes so a rename by AgentServer is respected.
-            previous_title = str(metadata.get("title") or "")
-            if previous_title == "Full-duplex conversation":
-                # Older plugin versions persisted this placeholder as a real title.
-                # Reuse Jiuwen's auto-title policy when that conversation resumes.
-                update_session_metadata(
-                    session_id=visible_session_id,
-                    clear_title=True,
-                    user_content=content,
-                    touch_last_message_at=False,
-                    sync_write=True,
-                )
+        try:
+            result = await task_agent_query(
+                agent_client, ReqMethod.VIDEO_CONVERSATION_APPEND,
+                {
+                    "event_id": event_id,
+                    "role": role,
+                    "content": content,
+                    "timestamp": timestamp,
+                    "event_type": event_type,
+                    "extra": extra,
+                },
+                visible_session_id,
+                WebChannel.connection_user_id(ws) or "",
+                metadata=getattr(ws, "_web_routing", None),
+            )
+        except Exception:
+            await channel.send_response(
+                ws, req_id, ok=False, code="VIDEO_HISTORY_UNAVAILABLE",
+                message="Unable to append Full-duplex history.",
+            )
+            return
 
-        append_history_record(
-            session_id=visible_session_id,
-            request_id=f"video-duplex-{event_id}",
-            channel_id="video_duplex",
-            role=role,
-            content=content,
-            timestamp=timestamp,
-            event_type=event_type,
-            extra=extra,
-            mode=str(metadata.get("mode") or ("team.design" if metadata.get("work_mode") == "design" else "agent")),
-        )
-        if previous_title is not None:
-            title = str(get_session_metadata(visible_session_id).get("title") or "")
-            if title and title != previous_title:
-                # The native listener updates both the header and workspace sidebar.
-                await channel.send_event(ws, "session.updated", {
-                    "session_id": visible_session_id,
-                    "title": title,
-                    "display_title": title,
-                })
+        title = result.get("updated_title")
+        if title:
+            await channel.send_event(ws, "session.updated", {
+                "session_id": visible_session_id,
+                "title": title,
+                "display_title": title,
+            })
         await channel.send_response(
             ws,
             req_id,
@@ -848,14 +844,15 @@ def register_video_live_handler(
         )
 
     async def _core_receipts(ws, req_id, params, session_id):
-        from .task_adapter import task_identity, task_agent_query
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.common.schema.message import ReqMethod as CoreReqMethod
+
+        from .task_adapter import task_identity
 
         try:
             owner, scope = task_identity(ws, str((params or {}).get("search_session_id") or ""))
             if not scope.startswith("task-duplex:"):
                 raise ValueError("Core receipts require a saved conversation")
-            payload = await task_agent_query(agent_client, ReqMethod.VOICE_SESSION_RECEIPTS,
+            payload = await task_agent_query(agent_client, CoreReqMethod.VOICE_SESSION_RECEIPTS,
                 {"token": params.get("token"), "action": params.get("action")},
                 scope.removeprefix("task-duplex:"), owner)
             await channel.send_response(ws, req_id, ok=True, payload=payload)
