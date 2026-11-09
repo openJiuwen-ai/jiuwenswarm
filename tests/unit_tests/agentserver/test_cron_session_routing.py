@@ -111,6 +111,7 @@ async def test_agent_manager_plain_cron_followup_uses_request_channel() -> None:
         project_dir=None,
         sub_mode=None,
         request=None,
+        session_id="cron_job_x",
     )
 
 
@@ -183,6 +184,7 @@ async def test_cron_followup_routes_to_web_channel_agent() -> None:
         mode="agent",
         project_dir=None,
         sub_mode=None,
+        session_id="cron_job1_run2",
     )
 
 
@@ -277,6 +279,7 @@ async def test_cron_interrupt_resume_falls_back_to_get_agent_cron_channel() -> N
         mode="agent",
         project_dir=None,
         sub_mode=None,
+        session_id="cron_job1_run3",
     )
 
 
