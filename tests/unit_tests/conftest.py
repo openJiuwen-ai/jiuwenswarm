@@ -23,9 +23,13 @@ import os
 import shutil
 import sys
 from collections.abc import Iterator
+from copy import deepcopy
+from io import TextIOWrapper
 from pathlib import Path
+from typing import IO, Any
 
 import pytest
+import yaml
 
 import jiuwenswarm.common.utils as _utils
 
@@ -43,6 +47,7 @@ _REAL_GET_AGENT_WORKSPACE_DIR = _utils.get_agent_workspace_dir
 # Must match the stubs used in test_external_memory_{builder,config}.py
 _STUB_CONFIG = Path("/tmp/test_config.yaml")
 _STUB_WORKSPACE = Path("/tmp/test_workspace")
+_WORKSPACE_CONFIG_TEMPLATE = Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml"
 
 _EXTERNAL_MEMORY_BASENAMES = frozenset(
     {
@@ -52,22 +57,44 @@ _EXTERNAL_MEMORY_BASENAMES = frozenset(
 )
 
 
+@pytest.fixture(scope="session")
+def _workspace_config_template() -> tuple[str, dict[str, Any]]:
+    """Parse the default workspace config once per pytest worker."""
+    text = _WORKSPACE_CONFIG_TEMPLATE.read_text(encoding="utf-8")
+    return text, yaml.safe_load(text)
+
+
 @pytest.fixture(autouse=True)
-def _isolate_user_workspace(tmp_path_factory):
-    """Keep data written by unit tests (sessions, etc.) out of the real ~/.jiuwenswarm."""
+def _isolate_user_workspace(
+    tmp_path_factory: pytest.TempPathFactory,
+    _workspace_config_template: tuple[str, dict[str, Any]],
+) -> Iterator[None]:
+    """Give each test a writable workspace and reuse pristine config parses."""
     from jiuwenswarm.server.runtime.session import session_metadata
+
+    data = tmp_path_factory.mktemp("unit_workspace") / ".jiuwenswarm"
+    config_dir = data / "infra" / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "config.yaml"
+    config_path_str = str(config_path)
+    shutil.copyfile(_WORKSPACE_CONFIG_TEMPLATE, config_path)
+    template_text, template_config = _workspace_config_template
+    safe_load = yaml.safe_load
+
+    def load_workspace_config(stream: str | bytes | IO[str] | IO[bytes]) -> Any:
+        """Reuse the template only when the isolated file still matches it."""
+        if isinstance(stream, TextIOWrapper) and stream.name == config_path_str and stream.tell() == 0:
+            if stream.read() == template_text:
+                return deepcopy(template_config)
+            stream.seek(0)
+        return safe_load(stream)
 
     # Own MonkeyPatch: this teardown then runs after the test's monkeypatch is undone,
     # so the drain below uses the real queue/clock instead of a test's stubs.
     flush_pending_writes = session_metadata.flush_pending_writes
     with pytest.MonkeyPatch.context() as mp:
-        data = tmp_path_factory.mktemp("unit_workspace") / ".jiuwenswarm"
-        config_dir = data / "infra" / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(
-            Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml",
-            config_dir / "config.yaml",
-        )
+        # Both packages cache by path. Reuse the parse only after reading this test's file.
+        mp.setattr(yaml, "safe_load", load_workspace_config)
         mp.setattr(_utils, "_workspace_base_dir", data)
         mp.setattr(_utils, "_initialized", False)
         for name in ("_config_dir", "_workspace_dir", "_root_dir"):
@@ -79,7 +106,7 @@ def _isolate_user_workspace(tmp_path_factory):
             if module:
                 for attr in ("CONFIG_YAML_PATH", "_CONFIG_YAML_PATH"):
                     if hasattr(module, attr):
-                        mp.setattr(module, attr, config_dir / "config.yaml")
+                        mp.setattr(module, attr, config_path)
         # Subprocesses spawned by tests resolve the workspace from the environment.
         mp.setenv("JIUWENSWARM_DATA_DIR", str(data))
         yield

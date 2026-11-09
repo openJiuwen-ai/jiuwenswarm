@@ -118,6 +118,7 @@ npm run build
 - 已注册的标记为 `unit`、`integration`、`system`、`slow` 和 `async`。`--strict-markers` 已开启，新增标记必须先写入 `pytest.ini`。
 - `filterwarnings = error` 已开启。第三方告警必须在 `pytest.ini` 中按消息精确放行，不要全局关闭。
 - 共享 fixture 位于 `tests/conftest.py`：`temp_workspace`、`temp_config_file`、`mock_env_vars`、`sample_skill_md`、`sample_messages`。
+- 单元测试各自持有可写的 `config.yaml`。未修改的配置复用当前 pytest worker 的模板解析结果，每次返回独立副本。修改配置后仍从该用例自己的文件读取。
 
 ## 持续集成状态
 
