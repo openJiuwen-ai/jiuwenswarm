@@ -10,7 +10,7 @@ from openjiuwen.core.foundation.tool import ToolCard
 from openjiuwen.core.single_agent.rail.base import AgentRail, ToolCallInputs
 from openjiuwen.harness.tools.cua.rails import CuaProgressRail, CuaRuntimeRail
 
-from ..tools.cua_repl import CuaReplTool
+from ..tools.cua_repl import CuaReplResetTool, CuaReplTool
 from ..tools.cua_runtime import ReplRuntime
 
 
@@ -40,6 +40,8 @@ class CuaExtensionRail(AgentRail):
             # preflight until a legacy tool is used, so it cannot block the REPL.
             self.native_rail._verified = True  # pylint: disable=protected-access
         agent.ability_manager.add_ability(self.repl.card, self.repl)
+        reset = CuaReplResetTool(self.repl, self.owner_id)
+        agent.ability_manager.add_ability(reset.card, reset)
         agent.register_task_resource_cleanup(self.close)
 
     async def before_invoke(self, ctx):
