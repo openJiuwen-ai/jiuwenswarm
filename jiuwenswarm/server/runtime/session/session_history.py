@@ -822,6 +822,14 @@ def _write_records_unfenced(path: Path, records: list[dict[str, Any]]) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(temporary_path, path)
+    from jiuwenswarm.server.runtime.session.history_replay import invalidate_history_head
+
+    invalidate_history_head(path)
+    sid = _managed_history_session_id(path)
+    if sid is not None:
+        from jiuwenswarm.server.runtime.session.context_snapshot import invalidate_snapshot_hint
+
+        invalidate_snapshot_hint(sid)
 
 
 def _append_record_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -836,9 +844,18 @@ def _append_record_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 def _append_record_unfenced(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    sid = _managed_history_session_id(path)
+    if sid is not None:
+        from jiuwenswarm.server.runtime.session.history_artifacts import externalize_history_record
+
+        record = externalize_history_record(sid, record)
+    before = path.stat() if path.exists() else None
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False))
         fh.write("\n")
+    from jiuwenswarm.server.runtime.session.history_replay import note_history_append
+
+    note_history_append(path, record, before)
 
 
 def _ensure_jsonl_bootstrap(session_id: str) -> Path:
@@ -848,8 +865,9 @@ def _ensure_jsonl_bootstrap(session_id: str) -> Path:
 
     legacy_path = _history_file(session_id)
     if legacy_path.exists():
-        legacy_records = _read_history(legacy_path)
-        _write_records_to_path(jsonl_path, legacy_records)
+        from jiuwenswarm.server.runtime.session.history_stream import convert_legacy_jsonl
+
+        convert_legacy_jsonl(session_id, legacy_path, jsonl_path)
     else:
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     return jsonl_path
@@ -1091,7 +1109,9 @@ def _ensure_legacy_json_bootstrap(session_id: str) -> Path:
 
     jsonl_path = _history_jsonl_file(session_id)
     if jsonl_path.exists():
-        jsonl_records = _read_history_jsonl(jsonl_path)
+        from jiuwenswarm.server.runtime.session.history_replay import read_history_for_rewrite
+
+        jsonl_records = read_history_for_rewrite(jsonl_path)
         _write_records_to_path(legacy_path, jsonl_records)
     else:
         legacy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1311,7 +1331,9 @@ def _write_item(
 
         if use_legacy_history_json():
             target_path = _ensure_legacy_json_bootstrap(session_id)
-            records = _read_history(target_path)
+            from jiuwenswarm.server.runtime.session.history_replay import read_history_for_rewrite
+
+            records = read_history_for_rewrite(target_path)
             if _is_error_record(item) and _has_request_error(records, item):
                 return
             records.append(item)
@@ -1319,7 +1341,7 @@ def _write_item(
             return
 
         target_path = _ensure_jsonl_bootstrap(session_id)
-        if _is_error_record(item) and _has_request_error(_read_history_jsonl(target_path), item):
+        if _is_error_record(item) and _has_request_error(_iter_error_records(target_path), item):
             return
         _append_record_jsonl(target_path, item)
 
@@ -1330,7 +1352,31 @@ def _is_error_record(item: dict[str, Any]) -> bool:
     }
 
 
-def _has_request_error(records: list[dict[str, Any]], item: dict[str, Any]) -> bool:
+def _iter_error_records(path: Path) -> Iterator[dict[str, Any]]:
+    """Error persistence must not load a failing session's full audit history."""
+    if not path.exists():
+        return
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayLimits
+
+    limit = HistoryReplayLimits().max_record_bytes
+    with path.open("rb") as source:
+        while True:
+            raw = source.readline(limit + 1)
+            if not raw:
+                return
+            if len(raw) > limit:
+                while raw and not raw.endswith(b"\n"):
+                    raw = source.readline(64 * 1024)
+                continue
+            try:
+                record = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeError):
+                continue
+            if isinstance(record, dict) and _is_error_record(record):
+                yield record
+
+
+def _has_request_error(records: Iterator[dict[str, Any]] | list[dict[str, Any]], item: dict[str, Any]) -> bool:
     """Deduplicate cron fallback and primary error regardless of write order."""
     if not item.get("request_id") or item.get("role") != "assistant":
         return False
