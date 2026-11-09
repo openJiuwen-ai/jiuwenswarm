@@ -549,6 +549,14 @@ Ask the Agent to distill a completed multi-Skill workflow. `skillpack_distill` r
 
 Installed Packs appear in My Skills and the existing task Skill picker with a SkillPack label. Member changes affect Pack availability. A complete query match offers a confirmation or a choice of Packs before bypassing Symphony composition. Partial or uncertain matches continue through the existing path. Explicitly picking one Pack confirms the selection; mixed selections require a choice. Existing side-effect permissions remain in force. Failure after member execution does not automatically restart composition.
 
+Choosing normal composition, skipping or cancelling the reuse question declines the Pack for the current request and continues normal task handling without repeatedly asking. A new message in the same conversation is assessed independently; it does not inherit the previous task's confirmation or blocked state.
+
+Automatic matching has a 60-second total deadline. A timeout means no decision was obtained, not a negative match. Ordinary task handling continues, but the ordinary `skill_tool` entry returns only a read-only summary for an unconfirmed Pack, not its execution instructions. Timeout details are logged by the backend and are not separately shown in the conversation UI.
+
+Unconfirmed reads identify the actual target directory in `skill_tool`'s current session view, including external Skills and restored sessions. They read only the target root document, without blocking ordinary Skills on unrelated inventory scans or locks, or granting access from stale type caches. An unreadable or unclassifiable target is rejected conservatively; confirmed Pack execution retains live inventory and member validation.
+
+If a confirmed Pack's state changes or validation fails during execution, the request returns a deterministic stop message. It does not ask the model to continue with an empty tool list or automatically restart composition.
+
 ### Install and manage
 
 The thin ZIP contains the existing `plugin.yaml` wrapper, root instructions and `skillpack.lock.json`. It does not contain member sources. The lock records ordered Hub asset IDs, exact versions and original ZIP SHA-256 digests. Missing members are downloaded independently from the same Hub.
