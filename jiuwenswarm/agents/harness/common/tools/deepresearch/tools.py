@@ -88,6 +88,7 @@ from jiuwenswarm.common.utils import (
     get_shared_agent_skills_dirs,
     parse_shared_skills_dirs_raw,
 )
+from jiuwenswarm.llm_sse_patch import apply_model_http_hook
 from jiuwenswarm.perf.context import DeepResearchReportType
 from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
@@ -862,20 +863,25 @@ def _encode_deepresearch_config(
         "tls": tls,
     }
     frame = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
+        payload, ensure_ascii=False, separators=(",", ":"),
     ).encode("utf-8") + b"\n"
+    error = None
     if len(frame) > DEEPRESEARCH_CONFIG_MAX_BYTES:
-        raise ValueError("DeepResearch config frame exceeds 64 KiB")
-    if request_query is not None:
+        error = "DeepResearch config frame exceeds 64 KiB"
+    elif request_query is not None:
         if not isinstance(request_query, str) or not request_query.strip():
             raise ValueError("DeepResearch request query must be nonempty text")
         payload["request_query"] = request_query
         frame = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
         if len(frame) > DEEPRESEARCH_QUERY_FRAME_MAX_BYTES:
-            raise ValueError("DeepResearch query frame exceeds 1 MiB")
-    return frame
+            error = "DeepResearch query frame exceeds 1 MiB"
+    if error is None:
+        return frame
+    if "LLM_CUSTOM_HEADERS" in config:
+        required_config = dict(config)
+        required_config.pop("LLM_CUSTOM_HEADERS")
+        return _encode_deepresearch_config(required_config, request_query=request_query)
+    raise ValueError(error)
 
 
 def _config_secret_values(config: dict[str, str]) -> tuple[str, ...]:
@@ -3043,6 +3049,19 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             service_id=str(route.get("service_id") or "default"),
             agent_id=str(route.get("agent_id") or "default"),
         )
+        # Snapshot extension-generated headers for this child invocation only.
+        # SDK consumption is independent of the host-to-runner transport.
+        model_http_attrs: dict[str, Any] = {}
+        await apply_model_http_hook(
+            api_base=config.get("LLM_BASE_URL", ""),
+            model_name=config.get("LLM_MODEL_NAME", ""),
+            kwargs=model_http_attrs,
+            request_scope=(str(route.get("session_id") or ""), str(route.get("request_id") or "")),
+        )
+        if model_http_attrs.get("custom_headers"):
+            config["LLM_CUSTOM_HEADERS"] = json.dumps(
+                model_http_attrs["custom_headers"], ensure_ascii=False,
+            )
         if report_type is not None:
             config["REPORT_TYPE"] = report_type
         if (

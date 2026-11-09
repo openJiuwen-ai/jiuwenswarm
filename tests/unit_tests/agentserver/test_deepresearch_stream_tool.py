@@ -14,6 +14,7 @@ import sys
 import warnings
 import zipfile
 from contextlib import ExitStack, asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -470,6 +471,186 @@ async def test_stream_sends_explicit_report_type_in_config_frame_only(report_typ
     frame = json.loads(bytes(proc.stdin.data))
     assert frame["config"]["REPORT_TYPE"] == report_type
     assert "REPORT_TYPE" not in spawn.await_args.kwargs["env"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["start", "resume"])
+async def test_stream_forwards_model_http_headers_in_config_frame_only(action, monkeypatch):
+    """Collect this round's extension headers before either child launch path."""
+    expected = {
+        "x-officeace-client": "miniprogram|vivo|trial",
+        "x-officeace-message-meta": "research|session-A|request-A|question",
+        "x-span-id": "extension-span",
+    }
+    calls = []
+
+    async def trigger(event, context):
+        calls.append((event, context.api_base, context.model_name, context.request_scope))
+        context.scoped_headers.update(expected)
+        context.scoped_headers.update({"Authorization": "forbidden", "x-bad": "a\r\nb"})
+        context.extra_body["unrelated"] = "not-forwarded"
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    proc = _Proc([json.dumps({"__deepsearch_status__": "interrupted",
+                             "agent": "feedback_handler", "conversation_id": "C1"})])
+    patches = _stream_patches(proc, route={"session_id": "session-A", "request_id": "request-A",
+                                          "channel_id": "officeclaw"})
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        await dt.deepresearch_stream._func(
+            action=action, query="q", conversation_id="C1", node="stopped",
+        )
+        spawn = patches[5].new
+
+    frame = json.loads(proc.stdin.data)
+    assert json.loads(frame["config"]["LLM_CUSTOM_HEADERS"]) == expected
+    assert calls == [("agent_server:before_model_http", "https://llm.invalid/v1", "model",
+                      ("session-A", "request-A"))]
+    assert frame["version"] == 1
+    assert "extra_body" not in frame["config"]
+    assert "LLM_CUSTOM_HEADERS" not in spawn.await_args.kwargs["env"]
+    assert all(value not in str(spawn.await_args.args) for value in expected.values())
+
+
+@pytest.mark.parametrize("with_query", [False, True])
+def test_optional_headers_do_not_overflow_stdin_frame(with_query):
+    query = None
+    config = _valid_config()
+    if with_query:
+        query = "q" * (dt.DEEPRESEARCH_QUERY_FRAME_MAX_BYTES - 1000)
+    else:
+        config["FILLER"] = "q" * (dt.DEEPRESEARCH_CONFIG_MAX_BYTES - 1000)
+    baseline = dt._encode_deepresearch_config(config, request_query=query)
+    config["LLM_CUSTOM_HEADERS"] = json.dumps({"x-officeace-message-meta": "m" * 2000})
+    assert dt._encode_deepresearch_config(config, request_query=query) == baseline
+
+
+@pytest.mark.asyncio
+async def test_scoped_research_drops_legacy_unbound_hook_output(monkeypatch):
+    async def trigger(event, context):
+        context.headers["x-officeace-message-meta"] = "chat|other|old|unbound"
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    proc = _Proc()
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": "session-A", "request_id": "request-A",
+                                                  "channel_id": "officeclaw"}):
+            stack.enter_context(item)
+        await dt.deepresearch_stream._func(action="start", query="q")
+    assert "LLM_CUSTOM_HEADERS" not in json.loads(proc.stdin.data)["config"]
+
+
+def test_model_http_header_config_is_redacted_from_child_errors():
+    raw = '{"x-private-tag":"sensitive-attribution"}'
+    config = _valid_config(LLM_CUSTOM_HEADERS=raw)
+    secrets = dt._config_secret_values(config)
+    assert dt._redact_known_secrets(f"child error: {raw}", secrets) == "child error: [REDACTED]"
+
+
+def test_model_http_public_labels_do_not_redact_report_text():
+    config = _valid_config(LLM_CUSTOM_HEADERS='{"x-officeace-client":"pc"}')
+    secrets = dt._config_secret_values(config)
+    assert dt._redact_known_secrets("pc and rpc usage", secrets) == "pc and rpc usage"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["uninitialized", "empty", "error"])
+async def test_stream_without_model_http_headers_keeps_legacy_frame(mode, monkeypatch):
+    async def trigger(event, context):
+        if mode == "error":
+            context.scoped_headers["x-partial"] = "discard-on-failure"
+            raise RuntimeError("extension failed")
+        return mode != "uninitialized"
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    proc = _Proc([json.dumps({"__deepsearch_status__": "error",
+                             "error_code": "workflow_error", "error": "done"})])
+    with ExitStack() as stack:
+        for item in _stream_patches(proc):
+            stack.enter_context(item)
+        await dt.deepresearch_stream._func(action="start", query="q")
+    assert json.loads(proc.stdin.data)["config"] == _valid_config()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_streams_keep_model_http_headers_request_scoped(monkeypatch):
+    current_headers = ContextVar("test_model_http_headers")
+
+    async def trigger(event, context):
+        await asyncio.sleep(0)
+        context.scoped_headers.update(current_headers.get())
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    processes = [_Proc(), _Proc()]
+    patches = _stream_patches(processes[0])
+
+    async def run(request_id):
+        token = current_headers.set({"x-officeace-message-meta": request_id})
+        try:
+            await dt.deepresearch_stream._func(action="start", query=request_id)
+        finally:
+            current_headers.reset(token)
+
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(patch.object(dt, "_build_deepresearch_request_config",
+                                        side_effect=lambda **kwargs: _valid_config()))
+        stack.enter_context(patch("asyncio.create_subprocess_exec",
+                                  new=AsyncMock(side_effect=processes)))
+        await asyncio.gather(run("request-A"), run("request-B"))
+
+    headers = [json.loads(json.loads(proc.stdin.data)["config"]["LLM_CUSTOM_HEADERS"])
+               for proc in processes]
+    assert headers == [{"x-officeace-message-meta": "request-A"},
+                       {"x-officeace-message-meta": "request-B"}]
+
+
+@pytest.mark.asyncio
+async def test_real_child_receives_model_http_headers_from_stdin(tmp_path, monkeypatch):
+    expected = {"x-officeace-client": "miniprogram",
+                "x-officeace-message-meta": "research|session-A|request-A|question"}
+
+    async def trigger(event, context):
+        context.scoped_headers.update(expected)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    captured = tmp_path / "received-config.json"
+    real_spawn = asyncio.create_subprocess_exec
+    child_script = (
+        "import json, pathlib, sys; "
+        "frame = json.loads(sys.stdin.buffer.readline()); "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps(frame), encoding='utf-8'); "
+        "print(json.dumps({'__deepsearch_status__': 'error', "
+        "'error_code': 'workflow_error', 'error': 'transport test complete'}), flush=True)"
+    )
+
+    async def spawn_child(*args, **kwargs):
+        return await real_spawn(sys.executable, "-c", child_script, str(captured), **kwargs)
+
+    with ExitStack() as stack:
+        for item in _stream_patches(_Proc()):
+            stack.enter_context(item)
+        stack.enter_context(patch("asyncio.create_subprocess_exec", new=spawn_child))
+        await dt.deepresearch_stream._func(action="start", query="q")
+
+    frame = json.loads(captured.read_text(encoding="utf-8"))
+    assert json.loads(frame["config"]["LLM_CUSTOM_HEADERS"]) == expected
 
 
 @pytest.mark.asyncio
