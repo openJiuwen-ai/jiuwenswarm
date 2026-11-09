@@ -33,7 +33,9 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(monkeypatc
     monkeypatch.setattr(sys, "argv", ["jiuwenswarm-app"] + (["--keep-worker"] if keep_worker else []))
     app = importlib.import_module("jiuwenswarm.app")
     order = []
-    monkeypatch.setattr(app, "supervise", lambda *args: order.append("fronts-stopped") or 0)
+    monkeypatch.setattr(app, "supervise", lambda *args, **kwargs: order.append("fronts-stopped") or 0)
+    monkeypatch.setattr(app, "begin_system_plugin_recovery_session", lambda: None)
+    monkeypatch.setattr(app.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(poll=lambda: 0))
     monkeypatch.setattr(app.signal, "signal", lambda *args: None)
     monkeypatch.setattr(app, "install_async_dump_handler", lambda *args: None)
     monkeypatch.setattr(shutdown, "shutdown_application_worker",
@@ -106,6 +108,9 @@ def breadcrumb_file(monkeypatch, tmp_path):
     path = tmp_path / "service_exits.jsonl"
     monkeypatch.setattr(process_supervision, "_breadcrumb_path", lambda: path)
     _FakeProc._instances.clear()
+    # Platform branches emulate Linux even when pytest itself runs on Windows.
+    monkeypatch.setattr(process_supervision, "_POSIX_CRASH_SIGNALS", frozenset((4, 6, 7, 8, 11)))
+    monkeypatch.setattr(process_supervision.signal, "SIGKILL", process_supervision._SIGKILL, raising=False)
 
     def stop_fake_tree(pid, *, timeout):
         assert pid in _FakeProc._instances, "Unit tests must never signal a real PID"
@@ -251,6 +256,127 @@ def test_keyboard_interrupt_returns_130_and_terminates_children(monkeypatch, clo
     assert all(proc.terminated for _, proc in spawned)
 
 
+def test_requested_restart_restarts_only_selected_children(monkeypatch, clock):
+    spawned = _script_children(
+        monkeypatch, clock,
+        {"recovery": [(None, 0)], "agentserver": [(None, 0), (None, 0)], "gateway": [(None, 0), (None, 0)]},
+    )
+    requested = True
+    order = []
+
+    def stop(pid, *, timeout):
+        del timeout
+        name, proc = next(item for item in spawned if item[1].pid == pid)
+        order.append("stop-" + name)
+        proc.terminate()
+
+    monkeypatch.setattr(process_supervision, "terminate_service_tree", stop)
+
+    def before_restart():
+        assert len(spawned) == 3
+        assert spawned[0][1].poll() is None
+        assert spawned[1][1].poll() is not None and spawned[2][1].poll() is not None
+        order.append("worker-retired")
+
+    def restart_requested():
+        nonlocal requested
+        result, requested = requested, False
+        return result
+
+    clock.interrupt_at = 1.0
+    assert supervise(
+        {"recovery": ["recovery"], **_COMMANDS}, {},
+        restart_requested=restart_requested, restart_names=("gateway", "agentserver"), before_restart=before_restart,
+    ) == 130
+    assert [name for name, _ in spawned] == ["recovery", "agentserver", "gateway", "agentserver", "gateway"]
+    assert order[:3] == ["stop-gateway", "stop-agentserver", "worker-retired"]
+
+
+def test_recovery_worker_failure_prevents_replacement_start(monkeypatch, clock):
+    spawned = _script_children(monkeypatch, clock, {"agentserver": [(None, 0)], "gateway": [(None, 0)]})
+
+    def refuse_worker():
+        assert all(proc.poll() is not None for _, proc in spawned)
+        raise RuntimeError("Worker retirement incomplete")
+
+    with pytest.raises(RuntimeError, match="Worker retirement incomplete"):
+        supervise(_COMMANDS, {}, restart_requested=lambda: True,
+                  restart_names=("gateway", "agentserver"), before_restart=refuse_worker)
+    assert [name for name, _ in spawned] == ["agentserver", "gateway"]
+
+
+def test_recovery_service_failure_never_retires_worker_or_starts_replacements(monkeypatch, clock):
+    spawned = _script_children(monkeypatch, clock, {"agentserver": [(None, 0)], "gateway": [(None, 0)]})
+    failures = [True]
+    workers = []
+
+    def stop(pid, *, timeout):
+        del timeout
+        if failures:
+            failures.pop()
+            raise RuntimeError("Service exit unconfirmed")
+        _FakeProc._instances[pid].terminate()
+
+    monkeypatch.setattr(process_supervision, "terminate_service_tree", stop)
+    with pytest.raises(RuntimeError, match="Application services did not completely stop"):
+        supervise(_COMMANDS, {}, restart_requested=lambda: True,
+                  restart_names=("gateway", "agentserver"), before_restart=lambda: workers.append(True))
+    assert len(spawned) == 2 and workers == []
+
+
+def test_partial_recovery_start_retires_the_replacement_worker_after_front_cleanup(monkeypatch, clock):
+    spawned = _script_children(monkeypatch, clock,
+                               {"agentserver": [(None, 0), (None, 0)], "gateway": [(None, 0)]})
+    original = process_supervision.subprocess.Popen
+    gateway_starts = []
+    retirements = []
+
+    def spawn(command, **kwargs):
+        if command[0] == "gateway":
+            gateway_starts.append(True)
+            if len(gateway_starts) > 1:
+                raise OSError("replacement Gateway failed")
+        return original(command, **kwargs)
+
+    def retire():
+        assert all(proc.poll() is not None for _, proc in spawned)
+        retirements.append(True)
+
+    monkeypatch.setattr(process_supervision, "subprocess", SimpleNamespace(Popen=spawn))
+    with pytest.raises(OSError, match="replacement Gateway failed"):
+        supervise(_COMMANDS, {}, restart_requested=lambda: True,
+                  restart_names=("gateway", "agentserver"), before_restart=retire)
+    assert [name for name, _ in spawned] == ["agentserver", "gateway", "agentserver"]
+    assert len(retirements) == 2
+
+
+def test_unmatched_restart_request_keeps_the_supervisor_polling(monkeypatch, clock):
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {"agentserver": [(None, 0)], "gateway": [(None, 0)]},
+    )
+    requested = True
+
+    def restart_requested() -> bool:
+        nonlocal requested
+        if not requested:
+            return False
+        requested = False
+        return True
+
+    clock.interrupt_at = 0.5
+    assert supervise(
+        _COMMANDS,
+        {},
+        restart_requested=restart_requested,
+        restart_names=frozenset({"missing"}),
+    ) == 130
+
+    assert [name for name, _ in spawned] == ["agentserver", "gateway"]
+    assert clock.now >= process_supervision._POLL_INTERVAL
+
+
 @pytest.mark.parametrize(
     ("platform", "returncode", "expected"),
     [
@@ -351,7 +477,7 @@ def test_posix_respawn_kills_the_dead_childs_process_group(monkeypatch, clock):
     assert supervise(_COMMANDS, {"start_new_session": True}) == 0
 
     dead_pid = spawned[0][1].pid
-    assert killpg_calls == [(dead_pid, signal.SIGKILL)]
+    assert killpg_calls == [(dead_pid, process_supervision._SIGKILL)]
 
 
 def test_posix_respawn_without_own_session_skips_killpg(monkeypatch, clock):
@@ -386,6 +512,9 @@ def test_win32_respawn_kills_verified_descendants_only(monkeypatch, clock):
     class _Victim:
         def __init__(self, pid: int) -> None:
             self.pid = pid
+
+        def create_time(self) -> float:
+            return _Dead.create_time_value
 
         def kill(self) -> None:
             killed.append(self.pid)

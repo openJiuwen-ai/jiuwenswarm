@@ -192,6 +192,7 @@ _ensure_req_method("EXTENSIONS_V2_FILE_READ", "extensions.v2.file.read")
 _ensure_req_method("EXTENSIONS_V2_INSTALL", "extensions.v2.install")
 _ensure_req_method("EXTENSIONS_V2_UNINSTALL", "extensions.v2.uninstall")
 _ensure_req_method("EXTENSIONS_V2_RELOAD", "extensions.v2.reload")
+_ensure_req_method("EXTENSIONS_V2_SET_ENABLED", "extensions.v2.set_enabled")
 # Hub expert/equipment catalog served by AgentServer (dispatch.py / methods.py /
 # http_invoke.py reference this member); 协议包当前 pin 尚未定义。
 _ensure_req_method("HUB_EXPERT_PACKAGES_CATALOG", "hub.expert_packages.catalog")

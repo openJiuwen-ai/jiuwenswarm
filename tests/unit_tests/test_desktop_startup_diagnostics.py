@@ -50,6 +50,15 @@ def test_child_env_is_scoped_to_current_startup_session(
     assert json.loads(env["JIUWENSWARM_START_CMD"]) == ["workswarm.exe"]
 
 
+def test_desktop_process_cleanup_preserves_the_develop_worker_ownership_boundary(desktop_app, monkeypatch) -> None:
+    from jiuwenswarm.common import process_supervision
+
+    calls = []
+    monkeypatch.setattr(process_supervision, "signal_service_tree", lambda pid, **kwargs: calls.append((pid, kwargs)))
+    desktop_app._psutil_terminate(100)
+    assert calls == [(100, {"force": False})]
+
+
 def test_start_process_persists_child_stdout_and_stderr(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
@@ -335,6 +344,106 @@ def test_process_started_during_shutdown_is_terminated(
     assert "web" not in runtime.processes
 
 
+class _RecoveryProcess:
+    def __init__(self, pid):
+        self.pid = pid
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
+
+
+def _recovery_owner(desktop_app, runtime, tmp_path, monkeypatch):
+    from jiuwenswarm.common import process_supervision
+    from jiuwenswarm.server.supervisor import shutdown
+
+    events = []
+    processes = {}
+    old_agent, old_gateway, web = (_RecoveryProcess(pid) for pid in (10001, 10002, 10003))
+    processes.update({process.pid: process for process in (old_agent, old_gateway, web)})
+    runtime.processes.update(agent=old_agent, gateway=old_gateway, web=web)
+
+    def stop(pid, *, timeout):
+        assert pid in processes and pid != web.pid, "Recovery tests must never signal a real process"
+        processes[pid].returncode = 0
+        events.append(("stop", pid))
+
+    def retire(**kwargs):
+        assert kwargs["workspace"] == tmp_path
+        assert all(process.poll() is not None for name, process in runtime.processes.items() if name != "web")
+        events.append(("worker", None))
+        return True
+
+    def start(name, command):
+        process = _RecoveryProcess(10010 + len(processes))
+        processes[process.pid] = process
+        runtime.processes[name] = process
+        events.append(("start", name))
+        return process
+
+    monkeypatch.setattr(process_supervision, "terminate_service_tree", stop)
+    monkeypatch.setattr(shutdown, "shutdown_application_worker", retire)
+    monkeypatch.setattr(desktop_app, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(desktop_app, "_ensure_process_running", lambda *_args: None)
+    monkeypatch.setattr(desktop_app, "_wait_for_tcp", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_preflight_gateway_singleton", lambda: None)
+    monkeypatch.setattr(runtime, "_start_managed_process", start)
+    return events, old_agent, old_gateway, web
+
+
+def test_recovery_restart_only_replaces_the_backend_pair(desktop_app, tmp_path, monkeypatch) -> None:
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+    events, agent, gateway, web = _recovery_owner(desktop_app, runtime, tmp_path, monkeypatch)
+    runtime._restart_backend_processes()
+    assert events[:5] == [("stop", gateway.pid), ("stop", agent.pid), ("worker", None),
+                          ("start", "agent"), ("start", "gateway")]
+    assert runtime.processes["web"] is web and web.poll() is None
+
+
+def test_recovery_restart_refuses_unconfirmed_service_exit(desktop_app, tmp_path, monkeypatch) -> None:
+    from jiuwenswarm.common import process_supervision
+
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+    events, _, _, web = _recovery_owner(desktop_app, runtime, tmp_path, monkeypatch)
+
+    def refuse_stop(pid, *, timeout):
+        raise RuntimeError("Service exit unconfirmed")
+
+    monkeypatch.setattr(process_supervision, "terminate_service_tree", refuse_stop)
+    with pytest.raises(RuntimeError, match="Service exit unconfirmed"):
+        runtime._restart_backend_processes()
+    assert events == [] and runtime.processes["web"] is web
+
+
+def test_recovery_restart_refuses_incomplete_worker_retirement(desktop_app, tmp_path, monkeypatch) -> None:
+    from jiuwenswarm.server.supervisor import shutdown
+
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+    events, _, _, _ = _recovery_owner(desktop_app, runtime, tmp_path, monkeypatch)
+    monkeypatch.setattr(shutdown, "shutdown_application_worker", lambda **kwargs: False)
+    with pytest.raises(RuntimeError, match="incomplete Worker shutdown"):
+        runtime._restart_backend_processes()
+    assert [event for event in events if event[0] == "start"] == []
+
+
+def test_failed_recovery_start_cleans_up_the_new_worker(desktop_app, tmp_path, monkeypatch) -> None:
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+    events, _, _, web = _recovery_owner(desktop_app, runtime, tmp_path, monkeypatch)
+    start = runtime._start_managed_process
+
+    def fail_gateway(name, command):
+        if name == "gateway":
+            raise RuntimeError("New Gateway failed")
+        return start(name, command)
+
+    monkeypatch.setattr(runtime, "_start_managed_process", fail_gateway)
+    with pytest.raises(RuntimeError, match="New Gateway failed"):
+        runtime._restart_backend_processes()
+    assert [event for event in events if event[0] == "start"] == [("start", "agent")]
+    assert len([event for event in events if event[0] == "worker"]) == 2
+    assert runtime.processes["web"] is web and web.poll() is None
+
+
 def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
@@ -343,6 +452,7 @@ def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
     agent_process = types.SimpleNamespace(poll=lambda: None)
     gateway_process = types.SimpleNamespace(poll=lambda: None)
     web_process = types.SimpleNamespace(poll=lambda: None)
+    recovery_process = types.SimpleNamespace(poll=lambda: None)
     peer_terminated = threading.Event()
     terminated = []
 
@@ -356,6 +466,7 @@ def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
             "agent": agent_process,
             "gateway": gateway_process,
             "web": web_process,
+            "recovery": recovery_process,
         }[name],
     )
     monkeypatch.setattr(desktop_app, "_ensure_process_running", lambda *_args: None)
@@ -387,6 +498,7 @@ def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
         id(agent_process),
         id(gateway_process),
         id(web_process),
+        id(recovery_process),
     }
 
 
@@ -413,6 +525,7 @@ def test_start_services_reports_web_ready_when_backend_fails_at_same_time(
     agent_process = types.SimpleNamespace(poll=lambda: None)
     gateway_process = types.SimpleNamespace(poll=lambda: None)
     web_process = types.SimpleNamespace(poll=lambda: None)
+    recovery_process = types.SimpleNamespace(poll=lambda: None)
     web_ready = threading.Event()
     callback_calls: list[str] = []
 
@@ -426,6 +539,7 @@ def test_start_services_reports_web_ready_when_backend_fails_at_same_time(
             "agent": agent_process,
             "gateway": gateway_process,
             "web": web_process,
+            "recovery": recovery_process,
         }[name],
     )
     monkeypatch.setattr(desktop_app, "_ensure_process_running", lambda *_args: None)

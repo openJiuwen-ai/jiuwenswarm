@@ -918,6 +918,9 @@ function AppContent({
       setSingleAgentPanelExpanded(false);
       setToolPanelHidden(true);
       return () => { cancelled = true; };
+    } else if (route.kind === 'system-plugin-recovery') {
+      setRequestedSettingsNavigation({ moduleId: 'systemPluginRecovery' });
+      setActiveNav('settings');
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== chatRoutePath({ kind: 'chat-new' })) {
         navigate({ kind: 'chat-new' }, { replace: true });

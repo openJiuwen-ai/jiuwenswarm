@@ -26,19 +26,25 @@ function fixture(platform, frontendOnly = false) {
   let watched = 0;
   let workerAlive = true; // A resident Worker from an earlier Front.
   let pid = 1000;
+  let workerExit = 0;
+  let gatewayStartFails = false;
+  const events = [];
   app.isPackaged = true;
+  app.getPath = () => '.';
   app.exit = code => exits.push(code);
   const context = vm.createContext({
-    app, mainWindow: null, isFrontendOnly: frontendOnly, VITE_DEV_MODE: false, hasCdp: false,
+    app, path, fs: { mkdir: async () => {}, unlink: async () => {} }, mainWindow: null, isFrontendOnly: frontendOnly, VITE_DEV_MODE: false, hasCdp: false,
     browserTargetResolver: null, forceManagedBrowser: false, startupDiagnosticsDir: null,
     desktopLockToken: 'isolated', BACKEND_HOST: '127.0.0.1', FRONTEND_HOST: '127.0.0.1',
     process: { platform, argv: ['workswarm'], execPath: 'workswarm',
       env: { JIUWENSWARM_DATA_DIR: 'isolated' }, kill(group, signal) {
       const child = children.get(-group);
       if (!child || child.exitCode !== null) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
-      if (signal !== 0) { child.exitCode = 0; queueMicrotask(() => child.emit('exit', 0)); }
+      if (signal !== 0) { events.push('stop-' + child.serviceName); child.exitCode = 0; queueMicrotask(() => child.emit('exit', 0)); }
     } },
-    serviceProcesses: new Map(), shuttingDown: false, quitRequested: false, shutdownPromise: null,
+    serviceProcesses: new Map(), backendRestartInProgress: false, recoveryRestartWatcher: null,
+    recoveryRestartSignalPath: '', recoverySessionId: 'test-session', intentionallyStoppedProcesses: new WeakSet(),
+    watchRecoveryRestartRequests() {}, shuttingDown: false, quitRequested: false, shutdownPromise: null,
     finalShutdownPromise: null, shutdownComplete: false, requestedExitCode: 0,
     SERVICE_SHUTDOWN_TIMEOUT_MS: 500, SERVICE_KILL_TIMEOUT_MS: 500, RUNTIME_SHUTDOWN_TIMEOUT_MS: 3000,
     backendExecutable: () => 'backend', serviceWorkingDirectory: () => '.', logStreamFor: () => 'ignore',
@@ -51,16 +57,26 @@ function fixture(platform, frontendOnly = false) {
       Object.assign(child, { pid: ++pid, exitCode: null, signalCode: null, unref() {}, kill() {} });
       if (args.includes('--desktop-run-worker-lifecycle') || command === 'taskkill') {
         helpers.push({ command, args, env: options.env });
-        if (args.includes('--shutdown-worker')) workerAlive = false;
+        if (args.includes('--shutdown-worker')) {
+          events.push('worker');
+          if (workerExit === 0) workerAlive = false;
+        }
         const target = args.includes('--detach-front') ? args[args.indexOf('--detach-front') + 1]
           : command === 'taskkill' ? args[1] : null;
         if (target) {
           const stopped = children.get(Number(target));
+          events.push('stop-' + stopped.serviceName);
           stopped.exitCode = 0;
           queueMicrotask(() => stopped.emit('exit', 0));
         }
-        queueMicrotask(() => child.emit('exit', 0));
+        queueMicrotask(() => child.emit('exit', args.includes('--shutdown-worker') ? workerExit : 0));
       } else {
+        const service = args.includes('--desktop-run-agent') ? 'agent'
+          : args.includes('--desktop-run-gateway') ? 'gateway'
+            : args.includes('--desktop-run-web') ? 'web' : 'other';
+        if (service === 'gateway' && gatewayStartFails) throw new Error('replacement Gateway failed');
+        child.serviceName = service;
+        events.push('start-' + service);
         children.set(child.pid, child);
         launches.push({ args, duringShutdown: context.shuttingDown });
       }
@@ -71,11 +87,13 @@ function fixture(platform, frontendOnly = false) {
     section('function serviceCommand(', 'function waitForTcp('),
     section('function runToExit(', 'function prepareRuntimeWorkspace('),
     section('async function startBackendServices(', 'function forceStopServices('),
+    section('async function restartBackendServices(', 'function watchRecoveryRestartRequests('),
     section("app.on('before-quit'", "app.on('activate'"),
   ].join('\n'), context);
   context.prepareRuntimeWorkspace = () => context.runToExit('backend', ['--desktop-prepare-runtime-workspace']);
   const quit = () => app.emit('before-quit', { preventDefault() {} });
-  return { context, launches, helpers, exits, errors, quit,
+  return { context, launches, helpers, exits, errors, quit, events,
+    refuseWorker() { workerExit = 1; }, failGatewayStart() { gatewayStartFails = true; },
     get workerAlive() { return workerAlive; }, get watched() { return watched; } };
 }
 
@@ -280,5 +298,48 @@ for (const failure of ['hide', 'destroyTray']) {
     assert.equal(f.context.tray, null);
     assert.equal(f.errors.length, 1);
     assert.deepEqual(f.exits, [0]);
+  });
+}
+
+
+for (const platform of ['darwin', 'win32']) {
+  test(`${platform}: recovery stops Gateway and Front, retires Worker, then replaces the pair`, async () => {
+    const f = fixture(platform);
+    const web = f.context.spawnService('web', ports);
+    const agent = f.context.spawnService('agent', ports);
+    f.context.spawnService('gateway', ports);
+    const sidecar = f.context.spawnService('recovery', ports);
+    agent.spawnEnvironment = { JIUWENSWARM_DATA_DIR: 'recovery-owned-instance' };
+    f.events.length = 0;
+    assert.equal(await f.context.restartBackendServices(ports), true);
+    assert.deepEqual(f.events.slice(0, 5), ['stop-gateway', 'stop-agent', 'worker', 'start-agent', 'start-gateway']);
+    assert.equal(f.context.serviceProcesses.get('web'), web);
+    assert.equal(f.context.serviceProcesses.get('recovery'), sidecar);
+    const retirement = f.helpers.find(item => item.args.includes('--shutdown-worker'));
+    assert.equal(retirement.env.JIUWENSWARM_DATA_DIR, 'recovery-owned-instance');
+  });
+
+  test(`${platform}: incomplete Worker retirement prevents recovery replacement`, async () => {
+    const f = fixture(platform);
+    const web = f.context.spawnService('web', ports);
+    f.context.spawnService('agent', ports);
+    f.context.spawnService('gateway', ports);
+    f.refuseWorker();
+    f.events.length = 0;
+    assert.equal(await f.context.restartBackendServices(ports), false);
+    assert.deepEqual(f.events, ['stop-gateway', 'stop-agent', 'worker']);
+    assert.equal(f.context.serviceProcesses.get('web'), web);
+    assert.equal(f.context.backendRestartInProgress, false);
+  });
+
+  test(`${platform}: partial recovery startup retires its newly started Worker`, async () => {
+    const f = fixture(platform);
+    f.context.spawnService('agent', ports);
+    f.context.spawnService('gateway', ports);
+    f.failGatewayStart();
+    f.events.length = 0;
+    assert.equal(await f.context.restartBackendServices(ports), false);
+    assert.deepEqual(f.events, ['stop-gateway', 'stop-agent', 'worker', 'start-agent', 'stop-agent', 'worker']);
+    assert.equal(f.context.backendRestartInProgress, false);
   });
 }

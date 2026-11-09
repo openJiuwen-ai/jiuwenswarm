@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
+from jiuwenswarm.common import system_plugin_recovery
 
 UPLOAD_PATH = "/extension-uploads/" + "a" * 32 + "/theme.zip"
 DOWNLOAD_PATH = "/extension-downloads/" + "b" * 32
@@ -122,3 +123,28 @@ def test_remote_clients_can_import_and_export(tmp_path):
             statuses.append(response.status)
     assert statuses == [204, 200]
     assert seen == [{"method": "PUT", "path": UPLOAD_PATH, "body": body}, {"method": "GET", "path": DOWNLOAD_PATH}]
+
+
+def test_recovery_endpoint_is_available_only_to_loopback_clients(tmp_path, monkeypatch):
+    class _Recovery:
+        def endpoint(self):
+            return "http://127.0.0.1:12345/system-plugin-recovery?token=private-token"
+
+    monkeypatch.setattr(system_plugin_recovery, "SystemPluginRecovery", _Recovery)
+    with _proxy(1, tmp_path) as port:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request("GET", "/system-plugin-recovery/endpoint")
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+    assert response.status == 200
+    assert b"private-token" in body
+
+    with _proxy(1, tmp_path, remote=True) as port:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request("GET", "/system-plugin-recovery/endpoint")
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+    assert response.status == 403
+    assert b"private-token" not in body
