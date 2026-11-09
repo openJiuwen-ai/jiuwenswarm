@@ -26,7 +26,9 @@ session delete / rewind（同 ``_plan_exited_sessions`` 清理位点）；客户
 名单内，用户历史照常落盘（重连 / 刷新经历史恢复可见）。chunk 逐个经
 ``server.send_push`` 下行（proactive_adapter 同配方），并先推一帧带 content 的
 ``chat.processing_status`` 回显帧，前端据此渲染用户气泡（heartbeat automation
-回显同款）。契约见 ``server/docs/features/F_02_plan-execute-continuation.md``
+回显同款）。执行流抛异常时补推 ``chat.error`` + ``processing_status=false``
+终态帧——前端无本地 ``chat.send`` 超时兜底，缺终态帧会停在 processing=true。
+契约见 ``server/docs/features/F_02_plan-execute-continuation.md``
 与 ``agents/harness/docs/specs/S_04_plan-approval.md``（N3/P1）。
 """
 
@@ -57,6 +59,11 @@ _COPIED_PARAM_KEYS = ("project_dir", "project_id", "work_mode", "agent_scope")
 
 # (session_id:request_id) → 待执行的续跑记账。
 _pending: dict[str, "_ContinuationPlan"] = {}
+
+# 后台续跑 task 强引用：事件循环只持弱引用，不持会被 GC 静默回收
+# （asyncio 官方要求调用方保存 create_task 返回值）；done 回调自清理。
+# 仅防回收，不用于强杀——取消语义仍以领取记账为权威判据。
+_continuation_tasks: set[asyncio.Task] = set()
 
 
 @dataclass(frozen=True)
@@ -148,7 +155,9 @@ def schedule_plan_execute_continuation(
         return False
 
     _pending[plan.key] = plan
-    asyncio.create_task(_grace_then_run(ctx, agent, plan))
+    task = asyncio.create_task(_grace_then_run(ctx, agent, plan))
+    _continuation_tasks.add(task)
+    task.add_done_callback(_continuation_tasks.discard)
     logger.info(
         "[plan_execute_continuation] scheduled (grace %.1fs): %s plan_slug=%s",
         PLAN_EXECUTE_CONTINUATION_GRACE_SECONDS, plan.key, plan_slug,
@@ -161,8 +170,8 @@ def cancel_plan_execute_continuation(session_id: str, *, reason: str = "") -> in
 
     供普通 ``chat.send`` 到达（消息即执行消息）与 session delete / rewind
     清理调用；客户端断连**不**调用——断连兜底是本模块的存在理由。取消即从
-    记账移除：grace 计时醒来后领取不到记账，静默退出（领取是权威判据，
-    不持 task 引用强杀）。
+    记账移除：grace 计时醒来后领取不到记账，静默退出（领取是权威判据；
+    后台 task 引用仅防 GC 回收，不用于强杀）。
     """
     cancelled = 0
     for key, plan in list(_pending.items()):
@@ -200,14 +209,18 @@ async def _grace_then_run(ctx: Any, agent: Any, plan: _ContinuationPlan) -> None
     if _pending.pop(plan.key, None) is None:
         return
 
+    # request_id 在此生成并贯穿整轮（回显帧 / chunk 帧 / 失败终态帧共用），
+    # 前端按 request_id 对齐续跑事件。
+    request_id = f"plan_execute_continuation_{plan.round_id}_{int(time.time() * 1000)}"
     try:
-        await _run_continuation_stream(ctx, agent, plan)
-    except Exception:  # noqa: BLE001
-        # fire-and-forget 后台任务：失败落日志，用户可手动补发；
-        # 不向外抛——未被 await 的 task 异常会触发 asyncio 未检索告警。
+        await _run_continuation_stream(ctx, agent, plan, request_id)
+    except Exception as exc:  # noqa: BLE001
+        # fire-and-forget 后台任务：失败落日志，并向前端补终态帧后即可手动
+        # 补发；不向外抛——未被 await 的 task 异常会触发 asyncio 未检索告警。
         logger.exception(
             "[plan_execute_continuation] continuation run failed: %s", plan.key
         )
+        await _push_failure_terminal_frames(ctx, plan, request_id, exc)
 
 
 async def _wait_until_session_idle(agent: Any, session_id: str) -> bool:
@@ -232,11 +245,50 @@ async def _wait_until_session_idle(agent: Any, session_id: str) -> bool:
     return False
 
 
-async def _run_continuation_stream(ctx: Any, agent: Any, plan: _ContinuationPlan) -> None:
+async def _push_failure_terminal_frames(
+    ctx: Any, plan: "_ContinuationPlan", request_id: str, exc: Exception
+) -> None:
+    """异常终态兜底：补推 ``chat.error`` + ``processing_status=false``。
+
+    续跑由 server 发起，前端没有本地 ``chat.send`` 的 15s 超时兜底；执行流
+    中途抛异常（配额拦截 / adapter 初始化失败 / 流式生成异常等）时若不补
+    终态帧，前端会停留在 processing=true（输入区转圈、执行轮永不再收口），
+    只能刷新页面恢复。推帧自身失败仅落日志（通道已坏时无从兜底）。
+    """
+    for payload in (
+        {
+            "event_type": "chat.error",
+            "error": str(exc) or exc.__class__.__name__,
+            "source": "plan_execute_continuation",
+        },
+        {
+            "event_type": "chat.processing_status",
+            "is_processing": False,
+            "source": "plan_execute_continuation",
+        },
+    ):
+        try:
+            await ctx.services.send_push({
+                "request_id": request_id,
+                "channel_id": plan.channel_id,
+                "session_id": plan.session_id,
+                "payload": payload,
+            })
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[plan_execute_continuation] terminal frame push failed: %s %s",
+                payload.get("event_type"), plan.key,
+            )
+
+
+async def _run_continuation_stream(
+    ctx: Any, agent: Any, plan: _ContinuationPlan, request_id: str | None = None
+) -> None:
     """代发执行消息并消费执行轮流式输出，chunk 经 send_push 下行。"""
     from jiuwenswarm.common.schema.agent import AgentRequest
 
-    request_id = f"plan_execute_continuation_{plan.round_id}_{int(time.time() * 1000)}"
+    if not request_id:
+        request_id = f"plan_execute_continuation_{plan.round_id}_{int(time.time() * 1000)}"
     agent_request = AgentRequest(
         request_id=request_id,
         channel_id=plan.channel_id,
@@ -288,16 +340,20 @@ async def _run_continuation_stream(ctx: Any, agent: Any, plan: _ContinuationPlan
 def _resolve_language(agent: Any) -> str:
     """沿 agent 配置解析执行文案语言；取不到回退 ``"cn"``。
 
-    与 rail 侧 ``_detect_language``（system_prompt_builder.language）同源；
-    facade 经 ``resolve_adapter`` 拿内层 adapter 再读（惰性导入防循环）。
+    与 rail 侧 ``_detect_language`` 同源：``system_prompt_builder`` 挂在
+    adapter 的内层 ``_instance``（openjiuwen DeepAgent）上——``interface_deep.
+    _update_prompt_for_mode`` 正是写 ``self._instance.system_prompt_builder``
+    （评审 2026-11-09：adapter 自身无该属性，直接读恒为 None 恒回退 cn）。
+    facade 经 ``resolve_adapter`` 拿 adapter 再入 ``_instance``（惰性导入防循环）。
     """
     try:
         from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
         adapter = AgentWebSocketServer.resolve_adapter(agent)
-        language = getattr(
-            getattr(adapter, "system_prompt_builder", None), "language", None
+        builder = getattr(
+            getattr(adapter, "_instance", None), "system_prompt_builder", None
         )
+        language = getattr(builder, "language", None)
         if language in ("cn", "en"):
             return language
     except Exception:  # noqa: BLE001
