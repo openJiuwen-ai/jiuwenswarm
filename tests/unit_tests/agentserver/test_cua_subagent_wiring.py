@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import inspect
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from filelock import Timeout as FileLockTimeout
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.image_modality_probe import (
     probe_cache_key,
@@ -30,6 +31,7 @@ from openjiuwen.harness.subagents.cua_agent import (
     create_cua_agent,
 )
 
+from jiuwenswarm.agents.harness.common import cua_factory
 from jiuwenswarm.agents.harness.common.cua_defaults import (
     CUA_AGENT_CARD_DESCRIPTION,
     DEFAULT_CUA_AGENT_MAX_ITERATIONS,
@@ -53,6 +55,7 @@ from jiuwenswarm.agents.swarm.providers.code_subagents import (
     build_swarm_cua_agent,
 )
 from jiuwenswarm.agents.swarm.registry import register_swarm_providers
+from jiuwenswarm.common import cua_config
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
 )
@@ -67,6 +70,12 @@ def _names(subagents) -> list[str]:
 
 def _cua_spec(subagents):
     return next(spec for spec in subagents if spec.agent_card.name == "cua_agent")
+
+
+@pytest.fixture(autouse=True)
+def legacy_factory_by_default(monkeypatch):
+    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: False)
+    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: True)
 
 
 # ── single-agent (agent mode) path ───────────────────────────────────────
@@ -648,29 +657,135 @@ def test_no_unavailable_notice_when_cua_is_mounted_or_not_enabled():
     )
 
 
-@pytest.mark.parametrize("frozen", [False, True])
-def test_cua_factory_keeps_caller_rails_in_both_builds(monkeypatch, tmp_path, frozen):
-    # The panel's tool activity rail is passed in by the adapters; the desktop
-    # installer build must keep it next to its own CuaExtensionRail, not drop either.
-    from jiuwenswarm.agents.harness.common import cua_factory
+def test_enabled_cua_is_skipped_when_the_host_has_no_backend(monkeypatch, tmp_path):
+    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
+    react = {"subagents": {"cua_agent": {"enabled": True}}}
+    model = MagicMock()
+    for adapter in (_deep_adapter(monkeypatch, tmp_path), _code_adapter(monkeypatch, tmp_path)):
+        subagents, _ = adapter._build_configured_subagents(model, react, {})
+        assert "cua_agent" not in _names(subagents)
+    assert not any(spec.factory_name == SWARM_CUA_AGENT for spec in build_member_subagent_specs(
+        mode="work", role="leader", config={"react": react},
+    ))
+    ctx = SwarmBuildContext(extras={"_parent_model": model})
+    assert build_swarm_cua_agent({}, ctx) is None
+
+    prompt = BrowserTaskPromptRail(cua_agent_enabled=True)._task_prompt_extension(_rail_agent(), "en")
+    assert "No computer control backend is available" in prompt
+
+
+@pytest.mark.parametrize("legacy_available", [False, True])
+@pytest.mark.parametrize(("language", "guidance"), [("cn", "cua_repl 支持"), ("en", "cua_repl executes")])
+def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, tmp_path, legacy_available, language, guidance):
+    from openjiuwen.harness.tools.cua.rails import CuaProgressRail
     from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
 
-
-    def _fake_core(model, **kwargs):
-        return SimpleNamespace(rails=list(kwargs["rails"]), system_prompt="core prompt")
-
-    monkeypatch.setattr(cua_factory, "build_core_cua_config", _fake_core)
     (tmp_path / "__init__.pyi").write_text("class Computer: ...", encoding="utf-8")
     monkeypatch.setattr(cua_factory, "files", lambda package: tmp_path)
-    monkeypatch.setattr(cua_factory.sys, "frozen", frozen, raising=False)
-    monkeypatch.setattr(cua_factory.sys, "platform", "win32")
+    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
+    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: legacy_available)
     caller_rail = object()
 
-    spec = cua_factory.build_cua_agent_config(MagicMock(), card=AgentCard(name="cua_agent"), rails=[caller_rail])
+    spec = cua_factory.build_cua_agent_config(
+        MagicMock(), card=AgentCard(name="cua_agent"), rails=[caller_rail], language=language,
+    )
 
-    rails = spec.rails
-    assert rails[0] is caller_rail
-    assert any(isinstance(rail, CuaExtensionRail) for rail in rails) is frozen
+    assert spec.rails[0] is caller_rail
+    assert any(isinstance(rail, CuaExtensionRail) for rail in spec.rails)
+    assert spec.factory_name == (CUA_AGENT_FACTORY_NAME if legacy_available else None)
+    assert ("list_windows" in spec.system_prompt) is legacy_available
+    assert guidance in spec.system_prompt
+    assert "class Computer: ..." in spec.system_prompt
+    assert any(isinstance(rail, CuaProgressRail) for rail in spec.rails) is not legacy_available
+
+
+@pytest.mark.asyncio
+async def test_repl_only_subagent_registers_repl_without_legacy_tools_or_sdk_stub(monkeypatch, tmp_path):
+    from openjiuwen.harness import create_deep_agent
+
+    monkeypatch.setattr(cua_factory, "files", lambda package: tmp_path)
+    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
+    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
+    model = MagicMock()
+    subagents, _ = _deep_adapter(monkeypatch, tmp_path)._build_configured_subagents(
+        model, {"subagents": {"cua_agent": {"enabled": True}}}, {},
+    )
+    parent = create_deep_agent(
+        model=model, subagents=subagents, workspace=str(tmp_path),
+        enable_read_image_multimodal=False, enable_sys_operation=False,
+    )
+    child = parent.create_subagent("cua_agent", "repl-only-test")
+    try:
+        await child._ensure_initialized()
+        names = {tool.name for tool in await child.ability_manager.list_tool_info()}
+        assert names == {"cua_repl"}
+    finally:
+        await child.stop()
+        await parent.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "detail"),
+    [
+        (FileLockTimeout("native-build.lock"), "Another session is preparing the desktop driver"),
+        (FileNotFoundError("Swift compiler unavailable"), "Swift compiler unavailable"),
+    ],
+)
+async def test_repl_can_retry_after_driver_preparation_fails(monkeypatch, error, detail):
+    from computer_use_mcp import session as sdk_session
+
+    from jiuwenswarm.agents.harness.common.tools import cua_runtime
+    from jiuwenswarm.agents.harness.common.tools.cua_repl import CuaReplTool
+
+    prepare = MagicMock(side_effect=[error, None])
+    monkeypatch.setattr(cua_runtime, "_prepare_native_driver", prepare)
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value={"content": [{"type": "text", "text": "ok"}]}),
+        close=AsyncMock(return_value={"isError": False}),
+    )
+    monkeypatch.setattr(sdk_session, "ExecutionSession", lambda: session)
+    runtime = cua_runtime.ReplRuntime()
+    tool = CuaReplTool(runtime, "test")
+    try:
+        failed = await tool.invoke({"code": "print('ok')"})
+        assert not failed.success
+        assert detail in failed.error
+        assert "No REPL code was executed" in failed.error
+        session.execute.assert_not_awaited()
+
+        recovered = await tool.invoke({"code": "print('ok')"})
+        assert recovered.success
+        session.execute.assert_awaited_once()
+    finally:
+        await runtime.close()
+
+
+def test_wheel_driver_retries_incomplete_native_build(monkeypatch, tmp_path):
+    from computer_use import paths
+    from computer_use_native_tools import native
+    from jiuwenswarm.agents.harness.common.tools import cua_runtime
+
+    _prepare_native_driver = cua_runtime._prepare_native_driver
+
+    driver = tmp_path / "driver"
+    monkeypatch.setattr(paths, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(paths, "native_driver", lambda **kwargs: {"command": str(driver)})
+
+    def fail_after_creating_driver(*, root):
+        driver.touch()
+        raise RuntimeError("build interrupted")
+
+    build = MagicMock(side_effect=fail_after_creating_driver)
+    monkeypatch.setattr(native, "build_native", build)
+    with pytest.raises(RuntimeError, match="build interrupted"):
+        _prepare_native_driver()
+
+    build.side_effect = None
+    _prepare_native_driver()
+    monkeypatch.setattr(cua_runtime, "FileLock", MagicMock(side_effect=PermissionError("read-only driver cache")))
+    _prepare_native_driver()
+    assert build.call_count == 2
 
 
 def test_panel_rail_is_added_to_the_cua_default_rails_not_replacing_them(monkeypatch, tmp_path):
