@@ -66,7 +66,10 @@ export function LogsPanel({ isConnected: _isConnected }: LogsPanelProps) {
     setLoading(true);
     try {
       const filePath = encodeURIComponent('agent/.logs/ws-dev.log');
-      const response = await fetch(`/file-api/file-content?path=${filePath}`);
+      // tail_bytes keeps the per-poll transfer bounded: the server returns only
+      // the trailing 256 KiB regardless of how large ws-dev.log has grown, and
+      // parseJsonlTail still takes the last 300 lines from that window.
+      const response = await fetch(`/file-api/file-content?path=${filePath}&tail_bytes=262144`);
       if (!response.ok) {
         const detail = await response.text();
         throw new Error(`${t('logsPanel.errors.readLogs')} (HTTP ${response.status})${detail ? `: ${detail.slice(0, 120)}` : ''}`);
