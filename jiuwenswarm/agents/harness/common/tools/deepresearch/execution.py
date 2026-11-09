@@ -14,7 +14,7 @@ import time
 import uuid
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Literal, Mapping
 
 from openjiuwen.core.foundation.tool import tool
 
@@ -34,6 +34,8 @@ from .tools import (
     build_model_research_fallback,
     _call_deepresearch_stream_impl,
     _deepresearch_stage_hint_ctx,
+    _deepresearch_main_agent_plan_ctx,
+    _deepresearch_process_scope_ctx,
     _get_brief_upgrade_record,
     _get_cached_outline_json,
     _get_route,
@@ -75,6 +77,7 @@ class DeepResearchExecutionContext:
     agent_id: str
     save_state: Callable[[dict[str, Any]], None]
     request_id: str = ""
+    parent_task_id: str = ""
     requested_report_type: DeepResearchReportType | None = None
     # 结构化升级动作（relay 校验后经请求上下文传入）：phase=new 启动 SDK 前
     # 解析并强制 strict 绑定最新来源记录；非 Mapping 一律按未携带处理。
@@ -99,6 +102,7 @@ def bind_deepresearch_execution_context(
     save_state: Callable[[dict[str, Any]], None],
     agent_id: str = "jiuwenswarm",
     request_id: str = "",
+    parent_task_id: str = "",
     requested_report_type: DeepResearchReportType | None = None,
     deepresearch_followup: Mapping[str, Any] | None = None,
     materials_context: dict[str, Any] | None = None,
@@ -116,6 +120,7 @@ def bind_deepresearch_execution_context(
             agent_id=agent_id.strip() or "jiuwenswarm",
             save_state=save_state,
             request_id=request_id.strip(),
+            parent_task_id=parent_task_id.strip(),
             requested_report_type=requested_report_type,
             deepresearch_followup=(
                 dict(deepresearch_followup)
@@ -1069,7 +1074,20 @@ async def _handle_outcome(
             error_code="interrupt_node_unknown",
             content="DeepResearch 返回了不支持的交互节点，任务已停止。",
         )
-    if status == "completed" and outcome.get("report_delivered") is True:
+    prepared_files = outcome.get("report_files")
+    prepared_for_main_agent = (
+        state.get("task_mode") == "main_agent"
+        and outcome.get("report_prepared") is True
+        and isinstance(prepared_files, list)
+        and bool(prepared_files)
+        and all(
+            isinstance(item, Mapping)
+            and isinstance(item.get("path"), str)
+            and bool(item["path"].strip())
+            for item in prepared_files
+        )
+    )
+    if status == "completed" and (outcome.get("report_delivered") is True or prepared_for_main_agent):
         html_style_status = outcome.get("html_style_status")
         if html_style_status not in {"applied", "fallback"}:
             html_style_status = None
@@ -1097,6 +1115,18 @@ async def _handle_outcome(
             brief_upgrade_available=outcome.get("brief_upgrade_available") is True,
         )
         completed_updates: dict[str, Any] = {"conversation_id": conversation_id}
+        if state.get("task_mode") == "main_agent":
+            # Paths come from written artifacts, never model input.
+            content = (
+                "研究已完成，产物已落盘但未发送至前台。请根据用户目标继续处理 report_files，并决定最终交付。"
+                if prepared_for_main_agent else
+                "研究已完成，产物已交付。请根据用户目标继续处理 report_files，避免重复发送已有产物。"
+            )
+            completed_updates.update(
+                report_files=outcome.get("report_files", []),
+                report_prepared=prepared_for_main_agent,
+                report_delivered=outcome.get("report_delivered") is True,
+            )
         if html_style_status is not None:
             completed_updates["html_style_status"] = html_style_status
         if html_style_phase is not None:
@@ -1104,6 +1134,10 @@ async def _handle_outcome(
             completed_updates["html_style_reason_code"] = html_style_reason_code
         state = _persist(context, state, "completed", **completed_updates)
         result_fields: dict[str, Any] = {"content": content}
+        if state.get("task_mode") == "main_agent":
+            result_fields.update(continuation="main_agent", report_files=state.get("report_files", []),
+                                 report_prepared=state.get("report_prepared", False),
+                                 report_delivered=state.get("report_delivered", False))
         if html_style_status is not None:
             result_fields["html_style_status"] = html_style_status
         if html_style_phase is not None:
@@ -1419,9 +1453,13 @@ _material_execution_locks = weakref.WeakValueDictionary()
         "report_type: 'professional' for in-depth multi-section reports, 'brief' for "
         "single-page concise reports; infer from the user's original wording. "
         "file_name: the delivered report file name and part of the idempotency key; "
-        "the same query plus file_name as an already-delivered report returns the "
+        "in standalone mode, the same query plus file_name as an already-delivered report returns the "
         "delivered result without re-running, so pass a different file_name when the "
         "user explicitly asks to regenerate a report for the same topic. "
+        "task_mode: 'main_agent' when the Main Agent owns the top-level todos; "
+        "return prepared report_files for the Main Agent to process and deliver, without "
+        "publishing internal stage todos or ending the whole request. "
+        "The default 'standalone' retains direct terminal delivery. "
         "upgrade_from_brief: set true only when the user confirms expanding the "
         "just-delivered brief report in the same session into a full professional "
         "report; it reuses the cached brief outline and skips intent recognition. "
@@ -1444,28 +1482,43 @@ async def deepresearch_execute(
     report_type: DeepResearchReportType | None = None,
     upgrade_from_brief: bool = False,
     conversation_id: str = "",
+    task_mode: Literal["standalone", "main_agent"] = "standalone",
 ) -> dict[str, Any]:
     context = _execution_context.get()
-    if context is None or not (context.materials_context or (context.state or {}).get("materials_prepared")):
-        return await _execute_workflow(
-            query, file_name, report_type, conversation_id,
-            upgrade_from_brief=upgrade_from_brief,
-        )
-    key = (str((context.materials_context or {}).get("scope") or ""), context.tool_call_id)
-    lock = _material_execution_locks.setdefault(key, asyncio.Lock())
-    if lock.locked():
-        latest = context.load_state() if context.load_state else context.state
-        return _result("in_progress", dict(latest or {}), error_code="execution_uncertain")
-    async with lock:
-        latest = context.load_state() if context.load_state else context.state
-        token = _execution_context.set(replace(context, state=latest))
-        try:
+    # HITL resumes and stopped claims retain the initial ownership decision.
+    mode = (context.state or {}).get("task_mode", task_mode) if context else task_mode
+    if mode not in {"standalone", "main_agent"}:
+        raise ValueError("invalid DeepResearch task_mode")
+    plan_token = _deepresearch_main_agent_plan_ctx.set(mode == "main_agent")
+    owner = str((context.state or {}).get("parent_task_id") or context.parent_task_id).strip() if context else ""
+    scope_token = _deepresearch_process_scope_ctx.set(
+        (owner, context.tool_call_id) if mode == "main_agent" and owner and context else None
+    )
+    try:
+        context = _execution_context.get()
+        if context is None or not (context.materials_context or (context.state or {}).get("materials_prepared")):
             return await _execute_workflow(
                 query, file_name, report_type, conversation_id,
                 upgrade_from_brief=upgrade_from_brief,
             )
-        finally:
-            _execution_context.reset(token)
+        key = (str((context.materials_context or {}).get("scope") or ""), context.tool_call_id)
+        lock = _material_execution_locks.setdefault(key, asyncio.Lock())
+        if lock.locked():
+            latest = context.load_state() if context.load_state else context.state
+            return _result("in_progress", dict(latest or {}), error_code="execution_uncertain")
+        async with lock:
+            latest = context.load_state() if context.load_state else context.state
+            token = _execution_context.set(replace(context, state=latest))
+            try:
+                return await _execute_workflow(
+                    query, file_name, report_type, conversation_id,
+                    upgrade_from_brief=upgrade_from_brief,
+                )
+            finally:
+                _execution_context.reset(token)
+    finally:
+        _deepresearch_process_scope_ctx.reset(scope_token)
+        _deepresearch_main_agent_plan_ctx.reset(plan_token)
 
 
 async def _execute_workflow(
@@ -1501,8 +1554,13 @@ async def _execute_workflow(
             # config REPORT_TYPE -> run_deepsearch.py -> SDK config.report_type，
             # 触发 IntentRecognitionNode 锁死 report_type 字段，LLM 无决定权。
             "requested_report_type": report_type or context.requested_report_type or "brief",
+            "task_mode": "main_agent" if _deepresearch_main_agent_plan_ctx.get() else "standalone",
             "revision": 0,
         }
+    # Existing pre-mode checkpoints can opt in; a stored mode is never overwritten.
+    state.setdefault("task_mode", "main_agent" if _deepresearch_main_agent_plan_ctx.get() else "standalone")
+    if state["task_mode"] == "main_agent" and context.parent_task_id:
+        state.setdefault("parent_task_id", context.parent_task_id)
     if not str(state.get("query") or "").strip():
         return _terminal_error(
             context,
@@ -1551,7 +1609,14 @@ async def _execute_workflow(
             ),
         )
     if phase in {"completed", "cancelled"}:
-        return _result(phase, state, content="DeepResearch 任务已经结束。")
+        fields = {}
+        if phase == "completed" and state.get("task_mode") == "main_agent":
+            fields = {"continuation": "main_agent", "report_files": state.get("report_files", []),
+                      "report_prepared": state.get("report_prepared", False),
+                      "report_delivered": state.get(
+                          "report_delivered", state.get("report_prepared") is not True
+                      )}
+        return _result(phase, state, content="DeepResearch 任务已经结束。", **fields)
     if phase == "error":
         if (state.get("model_research_fallback") is True
                 and state.get("error_code") in MODEL_RESEARCH_HANDOFF_ERRORS):
@@ -1613,6 +1678,8 @@ async def _execute_workflow(
                 file_name=str(state.get("file_name") or file_name),
             )
             if salvage is not None:
+                if state.get("task_mode") == "main_agent":
+                    return await _handle_outcome(context, state, salvage, action="resume")
                 state = _persist(
                     context, state, "completed", conversation_id=error_cid
                 )
@@ -1877,6 +1944,8 @@ async def _execute_workflow(
                     file_name=str(state.get("file_name") or file_name),
                 )
                 if salvage is not None:
+                    if state.get("task_mode") == "main_agent":
+                        return await _handle_outcome(context, state, salvage, action="resume")
                     state = _persist(
                         context, state, "completed", conversation_id=claimed_cid
                     )

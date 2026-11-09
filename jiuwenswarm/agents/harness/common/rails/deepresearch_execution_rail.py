@@ -35,6 +35,7 @@ from jiuwenswarm.common.schema.ask_user import ask_user_response_schema
 from jiuwenswarm.perf.context import (
     extract_session_id_from_callback,
     get_request_context,
+    resolve_task_id,
 )
 
 DEEPRESEARCH_EXECUTION_STATE_KEY = "deepresearch_execution_states"
@@ -52,7 +53,7 @@ _BRIEF_REFRESH_INSTRUCTION = (
     "report_type='brief'、upgrade_from_brief=False；执行工具会核对来源报告并读取原报告。"
     "必须生成并交付包含补充数据、事实依据和来源的新版精简报告文件，不要只在聊天里回答。"
     "用户所说的‘不需要重新生成完整报告’指不生成专业版，不禁止生成新版精简报告。"
-    "不要升级专业版、不要另建 todo，也不要重复发送工具已交付的报告。"
+    "不要升级专业版；沿用已有顶层 todo，不将研究内部步骤拆为待办，也不要重复发送工具已交付的报告。"
 )
 
 # HITL 暂停占位文案（interaction 分支写入 tool_msg）。必须注册进
@@ -512,7 +513,13 @@ class DeepResearchExecutionRail(DeepAgentRail):
             file_name=str(args.get("file_name") or ""),
             requested_report_type=requested_type,
         )
-        if hit is not None and not is_upgrade and workflow_id not in states:
+        # The legacy delivery index has no artifact paths for downstream todos.
+        if (
+            args.get("task_mode") != "main_agent"
+            and hit is not None
+            and not is_upgrade
+            and workflow_id not in states
+        ):
             from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
                 _completion_content,
                 _persist_delivered_state,
@@ -589,6 +596,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
             save_state=save_state,
             agent_id=self._agent_id,
             request_id=request_id,
+            parent_task_id=resolve_task_id(request_ctx=request_context) or "",
             requested_report_type=requested_report_type,
             deepresearch_followup=deepresearch_followup,
             materials_context=materials_context,
@@ -782,6 +790,35 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 # The next main-model turn follows the Skill, using existing tools.
                 return
             content = payload.get("content")
+
+            if isinstance(state, Mapping) and state.get("task_mode") == "main_agent":
+                completed = payload.get("kind") == "completed"
+                message = {
+                    "status": "completed" if completed else str(payload.get("kind") or "error"),
+                    "content": content,
+                    "report_files": payload.get("report_files", []) if completed else [],
+                    "report_prepared": payload.get("report_prepared", False) if completed else False,
+                    "report_delivered": payload.get("report_delivered", False) if completed else False,
+                    "next_action": (
+                        "研究阶段已完成，请更新顶层 todo 并继续用户要求的后续工作。"
+                        "如需 Word，加载 docx-craft，读取 report_files 中的正文，"
+                        "只做排版转换、校验和交付，不重新研究或改写结论与引用。"
+                        "根据 report_delivered 判断研究产物是否已发送；只交付用户需要的最终产物，避免重复发送。"
+                        "如用户仅要 Word，不发送中间 HTML/Markdown。没有后续加工时由你决定报告交付。"
+                        if completed else
+                        "研究未成功，更新顶层 todo 并说明原因；不得继续文档转换、"
+                        "虚报完成或自动重启研究。"
+                    ),
+                }
+                ctx.inputs.tool_msg = ToolMessage(
+                    content=json.dumps(message, ensure_ascii=False),
+                    tool_call_id=history_id,
+                )
+                # Keep completed state for idempotent replay, including file paths.
+                if completed:
+                    states[workflow_id] = dict(state)
+                    _save_states(ctx.session, states)
+                return
 
             if payload.get("kind") == "completed":
                 # 完成态回写：completed 结果不再以原始 JSON payload（含

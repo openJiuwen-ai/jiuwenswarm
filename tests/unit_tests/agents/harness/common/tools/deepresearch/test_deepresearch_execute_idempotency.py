@@ -475,3 +475,21 @@ def test_terminal_completed_preserves_structured_tool_result_for_usage_accountin
     assert ctx.inputs.tool_result.get("kind") == "completed"
     assert "workflow_llm_token_usage" in ctx.inputs.tool_result
     assert len(ctx.force_finish_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_main_agent_is_not_force_finished_by_standalone_delivery_record():
+    session = _fake_session(delivery_index={
+        "prior": {"query": "研究红果 App", "file_name": "红果报告",
+                  "conversation_id": "prior", "delivered_at": 1.0},
+    })
+    ctx = _build_callback_ctx(session, tool_call_id="new", args={
+        "query": "研究红果 App", "file_name": "红果报告", "task_mode": "main_agent",
+    })
+    instance = rail.DeepResearchExecutionRail(model_provider=lambda: None)
+    try:
+        await instance.before_tool_call(ctx)
+        assert ctx.force_finish_requests == []
+        assert ctx.inputs.tool_result is None
+    finally:
+        await instance.after_tool_call(ctx)

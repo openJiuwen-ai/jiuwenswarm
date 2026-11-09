@@ -104,10 +104,13 @@ async def _invoke(
     conversation_id="",
     materials_context=None,
     mcp_servers=None,
+    task_mode=None,
+    parent_task_id="",
 ):
     saved: list[dict] = []
     token = de.bind_deepresearch_execution_context(
         tool_call_id="call-1",
+        parent_task_id=parent_task_id,
         state=state,
         user_input=user_input,
         model=model,
@@ -124,6 +127,7 @@ async def _invoke(
             report_type=report_type,
             upgrade_from_brief=upgrade_from_brief,
             conversation_id=conversation_id,
+            **({"task_mode": task_mode} if task_mode is not None else {}),
         )
     finally:
         de.reset_deepresearch_execution_context(token)
@@ -4089,3 +4093,222 @@ async def test_stopped_material_research_resumes_with_original_query_and_snapsho
     assert stream.await_args.kwargs["node"] == "stopped"
     assert stream.await_args.kwargs["conversation_id"] == "stopped-materials"
     assert stream.await_args.kwargs["_materials_reference"] == reference
+
+
+@pytest.mark.asyncio
+async def test_main_agent_research_returns_files_and_preserves_mode_on_replay():
+    files = [{"path": "/workspace/report.html", "name": "report.html", "mime_type": "text/html"}]
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
+        "status": "completed", "report_delivered": True, "report_files": files,
+    })) as stream:
+        result, _ = await _invoke(task_mode="main_agent")
+        replay, _ = await _invoke(state=result["state"])
+    assert result["continuation"] == "main_agent"
+    assert result["report_files"] == files
+    assert replay["report_files"] == files
+    assert replay["continuation"] == "main_agent"
+    assert result["state"]["task_mode"] == "main_agent"
+    stream.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_main_agent_completion_does_not_force_finish_or_leak_internal_state():
+    state = {"phase": "completed", "task_mode": "main_agent", "revision": 4}
+    result = {"schema_version": de.EXECUTION_SCHEMA, "kind": "completed", "state": state,
+              "content": "研究产物已准备好", "continuation": "main_agent",
+              "report_prepared": True, "report_delivered": False,
+              "report_files": [{"path": "/workspace/report.md", "name": "report.md", "mime_type": "text/markdown"}]}
+    ctx = _rail_ctx(result=result)
+    await DeepResearchExecutionRail(model_provider=lambda: None).after_tool_call(ctx)
+    assert ctx.force_finish_requests == []
+    message = json.loads(ctx.inputs.tool_msg.content)
+    assert message["report_files"] == result["report_files"]
+    assert message["status"] == "completed"
+    assert "state" not in message
+    assert "docx-craft" in message["next_action"]
+    assert message["report_prepared"] is True
+    assert message["report_delivered"] is False
+    assert "不发送中间 HTML/Markdown" in message["next_action"]
+
+
+@pytest.mark.asyncio
+async def test_main_agent_research_error_allows_plan_cleanup_but_not_conversion():
+    result = {"schema_version": de.EXECUTION_SCHEMA, "kind": "error",
+              "state": {"task_mode": "main_agent", "phase": "error"},
+              "content": "报告交付失败", "error_code": "report_file_delivery_failed"}
+    ctx = _rail_ctx(result=result)
+    await DeepResearchExecutionRail(model_provider=lambda: None).after_tool_call(ctx)
+    assert ctx.force_finish_requests == []
+    message = json.loads(ctx.inputs.tool_msg.content)
+    assert message["status"] == "error"
+    assert message["report_files"] == []
+    assert "不得" in message["next_action"]
+
+
+@pytest.mark.asyncio
+async def test_main_agent_mode_survives_feedback_and_outline_resume():
+    files = [{"path": "/workspace/final.md", "name": "final.md", "mime_type": "text/markdown"}]
+    modes = []
+
+    async def stream(**kwargs):
+        modes.append(dt._deepresearch_main_agent_plan_ctx.get())
+        if len(modes) == 1:
+            return {"status": "interrupted", "conversation_id": "C1", "node_id": "feedback_handler",
+                    "marker": {"questions": ["1. 研究范围？"]}}
+        if len(modes) == 2:
+            return {"status": "interrupted", "conversation_id": "C1", "node_id": "outline_interaction",
+                    "marker": {"outline": "# 研究报告\n### P1: 市场分析"}}
+        return {"status": "completed", "conversation_id": "C1", "report_delivered": True, "report_files": files}
+
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(side_effect=stream)):
+        first, _ = await _invoke(task_mode="main_agent")
+        assert first["kind"] == "interaction"
+        second, _ = await _invoke(state=first["state"], user_input={"status": "skipped", "answers": []})
+        assert second["kind"] == "interaction"
+        final, _ = await _invoke(state=second["state"], user_input={"status": "skipped", "answers": []})
+    assert final["kind"] == "completed"
+    assert final["report_files"] == files
+    assert modes == [True, True, True]
+    assert dt._deepresearch_main_agent_plan_ctx.get() is False
+
+
+@pytest.mark.asyncio
+async def test_main_agent_material_replay_restores_both_context_variables():
+    state = {"phase": "completed", "task_mode": "main_agent", "materials_prepared": True,
+             "query": "q", "report_files": []}
+    result, _ = await _invoke(state=state)
+    assert result["continuation"] == "main_agent"
+    assert de._execution_context.get() is None
+    assert dt._deepresearch_main_agent_plan_ctx.get() is False
+
+
+@pytest.mark.asyncio
+async def test_main_agent_mode_isolated_from_concurrent_standalone_research():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    observed = {}
+
+    async def stream(**kwargs):
+        observed[kwargs["query"]] = dt._deepresearch_main_agent_plan_ctx.get()
+        if kwargs["query"] == "main":
+            entered.set()
+            await release.wait()
+        return {"status": "completed", "report_delivered": True, "report_files": []}
+
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(side_effect=stream)):
+        main_task = asyncio.create_task(_invoke(query="main", task_mode="main_agent"))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        try:
+            standalone, _ = await _invoke(query="standalone")
+        finally:
+            release.set()
+        main, _ = await main_task
+    assert observed == {"main": True, "standalone": False}
+    assert main["continuation"] == "main_agent"
+    assert "continuation" not in standalone
+    assert dt._deepresearch_main_agent_plan_ctx.get() is False
+
+
+@pytest.mark.asyncio
+async def test_main_agent_cancelled_card_never_exposes_report_files():
+    state = {"phase": "wait_outline", "task_mode": "main_agent", "query": "q",
+             "conversation_id": "C1", "outline_presented": True}
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream:
+        result, _ = await _invoke(state=state, user_input={"status": "cancelled", "answers": []})
+    assert result["kind"] == "cancelled"
+    assert "report_files" not in result
+    stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_main_agent_can_continue_legacy_checkpoint_without_research_restart():
+    state = {"phase": "wait_outline", "query": "q", "conversation_id": "C1",
+             "file_name": "report", "outline_presented": True}
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
+        "status": "completed", "report_delivered": True, "report_files": [],
+    })) as stream:
+        result, _ = await _invoke(state=state, task_mode="main_agent",
+                                  user_input={"status": "skipped", "answers": []})
+    assert result["continuation"] == "main_agent"
+    assert stream.await_args.kwargs["action"] == "resume"
+
+
+@pytest.mark.asyncio
+async def test_main_agent_process_owner_is_persisted_and_not_rebound_on_resume():
+    scopes = []
+    async def stream(**kwargs):
+        scopes.append(dt._deepresearch_process_scope_ctx.get())
+        return {"status": "completed", "report_delivered": True, "report_files": []}
+    with patch.object(de, "_call_deepresearch_stream_impl", new=stream):
+        result, _ = await _invoke(task_mode="main_agent", parent_task_id="todo:research")
+        assert result["state"]["parent_task_id"] == "todo:research"
+        state = {**result["state"], "phase": "wait_outline", "outline_presented": True}
+        await _invoke(state=state, parent_task_id="todo:word", user_input={"status": "answered", "answers": [{"selected_options": ["确认大纲，继续研究"]}]})
+    assert scopes == [("todo:research", "call-1"), ("todo:research", "call-1")]
+    assert dt._deepresearch_process_scope_ctx.get() is None
+
+
+@pytest.mark.asyncio
+async def test_main_agent_prepared_report_completes_and_replays_without_claiming_delivery():
+    files = [{"path": "/workspace/report.html", "name": "report.html", "mime_type": "text/html"}]
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
+        "status": "completed", "report_delivered": False, "report_prepared": True, "report_files": files,
+    })) as stream:
+        result, _ = await _invoke(task_mode="main_agent")
+        replay, _ = await _invoke(state=result["state"])
+    assert result["kind"] == "completed"
+    assert result["report_prepared"] is True
+    assert result["report_delivered"] is False
+    assert result["report_files"] == replay["report_files"] == files
+    assert replay["report_prepared"] is True
+    assert "未发送" in result["content"]
+    stream.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,files", [
+    ("standalone", [{"path": "/workspace/report.html"}]),
+    ("main_agent", []), ("main_agent", [{}]),
+    ("main_agent", [{"path": "   "}]), ("main_agent", [{"path": 42}]),
+])
+async def test_prepared_report_does_not_complete_standalone_or_missing_artifacts(mode, files):
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
+        "status": "completed", "report_prepared": True, "report_delivered": False, "report_files": files,
+    })):
+        result, _ = await _invoke(task_mode=mode)
+    assert result["kind"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_legacy_main_agent_completed_checkpoint_preserves_delivered_semantics():
+    files = [{"path": "/workspace/previous.html"}]
+    state = {"phase": "completed", "task_mode": "main_agent", "query": "q", "report_files": files}
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream:
+        result, _ = await _invoke(state=state)
+    assert result["kind"] == "completed"
+    assert result["report_files"] == files
+    assert result["report_delivered"] is True
+    assert result["report_prepared"] is False
+    stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["new", "error"])
+async def test_main_agent_salvage_hands_prepared_report_back(phase):
+    state = {"phase": phase, "query": "研究智能家电竞争格局",
+             "conversation_id": "C-SAL", "file_name": "报告", "task_mode": "main_agent"}
+    files = [{"path": "/workspace/report.html"}]
+    outcome = {"status": "completed", "conversation_id": "C-SAL",
+               "report_prepared": True, "report_delivered": False, "report_files": files}
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", return_value=None),
+        patch.object(de, "salvage_deepresearch_report", new=AsyncMock(return_value=outcome)) as salvage,
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(state=state, conversation_id="C-SAL")
+    salvage.assert_awaited_once()
+    stream.assert_not_awaited()
+    assert result["kind"] == "completed"
+    assert result["continuation"] == "main_agent"
+    assert result["report_files"] == saved[-1]["report_files"] == files
+    assert result["report_delivered"] is False

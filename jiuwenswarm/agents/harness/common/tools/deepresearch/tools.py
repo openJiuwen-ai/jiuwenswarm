@@ -238,6 +238,37 @@ _deepresearch_route_ctx: contextvars.ContextVar[dict[str, object] | None] = (
 _deepresearch_router_state_ctx: contextvars.ContextVar[object | None] = (
     contextvars.ContextVar("jiuwenswarm_deepresearch_router_state", default=None)
 )
+# Main Agent owns the outer plan; internal stages must not replace its todos.
+_deepresearch_main_agent_plan_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "jiuwenswarm_deepresearch_main_agent_plan", default=False
+)
+_deepresearch_process_scope_ctx: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "deepresearch_process_scope", default=None,
+)
+
+
+def _scope_main_agent_process(payload: dict[str, Any]) -> dict[str, Any]:
+    """Route skill process nodes beneath their captured owner, without creating todos."""
+    scope = _deepresearch_process_scope_ctx.get()
+    if scope is None or payload.get("event_type") not in {"task.start", "task.complete", "chat.reasoning"}:
+        return payload
+    owner, workflow = scope
+    node = str(payload.get("stream_source_id") or payload.get("task_id") or "").strip()
+    if not node:
+        return payload
+    scoped = dict(payload)
+    scoped.update(
+        task_id=owner,
+        stream_source_id=f"deepresearch:{workflow}:{node}",
+        skill_call_id=workflow,
+        skill_node_id=node,
+        source_chunk_type="process",
+    )
+    title = str(payload.get("task_content") or "").strip()
+    if title:
+        scoped["task_content"] = title.split(" - ", 1)[0]
+    return scoped
+
 # 停止续跑(resume node='stopped')的前端进度起始阶段提示:认领侧
 # (execution.py)按被停止节点推导后经本上下文传入 _consume_stream,
 # 避免进度列表错误回退到第一步(详见 stream_router.stage_for_resume_node)。
@@ -3448,6 +3479,21 @@ def _locate_salvage_report(conversation_id: str) -> dict[str, Any] | None:
     }
 
 
+async def _publish_report_files(
+    payload: dict[str, Any], send: Callable[[dict[str, Any]], Awaitable[bool]]
+) -> bool:
+    """Main Agent owns delivery; standalone keeps the existing push contract."""
+    if _deepresearch_main_agent_plan_ctx.get():
+        return bool(payload.get("files"))
+    return await send(payload)
+
+
+def _report_completion_fields(files: list[dict[str, Any]]) -> dict[str, Any]:
+    if _deepresearch_main_agent_plan_ctx.get():
+        return {"report_prepared": True, "report_delivered": False, "report_files": files}
+    return {"report_delivered": True}
+
+
 async def _deliver_salvaged_report(
     *,
     route: dict[str, object],
@@ -3509,7 +3555,7 @@ async def _deliver_salvaged_report(
     )
     if bundle:
         file_payload["metadata"] = {"artifactBundle": bundle}
-    if not await send(file_payload):
+    if not await _publish_report_files(file_payload, send):
         return None
     logger.warning(
         "[deepresearch_stream] salvaged report from raw_report.md "
@@ -3520,7 +3566,7 @@ async def _deliver_salvaged_report(
     outcome: dict[str, Any] = {
         "status": "completed",
         "conversation_id": conversation_id,
-        "report_delivered": True,
+        **_report_completion_fields(files),
         "salvaged_report": True,
     }
     if html_style_status in {"applied", "fallback"}:
@@ -3600,6 +3646,9 @@ async def _deliver_race_completed_report(
             return False
         if not isinstance(safe_payload, dict):
             return False
+        if _deepresearch_main_agent_plan_ctx.get() and safe_payload.get("event_type") == "task.update":
+            return True
+        safe_payload = _scope_main_agent_process(safe_payload)
         if todo_target is not None and safe_payload.get("event_type") == "task.update":
             try:
                 await persist_deepresearch_task_update(safe_payload, todo_path=todo_path, target=todo_target)
@@ -3702,17 +3751,17 @@ async def _deliver_race_completed_report(
             file_metadata["htmlStyleReasonCode"] = html_style_reason_code
     if file_metadata:
         file_payload["metadata"] = file_metadata
-    if not await send(file_payload):
+    if not await _publish_report_files(file_payload, send):
         return None
     logger.warning(
-        "[deepresearch_stream] race-completed report delivered "
+        "[deepresearch_stream] race-completed report prepared "
         "conversation_id=%s",
         resolved_cid,
     )
     outcome: dict[str, Any] = {
         "status": "completed",
         "conversation_id": resolved_cid,
-        "report_delivered": True,
+        **_report_completion_fields(files),
         "race_completed": True,
     }
     if html_style_status in {"applied", "fallback"}:
@@ -3857,6 +3906,9 @@ async def _consume_stream(
         safe_payload = _redact_json_value(payload, secrets)
         if not isinstance(safe_payload, dict):
             raise _StreamProtocolInvalid("Gateway payload is not an object")
+        if _deepresearch_main_agent_plan_ctx.get() and safe_payload.get("event_type") == "task.update":
+            return True
+        safe_payload = _scope_main_agent_process(safe_payload)
         if todo_target is not None and safe_payload.get("event_type") == "task.update":
             try:
                 await persist_deepresearch_task_update(
@@ -4242,7 +4294,7 @@ async def _consume_stream(
                 file_metadata["htmlStyleReasonCode"] = html_style_reason_code
             if file_metadata:
                 file_payload["metadata"] = file_metadata
-            if not await send(file_payload):
+            if not await _publish_report_files(file_payload, send):
                 return attach_terminal_timing({
                     "status": "error",
                     "conversation_id": chunk.get("conversation_id", outcome_cid),
@@ -4256,7 +4308,7 @@ async def _consume_stream(
             completed_outcome: dict[str, Any] = {
                 "status": "completed",
                 "conversation_id": chunk.get("conversation_id", outcome_cid),
-                "report_delivered": True,
+                **_report_completion_fields(files),
             }
             # brief→professional 升级：完成即登记来源记录（metadata 缺失/无效
             # 同样登记为不可用并覆盖旧记录——升级不会读到上一份 brief 的缓存
@@ -4280,7 +4332,7 @@ async def _consume_stream(
                 )
                 if brief_upgrade_available:
                     completed_outcome["brief_upgrade_available"] = True
-                if brief_report_id:
+                if brief_report_id and not _deepresearch_main_agent_plan_ctx.get():
                     completed_outcome["brief_report"] = {
                         "v": 1,
                         "report_id": brief_report_id,
@@ -4366,7 +4418,7 @@ async def _consume_stream(
             if titles:
                 state.section_titles.update(titles)
                 state.authoritative_section_indices.update(titles)
-        for payload in route_chunk(chunk, state):
+        for payload in route_chunk(chunk, state, nested_process=_deepresearch_process_scope_ctx.get() is not None):
             await send(payload)
         # 只跟踪专业版大纲流（brief 走 brief_outline，无大纲卡与「报告概览」）。
         if chunk.get("agent") == "outline":
