@@ -1,4 +1,5 @@
 import { webRequest } from './webClient';
+import { browserClientCapabilities } from '../features/webui/client/browserClient';
 import type { SystemPluginDetail, SystemPluginSummary } from '../types/systemPlugin';
 import {
   normalizeAgentFileContent,
@@ -21,6 +22,35 @@ export interface SystemPluginReportPayload {
 // The Gateway waits dependency_timeout (default 300s) + 30s for the AgentServer; the
 // client keeps another 30s so the server-side timeout error reaches the UI first.
 const INSTALL_TIMEOUT_MS = 360_000;
+const READ_TIMEOUT_MS = 30_000;
+
+async function readPluginState(method: string, params: Record<string, unknown>): Promise<unknown> {
+  try {
+    return await webRequest(method, params, { timeoutMs: READ_TIMEOUT_MS });
+  } catch (error) {
+    if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'CONTEXT_CHANGED') {
+      throw error;
+    }
+    const host = browserClientCapabilities;
+    const ready = await new Promise<boolean>((resolve) => {
+      if (!host.isChanging()) {
+        resolve(!host.isUnavailable());
+        return;
+      }
+      const finish = (available: boolean) => {
+        window.clearTimeout(timeoutId);
+        unsubscribe();
+        resolve(available);
+      };
+      const unsubscribe = host.subscribe((change) => {
+        if (change.phase === 'ready' && !host.isChanging()) finish(!host.isUnavailable());
+      });
+      const timeoutId = window.setTimeout(() => finish(false), READ_TIMEOUT_MS);
+    });
+    if (!ready) throw error;
+    return webRequest(method, params, { timeoutMs: READ_TIMEOUT_MS });
+  }
+}
 
 function reportFailure(payload: SystemPluginReportPayload): string | null {
   const failed = (payload.reports ?? []).find((report) => report.status !== 'SUCCESS');
@@ -30,13 +60,13 @@ function reportFailure(payload: SystemPluginReportPayload): string | null {
 
 export const systemPluginApi = {
   async catalog(scope: 'catalog' | 'mine'): Promise<SystemPluginSummary[]> {
-    const result = await webRequest('extensions.v2.catalog', { scope }, { timeoutMs: 30_000 });
+    const result = await readPluginState('extensions.v2.catalog', { scope });
     const packages = (result as { packages?: SystemPluginSummary[] } | null)?.packages;
     return Array.isArray(packages) ? packages : [];
   },
 
   async show(packageId: string): Promise<SystemPluginDetail | null> {
-    const result = await webRequest('extensions.v2.show', { package_id: packageId }, { timeoutMs: 30_000 });
+    const result = await readPluginState('extensions.v2.show', { package_id: packageId });
     return (result as { package?: SystemPluginDetail } | null)?.package ?? null;
   },
 
