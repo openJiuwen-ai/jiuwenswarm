@@ -1815,6 +1815,15 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
                     "[SkillTurboTool] turbo_session post_run failed",
                     exc_info=True,
                 )
+        # 回收本次环境注册进全局注册表的工具实例（issue #5908：uuid 实例泄漏）。
+        # 无论正常完成、异常还是 HITL 中断都要执行；重复调用安全。
+        try:
+            skill_turbo_inst.release_registered_tools()
+        except Exception:
+            logger.debug(
+                "[SkillTurboTool] release_registered_tools failed",
+                exc_info=True,
+            )
 
 
 # PPT 加速流水线经常超过 AbilityManager 默认 300s 工具超时；与 deepresearch_stream 一样

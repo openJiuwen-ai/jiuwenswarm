@@ -1144,6 +1144,35 @@ class AgentWebSocketServer:
                 "unexpected error; skipping (用户可在 TUI 里 /sandbox enable 重试)"
             )
 
+    async def _sync_sandbox_runtime(self) -> None:
+        """按当前 ``sandbox.enabled`` 拉起或停掉本进程管理的 box-server。
+
+        配置页保存后 agent 会 reload。这里只在开关和进程状态不一致时动作：
+        已在跑的不重复拉起，没拉起过的关闭也不去停。
+        """
+        from jiuwenswarm.common.config import clear_config_cache
+        from jiuwenswarm.server.sandbox_lifecycle import shutdown_jiuwenbox_sandboxes
+
+        try:
+            if is_enterprise():
+                return
+            clear_config_cache()
+            enabled = bool(get_sandbox_runtime().get("enabled"))
+            runner = self._jiuwenbox_runner
+            owns = bool(getattr(runner, "owns_process", False))
+            if not enabled:
+                if not owns:
+                    return
+                await runner.stop()
+                await asyncio.to_thread(shutdown_jiuwenbox_sandboxes)
+                logger.info("[sandbox_lifecycle] sandbox.enabled=false, 已停掉 box-server")
+                return
+            if owns:
+                return
+            await self._bootstrap_internal_jiuwenbox()
+        except Exception:  # noqa: BLE001
+            logger.exception("[sandbox_lifecycle] sync sandbox runtime failed")
+
     async def _stop_scheduler(self) -> None:
         """Stop the auto_harness scheduler."""
         try:

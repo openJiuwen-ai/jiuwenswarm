@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-05 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -33,8 +33,10 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   WS连接建立时固定选择，HTTP请求进入时固定选择；本请求内配置变化不改变输出。
   实时和历史共用此上下文。既有版本消费者停用增强需先明确状态/连接切换，不能热降级。
 
-- **N1 配置缓存双重键**：合并结果按 `(path, mtime_ns)` 缓存（省 ~150ms/次）；
+- **N1 配置缓存双重键**：合并结果按 `(path, mtime_ns, size)` 缓存（省 ~150ms/次）；
   `get_config()` 按 `(sid, aid)` ns + overlay 内容 hash 做 TTL + 版本号缓存。
+  合并结果只取决于两份 YAML，与环境变量无关：`clear_config_cache(service_id, agent_id)`
+  只清该 ns 的解析缓存，不清合并缓存；无参全量清理才连带清空合并缓存。
   **返回共享引用，消费方禁止原地修改**——要改走 `update_config` / `set_config`。
 - **N2 写回三保险**：portalocker + 原子替换（tmp + os.replace）+ ruamel round-trip
   （保注释保格式）。绕过 `set_config` 直写文件会与锁协议冲突。
@@ -71,7 +73,12 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - **N11 代理解析顺序与重试**：tip/overlay（无进程回退）→ `os.environ`（Windows 大小写
   不敏感已处理）；NO_PROXY 支持 `*` / 域名后缀 / IP / CIDR；`ProxyError` 自动去代理
   重试（fail-open）；requests 封装 `trust_env=False`（`REQUESTS_CA_BUNDLE` 需显式注入）；
-  `JIUWENSWARM_SSL_VERIFY` 默认开启 TLS。
+  `JIUWENSWARM_SSL_VERIFY` 默认开启 TLS。AgentServer 工具执行绑定 NetGuard 配置 key 时，
+  网页/搜索请求改走受保护传输：仅按 key 调用 PermissionManager；每跳解析并校验完整 DNS
+  快照、固定连接 IP、保留原 Host/SNI 并验证证书，重定向重新检查。该路径强制 TLS
+  校验（保留自定义 CA 路径，旧的免校验开关不生效）；当前代理接口无法保证目标 IP 固定，
+  故显式拒绝代理，禁止失败后自动直连。
+  未绑定此执行上下文的原有请求路径保持上述兼容行为（包括 Gateway）。
 - **N12 affinity 不变量 fail-closed**：affinity 开启 ⇒ release 必 false 且默认 provider
   必为 `AscendAffinity`；请求级互斥冲突直接抛 ValueError。provider 判定链：
   `models.defaults[is_default]` → `models.default` → `react.model_client_config` →
@@ -124,7 +131,7 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - **tip**：`(session_id, agent_id)` → 生效环境 dict（active ∪ staged，staged 胜）。
 - **overlay**：任务级密封 dict（ContextVar）；`effective_tip = tip ∪ overlay`（overlay
   键存在即覆盖，miss 即 unset）。
-- **config 缓存**：`(path, mtime_ns)` → 合并 dict；`(sid, aid, overlay_hash)` → agent
+- **config 缓存**：`(path, mtime_ns, size)` → 合并 dict；`(sid, aid, overlay_hash)` → agent
   视图 + 版本号。
 - **HooksConfig**：`{events: [{event, matchers}]}`；match 失败静默跳过。
 

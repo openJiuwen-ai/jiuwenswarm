@@ -46,7 +46,10 @@ def test_session_state_cannot_be_reopened_by_explicit_allow_or_alias(
             {"allow": [str(sessions)]}, shared_dir=tenant
         )
     alias = tmp_path / "alias"
-    alias.symlink_to(tenant, target_is_directory=True)
+    try:
+        alias.symlink_to(tenant, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation requires privilege on this platform")
     with pytest.raises(ValueError, match="alias"):
         sysop_builder.build_filesystem_policy(
             {"allow": [str(alias)]}, shared_dir=tenant

@@ -2053,6 +2053,7 @@ class SkillTurboExecutor:
                             response = await client.invoke(
                                 messages,
                                 max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                request_purpose="skill_turbo",
                                 **thinking_kwargs,
                             )
                         except Exception as inv_exc:
@@ -2067,6 +2068,7 @@ class SkillTurboExecutor:
                                 response = await client.invoke(
                                     messages,
                                     max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                    request_purpose="skill_turbo",
                                 )
                             else:
                                 raise
@@ -2242,6 +2244,7 @@ class SkillTurboExecutor:
                                 async for chunk in client.stream(
                                     messages,
                                     max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                    request_purpose="skill_turbo",
                                     **thinking_kwargs,
                                 ):
                                     yield chunk
@@ -2257,6 +2260,7 @@ class SkillTurboExecutor:
                                     async for chunk in client.stream(
                                         messages,
                                         max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                        request_purpose="skill_turbo",
                                     ):
                                         yield chunk
                                 else:

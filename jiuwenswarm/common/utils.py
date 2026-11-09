@@ -302,6 +302,9 @@ def _log_component_from_logger_name(name: str) -> str:
         return "permissions"
     if name.startswith("openjiuwen.harness.security") or name.startswith("openjiuwen.harness.rails.security"):
         return "permissions"
+    # W1a: agent_shield 判定日志进 permissions.log（permission.engine.decision / manager.*）
+    if name.startswith("agent_shield"):
+        return "permissions"
     if name.startswith("jiuwenswarm.agents") or name.startswith("jiuwenswarm.server"):
         return "agent_server"
     return "gateway"
@@ -702,6 +705,7 @@ def _find_source_root() -> Path:
     return current
 
 
+@functools.lru_cache(maxsize=1)
 def _find_package_root() -> Path | None:
     """Best-effort detection of the jiuwenswarm package root.
 
@@ -809,12 +813,25 @@ def _get_builtin_skill_names() -> set[str]:
     return get_builtin_skill_names()
 
 
+_BUILTIN_SKILL_NAMES_CACHE: dict[str, tuple[int, frozenset[str]]] = {}
+
+
 def get_builtin_skill_names() -> set[str]:
     """Return official package builtin skill directory names."""
     builtin_skills_dir = get_builtin_skills_dir()
-    if not builtin_skills_dir.exists():
+    try:
+        mtime_ns = builtin_skills_dir.stat().st_mtime_ns
+    except OSError:
         return set()
-    return {item.name for item in builtin_skills_dir.iterdir() if item.is_dir()}
+    key = str(builtin_skills_dir)
+    cached = _BUILTIN_SKILL_NAMES_CACHE.get(key)
+    if cached is not None and cached[0] == mtime_ns:
+        return set(cached[1])
+    names = frozenset(item.name for item in builtin_skills_dir.iterdir() if item.is_dir())
+    if len(_BUILTIN_SKILL_NAMES_CACHE) >= 16:
+        _BUILTIN_SKILL_NAMES_CACHE.clear()
+    _BUILTIN_SKILL_NAMES_CACHE[key] = (mtime_ns, names)
+    return set(names)
 
 
 def is_builtin_skill(skill_name: str) -> bool:
@@ -1458,6 +1475,7 @@ def prepare_workspace(
     preferred_language: Optional[str] = None,
     workspace_dir: Optional[Path] = None,
 ) -> CopyDiffResult:
+    _prepare_t0 = time.perf_counter()
     package_root = _find_package_root()
     if not package_root:
         raise RuntimeError("package root not found")
@@ -1708,6 +1726,16 @@ def prepare_workspace(
 
     _resolve_paths(force=True)
 
+    # [startup] 归因：企业版首启/新 PVC 时本函数会整树拷贝资源，此前该阶段完全静默。
+    logger.info(
+        "[startup] prepare_workspace done: elapsed_ms=%.0f added_dirs=%d "
+        "added_files=%d overwritten_files=%d overwrite=%s",
+        (time.perf_counter() - _prepare_t0) * 1000.0,
+        len(cumulative_diff.added_dirs),
+        len(cumulative_diff.added_files),
+        len(cumulative_diff.overwritten_files),
+        overwrite,
+    )
     return cumulative_diff
 
 
@@ -2000,6 +2028,11 @@ def get_default_project_workspace_dir() -> Path:
     return get_agent_workspace_dir() / "projects"
 
 
+def _ensure_dir(path: Path) -> None:
+    if not path.is_dir():
+        path.mkdir(parents=True, exist_ok=True)
+
+
 def get_default_project_session_workspace_dir(session_id: str | None = None) -> Path:
     """Get the no-project task workspace for a single conversation session.
 
@@ -2015,19 +2048,19 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
         session_id=session_id,
     )
     if overridden is not None:
-        overridden.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(overridden)
         return overridden
     base = get_default_project_workspace_dir()
     raw_session = str(session_id or "").strip()
     if not raw_session:
-        base.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(base)
         return base
     safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_session).strip("._-")
     if not safe_session:
-        base.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(base)
         return base
     workspace = base / safe_session
-    workspace.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(workspace)
     return workspace
 
 
@@ -2640,7 +2673,8 @@ def get_builtin_skills_dir() -> Path:
     package_root = _find_package_root()
     # 优先检查 workspace/skills 目录（标准布局）
     primary_path = package_root / "resources" / "agent" / "workspace" / "skills"
-    if primary_path.exists() and primary_path.is_dir():
+    # is_dir() 不存在时即为 False，与原先 exists() and is_dir() 等价，少一次 stat
+    if primary_path.is_dir():
         return primary_path
     # 回退到 skills 目录
     fallback_path = package_root / "resources" / "agent" / "skills"

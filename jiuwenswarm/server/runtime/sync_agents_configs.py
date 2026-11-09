@@ -82,6 +82,11 @@ SYNC_ENV_SCHEMA: frozenset[str] = frozenset(
     }
 )
 
+# Accepted by the sync protocol but omissible by clients. Absence is not an error:
+# config.yaml resolves ``modalities: ${MODEL_MODALITIES:-text}`` and S_22 treats
+# undeclared modalities as text-only, so agents predating the key keep syncing.
+SYNC_ENV_OPTIONAL_KEYS: frozenset[str] = frozenset({"MODEL_MODALITIES"})
+
 
 def materialize_sync_env(env_dict: dict[str, Any]) -> dict[str, str]:
     """Build active-tip map: keep empty strings, omit nulls (deletes).
@@ -294,7 +299,7 @@ def _validate_env_schema(env: Any, *, agent_id: str) -> None:
     present: set[str] = set()
     for key in env:
         present |= set(env_keys_with_product_aliases((str(key),)))
-    missing = sorted(SYNC_ENV_SCHEMA - present)
+    missing = sorted(SYNC_ENV_SCHEMA - SYNC_ENV_OPTIONAL_KEYS - present)
     if missing:
         raise ValueError(
             f"agent {agent_id!r}: env missing required keys: {', '.join(missing)}"

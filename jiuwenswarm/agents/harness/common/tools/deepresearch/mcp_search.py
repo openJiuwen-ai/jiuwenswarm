@@ -150,33 +150,30 @@ async def get_search_mcp_context(adapter, *, registry_provider, owner_policy_pro
                         scope = (scopes.get(channel) or {}).get(principal)
                         if _resolve_owner_scope_level(scope, name, arguments) not in {None, "allow"}:
                             return False
-            from openjiuwen.harness.security.skill_authorization import (
-                get_skill_authorization_context, get_skill_grant_store,
-            )
-            authorization = get_skill_authorization_context()
-            if authorization is not None:
-                from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
-                    _compose_active_skill_permissions,
-                )
-                policy = _compose_active_skill_permissions(
-                    policy, authorization.session_id, authorization.agent_scope_id, get_skill_grant_store())
             enabled = policy.get("enabled") if isinstance(policy, dict) else None
             if enabled is False:
                 return True
-            engine = getattr(getattr(adapter, "_permission_rail", None), "_engine", None)
-            if enabled is not True or engine is None:
+            if enabled is not True:
                 return False
-            from openjiuwen.harness.security.models import PermissionLevel
-            from openjiuwen.harness.security.core import PermissionEngine
-            fresh = PermissionEngine(config=copy.deepcopy(policy),
-                                     workspace_root=getattr(engine, "_workspace_root", None),
-                                     trusted_dirs=getattr(engine, "_trusted_dirs", None))
-            if fresh.check_tool_permission_directly(name, arguments)[0] != PermissionLevel.ALLOW:
-                return False
-            # Without an explicit scope retain any tightening already applied
-            # by the host's active Skill; never mutate its shared engine.
-            return (authorization is not None
-                    or engine.check_tool_permission_directly(name, arguments)[0] == PermissionLevel.ALLOW)
+            # Manager only holds triad / default keys; Skill overlay and
+            # digital-avatar scene stay outside this path.
+            from jiuwenswarm.agents.harness.common.rails.permissions.permission_key import (
+                resolve_permission_key,
+            )
+            from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                PermissionLevel,
+                check_permission_by_key,
+            )
+            dims_reader = getattr(adapter, "permission_key_dims", None)
+            dims = dims_reader() if callable(dims_reader) else {
+                "group_id": None, "bot_id": None, "user_id": None,
+            }
+            key = resolve_permission_key(**dims)
+            result = await check_permission_by_key(name, arguments, key)
+            return (
+                result is not None
+                and result.permission == PermissionLevel.ALLOW
+            )
         except Exception:
             return False
 

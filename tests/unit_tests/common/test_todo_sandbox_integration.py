@@ -21,7 +21,11 @@ from fastapi.testclient import TestClient
 from jiuwenbox.models.sandbox import SandboxPhase, SandboxRef
 from jiuwenbox.server.auth import BearerTokenAuthMiddleware
 from jiuwenbox.server.routes import sandbox as routes
-from jiuwenbox.server.runtime.process import ProcessRuntime
+
+# jiuwenbox's bubblewrap-backed ProcessRuntime raises ImportError off Linux.
+ProcessRuntime = pytest.importorskip(
+    "jiuwenbox.server.runtime.process", exc_type=ImportError
+).ProcessRuntime
 from jiuwenbox.server.sandbox_manager import (
     CodePolicyDenialError,
     SandboxManager,
@@ -96,10 +100,6 @@ def backend(tmp_path, monkeypatch):
         app.add_exception_handler(
             SandboxNotFoundError,
             lambda req, exc: JSONResponse(status_code=404, content={"error": str(exc)}),
-        )
-        app.add_exception_handler(
-            CodePolicyDenialError,
-            lambda req, exc: JSONResponse(status_code=403, content={"error": str(exc)}),
         )
         try:
             with TestClient(

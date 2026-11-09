@@ -411,7 +411,11 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
 
         def _restore() -> None:
             try:
-                rail.update_config(saved_config)
+                from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                    update_permission_config,
+                )
+
+                update_permission_config(rail, saved_config)
             except Exception:
                 logger.warning(
                     "[spawn_fallback] failed to restore permission rail config",
@@ -442,6 +446,7 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
             "PermissionInterruptRail",
             "SkillAuthorizationPermissionRail",
             "SkillTurboPermissionRail",
+            "FlashPermissionRail",
         ):
             continue
         try:
@@ -453,7 +458,11 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
                 host.get_permissions_snapshot if host is not None else None
             )
 
-            rail.update_config(suspended_config)
+            from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                update_permission_config,
+            )
+
+            update_permission_config(rail, suspended_config)
             if host is not None:
                 host.get_permissions_snapshot = _make_disabled_snapshot(suspended_config)
             restore_steps.append(_make_restore(rail, saved_config, host, saved_snapshot))

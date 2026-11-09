@@ -77,6 +77,38 @@ def _parse_bool(value: str | bool | None, default: bool = False) -> bool:
     return default
 
 
+def normalize_minio_host(host: str) -> str:
+    """Normalize endpoint / URL host for OBS comparisons (strip, lower, drop trailing ``.``)."""
+    return (host or "").strip().lower().rstrip(".")
+
+
+def huawei_obs_needs_virtual_style(endpoint: str, bucket: str = "") -> bool:
+    """Whether Huawei OBS should use virtual-hosted-style addressing.
+
+    True only for Huawei OBS regional endpoints. False when ``OBS_URL`` already
+    embeds the bucket (legacy ``{bucket}.{endpoint}`` workaround) so minio-py
+    does not double-prefix the host as ``{bucket}.{bucket}.{endpoint}``.
+    """
+    endpoint_n = normalize_minio_host(endpoint)
+    bucket_n = normalize_minio_host(bucket)
+    if not endpoint_n or "myhuaweicloud." not in endpoint_n:
+        return False
+    if bucket_n and (endpoint_n == bucket_n or endpoint_n.startswith(f"{bucket_n}.")):
+        return False
+    return True
+
+
+def huawei_obs_virtual_hosted_bucket_host(endpoint: str, bucket: str) -> str | None:
+    """Return ``{bucket}.{endpoint}`` when virtual-hosted object URLs apply."""
+    if not huawei_obs_needs_virtual_style(endpoint, bucket):
+        return None
+    endpoint_n = normalize_minio_host(endpoint)
+    bucket_n = normalize_minio_host(bucket)
+    if not bucket_n:
+        return None
+    return normalize_minio_host(f"{bucket_n}.{endpoint_n}")
+
+
 def load_minio_upload_config() -> MinioUploadConfig:
     """Load object-store settings from ``OBS_*`` env or ``config.yaml`` ``minio``.
 
@@ -160,6 +192,9 @@ def upload_local_file_to_minio(
         secure=config.secure,
         region=config.region,
     )
+    # Huawei OBS requires virtual-hosted style (skip if OBS_URL already embeds bucket).
+    if huawei_obs_needs_virtual_style(config.endpoint, config.bucket):
+        client.enable_virtual_style_endpoint()
     if not client.bucket_exists(config.bucket):
         client.make_bucket(config.bucket)
 

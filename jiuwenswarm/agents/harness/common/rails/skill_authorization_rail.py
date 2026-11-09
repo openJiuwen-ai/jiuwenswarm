@@ -4,6 +4,7 @@
 
 import portalocker
 from openjiuwen.core.runner.callback.errors import AbortError
+from openjiuwen.harness.security.permission_checks import fail_closed_permission_callback
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.skills.skill_authorization_rail import (
     SkillAuthorizationRail as CoreSkillAuthorizationRail,
@@ -48,6 +49,7 @@ class SkillAuthorizationRail(CoreSkillAuthorizationRail):
                         "Skill authorization storage unavailable; retry the request"
                     ) from exc
 
+    @fail_closed_permission_callback
     async def before_tool_call(self, ctx):
         self._bind_session_files(ctx)
         return await super().before_tool_call(ctx)
