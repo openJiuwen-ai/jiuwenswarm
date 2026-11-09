@@ -34,6 +34,7 @@
     "test:jiuwenmate-model-initialization": "node --test tests/jiuwenmateModelInitialization.test.mjs",
     "test:welink-oauth": "node tests/welinkOauth.test.mjs",
     "test:jiuwenmate-profile": "node tests/buildJiuwenmateProfile.mjs && node --test tests/jiuwenmateProfile.test.mjs tests/jiuwenmateWorkspacePage.test.mjs",
+    "test:jiuwenmate-menu": "esbuild src/features/jiuwenmate/components/menuPosition.ts src/features/jiuwenmate/components/ActionMenu.tsx --bundle --packages=external --platform=node --format=esm --jsx=automatic --outbase=src/features/jiuwenmate --outdir=node_modules/.cache/jiuwenmate-menu && node --test tests/jiuwenmateMenu.test.mjs",
     "test:jiuwenmate-workspace": "esbuild src/features/jiuwenmate/workspaceState.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/jiuwenmate-workspace/workspaceState.js && node --test tests/jiuwenmateWorkspace.test.mjs",
     "test:jiuwenmate-office": "esbuild src/features/jiuwenmate/officeState.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/jiuwenmate-office/officeState.js && node --test tests/jiuwenmateOffice.test.mjs",
     "test:jiuwenmate-integration": "esbuild src/features/jiuwenmate/publicNav.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/jiuwenmate-integration/publicNav.js && node --test tests/jiuwenmateIntegration.test.mjs",
