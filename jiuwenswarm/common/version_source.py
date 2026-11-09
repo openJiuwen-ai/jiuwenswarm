@@ -23,7 +23,7 @@ RELEASES_PER_PAGE = 100
 MAX_RELEASE_PAGES = 100
 GITHUB_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
 GITCODE_API = "https://api.gitcode.com/api/v5/repos/{owner}/{repo}/releases/latest"
-PYPI_SIMPLE_API = "https://pypi.org/simple/{package}/"
+PYPI_INDEX_URL = "https://pypi.org/simple/"
 PYPI_VERSION_JSON_API = "https://pypi.org/pypi/{package}/{version}/json"
 
 #: Total budget for the best-effort publish-time lookup in
@@ -559,6 +559,19 @@ class GitCodeReleasesSource(VersionSource):
         return headers
 
 
+def normalize_pypi_index_url(mirror: str) -> str:
+    """Accept either a Simple API index URL or a legacy mirror base URL."""
+    mirror = mirror.strip()
+    if not mirror:
+        return ""
+
+    parts = urlsplit(mirror)
+    path = parts.path.rstrip("/")
+    if not path.endswith("/simple"):
+        path += "/simple"
+    return urlunsplit((parts.scheme, parts.netloc, f"{path}/", parts.query, parts.fragment))
+
+
 class PyPIVersionSource(VersionSource):
     def __init__(
         self,
@@ -567,12 +580,9 @@ class PyPIVersionSource(VersionSource):
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         super().__init__(name=package, timeout_seconds=timeout_seconds)
-        if mirror:
-            self._base_url = mirror.rstrip("/")
-            self._api_url = urljoin(self._base_url + "/", f"simple/{package}/")
-        else:
-            self._base_url = "https://pypi.org"
-            self._api_url = PYPI_SIMPLE_API.format(package=package)
+        index_url = normalize_pypi_index_url(mirror) or PYPI_INDEX_URL
+        self._base_url = urljoin(index_url, "../")
+        self._api_url = urljoin(index_url, f"{package}/")
 
     def fetch_latest(self, current_version: str = "") -> ReleaseInfo:
         del current_version
@@ -668,7 +678,7 @@ class PyPIVersionSource(VersionSource):
         hanging endpoint delay the check past the web client's timeout.
         """
         candidates = [
-            urljoin(self._base_url + "/", f"pypi/{self._name}/{version}/json")
+            urljoin(self._base_url, f"pypi/{self._name}/{version}/json")
         ]
         default_url = PYPI_VERSION_JSON_API.format(
             package=self._name,
