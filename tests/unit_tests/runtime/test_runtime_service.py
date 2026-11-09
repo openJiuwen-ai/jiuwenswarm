@@ -1228,6 +1228,99 @@ async def test_prepare_chat_turn_requires_atomic_manager_admission() -> None:
 
 
 @pytest.mark.asyncio
+async def test_single_agent_pause_keeps_stream_execution_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #6163: 单 Agent pause 只挂起 ReAct 循环，不取消协调器执行。"""
+    cancel_execution = AsyncMock()
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: SimpleNamespace(
+            session_id=session_id,
+            generation=2,
+            state=RuntimeSessionState.READY,
+            executions=(),
+        ),
+        cancel_execution=cancel_execution,
+    )
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+    )
+    adapter_interrupt = AsyncMock(
+        return_value=AgentResponse(
+            request_id="pause-request",
+            channel_id="web",
+            payload={"success": True},
+        )
+    )
+    request = AgentRequest(
+        request_id="pause-request",
+        channel_id="web",
+        session_id="session-a",
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"mode": "agent", "intent": "pause"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.request.cancel_request", adapter_interrupt,
+    )
+
+    response = await runtime.cancel_request(request)
+
+    assert response.ok is True
+    adapter_interrupt.assert_awaited_once()
+    cancel_execution.assert_not_awaited()
+    test_logger.info("Single-agent pause kept the stream execution alive")
+
+
+@pytest.mark.asyncio
+async def test_single_agent_cancel_still_cancels_coordinator_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cancel 仍要取消协调器执行，pause 的豁免不能扩散。"""
+    cancel_execution = AsyncMock(
+        return_value=CancelExecutionResult(matched=1, cancelled=1, timed_out=())
+    )
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: SimpleNamespace(
+            session_id=session_id,
+            generation=2,
+            state=RuntimeSessionState.READY,
+            executions=(),
+        ),
+        cancel_execution=cancel_execution,
+    )
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+    )
+    adapter_interrupt = AsyncMock(
+        return_value=AgentResponse(
+            request_id="cancel-request",
+            channel_id="web",
+            payload={"success": True},
+        )
+    )
+    request = AgentRequest(
+        request_id="cancel-request",
+        channel_id="web",
+        session_id="session-a",
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"mode": "agent", "intent": "cancel"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.request.cancel_request", adapter_interrupt,
+    )
+
+    response = await runtime.cancel_request(request)
+
+    assert response.ok is True
+    adapter_interrupt.assert_awaited_once()
+    cancel_execution.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("registered", "paused", "adapter_success", "timed_out", "expect_push"),
     [
