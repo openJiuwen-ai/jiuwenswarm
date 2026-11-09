@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,6 +37,37 @@ def test_recovery_page_marks_the_confirm_action_as_dangerous() -> None:
     assert ".dialog-actions .danger { background: var(--danger); }" in page
 
 
+def test_recovery_page_renders_collapsible_details() -> None:
+    page = _page("token", "zh")
+
+    assert '<button id="restore" type="button"></button>' in page
+    assert ".record-detail {\n  display: none;" in page
+    assert ".record-detail.is-open {\n  display: grid;" in page
+    assert ".chevron::before" in page
+    assert "flex: 1 1 auto;" in page
+    assert "width: auto;" in page
+    assert 'font: 400 14px/1.55 "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;' in page
+    assert "#status:empty { display: none; }" in page
+    assert ".record-selector" in page
+    assert "selector.type = 'radio';" in page
+    assert "selector.name = 'recovery-record';" in page
+    assert "selector.onchange = () => selectRecord(record.id);" in page
+    assert ".record-detail.is-open { grid-template-columns: 1fr; gap: 14px; }" in page
+    assert "function toggleDetail(item, toggle, detail, record, packages)" in page
+    assert "void loadPreview(record.id, packages, detail);" in page
+    assert "/api/preview?token=${query}&record_id=${recordQuery}" in page
+    assert "detail.hidden" not in page
+    assert "restoreButton.onclick = () => {" in page
+    assert "if (selectedRecordId) confirmRestore(selectedRecordId, restoreButton);" in page
+    assert "detail.append(detailCopy);" in page
+    assert "detail.append(detailCopy, restoreButton);" not in page
+    assert "header.append(selector, toggle);" in page
+    assert "item.append(header, detail);" in page
+    assert "item.append(copy, button);" not in page
+    assert "new ResizeObserver(scheduleContentHeight).observe(page);" in page
+    assert "jiuwenswarm.system-plugin-recovery.height" in page
+
+
 def test_restore_disables_packages_installed_after_the_selected_record(tmp_path: Path) -> None:
     install_dir = tmp_path / "extension_pkgs"
     first = _write_package(install_dir, "demo.first", "1.0.0", True)
@@ -50,6 +82,28 @@ def test_restore_disables_packages_installed_after_the_selected_record(tmp_path:
     assert _enabled(first) is True
     assert _enabled(second) is False
     assert [record["action"] for record in recovery.records()] == ["restore", "install", "startup"]
+
+
+def test_preview_matches_the_restore_result_for_currently_installed_packages(tmp_path: Path) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    retained = _write_package(install_dir, "demo.retained", "1.0.0", True)
+    removed = _write_package(install_dir, "demo.removed", "1.0.0", True)
+    recovery = SystemPluginRecovery(install_dir, tmp_path / "extension")
+    startup = recovery.begin_session("session-one")
+    shutil.rmtree(removed)
+    installed_later = _write_package(install_dir, "demo.installed-later", "1.0.0", True)
+
+    preview = recovery.preview(startup["id"])
+
+    assert preview == [
+        {"package_id": "demo.installed-later", "version": "1.0.0", "enabled": False},
+        {"package_id": "demo.retained", "version": "1.0.0", "enabled": True},
+    ]
+    assert _enabled(installed_later) is True
+    assert [record["action"] for record in recovery.records()] == ["startup"]
+    recovery.restore(startup["id"])
+    assert _enabled(retained) is True
+    assert _enabled(installed_later) is False
 
 
 def test_restore_rolls_back_written_manifests_when_a_later_write_fails(tmp_path: Path, monkeypatch) -> None:

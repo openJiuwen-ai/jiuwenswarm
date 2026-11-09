@@ -126,6 +126,34 @@ class SystemPluginRecovery:
             records = _records(self._read_history())
             return [_public_record(record) for record in reversed(records)]
 
+    def preview(self, record_id: str) -> list[dict[str, Any]]:
+        """Return the installed package states that restoring a record would produce.
+
+        The preview applies the same matching rule as :meth:`restore` without
+        modifying a manifest or appending a recovery record. Packages removed
+        from the managed install directory cannot be restored and are omitted;
+        packages installed after the selected record remain installed but are
+        shown as disabled.
+        """
+        if not isinstance(record_id, str) or not record_id:
+            raise ValueError("recovery record id is invalid")
+        with self._locked():
+            source = next(
+                (record for record in _records(self._read_history()) if record.get("id") == record_id),
+                None,
+            )
+            if source is None:
+                raise RecoveryRecordNotFound(record_id)
+            expected = _expected_enabled_states(source)
+            return [
+                {
+                    "package_id": state["package_id"],
+                    "version": state["version"],
+                    "enabled": expected.get((state["package_id"], state["version"]), False),
+                }
+                for state in self._scan_packages()
+            ]
+
     def restore(self, record_id: str) -> dict[str, Any]:
         """Persist the requested enabled states and append the restore result."""
         if not isinstance(record_id, str) or not record_id:
@@ -135,10 +163,7 @@ class SystemPluginRecovery:
             source = next((record for record in _records(document) if record.get("id") == record_id), None)
             if source is None:
                 raise RecoveryRecordNotFound(record_id)
-            expected = {
-                (item["package_id"], item["version"]): item["enabled"]
-                for item in _snapshot(source)
-            }
+            expected = _expected_enabled_states(source)
             changed = self._apply_snapshot(expected)
             record = self._record("restore", changed, source_record_id=record_id)
             records = _records(document)
@@ -335,6 +360,14 @@ def _public_record(record: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(source_record_id, str):
         value["source_record_id"] = source_record_id
     return value
+
+
+def _expected_enabled_states(record: Mapping[str, Any]) -> dict[tuple[str, str], bool]:
+    """Return the enabled state map stored in one recovery record."""
+    return {
+        (item["package_id"], item["version"]): item["enabled"]
+        for item in _snapshot(record)
+    }
 
 
 def _package_state(
