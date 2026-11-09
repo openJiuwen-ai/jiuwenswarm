@@ -25,7 +25,7 @@ function checkProps(name, input = {}) {
 
 test('catalog contains the supported components', () => {
   assert.deepEqual(componentCatalog.listComponents().map((rule) => rule.name).sort(), [
-    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FileImport', 'FilePreview', 'FileTree', 'Form', 'Form.Item', 'Icon',
+    'ApplicationSurface', 'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FileImport', 'FilePreview', 'FileTree', 'Form', 'Form.Item', 'Icon',
     'Iframe', 'Image', 'Input', 'MediaSurface', 'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
   ].sort());
   assert.deepEqual(componentCatalog.getSlot('application.entry'), {

@@ -1,7 +1,8 @@
 import { bool, component, inputProps, integer, object, text, token, valueData } from './shared.ts';
+import { localizedTextRule } from './localizedText.ts';
 
 export const inputRule = component('Input', {
-  ...inputProps, value: text, defaultValue: text, placeholder: text, maxLength: integer(),
+  ...inputProps, ariaLabel: localizedTextRule, value: text, defaultValue: text, placeholder: text, maxLength: integer(),
   allowClear: bool, showCount: bool, type: token('text', 'email', 'tel', 'url', 'password'), readOnly: bool,
   autoComplete: text,
 }, {

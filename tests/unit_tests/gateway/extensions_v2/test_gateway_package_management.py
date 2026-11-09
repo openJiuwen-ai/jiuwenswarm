@@ -820,6 +820,58 @@ async def test_import_local_installs_a_gateway_package(tmp_path, monkeypatch):
     assert (install_dir / "demo.gateway" / "0.1.0" / "manifest.json").is_file()
 
 
+@pytest.mark.parametrize("action", ["import", "install", "reload"])
+async def test_web_management_notifies_mounted_slots_after_release_settles(tmp_path, monkeypatch, action):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
+    source = _example_package(examples_dir, "demo.gateway", "gateway")
+    if action == "reload":
+        assert (await runtime.packages.install([source]))[0].status == "SUCCESS"
+    order = []
+    settle = runtime.browser.settle
+
+    async def settled():
+        await settle()
+        order.append("released")
+
+    async def broadcast(event, payload):
+        order.append((event, payload))
+
+    monkeypatch.setattr(runtime.browser, "settle", settled)
+    runtime.channel.broadcast_event = broadcast
+    method = getattr(extension_package_handlers.ReqMethod, "EXTENSIONS_V2_" + action.upper())
+    params = {"path": str(source)} if action == "import" else (
+        {"package_ids": ["demo.gateway"]} if action == "install" else {"package_id": "demo.gateway"}
+    )
+    try:
+        assert await _handle(runtime, method, params)
+        assert order == ["released", ("extensions.v2.installed", {"package_ids": ["demo.gateway"]})]
+        assert runtime.channel.responses[-1]["payload"]["ui_notified"] is True
+    finally:
+        await runtime.shutdown()
+
+
+async def test_web_notification_failure_preserves_the_confirmed_install_result(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
+    source = _example_package(examples_dir, "demo.gateway", "gateway")
+
+    async def broadcast(event, payload):
+        raise ConnectionError("browser closed")
+
+    runtime.channel.broadcast_event = broadcast
+    try:
+        assert await _handle(runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)})
+        payload = runtime.channel.responses[-1]["payload"]
+        assert payload["reports"][0]["status"] == "SUCCESS"
+        assert payload["ui_notified"] is False
+        assert runtime.is_active_package("demo.gateway")
+    finally:
+        await runtime.shutdown()
+
+
 async def test_import_local_routes_agent_packages_to_the_agent_server(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)

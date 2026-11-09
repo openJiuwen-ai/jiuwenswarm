@@ -175,6 +175,8 @@ import {
   subscribeDesignModelGate,
 } from './features/designer/designSessionModelRestore';
 import { chatRoutePath } from './multi-session/routing/route';
+import { ApplicationPresentationHost } from './features/webui/presentation/ApplicationPresentationHost';
+import type { PresentationConversation } from './features/webui/presentation/protocol';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import {
   NEW_CONVERSATION_ID,
@@ -4086,6 +4088,16 @@ function AppContent({
     void supplement(currentSessionId, trimmed);
   }, [supplement]);
 
+  const cancelAgentConversation = useCallback((targetSessionId: string) => {
+    const runtime = useChatStore.getState().getRuntime(targetSessionId);
+    if (useSessionStore.getState().getRuntime(targetSessionId)?.mode === 'agent' && runtime?.taskQueue.length) {
+      useChatStore.getState().setQueuePaused(targetSessionId, true);
+    }
+    const pending = cancel(targetSessionId);
+    if (useGoalStore.getState().runtimes[targetSessionId]?.goal?.status === 'active') void pauseGoal(targetSessionId);
+    return pending;
+  }, [cancel, pauseGoal]);
+
   const handleCancel = useCallback(() => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) return;
@@ -4101,16 +4113,8 @@ function AppContent({
       if (isGoalActive) void pauseGoal(currentSessionId);
       return;
     }
-    // agent 模式下有队列任务时，暂停队列自动发送
-    if (mode === 'agent') {
-      const runtime = useChatStore.getState().getRuntime(currentSessionId);
-      if (runtime && runtime.taskQueue.length > 0) {
-        useChatStore.getState().setQueuePaused(currentSessionId, true);
-      }
-    }
-    void cancel(currentSessionId);
-    if (isGoalActive) void pauseGoal(currentSessionId);
-  }, [cancel, mode, pause, pauseGoal]);
+    void cancelAgentConversation(currentSessionId);
+  }, [cancel, cancelAgentConversation, mode, pause, pauseGoal]);
 
   /**
    * 删除目标：active 时除了清目标，还要顺带结束当前会话输出——复用停止按钮同一套中断调用
@@ -4357,6 +4361,23 @@ function AppContent({
     },
     [performSessionRestore],
   );
+
+  const preparePresentationConversation = useCallback(async (conversation: PresentationConversation | null) => {
+    if (!conversation) return;
+    if (conversation.sessionId === NEW_CONVERSATION_ID) {
+      await handleNewSession({
+        initialInputValue: useChatStore.getState().getRuntime(NEW_CONVERSATION_ID)?.inputValue ?? '',
+        preserveProject: true,
+        forceMode: 'agent',
+      });
+      return;
+    }
+    const workspace = useWorkspaceStore.getState();
+    const target = [...Object.values(workspace.projectSessions).flat(), ...workspace.pinnedSessions,
+      ...useSessionStore.getState().sessions].find((item) => item.session_id === conversation.sessionId);
+    await handleRestoreSession(conversation.sessionId, target?.mode, target);
+    if (sessionIdRef.current !== conversation.sessionId) throw new Error('TARGET_INACTIVE');
+  }, [handleNewSession, handleRestoreSession]);
 
   const handleOpenContinuedFromSession = useCallback(
     (sourceSessionId: string): void => {
@@ -5126,6 +5147,18 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       data-session-id={sessionId}
     >
       <ApplicationConversationRuntimes sessionId={sessionId} />
+      <ApplicationPresentationHost sessionId={sessionId} connected={isConnected}
+        onSelect={preparePresentationConversation}
+        onSend={async (conversation, text) => {
+          if (conversation.sessionId === NEW_CONVERSATION_ID) {
+            const acceptedSessionId = await handleSendMessage(text);
+            return { accepted: typeof acceptedSessionId === 'string', conversationKey: acceptedSessionId ?? sessionIdRef.current };
+          }
+          const accepted = await sendMessage(text, conversation.sessionId);
+          return { accepted, conversationKey: conversation.conversationKey };
+        }}
+        onStop={(conversation) => cancelAgentConversation(conversation.sessionId)}
+        onWorkspace={preparePresentationConversation} />
       {/* Navigation Sidebar */}
       <SessionSidebar
         webUIReady={initialDataLoaded && isConnected}

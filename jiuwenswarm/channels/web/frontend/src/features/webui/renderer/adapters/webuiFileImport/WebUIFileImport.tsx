@@ -8,6 +8,8 @@ import { useRef, useState } from 'react';
 import { Button } from 'antd';
 import { useTranslation } from 'react-i18next';
 import type { WebUIAdapterProps } from '../../types.ts';
+import type { LocalizedText } from '../../../catalog/components/localizedText.ts';
+import { useLocalizedText } from '../../useLocalizedText.ts';
 import { WebUIUploadError, describePickedFiles } from '../../../transfers/uploads.ts';
 import { useWebUIUploadService } from './uploadContext.ts';
 import './FileImport.css';
@@ -21,7 +23,8 @@ const ERROR_KEYS: Readonly<Record<string, string>> = {
 
 export function WebUIFileImport({ node, context, emit, appearance }: WebUIAdapterProps) {
   const { t } = useTranslation();
-  const p = node.props as { label?: string; accept?: string[]; multiple?: boolean; directory?: boolean; disabled?: boolean };
+  const p = node.props as { label: LocalizedText; accept?: string[]; multiple?: boolean; directory?: boolean; disabled?: boolean };
+  const label = useLocalizedText(p.label);
   const service = useWebUIUploadService();
   const input = useRef<HTMLInputElement>(null);
   const [phase, setPhase] = useState<Phase>('idle');
@@ -54,7 +57,7 @@ export function WebUIFileImport({ node, context, emit, appearance }: WebUIAdapte
       data-testid="webui-file-import" data-variant={phase}>
       <Button disabled={disabled} loading={phase === 'uploading'} onClick={() => input.current?.click()}
         data-testid="webui-file-import-btn">
-        {p.label}
+        {label}
       </Button>
       <input ref={input} type="file" hidden tabIndex={-1} aria-hidden="true" data-testid="webui-file-import-input"
         accept={p.accept?.join(',')} multiple={p.multiple === true || p.directory === true} {...directoryProps}
