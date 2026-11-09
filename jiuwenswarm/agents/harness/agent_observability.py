@@ -780,7 +780,9 @@ def install_subagent_llm_history_forwarder() -> None:
             from jiuwenswarm.server.runtime.session.history_artifacts import put_prompt
             from jiuwenswarm.server.runtime.session.history_io import run_history_io
 
-            prompt_ref = await run_history_io(put_prompt, parent_id, kwargs.get("messages") or [], kwargs.get("tools") or [])
+            prompt_ref = await run_history_io(
+                put_prompt, parent_id, kwargs.get("messages") or [], kwargs.get("tools") or [],
+            )
             prompt = _subagent_prompt_preview(kwargs.get("messages"))
             if prompt:
                 _LAST_PROMPT_BY_SESSION[sid] = prompt

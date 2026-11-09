@@ -15,29 +15,15 @@ generated: true
 
 | 模块 |
 |---|
-| [jiuwenswarm/agents/harness/common](#module-1) |
-| [jiuwenswarm/agents/harness/common/rails](#module-2) |
-| [jiuwenswarm/agents/harness/common/tools](#module-3) |
-| [jiuwenswarm/channels/web/frontend](#module-4) |
-| [jiuwenswarm/extensions/sdk](#module-5) |
-| [jiuwenswarm/extensions/video_duplex/backend](#module-6) |
-| [jiuwenswarm/resources/plugins/ttse](#module-7) |
-| [jiuwenswarm/runtime](#module-8) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-9) |
-| [jiuwenswarm/server/runtime/session](#module-10) |
-| [jiuwenswarm/server/supervisor](#module-11) |
-| [未分类](#module-12) |
+| [jiuwenswarm/agents/harness/common/rails](#module-1) |
+| [jiuwenswarm/agents/harness/common/tools](#module-2) |
+| [jiuwenswarm/channels/web/frontend](#module-3) |
+| [jiuwenswarm/extensions/sdk](#module-4) |
+| [jiuwenswarm/resources/plugins/ttse](#module-5) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-6) |
+| [未分类](#module-7) |
 
 <a id="module-1"></a>
-
-## jiuwenswarm/agents/harness/common
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_bounded-history-replay](jiuwenswarm/server/runtime/session/S_01_bounded-history-replay.md) | S | 有界会话恢复与 Worker 崩溃保护 | 刘瑜 | jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common, jiuwenswarm/extensions/video_duplex/backend, jiuwenswarm/server/supervisor, jiuwenswarm/runtime | jiuwenswarm/server/runtime/session/history_replay.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/extensions/video_duplex/backend/conversation_context.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/runtime/events.py, jiuwenswarm/server/agent_ws_server.py | — |
-| [S_02_durable-context-recovery](jiuwenswarm/server/runtime/session/S_02_durable-context-recovery.md) | S | 有效上下文持久化、增量恢复与旧历史迁移 | 刘瑜 | jiuwenswarm/runtime, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/runtime/context_checkpointer.py, jiuwenswarm/runtime/checkpointer.py, jiuwenswarm/server/runtime/session/context_snapshot.py, jiuwenswarm/server/runtime/session/context_migration.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/server/runtime/session/history_artifacts.py, jiuwenswarm/server/runtime/session/recovery_budget.py, jiuwenswarm/agents/harness/common/rails/stream_event_rail.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/server/handlers/session.py | — |
-
-<a id="module-2"></a>
 
 ## jiuwenswarm/agents/harness/common/rails
 
@@ -45,7 +31,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 
-<a id="module-3"></a>
+<a id="module-2"></a>
 
 ## jiuwenswarm/agents/harness/common/tools
 
@@ -53,7 +39,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 
-<a id="module-4"></a>
+<a id="module-3"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -61,7 +47,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_01_app-agent-interaction](mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 
-<a id="module-5"></a>
+<a id="module-4"></a>
 
 ## jiuwenswarm/extensions/sdk
 
@@ -69,15 +55,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
-<a id="module-6"></a>
-
-## jiuwenswarm/extensions/video_duplex/backend
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_bounded-history-replay](jiuwenswarm/server/runtime/session/S_01_bounded-history-replay.md) | S | 有界会话恢复与 Worker 崩溃保护 | 刘瑜 | jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common, jiuwenswarm/extensions/video_duplex/backend, jiuwenswarm/server/supervisor, jiuwenswarm/runtime | jiuwenswarm/server/runtime/session/history_replay.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/extensions/video_duplex/backend/conversation_context.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/runtime/events.py, jiuwenswarm/server/agent_ws_server.py | — |
-
-<a id="module-7"></a>
+<a id="module-5"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
@@ -85,16 +63,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_02_ttse-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_02_ttse-plugin-runtime.md) | S | TTSE Coding 插件运行契约 | xinyang_bali | jiuwenswarm/resources/plugins/ttse | jiuwenswarm/resources/plugins/ttse/rails/ttse_plugin_rail.py, jiuwenswarm/resources/plugins/ttse/manifest.json | — |
 
-<a id="module-8"></a>
-
-## jiuwenswarm/runtime
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_bounded-history-replay](jiuwenswarm/server/runtime/session/S_01_bounded-history-replay.md) | S | 有界会话恢复与 Worker 崩溃保护 | 刘瑜 | jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common, jiuwenswarm/extensions/video_duplex/backend, jiuwenswarm/server/supervisor, jiuwenswarm/runtime | jiuwenswarm/server/runtime/session/history_replay.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/extensions/video_duplex/backend/conversation_context.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/runtime/events.py, jiuwenswarm/server/agent_ws_server.py | — |
-| [S_02_durable-context-recovery](jiuwenswarm/server/runtime/session/S_02_durable-context-recovery.md) | S | 有效上下文持久化、增量恢复与旧历史迁移 | 刘瑜 | jiuwenswarm/runtime, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/runtime/context_checkpointer.py, jiuwenswarm/runtime/checkpointer.py, jiuwenswarm/server/runtime/session/context_snapshot.py, jiuwenswarm/server/runtime/session/context_migration.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/server/runtime/session/history_artifacts.py, jiuwenswarm/server/runtime/session/recovery_budget.py, jiuwenswarm/agents/harness/common/rails/stream_event_rail.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/server/handlers/session.py | — |
-
-<a id="module-9"></a>
+<a id="module-6"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -102,27 +71,9 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_01_app-agent-interaction](mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
-| [S_02_durable-context-recovery](jiuwenswarm/server/runtime/session/S_02_durable-context-recovery.md) | S | 有效上下文持久化、增量恢复与旧历史迁移 | 刘瑜 | jiuwenswarm/runtime, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/runtime/context_checkpointer.py, jiuwenswarm/runtime/checkpointer.py, jiuwenswarm/server/runtime/session/context_snapshot.py, jiuwenswarm/server/runtime/session/context_migration.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/server/runtime/session/history_artifacts.py, jiuwenswarm/server/runtime/session/recovery_budget.py, jiuwenswarm/agents/harness/common/rails/stream_event_rail.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/server/handlers/session.py | — |
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
-<a id="module-10"></a>
-
-## jiuwenswarm/server/runtime/session
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_bounded-history-replay](jiuwenswarm/server/runtime/session/S_01_bounded-history-replay.md) | S | 有界会话恢复与 Worker 崩溃保护 | 刘瑜 | jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common, jiuwenswarm/extensions/video_duplex/backend, jiuwenswarm/server/supervisor, jiuwenswarm/runtime | jiuwenswarm/server/runtime/session/history_replay.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/extensions/video_duplex/backend/conversation_context.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/runtime/events.py, jiuwenswarm/server/agent_ws_server.py | — |
-| [S_02_durable-context-recovery](jiuwenswarm/server/runtime/session/S_02_durable-context-recovery.md) | S | 有效上下文持久化、增量恢复与旧历史迁移 | 刘瑜 | jiuwenswarm/runtime, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/runtime/context_checkpointer.py, jiuwenswarm/runtime/checkpointer.py, jiuwenswarm/server/runtime/session/context_snapshot.py, jiuwenswarm/server/runtime/session/context_migration.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/server/runtime/session/history_artifacts.py, jiuwenswarm/server/runtime/session/recovery_budget.py, jiuwenswarm/agents/harness/common/rails/stream_event_rail.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/server/handlers/session.py | — |
-
-<a id="module-11"></a>
-
-## jiuwenswarm/server/supervisor
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_bounded-history-replay](jiuwenswarm/server/runtime/session/S_01_bounded-history-replay.md) | S | 有界会话恢复与 Worker 崩溃保护 | 刘瑜 | jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common, jiuwenswarm/extensions/video_duplex/backend, jiuwenswarm/server/supervisor, jiuwenswarm/runtime | jiuwenswarm/server/runtime/session/history_replay.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/extensions/video_duplex/backend/conversation_context.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/runtime/events.py, jiuwenswarm/server/agent_ws_server.py | — |
-
-<a id="module-12"></a>
+<a id="module-7"></a>
 
 ## 未分类
 

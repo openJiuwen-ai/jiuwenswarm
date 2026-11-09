@@ -1711,8 +1711,12 @@ async def warmup_session_context(
             if replay_cursor is not None:
                 from jiuwenswarm.server.runtime.session.context_snapshot import bind_recovery_boundary
 
-                restored_ids = ({str(record.get("request_id")) for record in history_records if record.get("request_id")}
-                                if replay_cursor.path.suffix.lower() != ".jsonl" else set())
+                restored_ids = set()
+                if replay_cursor.path.suffix.lower() != ".jsonl":
+                    restored_ids = {
+                        str(record.get("request_id"))
+                        for record in history_records if record.get("request_id")
+                    }
                 bind_recovery_boundary(restored_context, replay_cursor, restored_ids)
             restored_context.duplex_history_ids = {
                 record.get("id") or record.get("request_id")

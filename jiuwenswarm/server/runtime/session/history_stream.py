@@ -130,7 +130,7 @@ class _JSONStream:
                 value = json.loads(token, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
                 if not isinstance(value, (bool, int, float, type(None))):
                     raise ValueError()
-            except (ValueError, UnicodeError) as exc:
+            except ValueError as exc:
                 raise HistoryReplayError("Invalid legacy JSON token") from exc
 
 

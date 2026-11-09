@@ -183,6 +183,15 @@ def read_artifact_chunk(session_id: str, digest: str, *, offset: int = 0,
                 "offset": offset, "next_offset": offset + used, "eof": offset + used == size}
 
 
+def _file_chunks(path: Path) -> Iterable[bytes]:
+    with path.open("rb") as stream:
+        while True:
+            chunk = stream.read(MAX_CHUNK_BYTES)
+            if not chunk:
+                return
+            yield chunk
+
+
 def copy_history_artifacts(value: dict[str, Any], source_session_id: str, target_session_id: str) -> dict[str, Any]:
     """Make a fork independent of its parent's lifetime, without loading blobs."""
     replacements = {}
@@ -202,11 +211,10 @@ def copy_history_artifacts(value: dict[str, Any], source_session_id: str, target
                     source = artifact_directory(source_session_id) / digest
                     target = artifact_directory(target_session_id) / digest
                     if not target.exists():
-                        def chunks():
-                            with source.open("rb") as stream:
-                                while chunk := stream.read(MAX_CHUNK_BYTES):
-                                    yield chunk
-                        copied = put_chunks(target_session_id, chunks(), media_type=ref.get("media_type", "application/json"))
+                        copied = put_chunks(
+                            target_session_id, _file_chunks(source),
+                            media_type=ref.get("media_type", "application/json"),
+                        )
                         if copied["sha256"] != digest or copied["bytes"] != ref.get("bytes"):
                             raise ArtifactCopyError("Source history artifact failed its checksum")
                     if isinstance(ref.get("path"), str):

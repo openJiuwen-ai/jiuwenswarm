@@ -150,8 +150,9 @@ async def _migrate_history_context(*, context_engine: Any, session: Any, process
         with lc.resource_lock("session", session_id):
             lc.guard(session_id)
             latest = path.stat()
-            if (get_read_history_path(session_id) != path or (latest.st_dev, latest.st_ino) != identity[:2]
-                    or latest.st_size < identity[2]
+            if get_read_history_path(session_id) != path or (latest.st_dev, latest.st_ino) != identity[:2]:
+                raise HistoryReplayError("History changed during migration", code="HISTORY_RESTORE_CHANGED")
+            if (latest.st_size < identity[2]
                     or int(lc.state("session", session_id).get("generation", 0)) != generation):
                 raise HistoryReplayError("History changed during migration", code="HISTORY_RESTORE_CHANGED")
         if not context.get_messages():
@@ -164,7 +165,9 @@ async def _migrate_history_context(*, context_engine: Any, session: Any, process
                 context = await context_engine.create_context(session=session, processors=processors)
             if not context.get_messages():
                 if pending["had_compaction"]:
-                    raise HistoryReplayError("Only audit summaries remain; a verified native window or original history is required")
+                    raise HistoryReplayError(
+                        "Only audit summaries remain; a verified native window or original history is required"
+                    )
                 return False
         # Only the temporary migration context uses zero protected tail; the
         # live agent resumes with its original processor policy and tool pairs.
@@ -190,7 +193,9 @@ async def _migrate_history_context(*, context_engine: Any, session: Any, process
         if isinstance(exc, (asyncio.CancelledError, HistoryReplayError)):
             raise
         if isinstance(exc, MemoryError):
-            raise HistoryReplayError("Insufficient memory for legacy migration", code="HISTORY_RESTORE_RESOURCE") from exc
+            raise HistoryReplayError(
+                "Insufficient memory for legacy migration", code="HISTORY_RESTORE_RESOURCE"
+            ) from exc
         if isinstance(exc, Exception):
             raise HistoryReplayError("Legacy context migration failed; original history was preserved") from exc
         raise

@@ -31,9 +31,10 @@ class HistoryReplayLimits:
     max_scan_bytes: int = 256 * 1024 * 1024
 
     def __post_init__(self) -> None:
-        if any(type(value) is not int or value <= 0 for value in (
+        budgets = (
             self.max_record_bytes, self.max_retained_bytes, self.max_records, self.max_scan_bytes,
-        )):
+        )
+        if any(type(value) is not int or value <= 0 for value in budgets):
             raise ValueError("History replay limits must be positive integers")
 
 
@@ -115,9 +116,11 @@ def _check_cursor(cursor: HistoryReplayCursor, path: Path, generation: int,
                   identity: tuple[int, int, int, int, int]) -> None:
     if cursor.generation == generation and cursor.identity == (0, 0, 0, 0, 0) and cursor.offset == 0:
         return
-    if (cursor.path != path or cursor.generation != generation
-            or cursor.identity[:2] != identity[:2] or identity[2] < cursor.offset
-            or (identity[2] == cursor.identity[2] and identity != cursor.identity)):
+    if cursor.path != path or cursor.generation != generation:
+        raise HistoryReplayError("History changed after context restore", code="HISTORY_RESTORE_CHANGED")
+    if cursor.identity[:2] != identity[:2] or identity[2] < cursor.offset:
+        raise HistoryReplayError("History changed after context restore", code="HISTORY_RESTORE_CHANGED")
+    if identity[2] == cursor.identity[2] and identity != cursor.identity:
         raise HistoryReplayError("History changed after context restore", code="HISTORY_RESTORE_CHANGED")
 
 
@@ -162,11 +165,9 @@ def read_history_replay(
                     return HistoryReplayBatch([], end_cursor, end_cursor, 0)
             return _read_prefix(path, generation, identity, start, is_restorable,
                                 before_request_id, limits or HistoryReplayLimits())
-    except HistoryReplayError:
-        raise
     except MemoryError as exc:
         raise HistoryReplayError("Insufficient memory for history restore", code="HISTORY_RESTORE_RESOURCE") from exc
-    except (OSError, UnicodeError, ValueError, TypeError, RecursionError) as exc:
+    except (OSError, ValueError, TypeError, RecursionError) as exc:
         raise HistoryReplayError(f"History could not be read ({type(exc).__name__})") from exc
     finally:
         _READ_SLOTS.release()
@@ -185,7 +186,7 @@ def read_history_for_rewrite(path: Path) -> list[dict[str, Any]]:
                             None, HistoryReplayLimits()).records
     except MemoryError as exc:
         raise HistoryReplayError("Insufficient memory for history conversion", code="HISTORY_RESTORE_RESOURCE") from exc
-    except (OSError, UnicodeError, ValueError, TypeError, RecursionError) as exc:
+    except (OSError, ValueError, TypeError, RecursionError) as exc:
         raise HistoryReplayError("History format conversion failed") from exc
 
 
@@ -232,7 +233,7 @@ def latest_completed_request_bounded(session_id: str, *, max_tail_bytes: int = 1
                     if record.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT:
                         return request_id if record.get("status") == "success" and later <= {request_id} else None
                     later.add(request_id)
-    except (OSError, ValueError, TypeError, UnicodeError, MemoryError):
+    except (OSError, ValueError, TypeError, MemoryError):
         logger.warning("Could not inspect history tail for reply suggestions: session_id=%s", session_id)
     return None
 
@@ -260,10 +261,10 @@ def _read_prefix(
         nonlocal retained_bytes, prefix_offset
         if not isinstance(record, dict):
             raise HistoryReplayError(f"History record at byte {offset} is not an object")
-        if (prefix_offset is None and before_request_id
-                and record.get("role") in {"user", "human"}
-                and str(record.get("request_id") or "").strip() == before_request_id):
-            prefix_offset = offset
+        if prefix_offset is None and before_request_id:
+            if (record.get("role") in {"user", "human"}
+                    and str(record.get("request_id") or "").strip() == before_request_id):
+                prefix_offset = offset
         if not is_restorable(record):
             return
         retained_bytes += size

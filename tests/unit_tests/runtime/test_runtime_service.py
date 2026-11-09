@@ -3734,6 +3734,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     from openjiuwen.core.session.checkpointer import CheckpointerFactory
 
     from jiuwenswarm.runtime import checkpointer
+    from jiuwenswarm.runtime.context_checkpointer import ContextCheckpointer
 
     dispose_error = RuntimeError("dispose failed")
     dispose = AsyncMock(side_effect=dispose_error)
@@ -3778,7 +3779,11 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     await checkpointer.ensure_persistent_checkpointer()
 
     create_checkpointer.assert_awaited_once()
-    assert installed == [None, replacement_checkpointer]
+    assert len(installed) == 2
+    assert installed[0] is None
+    assert isinstance(installed[1], ContextCheckpointer)
+    assert installed[1].delegate is replacement_checkpointer
+    assert checkpointer._shared_checkpointer is installed[1]
     assert checkpointer._PERSISTENT_CHECKPOINTER_READY is True
 
 

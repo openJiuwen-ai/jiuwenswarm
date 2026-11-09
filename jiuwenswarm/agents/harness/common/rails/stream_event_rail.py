@@ -1527,7 +1527,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             projected["result"] = str(projected["result"]) if projected["result"] is not None else ""
             tool_result_payload.update({key: value for key, value in projected.items() if key != "raw_output"})
             if raw_output is not None:
-                wire_source = projected.get("raw_output") if "raw_output" in projected.get("payload_refs", {}) else raw_output
+                wire_source = (
+                    projected.get("raw_output")
+                    if "raw_output" in projected.get("payload_refs", {}) else raw_output
+                )
                 wire_raw_output, trimmed = _bounded_raw_output(wire_source)
                 externalized = "raw_output" in projected.get("payload_refs", {})
                 trimmed = trimmed or externalized
@@ -1537,7 +1540,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     logger.warning(
                         "[StreamEventRail] tool_result raw_output trimmed for the wire: tool=%s bytes=%d",
                         tool_result_payload["tool_name"],
-                        projected["payload_refs"]["raw_output"]["bytes"] if externalized else _json_wire_size(raw_output),
+                        (
+                            projected["payload_refs"]["raw_output"]["bytes"]
+                            if externalized else _json_wire_size(raw_output)
+                        ),
                     )
                 self._symphony_stream_handler.enrich_result_payload(
                     tool_call,

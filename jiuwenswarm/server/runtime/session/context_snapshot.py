@@ -103,7 +103,10 @@ def bind_recovery_boundary(context: Any, cursor: HistoryReplayCursor, covered: s
     if cursor.path.suffix.lower() != ".jsonl":
         context.duplex_history_cursor = None
         return
-    if (voice_cursor is None or voice_cursor.path != cursor.path or voice_cursor.generation != cursor.generation
+    if voice_cursor is None:
+        context.duplex_history_cursor = cursor
+        return
+    if (voice_cursor.path != cursor.path or voice_cursor.generation != cursor.generation
             or voice_cursor.offset < cursor.offset):
         context.duplex_history_cursor = cursor
 
@@ -121,13 +124,17 @@ def _read_cursor(session_id: str, value: dict[str, Any]) -> HistoryReplayCursor 
     identity = _identity(path) if path.exists() else (0, 0, 0, 0, 0)
     old_identity = value.get("identity")
     offset = value.get("offset")
-    if (not isinstance(old_identity, list) or len(old_identity) != 5
-            or any(type(item) is not int for item in old_identity)
-            or type(offset) is not int or offset < 0 or offset > old_identity[2]):
+    if not isinstance(old_identity, list) or len(old_identity) != 5:
         raise HistoryReplayError("Invalid context snapshot boundary")
-    if (value.get("file") != path.name or value.get("generation") != generation
-            or (old_identity[2] and tuple(old_identity[:2]) != identity[:2])
-            or identity[2] < offset or _anchor(path, offset) != value.get("anchor")):
+    if any(type(item) is not int for item in old_identity):
+        raise HistoryReplayError("Invalid context snapshot boundary")
+    if type(offset) is not int or offset < 0 or offset > old_identity[2]:
+        raise HistoryReplayError("Invalid context snapshot boundary")
+    if value.get("file") != path.name or value.get("generation") != generation:
+        return None
+    if old_identity[2] and tuple(old_identity[:2]) != identity[:2]:
+        return None
+    if identity[2] < offset or _anchor(path, offset) != value.get("anchor"):
         return None
     return HistoryReplayCursor(path, generation, identity, offset)
 
@@ -163,7 +170,9 @@ def _write_snapshot_unfenced(session_id: str, states: dict[str, Any], cursor: Hi
             for chunk in json_chunks(value):
                 size += len(chunk)
                 if size > MAX_SNAPSHOT_BYTES:
-                    raise HistoryReplayError("Effective context exceeds the snapshot budget", code="HISTORY_RESTORE_LIMIT")
+                    raise HistoryReplayError(
+                        "Effective context exceeds the snapshot budget", code="HISTORY_RESTORE_LIMIT"
+                    )
                 stream.write(chunk)
                 digest.update(chunk)
             stream.flush()
@@ -209,12 +218,18 @@ def _validate_native_offloads(state: dict[str, Any]) -> None:
     if state.get("offload_directory") or state.get("offload_versions"):
         raise HistoryReplayError("This snapshot requires a different Core offload format")
     offloads = state.get("offload_messages") or {}
-    if (not isinstance(offloads, dict) or len(offloads) > 8192
-            or any(not isinstance(handle, str) or not handle or len(handle) > 1024
-                   or not isinstance(items, list) or len(items) > 8192
-                   for handle, items in offloads.items())
-            or sum(len(items) for items in offloads.values()) > 8192):
-        raise HistoryReplayError("Native offloads exceed the snapshot budget", code="HISTORY_RESTORE_LIMIT")
+    limit_message = "Native offloads exceed the snapshot budget"
+    if not isinstance(offloads, dict) or len(offloads) > 8192:
+        raise HistoryReplayError(limit_message, code="HISTORY_RESTORE_LIMIT")
+    total_messages = 0
+    for handle, items in offloads.items():
+        if not isinstance(handle, str) or not handle or len(handle) > 1024:
+            raise HistoryReplayError(limit_message, code="HISTORY_RESTORE_LIMIT")
+        if not isinstance(items, list) or len(items) > 8192:
+            raise HistoryReplayError(limit_message, code="HISTORY_RESTORE_LIMIT")
+        total_messages += len(items)
+    if total_messages > 8192:
+        raise HistoryReplayError(limit_message, code="HISTORY_RESTORE_LIMIT")
 
 
 def load_checkpoint_snapshot(session_id: str, reference: Any) -> ContextSnapshot | None:
@@ -222,9 +237,11 @@ def load_checkpoint_snapshot(session_id: str, reference: Any) -> ContextSnapshot
     if not reference:
         return None
     try:
-        if (not isinstance(reference, dict) or reference.get("version") != 1
-                or not isinstance(reference.get("file"), str) or _NAME.fullmatch(reference["file"]) is None
-                or type(reference.get("bytes")) is not int or not 0 < reference["bytes"] <= MAX_SNAPSHOT_BYTES):
+        if not isinstance(reference, dict) or reference.get("version") != 1:
+            raise ValueError("invalid reference")
+        if not isinstance(reference.get("file"), str) or _NAME.fullmatch(reference["file"]) is None:
+            raise ValueError("invalid reference")
+        if type(reference.get("bytes")) is not int or not 0 < reference["bytes"] <= MAX_SNAPSHOT_BYTES:
             raise ValueError("invalid reference")
         with lc.resource_lock("session", session_id):
             lc.guard(session_id)
@@ -250,8 +267,6 @@ def load_checkpoint_snapshot(session_id: str, reference: Any) -> ContextSnapshot
                 raise ValueError("invalid voice identities")
             return ContextSnapshot(_decode_contexts(session_id, value["contexts"]), cursor, set(covered),
                                    voice_cursor or cursor, set(voice_ids))
-    except HistoryReplayError:
-        raise
     except MemoryError as exc:
         raise HistoryReplayError("Insufficient memory for the saved context", code="HISTORY_RESTORE_RESOURCE") from exc
     except (OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
@@ -272,10 +287,14 @@ def _advance_boundary(session_id: str, cursor: HistoryReplayCursor | None,
         start = cursor.offset if cursor is not None else 0
         if cursor is not None:
             if cursor.path != path or cursor.generation != generation:
-                raise HistoryReplayError("History revision changed before snapshot publication", code="HISTORY_RESTORE_CHANGED")
+                raise HistoryReplayError(
+                    "History revision changed before snapshot publication", code="HISTORY_RESTORE_CHANGED"
+                )
             if ((cursor.identity[2] and cursor.identity[:2] != identity[:2]) or identity[2] < start):
                 if path.suffix.lower() == ".jsonl":
-                    raise HistoryReplayError("History revision changed before snapshot publication", code="HISTORY_RESTORE_CHANGED")
+                    raise HistoryReplayError(
+                        "History revision changed before snapshot publication", code="HISTORY_RESTORE_CHANGED"
+                    )
                 start = 0  # Legacy JSON writers atomically replace the array on append.
         offset = start
         if path.exists():
@@ -320,7 +339,9 @@ async def save_context_snapshot(*, context_engine: Any, session: Any,
 
     binding = bind_context_checkpoint(context_engine, session)
     async with context_checkpoint_lock(binding), context_snapshot_lock(context):
-        context.history_recovery_covered = set(getattr(context, "history_recovery_covered", ())) | set(consumed_request_ids or ())
+        covered = set(getattr(context, "history_recovery_covered", ()))
+        covered.update(consumed_request_ids or ())
+        context.history_recovery_covered = covered
         previous_reference = session.get_state(SNAPSHOT_KEY)
         previous_context = session.get_state("context")
         try:
@@ -367,7 +388,9 @@ async def prepare_context_snapshot(*, context_engine: Any, session: Any, states:
     except HistoryReplayError:
         raise
     except MemoryError as exc:
-        raise HistoryReplayError("Insufficient memory to prepare context persistence", code="HISTORY_RESTORE_RESOURCE") from exc
+        raise HistoryReplayError(
+            "Insufficient memory to prepare context persistence", code="HISTORY_RESTORE_RESOURCE"
+        ) from exc
     except Exception as exc:
         raise HistoryReplayError("Context persistence preparation failed") from exc
 
@@ -382,7 +405,9 @@ async def _prepare_context_snapshot_locked(*, context_engine: Any, session: Any,
     for context_id in states:
         if (not isinstance(states[context_id].get("messages"), list)
                 or len(states[context_id]["messages"]) > 8192):
-            raise HistoryReplayError("Effective message count exceeds the snapshot budget", code="HISTORY_RESTORE_LIMIT")
+            raise HistoryReplayError(
+                "Effective message count exceeds the snapshot budget", code="HISTORY_RESTORE_LIMIT"
+            )
         _validate_native_offloads(states[context_id])
     cursor = getattr(context, "history_recovery_cursor", getattr(context, "duplex_history_cursor", None))
     voice_cursor = getattr(context, "duplex_history_cursor", None)
@@ -404,7 +429,9 @@ async def _prepare_context_snapshot_locked(*, context_engine: Any, session: Any,
                 current_ids.update(ids)
                 if not metadata.get("jiuwenswarm_recovery_recorded"):
                     covered.update(set(ids) - remembered)
-                    message = message.model_copy(update={"metadata": {**metadata, "jiuwenswarm_recovery_recorded": True}})
+                    message = message.model_copy(
+                        update={"metadata": {**metadata, "jiuwenswarm_recovery_recorded": True}}
+                    )
             saved_messages.append(message)
         state["messages"] = saved_messages
     next_cursor = await run_history_io(_advance_boundary, session_id, cursor, covered, voice_cursor, voice_ids)
@@ -486,7 +513,9 @@ async def _restore_checkpoint_context(*, context_engine: Any, session: Any, proc
                 if is_context_record(record):
                     retained += len(json.dumps(record, ensure_ascii=False).encode("utf-8"))
                     if retained > 4 * 1024 * 1024 or len(result) >= 2048:
-                        raise HistoryReplayError("Incremental context tail needs bounded migration", code="HISTORY_RESTORE_LIMIT")
+                        raise HistoryReplayError(
+                            "Incremental context tail needs bounded migration", code="HISTORY_RESTORE_LIMIT"
+                        )
                     result.append(record)
             return result
         try:
@@ -514,9 +543,14 @@ async def _restore_checkpoint_context(*, context_engine: Any, session: Any, proc
             raise HistoryReplayError("Core did not install the committed context")
         next_cursor = HistoryReplayCursor(cursor.path, cursor.generation, cursor.identity, prefix)
         bind_recovery_boundary(context, next_cursor, covered)
-        context.duplex_history_cursor = (voice_cursor if voice_cursor.offset > next_cursor.offset else next_cursor) if cursor.path.suffix.lower() == ".jsonl" else None
-        context.duplex_history_ids = saved_voice_ids | {(getattr(message, "metadata", None) or {}).get("duplex_history_id")
-                                     for message in context.get_messages()}
+        if cursor.path.suffix.lower() == ".jsonl":
+            context.duplex_history_cursor = voice_cursor if voice_cursor.offset > next_cursor.offset else next_cursor
+        else:
+            context.duplex_history_cursor = None
+        context.duplex_history_ids = saved_voice_ids | {
+            (getattr(message, "metadata", None) or {}).get("duplex_history_id")
+            for message in context.get_messages()
+        }
         return True
     except BaseException:
         await context_engine.clear_context(session_id=session_id)

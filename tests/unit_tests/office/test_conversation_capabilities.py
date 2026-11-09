@@ -13,6 +13,7 @@ import uuid
 import pytest
 from openjiuwen.core.foundation.llm import ToolCall
 from openjiuwen.core.runner import Runner
+from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.harness.rails import SubagentRail
 
 from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
@@ -22,6 +23,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.agents.harness.common.rails import runtime_prompt_rail
+from jiuwenswarm.runtime import checkpointer
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -67,6 +69,10 @@ class PromptModel(ScriptedModel):
 async def server(sessions, tmp_path, monkeypatch):
     """The root adapter of AgentServer's agent; its session children use one model that remembers prompts."""
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: sessions)
+    # Each test owns a different workspace, so its checkpoint store must match it.
+    monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", False)
+    monkeypatch.setattr(checkpointer, "_shared_checkpointer", None)
+    monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", None)
 
     def state_path(session_id=None):
         # Rather than the config directory, which is in the source tree.
@@ -88,6 +94,7 @@ async def server(sessions, tmp_path, monkeypatch):
     for session_id in list(root._session_adapters):
         await root.cleanup_session_adapter(session_id)
     await Runner.stop()
+    await checkpointer.close_persistent_checkpointer()
     session_metadata.flush_pending_writes()
     session_metadata._METADATA_CACHE.clear()
 
