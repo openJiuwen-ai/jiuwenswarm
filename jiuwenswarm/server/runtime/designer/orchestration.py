@@ -4152,7 +4152,10 @@ def _heuristic_node_score(
 
 def _shot_distinctness_patch(graph: DesignerExecutionGraph) -> list[str]:
     """Ensure each clip has a unique clip_action + generate prompt (text-only)."""
-    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import shot_brief_prompt
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+        clip_scene_label,
+        shot_brief_prompt,
+    )
 
     notes: list[str] = []
     camera_cycle = (
@@ -4186,7 +4189,13 @@ def _shot_distinctness_patch(graph: DesignerExecutionGraph) -> list[str]:
         if not lock and action:
             cfg["continuity_lock"] = _infer_continuity_lock(action)
         if not prompt or (marker not in prompt.lower() and f"第{idx}镜" not in prompt):
-            gen["prompt"] = shot_brief_prompt(idx, camera=camera, action=action, cast_names=cast_names)
+            gen["prompt"] = shot_brief_prompt(
+                idx,
+                camera=camera,
+                action=action,
+                cast_names=cast_names,
+                scene=clip_scene_label(cfg),
+            )
             cfg["generate"] = gen
             notes.append(f"{node.get('id')}: refreshed generate.prompt")
         if role == "clip":

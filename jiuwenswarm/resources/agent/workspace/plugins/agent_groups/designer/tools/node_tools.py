@@ -324,8 +324,15 @@ def _reference_bindings(ctx: Any, node: dict[str, Any]) -> list[dict[str, Any]]:
         from jiuwenswarm.server.runtime.designer.handlers.clip import (
             collect_clip_reference_images,
         )
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+            ClipReferenceError,
+        )
 
-        paths = list(collect_clip_reference_images(ctx, node_clip_index(node), node=node))
+        try:
+            paths = list(collect_clip_reference_images(ctx, node_clip_index(node), node=node))
+        except ClipReferenceError:
+            # The video call reports the missing scene; the context view lists nothing.
+            paths = []
     elif pipeline == NODE_ROLE_COMPOSE:
         from jiuwenswarm.server.runtime.designer.handlers.common import predecessor_outputs
 

@@ -59,8 +59,10 @@ def test_build_clip_prompt_uses_brief_then_graph_text() -> None:
     prompt = build_clip_prompt(graph, clip)
     assert "USER PROMPT (authoritative story" not in prompt
     assert "火车站晨间短片" not in prompt
-    # Design clips always use R2V story-form (Image-N binding), not long lock essays.
-    assert "Image" in prompt or "image" in prompt.lower() or "scene" in prompt.lower()
+    # Without attached images there is no scene sentence, and never a placeholder room.
+    assert prompt
+    assert "empty room" not in prompt.lower()
+    assert "Image" not in prompt
 
     clip["config"] = {"role": NODE_ROLE_CLIP, "prompt": "只拍站台", "clip_action": "只拍站台"}
     out = build_clip_prompt(graph, clip)

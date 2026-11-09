@@ -70,9 +70,10 @@ def wan_r2v_prompt_formula() -> str:
     """Short reference-video formula shared by Wan, Seedance, and MiniMax-H3."""
     return (
         "VIDEO PROMPT FORMULA: positive story form only — rewrite locks as narrative. "
-        "The scene is as in Image N: <place>. "
-        "<Name> from Image k, wearing <wardrobe>, <placement>, in the scene from Image N, "
+        "<Name>, wearing <wardrobe>, <placement> in the scene, "
         "is <action from this storyboard row>. "
+        "The system appends which attached image is each character and the scene; "
+        "do not write image numbers yourself. "
         "Name only on_screen / partial cast. Omit exited cast until returned. "
         "The camera <one move>. <Speaker> says: \"<this shot's line>\". "
         "One look phrase at the end. Never forbid lists, 'do not', examples, or sit/stand defaults."
@@ -86,7 +87,7 @@ def wan_reference_media_rules(*, prior_ending_count: int = 0) -> str:
         "- Solo sheets = identity/wardrobe ONLY (face + clothing). Not final blocking.",
         "- Scene / environment ref (LAST among set refs) = place geography ONLY — empty of cast.",
         "- Prompt places character1… into the environment with contact against supports.",
-        "- Upload/attach order defines labels; prompt must use the same order.",
+        "- Attach order defines image labels; the system appends that binding to the prompt.",
         "- Prefer short explicit constraints over vague 'cinematic' adjectives.",
         "- Keep faces unique; keep landmarks fixed; keep medium stable across the film.",
     ]
@@ -110,7 +111,8 @@ def wan_leaf_skill_block(*, role: str = "clip") -> str:
         return "\n".join(
             [
                 wan_r2v_prompt_formula(),
-                "Seedance uses @Image N; MiniMax/Wan use Image N. Always 'from Image k' in story form.",
+                "Name people by name in story form; the appended binding maps names to Image k "
+                "(Seedance @Image k).",
                 "ORDER: (1) scene + present-cast story sentences with wardrobe/placement/visibility, "
                 "(2) THIS storyboard action + camera + speech, "
                 "(3) same-setting continue only — never across setting_id.",

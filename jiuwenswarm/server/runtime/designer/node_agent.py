@@ -1102,10 +1102,9 @@ class DesignerGraphToolkit:
         from jiuwenswarm.server.runtime.designer.handlers.clip import (
             _looks_like_contaminated_prompt,
             build_clip_prompt,
-            attach_order_clause,
-            collect_clip_reference_images,
+            attachable_slots,
+            collect_clip_reference_slots,
             connected_payload_clause,
-            edge_image_flow,
             edge_text_inputs,
             edge_video_inputs,
             first_connected_video_file,
@@ -1114,6 +1113,10 @@ class DesignerGraphToolkit:
             video_duration_seconds,
         )
         from jiuwenswarm.common.schema.designer_graph import node_clip_index
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+            ClipReferenceError,
+            reindex_slots,
+        )
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
             scrub_restated_speech,
             stamp_speech_onto_next_clips,
@@ -1136,17 +1139,19 @@ class DesignerGraphToolkit:
 
         # Gated same-scene last-frame chain before prompt so Wan binding matches attach order.
         clip_index = node_clip_index(node)
-        refs = collect_clip_reference_images(
-            self.ctx, clip_index, node=node
-        )
-        image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
-        ref_paths = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        ref_files = [str(p) for p in ref_paths]
+        try:
+            slots = attachable_slots(collect_clip_reference_slots(self.ctx, clip_index, node=node))
+        except ClipReferenceError as exc:
+            self.fail_media(exc)
+            raise
+        ref_files = [str(slot.path) for slot in slots]
 
         # Agent writes P2 (continuation). Structured prompt is fallback / lock scaffold.
         structured = ""
         try:
-            structured = str(build_clip_prompt(self.ctx.graph, node, self.ctx) or "").strip()
+            structured = str(
+                build_clip_prompt(self.ctx.graph, node, self.ctx, slots=slots) or ""
+            ).strip()
         except Exception:  # noqa: BLE001
             logger.debug("build_clip_prompt failed in call_video_model", exc_info=True)
         agent_text = str(prompt or "").strip()
@@ -1213,14 +1218,12 @@ class DesignerGraphToolkit:
                 or graph_prompt(self.ctx.graph, node)
                 or ""
             )
-        clause = attach_order_clause(ref_paths, edge_image_flow(self.ctx, node))
         payload = connected_payload_clause(
             edge_text_inputs(self.ctx, node),
             edge_video_inputs(self.ctx, node),
         )
-        extra = "\n\n".join(part for part in (clause, payload) if part)
-        if extra and extra not in text:
-            text = f"{text.rstrip()}\n\n{extra}".strip()
+        if payload and payload not in text:
+            text = f"{text.rstrip()}\n\n{payload}".strip()
         if not text:
             return "call_video_model error: prompt required"
         try:
@@ -1279,6 +1282,7 @@ class DesignerGraphToolkit:
             cfg=cfg,
             graph=graph,
             clip_index=clip_index,
+            slots=reindex_slots(slots, [Path(p) for p in ref_files]),
         )
         cfg["prompt"] = text
         want_audio, _model_override = resolve_video_audio_request(cfg, meta)
@@ -1868,9 +1872,11 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                 "call_video_model",
                 (
                     "Generate a clip via the configured video model. "
-                    "Positive story form only: The scene is as in Image N. "
-                    "<Name> from Image k, wearing <clothing>, <placement>. State this "
+                    "Positive story form only: "
+                    "<Name>, wearing <clothing>, <placement> in the scene. State this "
                     "shot's action verbatim — never glue it onto an auxiliary verb. "
+                    "Image numbers are added by the system from the attached files; "
+                    "do not write which image is the scene or a character. "
                     "Name only on_screen / partial cast; omit exited cast until returned. "
                     "Same-setting continue cue only — do not paste prior Wan text. "
                     "Speaker says: \"<this shot's line>\". One camera move. One look phrase. "
@@ -1884,8 +1890,9 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                             "type": "string",
                             "description": (
                                 "Concise positive story-form prompt. Present cast only "
-                                "from Image k with clothing, placement, action; scene as "
-                                "in Image N; this shot's line. No forbid / do-not / "
+                                "by name with clothing, placement, action; this shot's "
+                                "line. The image-number binding is appended by the system. "
+                                "No forbid / do-not / "
                                 "examples. " + video_tool_hint
                             ),
                         },

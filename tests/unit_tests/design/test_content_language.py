@@ -112,7 +112,9 @@ def test_chinese_smart_graph_keeps_locks_out_of_visible_and_api_text(monkeypatch
     )
     Director.__new__(Director).validate_plan_structure(graph)
     cfg = next(n["config"] for n in graph["nodes"] if "clip_index" in (n.get("config") or {}))
-    assert cfg["generate"]["prompt"] == "仅拍第1镜。镜头：固定中景。动作：阿岚擦拭吧台。出镜角色：阿岚。"
+    assert cfg["generate"]["prompt"] == (
+        "仅拍第1镜。镜头：固定中景。动作：阿岚擦拭吧台。场景：街角咖啡馆。出镜角色：阿岚。"
+    )
     body, _notes = director_approve_video_prompt(
         "阿岚擦拭吧台", cfg=cfg, graph=graph, clip_index=1, action="阿岚擦拭吧台", camera="固定中景"
     )

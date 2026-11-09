@@ -11,6 +11,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+    ReferenceSlot,
+    append_reference_binding,
+    strip_reference_binding,
+)
+
 _SEED_CONTENT_WORD = re.compile(r"[A-Za-z\u4e00-\u9fff]{3,}")
 _SEED_STOP = frozenset(
     {
@@ -165,6 +171,7 @@ def apply_wan_call_locks(
     cfg: dict[str, Any] | None = None,
     graph: dict[str, Any] | None = None,
     clip_index: int = 0,
+    slots: list[ReferenceSlot] | None = None,
 ) -> str:
     """Rewrite the video call into a short image-binding prompt.
 
@@ -173,6 +180,10 @@ def apply_wan_call_locks(
 
     When generate.prompt_origin == user with a non-empty user prompt, that text
     seeds action/camera instead of stale clip_action/camera beats.
+
+    ``slots`` are the images attached to the call, in attach order. When given,
+    the reference binding rendered from them ends the returned prompt (except in
+    reference-led mode, which binds its own plan).
     """
     # Stamp/notes must mutate the caller's cfg. ensure_prior_clip_story_on_cfg
     # returns a shallow copy — use that copy only as the director working view.
@@ -189,12 +200,14 @@ def apply_wan_call_locks(
             director_cfg = cfg_map
     from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
         _pull_labeled,
+        active_video_family,
         director_approve_video_prompt,
         narrative_seed_from_user_prompt,
         resolve_user_origin_prompt,
     )
 
-    user_text = resolve_user_origin_prompt(cfg_map, prompt)
+    prompt = strip_reference_binding(prompt, cfg_map)
+    user_text = strip_reference_binding(resolve_user_origin_prompt(cfg_map, prompt), cfg_map)
     if user_text:
         candidate = user_text
         action = narrative_seed_from_user_prompt(user_text) or user_text
@@ -219,10 +232,18 @@ def apply_wan_call_locks(
         clip_index=clip_index,
         action=action,
         camera=camera,
+        slots=slots,
     )
     # If compose dropped user nouns (prop/color), fold a short seed clause in.
     if user_text and action:
         approved = _merge_user_seed_facts(approved, action)
+    if slots is not None and not str(director_cfg.get("reference_call_mode") or "").strip():
+        approved = append_reference_binding(
+            approved,
+            slots,
+            cfg=cfg_map,
+            family=active_video_family(),
+        )
     cfg_map["director_video_prompt_notes"] = list(notes)
     cfg_map["director_video_prompt_approved"] = True
     _stamp_sent_prompt(

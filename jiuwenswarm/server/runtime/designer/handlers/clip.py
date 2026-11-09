@@ -33,6 +33,12 @@ from jiuwenswarm.server.runtime.designer.handlers.text_nodes import (
     parse_storyboard_shots,
 )
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext, NodeResult
+from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+    ClipReferenceError,
+    ReferenceRole,
+    ReferenceSlot,
+    reindex_slots,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,12 +129,67 @@ def note_video_duration(
     )
 
 
+def _graph_node(ctx: NodeExecutionContext, node_id: str) -> DesignerGraphNode | None:
+    return next(
+        (
+            n
+            for n in (ctx.graph.get("nodes") or [])
+            if isinstance(n, dict) and str(n.get("id") or "") == node_id
+        ),
+        None,
+    )
+
+
+def _declared_scene_node(
+    ctx: NodeExecutionContext,
+    cfg: dict[str, Any],
+) -> DesignerGraphNode | None:
+    """The scene node this clip names by ``scene_node_id`` or shares a ``setting_id`` with.
+
+    A graph with a single scene node binds every clip of that (or no) setting
+    to it. With several scenes and no declared relation there is no scene,
+    never a guessed one.
+    """
+    scene_nid = str(
+        cfg.get("scene_node_id")
+        or (cfg.get("identity_refs") or {}).get("scene_node_id")
+        or ""
+    ).strip()
+    if scene_nid:
+        declared = _graph_node(ctx, scene_nid)
+        if declared is not None:
+            return declared
+    scenes = [
+        n
+        for n in (ctx.graph.get("nodes") or [])
+        if isinstance(n, dict) and node_pipeline(n) == NODE_ROLE_SCENE
+    ]
+    setting_id = str(cfg.get("setting_id") or "").strip()
+    if setting_id:
+        same_setting = next(
+            (n for n in scenes if str((n.get("config") or {}).get("setting_id") or "").strip() == setting_id),
+            None,
+        )
+        if same_setting is not None:
+            return same_setting
+    if len(scenes) != 1:
+        return None
+    sole_setting = str((scenes[0].get("config") or {}).get("setting_id") or "").strip()
+    if setting_id and sole_setting and sole_setting != setting_id:
+        return None
+    return scenes[0]
+
+
 def collect_clip_scene_image(
     ctx: NodeExecutionContext | None,
     clip_index: int = 1,
     node: DesignerGraphNode | None = None,
 ) -> Path | None:
-    """Resolve the setting's scene-card image (empty environment plate for R2V)."""
+    """Resolve the setting's scene-card image (empty environment plate for R2V).
+
+    None only when the clip has no scene at all. A declared scene without an
+    image raises ``ClipReferenceError``; another setting's plate is never used.
+    """
     del clip_index  # scene specs are keyed by setting / scene_node_id, not shot index
     if ctx is None:
         return None
@@ -137,39 +198,16 @@ def collect_clip_scene_image(
         if isinstance(node, dict) and isinstance(node.get("config"), dict)
         else {}
     )
-    scene_nid = str(
-        cfg.get("scene_node_id")
-        or (cfg.get("identity_refs") or {}).get("scene_node_id")
-        or ""
-    ).strip()
-    if scene_nid:
-        paths = node_output_image_paths(ctx, scene_nid)
-        if paths:
-            return paths[0]
-    setting_id = str(cfg.get("setting_id") or "").strip()
-    scenes = [
-        n
-        for n in (ctx.graph.get("nodes") or [])
-        if node_pipeline(n) == NODE_ROLE_SCENE
-    ]
-    if setting_id:
-        matched = next(
-            (
-                n
-                for n in scenes
-                if str((n.get("config") or {}).get("setting_id") or "").strip() == setting_id
-            ),
-            None,
+    scene = _declared_scene_node(ctx, cfg)
+    if scene is None:
+        return None
+    scene_id = str(scene.get("id") or "")
+    paths = node_output_image_paths(ctx, scene_id)
+    if not paths:
+        raise ClipReferenceError(
+            f"Scene node {scene_id} has no image yet; run it before this clip."
         )
-        if matched is not None:
-            paths = node_output_image_paths(ctx, str(matched.get("id") or ""))
-            if paths:
-                return paths[0]
-    if scenes:
-        paths = node_output_image_paths(ctx, str(scenes[0].get("id") or ""))
-        if paths:
-            return paths[0]
-    return None
+    return paths[0]
 
 
 def edge_image_flow(
@@ -268,85 +306,82 @@ def _flow_role_bucket(role: str) -> str:
     return "other"
 
 
-def ordered_flow_paths(
-    flow: list[tuple[str, str, Path]],
-    attached: list[Path],
-) -> list[Path]:
-    """Wan order over values that already flowed in: cast, local uploads, other edges, scene last."""
-    characters: list[Path] = []
-    others: list[Path] = []
-    scenes: list[Path] = []
-    for role, _label, path in flow:
-        bucket = _flow_role_bucket(role)
-        if bucket == "character":
-            characters.append(path)
-        elif bucket == "scene":
-            scenes.append(path)
-        else:
-            others.append(path)
-    return [*characters, *attached, *others, *scenes]
-
-
-def connected_clip_extra_images(
-    ctx: NodeExecutionContext | None,
-    node: DesignerGraphNode | None,
-) -> list[tuple[str, Path]]:
-    """Non-cast, non-scene images that arrived on incoming edges."""
-    flow = edge_image_flow(ctx, node)
-    if not flow:
-        return []
-    return [
-        (label, path)
-        for role, label, path in flow
-        if _flow_role_bucket(role) == "other"
-    ]
-
-
-def attach_order_clause(
-    paths: list[Path],
-    flow: list[tuple[str, str, Path]] | None,
+def _character_slot_label(
+    other: DesignerGraphNode | None,
+    fallback: str,
+    graph: DesignerExecutionGraph | None = None,
 ) -> str:
-    """Name each attached file from the edge that delivered it."""
-    if not paths or not flow:
-        return ""
-    labels: dict[str, str] = {}
-    for _role, label, path in flow:
-        labels.setdefault(str(path.resolve()), label)
-    bits = []
-    for index, path in enumerate(paths, start=1):
-        label = labels.get(str(path.resolve()), path.name)
-        bits.append(f"Image {index} = {label} ({path.name})")
-    return (
-        "Connected inputs follow the canvas edges, in this attach order: "
-        + "; ".join(bits)
-        + ". These Image numbers are the inputs. Use them instead of any earlier Image numbers."
+    """The cast name the clip prompt uses for this sheet, so body and binding agree."""
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import _name_for_id
+
+    oc = other.get("config") if isinstance(other, dict) and isinstance(other.get("config"), dict) else {}
+    names = oc.get("character_names") if isinstance(oc.get("character_names"), list) else []
+    name = str(oc.get("character_name") or (names[0] if names else "") or "").strip()
+    if name:
+        return name
+    ids = oc.get("character_ids") if isinstance(oc.get("character_ids"), list) else []
+    token = str(ids[0] if ids else "").strip()
+    return (_name_for_id(token, graph) if token else "") or fallback
+
+
+def _scene_slot_label(other: DesignerGraphNode | None, fallback: str) -> str:
+    """The place the scene plate shows; the node label when the plate names no place."""
+    from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
+        visual_place_name,
     )
 
+    oc = other.get("config") if isinstance(other, dict) and isinstance(other.get("config"), dict) else {}
+    specs = oc.get("scene_specs") if isinstance(oc.get("scene_specs"), dict) else {}
+    return visual_place_name(specs.get("scene_name")) or fallback
 
-def collect_clip_reference_images(
+
+def _wired_scene_ids_without_image(
+    ctx: NodeExecutionContext,
+    node: DesignerGraphNode | None,
+) -> list[str]:
+    """Scene nodes wired into this clip by a data edge that have no image output."""
+    from jiuwenswarm.common.schema.designer_graph import EDGE_KIND_DATA, edge_kind
+
+    node_id = str((node or {}).get("id") or ctx.node_id or "")
+    missing: list[str] = []
+    for edge in ctx.graph.get("edges") or []:
+        if not isinstance(edge, dict) or edge_kind(edge) != EDGE_KIND_DATA:
+            continue
+        if str(edge.get("target") or "") != node_id:
+            continue
+        source_id = str(edge.get("source") or "").strip()
+        source = _graph_node(ctx, source_id) if source_id else None
+        if source is None or node_pipeline(source) != NODE_ROLE_SCENE:
+            continue
+        if not node_output_image_paths(ctx, source_id) and source_id not in missing:
+            missing.append(source_id)
+    return missing
+
+
+def collect_clip_reference_slots(
     ctx: NodeExecutionContext | None,
     clip_index: int = 1,
     node: DesignerGraphNode | None = None,
-) -> list[Path]:
-    """Wan reference_images: on-screen character specs, then user images, then the scene spec.
+) -> list[ReferenceSlot]:
+    """Wan reference_images with their roles: character specs, user images, scene spec last.
 
     Design clips always attach these as R2V refs — never as a single
     first-frame image. Order matches Wan R2V labeling: character specs are
     character1…, uploads and user-wired image nodes follow, and the scene spec
-    stays last as the environment.
+    stays last as the environment. The slots carry what each image is so the
+    prompt binding can be rendered from the files actually sent.
+
+    Raises:
+        ClipReferenceError: a scene the clip is wired to or declares has no image.
     """
-    from jiuwenswarm.server.runtime.designer.handlers.common import (
-        node_ids_output_image_paths,
-        role_output_image_paths,
-        uploaded_material_image_paths,
-    )
+    from jiuwenswarm.server.runtime.designer.handlers.common import uploaded_material_image_paths
 
     attached = uploaded_material_image_paths(node if isinstance(node, dict) else None)
 
-    paths: list[Path] = []
+    entries: list[tuple[ReferenceRole, str, Path, str | None]] = []
     seen: set[str] = set()
 
-    def add(path: Path | None) -> None:
+    def add(role: ReferenceRole, label: str, path: Path | None, node_id: str | None = None) -> None:
         if path is None:
             return
         resolved = path.resolve()
@@ -354,10 +389,23 @@ def collect_clip_reference_images(
         if key in seen:
             return
         seen.add(key)
-        paths.append(resolved)
+        entries.append((role, label, resolved, node_id))
+
+    def slots() -> list[ReferenceSlot]:
+        from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
+            cap_r2v_reference_paths,
+        )
+
+        by_path = {str(path): (role, label, nid) for role, label, path, nid in entries}
+        kept = cap_r2v_reference_paths([path for _r, _l, path, _n in entries])
+        out: list[ReferenceSlot] = []
+        for index, path in enumerate(kept, start=1):
+            role, label, nid = by_path[str(path)]
+            out.append(ReferenceSlot(index=index, role=role, label=label, path=path, node_id=nid))
+        return out
 
     if ctx is None:
-        return paths
+        return []
 
     cfg = (
         node.get("config")
@@ -380,7 +428,6 @@ def collect_clip_reference_images(
         )
 
     from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
-        cap_r2v_reference_paths,
         offscreen_ids,
         on_screen_ids,
     )
@@ -417,26 +464,80 @@ def collect_clip_reference_images(
             for nid in preferred
             if cid_by_nid.get(nid) not in offscreen
         ]
-    flow = edge_image_flow(ctx, node if isinstance(node, dict) else None)
-    if flow is not None:
-        for path in ordered_flow_paths(flow, attached):
-            add(path)
-        return cap_r2v_reference_paths(paths)
+    from jiuwenswarm.server.runtime.designer.handlers.common import predecessor_outputs
+
+    outputs = predecessor_outputs(ctx, node if isinstance(node, dict) else None)
+    if outputs is not None:
+        missing = _wired_scene_ids_without_image(ctx, node)
+        if missing:
+            raise ClipReferenceError(
+                f"Scene node {', '.join(missing)} has no image yet; run it before this clip."
+            )
+        images = [item for item in outputs if item.kind == "image" and item.path is not None]
+        for item in images:
+            if _flow_role_bucket(item.role) == "character":
+                label = _character_slot_label(_graph_node(ctx, item.node_id), item.label, ctx.graph)
+                add("character", label, item.path, item.node_id)
+        for path in attached:
+            add("upload", path.stem, path)
+        for item in images:
+            if _flow_role_bucket(item.role) == "other":
+                add("other", item.label, item.path, item.node_id)
+        for item in images:
+            if _flow_role_bucket(item.role) == "scene":
+                add("scene", _scene_slot_label(_graph_node(ctx, item.node_id), item.label),
+                    item.path, item.node_id)
+        return slots()
 
     if solo_nids:
-        for path in node_ids_output_image_paths(ctx, solo_nids):
-            add(path)
+        character_nids = solo_nids
     elif not on_screen:
-        for path in role_output_image_paths(ctx, NODE_ROLE_CHARACTER)[:4]:
-            add(path)
+        character_nids = [
+            str(other.get("id") or "")
+            for other in graph.get("nodes") or []
+            if isinstance(other, dict) and node_pipeline(other) == NODE_ROLE_CHARACTER
+        ]
+    else:
+        character_nids = []
+    character_paths = 0
+    for nid in character_nids:
+        other = _graph_node(ctx, nid)
+        label = _character_slot_label(other, str((other or {}).get("label") or nid), ctx.graph)
+        for path in node_output_image_paths(ctx, nid):
+            if not solo_nids and character_paths >= 4:
+                break
+            add("character", label, path, nid)
+            character_paths += 1
 
     for path in attached:
-        add(path)
+        add("upload", path.stem, path)
 
     scene = collect_clip_scene_image(ctx, clip_index, node=node)
     # Scene specs is the last environment reference for every clip.
-    add(scene)
-    return cap_r2v_reference_paths(paths)
+    if scene is not None:
+        scene_node = _declared_scene_node(ctx, cfg)
+        scene_id = str((scene_node or {}).get("id") or "") or None
+        add("scene", _scene_slot_label(scene_node, str((scene_node or {}).get("label") or "")),
+            scene, scene_id)
+    return slots()
+
+
+def collect_clip_reference_images(
+    ctx: NodeExecutionContext | None,
+    clip_index: int = 1,
+    node: DesignerGraphNode | None = None,
+) -> list[Path]:
+    """File paths of :func:`collect_clip_reference_slots`, in attach order."""
+    return [slot.path for slot in collect_clip_reference_slots(ctx, clip_index, node=node)]
+
+
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"})
+
+
+def attachable_slots(slots: list[ReferenceSlot]) -> list[ReferenceSlot]:
+    """Slots whose file can be sent as a reference image, renumbered in order."""
+    kept = [slot.path for slot in slots if slot.path.is_file() and slot.path.suffix.lower() in _IMAGE_SUFFIXES]
+    return reindex_slots(slots, kept)
 
 
 def edge_storyboard_text(
@@ -509,8 +610,12 @@ def build_clip_prompt(
     graph: DesignerExecutionGraph,
     node: DesignerGraphNode,
     ctx: NodeExecutionContext | None = None,
+    slots: list[ReferenceSlot] | None = None,
 ) -> str:
-    """Shot-specific clip prompt. Prefer shot row over full Brief to avoid identical clips."""
+    """Shot-specific clip prompt. Prefer shot row over full Brief to avoid identical clips.
+
+    ``slots`` are the images the call will attach; image numbers follow them.
+    """
     clip_index, shot = _shot_for_node(graph, node, ctx)
     cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
     cfg = dict(cfg)
@@ -577,10 +682,6 @@ def build_clip_prompt(
         director_approve_video_prompt,
     )
 
-    extra_labels = [
-        f"{label} ({path.name})"
-        for label, path in connected_clip_extra_images(ctx, node if isinstance(node, dict) else None)
-    ]
     approved, _notes = director_approve_video_prompt(
         action or "",
         cfg=cfg,
@@ -588,7 +689,7 @@ def build_clip_prompt(
         clip_index=clip_index,
         action=action,
         camera=camera,
-        extra_image_labels=extra_labels,
+        slots=slots,
     )
     return approved
 
@@ -691,14 +792,11 @@ class ClipNodeHandler:
         cfg = scrub_restated_speech(cfg)
         node["config"] = cfg
 
-        refs = collect_clip_reference_images(
-            ctx, clip_index, node=node
-        )
-        image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
-        ref_files = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
+        slots = attachable_slots(collect_clip_reference_slots(ctx, clip_index, node=node))
+        ref_files = [slot.path for slot in slots]
         duration = video_duration_seconds(ctx, node)
         note_video_duration(ctx, node, duration)
-        prompt = build_clip_prompt(ctx.graph, node, ctx)
+        prompt = build_clip_prompt(ctx.graph, node, ctx, slots=slots)
         payload = connected_payload_clause(
             edge_text_inputs(ctx, node, exclude_roles=frozenset({NODE_ROLE_STORYBOARD})),
             edge_video_inputs(ctx, node),
@@ -726,6 +824,7 @@ class ClipNodeHandler:
             cfg=cfg,
             graph=graph,
             clip_index=clip_index,
+            slots=reindex_slots(slots, ref_files),
         )
         try:
             from jiuwenswarm.server.runtime.designer.pipeline.media_prompt_limits import (
