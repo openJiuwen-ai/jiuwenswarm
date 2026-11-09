@@ -669,6 +669,7 @@ function AppContent({
   }, []);
 
   useEffect(() => {
+    if (isJiuwenMate) return;
     const handler = (event: Event) => {
       const moduleId = (event as CustomEvent<SettingsModuleTarget>).detail;
       setRequestedSettingsModuleId(moduleId);
@@ -676,7 +677,7 @@ function AppContent({
     };
     window.addEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
     return () => window.removeEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
-  }, []);
+  }, [isJiuwenMate]);
 
   const restartAutoCloseTimerRef = useRef<number | null>(null);
   const saveToastTimerRef = useRef<number | null>(null);
@@ -4235,12 +4236,14 @@ function AppContent({
     [handleRestoreSession, mode, request],
   );
 
-  const confirmLeaveSettings = useCallback((): boolean => {
-    if (activeNav !== 'settings' || !settingsHasChangesRef.current) {
-      return true;
-    }
-    return window.confirm(t('settingsPanel.dialog.discardConfirm'));
-  }, [activeNav, t]);
+  const confirmDiscardSettings = useCallback(
+    () => !settingsHasChangesRef.current || window.confirm(t('settingsPanel.dialog.discardConfirm')),
+    [t],
+  );
+  const confirmLeaveSettings = useCallback(
+    () => activeNav !== 'settings' || confirmDiscardSettings(),
+    [activeNav, confirmDiscardSettings],
+  );
 
   const handleSelectDesignSession = useCallback((project: ProjectInfo, nextSessionId: string) => {
     if (!confirmLeaveSettings()) {
@@ -4734,7 +4737,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
   useEffect(() => {
     promptSuggestionBox.setEnabled(normalizeConfigBoolean(serverConfig?.prompt_suggestion_enabled));
   }, [promptSuggestionBox.setEnabled, serverConfig?.prompt_suggestion_enabled]);
-  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage) => {
+  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage, initialSettingsModuleId?: SettingsModuleTarget) => {
     if (nav === 'agents') {
       return (
         <div className="app-section min-h-0">
@@ -4846,7 +4849,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
           externalCliDetectResults={externalCliDetectResults}
           onExternalCliDetectResultsChange={setExternalCliDetectResults}
-          initialModuleId={requestedSettingsModuleId ?? undefined}
+          initialModuleId={initialSettingsModuleId}
         />
       </div>
     );
@@ -4863,12 +4866,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
         renderExistingPage={renderJiuwenMateExistingPage}
         useInstalledExpertRef={openInstalledExpertRef}
-        confirmDiscardSettings={() => {
-          if (!settingsHasChangesRef.current) return true;
-          if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
-          setRequestedSettingsModuleId(null);
-          return true;
-        }}
+        confirmDiscardSettings={confirmDiscardSettings}
       />
     );
   }
@@ -5459,8 +5457,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         </div>
       )}
 
-      {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
-      <LoginDialog />
     </div>
   );
 }
@@ -5479,6 +5475,7 @@ function App({
         settingsPageDefinition={settingsPageDefinition}
         resolveSettingsRequest={resolveSettingsRequest}
       />
+      <LoginDialog />
       <AssetPublishHost />
     </ErrorBoundary>
   );
