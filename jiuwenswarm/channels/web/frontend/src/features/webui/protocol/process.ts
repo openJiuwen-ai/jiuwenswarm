@@ -18,11 +18,8 @@ import {
   type WebUIProtocolResult,
 } from '../contracts/results.ts';
 import { DEFAULT_WEBUI_LIMITS, type WebUILimits } from './limits.ts';
-import { normalizeTree } from './normalizeTree.ts';
+import { normalizeTree, ROOT_ONLY_COMPONENTS } from './normalizeTree.ts';
 import { freezeJSON, isJSONData, isRecord, jsonByteLength, readNonEmptyString, utf8ByteLength } from './utils.ts';
-
-/** 只能作为整棵渲染树根、不能嵌套的组件。 */
-const ROOT_COMPONENTS: readonly string[] = ['Panel', 'Iframe'];
 
 export interface WebUIProtocol {
   readonly catalog: WebUICatalog;
@@ -111,12 +108,13 @@ export function processRenderFrame(
     return tree;
   }
   const rootComponent = tree.value.tree.component;
-  const slotRootComponents: readonly string[] = catalog.getSlot(target.value.slotId)?.rootComponents ?? [];
-  if (target.value.slotId === 'conversation.panel.right') {
+  const slot = catalog.getSlot(target.value.slotId);
+  const slotRootComponents: readonly string[] = slot?.rootComponents ?? [];
+  if (slot?.strictRoot) {
     if (!slotRootComponents.includes(rootComponent)) {
-      return protocolReject('SCHEMA_ERROR', `right panel requires one of: ${slotRootComponents.join(', ')}`);
+      return protocolReject('SCHEMA_ERROR', `${slot.id} requires one of: ${slotRootComponents.join(', ')}`);
     }
-  } else if (ROOT_COMPONENTS.includes(rootComponent) && !slotRootComponents.includes(rootComponent)) {
+  } else if (ROOT_ONLY_COMPONENTS.includes(rootComponent) && !slotRootComponents.includes(rootComponent)) {
     return protocolReject(
       'SCHEMA_ERROR',
       `${rootComponent} is only allowed in slots that accept it as the render root`,

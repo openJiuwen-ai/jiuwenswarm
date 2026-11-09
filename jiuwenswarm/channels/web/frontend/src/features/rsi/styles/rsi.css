@@ -2219,7 +2219,7 @@ dialog.rsi-config-dialog {
   padding: 24px;
   overflow: hidden;
   border-radius: 12px;
-  background: var(--color-rsi-page-bg);
+  background: var(--color-surface-popover);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16);
 }
 

@@ -316,9 +316,10 @@ function translationAt(locale, key) {
 
 test('registry definition preserves module order and fails invalid registrations', () => {
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
+  // Extensions (Gateway F_13) sits before Experimental; plugin settings entries follow it at runtime (F_13 D-08).
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
+    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*extensionsModule,\s*experimentalModule,\s*appearanceModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
   for (const removedPath of [

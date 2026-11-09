@@ -20,6 +20,8 @@ import { avatarRule } from './components/avatar.ts';
 import { formRule, formItemRule } from './components/form.ts';
 import { dropdownRule } from './components/dropdown.ts';
 import { iconRule } from './components/icon.ts';
+import { mediaSurfaceRule } from './components/mediaSurface.ts';
+import { fileImportRule } from './components/fileImport.ts';
 
 /** Component contract; Box/Text/Button retain their existing props. */
 export const componentCatalog = createCatalog({
@@ -27,7 +29,7 @@ export const componentCatalog = createCatalog({
     ...basicComponentRules,
     inputRule, switchRule, selectRule, treeSelectRule,
     sliderRule, tabsRule, emptyRule, imageRule, dividerRule, cardRule, tagRule, panelRule, fileTreeRule, filePreviewRule,
-    iframeRule, avatarRule, formRule, formItemRule, dropdownRule, iconRule,
+    iframeRule, avatarRule, formRule, formItemRule, dropdownRule, iconRule, mediaSurfaceRule, fileImportRule,
   ],
   slots: webUISlots,
 });

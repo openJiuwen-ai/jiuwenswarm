@@ -82,10 +82,16 @@ async def test_sandboxed_resource_modules_fetch_and_isolation(tmp_path, monkeypa
 
     monkeypatch.setattr(webui_resource_http, "fetch_agent_unary", fetch)
     package = SimpleNamespace(package_id="test.gateway-files", root=tmp_path, client={"requestBindings": []})
-    runtime = SimpleNamespace(config=SimpleNamespace(install_dir=tmp_path), active_packages=lambda: (package,),
-                              bus=SimpleNamespace(trigger=AsyncMock(return_value=GatewayRequestOutput(route="forward"))))
+    # The published activation is the one record of what runs and its generation (Gateway S_01 invariant 13).
+    activation = SimpleNamespace(package_id=package.package_id, package=package, generation="generation-one",
+                                 application=True)
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(install_dir=tmp_path, data_dir=tmp_path / "gateway-data"),
+        active_packages=lambda: (package,), current_activations=lambda: (activation,),
+        current_activation=lambda package_id: activation if package_id == package.package_id else None,
+        bus=SimpleNamespace(trigger=AsyncMock(return_value=GatewayRequestOutput(route="forward"))),
+    )
     runtime.browser = BrowserBridge(runtime)
-    runtime.browser.generations[package.package_id] = "generation-one"
     gateway_url = f"/extension-assets/{package.package_id}/generation-one/page.html"
     ready = asyncio.Event()
 
@@ -130,7 +136,7 @@ async def test_sandboxed_resource_modules_fetch_and_isolation(tmp_path, monkeypa
                         "cookie": "SecurityError", "storage": "SecurityError",
                     }
                 await resources.release(ops, directory.resource_id)
-                runtime.browser.generations[package.package_id] = "generation-two"
+                activation.generation = "generation-two"  # a reload: the old address is no longer served
                 for url in (agent_url, gateway_url):
                     response = await page.request.get(origin + url)
                     assert response.status == 404

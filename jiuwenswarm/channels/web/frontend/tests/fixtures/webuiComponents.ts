@@ -23,6 +23,12 @@ export { createWebUIAppRuntime } from '../../src/features/webui/assembly/index.t
 export { createMockTransport } from '../../src/features/webui/transport/index.ts';
 export { WebUIHost } from '../../src/features/webui/react/WebUIHost.tsx';
 export { WebUIEntryHost } from '../../src/features/webui/react/WebUIEntryHost.tsx';
+export { WebUIBackgroundHost } from '../../src/features/webui/react/WebUIBackgroundHost.tsx';
+export { WebUIAppearanceHost } from '../../src/features/webui/react/WebUIAppearanceHost.tsx';
+export * as appearanceModule from '../../src/features/webui/appearance/index.ts';
+export * as splashModule from '../../src/features/webui/splash/index.ts';
+export { WebUISplashGate } from '../../src/features/webui/react/WebUISplashGate.tsx';
+export { MediaSurfacePolicyContext } from '../../src/features/webui/renderer/adapters/webuiMediaSurface/hostPolicy.ts';
 export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';
 export { WebUISlotProvider } from '../../src/features/webui/react/WebUISlotProvider.tsx';
 export { WebUINavigationHost, WebUIPageHost } from '../../src/features/webui/react/WebUINavigation.tsx';
@@ -37,3 +43,8 @@ export { usePluginSettings } from '../../src/features/settings/registry/usePlugi
 export { SettingsServicesProvider } from '../../src/features/settings/services/SettingsServicesProvider.tsx';
 export { panelNavigation, requestPanelOpen } from '../../src/features/webui/client/panelNavigation.ts';
 export { useWebUIPanels } from '../../src/features/webui/react/useWebUIPanels.tsx';
+export * as transfersModule from '../../src/features/webui/transfers/index.ts';
+export * as applicationSettingsModule from '../../src/features/webui/applicationSettings/index.ts';
+export { WebUIUploadContext } from '../../src/features/webui/renderer/adapters/webuiFileImport/uploadContext.ts';
+export { SplashProviderSettings } from '../../src/features/settings/modules/extensions/SplashProviderSettings.tsx';
+export { extensionsModule } from '../../src/features/settings/modules/extensions/definition.ts';

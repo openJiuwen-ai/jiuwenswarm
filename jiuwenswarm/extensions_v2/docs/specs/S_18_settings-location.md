@@ -3,12 +3,12 @@
 | 项 | 值 |
 | --- | --- |
 | 编号 | S_18 |
-| 最近修订 | 2026-11-05 |
+| 最近修订 | 2026-11-07 |
 | 关联特性 | [F_32](../features/F_32_settings-location.md)、[F_33](../features/F_33_token-weather-glass.md) |
 
 ## 1. 范围与职责
 
-AgentServer 域活动插件通过原 application.settings 声明设置菜单、分类、配置项。宿主负责统一设置树、位置解析、访问策略和外层布局；插件提供已有 WebUI 树和事件读写。Gateway 域插件目录未接入此接口。
+AgentServer 域活动插件通过原 application.settings 声明设置菜单、分类、配置项。宿主负责统一设置树、位置解析、访问策略和外层布局；插件提供已有 WebUI 树和事件读写。Gateway 域插件使用同一套声明，配置项须显式为 application 范围；Gateway 在本目录的应答中追加其包的声明，并只认领自己包的实例，见 [Gateway S_10 第 2 节](../../../gateway/extensions_v2/docs/specs/S_10_application-settings.md)。
 
 ## 2. 声明与标识
 
@@ -36,7 +36,7 @@ item 的 scope 为 session/application，默认 session。instanceKey 默认声�
 
 ## 4. 查询与渲染
 
-webui.settings.catalog 为 Web 连接的只读请求，参数为空，无需 session。Gateway 薄代理返回 `{revision, items, errors}`，revision 为公开目录的 SHA-256。items 来自 application.settings 声明，包含包身份及归一化元数据，不泄露安装路径。item 元数据包含 scope、instance_key 和 presentation=row/content；菜单、分类没有渲染目标。
+webui.settings.catalog 为 Web 连接的只读请求，参数为空，无需 session。Gateway 取 AgentServer 的 `{revision, items, errors}` 后追加 Gateway 域包的声明（没有时原样返回），revision 为公开目录的 SHA-256。items 来自 application.settings 声明，包含包身份及归一化元数据，不泄露安装路径。item 元数据包含 scope、instance_key 和 presentation=row/content；菜单、分类没有渲染目标。
 
 所有控件都使用 application.settings，没有另一个设置承载槽位。宿主按目录的包、instance_key 和 scope 挂载与发送 ui.ready；上行适配器拒绝未声明实例或不匹配的范围。session 项使用真实活动会话，application 项 session_id 为空且按可信连接投递。application.settings 允许这两个范围；其他槽位的固定范围不改变。
 

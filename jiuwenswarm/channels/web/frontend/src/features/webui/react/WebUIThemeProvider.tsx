@@ -84,7 +84,8 @@ export function WebUIThemeProvider({ children }: { children: ReactNode }) {
     const observer = new MutationObserver(update);
     observer.observe(element, {
       attributes: true,
-      attributeFilter: ['data-theme', 'data-color-mode', 'class', 'style'],
+      // Appearance contributions and the application background change the theme variables too.
+      attributeFilter: ['data-theme', 'data-color-mode', 'class', 'style', 'data-webui-appearance', 'data-webui-background'],
     });
     return () => observer.disconnect();
   }, []);
