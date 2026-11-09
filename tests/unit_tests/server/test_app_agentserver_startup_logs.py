@@ -65,7 +65,8 @@ def test_first_log_pipeline_cost_line_emitted_after_begin(monkeypatch, tmp_path)
         "    _orig(msg, *args)\n"
         "u.logger.info = _cap\n"
         "import jiuwenswarm.server.app_agentserver\n"
-        "begin = next(i for i, m in enumerate(seen) if m.startswith('[startup] AgentServer begin'))\n"
+        "begin = next(i for i, m in enumerate(seen) "
+        "if m.startswith('[startup] AgentServer begin'))\n"
         "first = next(i for i, m in enumerate(seen) if m.startswith('[startup] first-log'))\n"
         "print('ORDERED', first > begin)\n"
     )

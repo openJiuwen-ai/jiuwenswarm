@@ -578,11 +578,13 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         raise RuntimeError("AgentServer enforce requires a working HTTPS listener")
 
     if link_mtls.enforced:
-        logger.info("[AgentServer] ready: https://%s:%s/api/v1; plaintext WS disabled  [startup] startup_total_ms=%.0f",
+        logger.info("[AgentServer] ready: https://%s:%s/api/v1; plaintext WS disabled  "
+                    "[startup] startup_total_ms=%.0f",
                     host, http_server.port, _startup_total_ms())
     elif http_server is not None:
         logger.info(
-            "[AgentServer] ready: ws://%s:%s + http://%s:%s/api/v1  Ctrl+C to stop  [startup] startup_total_ms=%.0f",
+            "[AgentServer] ready: ws://%s:%s + http://%s:%s/api/v1  Ctrl+C to stop  "
+            "[startup] startup_total_ms=%.0f",
             host,
             port,
             host,
@@ -590,7 +592,9 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
             _startup_total_ms(),
         )
     else:
-        logger.info("[AgentServer] ready: ws://%s:%s  Ctrl+C to stop  [startup] startup_total_ms=%.0f", host, port, _startup_total_ms())
+        logger.info("[AgentServer] ready: ws://%s:%s  Ctrl+C to stop  "
+                    "[startup] startup_total_ms=%.0f",
+                    host, port, _startup_total_ms())
 
     stop_event = asyncio.Event()
     teammate_bootstrap_task: asyncio.Task | None = None

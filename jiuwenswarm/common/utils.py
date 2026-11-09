@@ -1728,7 +1728,8 @@ def prepare_workspace(
 
     # [startup] 归因：企业版首启/新 PVC 时本函数会整树拷贝资源，此前该阶段完全静默。
     logger.info(
-        "[startup] prepare_workspace done: elapsed_ms=%.0f added_dirs=%d added_files=%d overwritten_files=%d overwrite=%s",
+        "[startup] prepare_workspace done: elapsed_ms=%.0f added_dirs=%d "
+        "added_files=%d overwritten_files=%d overwrite=%s",
         (time.perf_counter() - _prepare_t0) * 1000.0,
         len(cumulative_diff.added_dirs),
         len(cumulative_diff.added_files),
