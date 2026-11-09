@@ -120,8 +120,14 @@ def detect_subjects(prompt: str) -> list[str]:
 
 
 def detect_audio_intent(prompt: str) -> dict[str, Any]:
-    """Infer speech / music / silence policy from the user prompt."""
+    """Split the audio the user asked for into speech, diegetic sound, and music.
+
+    Music is opt-in. A score is only recorded when the user asked for one,
+    because clips never render a score and no music node is created — a default
+    BGM lock only ever produced music inside clip prompts.
+    """
     from jiuwenswarm.server.runtime.designer.audio_locks import (
+        detect_music_request,
         infer_bgm_lock,
         infer_language_lock,
         prompt_requests_full_silence,
@@ -129,15 +135,17 @@ def detect_audio_intent(prompt: str) -> dict[str, Any]:
     )
 
     text = (prompt or "").lower()
-    music_markers = (
-        "music",
-        "bgm",
-        "soundtrack",
-        "score",
-        "song",
-        "配乐",
-        "音乐",
-        "b gm",
+    sfx_markers = (
+        "sound effect",
+        "sound design",
+        "sfx",
+        "foley",
+        "ambience",
+        "ambient sound",
+        "音效",
+        "环境音",
+        "现场声",
+        "声音设计",
     )
     language_lock = infer_language_lock(prompt or "")
     if prompt_requests_full_silence(prompt or ""):
@@ -145,27 +153,65 @@ def detect_audio_intent(prompt: str) -> dict[str, Any]:
             "policy": "silent",
             "include_speech": False,
             "include_music": False,
+            "speech_intent": {"include": False, "kind": "none", "notes": "Silence requested."},
+            "sfx_intent": {"include": False, "notes": "Silence requested."},
+            "music_intent": {"requested": False, "include": False, "notes": "Silence requested."},
             "language_lock": language_lock,
             "bgm_lock": {},
             "notes": "User requested silence / no audio.",
         }
     # Speech is the default. Only an explicit mime / no-dialogue request turns it off.
     include_speech = not user_declined_speech(prompt or "")
-    include_music = True
-    if include_speech:
+    music = detect_music_request(prompt or "")
+    music_declined = music["declined"]
+    music_requested = music["requested"]
+    sfx_requested = any(m in text for m in sfx_markers)
+    if include_speech and music_requested:
         policy = "speech_and_music"
-    elif any(m in text for m in music_markers):
+    elif include_speech:
+        policy = "speech"
+    elif music_requested:
         policy = "music"
     else:
         policy = "optional_music"
-    bgm_lock = infer_bgm_lock(prompt or "", {"policy": policy, "include_music": include_music})
+    bgm_lock = (
+        infer_bgm_lock(prompt or "", {"policy": policy, "include_music": True})
+        if music_requested
+        else {}
+    )
     return {
         "policy": policy,
         "include_speech": include_speech,
-        "include_music": include_music,
+        "include_music": music_requested,
+        "speech_intent": {
+            "include": include_speech,
+            "kind": "dialogue" if include_speech else "none",
+            "notes": "Speech is on unless the user asks for mime or silence.",
+        },
+        "sfx_intent": {
+            "include": True,
+            "notes": (
+                "User asked for diegetic sound design; keep it source-motivated."
+                if sfx_requested
+                else "Diegetic room tone and action sound only."
+            ),
+        },
+        "music_intent": {
+            "requested": music_requested,
+            "include": music_requested,
+            "declined": music_declined,
+            "notes": (
+                "Music requested by the user."
+                if music_requested
+                else ("User asked for no music." if music_declined else "No music requested.")
+            ),
+        },
         "language_lock": language_lock,
         "bgm_lock": bgm_lock,
-        "notes": f"Detected audio policy={policy}; language={language_lock}",
+        "notes": (
+            f"Detected audio policy={policy}; language={language_lock}; "
+            f"music={'requested' if music_requested else 'none'}"
+        ),
     }
 
 
