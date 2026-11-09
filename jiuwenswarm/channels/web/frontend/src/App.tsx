@@ -3494,6 +3494,8 @@ function AppContent({
       useChatStore.getState().setProcessing(newSid, false);
       sessionIdRef.current = newSid;
       setSessionId(newSid);
+      // Voice startup checks the active chat as soon as this callback resolves.
+      useChatStore.getState().setActiveSessionId(newSid);
       navigate({ kind: 'chat-session', sessionId: newSid }, { replace: true });
       newConversationPreviousSessionRef.current = null;
       return newSid;

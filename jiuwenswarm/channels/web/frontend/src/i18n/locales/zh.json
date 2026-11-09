@@ -39,6 +39,7 @@
       "failed": "语音播放失败。请阅读文字记录后结束会议。"
     },
     "task": {
+      "teamRequired": "创建团队后即可启用会议。",
       "enable": "启用会议",
       "enabled": "会议已启用",
       "enabling": "正在启用会议…",

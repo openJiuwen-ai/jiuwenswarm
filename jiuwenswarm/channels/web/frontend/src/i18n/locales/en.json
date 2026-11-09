@@ -39,6 +39,7 @@
       "failed": "Speech failed. Read the transcript, then end this meeting."
     },
     "task": {
+      "teamRequired": "Create a Team to enable a meeting.",
       "enable": "Enable meeting",
       "enabled": "Meeting enabled",
       "enabling": "Enabling meeting…",

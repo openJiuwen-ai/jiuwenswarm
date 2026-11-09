@@ -25,7 +25,12 @@
   background: var(--color-feedback-danger-subtle);
 }
 .chat-input-btn.task-meeting-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.chat-input-btn.task-meeting-action.is-closing:disabled {
   cursor: wait;
+  opacity: 1;
 }
 .task-meeting-spinner {
   animation: task-meeting-spin 1s linear infinite;

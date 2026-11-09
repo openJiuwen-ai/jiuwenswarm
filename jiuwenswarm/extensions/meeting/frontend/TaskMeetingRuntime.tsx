@@ -459,6 +459,15 @@ export function TaskMeetingRuntime({ sessionId }: ApplicationPluginTaskRuntimePr
     const off = webClient.on('meeting.state', ({ payload }) => {
       if (payload.session_id === sessionId) {
         revision++;
+        // Gateway may reduce this notification to session_id/content.
+        if (
+          typeof payload.team_exists !== 'boolean' ||
+          typeof payload.enabled !== 'boolean' ||
+          typeof payload.state !== 'string'
+        ) {
+          refresh();
+          return;
+        }
         void reflect(payload as unknown as ServerMeeting);
       }
     });

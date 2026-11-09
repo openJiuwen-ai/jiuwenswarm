@@ -27,6 +27,9 @@ export function TaskMeetingAction({ fallback, sessionId }: ApplicationPluginTask
       : requested
         ? 'active'
         : 'idle';
+  const teamReady = !!sessionId && sessionId !== 'new' && active && snapshot.teamExists;
+  const needsTeam =
+    !teamReady && !requested && status !== 'starting' && status !== 'closing' && status !== 'cleanup_failed';
 
   useEffect(() => {
     let cancelled = false;
@@ -49,7 +52,7 @@ export function TaskMeetingAction({ fallback, sessionId }: ApplicationPluginTask
   }, []);
   const toggle = () => {
     if (status === 'cleanup_failed') return stopMeeting();
-    if ((!requested || status === 'failed') && sessionId && active && snapshot.teamExists && status !== 'starting') {
+    if ((!requested || status === 'failed') && sessionId && teamReady && status !== 'starting') {
       publishMeeting({ state: 'starting', error: undefined });
       void startMeeting(sessionId).catch((error) => {
         publishMeeting({
@@ -62,9 +65,11 @@ export function TaskMeetingAction({ fallback, sessionId }: ApplicationPluginTask
     }
     if (requested || status === 'starting') stopMeeting();
   };
-  const title = t(
-    `meeting.task.${status === 'idle' ? 'enable' : status === 'starting' ? 'enabling' : status === 'closing' ? 'disabling' : status === 'cleanup_failed' ? 'retryCleanup' : status === 'failed' ? 'retryEnable' : 'stop'}`,
-  );
+  const title = needsTeam
+    ? t('meeting.task.teamRequired')
+    : t(
+        `meeting.task.${status === 'idle' ? 'enable' : status === 'starting' ? 'enabling' : status === 'closing' ? 'disabling' : status === 'cleanup_failed' ? 'retryCleanup' : status === 'failed' ? 'retryEnable' : 'stop'}`,
+      );
   const activationError =
     status === 'failed'
       ? t(`meeting.errors.${snapshot.error || 'meetingStartFailed'}`, {
@@ -90,7 +95,7 @@ export function TaskMeetingAction({ fallback, sessionId }: ApplicationPluginTask
     .join('\n');
   return (
     <>
-      {((enabled && active && snapshot.teamExists) || status === 'closing' || status === 'cleanup_failed') && (
+      {(enabled || status === 'closing' || status === 'cleanup_failed') && (
         <div className="task-meeting-actions" data-testid="chat-panel-meeting-controls" data-variant={status}>
           <button
             type="button"
@@ -100,7 +105,7 @@ export function TaskMeetingAction({ fallback, sessionId }: ApplicationPluginTask
             aria-label={statusDescription}
             aria-pressed={requested}
             aria-busy={status === 'starting' || status === 'closing'}
-            disabled={status === 'closing'}
+            disabled={status === 'closing' || needsTeam}
             data-testid="chat-panel-input-meeting"
             data-variant={status}
             onClick={toggle}
