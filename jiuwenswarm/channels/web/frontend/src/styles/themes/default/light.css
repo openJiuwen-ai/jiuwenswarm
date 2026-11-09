@@ -199,7 +199,8 @@
   --effect-voice-pulse-end: 0 0 0 8px rgba(239, 68, 68, 0);
 
   /* Component roles */
-  --color-chat-composer-surface: #ffffff;
+  --color-chat-composer-surface: var(--color-surface-workspace);
+  --color-chat-composer-context-surface: var(--color-action-secondary);
   --color-chat-composer-surface-rgb: 255, 255, 255;
   --color-chat-composer-border: rgba(25, 25, 25, 0.1);
   --effect-chat-composer-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);

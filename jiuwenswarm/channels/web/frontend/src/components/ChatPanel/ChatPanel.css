@@ -175,7 +175,7 @@
 .chat-input-container--work-home {
   border: 0;
   border-radius: 24px;
-  background: var(--color-action-secondary);
+  background: var(--color-chat-composer-context-surface);
   box-shadow: var(--effect-chat-composer-shadow);
   padding: 4px 4px 0;
   overflow: visible;
@@ -184,7 +184,7 @@
 .chat-input-container--work-home .chat-input-body {
   border: 1px solid var(--color-border-default);
   border-radius: 20px;
-  background: var(--color-surface-card);
+  background: var(--color-chat-composer-surface);
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.06);
   overflow: hidden;
   z-index: 2;
