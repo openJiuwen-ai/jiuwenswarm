@@ -51,6 +51,31 @@ function extractStringField(value: string, field: string): string {
   return match ? unescapeQuotedValue(match[1]) : '';
 }
 
+/** Suffix the subagent activity projector appends when it truncates a summary. */
+const TRUNCATION_SUFFIX = /\.\.\.$/;
+
+/**
+ * Read the shell command from a tool-call summary in each shape the activity
+ * projector produces:
+ * - `bash({"command": "..."})`: string arguments, rendered as given.
+ * - `bash({"command": "...` (no closing quote): the same, cut off at the
+ *   projector's length limit.
+ * - `bash(command=..., description=...)`: dict arguments, rendered as
+ *   `key=value` pairs with unescaped values. A command that itself contains
+ *   `, <name>=` is cut there; the preview is a single bounded line anyway.
+ */
+function extractShellCommand(callSummary: string): string {
+  const quoted = extractStringField(callSummary, 'command');
+  if (quoted) return quoted;
+
+  // The cut can split an escape sequence, leaving a dangling backslash that is dropped before unescaping.
+  const truncated = callSummary.match(/"command"\s*:\s*"((?:\\.|[^"\\])*)\\?$/);
+  if (truncated) return unescapeQuotedValue(truncated[1].replace(TRUNCATION_SUFFIX, ''));
+
+  const keyword = callSummary.match(/(?:\(|, )command=([\s\S]*?)(?=, [A-Za-z_]\w*=|\)$|$)/);
+  return keyword ? keyword[1].replace(TRUNCATION_SUFFIX, '') : '';
+}
+
 function resultPreview(value: string): string {
   const content = value.match(/(?:^|\s)Content:\s*([\s\S]*)$/i)?.[1];
   if (content) return firstNonEmptyLine(content);
@@ -235,7 +260,7 @@ export function getSubagentActivityPreview(group: SubagentActivityGroup): string
     return resultPreview(resultSummary) || extractStringField(callSummary, 'url');
   }
   if (toolName.includes('bash') || toolName.includes('terminal') || toolName.includes('shell')) {
-    return extractStringField(callSummary, 'command') || resultPreview(resultSummary);
+    return extractShellCommand(callSummary) || resultPreview(resultSummary);
   }
   return resultPreview(resultSummary) || firstNonEmptyLine(callSummary || group.summary);
 }
