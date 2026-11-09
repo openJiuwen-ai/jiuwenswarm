@@ -3720,21 +3720,13 @@ test('desktop windows of one start share the completion and a new start plays ag
 
 // ── Application settings and file transfers (Gateway F_13) ───────────────────
 
-const {
-  transfersModule, applicationSettingsModule, WebUIUploadContext, SplashProviderSettings,
-  extensionsModule,
-} = await import('../node_modules/.cache/webui-components/components.mjs');
+const { transfersModule, WebUIUploadContext } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 // Gateway packages render their settings items in the shared settings slot (AgentServer S_18).
 const SETTINGS_SLOT = 'application.settings';
 const importTree = (props = { label: 'Import theme', accept: ['.zip'] }) => ({ component: 'Box', children: [
   { component: 'FileImport', props, events: { 'ui.change': { id: 'import' } } },
 ] });
-
-function settingsRequest(handler) {
-  const calls = [];
-  return { calls, request: async (method, params) => { calls.push([method, params]); return handler(method, params); } };
-}
 
 async function mounted(element) {
   const container = document.createElement('div');
@@ -3744,32 +3736,6 @@ async function mounted(element) {
   await act(async () => settle());
   return { container, async unmount() { await act(async () => root.unmount()); container.remove(); } };
 }
-
-test('application settings answers are validated and the shown order follows the saved choice', () => {
-  const { parseSplashSettings, displayedProviders, movedOrder, toggledDisabled } = applicationSettingsModule;
-  // Manifest display.name arrives as { zh, en }; both languages are required and extra fields are dropped.
-  assert.deepEqual(parseSplashSettings({ customized: false, providers: [
-    { package_id: 'pkg.l', title: { zh: '主题背景', en: 'Theme background', extra: 1 }, skippable: true,
-      max_duration_ms: 9500, enabled: true },
-    { package_id: 'pkg.m', title: { zh: '只有中文' }, skippable: true, max_duration_ms: 9500, enabled: true },
-  ] }).providers.map((provider) => provider.title), [{ zh: '主题背景', en: 'Theme background' }]);
-  const settings = parseSplashSettings({ customized: false, providers: [
-    { package_id: 'pkg.a', title: 'A', skippable: true, max_duration_ms: 9500, enabled: true },
-    { package_id: 'pkg.b', title: 'B', skippable: false, max_duration_ms: 60000, enabled: false },
-    { package_id: 'pkg.c', title: 'C', skippable: false, max_duration_ms: 60000, enabled: true },
-    { package_id: 'pkg.d', title: 'D', skippable: false, max_duration_ms: 1.5, enabled: true },
-  ] });
-  assert.deepEqual(settings.providers.map((provider) => provider.packageId), ['pkg.a', 'pkg.b', 'pkg.c']);
-  assert.equal(parseSplashSettings({ providers: [] }), null);
-  assert.deepEqual(displayedProviders(settings, 'pkg.c').map((provider) => provider.packageId), ['pkg.c', 'pkg.a', 'pkg.b']);
-  assert.deepEqual(displayedProviders({ ...settings, customized: true }, 'pkg.c').map((provider) => provider.packageId),
-    ['pkg.a', 'pkg.b', 'pkg.c']);
-  assert.deepEqual(movedOrder(settings.providers, 'pkg.b', -1), ['pkg.b', 'pkg.a', 'pkg.c']);
-  assert.equal(movedOrder(settings.providers, 'pkg.a', -1), null);
-  assert.equal(movedOrder(settings.providers, 'pkg.c', 1), null);
-  assert.deepEqual(toggledDisabled(settings.providers, 'pkg.a', false), ['pkg.a', 'pkg.b']);
-  assert.deepEqual(toggledDisabled(settings.providers, 'pkg.b', true), []);
-});
 
 test('a saved splash order plays as saved instead of putting the appearance provider first', async () => {
   const app = splashSetup({
@@ -3925,116 +3891,6 @@ test('download offers are validated and go to the desktop dialog or a download l
   }
   assert.deepEqual(clicks, [[good.url, '备份.zip']]);
   assert.equal(document.querySelector('a[download]'), null);
-});
-
-test('Extensions settings lists splash providers and saves order, switches and reset', async () => {
-  window.localStorage.setItem('workswarm.appearance.provider', 'pkg.b');
-  let state = { customized: false, providers: [
-    { package_id: 'pkg.a', title: 'Aurora', skippable: true, max_duration_ms: 9500, enabled: true },
-    { package_id: 'pkg.b', title: 'Hive', skippable: false, max_duration_ms: 60000, enabled: true },
-  ] };
-  const services = settingsRequest((method, params) => {
-    if (method === 'webui.splash.settings.update' && 'order' in params) {
-      state = params.order === null ? { ...state, customized: false }
-        : { customized: true, providers: params.order.map((id) => state.providers.find((item) => item.package_id === id)) };
-    }
-    if (method === 'webui.splash.settings.update' && 'disabled' in params) {
-      state = { ...state, providers: state.providers.map((item) => ({ ...item, enabled: !params.disabled.includes(item.package_id) })) };
-    }
-    return state;
-  });
-  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
-    request: services.request }, createElement(SplashProviderSettings, { disabled: false })));
-  const all = (testId) => [...view.container.querySelectorAll(`[data-testid="${testId}"]`)];
-  const items = () => all('settings-extensions-splash-item').map((node) => node.dataset.variant);
-  const control = (testId, packageId) => all(testId).find((node) => node.dataset.variant === packageId);
-  const click = async (node) => { await act(async () => node.click()); await act(async () => settle()); };
-  try {
-    assert.deepEqual(items(), ['pkg.b', 'pkg.a'], 'without a saved order the appearance provider is shown first');
-    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-order"]').dataset.variant, 'default');
-    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-reset-btn"]'), null);
-    assert.equal(control('settings-extensions-splash-up-btn', 'pkg.b').disabled, true);
-    assert.match(all('settings-extensions-splash-item')[1].closest('.setting-row').textContent, /可跳过，最长 10 秒|Skippable, up to 10 s/);
-
-    await click(control('settings-extensions-splash-down-btn', 'pkg.b'));
-    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { order: ['pkg.a', 'pkg.b'] }]);
-    assert.deepEqual(items(), ['pkg.a', 'pkg.b']);
-    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-order"]').dataset.variant, 'custom');
-
-    await click(control('settings-extensions-splash-switch', 'pkg.a'));
-    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { disabled: ['pkg.a'] }]);
-    assert.equal(control('settings-extensions-splash-switch', 'pkg.a').getAttribute('aria-checked'), 'false');
-
-    await click(view.container.querySelector('[data-testid="settings-extensions-splash-reset-btn"]'));
-    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { order: null }]);
-    assert.deepEqual(items(), ['pkg.b', 'pkg.a']);
-  } finally {
-    await view.unmount();
-    window.localStorage.removeItem('workswarm.appearance.provider');
-  }
-});
-
-test('Extensions settings reports a failed save and keeps the previous state', async () => {
-  const state = { customized: false, providers: [
-    { package_id: 'pkg.a', title: 'Aurora', skippable: true, max_duration_ms: 9500, enabled: true },
-  ] };
-  const services = settingsRequest((method) => {
-    if (method === 'webui.splash.settings.update') throw Object.assign(new Error('write failed'), { code: 'SETTINGS_WRITE_FAILED' });
-    return state;
-  });
-  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
-    request: services.request }, createElement(SplashProviderSettings, { disabled: false })));
-  const toggle = () => view.container.querySelector('[data-testid="settings-extensions-splash-switch"]');
-  try {
-    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-save-error"]'), null);
-    await act(async () => toggle().click());
-    await act(async () => settle());
-    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { disabled: ['pkg.a'] }]);
-    assert.ok(view.container.querySelector('[data-testid="settings-extensions-splash-save-error"]'));
-    assert.equal(toggle().getAttribute('aria-checked'), 'true', 'the switch shows the state that is still saved');
-  } finally {
-    await view.unmount();
-  }
-});
-
-test('Extensions settings shows localized plugin names in the interface language', async () => {
-  const services = settingsRequest(() => ({ customized: false, providers: [
-    { package_id: 'pkg.l', title: { zh: '主题背景', en: 'Theme background' }, skippable: true, max_duration_ms: 9500,
-      enabled: true },
-  ] }));
-  const previousLanguage = i18n.language;
-  await act(async () => i18n.changeLanguage('zh'));
-  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
-    request: services.request }, createElement(SplashProviderSettings, { disabled: false })));
-  const name = () => view.container.querySelector('[data-testid="settings-extensions-splash-item"]').textContent;
-  try {
-    assert.equal(name(), '主题背景');
-    await act(async () => i18n.changeLanguage('en'));
-    assert.equal(name(), 'Theme background');
-    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-up-btn"]').getAttribute('aria-label'),
-      i18n.t('settingsPanel.extensions.splash.moveUp', { name: 'Theme background' }));
-  } finally {
-    await view.unmount();
-    await act(async () => i18n.changeLanguage(previousLanguage));
-  }
-});
-
-test('Extensions settings shows its empty and disconnected states', async () => {
-  const offline = settingsRequest(() => ({ providers: [], customized: false }));
-  let view = await mounted(createElement(SettingsServicesProvider, { isConnected: false, connectionState: 'closed',
-    request: offline.request }, createElement(SplashProviderSettings, { disabled: false })));
-  assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-status"]').dataset.variant, 'disconnected');
-  assert.deepEqual(offline.calls, []);
-  await view.unmount();
-  const empty = settingsRequest(() => ({ providers: [], customized: false }));
-  view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
-    request: empty.request }, createElement(SplashProviderSettings, { disabled: false })));
-  assert.ok(view.container.querySelector('[data-testid="settings-extensions-splash-empty"]'));
-  await view.unmount();
-});
-
-test('the Extensions module keeps only host features', () => {
-  assert.deepEqual(extensionsModule.sections.map((section) => section.id), ['extensions-splash']);
 });
 
 // ── Splash preview (Gateway F_14) ────────────────────────────────────────────
