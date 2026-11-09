@@ -11,11 +11,20 @@ default: an empty allowlist denies every outbound request.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from jiuwenswarm.common.extension_config import (
+    resolve_install_dir,
+    resolve_install_report_path,
+    resolve_install_report_settings,
+)
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_INSTALL_DIR = "extension_pkgs"
 DEFAULT_RECOVERY_DATA_DIR = "extension"
@@ -95,6 +104,10 @@ class GatewayExtensionConfig:
     http: HttpPolicy = HttpPolicy()
     #: ``uploads.max_bytes``: total size of one file import.
     upload_max_bytes: int = DEFAULT_UPLOAD_MAX_BYTES
+    report_path: Path | None = None
+    poll_interval: float = 0.5
+    dependency_timeout: float = 300.0
+    lock_timeout: float = 5.0
 
 
 def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExtensionConfig:
@@ -107,18 +120,23 @@ def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExten
         gateway = {}
 
     enabled = gateway.get("enabled")
-    install_dir = gateway.get("install_dir")
-    if not isinstance(install_dir, str) or not install_dir.strip():
-        install_dir = DEFAULT_INSTALL_DIR
+    shared_install_dir = resolve_install_dir(source)
+    explicit_shared = extensions.get("install_dir") if isinstance(extensions, Mapping) else None
+    install_dir = _gateway_install_dir(
+        gateway.get("install_dir"),
+        shared_install_dir,
+        shared_explicit=isinstance(explicit_shared, str) and bool(explicit_shared.strip()),
+    )
     data_dir = gateway.get("data_dir")
     if not isinstance(data_dir, str) or not data_dir.strip():
         data_dir = DEFAULT_DATA_DIR
     recovery_data_dir = extensions.get("data_dir") if isinstance(extensions, Mapping) else None
     if not isinstance(recovery_data_dir, str) or not recovery_data_dir.strip():
         recovery_data_dir = DEFAULT_RECOVERY_DATA_DIR
+    settings = resolve_install_report_settings(source)
     return GatewayExtensionConfig(
         enabled=enabled if isinstance(enabled, bool) else True,
-        install_dir=_resolve_dir(install_dir),
+        install_dir=install_dir,
         data_dir=_resolve_dir(data_dir),
         recovery_data_dir=_resolve_dir(recovery_data_dir),
         http=_read_http_policy(gateway.get("http")),
@@ -126,7 +144,37 @@ def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExten
             (gateway.get("uploads") if isinstance(gateway.get("uploads"), Mapping) else {}).get("max_bytes"),
             DEFAULT_UPLOAD_MAX_BYTES, MAX_UPLOAD_BYTES,
         ),
+        report_path=resolve_install_report_path(source),
+        poll_interval=settings.poll_interval,
+        dependency_timeout=settings.dependency_timeout,
+        lock_timeout=settings.lock_timeout,
     )
+
+
+def _gateway_install_dir(raw: Any, shared: Path, *, shared_explicit: bool) -> Path:
+    """Accept the legacy Gateway key only while it names the shared root.
+
+    Two explicit directories in one file are a configuration error. When the
+    shared root comes from the environment or the default instead, the stale
+    legacy key is ignored with a warning so an old config keeps starting.
+    """
+
+    if not isinstance(raw, str) or not raw.strip():
+        return shared
+    legacy = _resolve_dir(raw.strip())
+    if legacy == shared:
+        return shared
+    if shared_explicit:
+        raise ValueError(
+            "extensions.gateway.install_dir conflicts with extensions.install_dir"
+        )
+    logger.warning(
+        "[GatewayExtensions] ignoring extensions.gateway.install_dir=%s; "
+        "packages are shared under %s",
+        legacy,
+        shared,
+    )
+    return shared
 
 
 def _read_http_policy(raw: Any) -> HttpPolicy:
@@ -180,5 +228,6 @@ def _read_config() -> Mapping[str, Any]:
 
         value = get_config()
     except Exception:  # noqa: BLE001 - a broken config only disables the feature
+        logger.warning("[GatewayExtensions] cannot read host configuration; using defaults", exc_info=True)
         return {}
     return value if isinstance(value, Mapping) else {}

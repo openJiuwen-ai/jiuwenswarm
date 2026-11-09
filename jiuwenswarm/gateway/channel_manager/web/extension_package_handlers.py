@@ -21,6 +21,7 @@ reachable and the first login package can be installed.
 from __future__ import annotations
 
 import json
+import logging
 import tarfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import fields, is_dataclass
@@ -40,7 +41,6 @@ from jiuwenswarm.gateway.extensions_v2.management.catalog import (
     resolve_install_source,
 )
 from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
-from jiuwenswarm.common.extension_cli import merge_query_states
 
 MANAGEMENT_METHODS = frozenset(
     {
@@ -55,6 +55,9 @@ MANAGEMENT_METHODS = frozenset(
     }
 )
 INVALID_PARAMS_CODE = "INVALID_PARAMS"
+OPERATION_FAILED_CODE = "EXTENSION_OPERATION_FAILED"
+
+logger = logging.getLogger(__name__)
 
 
 def register_extension_package_handlers(channel: Any, resolve_client: Callable[[], Any]) -> None:
@@ -89,7 +92,7 @@ def register_extension_package_handlers(channel: Any, resolve_client: Callable[[
                 user_id=user_id,
                 req_method=method,
                 label=method.value,
-                timeout_seconds=120.0,
+                timeout_seconds=_request_timeout(),
                 drop_params=("session_id",),
                 preserve_error_payload=True,
             )
@@ -150,30 +153,12 @@ async def _handle_locally(
 
     if method is ReqMethod.EXTENSIONS_V2_QUERY:
         package_id = params.get("package_id")
-        if isinstance(package_id, str) and package_id:
-            if not manager.owns(package_id):
-                return False
-            await _respond(channel, ws, req_id, ok=True, payload={"state": manager.query(package_id)})
-            return True
-        if not manager.gateway_installed():
+        if not isinstance(package_id, str) or not package_id:
+            # The shared report is owned by AgentServer; it returns every domain id.
             return False
-        state = manager.query()
-        agent_client = resolve_client()
-        if agent_client is not None:
-            ok, payload = await fetch_agent_unary(
-                agent_client=agent_client,
-                req_method=method,
-                params=dict(params),
-                session_id=session_id,
-                user_id=user_id,
-                channel_id=channel.channel_id,
-                label=method.value,
-                timeout_seconds=120.0,
-            )
-            remote = payload.get("state") if ok else None
-            if isinstance(remote, Mapping):
-                state = merge_query_states(state, remote)
-        await _respond(channel, ws, req_id, ok=True, payload={"state": state})
+        if await manager.get_package_domain(package_id) != DOMAIN_GATEWAY:
+            return False
+        await _respond(channel, ws, req_id, ok=True, payload={"state": manager.query(package_id)})
         return True
 
     if method is ReqMethod.EXTENSIONS_V2_CATALOG:
@@ -196,7 +181,7 @@ async def _handle_locally(
                 user_id=user_id,
                 channel_id=channel.channel_id,
                 label=method.value,
-                timeout_seconds=120.0,
+                timeout_seconds=_request_timeout(),
             )
             remote = payload.get("packages") if ok else None
             if isinstance(remote, list):
@@ -252,7 +237,20 @@ async def _handle_locally(
             if error is not None:
                 await _respond(channel, ws, req_id, ok=False, error=error, code=INVALID_PARAMS_CODE)
                 return True
-        owners = [manager.owns_source(path) for path in paths]
+        owners: list[bool] = []
+        for path in paths:
+            try:
+                owners.append(await manager.get_source_domain(path) == DOMAIN_GATEWAY)
+            except Exception:  # noqa: BLE001 - an unreadable source belongs to neither side
+                await _respond(
+                    channel,
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="install source is not a valid package",
+                    code=INVALID_PARAMS_CODE,
+                )
+                return True
         if not any(owners):
             return False
         if not all(owners):
@@ -279,7 +277,10 @@ async def _handle_locally(
         return True
 
     package_id = params.get("package_id")
-    if not isinstance(package_id, str) or not manager.owns(package_id):
+    if not isinstance(package_id, str) or not package_id:
+        return False
+    domain = await manager.get_package_domain(package_id)
+    if domain != DOMAIN_GATEWAY and not (domain is None and manager.owns(package_id)):
         return False
     if method is ReqMethod.EXTENSIONS_V2_SET_ENABLED:
         if not isinstance(params.get("enable"), bool):
@@ -296,7 +297,19 @@ async def _handle_locally(
         await _respond(channel, ws, req_id, ok=True, payload={"reports": [_encode(report)]})
         return True
     operation = manager.uninstall if method is ReqMethod.EXTENSIONS_V2_UNINSTALL else manager.reload
-    report = await operation(package_id)
+    try:
+        report = await operation(package_id)
+    except Exception as exc:  # noqa: BLE001 - answer the frame instead of dropping it
+        logger.exception("[GatewayExtensions] %s failed for %s", method.value, package_id)
+        await _respond(
+            channel,
+            ws,
+            req_id,
+            ok=False,
+            error=f"{method.value} failed: {exc}",
+            code=OPERATION_FAILED_CODE,
+        )
+        return True
     await _respond(channel, ws, req_id, ok=True, payload={"reports": [_encode(report)]})
     return True
 
@@ -367,7 +380,7 @@ async def _import_local(
         user_id=user_id,
         channel_id=channel.channel_id,
         label=method.value,
-        timeout_seconds=120.0,
+        timeout_seconds=_request_timeout(),
     )
     if not ok:
         await _respond(
@@ -451,6 +464,17 @@ def _merge_packages(local: list[dict[str, Any]], remote: list[Any]) -> list[dict
         if isinstance(item, Mapping):
             merged.setdefault(str(item.get("id")), dict(item))
     return list(merged.values())
+
+
+def _request_timeout() -> float:
+    """Client and proxy wait at least the dependency window plus one margin."""
+
+    from jiuwenswarm.gateway.extensions_v2.assembly import get_gateway_runtime
+
+    runtime = get_gateway_runtime()
+    if runtime is None:
+        return 330.0
+    return float(runtime.config.dependency_timeout) + 30.0
 
 
 def _encode(value: object) -> Any:

@@ -25,7 +25,11 @@ def installed_splash_providers(config: GatewayExtensionConfig | None = None) -> 
     from jiuwenswarm.gateway.extensions_v2.webui.bridge import BrowserBridge
     from jiuwenswarm.gateway.extensions_v2.webui.host_settings import SplashPreferences
 
-    config = config if config is not None else load_gateway_config()
+    try:
+        config = config if config is not None else load_gateway_config()
+    except Exception:  # noqa: BLE001 - a bad config means no splash, not a failed Web UI start
+        logger.exception("[GatewayExtensions] invalid configuration; no splash providers")
+        return []
     if not config.enabled:
         return []
     preferences = SplashPreferences(config.data_dir)

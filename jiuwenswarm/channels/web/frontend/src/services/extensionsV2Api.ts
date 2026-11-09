@@ -18,7 +18,9 @@ export interface SystemPluginReportPayload {
   reports: SystemPluginReport[];
 }
 
-const INSTALL_TIMEOUT_MS = 130_000;
+// The Gateway waits dependency_timeout (default 300s) + 30s for the AgentServer; the
+// client keeps another 30s so the server-side timeout error reaches the UI first.
+const INSTALL_TIMEOUT_MS = 360_000;
 
 function reportFailure(payload: SystemPluginReportPayload): string | null {
   const failed = (payload.reports ?? []).find((report) => report.status !== 'SUCCESS');

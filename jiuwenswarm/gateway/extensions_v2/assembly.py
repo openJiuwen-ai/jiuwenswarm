@@ -48,11 +48,15 @@ async def install_gateway_extensions(
     async with _LOCK:
         if _ASSEMBLY is not None:
             return _ASSEMBLY
-        settings = config if isinstance(config, GatewayExtensionConfig) else load_gateway_config(config)
-        if not settings.enabled:
-            logger.info("[GatewayExtensions] disabled by configuration")
+        try:
+            settings = config if isinstance(config, GatewayExtensionConfig) else load_gateway_config(config)
+            if not settings.enabled:
+                logger.info("[GatewayExtensions] disabled by configuration")
+                return None
+            assembly = _build_assembly(channel, settings)
+        except Exception:  # noqa: BLE001 - a bad config disables the feature, not the Gateway
+            logger.exception("[GatewayExtensions] invalid configuration; extension features are unavailable")
             return None
-        assembly = _build_assembly(channel, settings)
         try:
             await assembly.runtime.start()
         except Exception:  # noqa: BLE001 - extensions must not block the Gateway
