@@ -191,7 +191,7 @@ class TestValidateModelHandler:
         channel = FakeChannel()
         params = {
             "api_base": DEEPSEEK_BASE,
-            "api_key": "sk-unit-test",
+            "api_key": "unit-test-placeholder",
             "model": "deepseek-flash",
             "model_provider": handlers.normalize_provider_value(provider),
         }

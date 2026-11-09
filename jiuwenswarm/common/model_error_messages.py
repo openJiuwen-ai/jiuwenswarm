@@ -34,6 +34,13 @@ __all__ = [
 
 BALANCE_ERROR_CODE = "INSUFFICIENT_BALANCE"
 
+# 集中声明阈值与外部入口，避免判定逻辑里散落魔法数字和硬编码链接。
+_MAX_ERROR_TEXT_CHARS = 6000
+_MAX_CAUSE_DEPTH = 4
+_MAX_RAW_ERROR_CHARS = 240
+_DEEPSEEK_TOPUP_URL = "https://platform.deepseek.com/top_up"
+_OPENAI_BILLING_URL = "https://platform.openai.com/settings/billing"
+
 _BALANCE_MARKERS = (
     "insufficient balance",
     "insufficient_balance",
@@ -113,6 +120,17 @@ _SERVER_MARKERS = (
     "服务暂时不可用",
 )
 
+# 分类规则表：(类别, 关键字, 状态码, 状态码命中时需同时出现的关键字)。
+# 顺序即优先级，越具体的类别越靠前。
+_CLASSIFY_RULES = (
+    ("balance", _BALANCE_MARKERS, (402,), None),
+    ("auth", _AUTH_MARKERS, (401, 403), None),
+    ("model", _MODEL_MARKERS, (404,), "model"),
+    ("rate", _RATE_MARKERS, (429,), None),
+    ("network", _NETWORK_MARKERS, (), None),
+    ("server", _SERVER_MARKERS, (500, 502, 503, 504), None),
+)
+
 _BALANCE_MESSAGE = (
     "模型账户余额不足，服务商已拒绝本次调用（HTTP 402）。"
     "请先到模型服务商平台充值；充值完成后无需修改当前配置，直接重新测试即可。"
@@ -156,7 +174,7 @@ def _flatten_error(error: Any) -> str:
 
     add(error)
     current = error
-    for _ in range(4):
+    for _ in range(_MAX_CAUSE_DEPTH):
         cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
         if cause is None:
             break
@@ -166,9 +184,11 @@ def _flatten_error(error: Any) -> str:
         for attr in ("body", "message", "detail", "response"):
             try:
                 add(getattr(error, attr, None))
-            except Exception:  # noqa: BLE001 — 属性访问可能由 SDK 懒加载触发
+            except (AttributeError, TypeError, ValueError, RuntimeError):
+                # SDK 详情字段可能由懒加载触发异常；跳过该字段即可，
+                # 异常文本与其余字段仍会参与分类，不吞掉调用方的真实故障。
                 continue
-    return " \n".join(parts)[:6000].lower()
+    return " \n".join(parts)[:_MAX_ERROR_TEXT_CHARS].lower()
 
 
 def _has_status(text: str, code: int) -> bool:
@@ -181,36 +201,34 @@ def _has_status(text: str, code: int) -> bool:
     )
 
 
+def _status_matches(text: str, codes: tuple[int, ...], requires: str | None) -> bool:
+    """状态码命中判定；``requires`` 非空时还需文本中出现该关键字。"""
+    if requires and requires not in text:
+        return False
+    return any(_has_status(text, code) for code in codes)
+
+
 def _classify(text: str) -> str | None:
-    """返回错误类别；顺序代表优先级（越具体的越靠前）。"""
-    if any(marker in text for marker in _BALANCE_MARKERS) or _has_status(text, 402):
-        return "balance"
-    if any(marker in text for marker in _AUTH_MARKERS) or _has_status(text, 401) or _has_status(text, 403):
-        return "auth"
-    if any(marker in text for marker in _MODEL_MARKERS) or (_has_status(text, 404) and "model" in text):
-        return "model"
-    if any(marker in text for marker in _RATE_MARKERS) or _has_status(text, 429):
-        return "rate"
-    if any(marker in text for marker in _NETWORK_MARKERS):
-        return "network"
-    if any(marker in text for marker in _SERVER_MARKERS) or any(
-        _has_status(text, code) for code in (500, 502, 503, 504)
-    ):
-        return "server"
+    """按规则表顺序返回错误类别；无法识别时返回 ``None``。"""
+    for kind, markers, codes, requires in _CLASSIFY_RULES:
+        if any(marker in text for marker in markers):
+            return kind
+        if _status_matches(text, codes, requires):
+            return kind
     return None
 
 
 def _balance_provider_hint(api_base: str) -> str:
     """针对已知服务商给出充值入口，未知服务商回显其域名便于定位。"""
-    host = ""
     try:
         host = (urlparse(str(api_base or "")).hostname or "").lower()
-    except Exception:  # noqa: BLE001 — api_base 可能不是合法 URL
-        pass
+    except ValueError:
+        # 畸形 URL（如非法 IPv6 字面量）解析不出域名，回退到空域名即可。
+        host = ""
     if "deepseek" in host:
-        return " DeepSeek 充值页：https://platform.deepseek.com/top_up"
+        return f" DeepSeek 充值页：{_DEEPSEEK_TOPUP_URL}"
     if "openai.com" in host:
-        return " OpenAI 账单页：https://platform.openai.com/settings/billing"
+        return f" OpenAI 账单页：{_OPENAI_BILLING_URL}"
     if host:
         return f" 当前配置的服务商：{host}。"
     return ""
@@ -246,7 +264,7 @@ def user_facing_model_error(
     raw = "" if error is None else str(error).strip()
     if not raw:
         return fallback
-    if len(raw) > 240 or "\n" in raw:
+    if len(raw) > _MAX_RAW_ERROR_CHARS or "\n" in raw:
         return _INTERNAL_MESSAGE
     return raw
 
