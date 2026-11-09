@@ -777,6 +777,12 @@ def install_subagent_llm_history_forwarder() -> None:
             if not active:
                 return
             parent_id, sub_type, ctx = active
+            from jiuwenswarm.server.runtime.session.history_artifacts import put_prompt
+            from jiuwenswarm.server.runtime.session.history_io import run_history_io
+
+            prompt_ref = await run_history_io(
+                put_prompt, parent_id, kwargs.get("messages") or [], kwargs.get("tools") or [],
+            )
             prompt = _subagent_prompt_preview(kwargs.get("messages"))
             if prompt:
                 _LAST_PROMPT_BY_SESSION[sid] = prompt
@@ -784,7 +790,7 @@ def install_subagent_llm_history_forwarder() -> None:
             _append_subagent_llm_record(
                 parent_id=parent_id, subagent_type=sub_type, ctx=ctx,
                 event_type="chat.llm_call_start",
-                extra={"prompt": prompt} if prompt else {},
+                extra={"prompt": prompt or "", "payload_refs": {"prompt": prompt_ref}},
             )
         except Exception as exc:
             server_logger.warning("[AgentObservability] subagent llm_start forward failed: %s", exc)

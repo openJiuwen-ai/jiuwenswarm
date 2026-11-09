@@ -495,3 +495,19 @@ empty `items` and an error message, without a local Gateway fallback. Existing S
 cold-cache and background-refresh semantics remain in place. The pinned
 `openjiuwen-protocol` package defines `hub.expert_packages.catalog`; no application-side
 enum registration is required.
+
+## History payload references and chunk retrieval
+
+Large tool results retain a short preview and may include `payload_refs`. A `chat.llm_call_start` event may also reference the complete model input (messages and tools). Each reference contains `sha256`, `bytes`, `media_type`, and a host path. Clients retrieve content by session and digest rather than opening the host path.
+
+`text/plain` identifies an original string; `application/json` identifies the complete structured value. `raw_output_truncated=true` means the inline preview was reduced while the complete artifact remains available. Existing small results and inline history keep their semantics.
+
+Use a unary `history.get` request with these `params`:
+
+```json
+{"session_id":"web_example","artifact_sha256":"<64 lowercase SHA-256 hex characters>","offset":0,"max_bytes":65536}
+```
+
+The response payload contains `content`, `offset`, `next_offset`, `eof`, `bytes`, and `sha256`. Offsets are UTF-8 byte positions and must align with character boundaries; each read is limited to 64 KiB. Continue from the returned `next_offset` until `eof=true`. Digests are resolved within the selected session; arbitrary file paths are not accepted. Invalid digests, ranges, encoding boundaries, or missing artifacts produce `HISTORY_ARTIFACT_FAILED`.
+
+Omitting `artifact_sha256` preserves existing history paging/streaming behavior. The E2A envelope and protocol version are unchanged.

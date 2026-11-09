@@ -108,6 +108,7 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "is_goal_objective_message",
     "is_goal_completed_message",
     "evidence",
+    "payload_refs",
     "agent_template_name",
 }
 
