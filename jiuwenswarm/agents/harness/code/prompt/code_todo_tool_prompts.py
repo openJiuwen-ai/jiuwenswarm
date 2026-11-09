@@ -34,7 +34,7 @@ Do NOT create one todo per file unless the user explicitly asks for file-level t
 
 ## Usage
 
-Create only when a new plan is needed. Continue or adjust an active plan with todo_modify; explicitly pass plan_action=new/rebuild to replace it. Prefer todo_create in parallel with the first write/bash when possible — avoid a todo-only first round.
+Call once before substantive work. Prefer todo_create in parallel with the first write/bash when possible — avoid a todo-only first round.
 
 {"tasks": [{"id": "backend", "content": "Implement Flask backend", "activeForm": "Implementing Flask backend", "description": "app.py, SQLite scores API, static routes"}, {"id": "verify", "content": "Verify end-to-end", "activeForm": "Verifying end-to-end", "description": "Run app, exercise APIs, confirm game loads"}]}
 """.strip()
@@ -66,7 +66,7 @@ Update todo items for the current session.
 - cancel / delete: remove items that are no longer needed
 - insert_after / insert_before: only for mid-plan scope changes, not file-by-file progress
 
-To replace the entire plan, call todo_create with plan_action=new/rebuild. Continue or adjust an active plan with todo_modify.
+To replace the entire plan, call todo_create instead of many inserts.
 
 Do not create a new todo for each file written or each verification command.
 """.strip()
@@ -103,6 +103,7 @@ def get_code_todo_create_input_params() -> dict[str, Any]:
             "plan_action": {"type": "string", "enum": ["new", "rebuild"]},
             "tasks": {
                 "type": "array",
+                "minItems": 1,
                 "description": (
                     "Outcome-based milestones scaled to complexity: skip todos for trivial work; "
                     "2–3 for medium multi-phase work; 4–6 max for complex work. "
@@ -134,22 +135,34 @@ def get_code_todo_modify_input_params() -> dict[str, Any]:
             },
             "ids": {
                 "type": "array",
-                "items": {"type": "string"},
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
                 "description": "Task ids for delete or cancel.",
             },
             "todos": {
                 "type": "array",
                 "description": (
-                    "Tasks to update or append. Prefer batching several status changes in one call."
+                    "Tasks to update or append. Update needs id plus changed fields; "
+                    "append needs a nonempty array with id/content/status in every item. "
+                    "Prefer batching several status changes in one call."
                 ),
                 "items": {
                     "type": "object",
                     "properties": _CODE_TODO_ITEM_PROPERTIES_EN,
+                    "required": ["id"],
                 },
             },
             "todo_data": {
                 "type": "object",
                 "description": "Target and items for insert_after / insert_before.",
+                "properties": {
+                    "target_id": {"type": "string", "minLength": 1},
+                    "items": {"type": "array", "minItems": 1, "items": {
+                        "type": "object", "properties": _CODE_TODO_ITEM_PROPERTIES_EN,
+                        "required": ["id", "content", "status"],
+                    }},
+                },
+                "required": ["target_id", "items"],
             },
         },
         "required": ["action"],

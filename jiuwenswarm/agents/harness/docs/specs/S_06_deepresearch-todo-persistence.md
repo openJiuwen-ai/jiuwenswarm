@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_06 |
 | 状态 | 当前实现的真实描述 |
-| 修订日期 | 2026-10-28 |
+| 修订日期 | 2026-11-09 |
 | 关联模块 | `jiuwenswarm/agents/harness/common/tools/deepresearch/todo_progress.py`（落盘件：路径解析 + 安全校验 + 原子写，313 行）<br>`jiuwenswarm/agents/harness/common/tools/deepresearch/tools.py`（两处 send 通道调用点：~3230 race-completed 通道、~3476 主 push 通道）<br>`jiuwenswarm/agents/harness/common/tools/deepresearch/stream_router.py`（`DEEPRESEARCH_STAGES` 四阶段常量 ~94、节点→阶段映射 `_NODE_STAGE`、task.update 生产侧） |
 | 消费点 | 落盘文件即 [[S_01]] 布局的标准 `{workspace}/todo/{session_id}/todo.json`——`TaskExecutionRail._load_todo_from_json` / `_format_tasks_for_update`（[[S_02]]）可直接读，供历史 / 恢复视图展示 |
 | 测试锚点 | `tests/unit_tests/agentserver/test_deepresearch_todo_progress.py`（全量）；`test_deepresearch_stream_tool.py`（~1913 路径异常容忍、~4468/~5153 persist mock） |
@@ -13,7 +13,7 @@
 
 本 spec 管 **"DeepResearch 流式进度事件中的四阶段 task.update 快照，如何以安全方式落盘为标准 harness todo.json"**：
 
-- DeepResearch 是**无 session 内 todo 工具**的编排型能力：进度以网关 push 事件（`task.update`）流给前端，不经过 [[S_02]] 的执行地图
+- DeepResearch 本身不注册另一套 Todo 工具：回写复用所属宿主引擎，进度仍通过原 task.update 推送，不新增事件协议
 - 落盘的意义：**会话结束后**历史 / 恢复视图仍能看到"这次研究完成了哪四个阶段"——落盘的是**最终成就快照**，不是过程状态
 - 落盘发生在 push 通道内：每个 `task.update` payload 推给网关**之前**先尝试持久化
 
@@ -35,50 +35,52 @@
 **N3 落盘即标准格式**
 写出条目字段：`id` / `content` / `activeForm`（=阶段标题）/ `status` / `createdAt` / `updatedAt`——可被 openjiuwen `TodoItem.from_dict` 往返，可被 `TaskExecutionRail._load_todo_from_json` 直接读。DeepResearch 不发明私有格式。
 
-**N4 createdAt 保留、updatedAt 刷新**
-`_existing_created_at` 读旧文件按 id 建 createdAt 映射（旧文件缺失 / JSON 损坏 / 非列表 → 空映射）；写新文件时已有 id 沿用旧 createdAt，其余用 `now`（UTC ISO）。重跑同一 session 不重置"何时开始"，但 updatedAt 恒为本次落盘时间。
+**N4 保留既有用户任务和时间字段**
+已有清单只更新同 ID、同标题的研究阶段，保留其他行、扩展字段及 createdAt，更新阶段的 updatedAt。普通研究仅在捕获的文件未变化时回写，空清单可保存完成阶段；Flash 只更新已有完整标准阶段，不由回调创建或重建计划。
 
 **N5 落盘先于 push，同 payload 两处通道**
 `tools.py` 的两个 send 闭包（race-completed 通道 ~3230 与主通道 ~3476）都是：`_redact_json_value` 脱敏 → `task.update` 则先 `persist_deepresearch_task_update(safe_payload, todo_path)` → 再 `push.send_push`。两处行为一致，无第三条旁路。
 
 **N6 落盘 fail-open，不牺牲主链路**
-路径解析失败 → `todo_path=None`，后续跳过 persist；persist 抛任何异常 → warning（只记异常**类型名**）后照常 push。可见性优化绝不能让研究结果的推送失败。
+普通模式缺少所属目标时跳过持久化，报告继续；Flash 启动前不能确认目标时沿原工具错误通路返回。回写阶段异常记录类型并保持报告推送，不能把回写失败说成保存成功。
 
 **N7 路径分量不透明校验**
+实际宿主 provider 优先于 worker 的历史绑定，即使 session 字符串相同也不能借用其他工作区。只在实际对象键匹配时复用批次冻结的 plan；绑定尚未指定工具但已有同对象冻结引用时，同样不能换绑新计划。工具参数指定的路径来自可信宿主，模型不提供此引擎或回写目标。
+
 `deepresearch_todo_path(session_id, workspace_key)`：`session_id` 与非 None 的 `workspace_key` 都过 `_validate_component`——拒绝空串 / `.` / `..` / `/` / `\` / `\0` / UTF-8 超 255 字节，非法即 `ValueError`（哨兵串 `deepresearch_todo_invalid_path`）；`workspace_key` 仅 **None → "default"**，空白串不落 default——strip 后空串同样被 `_validate_component` 以 `ValueError` 拒绝（fail-closed）。最终路径 = `get_tenant_agent_workspace_dir(wk) / "todo" / {session_id} / "todo.json"`——**无法逃出租户 workspace**。
 
 **N8 父目录信任链（fail-closed）**
 `_open_trusted_parent` 建立"持有者"身份：
 - **POSIX**：从 anchor 起**逐级** `os.open(part, dir_fd=fd, O_NOFOLLOW|O_DIRECTORY)`，中间目录缺失则 `mkdir(0o700, dir_fd=fd)` 后重开；任一级是 symlink 即失败。返回持有 fd + `(st_dev, st_ino)`
 - **Windows**：无法 open 目录的 Python 实现降级为 lstat 身份链（best-effort），能 open 的层级做 lstat/fstat 双重身份比对
-- 后续所有读 / 写 / replace / cleanup 都相对这个持有 fd（`dir_fd=trusted.fd`），不信任命名路径
+- 本地前置读取持有 fd，提交时传入 expected_parent_identity，由 Core 文件端在条件原子替换时复核；沙箱不借用宿主路径判断
 - `_verify_named_parent`：replace 前后重新按名解析并比对身份——父目录被换（重命名 / 符号链接重指）即 `OSError`
 
-**N9 原子替换 + TOCTOU 全程防御**
-- 进程级 `_TODO_WRITE_LOCK`（threading.Lock）串行化全部落盘
-- 读旧文件 `_read_existing_todo`：leaf 必须 regular + `nlink==1` + `size ≤ 1MB`；打开前后 fstat 身份一致；读完后**再**比对一次身份（读期间被换即失败）
-- 写 temp：`_allocate_temp` 用 `secrets.token_hex(16)` 随机名 + `O_CREAT|O_EXCL`，最多 32 次重试；temp 身份（dev/ino/nlink）校验后才用
-- `os.replace` 在持有 fd 内原子换名（Windows 走路径版 replace 后**再** verify 一次父链）
-- finally 里 `_cleanup_owned_temp` 只删**自己创建且身份未漂移**的 temp（name + identity 双条件）——别人的文件不碰
+**N9 同对象增量事务和条件发布**
+- 本地目录/leaf 前置安全检查保留，使用工具实际路径；条件提交传 expected_parent_identity。沙箱经对应 SysOperation fs，不要求宿主同名文件存在。
+- 所有回写使用 Core transact，在最新候选上仅修改匹配阶段；固定 expected_plan，文件端按 exists/hash 条件替换。旧计划不换绑，失败或未知不退回普通覆盖。
+- 普通回调额外比较启动时内容指纹，避免覆盖中途变化；所有候选经过 Core 最终发布约束。
 
-**N10 幂等重入**
-同 payload 重复落盘结果一致：全量替换、不增量合并、createdAt 沿旧值。并发落盘被 N9 的锁串行。
+**N10 请求归属与回写有效期**
+启动前从实际工具/宿主 provider 捕获 ResearchTodoTarget，包含引擎、session、plan、普通/Flash 策略及调用级 write_scope。两种策略都绑定原 asyncio.Task；取消处理先关闭 scope，正常返回/异常/finally 同样关闭。完成竞速交付沿用原目标，不重领修改资格。读取前、等待锁后及发布前重新检查 owner/scope；请求失效或计划改变拒绝新回写。在途请求的提交结果可能已确认或未知，不能宣称取消会撤回已发出的写入。
+
+目标捕获的普通/Flash 策略与 owner 有效性分开，不能用 owner=None 表示普通模式无需检查。重复回调遵循原计划、内容指纹和作用域；不提供跨请求 exactly-once 保证。
 
 ## 3. 接口契约
 
 | 公开面 | 位置 | 消费方 |
 |---|---|---|
 | `deepresearch_todo_path(*, session_id, workspace_key=None) -> Path` | `todo_progress.py` | `tools.py` 两处 send 通道（前置解析） |
-| `persist_deepresearch_task_update(payload, *, todo_path) -> bool` | `todo_progress.py` | `tools.py` 两处 send 通道（task.update 分支） |
+| `persist_deepresearch_task_update(payload, *, todo_path, target=None) -> bool` | `todo_progress.py` | `tools.py` 两处 send 通道（task.update 分支） |
 | `DEEPRESEARCH_STAGES`（四元组） | `stream_router.py` | `_deepresearch_tasks` 校验 + stream_router 阶段推进 |
 
-`persist_deepresearch_task_update` 返回 False 的三种情形：载荷校验不过（N1）/ 非全 completed（N2）/ 其它事件类型。返回 True 仅在完整走完原子替换后。
+`persist_deepresearch_task_update` 对无效/非完成载荷、匹配阶段不足或普通内容指纹变化返回 False；无可确认目标、失效作用域或旧计划拒绝修改。返回 True 表示事务已确认发布或确认无需变化；报告推送与 Todo 回写结果分别处理。
 
 ## 4. 数据结构
 
-- 落盘条目：`{"id": "deepresearch_stage_{1..4}", "content": <阶段标题>, "activeForm": <阶段标题>, "status": "completed", "createdAt": <ISO8601>, "updatedAt": <ISO8601>}`——JSON 数组、`ensure_ascii=False`、indent=2、尾部换行
+- 文件外层使用 Core plan_id/revision/todos 快照，旧数组按同对象事务兼容。阶段条目为 `id/content/activeForm/status/createdAt/updatedAt`；已有条目及扩展字段保留，不以阶段表替换整张用户清单
 - `_TrustedParent(fd, identity, ancestors)`：持有父目录 fd（POSIX）或祖先身份链（Windows）的 frozen dataclass
-- 常量：`_MAX_TODO_BYTES = 1MiB`（leaf 与读缓冲上限）、`_MAX_COMPONENT_BYTES = 255`、temp 前缀 `.deepresearch-todo-{hex}.json`
+- 常量：`_MAX_TODO_BYTES = 1MiB`（leaf 与读缓冲上限）、`_MAX_COMPONENT_BYTES = 255`；临时文件与替换由实际 Core fs 后端管理
 - `_TODO_STATUSES` 四值与 openjiuwen TodoStatus 对齐（completed 落盘，其余三值仅校验用）
 
 ## 5. 执行路径全景
@@ -87,19 +89,19 @@
 deepresearch 编排节点按 `_NODE_STAGE` 映射推进 `state.current_stage` → stream_router 组装 `task.update` payload（含四阶段 tasks 快照与计数）→ 进入 `tools.py` 的 send 通道。
 
 **P2 落盘（persist 全程）**
-send 通道收到 payload → 脱敏 → `event_type == "task.update"` → `persist_deepresearch_task_update`：载荷校验（N1）→ 全 completed 判定（N2）→ 加进程锁 → 建信任父链（N8，含逐级 mkdir）→ 读旧 createdAt（N4）→ 分配 temp → `json.dump` + flush + temp 身份复核 → `_verify_named_parent` → `os.replace` 原子换名 → finally 清理自有 temp + 关持有 fd → 返回 True。任何一步 OSError / ValueError 冒给调用方 → E5 warning → push 照常。
+启动研究前固定 route/工具/计划与写作用域 → send 收到脱敏 task.update → 校验四阶段及全部 completed → 检查原请求仍有效 → Core transact 锁定实际对象并读取当前快照 → 本地安全检查或沙箱 fs → 检查捕获 plan/hash → 仅更新匹配阶段，普通空清单按原语义保存完成阶段 → 最终状态校验和条件原子发布 → 推送原事件。回写失败不隐藏或伪造完成状态，普通无引擎时跳过保存并继续报告交付；Flash 启动前目标捕获失败沿原工具失败通路处理。
 
 **P3 消费（读侧接缝）**
 会话结束后：历史 / 恢复路径经 `TaskExecutionRail._load_todo_from_json(session_id)` 读同一文件（workspace TODO 节点）→ `_format_tasks_for_update(retained, source="todo")` 转广播格式 → 前端 todo 视图展示四阶段全 completed。**落盘文件是 DeepResearch 与 [[S_02]] 执行地图体系的唯一交汇点**——但方向是单向的（DeepResearch 只写不读 rail 状态，rail 只读不写 DeepResearch 进度）。
 
 ## 6. 异常分支
 
-- **E1** 载荷不符（长度 ≠ 4 / task_id / content / status 任一不匹配）→ 返回 None，非错误，不落盘
+- **E1** 载荷不符（长度 ≠ 4 / task_id / content / status 任一不匹配）→ 返回 False，非错误，不落盘
 - **E2** 非 `task.update` 事件 → 直接跳过 persist
 - **E3** `deepresearch_todo_path` 分量非法 → `ValueError`；调用方 warning + `todo_path=None`，本 session 后续跳过落盘
 - **E4** 安全防御触发（symlink 中间目录 / leaf 非 regular / nlink≠1 / 身份漂移 / 超 1MB / temp 分配 32 次失败）→ `OSError` fail-closed——**宁可落盘失败也不写外部目录**
 - **E5** persist 任何异常 → 调用方 warning（只记类型名，不泄内容）→ push 照常（N6）
-- **E6** 旧 todo.json 损坏 / 非列表 / 字段类型不对 → `_existing_created_at` 返回空映射，createdAt 全用 now——旧文件损坏不阻塞新快照落盘
+- **E6** 旧 todo.json 损坏或快照非法 → 事务拒绝写入，保留原文件；调用方记录类型并保持原报告交付通路，不能把损坏当作空清单重建。
 
 ## 7. 边界 case 清单（测试锚点）
 
@@ -123,7 +125,7 @@ send 通道收到 payload → 脱敏 → `event_type == "task.update"` → `pers
 2. **改落盘时机（如中途也落）** → 重新评估 N2（历史视图语义从"成就快照"变"过程状态"）与 E1 的读侧兼容
 3. **改存储布局** → 必须同步 [[S_01]] 与 `TaskExecutionRail._load_todo_from_json` 读侧——这是双向契约
 4. **动安全写代码** → 跑 test_deepresearch_todo_progress.py 全量——symlink / swap / identity 系列是安全回归网，删任何一道校验前先看 N8/N9 对应测试
-5. **新增需要落盘的事件类型** → 复用 persist 骨架（信任链 + temp + replace），勿另起写路径
+5. **新增需要落盘的事件类型** → 复用已捕获目标与 Core 条件事务，保留安全路径及最终状态校验，勿另起裸写路径
 6. **两处 send 通道的行为必须保持一致** → 改一处必须同步另一处（race-completed ~3230 与主通道 ~3476 是复制粘贴式对称）
 
 ## 9. 与其它 spec 的关系

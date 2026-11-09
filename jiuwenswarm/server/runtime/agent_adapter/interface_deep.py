@@ -8051,7 +8051,7 @@ class JiuWenSwarmDeepAdapter:
                     )
         return context
 
-    def _get_deepresearch_tool_context(self) -> dict[str, str]:
+    def _get_deepresearch_tool_context(self) -> dict[str, Any]:
         """Return the adapter-owned route that survives runner task boundaries.
 
         Prefers the per-session-adapter ``_current_request_route`` snapshot
@@ -8074,6 +8074,7 @@ class JiuWenSwarmDeepAdapter:
                 "service_id": scope.service_id,
                 "agent_id": scope.agent_id,
                 "workspace_key": scope.workspace_key,
+                "todo_tool_provider": lambda: self._get_todo_modify_tool(scope.session_id),
                 "output_dir": self._deepresearch_artifact_output_dir(
                     route.get("output_dir")
                 ),
@@ -8089,6 +8090,7 @@ class JiuWenSwarmDeepAdapter:
             "service_id": scope.service_id,
             "agent_id": scope.agent_id,
             "workspace_key": scope.workspace_key,
+            "todo_tool_provider": lambda: self._get_todo_modify_tool(scope.session_id),
             "output_dir": self._deepresearch_artifact_output_dir(
                 metadata.get("project_dir")
             ),
@@ -10228,6 +10230,7 @@ class JiuWenSwarmDeepAdapter:
                 service_id=scope.service_id,
                 agent_id=scope.agent_id,
                 workspace_key=scope.workspace_key,
+                todo_tool_provider=lambda: self._get_todo_modify_tool(scope.session_id),
                 output_dir=self._deepresearch_artifact_output_dir(
                     normalized_metadata.get("project_dir")
                 ),
