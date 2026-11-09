@@ -12,9 +12,9 @@ from jiuwenbox.supervisor import network
 
 @pytest.fixture(autouse=True)
 def _reset_proc_sys_state():
-    network._proc_sys_writable = False
+    network.reset_proc_sys_mount_state()
     yield
-    network._proc_sys_writable = False
+    network.reset_proc_sys_mount_state()
 
 
 def test_already_enabled_does_not_write(monkeypatch):
@@ -22,7 +22,7 @@ def test_already_enabled_does_not_write(monkeypatch):
 
     def _open(path, mode="r", *args, **kwargs):
         opened.append(mode)
-        assert path == network._IP_FORWARD
+        assert path == network.ip_forward_path()
         if "w" in mode:
             raise AssertionError("write should be skipped when forwarding is already on")
         return io.StringIO("1\n")
@@ -64,7 +64,6 @@ def test_read_only_proc_sys_remounts_once_then_writes(monkeypatch):
 
     def _remount():
         remounts["n"] += 1
-        network._proc_sys_writable = True
 
     monkeypatch.setattr("builtins.open", _open)
     monkeypatch.setattr(network, "_remount_proc_sys_rw", _remount)

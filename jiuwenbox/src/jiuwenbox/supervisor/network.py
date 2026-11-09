@@ -830,6 +830,17 @@ _proc_sys_lock = threading.Lock()
 _proc_sys_writable = False
 
 
+def reset_proc_sys_mount_state() -> None:
+    """Forget a previous successful /proc/sys remount. Used by tests."""
+    global _proc_sys_writable
+    _proc_sys_writable = False
+
+
+def ip_forward_path() -> str:
+    """Path written when IPv4 forwarding is still off."""
+    return _IP_FORWARD
+
+
 def _ip_forward_enabled(path: str = _IP_FORWARD) -> bool:
     try:
         with open(path, encoding="ascii") as handle:

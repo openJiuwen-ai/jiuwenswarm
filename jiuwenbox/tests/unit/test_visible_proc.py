@@ -11,11 +11,9 @@ from jiuwenbox.supervisor import visible_proc
 
 @pytest.fixture(autouse=True)
 def _reset():
-    visible_proc._ready = False
-    visible_proc._warned = False
+    visible_proc.reset_visible_proc_state()
     yield
-    visible_proc._ready = False
-    visible_proc._warned = False
+    visible_proc.reset_visible_proc_state()
 
 
 def test_mounts_once(monkeypatch, tmp_path):
@@ -33,9 +31,9 @@ def test_mounts_once(monkeypatch, tmp_path):
     visible_proc.ensure_visible_proc()
     visible_proc.ensure_visible_proc()
     assert calls == [
-        (None, str(parent), None, visible_proc._MS_REC | visible_proc._MS_PRIVATE),
+        (None, str(parent), None, visible_proc.MS_REC | visible_proc.MS_PRIVATE),
         ("proc", str(mountpoint), "proc", 0),
-        (None, str(mountpoint), None, visible_proc._MS_PRIVATE),
+        (None, str(mountpoint), None, visible_proc.MS_PRIVATE),
     ]
     assert (parent.stat().st_mode & 0o777) == 0o700
 
@@ -61,7 +59,7 @@ def test_busy_mountpoint_is_ready(monkeypatch, tmp_path):
         lambda path: mounted and path == str(mountpoint),
     )
     visible_proc.ensure_visible_proc()
-    assert visible_proc._ready is True
+    assert visible_proc.visible_proc_is_ready() is True
 
 
 def test_permission_error_does_not_raise(monkeypatch, tmp_path):
@@ -77,4 +75,4 @@ def test_permission_error_does_not_raise(monkeypatch, tmp_path):
     monkeypatch.setattr(visible_proc, "_mount", _mount)
     monkeypatch.setattr(visible_proc.os.path, "ismount", lambda path: False)
     visible_proc.ensure_visible_proc()
-    assert visible_proc._ready is False
+    assert visible_proc.visible_proc_is_ready() is False
