@@ -28,12 +28,13 @@ import logging
 import time
 from typing import Final
 
+from agent_gateway.common.work_mode import SUPPORTED_WORK_MODES
+
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.utils import get_agent_root_dir
-from gateway.common.work_mode import SUPPORTED_WORK_MODES
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
     build_error_response,
@@ -456,7 +457,7 @@ class SessionAdapter(GatewayAdapter):
             return build_error_response(
                 request, "session_id is required", code="BAD_REQUEST"
             )
-        from gateway.common.mode_matrix import is_team_mode
+        from agent_gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.server.runtime.offline_session_cleanup import (
             delete_offline_session,
         )

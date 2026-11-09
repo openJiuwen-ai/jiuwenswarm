@@ -10,15 +10,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from gateway.config.enterprise.repository import EnterpriseRecordRepository
-from gateway.config.memory.repository import MemoryConfigRepository
-from gateway.config.section import DbBodySectionCodec
-from gateway.enterprise.config.manager_config.core.application_config import (
+from agent_gateway.config.enterprise.repository import EnterpriseRecordRepository
+from agent_gateway.config.memory.repository import MemoryConfigRepository
+from agent_gateway.config.section import DbBodySectionCodec
+from agent_gateway.enterprise.config.manager_config.core.application_config import (
     memory_config as memory_service,
     task_memory_config as task_service,
 )
-from gateway.enterprise.config.manager_config.routers import application_config_routers as routes
-from gateway.enterprise.config.manager_config.routers.deps import SyncContext
+from agent_gateway.enterprise.config.manager_config.routers import application_config_routers as routes
+from agent_gateway.enterprise.config.manager_config.routers.deps import SyncContext
 from jiuwenswarm.agents.harness.common.memory import config as memory
 from jiuwenswarm.enterprise.config.config_provider import AgentConfigContext, DefaultConfigProvider
 from jiuwenswarm.enterprise.config.effective import db_queries

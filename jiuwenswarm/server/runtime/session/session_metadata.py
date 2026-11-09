@@ -17,14 +17,15 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
-from jiuwenswarm.common.utils import get_agent_sessions_dir
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     NEW_AGENT_CODE_NORMAL,
     NEW_AGENT_WORK_NORMAL,
     deprecate_mode,
     is_new_canonical_mode,
     is_team_mode,
 )
+
+from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
@@ -32,6 +33,8 @@ from jiuwenswarm.server.runtime.session.work_mode import (
     default_work_mode_for_channel,
     normalize_work_mode,
 )
+
+from jiuwenswarm.server.runtime.session.session_info import session_type_from_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +252,7 @@ def _build_project_lookup() -> tuple[
 
 def _repair_session_project_dir(metadata: dict[str, Any]) -> None:
     """Keep an explicitly bound session's directory consistent with its project ID."""
-    from gateway.common.work_mode import is_default_project_id
+    from agent_gateway.common.work_mode import is_default_project_id
     from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
 
     project_id = str(metadata.get("project_id") or "").strip()
@@ -331,6 +334,17 @@ def _apply_metadata_defaults_with_inference(
 
     changed = False  # 是否有需要写盘的确定性推断
     changed_fields: set[str] = set()
+
+    conversation_type = session_type_from_metadata(metadata)
+    if conversation_type == "chat":
+        directory = session_dir if session_dir is not None else get_agent_sessions_dir() / session_id
+        if (directory / "group.json").is_file():
+            conversation_type = "group_chat"
+    if metadata.get("type") != conversation_type:
+        metadata["type"] = conversation_type
+        if conversation_type == "group_chat":
+            changed = True
+            changed_fields.add("type")
 
     # last_user_message_at: 多级回退
     # 优先用已有时间字段;不能用 ``or`` 短路——合法的 0.0 时间戳是 falsy。
@@ -727,6 +741,12 @@ def _write_metadata_unfenced(
                 session_id, len(recovered), sorted(recovered),
             )
 
+        # The display snapshot is frozen at first binding. Queued metadata
+        # captured before uninstall must not remove the persisted identity.
+        if current is not None and isinstance(current.get("team_group_identity"), dict):
+            to_write = to_write.copy()
+            to_write["team_group_identity"] = copy.deepcopy(current["team_group_identity"])
+
         # External Harness runtime selection is a first-binding field. Preserve
         # the authoritative on-disk value against stale queued snapshots and
         # later attempts to switch the session to another runtime.
@@ -783,6 +803,15 @@ def _write_metadata_unfenced(
         # Recheck after merging so partial writes follow the current binding.
         to_write = to_write.copy()
         _repair_session_project_dir(to_write)
+
+        # A stale ordinary-chat snapshot must never downgrade a persistent group.
+        conversation_type = session_type_from_metadata(to_write)
+        if current is not None and session_type_from_metadata(current) == "group_chat":
+            conversation_type = "group_chat"
+        if (fpath.parent / "group.json").is_file():
+            conversation_type = "group_chat"
+        if conversation_type == "group_chat":
+            to_write["type"] = conversation_type
 
         # Atomic write: write a temp file then rename, so that truncation by
         # write_text can never expose empty content to a concurrent reader
@@ -1103,6 +1132,7 @@ def init_session_metadata(
     work_mode: str = "",
     channel_metadata: dict[str, Any] | None = None,
     agent_group_name: str = "",
+    client_app: str = "",
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
@@ -1143,6 +1173,8 @@ def init_session_metadata(
     }
     if agent_group_name:
         metadata["agent_group_name"] = agent_group_name
+    if client_app:
+        metadata["client_app"] = client_app
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
     _write_metadata_sync(session_id, metadata)
@@ -1182,6 +1214,7 @@ def update_session_metadata(
     session_runtime_binding: dict[str, Any] | None = None,
     session_harness_checkpoint: dict[str, Any] | None = None,
     group_members: list[dict[str, Any]] | None = None,
+    conversation_type: str | None = None,
     organization_owner_stopped: bool | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
@@ -1210,6 +1243,12 @@ def update_session_metadata(
     """
     if moa_enabled is not None and not isinstance(moa_enabled, bool):
         raise ValueError("moa_enabled must be a boolean")
+    if conversation_type is not None:
+        if not isinstance(conversation_type, str) or conversation_type not in {"chat", "group_chat"}:
+            raise ValueError("conversation_type must be chat or group_chat")
+        if conversation_type == "chat" and group_members is not None:
+            raise ValueError("a group roster requires group_chat type")
+
     metadata = _read_metadata(session_id, cache_bust=cache_bust)
     before = copy.deepcopy(metadata)
 
@@ -1375,8 +1414,13 @@ def update_session_metadata(
         if touch_last_message_at:
             metadata["last_message_at"] = _current_timestamp()
 
+    if conversation_type == "chat" and session_type_from_metadata(metadata) == "group_chat":
+        raise ValueError("a group session cannot be changed to ordinary chat")
+    if conversation_type is not None:
+        metadata["type"] = conversation_type
     if group_members is not None:
         metadata["group_members"] = copy.deepcopy(group_members)
+        metadata["type"] = "group_chat"
     if organization_owner_stopped is not None:
         metadata["organization_owner_stopped"] = organization_owner_stopped
 
@@ -2277,6 +2321,8 @@ def get_all_sessions_metadata(
     Returns:
         (sessions, total): 当前页的会话列表 和 会话总数
     """
+    from jiuwenswarm.server.client_attachments.registry import conversation_app
+
     sessions_dir = get_agent_sessions_dir()
     if not sessions_dir.exists() or not sessions_dir.is_dir():
         return [], 0
@@ -2343,7 +2389,7 @@ def get_all_sessions_metadata(
                 background_writeback=not state.get("write_blocked"),
             )
 
-        if metadata.get("ephemeral") is True:
+        if metadata.get("ephemeral") is True or conversation_app(metadata) is not None:
             continue
         _apply_batch_projection(metadata, session_id, state, project_states,
                                 (dir_to_projects, id_to_work_mode))

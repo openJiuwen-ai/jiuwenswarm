@@ -375,6 +375,9 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     if (shutdownMembers.has(memberId)) {
       return;
     }
+    // 镜像 worker 的工具帧（chat.tool_call / chat.tool_result）也是 teammate 角色，
+    // 同样会走到这里。重建记录时必须把已知字段原样带回去——尤其是 workflow_run_id，
+    // 它是成员列表按 run 分组的唯一依据，丢了就会掉到"未分组"、连组头都没有。
     const existing = members.get(memberId);
     members.set(memberId, {
       id: `hist-member-${memberId}`,
@@ -384,6 +387,11 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       name: existing?.name,
       execution_status: existing?.execution_status || 'idle',
       mode: existing?.mode,
+      role: existing?.role,
+      cli_agent: existing?.cli_agent,
+      workflow_run_id: existing?.workflow_run_id,
+      agent_template: existing?.agent_template,
+      display_name: existing?.display_name,
     });
   };
 

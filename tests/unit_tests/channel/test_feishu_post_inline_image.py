@@ -7,15 +7,15 @@ from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
-from gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
     FeishuChannel,
     FeishuConfig,
     _extract_feishu_post_image_keys,
 )
-from gateway.channel_manager.im_platforms.errors import (
+from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.base import RobotMessageRouter
 
 
 def _make_channel() -> FeishuChannel:

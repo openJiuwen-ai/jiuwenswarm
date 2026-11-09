@@ -22,8 +22,8 @@ import pytest
 from openjiuwen.harness.rails.interrupt.confirm_rail import ConfirmPayload
 from openjiuwen_protocol.message import EventType, Message
 
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
     FeishuChannel,
     FeishuConfig,
     _ApprovalCardContext,
@@ -59,7 +59,7 @@ def _ctx(**overrides) -> _ApprovalCardContext:
     defaults = {
         "request_id": "call_1",
         "source": "permission_interrupt",
-        "questions": [_question("执行 bash", [ALLOW_ONCE, REJECT], card_id="card-1")],
+        "questions": [_question("执行 bash", [ALLOW_ONCE, REJECT], card_id="call_1")],
         "session_id": "feishu_oc_chat",
         "chat_id": "oc_chat",
         "metadata": {"feishu_chat_id": "oc_chat", "feishu_open_id": "ou_requester"},
@@ -136,12 +136,12 @@ def test_permission_allow_once_builds_valid_confirm_payload(channel):
     assert params["source"] == "permission_interrupt"
     assert params["request_id"] == "call_1"
     assert params["supports_user_interaction"] is True
-    assert params["answers"] == [{"selected_options": ["allow_once"], "card_id": "card-1"}]
+    assert params["answers"] == [{"selected_options": ["allow_once"], "card_id": "call_1"}]
 
     interactive_input = JiuWenSwarm._build_interactive_input_from_answers(
         "call_1", params["answers"], params["source"],
     )
-    payload = interactive_input.user_inputs["card-1"]
+    payload = interactive_input.user_inputs["call_1"]
     assert ConfirmPayload.model_validate(payload).approved is True
 
 
@@ -155,7 +155,7 @@ def test_permission_always_allow_sets_persist_allow(channel):
         "call_1", params["answers"], params["source"],
     )
 
-    payload = ConfirmPayload.model_validate(interactive_input.user_inputs["card-1"])
+    payload = ConfirmPayload.model_validate(interactive_input.user_inputs["call_1"])
     assert payload.approved is True
     assert payload.auto_confirm is True
     assert payload.persist_allow is True
@@ -171,7 +171,7 @@ def test_permission_reject_builds_rejected_payload(channel):
         "call_1", params["answers"], params["source"],
     )
 
-    assert ConfirmPayload.model_validate(interactive_input.user_inputs["card-1"]).approved is False
+    assert ConfirmPayload.model_validate(interactive_input.user_inputs["call_1"]).approved is False
 
 
 # ---------- V-03：card_id 只属于权限回执 ----------------------------
@@ -446,8 +446,11 @@ async def test_multi_question_partial_answer_does_not_submit(channel):
 
 
 @pytest.mark.asyncio
-async def test_permission_answer_submits_chat_send_with_card_id(channel):
-    channel._save_card_context(_ctx())
+@pytest.mark.parametrize("card_id", ["call_1", "legacy-opaque-card"])
+async def test_permission_answer_submits_chat_send_with_card_id(channel, card_id):
+    ctx = _ctx()
+    ctx.questions[0]["card_id"] = card_id
+    channel._save_card_context(ctx)
 
     await channel._handle_card_callback_async("tok", "call_1", 0, "allow_once", "本次允许", "ou_requester")
 
@@ -455,7 +458,7 @@ async def test_permission_answer_submits_chat_send_with_card_id(channel):
     message = channel.published[0]
     assert message.req_method.value == "chat.send"
     assert message.params["source"] == "permission_interrupt"
-    assert message.params["answers"] == [{"selected_options": ["allow_once"], "card_id": "card-1"}]
+    assert message.params["answers"] == [{"selected_options": ["allow_once"], "card_id": card_id}]
     assert message.session_id == "oc_chat"
     assert message.chat_id == "oc_chat"
 

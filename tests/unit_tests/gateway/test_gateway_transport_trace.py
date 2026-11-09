@@ -11,9 +11,9 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from openjiuwen_protocol.e2a.models import E2AEnvelope
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire, encode_agent_chunk_for_wire
-from gateway import telemetry
-from gateway.routing.agent_client import WebSocketAgentServerClient
-from gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
+from agent_gateway import telemetry
+from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 
 @pytest.mark.asyncio
@@ -338,7 +338,7 @@ async def test_invoke_transport_failure_restores_context(monkeypatch, stream):
 
 @pytest.mark.asyncio
 async def test_unary_api_error_returns_expected_response(monkeypatch):
-    from gateway.extensions.yuanrong_frontend_client import YuanrongAgentApiError
+    from agent_gateway.extensions.yuanrong_frontend_client import YuanrongAgentApiError
 
     monkeypatch.setattr(telemetry, '_runtime', None)
     monkeypatch.delenv('OTEL_ENABLED', raising=False)

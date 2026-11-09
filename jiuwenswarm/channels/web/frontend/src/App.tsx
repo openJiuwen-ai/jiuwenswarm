@@ -5,6 +5,7 @@ import {
   getMultiModelCollaborationRevision,
   isMultiModelCollaborationEnabled,
 } from './features/multiModelCollaboration/featureConfig';
+import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
 import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS } from './edition';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
@@ -20,6 +21,9 @@ import { ChatPanel } from './components/ChatPanel';
 import { usePromptSuggestionBox } from './hooks/usePromptSuggestionBox';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
 import { SessionSidebar } from './components/SessionSidebar';
+import { JiuwenMateApp } from './features/jiuwenmate/JiuwenMateApp';
+import { reenterJiuwenMate } from './features/jiuwenmate/publicNav';
+import type { JiuwenMateExistingPage } from './features/jiuwenmate/types';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
 import { RsiPage } from './features/rsi/RsiPage';
@@ -39,7 +43,7 @@ import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
-import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
+import type { ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
 import { LoadingSpinner, ToastStack, toast } from './components/ui';
 import { SettingsPage } from './features/settings/SettingsPage';
@@ -53,7 +57,7 @@ import {
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
 import { DesignerPage } from './features/designer/components/DesignerPage';
-import { submitDesignComposer } from './features/designer/designerEntry';
+import { createDesignerConversation, submitDesignComposer } from './features/designer/designerEntry';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -82,6 +86,7 @@ import {
 } from './features/tool-events/toolEventNormalizer';
 import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from './features/teamGroupIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webClient, webRequest } from './services/webClient';
 import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
@@ -89,9 +94,11 @@ import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useDesktopBrowserAutoOpen } from './features/desktopBrowserFile';
+import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import {
   applyBrowserDisplaySettings,
   browserDisplayRevision,
+  useDesktopBrowserHeadless,
 } from './features/desktopBrowserDisplay';
 import {
   AgentMode,
@@ -527,6 +534,21 @@ function AppContent({
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  const [isJiuwenMate, setIsJiuwenMate] = useState(() => {
+    try {
+      return window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('jiuwenswarm:jiuwenmate-mode', String(isJiuwenMate));
+    } catch {
+      // Keep the mode switch usable when browser storage is unavailable.
+    }
+  }, [isJiuwenMate]);
+  const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -550,7 +572,6 @@ function AppContent({
   const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
-  const [externalCliInstallDialogOpen, setExternalCliInstallDialogOpen] = useState(false);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedAgents, setHasVisitedAgents] = useState(false);
   const [agentManagementNavigationRequest, setAgentManagementNavigationRequest] = useState<{
@@ -800,6 +821,13 @@ function AppContent({
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
       setActiveNav('chat');
+    } else if (route.kind === 'group-chat') {
+      // Group chats live in the JiuwenMate chat view.
+      sessionIdRef.current = NEW_CONVERSATION_ID;
+      setSessionId(NEW_CONVERSATION_ID);
+      setIsJiuwenMate(true);
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
     } else if (route.kind === 'design-project' && !isEnterprise()) {
       let cancelled = false;
       const nextSessionId = route.sessionId ?? NEW_CONVERSATION_ID;
@@ -866,6 +894,14 @@ function AppContent({
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = useSessionStore((s) => s.currentSession);
   const routeSessionId = route.kind === 'chat-session' ? route.sessionId : null;
+  useEffect(() => {
+    if (!routeSessionId) return;
+    const session = currentSession?.session_id === routeSessionId
+      ? currentSession : sessions.find((item) => item.session_id === routeSessionId);
+    if (session?.type === 'group_chat') {
+      navigate({ kind: 'group-chat', groupId: routeSessionId }, { replace: true });
+    }
+  }, [currentSession, navigate, routeSessionId, sessions]);
   const projects = useWorkspaceStore((s) => s.projects);
   // A new conversation belongs to the selected project: its message is sent there and its cards come from there.
   const newConversationProjectId = useWorkspaceStore((s) => newConversationTopicProjectId(s.selectedProject));
@@ -958,6 +994,8 @@ function AppContent({
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
+  const browserAgentActive = useBrowserAgentActivity(sessionId);
+  const browserHeadless = useDesktopBrowserHeadless();
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
@@ -1002,6 +1040,31 @@ function AppContent({
     setSingleAgentPanelExpanded(expanded);
   }, [mode, setSingleAgentPanelExpanded, setTeamAreaActiveTab, setTeamAreaExpanded, teamAreaActiveTab]);
 
+  const browserAutoExpandedSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (browserHeadless) {
+      browserAutoExpandedSessionRef.current = null;
+      return;
+    }
+    if (!window.jiuwenDesktop?.isElectron || !browserAgentActive) return;
+    // Electron 内置浏览器页签只在浏览器 Agent 真正被调用后出现；每个会话只自动
+    // 展开一次，之后尊重用户手动收起的选择。team 模式不抢 tab，等回到单 agent
+    // 模式再展开。
+    if (mode === 'team') return;
+    if (browserAutoExpandedSessionRef.current === sessionId) return;
+    browserAutoExpandedSessionRef.current = sessionId;
+    setToolPanelHidden(false);
+    setSingleAgentPanelActiveTab('browser');
+    setSingleAgentPanelExpanded(true);
+  }, [
+    browserAgentActive,
+    browserHeadless,
+    mode,
+    sessionId,
+    setSingleAgentPanelActiveTab,
+    setSingleAgentPanelExpanded,
+    setToolPanelHidden,
+  ]);
   const handleBrowserTaskOpen = useCallback(() => {
     setHeartbeatPanelOpen(false);
     setToolPanelHidden(false);
@@ -2044,7 +2107,13 @@ function AppContent({
             ? normalizeTeamLeaderIdentity(session.team_leader_identity)
             : null,
         );
-        // 同 handleRestoreSession：拿到后端 metadata 后还原模型选择，
+        useSessionStore.getState().setTeamGroupIdentity(
+          targetSessionId,
+          sessionGroupId && Object.prototype.hasOwnProperty.call(session, 'team_group_identity')
+            ? normalizeTeamGroupIdentity(session.team_group_identity)
+            : null,
+        );
+        // 同 handleRestoreSession：拿到后端 metadata 里的 model 后还原 selectedModelName，
         // 覆盖"targetSession 为空、走 loadSessionMetadata"这条恢复路径（如从 cron 触发
         // 会话列表点进来的占位 session 之后补全元数据的场景，bug002）。
         // Prefer stable model_selection when present; never restore a group from active_model/model name.
@@ -2277,7 +2346,11 @@ function AppContent({
     };
   }, [handleModelsRefresh]);
 
-  const detectExternalCli = useCallback(async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
+  const detectExternalCli = useCallback(async (
+    cliAgent: ExternalCliAgentKind,
+    cliPath?: string,
+    useBuiltin?: boolean,
+  ) => {
     return request<{
       cli_agent: ExternalCliAgentKind;
       status: "ok" | "warning" | "missing" | "unsupported" | "unavailable";
@@ -2288,6 +2361,7 @@ function AppContent({
     }>("external_cli.detect", {
       cli_agent: cliAgent,
       cli_path: cliPath || "",
+      use_builtin: useBuiltin ? "true" : "false",
     });
   }, [request]);
 
@@ -2367,13 +2441,12 @@ function AppContent({
     };
   }, [getExternalCliDependencyInstallStatus, isConnected]);
 
-  const trackExternalCliDependencyInstalls = useCallback(
-    (statuses: ExternalCliInstallStatuses) => {
-      setExternalCliInstallStatuses(statuses);
-      setExternalCliInstallDialogOpen(true);
-    },
-    [],
-  );
+  const trackExternalCliDependencyInstalls = useCallback((statuses: ExternalCliInstallStatuses) => {
+    // Merge, not replace: a save response may only carry a subset of agents
+    // (e.g. the one just committed), and replacing would drop another agent's
+    // in-flight install state and stop its progress updates.
+    setExternalCliInstallStatuses((current) => ({ ...current, ...statuses }));
+  }, []);
 
   const updateExternalCliInstallStatus = useCallback(
     (cliAgent: ExternalCliAgentKind, status: ExternalCliDependencyInstallStatus) => {
@@ -3141,7 +3214,7 @@ function AppContent({
     // 模式，无论当前会话是什么模式、也无论有没有未发送的集群模式草稿，跳转会话都要回到单
     // agent 模式（bug003）。
     const nextMode = options.forceMode ?? resolvedEntrySettings.mode;
-    const { selectedModelName } = resolvedEntrySettings;
+    const { selectedModelName, selectedModelSelection } = resolvedEntrySettings;
     setChatWelcomeVariant(options.welcomeVariant ?? null);
     const selectedProject = options.project ?? useWorkspaceStore.getState().selectedProject;
     const projectDir = resolveNewConversationProjectDir(
@@ -3163,7 +3236,7 @@ function AppContent({
       && pendingNewRuntime?.agentGroupSelectionIntent.kind === 'select'
       ? pendingNewRuntime.agentGroupSelectionIntent
       : null;
-    resetNewConversationRuntime({ mode: nextMode, selectedModelName, projectDir });
+    resetNewConversationRuntime({ mode: nextMode, selectedModelName, selectedModelSelection, projectDir });
     if (pendingAgentSelection) {
       useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, pendingAgentSelection);
     }
@@ -3315,12 +3388,23 @@ function AppContent({
     const runtimeSettings = {
       mode: pendingRuntime?.mode ?? mode,
       selectedModelName: sessionStore.getEffectiveModelName(NEW_CONVERSATION_ID),
+      selectedModelSelection: pendingRuntime?.selectedModelSelection ?? null,
       projectDir: pendingRuntime?.projectDirectory ?? null,
       persistSession: false,
     };
     const workContext = getWorkContextForSession(NEW_CONVERSATION_ID);
 
     try {
+      if (workContext.work_mode === 'design') {
+        const created = await createDesignerConversation(initialTitle);
+        pendingNewConversationRef.current = false;
+        newConversationPreviousSessionRef.current = null;
+        sessionIdRef.current = created.sessionId;
+        setSessionId(created.sessionId);
+        useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+        navigate({ kind: 'design-project', projectId: created.projectId, sessionId: created.sessionId });
+        return created.sessionId;
+      }
       const createParams: Record<string, unknown> = {
         create_token: generateUuidV4(),
         mode: resolvePlanWireMode(
@@ -3362,6 +3446,18 @@ function AppContent({
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
       (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
       if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
+      if (pendingRuntime?.teamGroupIdentity) {
+        sessionStore.setTeamGroupIdentity(newSid, pendingRuntime.teamGroupIdentity);
+      }
+      if (pendingRuntime?.selectedModelSelection) {
+        sessionStore.setSelectedModelSelection(newSid, pendingRuntime.selectedModelSelection);
+        void request('session.selection.set', {
+          session_id: newSid,
+          model_selection: pendingRuntime.selectedModelSelection,
+        }).catch((error) => {
+          console.warn('Failed to persist model selection for new session:', error);
+        });
+      }
       sessionStore.setAgentSelectionIntent(
         newSid,
         pendingRuntime?.agentSelectionIntent ?? { kind: 'keep' as const },
@@ -3512,6 +3608,7 @@ function AppContent({
       const runtimeSettings = {
         mode: newRuntime?.mode ?? mode,
         selectedModelName: useSessionStore.getState().getEffectiveModelName(NEW_CONVERSATION_ID),
+        selectedModelSelection: newRuntime?.selectedModelSelection ?? null,
         projectDir: newRuntime?.projectDirectory ?? null,
         persistSession: persistCommand.persistSession,
       };
@@ -3581,6 +3678,15 @@ function AppContent({
           useSessionStore.getState().setSessionMetadata(newSid, pendingMetadata);
           useSessionStore.getState().setSessionMetadata(NEW_CONVERSATION_ID, null);
         }
+        if (newRuntime?.selectedModelSelection) {
+          useSessionStore.getState().setSelectedModelSelection(newSid, newRuntime.selectedModelSelection);
+          void request('session.selection.set', {
+            session_id: newSid,
+            model_selection: newRuntime.selectedModelSelection,
+          }).catch((error) => {
+            console.warn('Failed to persist model selection for new session:', error);
+          });
+        }
         // 同样搬家：欢迎页（'new'）上如果已经通过"+"菜单"扩展"面板开了某些插件/MCP 的会话内
         // 开关（或者是"使用"按钮带过来的 initialEnabledPlugins/initialEnabledMcps），真实
         // session_id 创建后要跟着过去，否则下面 removeRuntime('new') 会把这些选择直接冲掉。
@@ -3598,6 +3704,11 @@ function AppContent({
         const pendingAgentGroupBinding = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.agentGroupBindingPending;
         if (pendingAgentGroupBinding) {
           useSessionStore.getState().setAgentGroupBindingPending(newSid, pendingAgentGroupBinding);
+        }
+        const pendingTeamGroupIdentity = useSessionStore.getState()
+          .getRuntime(NEW_CONVERSATION_ID)?.teamGroupIdentity;
+        if (pendingTeamGroupIdentity) {
+          useSessionStore.getState().setTeamGroupIdentity(newSid, pendingTeamGroupIdentity);
         }
         useSessionStore.getState().clearAgentGroupSelectionIntent(NEW_CONVERSATION_ID);
         // Swarmflow 开关同样按 session 存，必须在 removeRuntime('new') 之前搬到真实会话，
@@ -4113,6 +4224,10 @@ function AppContent({
         return;
       }
       closeSidebarPeek();
+      if (target !== 'new' && target.type === 'group_chat') {
+        navigate({ kind: 'group-chat', groupId: target.session_id });
+        return;
+      }
       if (target === 'new') {
         enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
         return;
@@ -4127,6 +4242,7 @@ function AppContent({
     [
       confirmLeaveSettings,
       closeSidebarPeek,
+      navigate,
       enterNewConversation,
       handleRestoreSession,
       isToolPanelAutoHideViewport,
@@ -4149,6 +4265,7 @@ function AppContent({
       if (nav !== 'settings') setRequestedSettingsModuleId(null);
       setActiveNav(nav);
       if (nav === 'chat') {
+        if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
         if (isMobile) {
           setTeamAreaExpanded(false);
           setSingleAgentPanelExpanded(false);
@@ -4171,6 +4288,8 @@ function AppContent({
     [
       closeSidebarPeek,
       openSidebarPeek,
+      navigate,
+      route.kind,
       confirmLeaveSettings,
       isMobile,
       modelSetupGuideStep,
@@ -4527,6 +4646,144 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
   useEffect(() => {
     promptSuggestionBox.setEnabled(normalizeConfigBoolean(serverConfig?.prompt_suggestion_enabled));
   }, [promptSuggestionBox.setEnabled, serverConfig?.prompt_suggestion_enabled]);
+  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage) => {
+    if (nav === 'agents') {
+      return (
+        <div className="app-section min-h-0">
+          <AgentManagementPanel
+            isActive
+            onUseAgent={(packageName) => openInstalledExpertRef.current(packageName)}
+            onUsePrompt={handleUseAgentPrompt}
+            onUseAgentGroup={(groupId) => {
+              setIsJiuwenMate(false);
+              handleUseAgentGroup(groupId);
+            }}
+            onUseGroupPrompt={(groupId, prompt) => {
+              setIsJiuwenMate(false);
+              handleUseGroupPrompt(groupId, prompt);
+            }}
+            onCreateViaChat={() => {
+              setIsJiuwenMate(false);
+              requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-creator'],
+              });
+            }}
+            onCreateGroupViaChat={() => {
+              setIsJiuwenMate(false);
+              requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-group-creator'],
+                forceMode: 'agent',
+              });
+            }}
+            navigationRequest={agentManagementNavigationRequest}
+          />
+        </div>
+      );
+    }
+    if (nav === 'personalContext') {
+      if (!FEATURE_PERSONAL_CONTEXT_UI) return null;
+      return (
+        <div className="app-section">
+          <PersonalContextPanel isConnected={isConnected} isActive />
+        </div>
+      );
+    }
+    if (nav === 'skills') {
+      return (
+        <div className="app-section">
+          <SkillPanel
+            sessionId={sessionId}
+            isConnected={isConnected}
+            isActive
+            symphonyEnabled={normalizeConfigBoolean(serverConfig?.symphony_enabled)}
+            onSymphonyEnabledChange={saveSymphonyEnabled}
+            onNavigateToSettings={() => requestSettingsModule('agent')}
+          />
+        </div>
+      );
+    }
+    if (nav === 'connectorMarket') {
+      return (
+        <div className="app-page-body">
+          <div className="page-content">
+            <ConnectorMarketPanel
+              onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
+                detail: {
+                  skillName: 'plugin-creator',
+                  suffixText: t('connectorMarket.chatPrompts.createPlugin'),
+                  metadata: { scene: 'create_plugin' },
+                },
+              }))}
+              onUseExample={(initialInputValue, mcpName, displayName) =>
+                requestSessionNavigation('new', {
+                  initialInputValue,
+                  initialEnabledMcps: [mcpName],
+                  forceMode: 'agent',
+                  metadata: { prefer_mcp: { id: mcpName, display_name: displayName ?? mcpName } },
+                })
+              }
+              onUsePluginExample={(initialInputValue, pluginId) =>
+                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
+              }
+              onUseExtension={({ kind, id }) =>
+                requestSessionNavigation(
+                  'new',
+                  kind === 'plugin'
+                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
+                    : { initialEnabledMcps: [id], forceMode: 'agent' },
+                )
+              }
+            />
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="app-section">
+        <SettingsPage
+          definition={settingsPageDefinition}
+          isConnected={isConnected}
+          connectionState={connectionState}
+          request={settingsRequest}
+          onHasChangesChange={handleSettingsHasChangesChange}
+          onDetectExternalCli={detectExternalCli}
+          onSelectExternalCliPath={selectExternalCliPath}
+          onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
+          externalCliInstallStatuses={externalCliInstallStatuses}
+          onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
+          onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
+          externalCliPendingChoices={externalCliPendingChoices}
+          onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
+          externalCliDetectResults={externalCliDetectResults}
+          onExternalCliDetectResultsChange={setExternalCliDetectResults}
+          initialModuleId={requestedSettingsModuleId ?? undefined}
+        />
+      </div>
+    );
+  };
+
+  if (isJiuwenMate) {
+    return (
+      <JiuwenMateApp
+        onExit={() => {
+          setIsJiuwenMate(false);
+          if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
+        }}
+        groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+        onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
+        renderExistingPage={renderJiuwenMateExistingPage}
+        useInstalledExpertRef={openInstalledExpertRef}
+        confirmDiscardSettings={() => {
+          if (!settingsHasChangesRef.current) return true;
+          if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
+          setRequestedSettingsModuleId(null);
+          return true;
+        }}
+      />
+    );
+  }
 
   return (
     <div
@@ -4534,6 +4791,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       data-testid="app-shell"
       data-session-id={sessionId}
     >
+      <ApplicationConversationRuntimes sessionId={sessionId} />
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}
@@ -4552,6 +4810,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         }}
         onNavItemPointerDownCapture={(key) => {
           if (key === sidebarPeek) peekSurfaceProps.onPointerDownCapture();
+        }}
+        onToggleJiuwenMate={() => {
+          setIsJiuwenMate(reenterJiuwenMate({ isJiuwenMate, activeNav }).isJiuwenMate);
         }}
       />
 
@@ -4581,7 +4842,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="chat-layout--peek-host" {...peekSurfaceProps}>
             {sidebarPeek === 'chat' ? (
               <ConversationSidebar
-                activeSessionId={activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                activeSessionId={route.kind === 'group-chat'
+                  ? route.groupId ?? null
+                  : activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
@@ -4611,7 +4874,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <>
             <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
               <ConversationSidebar
-                activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                activeSessionId={route.kind === 'group-chat'
+                  ? route.groupId ?? null
+                  : sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
@@ -4911,6 +5176,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onSelectExternalCliPath={selectExternalCliPath}
               onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
               externalCliInstallStatuses={externalCliInstallStatuses}
+              onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
+              onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
               externalCliPendingChoices={externalCliPendingChoices}
               onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
               externalCliDetectResults={externalCliDetectResults}
@@ -5097,14 +5364,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         </div>
       )}
-
-      <ExternalCliInstallDialog
-        open={externalCliInstallDialogOpen}
-        statuses={externalCliInstallStatuses}
-        onClose={() => setExternalCliInstallDialogOpen(false)}
-        onGetStatus={getExternalCliDependencyInstallStatus}
-        onStatusChange={updateExternalCliInstallStatus}
-      />
 
       {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
       <LoginDialog />

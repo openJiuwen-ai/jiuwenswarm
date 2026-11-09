@@ -17,7 +17,6 @@ import {
   buildSessionBoundEvent,
   buildTopicClickEvent,
   topicStarterShowsProviderRefusal,
-  topicStarterShowsRetryAction,
   topicStarterShowsSettingsAction,
   topicStarterShowsStatus,
   topicStarterStatusMessageKey,
@@ -72,25 +71,23 @@ const dynamicSlate = {
   topics: [topic(1), topic(2)],
 };
 
-test('collapses homepage recommendation status into three jobs', () => {
+test('collapses homepage recommendation status into two copy jobs', () => {
   assert.equal(topicStarterShowsStatus('ready', false), false);
   assert.equal(topicStarterShowsStatus('preparing', false), true);
+  assert.equal(topicStarterShowsStatus('preparing', true), true);
+  assert.equal(topicStarterShowsStatus('failed', false), false);
+  assert.equal(topicStarterShowsStatus('no_content', false), false);
+  assert.equal(topicStarterShowsStatus('waiting_for_input', false), false);
   assert.equal(topicStarterStatusMessageKey('preparing', false), 'chat.topicStarter.statusPreparing');
-  assert.equal(topicStarterStatusMessageKey('preparing', true), 'chat.topicStarter.statusPreparingWithCards');
+  assert.equal(topicStarterStatusMessageKey('preparing', true), 'chat.topicStarter.statusPreparing');
   assert.equal(topicStarterShowsSettingsAction('preparing'), false);
   assert.equal(topicStarterShowsStatus('disabled', true), true);
   assert.equal(topicStarterStatusMessageKey('disabled', true), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('disabled', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('missing_configuration', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('provider_unavailable', false), 'chat.topicStarter.statusNeedsSettings');
-  assert.equal(topicStarterStatusMessageKey('waiting_for_input', false), 'chat.topicStarter.statusNoCards');
-  assert.equal(topicStarterStatusMessageKey('no_content', false), 'chat.topicStarter.statusNoCards');
-  assert.equal(topicStarterStatusMessageKey('failed', false), 'chat.topicStarter.statusNoCards');
-  assert.equal(topicStarterStatusMessageKey('failed', true), 'chat.topicStarter.statusUpdateIncomplete');
   assert.equal(topicStarterShowsSettingsAction('disabled'), true);
   assert.equal(topicStarterShowsSettingsAction('failed'), false);
-  assert.equal(topicStarterShowsRetryAction('waiting_for_input'), true);
-  assert.equal(topicStarterShowsRetryAction('disabled'), false);
   assert.equal(topicStarterShowsProviderRefusal('provider_unavailable'), true);
   assert.equal(topicStarterShowsProviderRefusal('failed'), false);
 });
@@ -561,6 +558,7 @@ test('General renders and persists the topic switch through config while keeping
     const savedModel = requests.findLast(request => request.method === 'topic_starters.select_model');
     assert.equal(savedModel.params.configuration.api_key, 'saved-topic-key');
     assert.equal(savedModel.params.configuration.model, 'topic-chat');
+    assert.ok(Number(savedModel.params.configuration.context_window_tokens) > 0);
     assert.equal('model' in savedModel.params, false, 'configuration saves must not also carry a clear-model sentinel');
     assert.equal(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'), null);
     await react.act(async () => document.querySelector('[data-testid="settings-topic-model-edit"]').click());
@@ -610,10 +608,10 @@ test('General ignores legacy chat models and opens the connection form without a
     const dialog = document.querySelector('[data-testid="settings-agent-media-config-dialog"]');
     assert.ok(dialog);
     assert.equal(dialog.querySelector('[data-variant="api_key"] input').placeholder.includes('saved'), false);
-    for (const field of ['vendor_selection', 'protocol', 'api_key', 'model_name']) {
+    for (const field of ['vendor_selection', 'protocol', 'api_key', 'model_name', 'context_window_tokens']) {
       assert.ok(dialog.querySelector(`[data-testid="settings-agent-media-config-dialog-field"][data-variant="${field}"]`));
     }
-    for (const field of ['alias', 'reasoning_level', 'context_window_tokens']) {
+    for (const field of ['alias', 'reasoning_level']) {
       assert.equal(dialog.querySelector(`[data-variant="${field}"]`), null);
     }
     assert.equal(requests.includes('models.list'), false);
@@ -622,7 +620,7 @@ test('General ignores legacy chat models and opens the connection form without a
   }
 });
 
-test('disabled homepage hides cached cards immediately and links to General; enabling restores cards', async () => {
+test('disabled homepage keeps preset cards and links to General; enabling refreshes toward personalized cards', async () => {
   let settingsOpens = 0;
   const panel = await mountWelcome('sess-topic-switch', {
     holdResponses: true, onOpenGeneralSettings: () => { settingsOpens += 1; },
@@ -634,19 +632,31 @@ test('disabled homepage hides cached cards immediately and links to General; ena
     await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
       type: 'event', event: 'topic_starters.control_changed', payload: { enabled: false },
     }) }));
-    assert.equal(visibleSuggestionTitles().length, 0, 'cards must disappear without waiting for a get response');
+    assert.equal(visibleSuggestionTitles().length, 4, 'preset/cached cards stay while recommendation is off');
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
+    await react.act(async () => document.querySelector('[data-testid="chat-panel-welcome-suggestion"]').dispatchEvent(
+      new window.MouseEvent('mouseover', { bubbles: true }),
+    ));
     assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
     await react.act(async () => document.querySelector('[data-testid="chat-panel-topic-general-settings"]').click());
     assert.equal(settingsOpens, 1);
     await react.act(settle);
-    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, { available: false, reason: 'disabled' }));
+    await react.act(async () => liveSocket.reply(
+      starterRequests().at(-1).id,
+      { ...dynamicSlateResponse('sess-topic-switch', 'PRESET'), preparation_state: 'disabled' },
+    ));
     await react.act(settle);
+    assert.equal(visibleSuggestionTitles().length, 4);
     assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
+    const disabledHint = document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]');
+    assert.ok(disabledHint.textContent.includes('Settings - General'));
+    assert.ok(document.querySelector('[data-testid="chat-panel-welcome-banner-bubble"]').contains(disabledHint));
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-general-settings"]').className, 'chat-welcome__campaign-claim');
     await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
       type: 'event', event: 'topic_starters.control_changed', payload: { enabled: true },
     }) }));
     await react.act(settle);
-    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null, 'enabled without cards must not show the disabled hint');
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null, 'enabled must not show the disabled hint');
     await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, dynamicSlateResponse('sess-topic-switch', 'BACK')));
     await react.act(settle);
     assert.equal(visibleSuggestionTitles().length, 4);
@@ -656,7 +666,7 @@ test('disabled homepage hides cached cards immediately and links to General; ena
   }
 });
 
-test('enabled recommendations show a configuration-specific recovery hint without a disabled-feature hint', async () => {
+test('enabled recommendations show a shared unavailable hint with settings recovery', async () => {
   for (const state of ['missing_configuration', 'provider_unavailable']) {
     let settingsOpens = 0;
     const panel = await mountWelcome(`sess-enabled-${state}`, {
@@ -668,16 +678,14 @@ test('enabled recommendations show a configuration-specific recovery hint withou
       }));
       await react.act(settle);
       assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
+      const status = document.querySelector('[role="status"]');
+      assert.ok(status);
+      assert.ok(status.textContent.includes('unavailable'));
+      assert.ok(status.classList.contains('chat-suggestions__title'));
       const settingsButton = document.querySelector('[data-testid="chat-panel-topic-settings"]');
-      if (state === 'missing_configuration') {
-        assert.ok(settingsButton);
-        assert.ok(document.querySelector('[data-testid="chat-panel-topic-configuration-hint"]').textContent.includes('configuration is incomplete'));
-        await react.act(async () => settingsButton.click());
-        assert.equal(settingsOpens, 1);
-      } else {
-        assert.equal(settingsButton, null);
-        assert.ok(document.querySelector('[role="status"]').textContent.trim());
-      }
+      assert.ok(settingsButton);
+      await react.act(async () => settingsButton.click());
+      assert.equal(settingsOpens, 1);
       assert.equal(document.querySelector('[data-testid="chat-panel-topic-general-settings"]'), null);
       assert.equal(document.body.textContent.includes('For topics that understand you better'), false);
     } finally {

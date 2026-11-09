@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.common.etcd.client import (
+from agent_gateway.common.etcd.client import (
     EtcdCasError,
     EtcdError,
     EtcdJsonClient,
@@ -14,7 +14,7 @@ from gateway.common.etcd.client import (
     EtcdRangeResult,
     prefix_range_end,
 )
-from gateway.runtime.cron.etcd_store import EtcdCronJobStore
+from agent_gateway.runtime.cron.etcd_store import EtcdCronJobStore
 
 
 class FakeEtcdJsonClient:
@@ -130,13 +130,13 @@ async def test_etcd_put_get_list_delete(extra_fields):
 @pytest.mark.asyncio
 async def test_controller_creates_etcd_job_without_login_model(monkeypatch):
     """AgentOS creation passes mcp and an empty credential_ref without login."""
-    from gateway.cron.controller import CronController
+    from agent_gateway.cron.controller import CronController
 
     def unexpected_login_binding(*_args):
         raise AssertionError("ordinary cron must not bind login credentials")
 
     monkeypatch.setattr(
-        "gateway.cron.controller._login_credential_ref_from_session",
+        "agent_gateway.cron.controller._login_credential_ref_from_session",
         unexpected_login_binding,
     )
     store, fake = _store()
@@ -293,7 +293,7 @@ def test_normalize_endpoint_adds_scheme():
 
 @pytest.mark.asyncio
 async def test_watch_triggers_scheduler_reload():
-    from gateway.cron.scheduler import CronSchedulerService
+    from agent_gateway.cron.scheduler import CronSchedulerService
 
     class _StubAgent:
         async def send_request(self, *_a, **_k):

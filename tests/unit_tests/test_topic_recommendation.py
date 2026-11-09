@@ -13,7 +13,7 @@ def test_null_yaml_follows_code_defaults():
     assert switches.is_topic_recommendation_enabled(config) is switches.DEFAULT_TOPIC_RECOMMENDATION_ENABLED
     assert switches.is_prompt_suggestion_enabled(config) is switches.DEFAULT_PROMPT_SUGGESTION_ENABLED
     assert switches.DEFAULT_TOPIC_RECOMMENDATION_ENABLED is False
-    assert switches.DEFAULT_PROMPT_SUGGESTION_ENABLED is False
+    assert switches.DEFAULT_PROMPT_SUGGESTION_ENABLED is True
 
 def test_explicit_true_and_false_override_defaults():
     on = {"recommendation": {"topic_enabled": True, "prompt_enabled": False}}
@@ -26,7 +26,8 @@ def test_explicit_true_and_false_override_defaults():
 def test_legacy_enabled_without_consent_stays_off():
     config = {"recommendation": {"enabled": True}}
     assert switches.is_topic_recommendation_enabled(config) is False
-    assert switches.is_prompt_suggestion_enabled(config) is False
+    # Prompt suggestion follows its own code default; legacy ``enabled`` is not consent.
+    assert switches.is_prompt_suggestion_enabled(config) is switches.DEFAULT_PROMPT_SUGGESTION_ENABLED
 
 def test_explicit_null_split_keys_ignore_legacy_enabled():
     config = {
@@ -38,7 +39,7 @@ def test_explicit_null_split_keys_ignore_legacy_enabled():
         }
     }
     assert switches.is_topic_recommendation_enabled(config) is False
-    assert switches.is_prompt_suggestion_enabled(config) is False
+    assert switches.is_prompt_suggestion_enabled(config) is switches.DEFAULT_PROMPT_SUGGESTION_ENABLED
 
 def test_save_topic_switch_records_history_boundary(user_config):
     switches.save_recommendation_switches(topic_enabled=True, now=12.5)
@@ -52,6 +53,68 @@ def test_save_topic_switch_records_history_boundary(user_config):
     switches.save_recommendation_switches(prompt_enabled=True, now=13.0)
     assert user_config.recommendation["prompt_enabled"] is True
     assert controls.load_recommendation_controls()["history_after"] == 12.5
+
+
+def test_common_save_does_not_import_agents_when_hook_missing(user_config, tmp_path, monkeypatch):
+    """common switches stay layer-clean; freeze is hook-only, heal via repair on startup."""
+    from jiuwenswarm.common import recommendation_switches as common_switches
+
+    monkeypatch.setattr(controls, "get_agent_workspace_dir", lambda: tmp_path)
+    hooks = list(common_switches._TOPIC_ENABLED_HOOKS)
+    common_switches._TOPIC_ENABLED_HOOKS.clear()
+    try:
+        common_switches.save_recommendation_switches(topic_enabled=True, now=42.0)
+        assert controls._consent_state()["history_after"] is None
+        assert controls.repair_missing_consent_boundary(now=42.0) is True
+        assert controls.load_recommendation_controls()["history_after"] == 42.0
+    finally:
+        common_switches._TOPIC_ENABLED_HOOKS[:] = hooks
+
+
+def test_repair_missing_consent_boundary_when_topics_already_enabled(
+    user_config, tmp_path, monkeypatch,
+):
+    """Enabled YAML without a store boundary is healed without requiring toggle off/on."""
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(controls, "get_agent_workspace_dir", lambda: tmp_path)
+
+    def enable_without_freeze(cfg):
+        section = cfg.setdefault("recommendation", {})
+        section["topic_enabled"] = True
+        return cfg
+
+    config_module.update_config(enable_without_freeze)
+    assert controls._consent_state()["history_after"] is None
+    assert controls.repair_missing_consent_boundary(now=99.0) is True
+    assert controls.load_recommendation_controls()["history_after"] == 99.0
+    assert controls.repair_missing_consent_boundary(now=100.0) is False
+
+
+def test_prompt_suggestion_turns_are_revisit_eligible_like_hand_typed():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        V6SourceMessage,
+        _summary_origins,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
+        is_user_revisit_eligible,
+    )
+
+    assert is_user_revisit_eligible("manual_free_text", "none")
+    assert is_user_revisit_eligible("prompt_suggestion", "prompt_suggestion")
+    assert not is_user_revisit_eligible("starter_click", "starter_click")
+    mixed = (
+        V6SourceMessage(
+            "e1", "s", 0, "手打问题", 1.0,
+            "manual_free_text", "none", "cluster", "natural_question", None,
+        ),
+        V6SourceMessage(
+            "e2", "s", 1, "提示建议问题", 2.0,
+            "prompt_suggestion", "prompt_suggestion", "cluster", "natural_question", None,
+        ),
+    )
+    assert all(message.natural for message in mixed)
+    assert _summary_origins(mixed) == ("manual_free_text", "none")
 
 def test_recommendation_switches_reload_ui_only():
     from jiuwenswarm.common.config_panel.config_set_handlers import ConfigChangeSet, needs_agent_reload
@@ -546,6 +609,7 @@ def test_deleting_dedicated_topic_model_persists_disabled_state_on_disk(chat_con
     assert controls.save_recommendation_model_configuration({
         "provider": "OpenAI", "model": "dedicated-topic-model",
         "api_base": "https://topics.example/v1", "api_key": "test-topic-key",
+        "context_window_tokens": "128k",
     })
     switches.save_recommendation_switches(topic_enabled=True, now=1234.0)
     assert controls.save_recommendation_model("")
@@ -593,17 +657,28 @@ async def test_delete_topic_model_rpc_disables_runtime_and_notifies_clients(sett
 def test_dedicated_topic_configuration_does_not_add_chat_models(settings):
     settings["models"] = [{"model_id": "original-chat-model"}]
     values = {"model": "topic-only", "provider": "OpenAI", "api_base": "https://topics.example/v1",
-              "api_key": "test-key", "vendor_key": "", "plan": ""}
+              "api_key": "test-key", "vendor_key": "", "plan": "",
+              "context_window_tokens": "256k"}
     assert controls.save_recommendation_model_configuration(values)
     assert settings["models"] == [{"model_id": "original-chat-model"}]
-    assert controls.recommendation_model_config(environ={}).model == "topic-only"
+    config = controls.recommendation_model_config(environ={})
+    assert config.model == "topic-only"
+    assert config.context_window_tokens == 256 * 1024
     public = controls.recommendation_model_configuration()
     assert public["has_api_key"] is True
+    assert public["context_window_tokens"] == 256 * 1024
     assert "api_key" not in public
     assert controls.recommendation_model_configuration(include_api_key=True)["api_key"] == "test-key"
-    assert controls.save_recommendation_model_configuration({**values, "model": "edited", "api_key": ""})
+    assert controls.save_recommendation_model_configuration({
+        **values, "model": "edited", "api_key": "", "context_window_tokens": "512K",
+    })
     assert settings["recommendation"]["model_config"]["api_key"] == "test-key"
+    assert settings["recommendation"]["model_config"]["context_window_tokens"] == 512 * 1024
+    assert controls.recommendation_model_config(environ={}).context_window_tokens == 512 * 1024
     assert not controls.save_recommendation_model_configuration({**values, "api_key": "", "api_base": "https://other.example"})
+    assert not controls.save_recommendation_model_configuration({
+        **{key: value for key, value in values.items() if key != "context_window_tokens"},
+    })
     assert controls.save_recommendation_model("")
     assert controls.recommendation_model_configuration() == {}
     assert settings["recommendation"]["topic_enabled"] is False
@@ -621,15 +696,29 @@ async def test_dedicated_model_rpc_saves_without_disabling_an_enabled_switch(set
     monkeypatch.setattr(recommendation_rpc, "_status_payload", AsyncMock(return_value={"enabled": True}))
     result = await recommendation_rpc.dispatch_recommendation(
         host, action="select_model", params={"model": "", "configuration": {
-            "provider": "OpenAI", "model": "topics", "api_base": "https://topics.example/v1", "api_key": "test-key",
+            "provider": "OpenAI", "model": "topics", "api_base": "https://topics.example/v1",
+            "api_key": "test-key", "context_window_tokens": "128k",
         }}, session_id="test", request_id="configure-model",
     )
     assert result.ok is True
     assert settings["recommendation"]["model_config"]["model"] == "topics"
+    assert settings["recommendation"]["model_config"]["context_window_tokens"] == 128 * 1024
     assert settings["recommendation"]["topic_enabled"] is True
     service.reload_config.assert_awaited_once()
     service.set_enabled.assert_not_awaited()
     assert result.events == []
+
+
+def test_legacy_dedicated_topic_model_gets_default_context_window(settings):
+    settings["recommendation"] = {"model_config": {
+        "provider": "OpenAI", "model": "topics", "api_base": "https://topics.example/v1",
+        "api_key": "saved-test-key",
+    }}
+    config = controls.recommendation_model_config(environ={})
+    assert config is not None
+    assert config.context_window_tokens == controls.RECOMMENDATION_CONTEXT_WINDOW_TOKENS
+    public = controls.recommendation_model_configuration()
+    assert public["context_window_tokens"] == controls.RECOMMENDATION_CONTEXT_WINDOW_TOKENS
 
 
 @pytest.mark.asyncio
@@ -651,6 +740,7 @@ async def test_status_returns_saved_key_only_when_explicitly_requested(settings,
         )
         assert result.ok
         assert ("api_key" in result.payload["model_config"]) is includes_key
+        assert result.payload["model_config"]["context_window_tokens"] == controls.RECOMMENDATION_CONTEXT_WINDOW_TOKENS
         if includes_key:
             assert result.payload["model_config"]["api_key"] == "saved-test-key"
 
@@ -1246,6 +1336,16 @@ def enabled_recommendation_consent(monkeypatch):
     from jiuwenswarm.agents.harness.common.recommendation import topic_controls
     monkeypatch.setattr(topic_controls, "load_recommendation_controls", lambda: {"enabled": True})
 
+from agent_gateway.channel_manager.base import RobotMessageRouter  # pylint: disable=wrong-import-order
+from agent_gateway.channel_manager.web.app_web_handlers import (  # pylint: disable=wrong-import-order
+    WebHandlersBindParams,
+    _register_web_handlers,
+)
+from agent_gateway.channel_manager.web.web_connect import (  # pylint: disable=wrong-import-order
+    WebChannel,
+    WebChannelConfig,
+)
+
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
@@ -1259,15 +1359,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
     TopicService,
-)
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.app_web_handlers import (
-    WebHandlersBindParams,
-    _register_web_handlers,
-)
-from gateway.channel_manager.web.web_connect import (
-    WebChannel,
-    WebChannelConfig,
 )
 
 CHANNEL_NOW = 1_700_000_000.0
@@ -1725,22 +1816,28 @@ async def test_webchannel_scopes_exposure_and_server_derived_outcomes(
     await asyncio.wait_for(connection, timeout=5.0)
 
 @pytest.mark.asyncio
-async def test_webchannel_reports_unavailable_when_service_is_disabled(
+async def test_webchannel_rebuilds_product_lane_when_free_search_is_off(
     enabled_recommendation_consent,
     monkeypatch,
+    tmp_path,
 ) -> None:
+    """Free-search toggles must not leave the homepage without a product lane."""
+
     monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "false")
     monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "false")
     channel = WebChannel(
         WebChannelConfig(enabled=True), RobotMessageRouter()
     )
     channel.on_message(lambda _msg: False)
-    _register_panel(channel, service=None, store=None, queue=None)
+    store = TopicStarterStore(tmp_path / "webchannel-free-search-off.db")
+    # Simulate a prior build that left the product lane empty; ensure_services
+    # must recreate it even while both free-search engines are off.
+    _register_panel(channel, service=None, store=store, queue=None)
     ws = _OpenWebSocket("/ws?user_id=alice&session_id=visit-session")
     connection = asyncio.create_task(channel.handle_connection(ws, path=ws.path))
 
     ws.request(
-        "get-unavailable",
+        "get-presets",
         "topic_starters.get",
         {
             "session_id": "visit-session",
@@ -1750,16 +1847,13 @@ async def test_webchannel_reports_unavailable_when_service_is_disabled(
         },
     )
 
-    response = await _wait_response(ws, "get-unavailable")
+    response = await _wait_response(ws, "get-presets")
     assert response["ok"] is True
-    assert response["payload"] == {
-        "available": False,
-        "reason": "topic_service_unavailable",
-        "session_id": "visit-session",
-        "policy_id": POLICY_ID,
-        "context_scope": GLOBAL_NEW_CHAT_SCOPE,
-        "project_id": None,
-    }
+    payload = response["payload"]
+    assert payload["available"] is True
+    assert payload["session_id"] == "visit-session"
+    assert payload["context_scope"] == GLOBAL_NEW_CHAT_SCOPE
+    assert 1 <= len(payload.get("topics") or []) <= 4
 
     ws.release()
     await asyncio.wait_for(connection, timeout=5.0)
@@ -1847,7 +1941,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
 )
 from jiuwenswarm.server.runtime import recommendation_host
 
-def test_gateway_keeps_prepare_lane_when_search_is_unconfigured(
+def test_gateway_builds_product_lane_without_free_search_engines(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1861,7 +1955,8 @@ def test_gateway_keeps_prepare_lane_when_search_is_unconfigured(
     )
 
     assert isinstance(prepare_service, TopicPrepareService)
-    assert product_service is None
+    assert isinstance(product_service, TopicService)
+    assert product_service._search_provider_id == OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
     assert outcome_queue.pending_count == 0
 
 def test_gateway_startup_seeds_product_lane() -> None:
@@ -1897,7 +1992,9 @@ def test_gateway_builds_product_lane_when_native_search_chain_is_configured(
     assert isinstance(product_service, TopicService)
     assert product_service._search_provider_id == OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
 
-def test_recommendation_host_recovers_after_search_is_enabled(monkeypatch, tmp_path) -> None:
+def test_recommendation_host_builds_once_even_when_free_search_is_off(
+    monkeypatch, tmp_path,
+) -> None:
     monkeypatch.delenv("TOPIC_STARTER_SEARCH_PROVIDER", raising=False)
     monkeypatch.delenv("TOPIC_STARTER_V6_SEARCH_PROVIDER", raising=False)
     monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "false")
@@ -1905,24 +2002,18 @@ def test_recommendation_host_recovers_after_search_is_enabled(monkeypatch, tmp_p
     host = recommendation_host.RecommendationHost()
     host.store = TopicStarterStore(tmp_path / "recovery.db")
     host.ensure_services()
-    assert host.topic_service is None
+    assert isinstance(host.topic_service, TopicService)
     prepare = host.topic_prepare_service
     queue = host.topic_outcome_queue
-    host.ensure_services()
-    assert host.topic_prepare_service is prepare
+    service = host.topic_service
+    assert host.topic_service.on_prepared is not None
 
     monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "true")
-    host.ensure_services()
-    assert host.topic_service is None
     monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "true")
     host.ensure_services()
-    assert isinstance(host.topic_service, TopicService)
+    assert host.topic_service is service
     assert host.topic_prepare_service is prepare
     assert host.topic_outcome_queue is queue
-    assert host.topic_service.on_prepared is not None
-    service = host.topic_service
-    host.ensure_services()
-    assert host.topic_service is service
 
 
 def test_cold_start_serve_shows_corpus_cards_without_history(tmp_path):
@@ -1953,6 +2044,274 @@ def test_cold_start_serve_shows_corpus_cards_without_history(tmp_path):
         pass
 
 
+def test_empty_personalized_pool_still_serves_presets_when_provider_refused(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        PROVIDER_INVOCATION_EVENT_TYPE,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        POLICY_ID,
+    )
+
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    store.record_event({
+        "session_id": "usage",
+        "slate_id": "usage",
+        "event_type": PROVIDER_INVOCATION_EVENT_TYPE,
+        "topic_id": "request_failed",
+        "policy_id": "topic-starter-provider-invocation-v1",
+        "selection_mode": "provider_invocation",
+        "propensity_reason": "not_estimated",
+        "payload": {
+            "request_id": "req-1",
+            "attempt_id": "attempt-1",
+            "status": "request_failed",
+            "model": "test",
+            "failure_reason": "invalid_key",
+        },
+        "created_at": 1_700_000_000.0,
+    })
+    store.record_event({
+        "session_id": "topic-starter-background",
+        "slate_id": "attempt",
+        "event_type": "background_generation_failed",
+        "topic_id": "attempt",
+        "policy_id": POLICY_ID,
+        "selection_mode": "background_generation",
+        "propensity_reason": "not_estimated",
+        "payload": {
+            "reason": "provider_request_failed",
+            "generation_trigger_key": {
+                "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+                "model": "test",
+            },
+        },
+        "created_at": 1_700_000_000.0,
+    })
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=True,
+        now=lambda: 1_700_000_000.0,
+    )
+    assert service.configuration_status()["provider_refused"] is True
+    assert service.preparation_state(GLOBAL_NEW_CHAT_SCOPE) == "provider_unavailable"
+    response = service.serve(
+        "session-new",
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+        project_id=None,
+    )
+    assert response["available"] is True
+    assert 1 <= len(response["topics"]) <= 4
+    assert response["selection_mode"] == "generic_dynamic"
+    assert response["preparation_state"] == "provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_no_content_stand_in_presets_mark_preparing(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        POLICY_ID,
+    )
+
+    started = asyncio.Event()
+
+    async def generate(_trigger, _config, _scope, _project_id, _visit_id):
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("stand-in seed should stay cancelled")
+
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    store.record_event({
+        "session_id": "topic-starter-background",
+        "slate_id": "attempt",
+        "event_type": "background_generation_abstained",
+        "topic_id": "attempt",
+        "policy_id": POLICY_ID,
+        "selection_mode": "background_generation",
+        "propensity_reason": "not_estimated",
+        "payload": {
+            "reason": "no_eligible_history",
+            "generation_trigger_key": {
+                "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+                "model": "test",
+            },
+        },
+        "created_at": 1_700_000_000.0,
+    })
+    service = TopicService(
+        store,
+        generate=generate,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=True,
+        now=lambda: 1_700_000_001.0,
+    )
+    try:
+        assert service.preparation_state(GLOBAL_NEW_CHAT_SCOPE) == "no_content"
+        response = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+        )
+        assert response["available"] is True
+        assert response["topics"]
+        assert response["selection_mode"] == "generic_dynamic"
+        assert response["preparation_state"] == "preparing"
+        await asyncio.wait_for(started.wait(), timeout=5)
+    finally:
+        await service.shutdown()
+
+
+def test_disabled_serve_still_returns_preset_cards(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
+
+    service = TopicService(
+        TopicStarterStore(tmp_path / "recommendation-disabled.db"),
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: 1_700_000_000.0,
+    )
+    response = service.serve(
+        "session-disabled",
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+        project_id=None,
+    )
+    assert response["available"] is True
+    assert response["preparation_state"] == "disabled"
+    assert 1 <= len(response["topics"]) <= 4
+
+
+def test_disabled_project_serve_still_returns_preset_cards(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        scope_for_project,
+    )
+
+    project_id = "proj_preset_align"
+    service = TopicService(
+        TopicStarterStore(tmp_path / "recommendation-disabled-project.db"),
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: 1_700_000_000.0,
+    )
+    response = service.serve(
+        "session-disabled-project",
+        context_scope=scope_for_project(project_id),
+        project_id=project_id,
+    )
+    assert response["available"] is True
+    assert response["preparation_state"] == "disabled"
+    assert response["context_scope"] == scope_for_project(project_id)
+    assert response["project_id"] == project_id
+    assert 1 <= len(response["topics"]) <= 4
+    assert all(topic["title"] and topic["prompt"] for topic in response["topics"])
+
+
+def test_empty_project_pool_still_serves_presets_when_enabled(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        scope_for_project,
+    )
+
+    project_id = "proj_empty_preset"
+    service = TopicService(
+        TopicStarterStore(tmp_path / "recommendation-empty-project.db"),
+        # No generator: stand-in must still fill the project welcome page.
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=True,
+        now=lambda: 1_700_000_000.0,
+    )
+    response = service.serve(
+        "session-empty-project",
+        context_scope=scope_for_project(project_id),
+        project_id=project_id,
+    )
+    assert response["available"] is True
+    assert response["context_scope"] == scope_for_project(project_id)
+    assert response["project_id"] == project_id
+    assert 1 <= len(response["topics"]) <= 4
+    assert response["selection_mode"] == "generic_dynamic"
+    assert all(topic["title"] and topic["prompt"] for topic in response["topics"])
+
+
+def test_hot_list_open_url_prefers_topic_page_then_board():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
+        BAIDU_PROVIDER_ID,
+        BAIDU_REALTIME_URL,
+        WEIBO_HOT_BAND_URL,
+        WEIBO_HOT_LIST_PAGE_URL,
+        WEIBO_PROVIDER_ID,
+        HotListEntry,
+        HotListPull,
+        hot_list_open_url,
+        parse_weibo_hot_band,
+    )
+
+    pull = HotListPull(
+        receipt_id="pull-1",
+        provider_id=WEIBO_PROVIDER_ID,
+        list_url=WEIBO_HOT_BAND_URL,
+        pulled_at=1.0,
+        entries=(),
+    )
+    with_page = HotListEntry(
+        entry_id="weibo-hot-band:1",
+        provider_id=WEIBO_PROVIDER_ID,
+        rank=1,
+        word="甲",
+        page_url="https://s.weibo.com/weibo?q=%23甲%23",
+    )
+    without_page = HotListEntry(
+        entry_id="weibo-hot-band:2",
+        provider_id=WEIBO_PROVIDER_ID,
+        rank=2,
+        word="乙",
+    )
+    assert hot_list_open_url(with_page, pull) == with_page.page_url
+    assert hot_list_open_url(without_page, pull) == WEIBO_HOT_LIST_PAGE_URL
+    baidu_pull = HotListPull(
+        receipt_id="pull-2",
+        provider_id=BAIDU_PROVIDER_ID,
+        list_url=BAIDU_REALTIME_URL,
+        pulled_at=1.0,
+        entries=(),
+    )
+    baidu = HotListEntry(
+        entry_id="baidu-realtime:1",
+        provider_id=BAIDU_PROVIDER_ID,
+        rank=1,
+        word="丙",
+    )
+    assert hot_list_open_url(baidu, baidu_pull) == BAIDU_REALTIME_URL
+    band = parse_weibo_hot_band(
+        '{"data":{"band_list":[{"word":"丁","realpos":1,'
+        '"url":"https://s.weibo.com/weibo?q=%23丁%23","is_ad":0}]}}'
+    )
+    assert band[0].page_url == "https://s.weibo.com/weibo?q=%23丁%23"
+
+
 def test_corpus_avoids_anecdote_hunting_starters():
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
         _CARD_TITLE_MAX_CHARS,
@@ -1972,6 +2331,7 @@ def test_cold_start_prefers_live_timely_corpus_cards():
     from datetime import datetime, timezone
 
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
         build_cold_start_cards,
     )
 
@@ -1979,6 +2339,8 @@ def test_cold_start_prefers_live_timely_corpus_cards():
     cards = build_cold_start_cards(
         trigger_key={
             "local_date": "2026-10-21",
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
             "profile_semantic_version": 0,
             "short_intent_version": 0,
             "search_provider_id": "test",
@@ -2587,7 +2949,7 @@ def test_recommendation_stores_wait_the_same_for_a_write_lock(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_saved_topic_sync_logs_when_agent_server_rejects(monkeypatch) -> None:
-    from gateway.app_gateway import sync_saved_topic_recommendation
+    from agent_gateway.app_gateway import sync_saved_topic_recommendation
 
     warnings: list[str] = []
 
@@ -2597,8 +2959,8 @@ async def test_saved_topic_sync_logs_when_agent_server_rejects(monkeypatch) -> N
     async def reject(**_kwargs):
         return False, {"error": "AgentServer is unavailable", "code": "SERVICE_UNAVAILABLE"}
 
-    monkeypatch.setattr("gateway.routing.e2a_proxy.fetch_agent_unary", reject)
-    monkeypatch.setattr("gateway.app_gateway.logger.warning", record)
+    monkeypatch.setattr("agent_gateway.routing.e2a_proxy.fetch_agent_unary", reject)
+    monkeypatch.setattr("agent_gateway.app_gateway.logger.warning", record)
     await sync_saved_topic_recommendation(
         object(),
         updated_env_keys=["topic_recommendation_enabled"],

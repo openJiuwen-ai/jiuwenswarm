@@ -399,3 +399,215 @@ async def test_summarize_sessions_splits_a_long_first_preparation() -> None:
         f"s{index}" for index in range(4)
     }
     assert all(len(artifact.source_event_ids) == 2 for artifact in batch.artifacts)
+
+
+def test_fit_rid_inputs_drops_oldest_optional_summaries_first() -> None:
+    class _Summary:
+        def __init__(self, sid: str, completed_at: float, body: str) -> None:
+            self.session_summary_id = sid
+            self.completed_at = completed_at
+            self._body = body
+
+        def as_payload(self) -> dict[str, Any]:
+            return {
+                "session_summary_id": self.session_summary_id,
+                "completed_at": self.completed_at,
+                "body": self._body,
+            }
+
+    class _Interest:
+        def __init__(self, sid: str, version: int, body: str) -> None:
+            self.interest_summary_id = sid
+            self.profile_semantic_version = version
+            self._body = body
+
+        def as_payload(self) -> dict[str, Any]:
+            return {
+                "interest_summary_id": self.interest_summary_id,
+                "profile_semantic_version": self.profile_semantic_version,
+                "body": self._body,
+            }
+
+    rid_inputs = {
+        "binding": {"component": "rid"},
+        "input_snapshot_id": "snap",
+        "user_profile": {"name": "u"},
+        "long_term_profile_interests": (
+            _Interest("p-old", 1, "interest-body-" * 80),
+            _Interest("p-new", 2, "interest-body-" * 80),
+        ),
+        "session_summaries": (
+            _Summary("s-old", 1.0, "summary-body-" * 200),
+            _Summary("s-keep", 2.0, "summary-body-" * 200),
+            _Summary("s-new", 3.0, "summary-body-" * 200),
+        ),
+        "activity_group": "active",
+        "threshold_version": "t",
+        "feedback_context": {},
+        "delta": [],
+        "decision_context": {},
+    }
+    counter = _CharCounter()
+    full_tokens = counter.estimate_stage_tokens(
+        pipeline._RID_API_SYSTEM_PROMPT,
+        pipeline._rid_request_estimate_payload(rid_inputs),
+        pipeline._RID_RESERVED_OUTPUT_TOKENS,
+    )
+    # Force at least one optional summary drop while keeping the required one.
+    ok = pipeline._fit_rid_inputs_to_budget(
+        rid_inputs,
+        counter=counter,
+        limit=max(full_tokens - 50, 1),
+        required_summary_ids={"s-keep"},
+    )
+    assert ok is True
+    kept = [item.session_summary_id for item in rid_inputs["session_summaries"]]
+    assert "s-keep" in kept
+    assert "s-old" not in kept
+    assert len(kept) < 3
+
+
+def test_fit_recent_finalizer_drops_trailing_documents_then_candidates() -> None:
+    counter = _CharCounter()
+    candidates = [
+        {
+            "candidate_id": "c1",
+            "interest": "a",
+            "draft_title": "t1",
+            "intent": "i",
+            "primary_query": "q",
+            "documents": [
+                {"id": "d1", "text": "doc-text-" * 300},
+                {"id": "d2", "text": "doc-text-" * 300},
+            ],
+        },
+        {
+            "candidate_id": "c2",
+            "interest": "b",
+            "draft_title": "t2",
+            "intent": "i",
+            "primary_query": "q",
+            "documents": [{"id": "d3", "text": "doc-text-" * 300}],
+        },
+    ]
+    full = counter.estimate_stage_tokens(
+        pipeline._RECENT_FINALIZER_PROMPT,
+        pipeline._recent_finalizer_estimate_payload(
+            input_snapshot_id="snap",
+            discussion_coverage=[],
+            previously_offered=[],
+            candidates=candidates,
+        ),
+        10,
+    )
+    fitted = pipeline._fit_recent_finalizer_candidates(
+        candidates,
+        counter=counter,
+        limit=max(full - 40, 1),
+        input_snapshot_id="snap",
+        discussion_coverage=[],
+        previously_offered=[],
+        reserved_output=10,
+    )
+    assert fitted is not None
+    assert len(fitted) >= 1
+    original_docs = sum(len(item["documents"]) for item in candidates)
+    fitted_docs = sum(len(item["documents"]) for item in fitted)
+    assert fitted_docs < original_docs or len(fitted) < len(candidates)
+
+
+def test_session_summary_content_digest_ignores_summarizer_config() -> None:
+    messages = (_message("s1", 0, "hello", "world"),)
+    session_payload = pipeline._session_identity_payload("s1", messages)
+    boundary = SessionCompletionBoundary(
+        session_id="s1",
+        event_id="s1:completed",
+        request_id="request-s1",
+        ordinal=10_000,
+        completed_at=1_000.0,
+        status="success",
+    )
+    locators = (
+        pipeline.SessionSourceLocator(session_id="s1", ordinal=0, event_id="s1:0"),
+    )
+    identity = pipeline._session_summary_content_identity(
+        context_scope="global_new_chat",
+        session_payload=session_payload,
+        source_event_ids=("s1:0",),
+        source_locators=locators,
+        completion_boundary=boundary,
+    )
+    digest = pipeline._session_summary_content_digest(identity)
+    # Model/config are intentionally absent from the content identity.
+    assert "summary_config_version" not in identity
+    assert "summary_provider_version" not in identity
+    assert digest == pipeline._session_summary_content_digest(identity)
+
+
+@pytest.mark.asyncio
+async def test_summarize_sessions_reuses_content_matched_summary_after_model_change() -> None:
+    messages = (_message("s1", 0, "qing emperors", "twelve"),)
+    snapshot = _snapshot(messages)
+    first_calls: list[str] = []
+
+    async def first_invoke(stage: str, system_prompt: str, payload: str) -> dict[str, Any]:
+        import json
+        first_calls.append(stage)
+        parsed = json.loads(payload)
+        return {
+            "summaries": [
+                {"session_id": session["session_id"], "summary": "qing summary"}
+                for session in parsed["sessions"]
+            ]
+        }
+
+    class _EmptyStore:
+        def query_events(self, **kwargs: Any) -> list[Any]:
+            return []
+
+    topic = object.__new__(pipeline.TopicPipeline)
+    topic.store = _EmptyStore()
+    topic._now = lambda: 1_010.0
+    config_a = ArkBackgroundConfig(
+        api_key="key",
+        model="model-a",
+        base_url="https://a.example",
+        context_window_tokens=128_000,
+    )
+    batch_a = await topic._summarize_sessions(
+        snapshot, config=config_a, invoke_stage=first_invoke,
+    )
+    assert first_calls == ["v6_session_summarizer"]
+    assert len(batch_a.artifacts) == 1
+    stored = batch_a.artifacts[0].as_payload()
+
+    second_calls: list[str] = []
+
+    async def second_invoke(stage: str, system_prompt: str, payload: str) -> dict[str, Any]:
+        second_calls.append(stage)
+        raise AssertionError("content-matched summary must not be rewritten")
+
+    class _ReuseStore:
+        def query_events(self, **kwargs: Any) -> list[Any]:
+            topic_id = kwargs.get("topic_id")
+            if topic_id == stored["session_summary_id"]:
+                return [{"payload": stored, "created_at": 1.0}]
+            if kwargs.get("event_type") == "session_summary":
+                # Latest-summary scan for legacy digests.
+                return [{"payload": stored, "created_at": 1.0}]
+            return []
+
+    topic.store = _ReuseStore()
+    config_b = ArkBackgroundConfig(
+        api_key="key",
+        model="model-b",
+        base_url="https://b.example",
+        context_window_tokens=262_144,
+    )
+    batch_b = await topic._summarize_sessions(
+        snapshot, config=config_b, invoke_stage=second_invoke,
+    )
+    assert second_calls == []
+    assert batch_b.generated_summary_ids == ()
+    assert batch_b.artifacts[0].summary_text == "qing summary"
+    assert batch_b.artifacts[0].session_summary_id == stored["session_summary_id"]

@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+from agent_gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.runtime.evolution import (

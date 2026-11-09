@@ -22,13 +22,13 @@ from openjiuwen.core.session.agent import create_agent_session
 from openjiuwen.core.single_agent.interrupt import ClientToolRequest
 from openjiuwen.harness import create_deep_agent
 from openjiuwen.harness.schema.interaction import SendInputRequest
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_permission_rail,
     convert_interactions_to_ask_user_question,
     is_interrupt_resume_payload,
 )
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.runtime.client_tools import (
     ClientToolAnswer,

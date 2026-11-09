@@ -53,9 +53,16 @@ WORKDIR /app/jiuwenswarm
 RUN pip install --user uv
 ENV PATH=/home/app/.local/bin:$PATH
 ENV VIRTUAL_ENV=/app/.venv
+# uv pip resolves from wheel metadata, where the mother repo's openjiuwen pin
+# collides with agent-gateway's transitive pins ([tool.uv] override-dependencies
+# applies to project mode only). Export the locked closure and install it
+# verbatim instead; the project itself goes in with --no-deps. cairosvg & co
+# must come after uv pip sync, which removes anything not listed in the file.
 RUN uv venv "$VIRTUAL_ENV" && \
+    uv export --locked --no-hashes --no-dev --no-emit-project -o /tmp/requirements.txt && \
+    uv pip sync /tmp/requirements.txt && \
     uv pip install cairosvg svglib reportlab && \
-    uv pip install --no-cache .
+    uv pip install --no-cache --no-deps .
 
 # ---------------------------------------------------------------------------
 # final image - sources plus the artifacts produced by the two stages above.

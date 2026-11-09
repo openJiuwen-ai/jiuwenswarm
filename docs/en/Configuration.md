@@ -205,7 +205,7 @@ This section summarizes configuration for search and external services. All item
 | `serper_api_key` | Serper Search | [Serper](https://serper.dev/) |
 | `perplexity_api_key` | Perplexity | [Perplexity](https://www.perplexity.ai/) |
 | `github_token` | GitHub; SkillNet, etc. | [GitHub Tokens](https://github.com/settings/tokens) |
-| `teamskills_user_token` | TeamSkillsHub user token | [TeamSkillsHub](https://teamskills.openjiuwen.com) |
+| `teamskills_user_token` | TeamSkillsHub user token | [TeamSkillsHub](https://swarmskills.openjiuwen.com) |
 
 > ⚠️ **Note**: All optional. If unset, related features may be unavailable or fall back to degraded strategies; exact behavior depends on your product version.
 

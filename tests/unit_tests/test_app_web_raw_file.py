@@ -121,6 +121,54 @@ def test_raw_file_serves_an_image_in_the_selected_project_directory(tmp_path):
         server.server_close()
 
 
+def test_raw_file_serves_an_organization_summary(tmp_path):
+    agent_root = tmp_path / "agent"
+    agent_root.mkdir()
+    report = (
+        tmp_path / ".organizations" / "gorg-1" / "sessions" / "session-1"
+        / "organization-workspace" / "summary" / "report.txt"
+    )
+    report.parent.mkdir(parents=True)
+    report.write_text("report", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = agent_root
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        organizations_root = tmp_path / ".organizations"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("HEAD", f"/file-api/raw-file?path={quote(str(report))}")
+        response = connection.getresponse()
+        try:
+            assert response.status == 200
+            response.read()
+        finally:
+            connection.close()
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", f"/file-api/raw-file?path={quote(str(outside))}")
+        denied = connection.getresponse()
+        try:
+            assert denied.status == 403
+            denied.read()
+        finally:
+            connection.close()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def test_agentos_download_is_proxied_to_web_channel(tmp_path):
     received_paths: list[str] = []
 

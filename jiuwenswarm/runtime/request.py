@@ -9,7 +9,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     ResolvedMode,
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
@@ -18,9 +18,10 @@ from gateway.common.mode_matrix import (
     resolve_new_canonical_mode,
     resolve_request_mode,
 )
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,35 @@ def resolve_request_project_dir(
         if isinstance(first, str) and first.strip():
             return first.strip()
     return None
+
+
+def resolve_request_owner_channel(request: AgentRequest) -> str:
+    """Return the channel whose agent owns this request's session.
+
+    A voice task in a saved chat reaches Core on the ``video_tool`` channel
+    with the chat's own session id. It must run on that chat's agent: a
+    separate ``video_tool`` agent keeps a second in-memory copy of the
+    session, so a voice turn can resume an approval card the chat already
+    answered or still shows (#5487). Design tasks keep their own team routing.
+    """
+    channel_id = getattr(request, "channel_id", "")
+    session_id = str(getattr(request, "session_id", "") or "").strip()
+    params = getattr(request, "params", None)
+    params = params if isinstance(params, dict) else {}
+    if channel_id != "video_tool" or not session_id or str(params.get("mode") or "").startswith("team."):
+        return channel_id
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        owner = str(
+            (get_session_metadata(session_id, enable_writeback=False) or {}).get("channel_id") or ""
+        ).strip()
+    except (OSError, ValueError):
+        logger.warning("owner channel lookup failed for session %s", session_id, exc_info=True)
+        return channel_id
+    return owner if owner and owner != "video_tool" else channel_id
 
 
 def _resolve_cancel_project_dir(request: AgentRequest) -> str | None:
@@ -582,7 +612,7 @@ async def cancel_request(
     allow_create: bool = False,
 ) -> AgentResponse:
     """Cancel one request/session through its existing Runtime agent."""
-    channel_id = request.channel_id or "default"
+    channel_id = resolve_request_owner_channel(request) or "default"
     session_lookup = getattr(agent_manager, "get_agent_for_session_nowait", None)
     agent = (
         session_lookup(channel_id, request.session_id or "")
@@ -646,6 +676,7 @@ __all__ = [
     "cancel_request",
     "prepare_chat_turn",
     "resolve_agent_request_mode",
+    "resolve_request_owner_channel",
     "resolve_request_project_dir",
     "resolve_request_runtime_mode",
     "sync_chat_request_metadata",

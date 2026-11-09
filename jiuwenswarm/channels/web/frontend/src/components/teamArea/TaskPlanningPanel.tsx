@@ -27,7 +27,7 @@ import { SwarmflowGraphView } from './SwarmflowGraphView';
 import type { WorkflowAgent, WorkflowRun } from './workflowTypes';
 import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers } from './workflowTypes';
 import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
-import { groupByWorkflowRun } from './runGrouping';
+import { clusterByWorkflowRun, groupByWorkflowRun } from './runGrouping';
 import { RunGroupHeader } from './RunGroupHeader';
 
 type TaskPlanningPanelProps = {
@@ -234,7 +234,7 @@ export function ProgressSection({
             const remaining = expanded ? 0 : group.items.length - visible.length;
             return (
               <div key={group.runId} className="border-b border-border last:border-b-0">
-                <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} />
+                <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} executor={group.executor} />
                 <CompactTaskList
                   tasks={visible}
                   members={members}
@@ -376,6 +376,12 @@ export function TaskPlanningPanel({
     return groups;
   }, [tasks]);
 
+  // 普通任务 = 没有 run 归属的成员任务；镜像出来的 swarmflow 任务由树视图展示。
+  const ordinaryTasks = useMemo(
+    () => tasks.filter((task) => !task.workflow_run_id),
+    [tasks],
+  );
+
   const progressPercent = getTaskProgressPercent(tasks);
 
   if (variant === 'compact') {
@@ -448,6 +454,25 @@ export function TaskPlanningPanel({
           {workflowRuns.length > 0 && activeSessionId ? (
             <>
               <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
+              {/* 普通任务（无 workflow_run_id）照常展示在 swarmflow 树上方：
+                  以前只要会话里有 run 就把普通任务整段替换掉，teammate 同时跑
+                  普通任务 + swarmflow 时普通任务会凭空消失。 */}
+              {ordinaryTasks.length > 0 && (
+                <div className="shrink-0" data-testid="team-area-task-planning-ordinary-tasks">
+                  <CompactTaskList
+                    tasks={ordinaryTasks}
+                    members={members}
+                    hideAssignee={hideAssignee ?? false}
+                    statusIconAtEnd={statusIconAtEnd}
+                    renderTaskIcon={renderTaskIcon}
+                    maxCollapsedCount={maxCollapsedCount}
+                    expanded={expanded}
+                    emptyText={t('team.noTasks')}
+                    emptyIllustration={emptyIllustration}
+                    workflowRuns={workflowRuns}
+                  />
+                </div>
+              )}
               <SwarmflowTreeView runs={workflowRuns} sessionId={activeSessionId} />
             </>
           ) : (
@@ -478,11 +503,11 @@ export function TaskPlanningPanel({
           <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
 
           <div
-            className="min-h-0 flex-1 overflow-y-auto rounded-lg bg-secondary p-6"
+            className="min-h-0 flex-1 overflow-auto rounded-lg bg-secondary p-6"
             data-testid="team-area-task-planning-board"
           >
             <div
-              className="grid min-w-[920px] gap-5"
+              className="grid min-w-[940px] gap-5"
               style={{ gridTemplateColumns: 'repeat(4, minmax(220px, 1fr))' }}
               data-testid="team-area-task-planning-board-columns"
             >
@@ -518,6 +543,10 @@ function BoardColumn({
   workflowRuns: WorkflowRun[];
 }) {
   const { t } = useTranslation();
+  // Board columns bucket tasks by status and carry no group headers; same-run
+  // mirrored task cards are clustered instead (run first-appearance order) so
+  // they stay adjacent when multiple runs coexist.
+  const clusteredTasks = clusterByWorkflowRun(tasks);
 
   return (
     <section className="min-w-0" data-testid="team-area-task-planning-board-column" data-variant={column.key}>
@@ -529,7 +558,7 @@ function BoardColumn({
         {t(column.labelKey)} {tasks.length}
       </div>
       <div className="space-y-3" data-testid="team-area-task-planning-board-column-task-list">
-        {tasks.map((task) => {
+        {clusteredTasks.map((task) => {
           return <BoardTaskCard key={task.task_id} task={task} members={members} hideAssignee={hideAssignee} workflowRuns={workflowRuns} />;
         })}
       </div>

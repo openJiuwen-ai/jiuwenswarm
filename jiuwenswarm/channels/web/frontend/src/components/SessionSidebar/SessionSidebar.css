@@ -127,6 +127,11 @@
   min-height: 8px;
 }
 
+.icon-rail-nav-item--mode-switch {
+  margin-top: 8px;
+  margin-bottom: 16px;
+}
+
 .enterprise-context-popover {
   position: absolute;
   z-index: 1500;

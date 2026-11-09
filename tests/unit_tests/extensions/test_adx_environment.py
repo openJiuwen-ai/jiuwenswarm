@@ -5,8 +5,8 @@ import json
 import httpx
 import pytest
 
-from gateway.extensions.adx.config import load_router_config
-from gateway.extensions.adx.control_client import AdxControlClient, AdxControlError, AdxCreateTimeout
+from agent_gateway.extensions.adx.config import load_router_config
+from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError, AdxCreateTimeout
 
 
 def config(monkeypatch, tmp_path):
@@ -135,7 +135,7 @@ async def test_environment_query_rejects_mismatched_tenant_and_identity(monkeypa
 
 async def test_wait_running_timeout_uses_the_existing_lifecycle_error(monkeypatch, tmp_path):
     from dataclasses import replace
-    from gateway.extensions.yuanrong_frontend_client import YuanrongAgentTimeoutError
+    from agent_gateway.extensions.yuanrong_frontend_client import YuanrongAgentTimeoutError
 
     cfg = replace(config(monkeypatch, tmp_path), connect_timeout_seconds=0.01)
     calls = []

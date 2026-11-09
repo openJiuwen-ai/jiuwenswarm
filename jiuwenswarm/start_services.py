@@ -34,6 +34,7 @@ parse_dotenv_early("jiuwenswarm-start")
 
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.utils import get_env_file, get_root_dir, get_user_workspace_dir, is_package_installation
+from jiuwenswarm.common.process_supervision import application_shutdown, terminate_service_tree
 from jiuwenswarm.instance_manager import (
     InstanceConfig,
     InstanceLock,
@@ -48,13 +49,15 @@ from jiuwenswarm.instance_manager import (
     get_instance_status,
     is_port_available,
     list_all_instances,
+    read_pid_file,
     stop_instance_process,
-    stop_process_by_pid,
     validate_instance_name,
     write_pid_file,
     PORT_TYPES,
     PORT_ENV_NAMES,
+    PORT_ENV_OVERRIDES,
     compute_auto_port,
+    pinned_port_types,
 )
 
 # Runtime data root:
@@ -226,8 +229,77 @@ def _log_port_table(prefix: str, ports: dict[str, int]) -> None:
         logging.info(f"  {port_type}: {ports.get(port_type, 0)}")
 
 
-def _resolve_ports_with_fallback(cmd: InstanceCommand, scan_range: int = 10) -> int | None:
+def _reject_pinned_port_conflicts(
+    conflicts: list[tuple[str, int]],
+) -> int | None:
+    """Refuse to relocate a port group while any port in it is pinned.
+
+    Scanning is right for auto-allocated ports -- it is what makes ``--name foo``
+    work -- but wrong for a ``JIUWENSWARM_<TYPE>_PORT``: that port was chosen
+    because something else talks to it, so shifting it yields a healthy-looking
+    process nothing can reach.
+
+    The unit of relocation is the whole group. ``find_available_ports`` returns
+    ``calculate_instance_ports(index)``, which is ``base + index * 1000`` for
+    every port type at once, and the caller assigns that group over
+    ``cmd.config.ports`` entire. There is no group in which a pinned port keeps
+    its value while an auto-allocated one beside it moves. So the question is
+    not whether a pinned port is among the conflicting ones: an unpinned
+    conflict relocates the pinned ports just the same, and persists the shift.
+
+    Only reached when something already conflicts, so a pin alone never stops a
+    start; a pin plus a conflict does.
+
+    Returns:
+        1 when any port type is pinned (caller aborts), None when the group is
+        entirely auto-allocated and scanning may proceed.
+    """
+    pinned = pinned_port_types()
+    if not pinned:
+        return None
+
+    logging.info(
+        "[start_services] ERROR: %d port(s) in use and %d pinned, so the port "
+        "group cannot be relocated:",
+        len(conflicts),
+        len(pinned),
+    )
+    for port_type, port in conflicts:
+        pinned_by = PORT_ENV_OVERRIDES.get(port_type, "?")
+        logging.info(
+            "  ✗ %s: %s in use%s",
+            port_type,
+            port,
+            f", pinned by {pinned_by}" if port_type in pinned else "",
+        )
+    for port_type in sorted(pinned - {pt for pt, _ in conflicts}):
+        logging.info(
+            "  · %s: free, pinned by %s",
+            port_type,
+            PORT_ENV_OVERRIDES.get(port_type, "?"),
+        )
+    logging.info(
+        "[start_services] A relocation moves every port in the group by the "
+        "same step, the pinned ones included, and persists the result. A silent "
+        "shift would leave clients talking to an address nothing is listening on."
+    )
+    logging.info(
+        "[start_services] Free the port in use (ss -ltnp | grep <port>), change "
+        "the pinned value, or unset the variable to allow automatic allocation."
+    )
+    return 1
+
+
+def _resolve_ports_with_fallback(
+    cmd: InstanceCommand,
+    scan_range: int = 10,
+    conflicts: list[tuple[str, int]] | None = None,
+) -> int | None:
     """Resolve port conflicts by scanning for an available port group.
+
+    Aborts instead of scanning when any port type is pinned through
+    ``JIUWENSWARM_<TYPE>_PORT``, because a scan moves the whole group and would
+    move the pinned ports with it (see ``_reject_pinned_port_conflicts``).
 
     Called when ``cmd.check_ports_conflicts()`` is non-empty. Scans upward from
     the instance's own index (0 for default) for the first fully-available
@@ -261,6 +333,12 @@ def _resolve_ports_with_fallback(cmd: InstanceCommand, scan_range: int = 10) -> 
     )
 
     if cmd.config is None:
+        return 1
+
+    # Reuse the caller's list; re-probing is wasteful and can disagree.
+    if conflicts is None:
+        conflicts = cmd.check_ports_conflicts()
+    if _reject_pinned_port_conflicts(conflicts) is not None:
         return 1
 
     # Determine the scan starting index: the instance's own declared index.
@@ -398,8 +476,13 @@ def do_stop_instance(cmd: InstanceCommand) -> int:
     pid = cmd.status.pid
     logging.info(f"[start_services] Stopping instance '{cmd.name}' (PID={pid})...")
 
-    if cmd.is_default:
-        success = stop_process_by_pid(pid, timeout=10.0)
+    if cmd.is_default and read_pid_file(cmd.config) is None:
+        try:
+            terminate_service_tree(pid, timeout=10.0)
+        except (OSError, RuntimeError) as exc:
+            logging.error("[start_services] Service tree cleanup incomplete: %s", exc)
+            return 1
+        success = stop_instance_process(cmd.config, timeout=10.0)
     else:
         success = stop_instance_process(cmd.config, timeout=10.0)
 
@@ -423,6 +506,8 @@ def _run_instance_with_pid(commands: list[tuple[str, list[str], Path]],
         Exit code
     """
     processes: dict[str, subprocess.Popen[bytes]] = {}
+    cleanup_ok = False
+    exit_code = 1
     try:
         for cmd_name, cmd_args, cwd in commands:
             processes[cmd_name] = _start_process(
@@ -443,19 +528,15 @@ def _run_instance_with_pid(commands: list[tuple[str, list[str], Path]],
 
         _wait_for_services_ready(config.ports, processes)
 
-        while True:
-            for cmd_name, proc in processes.items():
-                code = proc.poll()
-                if code is not None:
-                    logging.info(f"[start_services] {cmd_name} exited with code {code}")
-                    return code
-            time.sleep(0.5)
+        exit_code = _wait_for_process_exit(processes)
 
     except KeyboardInterrupt:
         logging.info("\n[start_services] Keyboard interrupt received, shutting down...")
-        return 130
+        exit_code = 130
     finally:
-        _terminate_processes(processes)
+        with application_shutdown():
+            cleanup_ok = _shutdown_services(processes, commands, config.workspace)
+    return exit_code if cleanup_ok else 1
 
 
 def _launcher_create_time() -> float:
@@ -540,7 +621,7 @@ def _build_commands(mode: str, dotenv_path: Path | None = None) -> list[tuple[st
     dotenv_arg = ["--dotenv", str(dotenv_path)] if dotenv_path else []
 
     if mode in ("all", "app", "dev"):
-        cmd = [python_cmd, "-m", "jiuwenswarm.app"] + dotenv_arg
+        cmd = [python_cmd, "-m", "jiuwenswarm.app", "--keep-worker"] + dotenv_arg
         commands.append(("app", cmd, DATA_ROOT))
 
     if mode in ("all", "web"):
@@ -617,22 +698,41 @@ def _start_process(
 
 
 def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
-    """Terminate all running processes gracefully."""
+    """Stop owned Front/service trees without killing their resident Workers."""
+    errors = []
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] terminating {name} (pid={proc.pid})")
-            proc.terminate()
+            try:
+                terminate_service_tree(proc.pid, timeout=8.0)
+            except (OSError, RuntimeError) as exc:
+                errors.append(exc)
+    if errors:
+        raise RuntimeError("Service tree cleanup incomplete") from errors[0]
 
-    deadline = time.time() + 8
-    while time.time() < deadline:
-        if all(proc.poll() is not None for proc in processes.values()):
-            return
-        time.sleep(0.2)
 
-    for name, proc in processes.items():
-        if proc.poll() is None:
-            logging.info(f"[start_services] killing {name} (pid={proc.pid})")
-            proc.kill()
+def _shutdown_services(processes: dict[str, subprocess.Popen[bytes]],
+                       commands: list[tuple[str, list[str], Path]], workspace: Path) -> bool:
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
+
+    try:
+        _terminate_processes(processes)
+    except (OSError, RuntimeError) as exc:
+        logging.error("[start_services] Cannot retire Worker while Front cleanup is incomplete: %s", exc)
+        return False
+    if any(name == "app" for name, _, _ in commands):
+        return shutdown_application_worker(workspace=workspace)
+    return True
+
+
+def _wait_for_process_exit(processes: dict[str, subprocess.Popen[bytes]]) -> int:
+    while True:
+        for name, proc in processes.items():
+            code = proc.poll()
+            if code is not None:
+                logging.info(f"[start_services] {name} exited with code {code}")
+                return code
+        time.sleep(0.5)
 
 
 def _resolve_runtime_ports() -> dict[str, int]:
@@ -805,24 +905,22 @@ def _run_processes(
         Exit code
     """
     processes: dict[str, subprocess.Popen[bytes]] = {}
+    cleanup_ok = False
+    exit_code = 1
     try:
         for name, cmd, cwd in commands:
             processes[name] = _start_process(name, cmd, cwd, ports=ports)
 
         _wait_for_services_ready(ports, processes)
 
-        while True:
-            for name, proc in processes.items():
-                code = proc.poll()
-                if code is not None:
-                    logging.info(f"[start_services] {name} exited with code {code}")
-                    return code
-            time.sleep(0.5)
+        exit_code = _wait_for_process_exit(processes)
     except KeyboardInterrupt:
         logging.info("\n[start_services] keyboard interrupt received, shutting down...")
-        return 130
+        exit_code = 130
     finally:
-        _terminate_processes(processes)
+        with application_shutdown():
+            cleanup_ok = _shutdown_services(processes, commands, get_user_workspace_dir())
+    return exit_code if cleanup_ok else 1
 
 
 def _run(mode: str) -> int:
@@ -841,8 +939,9 @@ def _run(mode: str) -> int:
     if cmd.validate_and_load():
         return 1
 
-    if cmd.check_ports_conflicts():
-        if _resolve_ports_with_fallback(cmd) is not None:
+    conflicts = cmd.check_ports_conflicts()
+    if conflicts:
+        if _resolve_ports_with_fallback(cmd, conflicts=conflicts) is not None:
             return 1
         # Fallback already persisted the resolved ports to .env.
     else:
@@ -993,8 +1092,9 @@ def _start_named_instance(name: str, mode: str) -> int:
     # Port availability: on conflict, try to fall back to a free port group
     # (persists to instances.yaml + bootstrap .env so subprocesses/TUI/CLI
     # pick up the new ports). Only hard-fail if no fallback is possible.
-    if cmd.check_ports_conflicts():
-        if _resolve_ports_with_fallback(cmd) is not None:
+    conflicts = cmd.check_ports_conflicts()
+    if conflicts:
+        if _resolve_ports_with_fallback(cmd, conflicts=conflicts) is not None:
             return 1
 
     config = cmd.config

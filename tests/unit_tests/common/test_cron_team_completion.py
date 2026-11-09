@@ -1,4 +1,4 @@
-from gateway.common.cron_team_completion import (
+from agent_gateway.common.cron_team_completion import (
     apply_cron_team_round_event,
     cron_team_round_should_end,
     is_cron_leader_placeholder_text,

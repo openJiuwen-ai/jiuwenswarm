@@ -13,10 +13,10 @@ from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
 from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.message_handler.message_handler import ChannelMode, MessageHandler
+from agent_gateway.routing.session_sharing import SubRole
 
 from jiuwenswarm.common.schema import Message
-from gateway.message_handler.message_handler import ChannelMode, MessageHandler
-from gateway.routing.session_sharing import SubRole
 
 
 class _FakeAgentClient:
@@ -111,7 +111,7 @@ class _TestMessageHandler(MessageHandler):
     ("web_new", "paused"), ("web_new", "failed"),
 ])
 async def test_permission_resume_releases_hold_independently_of_session_prefix(monkeypatch, session_id, outcome):
-    from gateway.cron.scheduler import CronSchedulerService
+    from agent_gateway.cron.scheduler import CronSchedulerService
 
     class ResumeClient(_FakeAgentClient):
         @staticmethod
@@ -133,7 +133,7 @@ async def test_permission_resume_releases_hold_independently_of_session_prefix(m
     scheduler._permission_hold = {"job": (float("inf"), session_id)}
     scheduler._schedule_hold_redis_clear = Mock()
     scheduler._now_fn = lambda: 123.0
-    monkeypatch.setattr("gateway.cron.live_bus.cron_live_bus.clear_session", Mock())
+    monkeypatch.setattr("agent_gateway.cron.live_bus.cron_live_bus.clear_session", Mock())
     mark = Mock(wraps=scheduler.mark_permission_resume_succeeded)
     handler.set_cron_controller(SimpleNamespace(mark_permission_resume_succeeded=mark))
     monkeypatch.setattr(handler, "_sync_agentos_cron_jobs", AsyncMock())
@@ -318,7 +318,7 @@ async def _wait_for_sent_request_count(count: int, timeout: float = 0.2) -> None
 async def test_tui_non_stream_request_times_out_before_frontend_request(monkeypatch) -> None:
     handler = _TestMessageHandler.create_with_client(_HangingAgentClient())
     monkeypatch.setattr(
-        "gateway.routing.agent_request_timeout._TUI_DEFAULT_UNARY_TIMEOUT_SECONDS",
+        "agent_gateway.routing.agent_request_timeout._TUI_DEFAULT_UNARY_TIMEOUT_SECONDS",
         0.01,
         raising=False,
     )
@@ -542,7 +542,7 @@ async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, inte
         return {"team_name": "owner"}
 
     monkeypatch.setattr(
-        "gateway.common.external_providers.provider",
+        "agent_gateway.common.external_providers.provider",
         lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
@@ -611,7 +611,7 @@ async def test_targeted_cancel_requires_team_mode_and_a_target_that_is_not_a_kno
         return {"team_name": owner}
 
     monkeypatch.setattr(
-        "gateway.common.external_providers.provider",
+        "agent_gateway.common.external_providers.provider",
         lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode=mode)
@@ -622,7 +622,7 @@ async def test_targeted_cancel_requires_team_mode_and_a_target_that_is_not_a_kno
 @pytest.mark.asyncio
 async def test_targeted_cancel_stays_targeted_when_metadata_unavailable(monkeypatch):
     """元数据传输失败（非"读为空"）时，定向取消不被放大成会话级取消。"""
-    from gateway.routing.session_metadata_remote import SessionMetadataRemoteUnavailable
+    from agent_gateway.routing.session_metadata_remote import SessionMetadataRemoteUnavailable
 
     handler = _TestMessageHandler.create()
 
@@ -630,7 +630,7 @@ async def test_targeted_cancel_stays_targeted_when_metadata_unavailable(monkeypa
         raise SessionMetadataRemoteUnavailable("session metadata read failed")
 
     monkeypatch.setattr(
-        "gateway.common.external_providers.provider",
+        "agent_gateway.common.external_providers.provider",
         lambda _: SimpleNamespace(get_session_metadata_async=_unavailable),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
@@ -1467,6 +1467,25 @@ def test_is_team_chat_send_recognizes_all_team_modes(mode: str, expected: bool) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["", "agent.plan", "team"])
+async def test_group_chat_send_preserves_running_expert_stream(mode: str) -> None:
+    handler = _TestMessageHandler.create()
+    travel_task = _seed_stream_task(
+        handler, rid="rid-travel", channel_id="web", session_id="group-trip",
+    )
+    msg = _chat_send_message(channel_id="web", session_id="group-trip", mode=mode)
+    msg.params.update({"group_id": "group-trip", "mentions": ["essay-expert"]})
+
+    should_cancel = getattr(handler, "_should_cancel_existing_stream_before_chat_send")
+    if should_cancel(msg):
+        await handler.cancel_stream_tasks_for_channel(msg)
+
+    assert not travel_task.cancelled()
+    await asyncio.sleep(0)
+    assert not _FakeAgentClient.sent_requests
+
+
+@pytest.mark.asyncio
 async def test_stop_forwarding_interrupts_in_flight_sessions_before_local_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1477,7 +1496,7 @@ async def test_stop_forwarding_interrupts_in_flight_sessions_before_local_cancel
     client_disconnect pause).
     """
     monkeypatch.setattr(
-        "gateway.enterprise.is_enterprise",
+        "agent_gateway.enterprise.is_enterprise",
         lambda: True,
     )
     handler = _TestMessageHandler.create()

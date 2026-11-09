@@ -515,6 +515,65 @@ This is an easy distinction to miss: building the skill graph is not composing a
 - [Agent Team](AgentTeam.md)
 - [Chinese: Symphony](../zh/Symphony-技能编排与分发.md)
 
+## SkillPack: compatible Hub publication
+
+Publish an existing thin SkillPack from its detail page. Its members must be independent ordinary Skills, not SwarmSkills or nested Packs. Product publication is off by default; start with an isolated Hub:
+
+```sh
+export SKILLPACK_PRODUCTIZATION_ENABLED=true
+export SKILLPACK_HUB_DEPLOYMENT_SCOPE=isolated
+export SKILLPACK_HUB_TRANSPORT_PROFILE=legacy_skill_v1
+```
+
+Deployment scope must be `isolated` or `version_gated`. The latter asserts that the deployment already restricts marketplace client versions; the flag does not implement Hub filtering. A legacy Hub reviews and displays the wrapper as an ordinary Skill. Use `native_skillpack_v1` only with a compatible Hub. Transport failures never change profiles.
+
+One preflight lists each member as reuse, publish first, or blocked. User confirmation starts independent member uploads and review waiting, followed by Pack publication. A failed Pack does not delete successfully published members. Reopening the panel resumes status queries; changed local content requires a new preflight and confirmation.
+
+The thin ZIP contains the existing `plugin.yaml` wrapper, root instructions and `skillpack.lock.json`, not member sources. The ordered lock records exact Hub asset IDs, versions and original ZIP SHA-256 digests. Consumers must support this lock and independently download members from the same Hub; an ordinary single-Skill installer is not sufficient. The publisher/installer contract test checks the generated archive with the shared installer, without enabling the marketplace installation entry point by itself.
+
+Three consecutive Hub check failures stop automatic polling. After connectivity recovers, explicitly retry the confirmed operation with the same upload IDs. Normal moderation waiting does not count as a network failure. Polling backs off to 30 seconds without repeatedly querying approved members; the full member closure is checked before uploading the Pack and before completion. Expired authorization or an unconfirmed upload outcome stops automatic progress until the user addresses the cause and retries the same operation.
+
+Local simulated tests do not establish real Hub moderation, model or desktop acceptance. Record those separately. Disabling the product switch stops new Pack publication; it does not unpublish existing assets.
+
 ### Development boundaries
 
 `openjiuwen.symphony` owns retrieval, fingerprint extraction, graph orchestration, and evolution algorithms. JiuwenSwarm owns model configuration and usage, build status, Web/RPC, runtime tools, and skill-package installation. Configuration parsing lives in `jiuwenswarm/common/symphony_config.py`. Deployments require an openjiuwen version with the corresponding public interfaces. Removing unused SDK leftovers does not change persistent graph directories or user configuration paths.
+
+## SkillPack: distillation, reuse and installation
+
+A SkillPack is a composite Skill executed by one Agent. Its root `SKILL.md` describes an ordered workflow over independent ordinary Skills. SwarmSkills and nested SkillPacks are not supported members.
+
+### Enable
+
+The product entry points are off by default. Start with an isolated test Hub:
+
+```sh
+export SKILLPACK_PRODUCTIZATION_ENABLED=true
+export SKILLPACK_DIRECT_ROUTE_MODE=confirm
+```
+
+Routing accepts `off`, `shadow` (evaluate and log only), or `confirm`. The environment overrides `skillpack.direct_route_mode` in service configuration.
+
+### Use
+
+Ask the Agent to distill a completed multi-Skill workflow. `skillpack_distill` reads persisted real execution evidence and produces a candidate. Installation requires confirmation after inspecting the members and instructions.
+
+Installed Packs appear in My Skills and the existing task Skill picker with a SkillPack label. Member changes affect Pack availability. A complete query match offers a confirmation or a choice of Packs before bypassing Symphony composition. Partial or uncertain matches continue through the existing path. Explicitly picking one Pack confirms the selection; mixed selections require a choice. Existing side-effect permissions remain in force. Failure after member execution does not automatically restart composition.
+
+### Install and manage
+
+The thin ZIP contains the existing `plugin.yaml` wrapper, root instructions and `skillpack.lock.json`. It does not contain member sources. The lock records ordered Hub asset IDs, exact versions and original ZIP SHA-256 digests. Missing members are downloaded independently from the same Hub.
+
+Installation first displays a plan. Reuse requires matching provenance, version, archive digest and unchanged local content. Name conflicts and local edits block installation. All packages are validated before committing the inventory and `.archive` snapshots. Failures restore directories and registration state; startup recovers interrupted commits before loading Skills.
+
+If the plan expires or the local inventory changes before confirmation, the latest plan is shown once more and requires a fresh confirmation. Integrity failures are not retried automatically. Inventory contention asks the user to retry later without exposing internal lock paths.
+
+Uninstalling a Pack keeps its members. Uninstalling a Skill referenced by an installed Pack is blocked and lists its referring Packs.
+
+### Operations
+
+Corrupt journals, changed directory ownership or missing backups stop inventory loading with the retained transaction path. Recovery evidence is not deleted to force startup. Preserve the affected files and reconcile directory markers and state backups before retrying recovery; do not expose a partially installed inventory.
+
+Plans and transaction journals live in the current skills directory under `.skillpack/`. Per-Skill Hub provenance is stored in `.archive/hub-provenance.json`; neither is published. Disabling the product switch stops new distillation and Pack installation. Direct routing has a separate switch.
+
+Deploy the matching agent-core and JiuwenSwarm changes together. The dependency and lockfile pin official commit `4dbaa84ca568af3f181da4f9cd26b713a5b73039`, which includes Core !3457. Local simulated tests do not establish real Hub review, real model or desktop platform acceptance; record those separately.

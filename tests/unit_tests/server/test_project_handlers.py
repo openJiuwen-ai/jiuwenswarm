@@ -24,7 +24,7 @@ class _FakeWebChannel:
         self.methods: dict[str, object] = {}
         self.responses: list[dict] = []
 
-    def register_method(self, name, handler):
+    def register_method(self, name, handler, *, local_only=False):
         self.methods[name] = handler
 
     def on_connect(self, handler):
@@ -110,7 +110,7 @@ class _FakeSessionCreateAgentClient:
             )
             return SimpleNamespace(ok=response.ok, payload=response.payload)
 
-        from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE, is_default_project_id
+        from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE, is_default_project_id
         from jiuwenswarm.server.runtime.session import project_store
         from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
         from jiuwenswarm.server.runtime.session.work_mode import resolve_session_work_mode_params
@@ -272,7 +272,7 @@ def project_store_dir(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def registered_channel(sessions_dir, project_store_dir):
-    from gateway.channel_manager.web.app_web_handlers import (
+    from agent_gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from gateway.common.model_selection import ModelSelection
+from agent_gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.config import (
     delete_model_resource,
     upsert_model_group_resource,

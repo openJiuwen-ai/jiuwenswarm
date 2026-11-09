@@ -63,7 +63,8 @@ _PROMPT_CN = """# 画布执行（swarmflow）
 - 工具调用**立即返回**（执行在后台进行），进度实时推送到画布；执行结束后你会收到一条运行摘要消息，届时用一两句话如实向用户汇报各节点的结果与状态，不要粘贴全文。
 - 收到运行摘要的这一轮**只汇报**：不论成功、部分失败还是全部失败，跑完了就是跑完了。不要再次调用 swarmflow / designer_graph_autorun，也不要为了"修复"而改图；等用户下一条消息再决定。
 - 同一时刻只允许一个执行；执行中再次调用会被拒绝，此时告诉用户稍候。
-- 节点失败时摘要里会带 error，向用户说明失败节点与原因，可以给出建议（改提示词重跑该节点 / 从该节点续跑），但不要自行执行。
+- 节点失败时摘要里会带 error，向用户说明失败节点与原因，可以给出建议（改提示词重跑该节点 / 从该节点续跑），但不要自行执行。若 error 说明的是 Settings > Agent 里的生成模型未启用、未配置或端点不支持（如 “is switched off in Settings > Agent” / “is not configured” / “is not one of them”），就直接告诉用户去 Settings > Agent 开启并补全该模型，不要建议改提示词或重跑——那种情况下重跑不会成功。
+- 任何时候都不要建议用户"换个模型"或"切换模型"：设计用的是 Settings > Agent 里选定的模型，界面上没有切换模型的入口，建议切换只会让用户白折腾。
 - 调用后先告诉用户"已开始执行，画布可看进度"，不要在原地等待结果。
 """
 
@@ -94,7 +95,13 @@ Conventions:
   tell the user to wait.
 - Node failures carry an error in the summary: name the node, the reason,
   and you may suggest the next step (edit the prompt and rerun / rerun from
-  there) — never carry it out yourself.
+  there) — never carry it out yourself. When that error is a Settings gap
+  ("is switched off in Settings > Agent", "is not configured", "is not one of
+  them"), tell the user to enable / complete that model in Settings > Agent
+  instead of suggesting prompt edits or a rerun — a rerun cannot succeed.
+- Never suggest switching or changing the model: Design runs on the model
+  picked in Settings > Agent, the canvas has no model switch, and such advice
+  only sends the user in circles.
 - After launching, tell the user "execution started, watch the canvas" —
   do not wait in place for the result.
 """

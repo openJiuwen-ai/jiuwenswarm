@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Any
 
-from gateway.common.ws_limits import AGENT_WS_SEND_BUDGET_BYTES
+from agent_gateway.common.ws_limits import AGENT_WS_SEND_BUDGET_BYTES
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_chunk_for_wire,

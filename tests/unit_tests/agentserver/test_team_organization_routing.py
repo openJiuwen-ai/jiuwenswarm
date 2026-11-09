@@ -7,12 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server import agent_ws_server
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,
     HOST_USER_ORIGIN_INTERNAL,
@@ -462,6 +462,133 @@ async def test_team_list_returns_expert_snapshot_from_spec_without_package(monke
     assert "team_group_identity" not in next(team for team in teams if team["is_owner"])
 
 
+@pytest.fixture
+def owner_identity_server(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    metadata = {}
+    live_teams = []
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager", lambda _: team_manager_marker()
+    )
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda sid: metadata.get(sid, {}))
+    pool = SimpleNamespace(teams_for_session=AsyncMock(return_value=live_teams))
+    monkeypatch.setattr(
+        "openjiuwen.core.runner.runner.GLOBAL_RUNNER",
+        SimpleNamespace(_team_runtime_manager=SimpleNamespace(pool=pool)),
+    )
+    return server, metadata, live_teams
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pooled", [False, True])
+@pytest.mark.parametrize("assembling", [False, True])
+async def test_team_list_restores_owner_identity_from_session(
+    owner_identity_server, pooled, assembling, monkeypatch,
+):
+    server, metadata, live_teams = owner_identity_server
+    identity = {
+        "id": "business-asset", "name": "business-planning",
+        "display_name": "Business planning team", "avatar": "http://localhost/business.png",
+    }
+    metadata["session"] = {
+        "team_name": "owner", "agent_group_name": identity["name"], "team_group_identity": identity,
+    }
+    if assembling:
+        metadata["session"].pop("team_name")
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            lambda _: team_manager_marker(
+                snapshot={"session": {"team_name": "owner", "state": "pending"}},
+                pending={"session": "owner"},
+            ),
+        )
+    if pooled:
+        live_teams.append(SimpleNamespace(
+            team_name="owner", state=SimpleNamespace(value="running" if assembling else "paused"),
+            agent=SimpleNamespace(
+                card=SimpleNamespace(name="Team Leader"), team_backend=backend("org"),
+                spec=SimpleNamespace(metadata={"agent_group_name": identity["name"]}),
+            ),
+        ))
+
+    teams = await server._team_list_entries("session", "web")
+
+    assert len(teams) == 1
+    assert teams[0]["team_group_identity"] == identity
+    assert teams[0]["is_owner"] is True
+    assert teams[0]["agent_group_name"] == identity["name"]
+    if pooled:
+        assert teams[0]["display_name"] == "Team Leader"
+        assert teams[0]["state"] == ("running" if assembling else "paused")
+        assert teams[0]["source"] == "pool"
+        assert teams[0]["organization_id"] == "org"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live_snapshot", ["valid", "missing", "invalid", "wrong-package"])
+async def test_team_list_owner_identity_preserves_current_binding(owner_identity_server, live_snapshot):
+    server, metadata, live_teams = owner_identity_server
+    saved = {"id": "saved", "name": "business-planning", "display_name": "Saved business", "avatar": ""}
+    current = {**saved, "id": "current", "display_name": "Current business"}
+    snapshots = {
+        "valid": current, "missing": None, "invalid": {"name": "business-planning"},
+        "wrong-package": {**saved, "name": "old-package"},
+    }
+    metadata["session"] = {"team_name": "owner", "agent_group_name": saved["name"], "team_group_identity": saved}
+    live_teams.append(SimpleNamespace(
+        team_name="owner", state=SimpleNamespace(value="paused"),
+        agent=SimpleNamespace(spec=SimpleNamespace(metadata={
+            "agent_group_name": saved["name"], "team_group_identity": snapshots[live_snapshot],
+        })),
+    ))
+
+    teams = await server._team_list_entries("session", "web")
+
+    assert teams[0]["team_group_identity"] == (current if live_snapshot == "valid" else saved)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_group", ["business-planning", "new-package"])
+async def test_team_list_rejects_stale_owner_identity(owner_identity_server, runtime_group):
+    server, metadata, live_teams = owner_identity_server
+    metadata["session"] = {
+        "team_name": "owner", "agent_group_name": "business-planning",
+        "team_group_identity": {
+            "id": "old", "name": "old-package" if runtime_group == "business-planning" else "business-planning",
+            "display_name": "Old team",
+        },
+    }
+    live_teams.append(SimpleNamespace(
+        team_name="owner", state=SimpleNamespace(value="paused"),
+        agent=SimpleNamespace(spec=SimpleNamespace(metadata={"agent_group_name": runtime_group})),
+    ))
+
+    teams = await server._team_list_entries("session", "web")
+
+    assert teams[0]["agent_group_name"] == runtime_group
+    assert "team_group_identity" not in teams[0]
+
+
+@pytest.mark.asyncio
+async def test_team_list_owner_identity_is_scoped_to_session_and_team(owner_identity_server):
+    server, metadata, live_teams = owner_identity_server
+    identity = {"id": "business", "name": "business-planning", "display_name": "Business team", "avatar": ""}
+    metadata["session"] = {"team_name": "owner", "agent_group_name": identity["name"], "team_group_identity": identity}
+    metadata["another"] = {"team_name": "another-owner"}
+    for name in ("expert", "summary"):
+        live_teams.append(SimpleNamespace(
+            team_name=name, state=SimpleNamespace(value="paused"),
+            agent=SimpleNamespace(spec=SimpleNamespace(metadata={})),
+        ))
+
+    teams = {team["team_id"]: team for team in await server._team_list_entries("session", "web")}
+    other_teams = {team["team_id"]: team for team in await server._team_list_entries("another", "web")}
+
+    assert teams["owner"]["team_group_identity"] == identity
+    assert all("team_group_identity" not in teams[name] for name in ("expert", "summary"))
+    assert "team_group_identity" not in other_teams["another-owner"]
+
+
 
 @pytest.mark.asyncio
 async def test_team_list_merges_history_without_downgrading_live_team(monkeypatch):
@@ -610,6 +737,64 @@ async def test_cold_expert_recovery_error_returns_terminal_status(monkeypatch):
     assert chunks[-1].payload["is_processing"] is False
     assert chunks[-1].payload["success"] is False
     run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_team_list_marks_group_organization_owner(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    manager = team_manager_marker(
+        snapshot={"session": {"team_name": "jiuwen-group", "state": "active"}},
+        active="jiuwen-group",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager", lambda channel_id: manager
+    )
+    monkeypatch.setattr(
+        agent_ws_server,
+        "get_session_metadata",
+        lambda _: {"team_name": "jiuwen-group"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.group_service.read_group",
+        lambda group_id: {
+            "organization_teams": [
+                {"team_id": "org-expert-owner", "role": "owner"},
+                {"team_id": "org-expert-member", "role": "member"},
+            ]
+        },
+    )
+
+    async def teams_for_session(session_id):
+        return [
+            SimpleNamespace(
+                team_name=name,
+                state=SimpleNamespace(value="paused"),
+                agent=SimpleNamespace(
+                    team_backend=SimpleNamespace(is_leader=True, leader_member_name="leader"),
+                    card=SimpleNamespace(name=name),
+                    spec=SimpleNamespace(metadata={}),
+                ),
+                current_session_id=session_id,
+            )
+            for name in ("org-expert-owner", "org-expert-member")
+        ]
+
+    monkeypatch.setattr(
+        "openjiuwen.core.runner.runner.GLOBAL_RUNNER",
+        SimpleNamespace(
+            _team_runtime_manager=SimpleNamespace(
+                pool=SimpleNamespace(teams_for_session=teams_for_session)
+            )
+        ),
+    )
+
+    teams = await server._team_list_entries("session", "web")
+
+    assert {team["team_id"]: team["is_owner"] for team in teams} == {
+        "org-expert-owner": True,
+        "org-expert-member": False,
+        "jiuwen-group": False,
+    }
 
 
 @pytest.mark.asyncio

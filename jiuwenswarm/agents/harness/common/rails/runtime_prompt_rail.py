@@ -113,9 +113,23 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         self.attachment_manager = getattr(agent, "prompt_attachment_manager", None)
 
+    def _apply_voice_summary_policy(self, ctx: AgentCallbackContext) -> None:
+        """Apply voice receipt policy only when the optional module is present."""
+        try:
+            from jiuwenswarm.extensions.video_duplex.backend.session_receipts import apply_summary_policy
+        except ModuleNotFoundError as exc:
+            if exc.name != "jiuwenswarm.extensions.video_duplex.backend.session_receipts":
+                raise
+            if self.system_prompt_builder is not None:
+                self.system_prompt_builder.remove_section("video_duplex.voice_receipt")
+            return
+        if self.system_prompt_builder is not None:
+            apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
+
     def uninit(self, agent) -> None:
         """清理注入的 section 并释放引用。"""
         if self.system_prompt_builder is not None:
+            self.system_prompt_builder.remove_section("video_duplex.voice_receipt")
             self.system_prompt_builder.remove_section("time")
             self.system_prompt_builder.remove_section("runtime.model_answer_policy")
             self.system_prompt_builder.remove_section("language_output")
@@ -483,6 +497,8 @@ class RuntimePromptRail(DeepAgentRail):
             "trusted_dirs_policy"):
             self.system_prompt_builder.remove_section(name)
 
+        self._apply_voice_summary_policy(ctx)
+
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 
         # ── Platform, shell, encoding, time-query and channel rules ──
@@ -843,6 +859,8 @@ class RuntimePromptRail(DeepAgentRail):
             or runtime_state.get("language")
             or "unknown"
         ).strip()
+        self._apply_voice_summary_policy(ctx)
+
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 
         if not self._force_english and self._language == "cn":
@@ -870,6 +888,31 @@ class RuntimePromptRail(DeepAgentRail):
             kind=PromptAttachmentKind.RUNTIME,
             priority=95,
         )
+        from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            current_multimodal_image_files,
+        )
+
+        if current_multimodal_image_files():
+            await self._clear_prompt_attachment(ctx, section="runtime.current_media")
+        else:
+            media_content = (
+                "本轮没有附带屏幕或摄像头画面。用户询问当前屏幕内容时，如实说明看不到，"
+                "建议开启屏幕共享或提供截图，不得编造。历史图片、聊天记录和用户文字不能"
+                "证明当前屏幕内容；只有工具实际获取的新截图才能作为当前画面的依据。"
+                if not self._force_english and self._language == "cn"
+                else
+                "No screen or camera image is attached to this turn. If asked about the current screen, "
+                "say you cannot see it and suggest enabling screen sharing or attaching a screenshot. "
+                "Do not invent its contents or treat old images, chat history, or user text as the current view. "
+                "A fresh screenshot actually obtained through a tool can ground your answer."
+            )
+            await self._upsert_prompt_attachment(
+                ctx,
+                section="runtime.current_media",
+                content=media_content,
+                kind=PromptAttachmentKind.RUNTIME,
+                priority=95,
+            )
         await self._sync_a4p_intent_authorization_attachment(ctx)
         await self._sync_a4p_cron_authorization_scope_attachment(ctx)
 

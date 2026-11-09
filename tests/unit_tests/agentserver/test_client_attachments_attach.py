@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Attaching a client: the app plugin it installs and equips, the conflicts, the read models."""
+"""Attaching a client: the app its conversation belongs to, the conflicts, the read models."""
 
 from __future__ import annotations
 
@@ -9,80 +9,72 @@ import json
 
 import pytest
 
-from jiuwenswarm.server.client_attachments.errors import ClientAttachError
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.client_attachments import (
     attach,
     get_attachment_directory,
     load_attached_resource,
     load_client_capabilities,
-    plugins,
     registry,
 )
 from jiuwenswarm.server.client_attachments import directory
 from jiuwenswarm.server.client_attachments.directory import LEASE_SECONDS, RENEW_EVERY_SECONDS
 from jiuwenswarm.server.runtime import extension_package_manager as packages
+from jiuwenswarm.server.runtime.session import session_metadata
 from tests.unit_tests.agentserver.client_attachments_support import (  # noqa: F401 - the fixture
     RESOURCE,
-    OTHER_PLUGIN,
-    PLUGIN,
+    OTHER_APP,
+    CLIENT_APP,
     answer,
     answer_async,
+    created_for,
     isolated,
+    new_conversation,
     renew,
     request,
-    write_app,
+    stored_metadata,
 )
 
 pytestmark = pytest.mark.usefixtures("isolated")
 
 # What JiuwenSwarm ships, read before the ``isolated`` fixture replaces it.
-_SHIPPED_APP_PACKAGES = registry.APP_PACKAGES
+_SHIPPED_APPS = registry.APPS
 
 
-def test_attach_imports_the_plugin_once_equips_the_conversation_and_announces_the_attachment(isolated) -> None:
+def test_attach_records_the_attachment_and_announces_it() -> None:
     pushed: list[dict] = []
     attached = answer(request(), pushed)
     assert attached["ok"] is True
     assert attached["payload"]["attachment_id"].startswith("att_")
-    assert attached["payload"]["session_id"] == "session-1" and attached["payload"]["plugin_id"] == PLUGIN
+    assert attached["payload"]["session_id"] == "session-1" and attached["payload"]["client_app"] == CLIENT_APP
     assert (attached["payload"]["lease_seconds"], attached["payload"]["renew_every_seconds"]) == (
         LEASE_SECONDS, RENEW_EVERY_SECONDS)
-    assert isolated["installed"] == [PLUGIN]
-    assert isolated["equipment"]["session-1"]["plugin_names"] == [PLUGIN]
-    assert load_client_capabilities("session-1", PLUGIN) == {"supported_tools": ["read_presentation_context"]}
-    assert load_client_capabilities("session-1", "another-plugin") is None
+    assert load_client_capabilities("session-1") == {"supported_tools": ["read_presentation_context"]}
     assert [(m["metadata"]["ws_id"], m["payload"]["event_type"]) for m in pushed] == [
         ("ws-1", "client.attachments_changed")]
     connection, = get_attachment_directory().connections()
-    assert (connection.session_id, connection.display_name, connection.plugin_id) == (
-        "session-1", "Roadmap.pptx", PLUGIN)
+    assert (connection.session_id, connection.display_name, connection.client_app) == (
+        "session-1", "Roadmap.pptx", CLIENT_APP)
 
-    answer(request(session="session-2", socket="ws-2", resource={**RESOURCE, "key": "other"}))
-    assert isolated["installed"] == [PLUGIN]
+
+def test_attach_installs_no_plugin_and_equips_nothing() -> None:
+    assert answer(request())["ok"] is True
+
+    assert session_metadata.get_session_equipment("session-1", cache_bust=True) == {}
+    assert "session_equipment" not in stored_metadata("session-1")
+    assert not packages.plugin_package_exists(CLIENT_APP)
 
 
 @pytest.mark.parametrize("request_", [
-    request(owner="user-2"), request(session="missing"), request(plugin_id="../x"),
-    request(plugin_id="not-registered"), request(plugin_id="powerpoint"),  # a directory name, not a plugin id
+    request(owner="user-2"), request(session="missing"),
     request(resource={**RESOURCE, "key": " "}), request(capabilities=["read_presentation_context"]),
     request(socket=""),
 ])
-def test_an_attach_that_does_not_fit_is_refused_before_anything_is_written(isolated, request_) -> None:
+def test_an_attach_that_does_not_fit_is_refused_before_anything_is_written(request_) -> None:
     refused = answer(request_)
     assert refused["ok"] is False and refused["payload"]["code"]
-    assert isolated["equipment"] == {} and isolated["installed"] == []
     assert get_attachment_directory().connections() == ()
-    assert not (isolated["sessions"] / "session-1" / "client_capabilities.json").exists()
-
-
-def test_a_failed_install_refuses_the_attach(monkeypatch, isolated) -> None:
-    def fail(_params) -> None:
-        raise OSError("disk full")
-
-    monkeypatch.setattr(packages, "install_plugin_package", fail)
-    refused = answer(request())
-    assert refused["payload"]["code"] == "PLUGIN_UNAVAILABLE" and isolated["equipment"] == {}
+    assert load_attached_resource("session-1") is None
 
 
 def test_attached_clients_name_each_other_s_current_conversation() -> None:
@@ -128,7 +120,6 @@ def test_a_renew_extends_the_lease_and_does_nothing_else() -> None:
 
 @pytest.mark.parametrize("renewing", [
     {"attachment_id": "att_unknown"},
-    {"socket": "ws-2"},  # the pane's socket reconnected, or another socket names the attachment
     {"session": "session-2"},
 ])
 def test_a_renew_of_no_such_attachment_makes_the_client_attach_again(renewing) -> None:
@@ -137,6 +128,19 @@ def test_a_renew_of_no_such_attachment_makes_the_client_attach_again(renewing) -
     refused = answer(renew(**{"attachment_id": attachment_id, **renewing}))
 
     assert refused["ok"] is False and refused["payload"]["code"] == "NOT_ATTACHED"
+
+
+def test_a_client_whose_resource_another_client_attached_is_told_so_until_it_attaches_again() -> None:
+    attachment_id = answer(request())["payload"]["attachment_id"]
+    assert answer(request(socket="ws-2"))["ok"] is True  # a copy of the file, open in another window
+
+    assert answer(renew(attachment_id))["payload"]["code"] == "DISPLACED"
+    assert answer(renew(attachment_id, socket="ws-2"))["ok"] is True
+    # The first window's user continues there: the other one is now displaced.
+    assert answer(request())["ok"] is True
+    assert answer(renew(attachment_id, socket="ws-2"))["payload"]["code"] == "DISPLACED"
+    get_attachment_directory().expire(directory.clock.advance(LEASE_SECONDS))
+    assert answer(renew(attachment_id, socket="ws-2"))["payload"]["code"] == "NOT_ATTACHED"
 
 
 def test_after_the_server_forgot_its_attachments_a_renew_is_refused_and_an_attach_works_again() -> None:
@@ -159,6 +163,34 @@ def test_conversation_messages_are_owner_checked(monkeypatch) -> None:
     assert refused["payload"]["code"] == "NOT_FOUND_OR_FORBIDDEN"
 
 
+@pytest.mark.parametrize("newest", ["session-1", "session-2"])
+def test_a_resource_s_conversations_are_the_owner_s_of_its_app_latest_first(newest) -> None:
+    # Either order of last messages differs from the directory scan order in one case.
+    older = {"session-1": "session-2", "session-2": "session-1"}[newest]
+    titles = {"session-1": "Outline", "session-2": "Q3 plan"}
+    for session_id, last_message_at in [(newest, 300.0), (older, 200.0)]:
+        (attach.get_agent_sessions_dir() / session_id / "metadata.json").write_text(json.dumps(
+            {**new_conversation(session_id, "user-1"), "last_message_at": last_message_at,
+             "title": titles[session_id]}))
+    answer(request())
+    answer(request(session="session-2"))
+    answer(request(session="foreign", owner="user-2"))
+    created_for("session-3", OTHER_APP)  # the same key, attached in another app
+    answer(request(session="session-3", socket="ws-3", capabilities={"supported_tools": ["read_deck"]}))
+
+    listed = answer(request(ReqMethod.CLIENT_CONVERSATIONS, client_app=CLIENT_APP, resource_key=" office-deck "))
+    assert listed["payload"] == {"conversations": [
+        {"session_id": newest, "title": titles[newest], "last_message_at": 300.0},
+        {"session_id": older, "title": titles[older], "last_message_at": 200.0}]}
+    others = answer(request(ReqMethod.CLIENT_CONVERSATIONS, client_app=OTHER_APP, resource_key="office-deck"))
+    assert [c["session_id"] for c in others["payload"]["conversations"]] == ["session-3"]
+    assert answer(request(ReqMethod.CLIENT_CONVERSATIONS, client_app=CLIENT_APP, resource_key="new-deck"))[
+        "payload"] == {"conversations": []}
+    assert answer(request(ReqMethod.CLIENT_CONVERSATIONS, client_app="not-registered", resource_key="office-deck"))[
+        "payload"]["code"] == "APP_UNAVAILABLE"
+    assert answer(request(ReqMethod.CLIENT_CONVERSATIONS, client_app=CLIENT_APP))["payload"]["code"] == "BAD_REQUEST"
+
+
 def test_list_and_messages_read_the_conversation_off_the_event_loop(monkeypatch) -> None:
     threads: list[str] = []
     real_to_thread = asyncio.to_thread
@@ -169,38 +201,23 @@ def test_list_and_messages_read_the_conversation_off_the_event_loop(monkeypatch)
 
     monkeypatch.setattr(attach.asyncio, "to_thread", to_thread)
     answer(request(ReqMethod.CLIENT_LIST, session_id="session-1"))
+    answer(request(ReqMethod.CLIENT_CONVERSATIONS, client_app=CLIENT_APP, resource_key="office-deck"))
 
-    assert threads == ["_owned_session"]
+    assert threads == ["_owned_session", "_conversations"]
 
 
 # --- one resource, one conversation ---------------------------------------------------
 
 
-def test_a_conversation_of_another_application_s_client_is_refused(isolated) -> None:
-    isolated["equipment"]["session-1"] = {"plugin_names": ["some-skill-pack", OTHER_PLUGIN]}
+@pytest.mark.parametrize("client_app", ["", "retired-app"])  # a web conversation, one of an app no longer shipped
+def test_a_conversation_not_created_by_a_client_app_is_refused(client_app) -> None:
+    created_for("session-1", client_app)
 
     refused = answer(request())
 
     assert refused["ok"] is False and refused["payload"]["code"] == "CONFLICT"
-    assert isolated["installed"] == [] and get_attachment_directory().connections() == ()
-    assert isolated["equipment"]["session-1"]["plugin_names"] == ["some-skill-pack", OTHER_PLUGIN]
-
-
-def test_a_conversation_last_attached_by_another_application_is_refused() -> None:
-    attach.save_client_capabilities("session-1", OTHER_PLUGIN, {"supported_tools": []},
-                                    attachment_id="att_wps", resource=RESOURCE)
-
-    assert answer(request())["payload"]["code"] == "CONFLICT"
-    assert load_client_capabilities("session-1", OTHER_PLUGIN) == {"supported_tools": []}
-
-
-def test_equipping_never_stacks_a_second_app_plugin(isolated) -> None:
-    isolated["equipment"]["session-1"] = {"plugin_names": [OTHER_PLUGIN]}
-
-    with pytest.raises(ClientAttachError):
-        plugins.equip("session-1", PLUGIN, None)
-    plugins.equip("session-1", OTHER_PLUGIN, None)
-    assert isolated["equipment"]["session-1"]["plugin_names"] == [OTHER_PLUGIN]
+    assert get_attachment_directory().connections() == ()
+    assert load_attached_resource("session-1") is None
 
 
 def test_a_conversation_attached_to_another_resource_is_refused() -> None:
@@ -245,152 +262,32 @@ def test_a_refused_attach_keeps_the_socket_s_earlier_attachment(monkeypatch) -> 
     ({"supported_tools": ["read_deck"]}, "read_deck"),  # the other app's tool
     ({"supported_tools": "read_presentation_context"}, "supported_tools"),
 ])
-def test_a_client_declaring_tools_its_app_lacks_is_refused(isolated, capabilities, named) -> None:
+def test_a_client_declaring_tools_its_app_lacks_is_refused(capabilities, named) -> None:
     refused = answer(request(capabilities=capabilities))
 
     assert refused["payload"]["code"] == "INVALID_ARGUMENT" and named in refused["payload"]["error"]
-    assert isolated["installed"] == [] and get_attachment_directory().connections() == ()
+    assert get_attachment_directory().connections() == ()
 
 
-def test_apps_of_every_shipped_package_can_attach(isolated, monkeypatch) -> None:
-    more = isolated["importable"] / "docapps" / "more"
-    write_app(more, "sheets", "office-sheets", ["read_sheet"])
-    monkeypatch.setattr(registry, "APP_PACKAGES", ("docapps/apps", "docapps/more"))
+def test_a_conversation_attaches_with_the_tools_of_the_app_it_was_created_for() -> None:
+    created_for("session-2", OTHER_APP)
 
-    assert answer(request(plugin_id="office-sheets", capabilities={"supported_tools": ["read_sheet"]}))["ok"] is True
-    assert answer(request(session="session-2", socket="ws-2", resource={**RESOURCE, "key": "b"}))["ok"] is True
-
-
-def test_no_shipped_package_lets_no_client_attach(monkeypatch) -> None:
-    monkeypatch.setattr(registry, "APP_PACKAGES", ())
-
-    assert answer(request())["payload"]["code"] == "PLUGIN_UNAVAILABLE"
+    assert answer(request(session="session-2"))["payload"]["code"] == "INVALID_ARGUMENT"
+    attached = answer(request(session="session-2", capabilities={"supported_tools": ["read_deck"]}))
+    assert attached["payload"]["client_app"] == OTHER_APP
 
 
-def test_a_shipped_package_must_mark_the_copy_an_attach_installs_as_jiuwenswarm_s(isolated, monkeypatch) -> None:
-    # Unmarked, the copy the first attach installs would read as a user's own plugin and refuse every later attach.
-    package = write_app(isolated["importable"] / "docapps" / "unmarked", "sheets", "office-sheets", ["read_sheet"])
-    (package / "manifest.json").write_text(json.dumps({"id": "office-sheets"}))
-    monkeypatch.setattr(registry, "APP_PACKAGES", ("docapps/unmarked",))
+def test_every_app_jiuwenswarm_ships_has_its_contract_and_template(monkeypatch) -> None:
+    from openjiuwen.harness.resources.extension_loader import (
+        find_agent_template_manifest,
+        load_agent_template_package,
+    )
 
-    with pytest.raises(RuntimeError, match="managed_by"):
-        registry.app_plugins()
+    monkeypatch.setattr(registry, "APPS", _SHIPPED_APPS)
+    registry.client_apps.cache_clear()
 
-
-def test_every_package_jiuwenswarm_ships_marks_its_installed_copy(monkeypatch) -> None:
-    monkeypatch.setattr(registry, "APP_PACKAGES", _SHIPPED_APP_PACKAGES)
-
-    registry.app_plugins()
-
-
-# --- the app plugin JiuwenSwarm ships -----------------------------------------------------
-
-
-def _installed_copy(isolated, tmp_path, monkeypatch, manifest: dict, files: dict[str, str]):
-    copy = tmp_path / "workspace" / "plugins" / "local" / PLUGIN
-    copy.mkdir(parents=True)
-    (copy / "manifest.json").write_text(json.dumps(manifest))
-    for name, text in files.items():
-        (copy / name).write_text(text)
-    isolated["installed"].append(PLUGIN)
-    monkeypatch.setattr(packages, "resolve_plugin_dir", lambda pid: copy)
-    return copy
-
-
-def test_an_earlier_release_s_copy_is_refreshed_in_place_and_stays_installed(isolated, tmp_path, monkeypatch) -> None:
-    (isolated["shipped"] / "rails.json").write_text('{"rails": ["new"]}')
-    copy = _installed_copy(isolated, tmp_path, monkeypatch, {"metadata": {"managed_by": "client_attachments"}},
-                           {"rails.json": '{"rails": ["old"]}', "dropped.txt": "gone in this release"})
-
-    def no_reimport(_params) -> None:
-        raise AssertionError("a plugin other conversations may be loading is never imported again")
-
-    monkeypatch.setattr(packages, "import_plugin_package", no_reimport)
-    held = (copy / "rails.json").open()  # a turn of another conversation reading the old copy
-
-    assert answer(request())["ok"] is True
-
-    assert held.read() == '{"rails": ["old"]}'
-    held.close()
-    assert (copy / "rails.json").read_text() == '{"rails": ["new"]}' and not (copy / "dropped.txt").exists()
-    assert isolated["installed"] == [PLUGIN]
-    assert [p.name for p in copy.parent.iterdir()] == [PLUGIN]  # no staging left behind
-
-
-def test_an_unchanged_copy_is_not_read_again_on_the_next_attach(isolated, tmp_path, monkeypatch) -> None:
-    copy = _installed_copy(isolated, tmp_path, monkeypatch, {}, {})
-    for source in isolated["shipped"].iterdir():
-        (copy / source.name).write_bytes(source.read_bytes())
-    assert answer(request())["ok"] is True
-    reads: list[str] = []
-    read_bytes = type(copy).read_bytes
-    monkeypatch.setattr(type(copy), "read_bytes", lambda self: reads.append(self.name) or read_bytes(self))
-
-    assert answer(request(session="session-2", socket="ws-2", resource={**RESOURCE, "key": "b"}))["ok"] is True
-    assert reads == []
-
-
-def test_a_users_own_plugin_with_the_same_id_is_left_alone_and_the_attach_refused(
-        isolated, tmp_path, monkeypatch) -> None:
-    copy = _installed_copy(isolated, tmp_path, monkeypatch, {"id": PLUGIN}, {"mine.txt": "my own plugin"})
-
-    refused = answer(request())
-
-    assert refused["payload"]["code"] == "PLUGIN_UNAVAILABLE"
-    assert (copy / "mine.txt").read_text() == "my own plugin"
-    assert get_attachment_directory().connections() == () and isolated["equipment"] == {}
-
-
-def test_an_installed_plugin_that_cannot_be_read_refuses_the_attach_with_the_reason(isolated, monkeypatch) -> None:
-    isolated["installed"].append(PLUGIN)
-
-    def conflict(pid):
-        raise ValueError(f"plugin package conflict: {pid} exists in both local and built_in")
-
-    def no_reimport(_params) -> None:
-        raise AssertionError("an installed plugin is never imported over")
-
-    monkeypatch.setattr(packages, "resolve_plugin_dir", conflict)
-    monkeypatch.setattr(packages, "import_plugin_package", no_reimport)
-
-    refused = answer(request())
-
-    assert refused["payload"]["code"] == "PLUGIN_UNAVAILABLE"
-    assert "exists in both local and built_in" in json.dumps(refused["payload"])
-    assert get_attachment_directory().connections() == () and isolated["equipment"] == {}
-
-
-def test_a_copy_windows_holds_open_stays_in_use_and_the_attach_goes_on(isolated, tmp_path, monkeypatch) -> None:
-    (isolated["shipped"] / "rails.json").write_text('{"rails": ["new"]}')
-    copy = _installed_copy(isolated, tmp_path, monkeypatch, {"metadata": {"managed_by": "client_attachments"}},
-                           {"rails.json": '{"rails": ["old"]}'})
-    real_replace = plugins.os.replace
-
-    def locked(source, target):
-        if str(source) == str(copy):
-            raise PermissionError(32, "The process cannot access the file because it is being used")
-        return real_replace(source, target)
-
-    monkeypatch.setattr(plugins.os, "replace", locked)
-
-    assert answer(request())["ok"] is True
-    assert (copy / "rails.json").read_text() == '{"rails": ["old"]}'  # refreshed by a later attach
-    assert [p.name for p in copy.parent.iterdir()] == [PLUGIN]
-
-
-def test_a_copy_that_cannot_be_put_back_is_kept_rather_than_deleted(isolated, tmp_path, monkeypatch) -> None:
-    (isolated["shipped"] / "rails.json").write_text('{"rails": ["new"]}')
-    copy = _installed_copy(isolated, tmp_path, monkeypatch, {"metadata": {"managed_by": "client_attachments"}},
-                           {"rails.json": '{"rails": ["old"]}'})
-    real_replace = plugins.os.replace
-
-    def nothing_lands_on_the_copy(source, target):
-        if str(target) == str(copy):
-            raise PermissionError(32, "The process cannot access the file because it is being used")
-        return real_replace(source, target)
-
-    monkeypatch.setattr(plugins.os, "replace", nothing_lands_on_the_copy)
-    answer(request())
-
-    kept = [path for path in copy.parent.rglob("rails.json") if path.read_text() == '{"rails": ["old"]}']
-    assert kept, "the installed copy was deleted"
+    apps = registry.client_apps()
+    assert apps and all(app.tool_names for app in apps.values())
+    for app in apps.values():
+        template = load_agent_template_package(find_agent_template_manifest(app.package_dir))
+        assert template.prompt_sections and template.rails and template.skills

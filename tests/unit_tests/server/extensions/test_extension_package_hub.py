@@ -639,7 +639,7 @@ async def test_mine_list_is_local_only_and_does_not_wait_for_hub(
         ("plugin", "plugin_packages", catalog.show_plugin_package_with_hub),
     ],
 )
-async def test_remote_show_reads_package_capabilities_from_zip(
+async def test_remote_show_returns_metadata_without_downloading(
     extension_workspace: Path,
     kind: str,
     collection: str,
@@ -655,20 +655,113 @@ async def test_remote_show_reads_package_capabilities_from_zip(
     assert card["packageName"] == "sales-pack"
     assert card["source"] == "hub"
     assert card["installed"] is False
-    assert card["skills"][0]["id"] == "health-planning"
-    assert card["skills"][0]["displayName"]["zh"] == "健康生活规划"
-    assert card["tools"][0]["id"] == "HealthProfileTool"
-    assert card["quickInputs"] == [{"zh": "帮我规划饮食", "en": "Plan my diet"}]
-    if kind == "agent_template":
-        assert card["details"] == "包内专家说明"
-    else:
-        assert card["details"] == "包内 README\n"
-    assert downloader.calls == 1
-    assert hub.artifact_calls == 1
+    # A detail page renders from Hub metadata; the package stays untouched until the
+    # files tab or installation asks for it.
+    assert card["details"] == "完整的远端专家详情"
+    assert card["skills"] == []
+    assert card["tools"] == []
+    assert card["quickInputs"] == []
+    assert downloader.calls == 0
+    assert hub.artifact_calls == 0
     assert await catalog.list_agent_templates() == []
     assert not (
         extension_workspace / "plugins" / collection / "hub_preview"
     ).exists()
+
+
+@pytest.mark.asyncio
+async def test_remote_show_renders_capabilities_from_package_profile(
+    extension_workspace: Path,
+) -> None:
+    class ProfileHub(FakeHubAssetPort):
+        async def query_asset(self, request):
+            detail = await super().query_asset(request)
+            return replace(
+                detail,
+                package_profile={
+                    "capabilities": [
+                        {
+                            "kind": "skill",
+                            "id": "health-planning",
+                            "name": "健康生活规划",
+                            "description": "规划饮食与运动",
+                        },
+                        {
+                            "kind": "tool",
+                            "id": "HealthProfileTool",
+                            "name": "健康档案",
+                            "description": "记录健康数据",
+                        },
+                        {"kind": "unknown", "id": "ignored"},
+                    ],
+                    "quick_inputs": ["帮我规划饮食"],
+                    "persona_markdown": "你是一名健康顾问",
+                },
+            )
+
+    hub = ProfileHub(_item("asset-uuid", "agent_template", package_name="sales-pack"))
+    downloader = FakeDownloader()
+
+    card = await catalog.show_agent_template_with_hub(
+        "asset-uuid", hub_port=hub, downloader=downloader
+    )
+
+    assert downloader.calls == 0
+    assert [item["id"] for item in card["skills"]] == ["health-planning"]
+    assert card["skills"][0]["displayName"]["zh"] == "健康生活规划"
+    assert [item["id"] for item in card["tools"]] == ["HealthProfileTool"]
+    assert card["quickInputs"] == ["帮我规划饮食"]
+    assert card["persona"] == "你是一名健康顾问"
+
+
+@pytest.mark.asyncio
+async def test_remote_show_falls_back_to_readme_without_description(
+    extension_workspace: Path,
+) -> None:
+    class BareHub(FakeHubAssetPort):
+        def __init__(self, item, readme: str) -> None:
+            super().__init__(item)
+            self.readme = readme
+
+        async def query_asset(self, request):
+            detail = await super().query_asset(request)
+            return replace(detail, short_description="", detail_description="")
+
+        async def read_public_readme(self, asset_id, version):
+            return self.readme
+
+    hub = BareHub(
+        _item("asset-uuid", "agent_template", package_name="sales-pack"),
+        "# 包内说明\n\n来自 README 的正文",
+    )
+    downloader = FakeDownloader()
+
+    card = await catalog.show_agent_template_with_hub(
+        "asset-uuid", hub_port=hub, downloader=downloader
+    )
+
+    assert card["details"].startswith("# 包内说明")
+    assert downloader.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_remote_show_keeps_empty_details_when_readme_is_missing(
+    extension_workspace: Path,
+) -> None:
+    class BareHub(FakeHubAssetPort):
+        async def query_asset(self, request):
+            detail = await super().query_asset(request)
+            return replace(detail, short_description="", detail_description="")
+
+        async def read_public_readme(self, asset_id, version):
+            return ""
+
+    hub = BareHub(_item("asset-uuid", "plugin", package_name="sales-pack"))
+    card = await catalog.show_plugin_package_with_hub(
+        "asset-uuid", hub_port=hub, downloader=FakeDownloader()
+    )
+
+    assert card["details"] == ""
 
 
 @pytest.mark.asyncio
@@ -691,7 +784,7 @@ async def test_remote_show_keeps_empty_avatar_when_hub_icon_missing(
 
     assert card is not None
     assert card["avatar"] == ""
-    assert downloader.calls == 1
+    assert downloader.calls == 0
     assert await catalog.list_agent_templates() == []
 
 
@@ -1214,32 +1307,78 @@ async def test_hub_asset_uuid_remains_external_while_package_name_drives_runtime
     ]
 
 @pytest.mark.asyncio
-async def test_hub_install_replaces_built_in_copy_whose_shelf_package_was_removed(
+@pytest.mark.parametrize("shelf_available", [False, True])
+@pytest.mark.parametrize("failure_stage", [None, "resolve", "download", "validation"])
+async def test_hub_install_preserves_built_in_copy_when_aliasing(
     extension_workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shelf_available: bool,
+    failure_stage: str | None,
 ) -> None:
+    """A same-named Hub install must not delete an existing built_in copy."""
+    if shelf_available:
+        # A discoverable shelf without this package is still not permission to delete it.
+        shelf = tmp_path / "resources" / "agent_templates"
+        shelf.mkdir(parents=True)
+        monkeypatch.setattr(
+            catalog, "get_equipment_resources_agent_templates_dir", lambda: shelf
+        )
+
     asset_id = "8c5a4c8a1bf0484a8027af89e12d13d4"
-    hub = FakeHubAssetPort(
-        _item(asset_id, "agent_template", package_name="sales-expert")
-    )
+    hub = FakeHubAssetPort(_item(asset_id, "agent_template", package_name="sales-expert"))
     root = extension_workspace / "plugins" / "agent_templates"
-    orphan = root / "built_in" / "sales-expert"
-    orphan.mkdir(parents=True)
-    (orphan / "manifest.json").write_text(
+    existing = root / "built_in" / "sales-expert"
+    existing.mkdir(parents=True)
+    manifest = existing / "manifest.json"
+    manifest.write_text(
         json.dumps({"package_type": "agent_template", "name": "sales-expert"}),
         encoding="utf-8",
     )
+    sentinel = existing / "user-note.txt"
+    sentinel.write_text("Keep the existing package", encoding="utf-8")
+    original_manifest = manifest.read_bytes()
+    catalog.upsert_agent_template_marketplace_entry("sales-expert", installed=True, source="builtin")
+    original_entries = catalog.read_agent_template_marketplace_entries()
+    downloader = FakeDownloader()
 
-    ok, payload = await catalog.install_equipment_from_hub_gated(
-        "agent_templates",
-        {"id": asset_id},
-        hub_port=hub,
-        downloader=FakeDownloader(),
-    )
+    if failure_stage == "resolve":
+        async def fail_resolve(_request: object) -> HubResolvedDownload:
+            raise OSError("resolve failed")
 
-    assert (ok, payload) == (True, {})
-    assert not orphan.exists()
-    assert (root / "local" / "sales-expert").is_dir()
-    assert catalog.is_agent_template_installed("sales-expert") is True
+        monkeypatch.setattr(hub, "resolve_download", fail_resolve)
+    elif failure_stage == "download":
+        async def fail_download(_artifact: HubResolvedDownload, _destination: Path) -> None:
+            raise OSError("download failed")
+
+        monkeypatch.setattr(downloader, "download_and_extract", fail_download)
+    elif failure_stage == "validation":
+        downloader = WrongIdDownloader()
+
+    if failure_stage is None:
+        ok, payload = await catalog.install_equipment_from_hub_gated(
+            "agent_templates", {"id": asset_id}, hub_port=hub, downloader=downloader
+        )
+        assert (ok, payload) == (True, {})
+        assert (root / "local" / "sales-expert-2").is_dir()
+        assert catalog.is_agent_template_installed("sales-expert-2") is True
+        record = HubInstallStateStore(root).get(asset_id)
+        assert record is not None and record.package_id == "sales-expert-2"
+    else:
+        message = "package id mismatch" if failure_stage == "validation" else f"{failure_stage} failed"
+        with pytest.raises((OSError, ValueError), match=message):
+            await catalog.install_equipment_from_hub_gated(
+                "agent_templates", {"id": asset_id}, hub_port=hub, downloader=downloader
+            )
+        assert not (root / "local" / "sales-expert-2").exists()
+        assert HubInstallStateStore(root).get(asset_id) is None
+
+    # Read both disk and marketplace state independently of the install result.
+    assert manifest.read_bytes() == original_manifest
+    assert sentinel.read_text(encoding="utf-8") == "Keep the existing package"
+    entries = catalog.read_agent_template_marketplace_entries()
+    assert [entry for entry in entries if entry["id"] == "sales-expert"] == original_entries
+    assert not (root / "local" / "sales-expert").exists()
 
 
 @pytest.mark.asyncio
@@ -1444,3 +1583,29 @@ async def test_personal_install_still_downloads_connector_dependent_expert(
     else:
         assert (ok, payload) == (True, {})
     assert downloader.calls == 1
+@pytest.mark.asyncio
+async def test_read_public_readme_prefers_package_root() -> None:
+    class Transport:
+        def __init__(self) -> None:
+            self.requests: list[dict | None] = []
+
+        async def get_data(self, path, *, params=None):
+            self.requests.append(params)
+            if params is None:
+                return {
+                    "files": [
+                        {"path": "docs/README.md"},
+                        {"path": "README.md"},
+                        {"path": "skills/demo/README.md"},
+                    ]
+                }
+            return {"content": f"content:{params['with_content']}"}
+
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
+
+    transport = Transport()
+    client = HubClient(transport=transport)
+    text = await client.read_public_readme("asset-1", "1.0.0")
+
+    # Nested READMEs describe sub-assets; the package-root file wins.
+    assert text == "content:README.md"

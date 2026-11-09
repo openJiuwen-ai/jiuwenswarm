@@ -44,6 +44,10 @@ _MAX_NAME_LENGTH = 128
 class SkillPackValidationError(ValueError):
     """The root document does not satisfy the SDD-0010 contract."""
 
+    def __init__(self, message: str, *, code: str = "SKILLPACK_VALIDATION_FAILED") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class SkillPackOperationUnsupportedError(ValueError):
     """An operation is not supported for SkillPacks."""
@@ -246,8 +250,47 @@ def compute_skillpack_status(
 
     summaries: list[dict[str, Any]] = []
     blocked: list[dict[str, str]] = []
+    locked_members: dict[str, Any] = {}
+    pack_provenance = None
+    lock_path = skills_dir / definition.name / "skillpack.lock.json"
+    if lock_path.exists():
+        from jiuwenswarm.server.runtime.skill.archive_store import compute_content_checksum
+        from jiuwenswarm.server.runtime.skill.skillpack_install import read_hub_provenance
+        from jiuwenswarm.server.runtime.skill.skillpack_lock import load_skillpack_lock
+
+        pack_dir = skills_dir / definition.name
+        pack_provenance = read_hub_provenance(pack_dir)
+        try:
+            lock = load_skillpack_lock(pack_dir)
+            locked_members = {member.name: member for member in lock.members}
+            if (
+                not pack_provenance
+                or pack_provenance.get("version") != lock.version
+                or pack_provenance.get("content_sha256") != compute_content_checksum(pack_dir)
+            ):
+                blocked.append({"name": definition.name, "reason": "invalid"})
+        except SkillPackValidationError:
+            blocked.append({"name": definition.name, "reason": "invalid"})
     for member in definition.members:
         summary = _inspect_member(skills_dir, member, enabled_for)
+        if member in locked_members:
+            locked = locked_members[member]
+            member_dir = skills_dir / member
+            provenance = read_hub_provenance(member_dir)
+            summary.update(version=locked.version, asset_id=locked.asset_id, source="teamskillshub")
+            if not summary.get("blocking_reason"):
+                if not provenance or not pack_provenance:
+                    summary.update(enabled=False, available=False, blocking_reason="invalid")
+                else:
+                    expected = {
+                        "hub_url": pack_provenance.get("hub_url"),
+                        "asset_id": locked.asset_id,
+                        "version": locked.version,
+                        "artifact_sha256": locked.artifact_sha256,
+                    }
+                    identity_changed = any(provenance.get(key) != value for key, value in expected.items())
+                    if identity_changed or provenance.get("content_sha256") != compute_content_checksum(member_dir):
+                        summary.update(enabled=False, available=False, blocking_reason="invalid")
         if summary.get("blocking_reason") == "missing":
             summary["restorable"] = (
                 skills_dir / definition.name / MEMBER_BACKUP_DIRNAME / member
@@ -790,6 +833,8 @@ def _inspect_member(
     member: str,
     enabled_for: Callable[[str], bool],
 ) -> dict[str, Any]:
+    from jiuwenswarm.server.runtime.skill.skill_type import resolve_skillpack_member_type
+
     member_dir = skills_dir / member
     if not member_dir.is_dir():
         return {
@@ -810,6 +855,8 @@ def _inspect_member(
         )
         kind = str(frontmatter.get("kind") or "").strip().casefold()
         if not name or not description or kind not in {"", "skill"}:
+            raise SkillPackValidationError("member is not an ordinary Skill")
+        if resolve_skillpack_member_type(member_dir) != "skill":
             raise SkillPackValidationError("member is not an ordinary Skill")
         _validate_skill_id(name, "member name")
     except SkillPackValidationError:

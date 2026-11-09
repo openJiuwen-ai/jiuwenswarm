@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.routing.keys import AgentRef, RoutingKey, make_delivery_target
-from gateway.routing.session_sharing import SessionSharingRegistry, SubRole
+from agent_gateway.routing.keys import AgentRef, RoutingKey, make_delivery_target
+from agent_gateway.routing.session_sharing import SessionSharingRegistry, SubRole
 
 
 def _rk(channel_id: str, user_id: str, session_id: str) -> RoutingKey:

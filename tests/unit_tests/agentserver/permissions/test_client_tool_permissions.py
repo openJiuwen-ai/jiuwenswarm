@@ -18,13 +18,13 @@ from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.foundation.tool import ClientTool, ToolCard
 from openjiuwen.core.single_agent.interrupt import InterruptKind
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, pending_interrupts
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 
 from jiuwenswarm.agents.harness import agent_observability
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import SessionRunAdmission
 from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers
 from jiuwenswarm.common import config, utils
 from jiuwenswarm.common.schema.agent import AgentRequest
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.server.runtime.agent_adapter import interface, interface_deep
@@ -103,7 +103,7 @@ def _approval(h) -> dict:
     answer = {"selected_options": ["allow_once"]}
     cards = h.adapter._root_permission_queue.snapshot_scope(root_session_id=h.adapter._parent_session_id)
     if cards:
-        answer["card_id"] = cards[0].invocation_id
+        answer["card_id"] = cards[0].tool_call_id
     return {"source": "permission_interrupt", "request_id": interrupt.tool_call_id,
             "interrupt_id": interrupt.interrupt_id, "answers": [answer]}
 

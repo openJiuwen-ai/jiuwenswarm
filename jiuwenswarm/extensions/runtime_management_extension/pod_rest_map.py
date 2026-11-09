@@ -408,11 +408,11 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
 
 def _attach_package_allowlist_header(headers: dict[str, str]) -> None:
     """企业版写入刚绑定的名单。未绑定时按空名单发送。"""
-    from gateway.enterprise.edition import is_enterprise
+    from agent_gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return
-    from gateway.enterprise.capabilities.experts.allowlist import (
+    from agent_gateway.enterprise.capabilities.experts.allowlist import (
         attach_package_allowlist_header,
     )
 
@@ -461,11 +461,11 @@ def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
 
 def _enterprise_pod_route(method: str) -> tuple[str, str] | None:
     """企业版从 Gateway 企业平面取专家包专用网址。个人版不加载该模块。"""
-    from gateway.enterprise.edition import is_enterprise
+    from agent_gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return None
-    from gateway.enterprise.capabilities.experts.http_routes import pod_http_routes
+    from agent_gateway.enterprise.capabilities.experts.http_routes import pod_http_routes
 
     return pod_http_routes().get(method)
 

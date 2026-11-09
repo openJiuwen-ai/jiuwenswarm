@@ -17,8 +17,8 @@ import time
 
 import pytest
 
-from gateway.channel_manager.web.web_connect import WebChannel
-from gateway.routing.keys import AgentRef, RoutingKey
+from agent_gateway.channel_manager.web.web_connect import WebChannel
+from agent_gateway.routing.keys import AgentRef, RoutingKey
 from openjiuwen_protocol.message import EventType, Message
 
 SESSION_ID = "sess-synth"
@@ -31,7 +31,7 @@ class _FakeWs:
 
 
 def _make_channel() -> WebChannel:
-    from gateway.channel_manager.web.web_delivery_registry import WebDeliveryRegistry
+    from agent_gateway.channel_manager.web.web_delivery_registry import WebDeliveryRegistry
 
     channel = object.__new__(WebChannel)
     channel._session_busy = {}

@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -1389,6 +1390,8 @@ async def analyze_creative_brief(
     }
 
     duration_sec = int(film_duration_sec or 0)
+    started_at = time.monotonic()
+    attempt = 1
     try:
 
         story_enrichment_rule = (
@@ -1569,6 +1572,7 @@ async def analyze_creative_brief(
         if isinstance(first, dict) and first.get("source") == "llm":
             return first
         remaining = max(8.0, float(timeout_sec) * 0.4)
+        attempt = 2
         second = await asyncio.wait_for(_call(reinforce_json=True), timeout=remaining)
         if isinstance(second, dict) and second.get("source") == "llm":
             return second
@@ -1579,9 +1583,20 @@ async def analyze_creative_brief(
     except DesignerLlmError:
         raise
     except asyncio.TimeoutError as exc:
-        logger.info("LLM script analysis timed out after %.1fs", timeout_sec)
+        elapsed = time.monotonic() - started_at
+        logger.info(
+            "LLM script analysis timed out after %.1fs (attempt %d, budget %.0fs)",
+            elapsed,
+            attempt,
+            timeout_sec,
+        )
+        detail = (
+            "the first reply was not usable JSON and the retry did not finish in time"
+            if attempt > 1
+            else "no reply arrived in time"
+        )
         raise DesignerLlmError(
-            f"Chat model timed out after {timeout_sec:.0f}s during script analysis.",
+            f"Chat model timed out after {elapsed:.0f}s during script analysis ({detail}).",
             code=LLM_API_ERROR,
         ) from exc
     except Exception as exc:  # noqa: BLE001

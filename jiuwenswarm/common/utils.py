@@ -2714,6 +2714,32 @@ def _mask_named_sensitive_kv(text: str) -> str:
     return "".join(chunks)
 
 
+def _has_possible_json_container_prefix(text: str, start: int) -> bool:
+    """Reject SDK/Python repr prefixes without constructing JSONDecodeError.
+
+    Failed decoding computes line/column information over the entire prefix,
+    which is expensive for many fragments in a large log. Only reject starts
+    that cannot be JSON; let the decoder validate everything else. Bound the
+    nested-container lookahead so deeply nested input stays the decoder's job.
+    """
+    position = start
+    for _ in range(64):
+        container = text[position]
+        position += 1
+        while position < len(text) and text[position] in " \t\r\n":
+            position += 1
+        if position == len(text):
+            return False
+        token = text[position]
+        if container == "{":
+            return token in '"}'
+        if token in "[{":
+            continue
+        # JSONDecoder also accepts the nonstandard NaN/Infinity constants.
+        return token in '"]-0123456789tfnNI'
+    return True
+
+
 def _sanitize_log_text(text: str) -> str:
     """Redact JSON by value, preserving numbers and valid serialization.
 
@@ -2736,6 +2762,8 @@ def _sanitize_log_text(text: str) -> str:
         start = match.start()
         search_from = start + 1
         candidates += 1
+        if not _has_possible_json_container_prefix(text, start):
+            continue
         try:
             value, end = decoder.raw_decode(text, start)
         except (ValueError, RecursionError):
@@ -2976,6 +3004,9 @@ def install_source_record_masking() -> None:
     _source_record_masking_installed = True
 
 
+_RECORD_BYTE_LIMIT = 64 * 1024
+
+
 def _sanitize_record_text(text: str) -> str:
     """Bound regex/JSON work per log record without truncating a credential.
 
@@ -2984,14 +3015,18 @@ def _sanitize_record_text(text: str) -> str:
     a partial credential at a truncation boundary. Public mask_sensitive keeps
     its full-text behavior.
     """
-    if len(text) > 64 * 1024:
+    # Short-circuit on characters to avoid encoding unbounded input.
+    if len(text) > _RECORD_BYTE_LIMIT or (
+        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
+    ):
         if text.lstrip().startswith(("{", "[")):
             return json.dumps({
                 "log_payload_omitted": True,
                 "original_characters": len(text),
-                "character_limit": 64 * 1024,
+                "character_limit": _RECORD_BYTE_LIMIT,  # Retain the previous summary field.
+                "byte_limit": _RECORD_BYTE_LIMIT,
             }, separators=(",", ":"))
-        return f"[log payload omitted: {len(text)} characters exceeds 65536 character limit]"
+        return f"[log payload omitted: exceeds {_RECORD_BYTE_LIMIT} UTF-8 bytes]"
     return _sanitize_log_text(text)
 
 
@@ -3047,14 +3082,14 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         handler.close()
         root.removeHandler(handler)
 
-    # M0-c：gateway 升为顶层包后，其模块 logger（``gateway.*``）不再位于
-    # ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式把
-    # ``gateway`` logger 挂回 ``jiuwenswarm`` 树，保持 gateway.log / 控制台
-    # 路由不变（否则 gateway 日志全部丢失）。
-    gateway_logger = logging.getLogger("gateway")
-    gateway_logger.setLevel(logging.NOTSET)
-    gateway_logger.propagate = True
-    gateway_logger.parent = root
+    # gateway 已拆为独立包 agent_gateway，其模块 logger（``agent_gateway.*``）
+    # 不在 ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式挂回
+    # ``jiuwenswarm`` 树，保持 gateway.log / 控制台路由不变（否则日志全部丢失）。
+    for gateway_logger_name in ("gateway", "agent_gateway"):
+        gateway_logger = logging.getLogger(gateway_logger_name)
+        gateway_logger.setLevel(logging.NOTSET)
+        gateway_logger.propagate = True
+        gateway_logger.parent = root
 
     formatter = logging.Formatter(
         fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",

@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TrajectoryViewState } from './client/TrajectoryExplorer';
 import { trajectoryTranslator, type TrajectoryKey } from './client/i18n';
@@ -23,9 +24,11 @@ import {
 } from './teamTrajectoryWorkflowGroups';
 import {
   buildScheduledTeamLaneSections,
+  groupScheduledTaskRuns,
   scheduledMemberDisplayName,
   type ScheduledReviewerLane,
   type ScheduledReviewerTask,
+  type ScheduledTaskRun,
 } from './scheduledTrajectoryLanes';
 import type { TrajectorySubjectGroups } from './trajectorySubjects';
 import {
@@ -250,11 +253,28 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     ),
     [flatLanes, laneSections],
   );
+  const taskRuns = useMemo(
+    () => groupScheduledTaskRuns(
+      laneSections?.members ?? [],
+      laneSections?.tasks ?? [],
+    ),
+    [laneSections],
+  );
+  const standaloneMembers = useMemo(() => {
+    if (laneSections === null) return [];
+    const nested = new Set(
+      taskRuns.flatMap(run => (
+        run.member === undefined ? [] : [run.member.subjectId]
+      )),
+    );
+    return laneSections.members.filter(member => !nested.has(member.subjectId));
+  }, [laneSections, taskRuns]);
   // Swarmflow worker lanes collapse into one collapsible group per run,
-  // headed by the run's task name. Scheduled control sessions keep their own
-  // lane sections instead, so grouping only feeds the plain lanes branch.
+  // headed by the run's task name. In scheduled sessions only regular member
+  // lanes participate; reviewer lanes keep their Task -> Round hierarchy.
+  const workflowGroupingLanes = laneSections === null ? flatLanes : standaloneMembers;
   const { ungrouped, groups: workflowGroups } = groupTeamMemberLanesByWorkflowRun(
-    flatLanes,
+    workflowGroupingLanes,
     workflowRuns ?? [],
   );
   const translate = useMemo(() => trajectoryTranslator(messages), [messages]);
@@ -266,8 +286,9 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   const lanesRef = useRef<HTMLDivElement>(null);
   const laneRowsRef = useRef(new Map<string, HTMLDivElement>());
   const [pinToken, setPinToken] = useState(0);
-  const [collapsedTasks, setCollapsedTasks] = useState<ReadonlySet<string>>(() => new Set());
+  const [collapsedTaskRuns, setCollapsedTaskRuns] = useState<ReadonlySet<string>>(() => new Set());
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
+  const [collapsedReviews, setCollapsedReviews] = useState<ReadonlySet<string>>(() => new Set());
   const localViewState = useMemo<TrajectoryViewState>(() => ({
     actualDuration,
     actualTime,
@@ -342,59 +363,137 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     );
   };
 
-  const renderTask = (task: ScheduledReviewerTask) => {
-    const collapsed = collapsedTasks.has(task.taskId);
+  const renderReviewRounds = (task: ScheduledReviewerTask) => (
+    task.rounds.length === 0
+      ? (
+        <span className={css.taskReviewEmpty}>
+          {t('trajectory.team.schedule.noReviews')}
+        </span>
+      )
+      : task.rounds.map(round => (
+        <div className={css.roundSection} key={`${task.taskId}:r${round.round}`}>
+          <div className={css.roundHeader} data-testid="team-trajectory-review-round">
+            <span>R{round.round}</span>
+            <span>
+              {t('trajectory.team.schedule.reviewCount', { count: round.lanes.length })}
+            </span>
+          </div>
+          {round.lanes.map(renderLane)}
+        </div>
+      ))
+  );
+
+  const renderTaskReview = (task: ScheduledReviewerTask) => {
+    const collapsed = collapsedReviews.has(task.taskId);
     const taskPhase = task.phase === undefined
       ? null
       : t(`trajectory.team.schedule.phase.${task.phase}`);
-    const taskAssignee = task.assignee === undefined
-      ? null
-      : `${t('trajectory.team.schedule.assignee')}: ${memberDisplayName(task.assignee)}`;
     return (
       <div
-        className={css.laneSection}
-        key={`task:${task.taskId}`}
+        className={css.taskReviewSection}
+        key={`task-review:${task.taskId}`}
         data-testid="team-trajectory-review-task-group"
         data-variant={task.taskId}
         data-task-index={task.taskIndex}
       >
         <button
           type="button"
-          className={css.sectionHeader}
+          className={css.taskReviewToggle}
           aria-expanded={!collapsed}
-          onClick={() => setCollapsedTasks((current) => {
+          aria-label={t(collapsed
+            ? 'trajectory.team.schedule.expandReviews'
+            : 'trajectory.team.schedule.collapseReviews')}
+          onClick={() => setCollapsedReviews((current) => {
             const next = new Set(current);
             if (next.has(task.taskId)) next.delete(task.taskId);
             else next.add(task.taskId);
             return next;
           })}
+          data-testid="team-trajectory-review-toggle"
         >
-          <span className={`${css.sectionChevron} ${collapsed ? '' : css.sectionChevronOpen}`}>
-            {'>'}
-          </span>
-          <span className={css.sectionTitle}>
-            <span className={css.taskIndex}>T{task.taskIndex}</span>
-            <strong className={css.taskName}>{task.taskId}</strong>
-          </span>
-          <span className={css.sectionMeta}>
-            {[
-              taskPhase,
-              taskAssignee,
-              t('trajectory.team.schedule.reviewCount', { count: task.runCount }),
-            ].filter(Boolean).join(' · ')}
+          {collapsed ? (
+            <ChevronRight size={16} strokeWidth={2} className={css.disclosureIcon} aria-hidden />
+          ) : (
+            <ChevronDown size={16} strokeWidth={2} className={css.disclosureIcon} aria-hidden />
+          )}
+          <span className={css.taskIndex}>T{task.taskIndex}</span>
+          <strong className={css.taskName}>{task.taskId}</strong>
+          {taskPhase === null ? null : <span className={css.sectionMeta}>{taskPhase}</span>}
+          <span className={css.taskReviewCount}>
+            {t('trajectory.team.schedule.reviewCount', { count: task.runCount })}
           </span>
         </button>
-        {collapsed ? null : task.rounds.map(round => (
-          <div className={css.roundSection} key={`${task.taskId}:r${round.round}`}>
-            <div className={css.roundHeader} data-testid="team-trajectory-review-round">
-              <span>R{round.round}</span>
-              <span>
-                {t('trajectory.team.schedule.reviewCount', { count: round.lanes.length })}
+        {collapsed ? null : renderReviewRounds(task)}
+      </div>
+    );
+  };
+
+  const renderTaskRun = (run: ScheduledTaskRun) => {
+    const collapsed = collapsedTaskRuns.has(run.key);
+    const firstTask = run.tasks[0];
+    if (firstTask === undefined) return null;
+    const taskIndexes = run.tasks.map(task => `T${task.taskIndex}`).join(' / ');
+    const firstTaskPhase = firstTask.phase === undefined
+      ? null
+      : t(`trajectory.team.schedule.phase.${firstTask.phase}`);
+    const taskRunAssignee = run.member?.label ?? (
+      firstTask.assignee === undefined
+        ? t('trajectory.team.schedule.unassigned')
+        : memberDisplayName(firstTask.assignee)
+    );
+    return (
+      <div
+        className={css.taskSection}
+        key={run.key}
+        data-testid="team-trajectory-review-task-run"
+        data-variant={run.key}
+      >
+        <div className={css.taskHeader}>
+          <button
+            type="button"
+            className={css.taskHeaderToggle}
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsedTaskRuns((current) => {
+              const next = new Set(current);
+              if (next.has(run.key)) next.delete(run.key);
+              else next.add(run.key);
+              return next;
+            })}
+            data-testid="team-trajectory-review-task-toggle"
+          >
+            {collapsed ? (
+              <ChevronRight size={16} strokeWidth={2} className={css.disclosureIcon} aria-hidden />
+            ) : (
+              <ChevronDown size={16} strokeWidth={2} className={css.disclosureIcon} aria-hidden />
+            )}
+            <span className={css.sectionTitle}>
+              <strong className={css.taskRunIndex}>{taskIndexes}</strong>
+              {run.tasks.length === 1 ? (
+                <strong className={css.taskName}>{firstTask.taskId}</strong>
+              ) : null}
+            </span>
+            {run.tasks.length === 1 ? (
+              firstTaskPhase === null
+                ? null
+                : <span className={css.sectionMeta}>{firstTaskPhase}</span>
+            ) : null}
+            {run.tasks.length > 1 || run.member === undefined ? (
+              <span className={css.taskRunAssignee} title={taskRunAssignee}>
+                {t('trajectory.team.schedule.assigneeValue', { name: taskRunAssignee })}
               </span>
+            ) : null}
+          </button>
+        </div>
+        {collapsed ? null : (
+          <div className={css.taskBody}>
+            {run.member === undefined ? null : renderLane(run.member)}
+            <div className={css.taskRunReviews}>
+              {run.tasks.length === 1
+                ? renderReviewRounds(firstTask)
+                : run.tasks.map(renderTaskReview)}
             </div>
-            {round.lanes.map(renderLane)}
           </div>
-        ))}
+        )}
       </div>
     );
   };
@@ -511,16 +610,17 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
       >
         {scheduledMode && laneSections !== null ? (
           <>
-            {laneSections.members.length === 0 ? null : (
+            {standaloneMembers.length === 0 ? null : (
               <div className={css.laneSection} data-testid="team-trajectory-member-group">
                 <div className={css.memberSectionHeader}>
                   <strong>{t('trajectory.team.members')}</strong>
-                  <span>{laneSections.members.length}</span>
+                  <span>{standaloneMembers.length}</span>
                 </div>
-                {laneSections.members.map(renderLane)}
+                {ungrouped.map(renderLane)}
+                {workflowGroups.map(renderWorkflowGroup)}
               </div>
             )}
-            {laneSections.tasks.map(renderTask)}
+            {taskRuns.map(renderTaskRun)}
             {laneSections.ungroupedReviewers.length === 0 ? null : (
               <div className={css.laneSection}>
                 {laneSections.ungroupedReviewers.map(renderLane)}

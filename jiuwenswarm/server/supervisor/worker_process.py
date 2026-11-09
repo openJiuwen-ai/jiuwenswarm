@@ -13,9 +13,7 @@ import time
 import uuid
 from pathlib import Path
 
-from jiuwenswarm.server.ipc.client import try_connect
 from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
-from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
 
 logger = logging.getLogger(__name__)
 
@@ -40,27 +38,66 @@ def _runtime_instance_token() -> str:
     return hashlib.sha256(instance.encode()).hexdigest()[:8]
 
 
+def _make_runtime_dir(base: Path) -> Path:
+    """Create a uid-owned 0o700 runtime dir for the fallback IPC socket."""
+    directory = base / f"jiuwenswarm-runtime-{os.getuid()}"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+        raise RuntimeError("Runtime IPC directory has an unexpected owner")
+    directory.chmod(0o700)
+    return directory
+
+
 def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
         return override
     from jiuwenswarm.common.utils import get_user_workspace_dir
-    from jiuwenswarm.server.supervisor.identity import data_scope
+    from jiuwenswarm.server.supervisor.identity import deployment_scope
 
     suffix = "pipe" if os.name == "nt" else "sock"
-    scope = data_scope()[:16]
+    scope = deployment_scope()[:16]
     instance = _runtime_instance_token()
     sock_name = f"runtime-{scope}-{instance}.{suffix}" if instance else f"runtime-{scope}.{suffix}"
     path = get_user_workspace_dir() / "run" / sock_name
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
-        directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
-        directory.mkdir(mode=0o700, exist_ok=True)
-        if directory.is_symlink() or directory.stat().st_uid != os.getuid():
-            raise RuntimeError("Runtime IPC directory has an unexpected owner")
-        directory.chmod(0o700)
+
+        directory = _make_runtime_dir(Path(tempfile.gettempdir()))
         path = directory / sock_name
+        # macOS 的 tempfile.gettempdir() 解析为 /var/folders/<32>/T（约 49 字
+        # 节），兜底路径自身仍会超过 AF_UNIX sun_path 预算，worker bind 时抛
+        # "unix socket path is too long" 起不来。退回字面量 /tmp：bind 时内核
+        # 解析符号链接，实际可用。
+        if len(os.fsencode(path)) >= 100:
+            directory = _make_runtime_dir(Path("/tmp"))
+            path = directory / sock_name
     return str(path)
+
+
+def legacy_socket_paths() -> list[str]:
+    """Historical endpoints in this data scope; explicit overrides are isolated."""
+    if os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip():
+        return []
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    suffix = "pipe" if os.name == "nt" else "sock"
+    from jiuwenswarm.server.supervisor.identity import data_scope
+
+    root = get_user_workspace_dir() / "run"
+    instance = _runtime_instance_token()
+    scoped = f"runtime-{data_scope()[:16]}-{instance}.{suffix}" if instance else f"runtime-{data_scope()[:16]}.{suffix}"
+    paths = [
+        str(root / scoped),
+        str(root / f"runtime-{data_scope()[:16]}.{suffix}"),
+        str(root / f"runtime-worker.{suffix}"),
+    ]
+    if os.name != "nt":
+        import tempfile
+
+        fallback = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
+        paths.extend([str(fallback / scoped), str(fallback / f"runtime-{data_scope()[:16]}.sock")])
+    return list(dict.fromkeys(paths))
 
 
 def build_worker_command(
@@ -96,13 +133,13 @@ async def request_resident_worker_shutdown(socket_path: str, *, hello_timeout: f
 
     A Worker outlives the Front that spawned it, so stopping the service
     process tree leaves it running. This connects as a fresh supervisor,
-    reads the hello to learn the Worker pid, then sends ``shutdown``. The
+    validates the Worker, sends ``shutdown``, and confirms process exit. The
     caller must stop every Front first; otherwise a Front supervisor would
     spawn a replacement Worker.
 
     Args:
         socket_path: Worker IPC endpoint, see ``default_socket_path``.
-        hello_timeout: Seconds to wait for the Worker hello frame.
+        hello_timeout: Total handshake/exit deadline; name retained for compatibility.
 
     Returns:
         The pid of the Worker asked to shut down, or ``None`` when no Worker
@@ -112,20 +149,11 @@ async def request_resident_worker_shutdown(socket_path: str, *, hello_timeout: f
         RuntimeError: The endpoint answered with something other than a
             Worker hello.
     """
-    conn = await try_connect(socket_path)
-    if conn is None:
-        return None
-    try:
-        hello = await asyncio.wait_for(conn.recv(), timeout=hello_timeout)
-        if not isinstance(hello, dict) or hello.get("kind") != KIND_HELLO:
-            raise RuntimeError(f"expected worker hello on {socket_path}")
-        pid = hello.get("pid")
-        if not isinstance(pid, int):
-            raise RuntimeError(f"worker hello on {socket_path} carries no pid")
-        await conn.send({"kind": KIND_SHUTDOWN})
-        return pid
-    finally:
-        await conn.close()
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
+
+    result = await shutdown_resident_worker(timeout=hello_timeout, socket_path=socket_path)
+    return result.get("pid")
+
 
 
 class WorkerProcess:
@@ -245,7 +273,8 @@ class WorkerProcess:
             return
         deadline = time.monotonic() + max(0.0, timeout)
         proc.terminate()
-        code = await self.wait(timeout=max(0.0, deadline - time.monotonic()))
+        grace = deadline - min(1.0, max(0.0, timeout) / 2)
+        code = await self.wait(timeout=max(0.0, grace - time.monotonic()))
         if code is None:
             logger.warning("[Supervisor] worker did not exit after SIGTERM; killing")
             proc.kill()

@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from gateway.config.enterprise.expressions import matches, validate_match_expr
+from agent_gateway.config.enterprise.expressions import matches, validate_match_expr
 from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.enterprise.team.control_store import TEAM_ACTIVE_STATUSES, OwnerIdentity
 

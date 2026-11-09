@@ -1,29 +1,54 @@
 from __future__ import annotations
 
+import importlib
+import inspect
+import logging
 from typing import Any
 
-from gateway.extensions.sdk import (
+from agent_gateway.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
     FrontendContribution,
     WebSocketRouteContribution,
 )
-from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import (
-    QWEN_OMNI_PROXY_PATH,
-    serve_qwen_omni_websocket,
-)
-from jiuwenswarm.extensions.video_duplex.backend.video_live import (
-    register_video_live_handler,
-    video_duplex_enabled,
-)
 from jiuwenswarm.extensions.video_duplex.backend import settings
+
+logger = logging.getLogger(__name__)
+
+
+def _load_backend() -> Any:
+    """Check required capabilities before registering any plugin resources."""
+    backend = "jiuwenswarm.extensions.video_duplex.backend"
+    required = {
+        f"{backend}.realtime_context": ("RealtimeContextRestorer", "ContextRestoreExpired"),
+        f"{backend}.error_details": ("duplex_failure",),
+        f"{backend}.joyai_action_helper": ("select_model",),
+        "agent_gateway.extensions.video_duplex.backend.tasks.bridge": ("GatewayTaskEndpoint",),
+    }
+    for name, attributes in required.items():
+        module = importlib.import_module(name)
+        for attribute in attributes:
+            if not callable(getattr(module, attribute, None)):
+                raise ImportError(f"Required full-duplex capability unavailable: {name}.{attribute}")
+    protocol = importlib.import_module("openjiuwen_protocol.message")
+    if getattr(protocol.ReqMethod, "VOICE_TASK_CHECKPOINT_ACK", None) is None:
+        raise ImportError("Required protocol capability unavailable: VOICE_TASK_CHECKPOINT_ACK")
+    tools = importlib.import_module(f"{backend}.qwen_omni_tools")
+    try:
+        inspect.signature(tools.qwen_omni_tools).bind(queue_manager=True)
+    except (TypeError, ValueError) as exc:
+        raise ImportError("qwen_omni_tools does not support queue_manager") from exc
+    return importlib.import_module(f"{backend}.video_live")
 
 
 class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
     plugin_id = "video-duplex"
 
+    def __init__(self, backend: Any) -> None:
+        self._backend = backend
+
     def is_enabled(self) -> bool:
-        return video_duplex_enabled()
+        return self._backend.video_duplex_enabled()
 
     async def initialize(self, config: Any) -> None:
         del config
@@ -38,7 +63,7 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
         channel: Any,
         services: ApplicationPluginServices,
     ) -> None:
-        self._task_manager = register_video_live_handler(
+        self._task_manager = self._backend.register_video_live_handler(
             channel,
             agent_client=services.require_agent_client(),
             normalize_media_attachments=services.normalize_media_attachments,
@@ -115,9 +140,9 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
 
         async def test_connection(ws, req_id, params, session_id):  # noqa: ANN001
             del params, session_id
-            from jiuwenswarm.extensions.video_duplex.backend.connection_check import check_saved_connection
-
             try:
+                from jiuwenswarm.extensions.video_duplex.backend.connection_check import check_saved_connection
+
                 await check_saved_connection()
             except Exception:  # noqa: BLE001 - do not expose provider URLs or credentials
                 await channel.send_response(
@@ -146,6 +171,11 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
         )
 
     def websocket_routes(self) -> tuple[WebSocketRouteContribution, ...]:
+        from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import (
+            QWEN_OMNI_PROXY_PATH,
+            serve_qwen_omni_websocket,
+        )
+
         return (
             WebSocketRouteContribution(
                 path=QWEN_OMNI_PROXY_PATH,
@@ -171,6 +201,15 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
 
 
 async def register_extensions(registry: Any) -> list[VideoDuplexApplicationPlugin]:
-    extension = VideoDuplexApplicationPlugin()
+    try:
+        backend = _load_backend()
+    except (ImportError, AttributeError) as exc:
+        logger.error(
+            "Full-duplex plugin skipped: incompatible or incomplete dependencies (%s: %s). "
+            "Install compatible Swarm, Gateway, Core and protocol versions, then restart Gateway.",
+            type(exc).__name__, exc,
+        )
+        return []
+    extension = VideoDuplexApplicationPlugin(backend)
     registry.register_application_plugin(extension)
     return [extension]

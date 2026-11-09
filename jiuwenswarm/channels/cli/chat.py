@@ -17,7 +17,7 @@ import uuid as uuid_module
 from pathlib import Path
 from typing import Any
 
-from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+from agent_gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 
 # Importing ``readline`` transparently upgrades the builtin ``input()`` with
 # line editing: left/right cursor movement, history, and correct multi-byte
@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 # 基于 get_agent_workspace_dir()（~/.jiuwenswarm/agent/workspace），
 # 跟随 JIUWENSWARM_DATA_DIR 做多实例隔离，与 config.yaml 保持同一基准。
-from gateway.common.mode_matrix import NEW_CANONICAL_MODES
+from agent_gateway.common.mode_matrix import NEW_CANONICAL_MODES  # pylint: disable=wrong-import-order
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 _STATE_FILE = get_agent_workspace_dir() / "cli_trusted_dirs_state.json"
@@ -291,7 +291,7 @@ def _permission_answer_for_card(
     if not isinstance(raw_card_id, str):
         return []
     card_id = raw_card_id.strip()
-    if not card_id or len(card_id) > 128:
+    if not card_id or len(card_id) > 512:
         return []
     return [
         {
@@ -496,7 +496,7 @@ async def _run_interactive_loop(
     # chat.final but the team keeps working (creating workflows, delegating
     # to members, etc.). Only chat.processing_status(is_processing=False)
     # or team.error should terminate the CLI stream.
-    from gateway.common.mode_matrix import is_team_mode
+    from agent_gateway.common.mode_matrix import is_team_mode
     team_mode = is_team_mode(request.get("params", {}).get("mode"))
     # When the team leader replies with text but creates no tasks (e.g. a
     # simple greeting), the server's team-completion logic never fires
@@ -997,7 +997,7 @@ async def _run_jsonl_loop(
     renderer: JsonlRenderer,
     request: dict,
 ) -> int:
-    from gateway.common.mode_matrix import is_team_mode
+    from agent_gateway.common.mode_matrix import is_team_mode
     team_mode = is_team_mode(request.get("params", {}).get("mode"))
     await client.send_request(request)
     while True:
@@ -1033,7 +1033,7 @@ async def _run_json_loop(
     renderer: JsonRenderer,
     request: dict,
 ) -> int:
-    from gateway.common.mode_matrix import is_team_mode
+    from agent_gateway.common.mode_matrix import is_team_mode
     team_mode = is_team_mode(request.get("params", {}).get("mode"))
     await client.send_request(request)
     has_error = False
@@ -1146,7 +1146,7 @@ def run_chat(args: argparse.Namespace) -> int:
     if error is not None:
         return error
 
-    from gateway.common.mode_matrix import is_team_mode as is_team_runtime_mode
+    from agent_gateway.common.mode_matrix import is_team_mode as is_team_runtime_mode
     is_team_mode = is_team_runtime_mode(args.mode)
     supports_user_interaction = False
 

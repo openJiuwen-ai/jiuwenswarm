@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.auth import remote_config
-from gateway.auth.remote_config import RemoteConfig, get_config, parse_config
+from agent_gateway.auth import remote_config
+from agent_gateway.auth.remote_config import RemoteConfig, get_config, parse_config
 
 FULL = {
     "is_effective": True,
@@ -176,8 +176,10 @@ def test_hot_path_never_blocks_on_the_network_but_refreshes_in_background(monkey
 def test_warm_up_fetches_in_the_background(monkeypatch):
     calls = _serve(monkeypatch, FULL)
     remote_config.warm_up_in_background()
-    _wait_for(lambda: calls["n"] == 1)
+    # Starting a request does not mean its result has reached the cache.
+    _wait_for(lambda: get_config(allow_refresh=False) is not None)
     assert get_config(allow_refresh=False).is_effective is True
+    assert calls["n"] == 1
 
 
 def test_concurrent_callers_share_one_fetch(monkeypatch):

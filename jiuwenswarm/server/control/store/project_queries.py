@@ -7,8 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.cron_session import cron_session_matches_job
-from gateway.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
@@ -17,6 +16,8 @@ from gateway.common.work_mode import (
     SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
+
+from jiuwenswarm.common.cron_session import cron_session_matches_job
 from jiuwenswarm.server.runtime.session import project_store
 from jiuwenswarm.server.runtime.session.lifecycle import projection as lifecycle_projection
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
@@ -34,7 +35,7 @@ def attribute_session_project(
     visible_project_ids: set[str],
     removed_project_ids: set[str] = frozenset(),
 ) -> str:
-    """Return the owning project ID, ``""`` for a removed project, or the default.
+    """Return the owning project ID, ``""`` for a removed project or a client app's conversation, or the default.
 
     Removed (hidden) projects keep their sessions on disk, but those sessions
     must not surface: returning ``""`` makes every caller skip them instead of
@@ -42,6 +43,10 @@ def attribute_session_project(
     record is missing entirely, or that carry no ``project_id`` at all, still
     fall back to the default project so legacy metadata stays readable.
     """
+    from jiuwenswarm.server.client_attachments.registry import conversation_app
+
+    if conversation_app(metadata) is not None:
+        return ""
     project_id = str(metadata.get("project_id") or "")
     if project_id:
         if project_id in visible_project_ids:

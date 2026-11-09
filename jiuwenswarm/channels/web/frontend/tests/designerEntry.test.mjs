@@ -46,6 +46,7 @@ function fixture() {
     useChatStore: { getState: () => chat }, useSessionStore: { getState: () => sessions },
     useWorkspaceStore: { getState: () => workspace },
     resolveChatModelSelection: (_models, name, fallback) => ({ model_name: name || fallback }),
+    flushApplicationConversationHistory: async () => {},
     mediaItemsToBootstrapReferences: () => ({ refs: [] }), findDesignModelsProblem: async () => null,
     designerWorkspaceClient: {
       async createSession() { return { session: { session_id: 'design-session' } }; },
@@ -54,6 +55,7 @@ function fixture() {
     useDesignerStore: { getState: () => ({ applyGraph() {}, async flushSave() {} }) },
     useDesignerChatStore: { getState: () => ({ replaceMessages() {} }) },
     buildConversationModelPayload: ({ selectedModelName }) => ({ model_name: selectedModelName }),
+    flushApplicationConversationHistory: async () => {},
     webClient: { async request(method, params) { calls.requests.push({ method, params }); } },
   };
   const entry = evaluate(entryScript, context, '{ bindDesignerChatSession, seedDesignerChatHistory, sendDesignerLeaderMessage, submitDesignComposer }');

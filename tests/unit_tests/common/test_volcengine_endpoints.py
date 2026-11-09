@@ -4,7 +4,7 @@
 
 import pytest
 
-from gateway.common.volcengine_endpoints import normalize_ark_api_base
+from agent_gateway.common.volcengine_endpoints import normalize_ark_api_base
 
 
 @pytest.mark.parametrize("host", ["ark.cn-beijing.volces.com", "ark.ap-southeast.bytepluses.com"])

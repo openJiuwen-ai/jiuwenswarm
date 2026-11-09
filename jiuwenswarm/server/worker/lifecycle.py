@@ -17,6 +17,7 @@ from jiuwenswarm.server.worker.runtime_host import WorkerRuntime
 from jiuwenswarm.server.worker.signals import RuntimeSignalSink
 
 logger = logging.getLogger(__name__)
+_STARTUP_FAILURE_CLEANUP_TIMEOUT = 5.0
 
 
 async def start_worker_runtime(
@@ -24,10 +25,61 @@ async def start_worker_runtime(
 ) -> WorkerRuntime:
     """Run measured preparation; signals alone determine chat readiness."""
     measurements = telemetry.StartupTelemetry()
-    async with measurements.monitor():
-        return await _start_worker_runtime(
-            host, port, signals, on_constructed=on_constructed, measurements=measurements,
-        )
+    local_owner: WorkerRuntime | None = None
+
+    async def retain(server: object) -> WorkerRuntime:
+        nonlocal local_owner
+        local_owner = WorkerRuntime(server=server, stop_event=asyncio.Event())
+        return local_owner
+
+    try:
+        async with measurements.monitor():
+            return await _start_worker_runtime(
+                host, port, signals, on_constructed=on_constructed or retain, measurements=measurements,
+            )
+    except BaseException:
+        # The resident service cleans up any server handed to its callback.
+        # Standalone callers have no service owner after a failed startup.
+        if local_owner is not None:
+            try:
+                await _cleanup_failed_startup(local_owner)
+            except BaseException as exc:
+                logger.warning("[Worker] failed startup cleanup failed: %s", exc)
+        raise
+
+
+def _log_late_startup_cleanup(task: asyncio.Task) -> None:
+    """Consume a cleanup that outlived the failed startup's grace period."""
+    if not task.cancelled():
+        error = task.exception()
+        if error is not None:
+            logger.warning("[Worker] late startup cleanup failed: %s", error)
+
+
+async def _cleanup_failed_startup(runtime: WorkerRuntime) -> None:
+    """Preserve the startup error while giving partial resources bounded cleanup."""
+    owner = getattr(runtime.server, "worker_callback_registry_owner", None)
+    cleanup = asyncio.create_task(runtime.shutdown())
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _STARTUP_FAILURE_CLEANUP_TIMEOUT
+    try:
+        while not cleanup.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError("Worker failed startup cleanup exceeded its grace period")
+            try:
+                await asyncio.wait({cleanup}, timeout=remaining)
+            except asyncio.CancelledError:
+                # The outer handler re-raises the original startup exception,
+                # including its first cancellation, after this bounded join.
+                continue
+        cleanup.result()
+    finally:
+        if not cleanup.done():
+            cleanup.cancel()
+            cleanup.add_done_callback(_log_late_startup_cleanup)
+        if owner is not None:
+            owner.close()
 
 
 async def _start_worker_runtime(

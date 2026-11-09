@@ -362,7 +362,7 @@ Pop-Location
 
 # 3. Run PyInstaller
 Write-Host "`n[3/4] Running PyInstaller..." -ForegroundColor Yellow
-uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
+uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts\jiuwenswarm.spec --noconfirm
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Verify the actual frozen runtime, not only the PyInstaller source configuration.
@@ -388,6 +388,17 @@ $RsiVerifyProcess = Start-Process `
     -NoNewWindow
 if ($RsiVerifyProcess.ExitCode -ne 0) {
     throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+}
+
+$CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"
+$CuaVerifyProcess = Start-Process `
+    -FilePath $FrozenExe `
+    -ArgumentList @("`"$CuaVerifier`"") `
+    -Wait `
+    -PassThru `
+    -NoNewWindow
+if ($CuaVerifyProcess.ExitCode -ne 0) {
+    throw "Frozen Computer Use bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
 $GitCodeVerifier = Join-Path $ProjectRoot "scripts\verify_gitcode_cli_bundle.py"

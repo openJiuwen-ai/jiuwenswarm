@@ -8,12 +8,16 @@ import pytest
 @pytest.fixture
 async def worker_callback_framework(monkeypatch):
     """Give each simulated Worker its own SDK registry and cleanup boundary."""
+    from jiuwenswarm.runtime import kernel as kernel_module
     from openjiuwen.core.runner import Runner
     from openjiuwen.core.runner.callback import AsyncCallbackFramework
 
+    kernel = kernel_module.ResourceKernel()
+    monkeypatch.setattr(kernel_module, "_PROCESS_KERNEL", kernel)
     framework = AsyncCallbackFramework(enable_logging=False)
     monkeypatch.setattr(Runner, "callback_framework", framework)
     yield framework
     owner = getattr(framework.register, "_worker_callback_registry_owner", None)
     if owner is not None:
         await owner.aclose()
+    await kernel.close()
