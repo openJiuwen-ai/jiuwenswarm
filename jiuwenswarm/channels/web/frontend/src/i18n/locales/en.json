@@ -6321,6 +6321,7 @@
       "removeConnection": "Disconnect",
       "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
       "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
+      "removeFeishuConnectionSuccess": "Feishu connection disconnected",
       "workLog": "Work log",
       "periods": {
         "7d": "Last 7 days",

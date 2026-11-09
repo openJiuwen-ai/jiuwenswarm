@@ -8,13 +8,20 @@ import { JSDOM } from 'jsdom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { initReactI18next } from 'react-i18next';
 
+import { JiuwenMateApp } from '../node_modules/.cache/jiuwenmate-profile/JiuwenMateApp.js';
 import { ColleagueProfilePage } from '../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js';
 import { ScheduleBoard } from '../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js';
 import { ColleagueDeleteDialog } from '../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js';
+import { webClient } from '../node_modules/.cache/jiuwenmate-profile/webClient.js';
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
+const en = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
 const profileStyles = readFileSync(new URL('../src/features/jiuwenmate/jiuwenmate.css', import.meta.url), 'utf8');
-await i18n.use(initReactI18next).init({ lng: 'zh', resources: { zh: { translation: zh } }, interpolation: { escapeValue: false } });
+await i18n.use(initReactI18next).init({
+  lng: 'zh',
+  resources: { zh: { translation: zh }, en: { translation: en } },
+  interpolation: { escapeValue: false },
+});
 
 const colleague = {
   id: 'agent-1',
@@ -41,6 +48,86 @@ const colleague = {
 const feishuConnection = { channel: 'feishu', connectionKey: 'cli-app', agentId: 'agent-feishu', workspaceDir: null };
 
 const noop = () => undefined;
+
+for (const { language, expectedMessage, rejects } of [
+  { language: 'zh', expectedMessage: '飞书连接已解除' },
+  { language: 'en', expectedMessage: 'Feishu connection disconnected' },
+  { language: 'zh', rejects: true },
+]) {
+  test(`Feishu unbind ${rejects ? 'shows only the error when rejected' : `confirms success in ${language}`}`, async (t) => {
+    const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+    const { window: previousWindow, document: previousDocument, IS_REACT_ACT_ENVIRONMENT: previousAct } = globalThis;
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const root = createRoot(document.getElementById('root'));
+    const find = (id) => document.querySelector(`[data-testid="${id}"]`);
+    const click = async (selector) => {
+      const button = document.querySelector(selector);
+      assert.ok(button, `Missing ${selector}`);
+      await act(async () => button.click());
+    };
+    const { promise: unbindResult, resolve: finishUnbind, reject: rejectUnbind } = deferred();
+    const wireColleague = { agent_id: 'agent-1', config_id: 'agent-1', name: 'Test colleague' };
+    const unbindMethod = 'channel.feishu.unbind_agent';
+    const refreshMethod = 'jiuwenmate.colleague.get';
+    const request = t.mock.method(webClient, 'request', async (method) => {
+      if (method === 'group.list') return { groups: [], total: 0 };
+      if (method === 'jiuwenmate.colleague.list') {
+        return { colleagues: [{
+          ...wireColleague,
+          connections: [{ channel: 'feishu', connection_key: 'cli-app', agent_id: 'agent-feishu' }],
+        }] };
+      }
+      if (method === unbindMethod) return unbindResult;
+      if (method === refreshMethod) return { colleague: wireColleague };
+      return {};
+    });
+    const toastId = 'jiuwenmate-profile-feishu-disconnected-toast';
+    try {
+      await i18n.changeLanguage(language);
+      await act(async () => root.render(React.createElement(JiuwenMateApp, { onExit: noop, renderExistingPage: noop })));
+      await click('.jiuwenmate-colleague-card__action--primary');
+      await click('[data-testid="jiuwenmate-profile-section"][data-variant="channels"]');
+      await click('[data-testid="jiuwenmate-profile-im-remove"]');
+      await click('[data-testid="jiuwenmate-confirm-button"]');
+
+      const callsFor = (method) => request.mock.calls.filter(({ arguments: args }) => args[0] === method);
+      assert.deepEqual(callsFor(unbindMethod).map(({ arguments: args }) => args[1]), [{ app_id: 'cli-app' }]);
+      assert.equal(find(toastId), null);
+      assert.equal(callsFor(refreshMethod).length, 0);
+
+      if (rejects) {
+        await act(async () => rejectUnbind(new Error('Unbind rejected')));
+        assert.equal(find(toastId), null);
+        assert.match(find('jiuwenmate-action-error').textContent, /Unbind rejected/);
+        assert.ok(find('jiuwenmate-profile-im-remove'));
+        assert.equal(callsFor(refreshMethod).length, 0);
+      } else {
+        await act(async () => finishUnbind({ unbound: true }));
+        const notification = find(toastId);
+        assert.ok(notification);
+        assert.equal(notification.getAttribute('role'), 'status');
+        assert.equal(notification.textContent, expectedMessage);
+        assert.equal(find('jiuwenmate-profile-im-remove'), null);
+        assert.equal(callsFor(refreshMethod).length, 1);
+      }
+    } finally {
+      await act(async () => {
+        find(toastId)?.querySelector('[data-testid="ui-toast-close"]').click();
+        root.unmount();
+        t.mock.timers.tick(1000);
+      });
+      dom.window.close();
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.IS_REACT_ACT_ENVIRONMENT = previousAct;
+      await i18n.changeLanguage('zh');
+    }
+  });
+}
 
 const catalog = {
   skills: [{ name: 'report-writer', label: '报告', description: '整理周报' }],
@@ -178,8 +265,12 @@ test('DingTalk CLI is automatic and has no per-employee authorization page', () 
 
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 const dingtalkConnection = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };

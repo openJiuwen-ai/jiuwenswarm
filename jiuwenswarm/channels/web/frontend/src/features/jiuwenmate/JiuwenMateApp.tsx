@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ToastStack, toast } from '../../components/ui';
 import { webClient, webRequest } from '../../services/webClient';
 import { ColleagueDeleteDialog } from './components/ColleagueDeleteDialog';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
@@ -570,6 +571,13 @@ export function JiuwenMateApp({
       setActionError('');
       try {
         await api.unbindConnection(pendingConfirm.connection);
+        if (pendingConfirm.connection.channel === 'feishu') {
+          toast.open({
+            variant: 'success',
+            content: t('jiuwenmate.profile.removeFeishuConnectionSuccess'),
+            testId: 'jiuwenmate-profile-feishu-disconnected-toast',
+          });
+        }
         await refreshColleague(pendingConfirm.colleague.id);
       } catch (error) {
         setActionError(errorMessage(error));
@@ -1041,6 +1049,7 @@ export function JiuwenMateApp({
           renderFeature()
         )}
       </main>
+      <ToastStack />
       {groupDirectory.dialogs}
       {actionError && !existingPage ? (
         <div className="jiuwenmate-action-error" role="alert" data-testid="jiuwenmate-action-error">
