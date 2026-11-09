@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 from weakref import WeakValueDictionary
 
@@ -292,6 +293,33 @@ async def cancel_waiting_runs(execution_ids) -> None:
         await asyncio.wait(workers)
 
 
+def with_output_files(
+    outputs_dir: str | None, attachments: list[dict], since: float | None = None
+) -> list[dict]:
+    """Append files under ``outputs_dir`` that ``attachments`` does not already name.
+
+    Every run of one team shares ``team_outputs_dir``, so without a lower bound a
+    follow-up run re-attaches the deliverables of the runs before it. ``since``
+    keeps only files written during the current run.
+    """
+    attachments = list(attachments)
+    if not outputs_dir:
+        return attachments
+    root = Path(outputs_dir).resolve()
+    paths = {item.get("path") for item in attachments if isinstance(item.get("path"), str)}
+    for file in sorted(root.rglob("*")):
+        resolved = file.resolve()
+        if not file.is_file() or not resolved.is_relative_to(root):
+            continue
+        if since is not None and file.stat().st_mtime < since:
+            continue
+        path = str(resolved)
+        if path not in paths:
+            attachments.append({"name": file.name, "path": path})
+            paths.add(path)
+    return attachments
+
+
 class _GroupTool(Tool):
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)
@@ -344,17 +372,11 @@ class CompleteTeamRun(_GroupTool):
                 return ToolOutput(success=False, error="execution_id must match the active private-team task")
         attachments = list(attachments)
         outputs_dir = current.get("outputs_dir") if current is not None else None
-        if outputs_dir:
-            root = Path(outputs_dir).resolve()
-            paths = {item.get("path") for item in attachments if isinstance(item.get("path"), str)}
-            for file in sorted(root.rglob("*")):
-                resolved = file.resolve()
-                if not file.is_file() or not resolved.is_relative_to(root):
-                    continue
-                path = str(resolved)
-                if path not in paths:
-                    attachments.append({"name": file.name, "path": path})
-                    paths.add(path)
+        # Bound the sweep by this run's start so a follow-up run does not resend
+        # the deliverables of earlier runs that share the same team directory.
+        attachments = with_output_files(
+            outputs_dir, attachments, since=current.get("started_at") if current else None,
+        )
         submission = {"result": result, "attachments": attachments} if attachments else result
         future.set_result(submission)
         return ToolOutput(success=True, data={"submitted": True})
@@ -896,6 +918,8 @@ class RunTeam(_GroupTool):
                 "execution_id": execution["execution_id"] if execution is not None else None,
                 "group_id": self.context.session_id if execution is not None else None,
                 "outputs_dir": getattr(child.build_context, "team_outputs_dir", None),
+                # Marks this run's share of the team directory for complete_team_run.
+                "started_at": time.time(),
             }
             child.leader = child.leader.model_copy(
                 update={

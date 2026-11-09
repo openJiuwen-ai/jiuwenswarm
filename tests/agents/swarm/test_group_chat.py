@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import os
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -437,3 +439,56 @@ def test_run_paths_leave_room_under_the_windows_limits():
     runs = rf"C:\Users\75797\.jiuwenswarm\.agent_teams\{team}\runs"
     assert len(rf"{runs}\{'c' * gc.RUN_PATH_HASH_LENGTH}") <= 110
     assert len(rf"{runs}\org-{'d' * gc.RUN_PATH_HASH_LENGTH}.json") <= 120
+
+def _age(path, seconds):
+    """Move a file's mtime into the past so it reads as an earlier run's output."""
+    stamp = time.time() - seconds
+    os.utime(path, (stamp, stamp))
+
+
+def test_with_output_files_bounds_the_sweep_by_this_run(tmp_path):
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    previous = outputs / "run1.md"
+    previous.write_text("Earlier deliverable", encoding="utf-8")
+    (outputs / "nested").mkdir()
+    current = outputs / "nested" / "run2.md"
+    current.write_text("This run's deliverable", encoding="utf-8")
+    _age(previous, 3600)
+    _age(outputs / "nested", 3600)
+    started_at = time.time() - 60
+
+    names = [item["name"] for item in gc.with_output_files(str(outputs), [], since=started_at)]
+
+    assert names == ["run2.md"]
+
+
+def test_with_output_files_without_a_bound_keeps_every_file(tmp_path):
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    (outputs / "run1.md").write_text("Earlier deliverable", encoding="utf-8")
+    (outputs / "run2.md").write_text("This run's deliverable", encoding="utf-8")
+    _age(outputs / "run1.md", 3600)
+
+    names = {item["name"] for item in gc.with_output_files(str(outputs), [])}
+
+    assert names == {"run1.md", "run2.md"}
+
+
+def test_with_output_files_keeps_attachments_it_was_given(tmp_path):
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    delivered = outputs / "run2.md"
+    delivered.write_text("This run's deliverable", encoding="utf-8")
+    existing = [{"name": "run2.md", "path": str(delivered.resolve())}]
+    _age(delivered, 3600)
+
+    attachments = gc.with_output_files(str(outputs), existing, since=time.time())
+
+    assert attachments == existing
+
+
+def test_with_output_files_tolerates_a_missing_outputs_dir():
+    attachment = {"name": "a.md", "path": "/tmp/a.md"}
+    assert gc.with_output_files(None, [attachment]) == [attachment]
+    assert gc.with_output_files("", [attachment], since=0.0) == [attachment]
