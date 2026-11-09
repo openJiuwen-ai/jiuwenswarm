@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../../../components/ui/Button/Button';
 import { ColleagueAvatar } from './ColleagueAvatar';
@@ -27,6 +28,8 @@ interface GroupSharingInboxProps {
 
 export function GroupSharingInbox({ api, configId, colleague, conversationId, connectionEpoch, onOpen }: GroupSharingInboxProps) {
   const { t, i18n } = useTranslation();
+  const [expandedMessages, setExpandedMessages] = useState<Record<string, boolean>>({});
+  const [expandedArtifacts, setExpandedArtifacts] = useState<Record<string, boolean>>({});
   const inbox = useGroupSharing(api, configId, connectionEpoch, conversationId === SHARING_CONVERSATION_ID);
   const approvals = inbox.data?.approvals ?? [];
   const count = approvals.filter((item) => sharingStatus(item, inbox.now) === 'pending').length;
@@ -177,9 +180,19 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
                     <p data-testid="jiuwenmate-sharing-audience">
                       {t(approval.target.kind === 'group' ? 'jiuwenmate.sharing.groupAudience' : 'jiuwenmate.sharing.audience')}
                     </p>
-                    <details data-testid="jiuwenmate-sharing-messages">
+                    <details
+                      data-testid="jiuwenmate-sharing-messages"
+                      open={Boolean(expandedMessages[approval.approval_id])}
+                      onToggle={(event) => {
+                        const open = event.currentTarget.open;
+                        setExpandedMessages((previous) => previous[approval.approval_id] === open
+                          ? previous : { ...previous, [approval.approval_id]: open });
+                      }}
+                    >
                       <summary data-testid="jiuwenmate-sharing-expand">
-                        {t('jiuwenmate.sharing.exactMessages', { count: approval.messages.length })}
+                        {t(expandedMessages[approval.approval_id]
+                          ? 'jiuwenmate.sharing.collapseExactMessages' : 'jiuwenmate.sharing.exactMessages',
+                        { count: approval.messages.length })}
                       </summary>
                       <ol className="jiuwenmate-sharing-message-list" data-testid="jiuwenmate-sharing-message-list">
                         {approval.messages.map((message) => (
@@ -200,9 +213,19 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
                       </ol>
                     </details>
                     {approval.artifacts.length > 0 ? (
-                      <details data-testid="jiuwenmate-sharing-artifacts">
+                      <details
+                        data-testid="jiuwenmate-sharing-artifacts"
+                        open={Boolean(expandedArtifacts[approval.approval_id])}
+                        onToggle={(event) => {
+                          const open = event.currentTarget.open;
+                          setExpandedArtifacts((previous) => previous[approval.approval_id] === open
+                            ? previous : { ...previous, [approval.approval_id]: open });
+                        }}
+                      >
                         <summary data-testid="jiuwenmate-sharing-artifacts-expand">
-                          {t('jiuwenmate.sharing.exactArtifacts', { count: approval.artifacts.length })}
+                          {t(expandedArtifacts[approval.approval_id]
+                            ? 'jiuwenmate.sharing.collapseExactArtifacts' : 'jiuwenmate.sharing.exactArtifacts',
+                          { count: approval.artifacts.length })}
                         </summary>
                         <ol className="jiuwenmate-sharing-message-list" data-testid="jiuwenmate-sharing-artifact-list">
                           {approval.artifacts.map((artifact) => (

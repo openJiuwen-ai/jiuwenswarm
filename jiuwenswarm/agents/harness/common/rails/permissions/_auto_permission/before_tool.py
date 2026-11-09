@@ -202,6 +202,10 @@ class AutoPermissionBeforeToolMixin:
             NATIVE_PATH_ACCESS.reset(native_token)
             RUN_PERMISSIONS.reset(run_token)
 
+    def _native_permission_answer(self, ctx: Any, tool_call_id: str | None) -> Any | None:
+        """Let a host adapter supply an SDK-attributed answer for this exact call."""
+        return None
+
     async def _before_tool_call_impl(self, *args: Any, **kwargs: Any) -> Any:
         """Evaluate auto-permission guards before delegating to the base rail."""
         clear_no_host_fallback()
@@ -297,6 +301,10 @@ class AutoPermissionBeforeToolMixin:
             tool_call_id=tool_call_id,
             kwargs=kwargs,
         )
+        native_answer = self._native_permission_answer(invocation.ctx, tool_call_id)
+        if native_answer is not None:
+            user_input = native_answer.value
+        manual_resume = invocation_resume is not None or native_answer is not None
         if invocation_resume is not None:
             request_id = invocation_resume.card.key.request_id
 
@@ -363,7 +371,7 @@ class AutoPermissionBeforeToolMixin:
                     },
                 )
             if (
-                invocation_resume is not None
+                manual_resume
                 and decision_source == "manual_approval"
                 and classify_permission_result(result) == "allow"
             ):
@@ -391,7 +399,7 @@ class AutoPermissionBeforeToolMixin:
                 result,
             )
 
-        if invocation_resume is not None and _is_rejection_confirmation(user_input):
+        if manual_resume and _is_rejection_confirmation(user_input):
             facts = build_tool_decision_facts(
                 invocation.tool_name,
                 normalized_args,
@@ -499,7 +507,7 @@ class AutoPermissionBeforeToolMixin:
             base_result = await self._call_base_rail(args, kwargs, invocation)
             return runtime_result(base_result, decision_source="manual_approval")
         if policy_evaluation.source == "fail_closed":
-            if invocation_resume is not None or policy_evaluation.reason == "policy_config_refresh_failed":
+            if manual_resume or policy_evaluation.reason == "policy_config_refresh_failed":
                 return runtime_result(
                     build_denied_permission_response(policy_evaluation.reason),
                     decision_source="policy_evaluator",
@@ -577,7 +585,7 @@ class AutoPermissionBeforeToolMixin:
         if session_observation_args_valid(facts.tool_name, facts.untrusted_args) is False:
             domain_route = DecisionRoute(ASK_LEVEL, "readonly_tool_arguments_unverified", "manual_only")
 
-        if _is_rejection_confirmation(user_input) and invocation_resume is None:
+        if _is_rejection_confirmation(user_input) and not manual_resume:
             self._emit_audit(
                 facts,
                 decision=DENY_LEVEL,
@@ -594,7 +602,7 @@ class AutoPermissionBeforeToolMixin:
             # call. Static guards above still apply; the inner runs all rails.
             return runtime_result(None, decision_source="permission_wrapper_resume")
 
-        if invocation_resume is not None:
+        if manual_resume:
             base_result = await self._call_base_rail(args, kwargs, invocation)
             return runtime_result(
                 base_result, decision_source="manual_approval",
