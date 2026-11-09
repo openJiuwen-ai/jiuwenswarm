@@ -160,7 +160,13 @@ def _reason_text(
     *keys: str,
     default: str = "",
 ) -> str:
-    """Keep the complete final reason; audit applies its own redaction."""
+    """Keep the complete final reason; audit applies its own redaction.
+
+    Upstream reviewer payload validation requires non-empty string reasons.
+    Unlike _text, skip non-string and empty values without string coercion,
+    trying keys in order and returning default when none match. Preserve the
+    selected text without redaction or truncation.
+    """
     for key in keys:
         value = metadata.get(key)
         if isinstance(value, str) and value:
