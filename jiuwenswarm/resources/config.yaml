@@ -46,7 +46,7 @@ symphony:
 
   fingerprint:
     scan:
-      max_depth:
+      max_depth: 1
     extraction:
       workers: 4
       batch_size: 2
