@@ -225,12 +225,16 @@ jiuwenswarm = [
 [tool.uv]
 default-groups = ['dev']
 # agent-gateway（独立仓）与母仓各自钉 agent-core / 协议的 git rev；
-# 共存解析以母仓直接依赖为准；下面仅覆盖 agent-gateway 对 openjiuwen 的依赖约束，
-# 移除网关传递的 git 钉，由母仓直接依赖的 git URL 统一决定 core 修订。
-# 不全局覆盖 openjiuwen，保留母仓 cua/claude/codex/distribute 的 extras 链；
-# distribute 对应 openjiuwen[postgres,zmq]，无需按 extra 名重放依赖。
+# uv 的 override-dependencies 只接受 PEP 508 字符串，无法按包限定（per-package），
+# 故全局把 openjiuwen 覆盖为母仓直接依赖的同一 git rev，网关传递的钉随之被抹平，
+# 并按 extra 名重放母仓 cua/claude/codex/distribute 的 extras 链
+# （distribute 对应 openjiuwen[postgres,zmq]）。bump core rev 时需同步以下各行。
 override-dependencies = [
-    { package = { name = "agent-gateway", version = "0.0.1" }, dependencies = ["openjiuwen"] },
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e",
+    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e ; extra == 'cua'",
+    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e ; extra == 'claude'",
+    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e ; extra == 'codex'",
+    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e ; extra == 'distribute'",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@cbbadde9101db6e3d75e4ef2b9bdb6029fd92088#subdirectory=openjiuwen-protocol",
 ]
 
