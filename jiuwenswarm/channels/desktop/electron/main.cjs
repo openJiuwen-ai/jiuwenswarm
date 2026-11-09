@@ -17,7 +17,7 @@ const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidate
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
 const { createAppMarketWindows } = require('./app_market_windows.cjs');
-const appMarketWindows = createAppMarketWindows(BaseWindow, WebContentsView, () => mainWindow, resolveIconPath);
+const appMarketWindows = createAppMarketWindows(BaseWindow, WebContentsView, () => mainWindow, resolveIconPath, () => app.getAppMetrics(), () => app.getLocale());
 let macUpdateInProgress = false;
 
 const BACKEND_HOST = '127.0.0.1';
@@ -2443,6 +2443,7 @@ function registerIpcHandlers() {
   registerHandler('desktop:close-market-app', appMarketWindows.close);
   registerHandler('desktop:set-market-app-viewport', appMarketWindows.setViewport);
   registerHandler('desktop:reload-market-app', appMarketWindows.reload);
+  registerHandler('desktop:market-app-resources', appMarketWindows.getResources);
   ipcMain.on('desktop:is-frontend-only', event => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
       event.returnValue = isFrontendOnly;

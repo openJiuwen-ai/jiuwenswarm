@@ -24,6 +24,7 @@ const desktopApi = Object.freeze({
   closeMarketApp: appId => invoke('desktop:close-market-app', appId),
   setMarketAppViewport: (appId, bounds, focus) => invoke('desktop:set-market-app-viewport', appId, bounds, focus === true),
   reloadMarketApp: appId => invoke('desktop:reload-market-app', appId),
+  getMarketAppResources: () => invoke('desktop:market-app-resources'),
   captureOAuthToken: options => invoke('desktop:capture-oauth-token', options),
   exportShareImage: (sessionId, locale) => invoke('desktop:export-share-image', sessionId, locale),
   onShareImageExportProgress: callback => {

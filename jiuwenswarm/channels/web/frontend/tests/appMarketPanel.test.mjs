@@ -685,7 +685,8 @@ test('session preview reuses the market iframe and clears its binding when the i
     root = createRoot(document.getElementById('root'));
     await act(async () => root.render(React.createElement(AppMarketSessionPreview, { sessionId: 'new', preview: target })));
     assert.equal(find('app-market-web-view'), frame);
-    assert.equal(find('app-market-browser-toolbar'), null);
+    assert.ok(find('app-market-browser-toolbar'));
+    assert.ok(find('app-market-resources'));
     const pane = find('app-market-session-preview');
     assert.equal(pane.dataset.variant, app.app_id);
     find('app-market-browser-viewport').getBoundingClientRect = () => ({ left: 0, top: 50, width: 1000, height: 700 });
@@ -904,13 +905,16 @@ for (const desktop of [false, true]) {
       let opens = 0;
       let starts = 0;
       let live = !stopped;
+      const metrics = { apps: [], 
+        system: { cpuPercent: 12, memoryPercent: 34, sampledAt: Date.now() } };
       if (desktop) window.jiuwenDesktop = {
-        isElectron: true, openMarketApp: async () => { opens++; return true; },
+        isElectron: true, getMarketAppResources: async () => metrics, openMarketApp: async () => { opens++; return true; },
         closeMarketApp: async () => true, setMarketAppViewport: async () => true,
       };
       const ctx = await mount(method => {
         if (method === 'app_market.list') return { apps: [{ ...app, editor_session_id: 'editor' }] };
         if (method === 'app_market.start') { live = true; starts++; return running; }
+        if (method === 'app_market.resources') return metrics;
         return { instances: live ? [running] : [] };
       });
       await ctx.unmount();
@@ -922,10 +926,14 @@ for (const desktop of [false, true]) {
       };
       try {
         await render();
+        assert.match(find('app-market-editor-actions').textContent, /CPU 12.0% · RAM 34.0%/);
+        assert.match(find('app-market-resources').textContent, desktop ? /This computer/ : /Service host/);
         await click(find('app-market-editor-open-preview'));
         assert.deepEqual(previews[0], { appId: app.app_id, name: app.name, instanceId: running.instance_id });
         await act(async () => root.unmount());
         await render();
+        assert.match(find('app-market-editor-actions').textContent, /CPU 12.0% · RAM 34.0%/);
+        assert.match(find('app-market-resources').textContent, desktop ? /This computer/ : /Service host/);
         await click(find('app-market-editor-open-preview'));
         assert.equal(previews.length, 2);
         assert.equal(starts, stopped ? 1 : 0);
@@ -950,6 +958,7 @@ test('unbound conversation has no app header action and canceled restore cannot 
   try {
     await act(async () => root.render(React.createElement(AppMarketEditorAction, { sessionId: 'other', onOpen: () => opens++ })));
     assert.equal(find('app-market-editor-open-preview'), null);
+    assert.equal(find('app-market-editor-actions'), null);
     await act(async () => root.unmount());
     root = createRoot(document.getElementById('root'));
     await act(async () => root.render(React.createElement(AppMarketEditorAction, { sessionId: 'editor', onOpen: () => opens++ })));
@@ -1061,4 +1070,167 @@ test('a failed coalesced edit releases its request so retry can succeed', async 
   assert.equal(calls, 2);
   assert.deepEqual(h.restores, [editSession.session_id]);
   useChatStore.getState().removeRuntime(editSession.session_id);
+});
+
+
+test('Web market and app toolbar share service sampling and clearly exclude browser usage', async () => {
+  delete window.jiuwenDesktop;
+  const ctx = await mount(method => method === 'app_market.resources' ? {
+    apps: [{ appId: app.app_id, cpuPercent: 2.5, memoryBytes: 10485760 }],
+    system: { cpuPercent: 65, memoryPercent: 70, sampledAt: Date.now() }, sampledAt: Date.now(),
+  } : response(method, [running]));
+  try {
+    assert.match(find('app-market-resources').textContent, /Service host \(local connection\) CPU 65.0% \u00b7 RAM 70.0%/);
+    await click(find('app-market-open'));
+    const metrics = document.querySelectorAll('[data-testid="app-market-resources"]');
+    assert.equal(metrics.length, 2);
+    assert.match(metrics[1].textContent, /Service CPU 2.5% \u00b7 RAM 10 MiB/);
+    assert.match(metrics[1].textContent, /Browser page usage unavailable/);
+    assert.equal(ctx.calls.filter(call => call.method === 'app_market.resources').length, 1);
+  } finally { await ctx.close(); }
+});
+
+test('desktop market reads only native market metrics, including shared-process annotation', async () => {
+  let reads = 0;
+  window.jiuwenDesktop = { isElectron: true, getMarketAppResources: async () => {
+    reads++;
+    return { apps: [], system: { cpuPercent: 40, memoryPercent: 50, sampledAt: Date.now() }, sampledAt: Date.now() };
+  } };
+  const ctx = await mount(method => response(method));
+  try {
+    assert.match(find('app-market-resources').textContent, /This computer CPU 40.0% \u00b7 RAM 50.0%/);
+    assert.equal(find('app-market-resources-note'), null);
+    assert.equal(reads, 1);
+    assert.equal(ctx.calls.filter(call => call.method === 'app_market.resources').length, 0);
+  } finally { await ctx.close(); delete window.jiuwenDesktop; }
+});
+
+test('failed resource reads display unknown rather than misleading zeros', async () => {
+  delete window.jiuwenDesktop;
+  const ctx = await mount(method => {
+    if (method === 'app_market.resources') throw new Error('Unavailable');
+    return response(method);
+  });
+  try { assert.match(find('app-market-resources').textContent, /CPU \u2014 \u00b7 RAM \u2014/); }
+  finally { await ctx.close(); }
+});
+
+
+const { createPressureTracker } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/marketResources.mjs');
+const { resourceHostLabel } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/AppMarketResources.mjs');
+
+test('pressure warnings require sustained fresh samples, recover with hysteresis, and reset on gaps', () => {
+  const update = createPressureTracker();
+  const sample = (time, cpu = 90, memory = 50) => ({ cpuPercent: cpu, memoryPercent: memory, sampledAt: time });
+  assert.equal(update(sample(1000)), false);
+  assert.equal(update(sample(1000)), false);
+  assert.equal(update(sample(4000)), false);
+  assert.equal(update(sample(7000)), true);
+  assert.equal(update(sample(10000, 80)), true);
+  assert.equal(update(sample(13000, 70)), false);
+  assert.equal(update(sample(16000, 20, 90)), false);
+  assert.equal(update(sample(19000, 20, 90)), false);
+  assert.equal(update(sample(22000, 20, 90)), true);
+  assert.equal(update(undefined), false);
+  assert.equal(update(sample(25000)), false);
+  assert.equal(update(sample(45000)), false);
+  assert.equal(update(sample(48000)), false);
+});
+
+test('resource host labels never identify remote or unknown endpoints as the local machine', () => {
+  for (const endpoint of ['http://localhost:5173', 'ws://127.0.0.1:19000/ws', 'ws://[::1]:19000/ws']) {
+    assert.equal(resourceHostLabel(false, endpoint), 'appMarket.localServiceResources');
+  }
+  for (const endpoint of ['https://server.example', 'ws://192.168.1.2/ws', 'https://localhost.example', 'invalid']) {
+    assert.equal(resourceHostLabel(false, endpoint), 'appMarket.serverResources');
+  }
+  assert.equal(resourceHostLabel(true, 'https://server.example'), 'appMarket.localMachineResources');
+});
+
+
+test('market shows a persistent high-usage reminder and clears it after recovery', async () => {
+  const originalTimeout = globalThis.setTimeout;
+  let poll;
+  let count = 0;
+  let usage = 90;
+  globalThis.setTimeout = (fn, delay, ...args) => delay === 3000 ? (poll = fn, 0) : originalTimeout(fn, delay, ...args);
+  window.jiuwenDesktop = { isElectron: true, getMarketAppResources: async () => ({
+    apps: [], 
+    system: { cpuPercent: usage, memoryPercent: usage, sampledAt: ++count * 3000 }, sampledAt: Date.now(),
+  }) };
+  let ctx;
+  try {
+    ctx = await mount(method => response(method));
+    assert.equal(find('app-market-resources-warning'), null);
+    await act(async () => poll());
+    assert.equal(find('app-market-resources-warning'), null);
+    await act(async () => poll());
+    assert.match(find('app-market-resources-warning').textContent, /High system usage/);
+    usage = 70;
+    await act(async () => poll());
+    assert.equal(find('app-market-resources-warning'), null);
+  } finally {
+    if (ctx) await ctx.close();
+    globalThis.setTimeout = originalTimeout;
+    delete window.jiuwenDesktop;
+  }
+});
+
+test('unsubscribing and resubscribing discards late resource responses and their warning state', async () => {
+  const { marketResources } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/marketResources.mjs');
+  const old = deferred();
+  let reads = 0;
+  window.jiuwenDesktop = { isElectron: true, getMarketAppResources: () => {
+    reads++;
+    return reads === 1 ? old.promise : Promise.resolve({ apps: [], 
+      system: { cpuPercent: 12, memoryPercent: 34, sampledAt: Date.now() } });
+  } };
+  const off = marketResources.subscribe(() => {});
+  off();
+  const offNew = marketResources.subscribe(() => {});
+  try {
+    old.resolve({ apps: [], 
+      system: { cpuPercent: 99, memoryPercent: 99, sampledAt: Date.now() } });
+    await tick(); await tick();
+    assert.equal(reads, 2);
+    assert.equal(marketResources.getSnapshot().system.cpuPercent, 12);
+    assert.equal(marketResources.getSnapshot().highUsage, false);
+  } finally { offNew(); delete window.jiuwenDesktop; }
+});
+
+
+test('system CPU and memory colors update independently at boundaries without triggering early alerts', async () => {
+  const originalTimeout = globalThis.setTimeout;
+  let poll;
+  let system = { cpuPercent: 0, memoryPercent: 49.9, sampledAt: 3000 };
+  globalThis.setTimeout = (fn, delay, ...args) => delay === 3000 ? (poll = fn, 0) : originalTimeout(fn, delay, ...args);
+  window.jiuwenDesktop = { isElectron: true, getMarketAppResources: async () => ({
+    apps: [], system,
+  }) };
+  let ctx;
+  try {
+    ctx = await mount(method => response(method));
+    const cpu = find('app-market-system-cpu-percent');
+    const memory = find('app-market-system-memory-percent');
+    assert.equal(cpu.className, 'app-market-usage-low');
+    assert.equal(memory.className, 'app-market-usage-low');
+    system = { cpuPercent: 50, memoryPercent: 84.9, sampledAt: 6000 };
+    await act(async () => poll());
+    assert.equal(cpu.className, 'app-market-usage-medium');
+    assert.equal(memory.className, 'app-market-usage-medium');
+    system = { cpuPercent: 85, memoryPercent: 25, sampledAt: 9000 };
+    await act(async () => poll());
+    assert.equal(cpu.className, 'app-market-usage-high');
+    assert.equal(memory.className, 'app-market-usage-low');
+    assert.equal(find('app-market-resources-warning'), null);
+    system = { cpuPercent: null, memoryPercent: 100, sampledAt: 12000 };
+    await act(async () => poll());
+    assert.equal(cpu.className, 'app-market-usage-unknown');
+    assert.equal(cpu.textContent, '—');
+    assert.equal(memory.className, 'app-market-usage-high');
+  } finally {
+    if (ctx) await ctx.close();
+    globalThis.setTimeout = originalTimeout;
+    delete window.jiuwenDesktop;
+  }
 });

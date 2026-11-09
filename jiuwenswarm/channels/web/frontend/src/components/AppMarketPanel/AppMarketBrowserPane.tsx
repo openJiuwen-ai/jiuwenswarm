@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Maximize2, Minimize2, Minus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/Button/Button';
+import { AppMarketResources } from './AppMarketResources';
 import { webAppViews } from './webAppViews';
 
 export function AppMarketBrowserPane({ appId, name, controls, onError }: {
@@ -73,8 +74,10 @@ export function AppMarketBrowserPane({ appId, name, controls, onError }: {
 
   return (
     <section className="app-market-browser-pane" aria-label={name} data-testid="app-market-browser-pane" data-variant={appId}>
-      {controls && <div className="app-market-browser-toolbar" data-testid="app-market-browser-toolbar">
+      <div className="app-market-browser-toolbar" data-testid="app-market-browser-toolbar">
         <span className="min-w-0 flex-1 truncate" data-testid="app-market-browser-title">{name} · WorkSwarm</span>
+        <AppMarketResources appId={appId} />
+        {controls && <>
         <Button size="sm" variant="quiet" icon={controls.expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
           aria-label={t(controls.expanded ? 'appMarket.restorePane' : 'appMarket.expandPane')}
           title={t(controls.expanded ? 'appMarket.restorePane' : 'appMarket.expandPane')}
@@ -83,7 +86,8 @@ export function AppMarketBrowserPane({ appId, name, controls, onError }: {
           title={t('appMarket.hidePane')} data-testid="app-market-browser-hide" onClick={controls.onHide} />
         <Button size="sm" variant="quiet" icon={<X size={16} />} aria-label={t('appMarket.closePane')}
           title={t('appMarket.closePane')} data-testid="app-market-browser-close" onClick={controls.onClose} />
-      </div>}
+        </>}
+      </div>
       <div ref={viewport} className="app-market-browser-viewport" data-testid="app-market-browser-viewport">
         {hostError && <p role="alert" data-testid="app-market-browser-error">{t('appMarket.openFailed')}</p>}
       </div>

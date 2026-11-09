@@ -11,6 +11,7 @@ import {
   type InstanceInfo,
 } from './appMarketViews';
 import { webAppViews } from './webAppViews';
+import { AppMarketResources } from './AppMarketResources';
 import './AppMarketPanel.css';
 
 const PANE_HINT_DISMISSED = 'app-market-pane-hint-dismissed';
@@ -285,7 +286,7 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
   return (
     <div className={`app-market-layout${!isElectron && activeApp && paneExpanded ? ' app-market-layout-expanded' : ''}`} data-testid="app-market-panel">
       <div className="app-market-list flex min-h-0 flex-1 flex-col gap-5" data-testid="app-market-list">
-      <div className="page-shell flex shrink-0 items-center justify-between gap-4">
+      <div className="page-shell flex shrink-0 flex-wrap items-center justify-between gap-4">
         <CategoryTabs<Tab>
           items={[
             { value: 'all', label: t('appMarket.allApps') },
@@ -294,6 +295,8 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
           value={activeTab}
           onChange={setActiveTab}
         />
+        <div className="ml-auto flex items-center gap-2" data-testid="app-market-resource-actions">
+        <AppMarketResources />
         <button
           type="button"
           className="page-card-action shrink-0"
@@ -307,6 +310,7 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
         >
           <RefreshCw size={16} aria-hidden="true" />
         </button>
+        </div>
       </div>
       {windowHintVisible && (
         <div

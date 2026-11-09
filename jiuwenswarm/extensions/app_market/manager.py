@@ -5,12 +5,14 @@ import logging
 import asyncio
 import hashlib
 import base64
+import time
 from pathlib import Path
 from typing import Any
 from html.parser import HTMLParser
 from urllib.parse import quote
 
 from .app_market.market_service import MarketService
+from .resources import AppServiceResources, SystemResources
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,9 @@ class AppMarketManager:
     def __init__(self, data_dir: str) -> None:
         self._service = MarketService(data_dir)
         self._recovery_tasks = {}
+        self._resources = AppServiceResources()
+        self._system_resources = SystemResources()
+        self._resources_lock = asyncio.Lock()
 
     async def publish_app(self, entry_path: str, source_session: str, owner_id: str = "") -> dict[str, Any]:
         """Adapt a generated HTML entry after the user confirms publishing."""
@@ -157,6 +162,17 @@ class AppMarketManager:
                 }
             )
         return {"instances": result}
+
+    async def resources(self, owner_id: str = "") -> dict[str, Any]:
+        async with self._resources_lock:
+            instances = self._service.list_instances()
+            readings = await asyncio.to_thread(
+                self._resources.sample, instances,
+            )
+            allowed = {item.app_id for item in instances if item.owner_id == owner_id}
+            apps = [item for item in readings if item["appId"] in allowed]
+            system = await asyncio.to_thread(self._system_resources.sample)
+            return {"apps": apps, "system": system, "sampledAt": time.time() * 1000}
 
     async def start_app(self, app_id: str, owner_id: str = "") -> dict[str, Any] | None:
         instance = await self._service.start_app(app_id, owner_id=owner_id)

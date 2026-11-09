@@ -132,6 +132,7 @@
 | `components/ExtensionsHubPanel` | `extensions-hub-panel` | 扩展中心面板 |
 | `components/HarnessPackagePanel` | `harness-package-panel` | harness 包面板 |
 | `components/UpdatePanel` | `update-panel` | 更新面板 |
+| `components/AppMarketPanel` | `app-market` | 应用市场、应用预览与资源展示 |
 | `components/BrowserPanel` | `browser-panel` | 浏览器面板 |
 | `components/DesktopBrowserPane` | `desktop-browser` | Electron 浏览器面板及成员页面切换 |
 | `components/ChannelsPanel` | `channels-panel` | 频道面板 |

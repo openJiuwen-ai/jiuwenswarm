@@ -89,6 +89,11 @@ class AppMarketPlugin(ApplicationPluginExtension):
             result = self._manager.list_instances(owner(ws))
             await channel.send_response(ws, req_id, ok=True, payload=result)
 
+        async def handle_resources(ws, req_id, params, session_id):
+            del params, session_id
+            result = await self._manager.resources(owner(ws))
+            await channel.send_response(ws, req_id, ok=True, payload=result)
+
         async def handle_start(ws, req_id, params, session_id):  # noqa: ANN001
             del session_id
             app_id = params.get("app_id", "") if isinstance(params, dict) else ""
@@ -165,6 +170,7 @@ class AppMarketPlugin(ApplicationPluginExtension):
         channel.register_method("app_market.publish", handle_publish)
         channel.register_method("app_market.list", handle_list)
         channel.register_method("app_market.instances", handle_instances)
+        channel.register_method("app_market.resources", handle_resources)
         channel.register_method("app_market.start", handle_start)
         channel.register_method("app_market.stop", handle_stop)
         channel.register_method("app_market.delete", handle_delete)

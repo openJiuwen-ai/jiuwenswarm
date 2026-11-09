@@ -6,6 +6,8 @@ import type { AppMarketPreview } from '../../stores/sessionStore';
 import { Button } from '../ui/Button/Button';
 import { toast } from '../ui/Toast/toastStore';
 import { openAppMarketView, type InstanceInfo } from './appMarketViews';
+import { AppMarketResources } from './AppMarketResources';
+import './AppMarketPanel.css';
 
 type EditorApp = { app_id: string; name: string; editor_session_id: string };
 
@@ -27,7 +29,9 @@ export function AppMarketEditorAction({ sessionId, onOpen }: {
   }, [sessionId]);
 
   if (!app) return null;
-  return <Button variant="quiet" size="sm" icon={<AppWindow size={16} aria-hidden="true" />}
+  return <div className="flex min-w-0 flex-wrap items-center gap-2" data-testid="app-market-editor-actions">
+    <AppMarketResources />
+    <Button variant="quiet" size="sm" icon={<AppWindow size={16} aria-hidden="true" />}
     data-testid="app-market-editor-open-preview" disabled={loading}
     title={t('appMarket.openPreview')} onClick={() => {
       if (loading) return;
@@ -42,5 +46,6 @@ export function AppMarketEditorAction({ sessionId, onOpen }: {
       })().catch(() => {
         if (active.current) toast.open({ content: t('appMarket.openFailed'), variant: 'error' });
       }).finally(() => { if (active.current) setLoading(false); });
-    }}>{t('appMarket.openPreview')}</Button>;
+    }}>{t('appMarket.openPreview')}</Button>
+  </div>;
 }

@@ -1,6 +1,9 @@
+const { createMarketResourceMonitor } = require('./app_market_resources.cjs');
+
 // App pages keep one WebContentsView while moving between their window and editor pane.
-function createAppMarketWindows(BaseWindow, WebContentsView, getOwner, getIcon) {
+function createAppMarketWindows(BaseWindow, WebContentsView, getOwner, getIcon, metrics, locale) {
   const windows = new Map();
+  const resources = createMarketResourceMonitor(windows, metrics, locale);
   let ownerCloseRegistered = false;
   const isWebUrl = value => {
     try { return ['http:', 'https:'].includes(new URL(value).protocol); } catch { return false; }
@@ -76,14 +79,16 @@ function createAppMarketWindows(BaseWindow, WebContentsView, getOwner, getIcon) 
     } });
     const contents = view.webContents;
     win.contentView.addChildView(view);
-    const entry = { window: win, view, embedded: false, entryUrl: null, loadingUrl: null, navigation: 0, hidden: false };
+    const entry = { window: win, view, title: title ? `${String(title)} · WorkSwarm` : 'WorkSwarm', embedded: false, entryUrl: null, loadingUrl: null, navigation: 0, hidden: false };
     windows.set(appId, entry);
+    resources.start();
     win.setMenuBarVisibility(false);
     win.on('resize', () => resizeWindow(entry));
     // With no taskbar button, the market's Open / restore action is the restore entry.
     win.on('minimize', () => { entry.hidden = true; win.hide(); });
     win.on('closed', () => {
       if (windows.get(appId) === entry) windows.delete(appId);
+      resources.stopIfEmpty();
       const owner = getOwner();
       if (entry.embedded && owner && !owner.isDestroyed()) owner.contentView.removeChildView(view);
       if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
@@ -154,7 +159,7 @@ function createAppMarketWindows(BaseWindow, WebContentsView, getOwner, getIcon) 
     entry.view.webContents.reload();
     return true;
   };
-  return { open, close, setViewport, reload };
+  return { open, close, setViewport, reload, getResources: resources.read };
 }
 
 module.exports = { createAppMarketWindows };
