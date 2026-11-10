@@ -13613,7 +13613,11 @@ class AgentWebSocketServer:
             # Hot-reload ProactiveEngine config if available
             should_reload_proactive = not reload_scopes or bool(reload_scopes & {"model", "proactive", "agent_runtime"})
             if self._proactive_engine is not None and should_reload_proactive:
-                cfg = get_config()
+                from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+                    resolved_agent_config_or_yaml,
+                )
+
+                cfg = resolved_agent_config_or_yaml()
                 proactive_cfg = cfg.get("proactive_recommendation", {})
                 self._proactive_engine.reload_config(proactive_cfg)
                 # 重建 proactive agent——它启动时建一次，模型配置固化在实例里。

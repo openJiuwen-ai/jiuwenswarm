@@ -181,9 +181,11 @@ async def _ensure_server_initialized_async() -> None:
 
     # ---------- ProactiveEngine 初始化 ----------
     try:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+            resolved_agent_config_or_yaml,
+        )
         from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
-        full_cfg = get_config()
+        full_cfg = resolved_agent_config_or_yaml()
         proactive_config = (
             full_cfg.get("proactive_recommendation", {})
             if isinstance(full_cfg, dict)

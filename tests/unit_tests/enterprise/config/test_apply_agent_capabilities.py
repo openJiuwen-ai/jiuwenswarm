@@ -62,3 +62,12 @@ def test_auto_memory_sets_the_top_level_switch() -> None:
         {"auto_memory": {"enabled": True}},
     )
     assert merged["auto_memory_enabled"] is True
+
+
+def test_missing_section_is_created_from_the_overlay() -> None:
+    merged = apply_capability_bodies(
+        {},
+        {"proactive_recommendation": {"enabled": True, "max_recommend_per_day": 3}},
+    )
+    assert merged["proactive_recommendation"]["enabled"] is True
+    assert merged["proactive_recommendation"]["max_recommend_per_day"] == 3

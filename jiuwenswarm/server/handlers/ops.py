@@ -323,7 +323,11 @@ async def handle_agent_reload_config(ctx: RequestContext) -> None:
         )
         engine = ctx.services.proactive_engine
         if engine is not None and should_reload_proactive:
-            cfg = get_config()
+            from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+                resolved_agent_config_or_yaml,
+            )
+
+            cfg = resolved_agent_config_or_yaml()
             proactive_cfg = cfg.get("proactive_recommendation", {})
             engine.reload_config(proactive_cfg)
             try:

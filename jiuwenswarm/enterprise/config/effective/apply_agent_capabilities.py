@@ -24,6 +24,7 @@ _SECTION_TABLES: tuple[tuple[str, str], ...] = (
     ("a2ui_config", "a2ui"),
     ("a4p_config", "a4p"),
     ("symphony_config", "symphony"),
+    ("proactive_recommendation_config", "proactive_recommendation"),
 )
 _AUTO_MEMORY_TABLE = "auto_memory_config"
 
@@ -89,7 +90,7 @@ async def apply_agent_capability_configs(
     config: dict[str, Any],
     loaded: Any,
 ) -> dict[str, Any]:
-    """按这份生效配置的 Agent 模板，读取能力表并覆盖。"""
+    """按这份生效配置的 Agent 模板，读取五张能力表并覆盖。"""
     from jiuwenswarm.enterprise import is_enterprise
 
     if not is_enterprise() or loaded is None or not isinstance(config, dict):

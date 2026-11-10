@@ -64,9 +64,11 @@ async def start_optional_preparation(
                 return await asyncio.shield(task) is not False
         return True
 
-    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+        resolved_agent_config_or_yaml,
+    )
 
-    config = get_config()
+    config = resolved_agent_config_or_yaml()
     proactive_config = config.get("proactive_recommendation", {}) if isinstance(config, dict) else {}
 
     async def prepare_proactive() -> bool:
