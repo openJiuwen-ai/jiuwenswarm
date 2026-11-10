@@ -14,7 +14,7 @@ from jiuwenswarm.extensions.video_duplex.backend import video_search
 
 
 def seed(store, label, *, owner="alice", session="voice", status="completed", answer=None):
-    task = TaskService._new(owner, session, label, {})
+    task = TaskService.new_task(owner, session, label, {})
     task.update(status=status, result={"answer": answer or "Answer " + label})
     with store.transaction() as db:
         store.put(db, task)

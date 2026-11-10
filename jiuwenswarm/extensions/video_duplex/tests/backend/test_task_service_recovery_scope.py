@@ -47,7 +47,7 @@ async def test_submit_dispatches_only_its_own_conversation(tmp_path):
     store = TaskStore(tmp_path / "queued.sqlite")
     executor = Executor()
     service = TaskService(store, executor)
-    bob = service._new("bob", "task-duplex:bob", "bob pending work", {})
+    bob = service.new_task("bob", "task-duplex:bob", "bob pending work", {})
     with store.transaction() as db:
         store.put(db, bob)
     try:
@@ -67,7 +67,7 @@ async def test_submit_leaves_other_conversations_untouched(tmp_path):
     store = TaskStore(tmp_path / "running.sqlite")
     executor = Executor()
     service = TaskService(store, executor)
-    bob = service._new("bob", "task-duplex:bob", "bob running work", {})
+    bob = service.new_task("bob", "task-duplex:bob", "bob running work", {})
     bob.update(status="running", interaction={"state": "accepted"})
     with store.transaction() as db:
         store.put(db, bob)
@@ -93,7 +93,7 @@ async def test_repeated_snapshot_does_not_recover_a_conversation_twice(tmp_path)
     store = TaskStore(tmp_path / "repeat.sqlite")
     executor = Executor()
     service = TaskService(store, executor)
-    bob = service._new("bob", "task-duplex:bob", "bob running work", {})
+    bob = service.new_task("bob", "task-duplex:bob", "bob running work", {})
     bob.update(status="running")
     with store.transaction() as db:
         store.put(db, bob)

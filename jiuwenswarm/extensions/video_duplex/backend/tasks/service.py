@@ -393,6 +393,11 @@ class TaskService:
             output_closed=False,
         )
 
+    # Public alias for callers outside the class (extension tests seed tasks in
+    # a second conversation); reaching for ``_new`` there is a G.CLS.11
+    # protected-access violation.
+    new_task = _new
+
     def submit(self, owner, session, command_id, instruction, request=None):
         # WebChannel permits an absent user; persist it as an exact empty scope.
         # None remains invalid because store reads use it to mean "all owners".
