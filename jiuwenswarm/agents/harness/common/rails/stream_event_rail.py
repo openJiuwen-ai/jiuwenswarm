@@ -1194,12 +1194,18 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             payload["role"] = self._role
         try:
             if phase == "llm_call_start":
-                from jiuwenswarm.server.runtime.session.history_artifacts import put_prompt
-                from jiuwenswarm.server.runtime.session.history_io import run_history_io
-
+                # Core rebuilds the system prompt and context window after all
+                # before_model_call rails. These inputs are only a preview.
                 prompt_preview = self._summarize_call_prompt(ctx, max_chars=2048)
                 if prompt_preview:
                     payload["prompt"] = prompt_preview
+            elif phase == "llm_call_end":
+                from jiuwenswarm.server.runtime.session.history_artifacts import put_prompt
+                from jiuwenswarm.server.runtime.session.history_io import run_history_io
+
+                # AFTER_MODEL_CALL exposes the final messages/tools sent to the
+                # model, including injected rules and context processing.
+                if getattr(ctx.inputs, "messages", None):
                     try:
                         payload["payload_refs"] = {"prompt": await run_history_io(
                             put_prompt, self._artifact_session_scope(session, self._resolve_sid(ctx, session)),
@@ -1207,8 +1213,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                             getattr(ctx.inputs, "tools", None) or [],
                         )}
                     except OSError:
-                        logger.warning("[StreamEventRail] prompt artifact unavailable; emitting preview", exc_info=True)
-            elif phase == "llm_call_end":
+                        logger.warning("[StreamEventRail] prompt artifact unavailable; emitting call end", exc_info=True)
                 response_text = self._extract_response_text(ctx)
                 if response_text:
                     payload["content"] = response_text
@@ -1270,12 +1275,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
     @staticmethod
     def _summarize_call_prompt(ctx: AgentCallbackContext, max_chars: int | None = None) -> str | None:
-        """Serialize the full prompt sent to the model.
+        """Format the available input preview for ``llm_call_start``.
 
-        Carried inside ``llm_call_start`` so the IDE can show the exact final
-        prompt: system message included, tool results kept, no truncation by
-        default. Inline base64 images are replaced with ``[image]`` to keep the
-        dump readable.
+        Core finalizes the prompt after the before-model rails. The exact input
+        is externalized separately on ``llm_call_end``. Inline base64 images
+        are replaced with ``[image]`` to keep the preview readable.
         """
         messages = getattr(ctx.inputs, "messages", None) or []
         if not messages:

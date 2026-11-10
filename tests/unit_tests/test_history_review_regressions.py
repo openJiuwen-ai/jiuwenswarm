@@ -294,7 +294,7 @@ def test_recovery_budget_is_shared_by_concurrent_event_loops():
 
 
 @pytest.mark.asyncio
-async def test_prompt_storage_failure_still_emits_the_call_start_event(monkeypatch):
+async def test_prompt_storage_failure_still_emits_call_start_and_end(monkeypatch):
     from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
     from tests.unit_tests.agentserver.test_stream_event_rail_wire_budget import _StreamSession
 
@@ -302,11 +302,43 @@ async def test_prompt_storage_failure_still_emits_the_call_start_event(monkeypat
     callback = SimpleNamespace(session=session, context=None, extra={},
                                inputs=SimpleNamespace(messages=[UserMessage(content="QUESTION " * 2000)], tools=[]))
     monkeypatch.setattr(artifacts, "put_prompt", lambda *_args: (_ for _ in ()).throw(OSError("disk full")))
-    await JiuSwarmStreamEventRail().before_model_call(callback)
+    rail = JiuSwarmStreamEventRail()
+    await rail.before_model_call(callback)
     assert len(session.events) == 1 and session.events[0].type == "llm_call_start"
     payload = session.events[0].payload
     assert "QUESTION" in payload["prompt"] and len(payload["prompt"]) < 4096
     assert "payload_refs" not in payload
+    await rail._emit_llm_call_signal(callback, "llm_call_end")
+    assert len(session.events) == 2 and session.events[1].type == "llm_call_end"
+    assert "payload_refs" not in session.events[1].payload
+
+
+@pytest.mark.asyncio
+async def test_prompt_artifact_uses_final_model_input_instead_of_the_before_model_preview(stored, monkeypatch):
+    from openjiuwen.core.foundation.llm import SystemMessage
+    from jiuwenswarm.agents.harness.common.rails import stream_event_rail as rail_module
+    from tests.unit_tests.agentserver.test_stream_event_rail_wire_budget import _StreamSession
+
+    session = _StreamSession()
+    monkeypatch.setattr(session, "get_session_id", lambda: stored.sid)
+    monkeypatch.setattr(rail_module, "record_model_token_usage", AsyncMock())
+    rail = rail_module.JiuSwarmStreamEventRail()
+    monkeypatch.setattr(rail, "_emit_context_usage", AsyncMock())
+    callback = SimpleNamespace(session=session, context=None, extra={}, inputs=SimpleNamespace(
+        messages=[UserMessage(content="PREVIEW")], tools=[], response=None,
+    ))
+    await rail.before_model_call(callback)
+    assert "payload_refs" not in session.events[0].payload
+
+    final_messages = [SystemMessage(content="FINAL SYSTEM RULES"), UserMessage(content="FINAL QUESTION")]
+    callback.inputs.messages = final_messages
+    callback.inputs.tools = [{"name": "final_tool", "parameters": {"type": "object"}}]
+    await rail.after_model_call(callback)
+    assert [event.type for event in session.events] == ["llm_call_start", "llm_call_end"]
+    reference = session.events[1].payload["payload_refs"]["prompt"]
+    restored = json.loads(artifacts.read_artifact_chunk(stored.sid, reference["sha256"])["content"])
+    assert [message["content"] for message in restored["messages"]] == ["FINAL SYSTEM RULES", "FINAL QUESTION"]
+    assert restored["tools"] == callback.inputs.tools
 
 
 @pytest.mark.asyncio
