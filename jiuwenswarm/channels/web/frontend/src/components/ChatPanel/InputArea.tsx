@@ -14,7 +14,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { AtSign, CircleX, ClipboardList, FileText, Loader2, Plus, Square, Target, X } from 'lucide-react';
+import { AtSign, CircleX, ClipboardList, FileText, Loader2, Plus, Square, Target, Users, X } from 'lucide-react';
 import { FileTypeIcon, getFileTypeIconKeyFromFilename, type FileTypeIconKey } from './FileTypeIcon';
 import { useSpeechRecognition } from '../../hooks';
 
@@ -43,6 +43,12 @@ import { isEnterprise } from '../../edition';
 import { FEATURE_PERSONAL_CONTEXT_UI } from '../../featureFlags';
 import { webRequest } from '../../services/webClient';
 import { getSkillAvatar } from '../../utils/skillAvatar';
+import { isSkillVisibleInPicker, isSwarmSkillItem } from '../../utils/swarmSkillFilter';
+import {
+  ensureBindingAndBindSession,
+  listTeamTemplates,
+  type TeamTemplateSummary,
+} from '../../features/teamCatalog/teamCatalogApi';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
 import {
   isLikelyAbsolutePath,
@@ -78,6 +84,10 @@ type InputAreaSkillItem = {
   enabled?: boolean;
   installed?: boolean;
   source_type?: 'prebuilt' | 'user' | string;
+  /** SKILL.md frontmatter kind；与 skill_type 双读判定 Swarm */
+  kind?: string;
+  /** 列表字段；与 kind 双读用于 Swarm 过滤 / 分组 */
+  skill_type?: 'skill' | 'skillpack' | 'swarm_skill' | 'multimodal_skill' | string;
 };
 
 /** 已安装插件信息（用于判定技能是否已安装） */
@@ -184,6 +194,8 @@ interface InputAreaProps {
    * 真的空闲，空闲才会真正发送，不会重复触发。
    */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
+  /** 专家团绑定前确保真实 session 已创建（欢迎页 new → session.create） */
+  ensureSessionForExpertTeam?: () => Promise<string>;
 }
 
 export type InputAreaHandle = {
@@ -534,6 +546,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onSetGoal,
     onClearGoal,
     onDrainTaskQueueIfIdle,
+    ensureSessionForExpertTeam,
   },
   ref,
 ) {
@@ -565,6 +578,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [modeMenuAnchor, setModeMenuAnchor] = useState<DOMRect | null>(null);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [attachMenuAnchor, setAttachMenuAnchor] = useState<DOMRect | null>(null);
+  const [teamTemplates, setTeamTemplates] = useState<TeamTemplateSummary[]>([]);
+  const [teamTemplatesLoading, setTeamTemplatesLoading] = useState(false);
+  const [teamBindError, setTeamBindError] = useState<string | null>(null);
+  const [teamBinding, setTeamBinding] = useState(false);
+  const [expertTeamFlyoutOpen, setExpertTeamFlyoutOpen] = useState(false);
+  /** 右侧独立框锚点：用加号菜单整体矩形，保证下沿对齐 */
+  const [expertTeamFlyoutMenuRect, setExpertTeamFlyoutMenuRect] = useState<DOMRect | null>(null);
   const inputRef = useRef<HTMLDivElement>(null);
   /** 保存技能插入前的光标位置，用于在光标处插入 chip */
   const savedRangeRef = useRef<Range | null>(null);
@@ -573,6 +593,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const modeMenuPortalRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const attachMenuPortalRef = useRef<HTMLDivElement>(null);
+  const expertTeamFlyoutRef = useRef<HTMLDivElement>(null);
+  const expertTeamTriggerRef = useRef<HTMLButtonElement>(null);
+  const expertTeamCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoSendTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attachmentMenuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attachmentMenuOpenedByLongPressRef = useRef(false);
@@ -588,6 +611,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? []) as InputAreaTeamMember[];
+  const updateSession = useSessionStore((s) => s.updateSession);
   const currentSession = useSessionStore((s) => s.currentSession);
   const activeSession = useSessionStore((s) => {
     if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) return null;
@@ -616,6 +640,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isAgentMode = mode === 'agent';
   const isTeamMode = mode === 'team';
   const isAutoHarnessMode = mode === 'auto_harness';
+  const boundExpertTeamName = String(
+    activeSession?.team_name || currentSession?.team_name || '',
+  ).trim();
   const isWorkContextLocked = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const showWorkContextRow = !isEnterprise() && activeSessionId === NEW_CONVERSATION_ID;
   const enterpriseLocked = isEnterprise();
@@ -1275,15 +1302,45 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     };
   }, [isModeMenuOpen]);
 
+  const clearExpertTeamCloseTimer = useCallback(() => {
+    if (expertTeamCloseTimerRef.current) {
+      clearTimeout(expertTeamCloseTimerRef.current);
+      expertTeamCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const openExpertTeamFlyout = useCallback(() => {
+    clearExpertTeamCloseTimer();
+    const menuRect = attachMenuPortalRef.current?.getBoundingClientRect() ?? null;
+    if (!menuRect) return;
+    setExpertTeamFlyoutMenuRect(menuRect);
+    setExpertTeamFlyoutOpen(true);
+  }, [clearExpertTeamCloseTimer]);
+
+  const scheduleCloseExpertTeamFlyout = useCallback(() => {
+    clearExpertTeamCloseTimer();
+    expertTeamCloseTimerRef.current = setTimeout(() => {
+      setExpertTeamFlyoutOpen(false);
+      expertTeamCloseTimerRef.current = null;
+    }, 120);
+  }, [clearExpertTeamCloseTimer]);
+
   useEffect(() => {
-    if (!attachMenuOpen) return;
+    if (!attachMenuOpen) {
+      clearExpertTeamCloseTimer();
+      setExpertTeamFlyoutOpen(false);
+      return;
+    }
 
     const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
       if (
-        !attachMenuRef.current?.contains(event.target as Node) &&
-        !attachMenuPortalRef.current?.contains(event.target as Node)
+        !attachMenuRef.current?.contains(target) &&
+        !attachMenuPortalRef.current?.contains(target) &&
+        !expertTeamFlyoutRef.current?.contains(target)
       ) {
         setAttachMenuOpen(false);
+        setExpertTeamFlyoutOpen(false);
       }
     };
 
@@ -1292,7 +1349,92 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown);
     };
-  }, [attachMenuOpen]);
+  }, [attachMenuOpen, clearExpertTeamCloseTimer]);
+
+  useEffect(() => () => clearExpertTeamCloseTimer(), [clearExpertTeamCloseTimer]);
+
+  useEffect(() => {
+    if (!attachMenuOpen || !isTeamMode) {
+      setTeamBindError(null);
+      return;
+    }
+    let cancelled = false;
+    setTeamTemplatesLoading(true);
+    setTeamBindError(null);
+    void listTeamTemplates()
+      .then((items) => {
+        if (!cancelled) setTeamTemplates(items);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setTeamTemplates([]);
+          setTeamBindError(err instanceof Error ? err.message : String(err));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setTeamTemplatesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [attachMenuOpen, isTeamMode]);
+
+  const handleBindExpertTeam = useCallback(
+    async (template: TeamTemplateSummary) => {
+      if (!isTeamMode || teamBinding || isProcessing) return;
+      const templateId = String(template.template_id || '').trim();
+      if (!templateId) return;
+      setTeamBinding(true);
+      setTeamBindError(null);
+      try {
+        // 欢迎页 ``new`` 没有落盘 session，必须先 create 再 bind，否则后端报 session not found。
+        const sessionId = ensureSessionForExpertTeam
+          ? await ensureSessionForExpertTeam()
+          : (activeSessionId && activeSessionId !== NEW_CONVERSATION_ID ? activeSessionId : '');
+        if (!sessionId || sessionId === NEW_CONVERSATION_ID) {
+          throw new Error(t('multiSession.errors.create'));
+        }
+        const result = await ensureBindingAndBindSession({
+          sessionId,
+          templateId,
+          teamName: template.team_name || templateId,
+        });
+        // Expert-team XOR Swarm: drop pending skill chips so chat.send cannot
+        // still carry a Swarm id after bind (host would reject).
+        const pending = useSessionStore.getState().getRuntime(sessionId)?.selectedSkills ?? [];
+        useSessionStore.getState().clearSelectedSkills(sessionId);
+        const editor = inputRef.current;
+        if (editor && pending.length > 0) {
+          pending.forEach((skillName) => {
+            editor.querySelectorAll('[data-skill]').forEach((chip) => {
+              if (chip.getAttribute('data-skill') !== skillName) return;
+              const next = chip.nextSibling;
+              if (next && next.nodeType === Node.TEXT_NODE && next.textContent === '\u200B') {
+                next.remove();
+              }
+              chip.remove();
+            });
+          });
+        }
+        updateSession(sessionId, { team_name: result.team_name, mode: 'team' });
+        setExpertTeamFlyoutOpen(false);
+        setAttachMenuOpen(false);
+      } catch (err) {
+        setTeamBindError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setTeamBinding(false);
+      }
+    },
+    [
+      activeSessionId,
+      ensureSessionForExpertTeam,
+      isProcessing,
+      isTeamMode,
+      t,
+      teamBinding,
+      updateSession,
+    ],
+  );
 
   useEffect(() => {
     if (!attachmentMenuId) return;
@@ -2013,8 +2155,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handleModeSwitch = useCallback(async (targetMode: AgentMode) => {
     if (isProcessing || hasHistory || mode === targetMode) return;
+    // Agent ↔ Team skill pools differ (ordinary vs swarm); drop selection on switch.
+    const sid = useChatStore.getState().activeSessionId;
+    if (sid) {
+      const pending = useSessionStore.getState().getRuntime(sid)?.selectedSkills ?? [];
+      pending.forEach((skillName) => removeSkillChip(skillName));
+      useSessionStore.getState().clearSelectedSkills(sid);
+    }
     onSwitchMode(targetMode);
-  }, [isProcessing, hasHistory, mode, onSwitchMode]);
+  }, [isProcessing, hasHistory, mode, onSwitchMode, removeSkillChip]);
 
   const handleModeSelect = useCallback(async (targetMode: AgentMode) => {
     setIsModeMenuOpen(false);
@@ -2438,8 +2587,141 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     </button>
                   );
                 })()}
+                {isTeamMode && (
+                  <button
+                    ref={expertTeamTriggerRef}
+                    type="button"
+                    className="chat-mode-select__option"
+                    role="menuitem"
+                    aria-haspopup="menu"
+                    aria-expanded={expertTeamFlyoutOpen}
+                    disabled={teamBinding || isProcessing}
+                    onMouseEnter={openExpertTeamFlyout}
+                    onMouseLeave={scheduleCloseExpertTeamFlyout}
+                    onFocus={openExpertTeamFlyout}
+                    onBlur={scheduleCloseExpertTeamFlyout}
+                  >
+                    <span className="chat-mode-select__option-main">
+                      <span className="chat-mode-select__icon" aria-hidden="true">
+                        <Users className="w-4 h-4" />
+                      </span>
+                      <span className="chat-mode-select__label">
+                        {t('chat.teamSession.label')}
+                      </span>
+                    </span>
+                  </button>
+                )}
               </div>,
               document.body
+            )}
+            {attachMenuOpen && expertTeamFlyoutOpen && expertTeamFlyoutMenuRect && createPortal(
+              <div
+                ref={expertTeamFlyoutRef}
+                className="chat-team-select__menu"
+                role="menu"
+                data-testid="chat-expert-team-picker"
+                style={{
+                  position: 'fixed',
+                  left: Math.max(
+                    12,
+                    Math.min(
+                      expertTeamFlyoutMenuRect.right + 8,
+                      window.innerWidth - 300,
+                    ),
+                  ),
+                  // 下沿与加号面板下沿对齐；内容少时向上伸展，避免悬空
+                  bottom: Math.max(12, window.innerHeight - expertTeamFlyoutMenuRect.bottom),
+                  minHeight: expertTeamFlyoutMenuRect.height,
+                  zIndex: 10000,
+                }}
+                onMouseEnter={() => {
+                  clearExpertTeamCloseTimer();
+                  setExpertTeamFlyoutOpen(true);
+                }}
+                onMouseLeave={scheduleCloseExpertTeamFlyout}
+                onFocus={clearExpertTeamCloseTimer}
+                onBlur={(event) => {
+                  const next = event.relatedTarget as Node | null;
+                  if (next && event.currentTarget.contains(next)) return;
+                  scheduleCloseExpertTeamFlyout();
+                }}
+              >
+                <div className="chat-team-select__hint">
+                  {boundExpertTeamName
+                    ? t('chat.teamSession.boundHint')
+                    : t('chat.teamSession.pickHint')}
+                </div>
+                {teamTemplatesLoading && (
+                  <div className="chat-team-select__state">{t('chat.teamSession.loading')}</div>
+                )}
+                {!teamTemplatesLoading && teamBindError && (
+                  <div className="chat-team-select__state chat-team-select__state--error">
+                    {teamBindError}
+                  </div>
+                )}
+                {!teamTemplatesLoading && !teamBindError && teamTemplates.length === 0 && (
+                  <div className="chat-team-select__state">
+                    {t('chat.teamSession.emptyCatalog')}
+                  </div>
+                )}
+                {!teamTemplatesLoading && teamTemplates.length > 0 && (
+                  <div
+                    className="chat-team-select__list"
+                    aria-label={
+                      boundExpertTeamName
+                        ? t('chat.teamSession.switchPlaceholder')
+                        : t('chat.teamSession.pickPlaceholder')
+                    }
+                  >
+                    {teamTemplates.map((item) => {
+                      const itemTeamName = String(
+                        item.team_name || item.template_id || '',
+                      ).trim();
+                      const isCurrent = Boolean(
+                        boundExpertTeamName
+                        && itemTeamName
+                        && boundExpertTeamName === itemTeamName,
+                      );
+                      return (
+                        <button
+                          key={item.template_id}
+                          type="button"
+                          className={clsx(
+                            'chat-team-select__item',
+                            isCurrent && 'chat-team-select__item--current',
+                          )}
+                          role="menuitem"
+                          aria-current={isCurrent ? 'true' : undefined}
+                          disabled={teamBinding || isProcessing || isCurrent}
+                          title={
+                            isCurrent
+                              ? t('chat.teamSession.current')
+                              : (item.description || undefined)
+                          }
+                          onClick={() => {
+                            void handleBindExpertTeam(item);
+                          }}
+                        >
+                          <div className="chat-team-select__item-main">
+                            <div className="chat-team-select__item-name">
+                              {item.display_name || item.team_name || item.template_id}
+                            </div>
+                            {item.description ? (
+                              <div className="chat-team-select__item-desc">{item.description}</div>
+                            ) : null}
+                          </div>
+                          {isCurrent ? (
+                            <span className="chat-team-select__item-badge">
+                              {t('chat.teamSession.current')}
+                            </span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>,
+              document.body,
             )}
           </div>
           <div
@@ -2539,11 +2821,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
           )}
 
-          {!isTeamMode && <SkillSelector
+          <SkillSelector
+            isTeamMode={isTeamMode}
             onNavigateToSkills={onNavigateToSkills}
             onInsertSkill={insertSkillChip}
             onRemoveSkill={removeSkillChip}
-          />}
+          />
 
           {goalTagVisible && (
             <div className="chat-goal-tag">
@@ -3208,8 +3491,64 @@ function PermissionSelector({
   );
 }
 
-/** 输入栏右侧的「技能」下拉，展示已安装技能（结构与技能页卡片保持一致） */
-function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
+function SkillPickerRow({
+  skill,
+  selected,
+  badge,
+  onToggle,
+  addLabel,
+  removeLabel,
+  noDescription,
+}: {
+  skill: InputAreaSkillItem;
+  selected: boolean;
+  badge: string | null;
+  onToggle: (skillName: string) => void;
+  addLabel: string;
+  removeLabel: string;
+  noDescription: string;
+}) {
+  const avatar = getSkillAvatar(skill.name);
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(skill.name)}
+      className={clsx(
+        'chat-skill-select__item',
+        selected && 'chat-skill-select__item--selected',
+      )}
+      aria-pressed={selected}
+      title={selected ? removeLabel : addLabel}
+    >
+      <div className={`chat-skill-select__avatar ${avatar.color}`}>
+        {avatar.firstChar}
+      </div>
+      <div className="chat-skill-select__item-main">
+        <div className="chat-skill-select__item-name-row">
+          <div className="chat-skill-select__item-name">{skill.display_name || skill.name}</div>
+          {badge ? <span className="chat-skill-select__badge">{badge}</span> : null}
+        </div>
+        <div className="chat-skill-select__item-desc">
+          {skill.description || noDescription}
+        </div>
+      </div>
+      {selected && (
+        <svg className="chat-skill-select__item-check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+/** 输入栏右侧「技能」下拉（v2）：Agent 藏 Swarm；有团只普通；无团分组 */
+function SkillSelector({
+  isTeamMode,
+  onNavigateToSkills,
+  onInsertSkill,
+  onRemoveSkill,
+}: {
+  isTeamMode: boolean;
   onNavigateToSkills?: () => void;
   onInsertSkill?: (skillName: string) => void;
   onRemoveSkill?: (skillName: string) => void;
@@ -3217,6 +3556,15 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? []);
+  const sessions = useSessionStore((s) => s.sessions);
+  const currentSession = useSessionStore((s) => s.currentSession);
+  const boundTeamName = useMemo(() => {
+    if (!activeSessionId) return '';
+    const session =
+      sessions.find((item) => item.session_id === activeSessionId)
+      || (currentSession?.session_id === activeSessionId ? currentSession : null);
+    return String(session?.team_name || '').trim();
+  }, [activeSessionId, sessions, currentSession]);
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -3244,12 +3592,15 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
     [installedSkillMap],
   );
 
-  // 企业版不向客户提供内置技能的选择入口
+  // 单 Agent：隐藏 Swarm；有团：只普通；无团：普通 + Swarm（列表分组展示）。
   const installedSkills = useMemo(
-    () => skills.filter(
-      (s) => isSkillInstalled(s) && s.enabled !== false && !(isEnterprise() && s.source_type === 'builtin'),
-    ),
-    [skills, isSkillInstalled],
+    () =>
+      skills.filter((s) => {
+        if (!isSkillInstalled(s) || s.enabled === false) return false;
+        if (isEnterprise() && s.source_type === 'builtin') return false;
+        return isSkillVisibleInPicker(s, isTeamMode, boundTeamName);
+      }),
+    [skills, isSkillInstalled, isTeamMode, boundTeamName],
   );
 
   // 按名称/描述过滤
@@ -3263,6 +3614,21 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
       return name.includes(q) || displayName.includes(q) || desc.includes(q);
     });
   }, [installedSkills, searchQuery]);
+
+  // Team 无团：分组；其它模式保持扁平列表。
+  const showTeamUnboundGroups = isTeamMode && !boundTeamName;
+  const groupedSkills = useMemo(() => {
+    if (!showTeamUnboundGroups) {
+      return { ordinary: filteredSkills, swarm: [] as InputAreaSkillItem[] };
+    }
+    const ordinary: InputAreaSkillItem[] = [];
+    const swarm: InputAreaSkillItem[] = [];
+    for (const skill of filteredSkills) {
+      if (isSwarmSkillItem(skill)) swarm.push(skill);
+      else ordinary.push(skill);
+    }
+    return { ordinary, swarm };
+  }, [filteredSkills, showTeamUnboundGroups]);
 
   const fetchInstalledSkills = useCallback(async () => {
     if (!activeSessionId) return;
@@ -3313,7 +3679,7 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
     onNavigateToSkills?.();
   }, [onNavigateToSkills]);
 
-  // 点击技能项：已选则移除，未选则追加；保持下拉开启，便于多选
+  // 点击技能项：已选则移除；点另一项则以当前选择为准（Swarm 单选替换，不必先点取消）。
   const handleToggleSkill = useCallback((skillName: string) => {
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
@@ -3321,11 +3687,23 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
     if (selectedSkills.includes(skillName)) {
       store.removeSelectedSkill(sid, skillName);
       onRemoveSkill?.(skillName);
-    } else {
-      store.addSelectedSkill(sid, skillName);
-      onInsertSkill?.(skillName);
+      return;
     }
-  }, [selectedSkills, onInsertSkill, onRemoveSkill]);
+    const skillMeta = skills.find((item) => item.name === skillName);
+    if (skillMeta && isSwarmSkillItem(skillMeta)) {
+      if (boundTeamName) return;
+      // 无团至多 1 个 Swarm：新选中的替换已选 Swarm，无需先点旧项取消。
+      for (const name of selectedSkills) {
+        const meta = skills.find((item) => item.name === name);
+        if (meta && isSwarmSkillItem(meta)) {
+          store.removeSelectedSkill(sid, name);
+          onRemoveSkill?.(name);
+        }
+      }
+    }
+    store.addSelectedSkill(sid, skillName);
+    onInsertSkill?.(skillName);
+  }, [selectedSkills, onInsertSkill, onRemoveSkill, skills, boundTeamName]);
 
   return (
     <div
@@ -3338,14 +3716,20 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
         onClick={() => setIsOpen((open) => !open)}
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        title={t('chat.skillsToggle')}
+        title={t(
+          isTeamMode
+            ? (boundTeamName ? 'chat.skillsToggleTeamBound' : 'chat.skillsToggleTeamUnbound')
+            : 'chat.skillsToggle',
+        )}
         data-testid="chat-skills-trigger"
       >
         <span className="chat-mode-select__value">
           <span className="chat-mode-select__icon" aria-hidden="true">
             <span className="chat-config-icon chat-config-icon--skill" />
           </span>
-          <span className="chat-mode-select__label">{t('chat.skills')}</span>
+          <span className="chat-mode-select__label">
+            {t('chat.skills')}
+          </span>
         </span>
         <svg className="chat-mode-select__chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
           <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
@@ -3376,48 +3760,74 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
             <div className="chat-skill-select__state">{errorMessage}</div>
           )}
           {!loading && !errorMessage && installedSkills.length === 0 && (
-            <div className="chat-skill-select__state">{t('chat.noInstalledSkills')}</div>
+            <div className="chat-skill-select__state">
+                {t(
+                  isTeamMode
+                    ? (boundTeamName
+                      ? 'chat.noInstalledSkillsTeamBound'
+                      : 'chat.noInstalledSwarmSkills')
+                    : 'chat.noInstalledSkills',
+                )}
+            </div>
           )}
           {!loading && !errorMessage && installedSkills.length > 0 && filteredSkills.length === 0 && (
             <div className="chat-skill-select__state">{t('skills.noMatches')}</div>
           )}
           {!loading && !errorMessage && filteredSkills.length > 0 && (
-            <>
-              <div className="chat-skill-select__list">
-                {filteredSkills.map((skill) => {
-                  const avatar = getSkillAvatar(skill.name);
-                  const isSelected = selectedSkills.includes(skill.name);
-                  return (
-                    <button
-                      type="button"
-                      key={skill.name}
-                      onClick={() => handleToggleSkill(skill.name)}
-                      className={clsx(
-                        'chat-skill-select__item',
-                        isSelected && 'chat-skill-select__item--selected',
-                      )}
-                      aria-pressed={isSelected}
-                      title={isSelected ? t('chat.skillsRemove') : t('chat.skillsAdd')}
-                    >
-                      <div className={`chat-skill-select__avatar ${avatar.color}`}>
-                        {avatar.firstChar}
-                      </div>
-                      <div className="chat-skill-select__item-main">
-                        <div className="chat-skill-select__item-name">{skill.display_name || skill.name}</div>
-                        <div className="chat-skill-select__item-desc">
-                          {skill.description || t('skills.noDescription')}
-                        </div>
-                      </div>
-                      {isSelected && (
-                        <svg className="chat-skill-select__item-check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden="true">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
-                        </svg>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </>
+            <div className="chat-skill-select__list">
+              {showTeamUnboundGroups ? (
+                <>
+                  {groupedSkills.ordinary.length > 0 && (
+                    <div className="chat-skill-select__group" role="group" aria-label={t('chat.skillGroupOrdinary')}>
+                      <div className="chat-skill-select__group-title">{t('chat.skillGroupOrdinary')}</div>
+                      {groupedSkills.ordinary.map((skill) => (
+                        <SkillPickerRow
+                          key={skill.name}
+                          skill={skill}
+                          selected={selectedSkills.includes(skill.name)}
+                          badge={null}
+                          onToggle={handleToggleSkill}
+                          addLabel={t('chat.skillsAdd')}
+                          removeLabel={t('chat.skillsRemove')}
+                          noDescription={t('skills.noDescription')}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {groupedSkills.swarm.length > 0 && (
+                    <div className="chat-skill-select__group" role="group" aria-label={t('chat.skillGroupSwarm')}>
+                      <div className="chat-skill-select__group-title">{t('chat.swarmSkillStartCollab')}</div>
+                      <div className="chat-skill-select__group-hint">{t('chat.swarmSkillStartCollabHint')}</div>
+                      {groupedSkills.swarm.map((skill) => (
+                        <SkillPickerRow
+                          key={skill.name}
+                          skill={skill}
+                          selected={selectedSkills.includes(skill.name)}
+                          badge={t('chat.swarmSkillBadge')}
+                          onToggle={handleToggleSkill}
+                          addLabel={t('chat.skillsAdd')}
+                          removeLabel={t('chat.skillsRemove')}
+                          noDescription={t('skills.noDescription')}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                filteredSkills.map((skill) => (
+                  <SkillPickerRow
+                    key={skill.name}
+                    skill={skill}
+                    selected={selectedSkills.includes(skill.name)}
+                    badge={null}
+                    onToggle={handleToggleSkill}
+                    addLabel={t('chat.skillsAdd')}
+                    removeLabel={t('chat.skillsRemove')}
+                    noDescription={t('skills.noDescription')}
+                  />
+                ))
+              )}
+            </div>
           )}
 
           {/* 底部「技能管理」入口 */}

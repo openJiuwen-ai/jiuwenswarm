@@ -2284,10 +2284,6 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
             return True, None
 
         @staticmethod
-        def ensure_team_shared_skills_ready_for_session(*_args, **_kwargs):
-            pytest.fail("active team sessions should not be treated as first requests")
-
-        @staticmethod
         async def prepare_runtime_activation(*_args, **_kwargs):
             pytest.fail("active team sessions should not be recreated")
 
@@ -2349,10 +2345,6 @@ async def test_process_team_message_stream_routes_evolution_interrupt_to_active_
             return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
 
         @staticmethod
-        def ensure_team_shared_skills_ready_for_session(session_id: str, spec: Any):
-            pytest.fail("active evolution interrupt resume should not prepare shared skills")
-
-        @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str):
             pytest.fail("active evolution interrupt resume should not recreate runtime")
 
@@ -2404,8 +2396,6 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
 
-    captured: dict[str, Any] = {}
-
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         runtime_ready = False
         interact_calls: list[tuple[str, Any]] = []
@@ -2446,10 +2436,6 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
             return True, None
 
         @staticmethod
-        def ensure_team_shared_skills_ready_for_session(session_id: str, spec: Any):
-            captured["skills_ready"] = (session_id, spec.team_name)
-
-        @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str):
             raise AssertionError("prepare_runtime_activation should not run for resumed approval")
 
@@ -2488,7 +2474,6 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
     assert _FakeManager.interact_calls == [
         ("sess-team-plan-resume", approval_input),
     ]
-    assert "skills_ready" not in captured
     assert chunks[-1].is_complete is True
 
 
@@ -2524,10 +2509,6 @@ async def test_process_team_message_stream_rejects_orphaned_interactive_input(mo
         @staticmethod
         async def get_swarm_enriched_team_spec(**_kwargs):
             pytest.fail("orphaned interactive inputs should not recreate team runtime")
-
-        @staticmethod
-        def ensure_team_shared_skills_ready_for_session(*_args, **_kwargs):
-            pytest.fail("orphaned interactive inputs should not activate team runtime")
 
         @staticmethod
         async def prepare_runtime_activation(*_args, **_kwargs):
