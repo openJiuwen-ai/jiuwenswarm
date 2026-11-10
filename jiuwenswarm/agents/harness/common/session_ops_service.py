@@ -1582,15 +1582,6 @@ async def refresh_session_context_if_stale(
                     if _msg_key(_r) != _msg_key(_live_msgs[_i]):
                         break
                     _boundary = _i + 1
-                logger.info(
-                    "DBG alignment restored=%d live=%d boundary=%d "
-                    "restored_keys=%r live_keys=%r",
-                    len(_restored_msgs),
-                    len(_live_msgs),
-                    _boundary,
-                    [_msg_key(_r) for _r in _restored_msgs],
-                    [_msg_key(_m) for _m in _live_msgs],
-                )
                 _in_flight = _live_msgs[_boundary:]
                 if _in_flight:
                     if _boundary == 0 and _restored_msgs:

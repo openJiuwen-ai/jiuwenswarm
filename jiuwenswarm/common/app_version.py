@@ -2,7 +2,7 @@
 
 AskUser 结构化选项卡（status-update input-required 出站 + ToolExecute/
 InvokeRsp 应答回传 + ask_user_id 契约字段）仅对支持该契约的手机端开启：
-app_ver > 11.7.9（即 >= 11.7.10）。app_ver 由手机端随消息 data part 的
+app_ver >= 11.7.9.301。app_ver 由手机端随消息 data part 的
 variables.systemVariables 携带（与 push_id 同层，既有字段）；缺失/非法
 版本一律按不支持处理（fail-closed）——旧端侧对契约外字段做严格 schema
 校验，宁可不发卡也不能破坏旧版本。
@@ -11,8 +11,8 @@ gateway（xiaoyi_connect）与 server（agent_adapter）共用同一实现，
 避免两份拷贝语义漂移。
 """
 
-# 选项卡契约最低端侧版本：11.7.10 起支持（11.7.9 及以下已发版本不识别）。
-ASK_USER_TABS_MIN_APP_VER = (11, 7, 10)
+# 选项卡契约最低端侧版本：11.7.9.301 起支持（更低版本不识别）。
+ASK_USER_TABS_MIN_APP_VER = (11, 7, 9, 301)
 
 
 def parse_version_tuple(app_ver: str) -> tuple[int, ...] | None:
@@ -46,13 +46,13 @@ def parse_version_tuple(app_ver: str) -> tuple[int, ...] | None:
 
 
 def xiaoyi_ask_user_tabs_supported(app_ver: str) -> bool:
-    """手机端 app_ver 是否支持 AskUser 结构化选项卡（> 11.7.9）。
+    """手机端 app_ver 是否支持 AskUser 结构化选项卡（>= 11.7.9.301）。
 
     Args:
         app_ver: 端侧上报的版本字符串；缺失按不支持处理。
 
     Returns:
-        大于 11.7.9（即 >= 11.7.10）时为 True，否则 False。
+        大于等于 11.7.9.301 时为 True，否则 False。
     """
     parsed = parse_version_tuple(app_ver)
     return parsed is not None and parsed >= ASK_USER_TABS_MIN_APP_VER
