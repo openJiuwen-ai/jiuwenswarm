@@ -55,6 +55,22 @@ async def _is_denied(rail: AutoMemoryToolRestrictionRail, command: object) -> bo
         "ls | grep x",
         "cat a && head b",
         'find . -name "*.py"',
+        "git show HEAD",
+        "git show --stat HEAD",
+        # ``--`` ends the options; it is too short to abbreviate any of them
+        "git log -- f.txt",
+        # operators and substitution markers inside quotes are plain text
+        "grep -rn '&&' src",
+        'grep -F "|" f',
+        "grep -F '$' f",
+        "grep -F '`' f",
+        "grep -F '{}' f",
+        "cat 'a|b'",
+        "echo hello\\ world",
+        # --text is harmless and sits in front of --textconv, so --textconv is
+        # matched one way only; --output-indicator-* sits in front of --output
+        "git diff --text",
+        "git diff --output-indicator-new=+ HEAD",
     ],
 )
 async def test_read_only_commands_are_allowed(rail, command: str) -> None:
@@ -118,6 +134,38 @@ async def test_read_only_commands_are_allowed(rail, command: str) -> None:
         # the explicit flag is rejected, though textconv itself still runs by
         # default for diff/log/show through repository configuration
         "git diff --textconv -- a.py",
+        # the git core rule: the sub-command has to come right after ``git``
+        "git",
+        "git commit -m x",
+        "git push",
+        "git checkout -- .",
+        "git config --global core.pager 'sh -c id'",
+        # config injection only reaches git as a global option
+        "git -c core.fsmonitor=id status",
+        "git --config-env=core.pager=EVIL status",
+        # --output/--ext-diff write or execute on all three sub-commands, and on
+        # a git that abbreviates long options a prefix reaches them too
+        "git log --output=/tmp/x",
+        "git show --output=/tmp/x",
+        "git log --ext-diff",
+        "git diff --outpu=/tmp/out.patch",
+        "git log -p --ext-dif",
+        # quoting makes characters literal but does not end the token: the shell
+        # hands git one spliced argument, so the gate has to read it the same way
+        "git diff --out''put=/tmp/x",
+        "git diff -''-output=/tmp/x",
+        # ``x`` rather than ``{}``: the brace rule would deny this one on its
+        # own and hide whether the quote splicing was read correctly
+        "find . -e''xec rm x \\;",
+        # brace expansion splices an option name together at the shell level
+        "git diff --{output,}=/tmp/x",
+        # pathname expansion does the same when a file is named like an option
+        "git diff *",
+        "git log --oneline *",
+        # a quoted token cannot legitimize a real separator
+        "grep x 'a' && touch m",
+        # unterminated quote
+        "grep -rn 'a src",
     ],
 )
 async def test_chained_or_writing_commands_are_denied(rail, command: str) -> None:

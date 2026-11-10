@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 import re
-import shlex
 from pathlib import Path
 from typing import Any, Dict
 
@@ -72,18 +71,31 @@ READ_ONLY_BASH_COMMANDS = (
 # Subcommands allowed right after the ``git`` command name.
 READ_ONLY_GIT_SUBCOMMANDS = ("status", "log", "diff", "show")
 
-# Shell tokens that separate commands. Every other token made only of shell
-# control characters (``|&``, ``&>>``, ``>&``, ``<>``, ``>|``, ``(`` ...) is
-# rejected, so redirects and subshells cannot ride along with a read command.
+# Shell operators that separate commands. Only an unquoted, unescaped run of
+# control characters acts as an operator, and every run other than these
+# (``|&``, ``&>>``, ``>&``, ``<>``, ``>|``, ``(`` ...) is rejected, so redirects
+# and subshells cannot ride along with a read command.
 _COMMAND_SEPARATORS = frozenset({";", "&&", "||", "|", "&"})
-_SHELL_CONTROL_CHARS = frozenset(";&|<>()")
+_CONTROL_CHARS = frozenset(";&|<>()")
+_TOKEN_WHITESPACE = frozenset({" ", "\t"})
 
 # Options that turn an otherwise read-only command into a writer or an executor.
-# ``--textconv`` is only a defensive match next to ``--ext-diff``: git runs the
-# textconv filter configured for the repository by default in ``diff``/``log``/
-# ``show``, and only an explicit ``--no-textconv`` turns that off, which this
-# gate cannot inject - so rejecting the flag does not make the command exec-free.
-_FORBIDDEN_OPTION_PREFIXES = ("--output", "--ext-diff", "--textconv")
+# A long option may be abbreviated to any unambiguous prefix, so a token that is
+# a *prefix* of one of these names reaches the option as well - see
+# ``_is_forbidden_option``.
+_FORBIDDEN_OPTION_PREFIXES = ("--output", "--ext-diff")
+# Abbreviations are deliberately not expanded for these: ``--text`` is a real,
+# harmless diff option and a prefix of ``--textconv``, so matching backwards
+# would deny it. ``--textconv`` itself is only a defensive entry next to
+# ``--ext-diff``: git runs the textconv filter configured for the repository by
+# default in ``diff``/``log``/``show``, and only an explicit ``--no-textconv``
+# turns that off, which this gate cannot inject - so rejecting the flag does not
+# make the command exec-free.
+_FORBIDDEN_OPTION_NAMES_ONLY = ("--textconv",)
+# Harmless options that sit in the prefix shadow of ``--output`` and would be
+# caught by the abbreviation match: ``--output-indicator-new`` and its siblings
+# only change the marker characters of a patch - they write and execute nothing.
+_ALLOWED_OPTION_PREFIXES = ("--output-indicator",)
 _FIND_FORBIDDEN_OPTION_PREFIXES = ("-delete", "-exec", "-ok", "-fprint", "-fls")
 
 # Leading ``NAME=value`` prefix: ``PATH=/tmp ls`` runs a different binary.
@@ -93,32 +105,102 @@ _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 def _split_command_segments(command: str) -> list[list[str]] | None:
     """Split a shell command into per-command token segments.
 
+    Quoting and escaping are read the way a POSIX shell reads them, and they
+    only decide whether a character is literal - they never end a token: the
+    shell hands ``--out''put=x`` to the program as one argument ``--output=x``,
+    so the scanner has to see it as one token too. Only unquoted whitespace
+    separates tokens, and only unquoted control characters act as operators.
+
     Args:
         command: Raw bash command string (already stripped, single line).
 
     Returns:
         One token list per command, or None when the command cannot be
-        tokenized or uses a shell operator that is not a plain separator.
+        tokenized, uses a shell operator that is not a plain separator, does
+        command substitution, or contains an unquoted pattern character (brace
+        expansion ``--{output,}=/tmp/x`` and pathname expansion ``git diff *``
+        both splice a forbidden option name together at the shell level, and
+        the scanner cannot see the result).
     """
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return None
-
     segments: list[list[str]] = []
     current: list[str] = []
-    for token in tokens:
-        if token and all(char in _SHELL_CONTROL_CHARS for char in token):
-            if token not in _COMMAND_SEPARATORS:
+    token: list[str] = []
+    started = False
+    index = 0
+    length = len(command)
+
+    def flush_token() -> None:
+        nonlocal token, started
+        if started:
+            current.append("".join(token))
+            token = []
+            started = False
+
+    while index < length:
+        char = command[index]
+        if char == "'":
+            started = True
+            end = command.find("'", index + 1)
+            if end < 0:
                 return None
+            token.extend(command[index + 1:end])
+            index = end + 1
+            continue
+        if char == '"':
+            started = True
+            index += 1
+            while True:
+                if index >= length:
+                    return None
+                inner = command[index]
+                if inner == '"':
+                    index += 1
+                    break
+                if inner == "\\" and index + 1 < length and command[index + 1] in '"\\`$':
+                    token.append(command[index + 1])
+                    index += 2
+                    continue
+                if inner in "$`":
+                    return None
+                token.append(inner)
+                index += 1
+            continue
+        if char == "\\":
+            if index + 1 >= length:
+                return None
+            token.append(command[index + 1])
+            started = True
+            index += 2
+            continue
+        if char in "$`":
+            return None
+        # Brace and pathname expansion both splice words together at the shell
+        # level: ``--{output,}=x`` becomes ``--output=x``, and ``git diff *`` in
+        # a directory holding ``--output=zz`` passes that name to git as an
+        # option. Neither is visible in the token the scanner sees.
+        if char in "{}*?[":
+            return None
+        if char in _CONTROL_CHARS:
+            run_end = index
+            while run_end < length and command[run_end] in _CONTROL_CHARS:
+                run_end += 1
+            if command[index:run_end] not in _COMMAND_SEPARATORS:
+                return None
+            flush_token()
             if current:
                 segments.append(current)
-            current = []
+                current = []
+            index = run_end
             continue
-        current.append(token)
+        if char in _TOKEN_WHITESPACE:
+            flush_token()
+            index += 1
+            continue
+        token.append(char)
+        started = True
+        index += 1
+
+    flush_token()
     if current:
         segments.append(current)
     return segments or None
@@ -128,11 +210,38 @@ def _segment_command_name(tokens: list[str]) -> str:
     """Return the lower-cased executable name of a segment.
 
     ``_is_read_only_segment`` rejects a path-qualified head before calling this,
-    and ``shlex`` has already stripped quoting, so the head is the bare command
-    name; only the Windows ``.exe`` suffix is normalized away.
+    and the scanner has already stripped quoting, so the head is the bare
+    command name; only the Windows ``.exe`` suffix is normalized away.
     """
     name = tokens[0].lower()
     return name[:-4] if name.endswith(".exe") else name
+
+
+def _is_forbidden_option(token: str) -> bool:
+    """Check whether a token names a writer or executor option.
+
+    A long option can be abbreviated to any unambiguous prefix, so a token that
+    is itself a prefix of a forbidden name reaches that option too. An attached
+    value (``--outpu=/tmp/x``) is cut off before the comparison. The ``--``
+    option terminator is too short to abbreviate and is never matched.
+
+    Args:
+        token: One argument token of a command segment.
+
+    Returns:
+        True when the token selects a writer or executor option.
+    """
+    name = token.split("=", 1)[0]
+    if len(name) <= 2:
+        return False
+    if name.startswith(_ALLOWED_OPTION_PREFIXES):
+        return False
+    if name.startswith(_FORBIDDEN_OPTION_NAMES_ONLY):
+        return True
+    return any(
+        name.startswith(prefix) or prefix.startswith(name)
+        for prefix in _FORBIDDEN_OPTION_PREFIXES
+    )
 
 
 def _is_read_only_segment(tokens: list[str]) -> bool:
@@ -146,16 +255,12 @@ def _is_read_only_segment(tokens: list[str]) -> bool:
     """
     if not tokens:
         return False
-    # Quoting is gone after tokenizing, so a quoted ``"$(cmd)"`` is
-    # indistinguishable from a plain argument; reject any substitution marker.
-    if any("$" in token or "`" in token for token in tokens):
-        return False
     head = tokens[0]
     if _ENV_ASSIGNMENT_RE.match(head):
         return False
     if "/" in head or "\\" in head:
         return False
-    if any(token.startswith(_FORBIDDEN_OPTION_PREFIXES) for token in tokens[1:]):
+    if any(_is_forbidden_option(token) for token in tokens[1:]):
         return False
 
     name = _segment_command_name(tokens)
@@ -324,6 +429,26 @@ class AutoMemoryToolRestrictionRail(AgentRail):
         options and ``find`` write/exec actions. ``file`` is not whitelisted at
         all: ``-C``/``--compile`` writes a compiled magic database, and its
         options can be clustered or abbreviated, so no prefix list covers them.
+
+        Splitting is quoting-aware: the quotes of ``'...'``/``"..."`` and
+        backslash escapes only make characters literal (an operator, ``$`` or
+        backtick inside single quotes is plain text), and they never end a
+        token - ``--out''put=x`` is one argument ``--output=x`` to the shell.
+        Only unquoted whitespace separates tokens. Unquoted pattern characters
+        (``{``/``}``/``*``/``?``/``[``) are denied outright: brace and pathname
+        expansion both splice words together at the shell level, so
+        ``git diff --{output,}=/tmp/x`` reaches ``--output`` and ``git diff *``
+        in a directory holding a file named ``--output=zz`` passes that name as
+        an option, while the gate only sees a token matching no option name.
+
+        Options are matched against the forbidden names in both directions,
+        because a long option may be abbreviated to any unambiguous prefix.
+        That guard does not depend on which parser a ``git`` sub-command uses:
+        ``diff``/``log``/``show`` keep their own option tables and do not
+        abbreviate (measured on git 2.50.1), while ``status`` (parse-options)
+        does accept ``--porc`` - but its option space has no writer or executor.
+        The ``--output-indicator-*`` family is harmless (it only changes patch
+        marker characters) and is allowed before that comparison runs.
 
         Some execution paths of the whitelisted ``git`` sub-commands come from
         repository configuration rather than from the command line, so option
