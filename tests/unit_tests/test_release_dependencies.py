@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import runpy
@@ -9,6 +10,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 from zipfile import ZipFile
 import tomllib
 
@@ -32,7 +35,7 @@ def test_repository_dependencies_pass_the_release_gate():
 def _project(root: Path, repository: str = OFFICIAL) -> None:
     requirement = f"openjiuwen @ git+{repository}@{REVISION}"
     (root / "pyproject.toml").write_text(
-        '[build-system]\nrequires = ["setuptools>=70.1", "packaging>=23"]\n'
+        '[build-system]\nrequires = ["setuptools>=70.1", "wheel>=0.46.3", "packaging>=23"]\n'
         'build-backend = "setuptools.build_meta"\n'
         '[project]\nname = "release-guard-fixture"\nversion = "0.0.1"\n'
         f'dependencies = [{json.dumps(requirement)}]\n'
@@ -178,6 +181,91 @@ def test_release_normalizes_gateway_names_in_sources_and_lock(tmp_path, location
         validate_release_dependencies(tmp_path)
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_setup_selects_the_available_wheel_backend(monkeypatch, legacy):
+    import setuptools
+
+    modern_backend = type("ModernWheel", (), {})
+    legacy_backend = type("LegacyWheel", (), {})
+    original_import = builtins.__import__
+    wheel_imports = []
+
+    def import_backend(name, *args, **kwargs):
+        if name == "setuptools.command.bdist_wheel":
+            if legacy:
+                raise ModuleNotFoundError(f"No module named '{name}'", name=name)
+            return SimpleNamespace(bdist_wheel=modern_backend)
+        if name == "wheel.bdist_wheel":
+            wheel_imports.append(name)
+            return SimpleNamespace(bdist_wheel=legacy_backend)
+        return original_import(name, *args, **kwargs)
+
+    setup = Mock()
+    monkeypatch.setattr(setuptools, "setup", setup)
+    monkeypatch.setattr(builtins, "__import__", import_backend)
+    runpy.run_path(str(ROOT / "setup.py"))
+
+    setup.assert_called_once()
+    command = setup.call_args.kwargs["cmdclass"]["bdist_wheel"]
+    assert issubclass(command, legacy_backend if legacy else modern_backend)
+    assert len(wheel_imports) == int(legacy)
+
+
+def test_setup_does_not_mask_unrelated_backend_import_failures(monkeypatch):
+    original_import = builtins.__import__
+
+    def import_backend(name, *args, **kwargs):
+        if name == "setuptools.command.bdist_wheel":
+            raise ModuleNotFoundError("Missing backend dependency", name="backend_dependency")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_backend)
+    with pytest.raises(ModuleNotFoundError) as raised:
+        runpy.run_path(str(ROOT / "setup.py"))
+    assert raised.value.name == "backend_dependency"
+
+
+@pytest.mark.parametrize("kind", ["editable", "wheel", "sdist"])
+@pytest.mark.parametrize("repository", [OFFICIAL, CANDIDATE])
+def test_build_requirement_discovery_can_bootstrap_before_building(tmp_path, kind, repository):
+    _project(tmp_path, repository)
+    script = (
+        "import setuptools.build_meta as backend; "
+        f"requirements = backend.get_requires_for_build_{kind}(); "
+        "assert isinstance(requirements, list)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=tmp_path, capture_output=True,
+        text=True, encoding="utf-8", errors="replace", check=False, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not list(tmp_path.rglob("*.whl"))
+    assert not list(tmp_path.rglob("*.tar.gz"))
+
+
+def test_repository_editable_metadata_uses_actual_configuration(tmp_path):
+    for name in ("pyproject.toml", "setup.py"):
+        shutil.copyfile(ROOT / name, tmp_path / name)
+    for name in ("jiuwenswarm", "jiuwenbox/src/jiuwenbox"):
+        package = tmp_path / name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "metadata").mkdir()
+    script = (
+        "import setuptools.build_meta as backend; "
+        "backend.get_requires_for_build_editable(); "
+        "backend.prepare_metadata_for_build_editable('metadata')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=tmp_path, capture_output=True,
+        text=True, encoding="utf-8", errors="replace", check=False, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    metadata = list((tmp_path / "metadata").glob("*.dist-info/METADATA"))
+    assert len(metadata) == 1
+    assert "Name: workswarm" in metadata[0].read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("hook", ["build_wheel", "build_sdist", "build_editable"])
 @pytest.mark.parametrize("repository", [OFFICIAL, CANDIDATE])
 def test_build_hooks_block_candidate_releases_but_allow_editable_installs(tmp_path, hook, repository):
@@ -276,7 +364,7 @@ def _assert_build_bootstrap(result, exit_code: int) -> None:
     assert calls, result.stdout + result.stderr
     install = calls[0]
     assert install[:3] == ["-m", "pip", "install"]
-    assert {"build", "wheel", "setuptools>=70.1.0", "packaging>=23.0"} <= set(install)
+    assert {"build", "wheel>=0.46.3", "setuptools>=70.1.0", "packaging>=23.0"} <= set(install)
     if exit_code:
         assert result.returncode != 0, result.stdout + result.stderr
         assert len(calls) == 1

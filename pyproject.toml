@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=70.1.0", "packaging>=23.0"]
+requires = ["setuptools>=70.1.0", "wheel>=0.46.3", "packaging>=23.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -146,6 +146,7 @@ shell-ast = []
 # Same packages as [dependency-groups] test (pip install -e ".[test]")
 test = [
     "setuptools>=70.1.0",
+    "wheel>=0.46.3",
     "packaging>=23.0",
     "a2a-sdk[http-server]==1.0.0",
     "cryptography>=44.0.0",
@@ -255,6 +256,7 @@ openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-ru
 # Testing (keep in sync with optional-dependencies.test)
 test = [
     "setuptools>=70.1.0",
+    "wheel>=0.46.3",
     "packaging>=23.0",
     "a2a-sdk[http-server]==1.0.0",
     "cryptography>=44.0.0",

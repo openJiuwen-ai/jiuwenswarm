@@ -7145,6 +7145,18 @@ wheels = [
 ]
 
 [[package]]
+name = "wheel"
+version = "0.48.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/20/50ed6bdf27dec98b568a8ae25dc599f35baa3d9709f9e83fd1edb56b9a90/wheel-0.48.0.tar.gz", hash = "sha256:94800765601e9171bf5d58d066e640662842bcedcbab982b2c90787a2c987322", size = 66471, upload-time = "2026-08-11T22:02:27.327Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl", hash = "sha256:3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab", size = 33320, upload-time = "2026-08-11T22:02:26.1Z" },
+]
+
+[[package]]
 name = "win32-setctime"
 version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -7304,6 +7316,7 @@ test = [
     { name = "pytest-timeout" },
     { name = "pyyaml" },
     { name = "setuptools" },
+    { name = "wheel" },
 ]
 tui = [
     { name = "workswarm-tui" },
@@ -7329,6 +7342,7 @@ dev = [
     { name = "pyyaml" },
     { name = "ruff" },
     { name = "setuptools" },
+    { name = "wheel" },
 ]
 lint = [
     { name = "codespell" },
@@ -7351,6 +7365,7 @@ test = [
     { name = "pytest-timeout" },
     { name = "pyyaml" },
     { name = "setuptools" },
+    { name = "wheel" },
 ]
 
 [package.metadata]
@@ -7479,6 +7494,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=12.0,<16" },
     { name = "wecom-aibot-sdk", specifier = ">=1.0.5,<2" },
     { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
+    { name = "wheel", marker = "extra == 'test'", specifier = ">=0.46.3" },
     { name = "workswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
 ]
 provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "claude", "codex", "cua", "shell-ast", "test"]
@@ -7503,6 +7519,7 @@ dev = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.11.2" },
     { name = "setuptools", specifier = ">=70.1.0" },
+    { name = "wheel", specifier = ">=0.46.3" },
 ]
 lint = [
     { name = "codespell", specifier = ">=2.2.4" },
@@ -7525,6 +7542,7 @@ test = [
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "setuptools", specifier = ">=70.1.0" },
+    { name = "wheel", specifier = ">=0.46.3" },
 ]
 
 [[package]]

@@ -4,9 +4,16 @@ from pathlib import Path
 import runpy
 
 from setuptools import setup
-from setuptools.command.bdist_wheel import bdist_wheel
 from setuptools.command.build_py import build_py
 from setuptools.command.sdist import sdist
+
+try:
+    from setuptools.command.bdist_wheel import bdist_wheel
+except ModuleNotFoundError as exc:
+    if exc.name != "setuptools.command.bdist_wheel":
+        raise
+    # Some CI bootstrap environments load setuptools before 70.1.
+    from wheel.bdist_wheel import bdist_wheel
 
 
 def _validate_release_dependencies() -> None:

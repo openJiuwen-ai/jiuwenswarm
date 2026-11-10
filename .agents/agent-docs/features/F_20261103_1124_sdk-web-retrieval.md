@@ -379,6 +379,46 @@ pytest 选项为 `-q -o addopts= -o log_cli=false -o asyncio_mode=auto -p no:cac
 未运行格式化、静态检查、全仓测试、完整桌面打包或真实搜索/模型任务；未安装主环境依赖或重启服务。
 当前契约同步到 `S_02_web-retrieval`，不新建管理器、设计文档或重复检索策略。
 
+## CI editable 构建回归修复（2026-11-10）
+
+针对已推送的 `92d33bdf6dc095e38ae41e2ed0c117af453bac93`，用户提供 build、st_gateway、UT 三份
+本轮 CI 日志。用户先明确选择只修 build/UT、Gateway 保持不动，随后授权仅将本节修复、测试和记录
+提交并推送到 !9841，关联 #5651。本次 author/committer 邮箱使用 `dingyangkai@huawei.com`，
+不修改 Git 默认身份，不带入无关自动索引变更；推送后跟进新 SHA 的 CI 结果。
+
+- build（15:51:56）与 UT（15:47）都在 `uv sync --all-extras` 调用
+  `setuptools.build_meta.get_requires_for_build_editable` 时失败，尚未执行前端构建或测试用例。
+  两者都在 `setup.py:7` 抛 `No module named 'setuptools.command.bdist_wheel'`，后端来自镜像的
+  `/usr/local/python3/lib/python3.11/site-packages`。日志未给出完整环境及 setuptools 版本，
+  不能进一步认定是哪个 PYTHONPATH 或隔离配置造成旧后端被加载。UT 的上传列表为空，不能当作断言失败。
+- 上一节仅补后续 `python -m build --no-isolation` 的安装步骤，未覆盖前置 editable 入口；
+  本节替代“不增加旧 wheel 后端兼容分支”的决策。仅捕获缺少指定模块的 `ModuleNotFoundError`，
+  回退 wheel 提供的命令；现代后端仍优先，其他导入错误不吞掉，不移除发行包依赖门禁。
+  build-system、test extra/group、两个构建脚本显式使用 `wheel>=0.46.3`，避免 wheel 0.46.0/0.46.1
+  不再提供旧命令的兼容问题。锁文件新增 wheel 0.48.0 及 workswarm 的对应依赖边，未改已有包版本、来源或 marker。
+- st_gateway（15:48:53）是独立的 pip 解析失败：Swarm 固定 Core `2dc7477af89ceedbad550de88aac3291db578506`，
+  官方 Gateway `435d3323425e1051c6fe2d1feadcba68b4be020d` 固定 Core
+  `f3f8f576164cc405c046e43079c8ad00ee17f0c4`。二者即使都声明 0.1.20，直接 URL 仍冲突。
+  uv override 未进入 pip 的 Requires-Dist 解析。核对官方 Gateway develop 仍是后者，且两个 Core
+  提交的 Web 检索实现并不相同，不能降级来掩盖冲突。本轮不改 Gateway、SDK pin 或运行时搜索行为，
+  不跳过测试、不使用 `--no-deps`；因此不承诺本轮能让 st_gateway 通过。
+
+验证：
+
+- 独立 `.tmp/ci-9841-build-legacy` 环境使用 Python 3.11.5、setuptools 69.5.1、wheel 0.48.0。
+  修复前真实 editable 构建重现同一导入异常。修复后直接调用既有构建测试函数完成 **14 项检查**：
+  官方/fork 两种依赖各覆盖三类 get_requires 和三类 build hook，另验证 skip-build 不能绕过门禁，
+  以及真实项目 pyproject/setup 的 get_requires/prepare_metadata_for_build_editable。
+  这不是全套 pytest：独立环境没有应用依赖，直接复用同一测试函数及断言隔离构建入口。
+- 现有环境 setuptools 82.0.1 上，发布门禁、build config、浏览器搜索提示三个文件共 **117 passed**，
+  包括现代/旧模块选择、无关 ImportError 透传、依赖探测和实际项目元数据回归。
+  使用上一节官方 SDK 源码覆盖与 pytest 参数；报告为本地 `.tmp/ci-9841-build-fix-modern.xml`。
+- `uv lock --check --offline` 通过。TOML 结构对比确认 332 个已有包中只有 workswarm 依赖声明变化，
+  顶层元数据及平台 marker 不变，新增 wheel 后总计 333 个包。
+
+未运行全仓 UT、完整前端/桌面打包或 CI 镜像重建；远端 CI 需推送后重跑验证。
+没有改变主工作区、主虚拟环境、Git 默认身份或用户服务，也未新增跳过用例。
+
 ## 残余限制
 
 语义评估仍可能误判或不可用，不能把所有相关搜索结果变成实时证据。剩余搜索源和页面布局也可能变动。
