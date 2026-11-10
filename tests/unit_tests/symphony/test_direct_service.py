@@ -2567,14 +2567,14 @@ async def test_background_model_preflight_failure_is_visible_without_running_pol
     result = await asyncio.wait_for(task, timeout=0.5)
     status = await service.graph_status()
 
-    expected = (
-        "主模型连接测试未通过：[181001] model call failed, reason: connection refused"
-    )
+    # 连接失败现在走统一的人性化提示；原始异常仍留在 build_progress.error 供诊断。
     assert started["build_progress"]["status"] == "running"
-    assert result["detail"] == expected
+    assert result["detail"].startswith("主模型连接测试未通过：")
+    assert "无法连接到模型服务" in result["detail"]
+    assert "[181001]" not in result["detail"]
     assert status["build_progress"]["status"] == "error"
-    assert status["build_error"] == expected
-    assert status["detail"] == expected
+    assert status["build_error"] == result["detail"]
+    assert status["detail"] == result["detail"]
 
 
 @pytest.mark.asyncio

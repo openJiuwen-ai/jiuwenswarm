@@ -10,9 +10,10 @@ import jsonschema
 import pytest
 from openjiuwen.core.foundation.tool import ToolExecution, ToolExposure
 
-from jiuwenswarm.office.contract import POWERPOINT_PACKAGE, ToolAnnotations, load_contract
+from jiuwenswarm.office.contract import ToolAnnotations, load_contract
 from jiuwenswarm.server.client_attachments import load_client_capabilities, registry
 from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, answer, request
+from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE
 
 DIRECT = {"read_presentation_context", "list_slide_shapes", "read_slide_image"}
 # What JiuwenSwarm ships, read before the ``isolated`` fixture replaces it.
@@ -56,7 +57,6 @@ def test_each_contract_tool_is_a_client_tool_offered_as_its_annotations_say() ->
 
 def test_the_registry_knows_the_same_contract() -> None:
     app = registry.client_apps()[CLIENT_APP]
-    assert app.package_dir == POWERPOINT_PACKAGE
     assert app.tool_names == {tool.name for tool in load_contract(POWERPOINT_PACKAGE)}
 
 

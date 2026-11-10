@@ -984,7 +984,7 @@ updater:
   # Windows / macOS installers are selected by their unique .exe / .dmg suffix.
   asset_name_pattern_linux: "JiuwenSwarm-{version}.tar.gz"
   timeout_seconds: 20
-  pypi_mirror: "https://mirrors.aliyun.com/pypi"
+  pypi_mirror: "https://mirrors.aliyun.com/pypi/simple/"
 
 extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：

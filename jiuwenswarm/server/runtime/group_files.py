@@ -2,7 +2,7 @@
 
 Group history and task snapshots are append-only records, so file changes are
 stored beside them in ``group.json`` under ``file_overrides`` and applied when
-attachments are returned to clients. Renaming only changes the displayed name;
+attachments are returned to clients. Renaming moves the file and remaps historical attachment paths;
 deleting hides the attachment and removes the file from disk when it lives in
 the group's own team workspace.
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -42,8 +43,34 @@ def normalize_attachment(item: dict) -> dict:
     return result
 
 
-def apply_file_overrides(attachments: list, overrides: dict) -> list:
-    """Return attachments with renamed display names and deleted files removed."""
+def attachment_record_time(record: dict) -> float | None:
+    """Use publication time, tolerating legacy execution records and millisecond messages."""
+    value = (
+        record.get("attachments_published_at") or record.get("timestamp")
+        or record.get("updated_at") or record.get("created_at")
+    )
+    if not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return value / 1000 if value > 1e12 else value
+
+
+def _versions(override: dict) -> list[dict]:
+    return [*override.get("previous", []), override]
+
+
+def _attachment_override(path: str, overrides: dict, published_at: float | None) -> dict:
+    override = overrides.get(path, {})
+    if published_at is None:
+        return override
+    for version in _versions(override):
+        cutoff = version.get("applies_before", version.get("updated_at", version.get("deleted_at")))
+        if cutoff is None or published_at <= cutoff:
+            return version
+    return {}
+
+
+def apply_file_overrides(attachments: list, overrides: dict, published_at: float | None = None) -> list:
+    """Return current attachment names and paths, with deleted files removed."""
     if not isinstance(attachments, list):
         return attachments
     result = []
@@ -51,14 +78,21 @@ def apply_file_overrides(attachments: list, overrides: dict) -> list:
         if isinstance(item, dict):
             item = normalize_attachment(item)
         path = item.get("path") if isinstance(item, dict) else None
-        override = overrides.get(path) if isinstance(path, str) else None
+        override = _attachment_override(path, overrides, published_at) if isinstance(path, str) else None
         if not override:
             result.append(item)
             continue
-        if _deleted(path, override):
+        current_path = override.get("path") or path
+        if override.get("deleted_at") and (published_at is not None or _deleted(current_path, override)):
             continue
         if override.get("name"):
             item = {**item, "name": override["name"]}
+        if current_path != path:
+            item = {**item, "path": current_path}
+            if "file_path" in item:
+                item["file_path"] = current_path
+            for key in ("url", "download_url", "download_token"):
+                item.pop(key, None)
         result.append(item)
     return result
 
@@ -80,25 +114,79 @@ def validate_file_path(value) -> str:
     return value
 
 
-def group_attachment_paths(messages: list, executions: list) -> set[str]:
+def group_attachment_paths(messages: list, executions: list, overrides: dict | None = None) -> set[str]:
     paths = set()
     for record in [*messages, *executions]:
         for item in apply_file_overrides(record.get("attachments") or [], {}):
             if isinstance(item, dict) and isinstance(item.get("path"), str):
-                paths.add(item["path"])
+                path = item["path"]
+                override = _attachment_override(path, overrides or {}, attachment_record_time(record))
+                # Deleted attachments still belong to the group, so delete retries stay idempotent.
+                paths.add(override.get("path") or path)
     return paths
 
 
-def record_rename(state: dict, path: str, name: str) -> dict:
+def _record_override(overrides: dict, path: str, replacement: dict) -> None:
+    current = overrides.get(path, {})
+    previous = list(current.get("previous", []))
+    # Reusing a path starts a new generation without discarding older attachments' mapping.
+    if current and (current.get("deleted_at") or current.get("path", path) != path):
+        previous.append({key: value for key, value in current.items() if key != "previous"})
+    if previous:
+        replacement["previous"] = previous
+    overrides[path] = replacement
+
+
+def record_rename(state: dict, path: str, name: str, new_path: str) -> dict:
     overrides = state.setdefault("file_overrides", {})
-    overrides[path] = {"name": name, "updated_at": time.time()}
+    now = time.time()
+    _record_override(overrides, path, {
+        "name": name, "path": new_path, "updated_at": now, "applies_before": now,
+    })
+    for original, override in overrides.items():
+        for version in _versions(override):
+            if version.get("deleted_at") or version.get("path", original) != path:
+                continue
+            version.setdefault("applies_before", version.get("updated_at", now))
+            version.update(name=name, path=new_path)
     return copy.deepcopy(overrides)
 
 
 def record_delete(state: dict, path: str) -> dict:
     overrides = state.setdefault("file_overrides", {})
-    overrides[path] = {**overrides.get(path, {}), "deleted_at": time.time()}
+    now = time.time()
+    _record_override(overrides, path, {"deleted_at": now, "applies_before": now})
+    for original, override in overrides.items():
+        for version in _versions(override):
+            if version.get("deleted_at") or version.get("path", original) != path:
+                continue
+            version.setdefault("applies_before", version.get("updated_at", now))
+            version["deleted_at"] = now
     return copy.deepcopy(overrides)
+
+
+def move_file(source: Path, target: Path) -> None:
+    """Move within a directory without overwriting an existing destination on any platform."""
+    os.link(source, target, follow_symlinks=False)
+    try:
+        source.unlink()
+    except OSError:
+        target.unlink()
+        raise
+
+
+def rename_workspace_file(team_name: str, path: str, name: str) -> Path:
+    """Rename an owned regular file, refusing symlinks, outside paths and collisions."""
+    source = Path(path)
+    root = team_home(team_name).resolve()
+    if source.is_symlink() or not source.resolve().is_relative_to(root):
+        raise ValueError("Only regular files inside this group's workspace can be renamed")
+    if not source.is_file():
+        raise FileNotFoundError("The file no longer exists or is not a regular file")
+    target = source.with_name(name)
+    if source != target:
+        move_file(source, target)
+    return target
 
 
 def remove_workspace_file(team_name: str, path: str) -> bool:

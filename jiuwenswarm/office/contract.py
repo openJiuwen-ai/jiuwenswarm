@@ -21,8 +21,6 @@ from typing import Any
 
 from openjiuwen.core.foundation.tool import ToolCard, ToolExecution, ToolExposure
 
-POWERPOINT_PACKAGE = Path(__file__).parent / "powerpoint"
-
 _TOOL_FIELDS = frozenset({"type", "name", "description", "input_schema", "annotations", "host_requirements"})
 _ANNOTATION_FIELDS = frozenset({"mutating", "exposure", "parallel_safe"})
 _SCHEMA_REFERENCES = frozenset({"$ref", "definitions", "$defs"})

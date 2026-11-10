@@ -402,6 +402,8 @@ class GroupExecutions:
                 return copy.deepcopy(record)
             if all(record.get(key) == value for key, value in changes.items()):
                 return copy.deepcopy(record)
+            if "attachments" in changes and record.get("attachments") != changes["attachments"]:
+                record["attachments_published_at"] = time.time()
             record.update(changes)
             record["revision"] += 1
             record["updated_at"] = time.time()
@@ -648,6 +650,7 @@ async def project_group_stream_event(session_id: str, event: dict) -> dict | Non
 
         message["attachments"] = group_files.apply_file_overrides(
             message.get("attachments", []), group.get("file_overrides") or {},
+            group_files.attachment_record_time(message),
         )
         correlation = correlate_public_reply(session_id, message)
         return {

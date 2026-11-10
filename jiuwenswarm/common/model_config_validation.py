@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from jiuwenswarm.common.model_error_messages import is_non_retryable_model_error
 from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,15 @@ async def probe_model_connection(
                 raise ValueError("Empty response from model")
             return ModelProbeResult(response=response, content=content)
         except Exception as exc:  # noqa: BLE001
+            # 欠费、鉴权失败、模型不存在是永久性错误：换一个 max_tokens 再试
+            # 只会多等一轮、多打一条同样的失败日志，直接反馈给用户更快。
+            if is_non_retryable_model_error(exc):
+                logger.info(
+                    "[%s] non-retryable model error, aborting probe: %s",
+                    log_context,
+                    exc,
+                )
+                raise
             if attempt + 1 >= len(limits):
                 raise
             next_max_tokens = limits[attempt + 1]

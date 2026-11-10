@@ -26,6 +26,7 @@ import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
 from openjiuwen.symphony import FINGERPRINT_ARTIFACT_FILENAME
 
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.model_error_messages import user_facing_model_error
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 from jiuwenswarm.server.runtime.skill.skillpack import (
     load_skillpack,
@@ -641,11 +642,13 @@ class SwarmSymphonyService:
                     await probe_model_connection(llm_config)
                     build_logger.record("model.probe.done", model=model_name)
                 except Exception as exc:  # noqa: BLE001
-                    error = str(exc).strip() or type(exc).__name__
+                    # 日志/诊断保留原始异常，用户可见的 detail 与 error 走友好提示。
+                    raw_error = str(exc).strip() or type(exc).__name__
+                    error = user_facing_model_error(exc, fallback=raw_error)
                     detail = f"主模型连接测试未通过：{error}"
                     build_logger.record(
                         "update.failed",
-                        error=error,
+                        error=raw_error,
                         detail=detail,
                         failure_stage="model.probe",
                     )

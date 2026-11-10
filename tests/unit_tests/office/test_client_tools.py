@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""What a model call is offered, and how a PowerPoint tool call pauses for the task pane and resumes with its result.
+"""What a model call is offered, and how a task pane tool call pauses for the task pane and resumes with its result.
 
-Each test runs a conversation's real DeepAgent with the PowerPoint rail and a
+Each test runs a conversation's real DeepAgent with the PowerPoint app's rail and a
 scripted model (``conversation``), through the pause and resume agent-core
 gives client tools. ``verify_slide_visual``'s reviews go to that scripted model
 when it takes images, else to a local OpenAI-compatible vision model
@@ -27,10 +27,12 @@ from jiuwenswarm.agents.harness.common.tools.tool_retrieval_toolkits import Tool
 from jiuwenswarm.common.file_download_token import validate_file_download_token
 from jiuwenswarm.office.assets import OfficeAssetStore
 from jiuwenswarm.office import review
-from jiuwenswarm.office.contract import POWERPOINT_PACKAGE, load_contract
-from jiuwenswarm.office.review import NO_ISSUES_SENTINEL, REVIEW_CHECKLIST
+from jiuwenswarm.office.contract import load_contract
+from jiuwenswarm.office.review import NO_ISSUES_SENTINEL, review_checklist
+from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE
 
 PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=="
+REVIEW_CHECKLIST = review_checklist(POWERPOINT_PACKAGE)
 READ_CONTEXT = ToolCall(id="context-1", type="function", name="read_presentation_context", arguments="{}")
 
 
@@ -99,13 +101,13 @@ async def test_a_call_naming_another_conversation_s_asset_fails_without_pausing(
 
     async with conversation([[call]]) as pane:
         assert await pane.turn("import the template") == []
-        assert "publish the file with publish_powerpoint_asset first" in pane.model.tool_results()["import-1"]
+        assert "publish the file with publish_office_asset first" in pane.model.tool_results()["import-1"]
 
 
 @pytest.mark.parametrize(("supported", "live", "reason"), [
-    (["read_presentation_context"], True, "cannot run read_slide_image"),
-    (["read_slide_image"], False, "not open in PowerPoint right now"),
-    (None, True, "no PowerPoint presentation is attached"),
+    (["read_presentation_context"], True, "task pane of this conversation's document cannot run read_slide_image"),
+    (["read_slide_image"], False, "document is not open right now"),
+    (None, True, "no document is attached"),
 ])
 async def test_a_call_no_task_pane_can_run_now_fails_without_pausing(
         conversation, attach_pane, supported, live, reason):
@@ -185,9 +187,28 @@ async def test_a_deferred_tool_called_through_tool_call_pauses_and_resumes_the_s
 
 
 RENDER = f"data:image/png;base64,{PNG_BASE64}"
-GEOMETRY = {"shapes": [{}, {}, {}], "overlaps": [{}], "overflows": [],
-            "coverage": {"coverage_ratio": 0.62, "top_start": 40, "bottom_gap": 80},
-            "occlusion_warnings": [{"message": "Title overlaps Logo"}]}
+# What the task pane measures on a slide for ``verify_slide_visual``.
+GEOMETRY = {
+    "width": 720, "height": 540,
+    "shapes": [
+        {"ref": "256#1:2", "id": "2", "name": "Title", "type": "TextBox", "left": 40, "top": 30, "width": 880,
+         "height": 80},
+        {"ref": "256#1:3", "id": "3", "name": "Bleed", "type": "Image", "left": -12, "top": 500, "width": 50,
+         "height": 50},
+        {"ref": "256#1:4", "id": "4", "name": "Caption", "type": "TextBox", "left": 20, "top": 90, "width": 200,
+         "height": 40},
+    ],
+    "overflows": [
+        {"shape_id": "2", "shape_name": "Title", "edge": "right", "by": 200},
+        {"shape_id": "3", "shape_name": "Bleed", "edge": "left", "by": 12},
+        {"shape_id": "3", "shape_name": "Bleed", "edge": "bottom", "by": 10},
+    ],
+    "overlaps": [{"shape_ids": ["2", "4"], "shape_names": ["Title", "Caption"], "overlap_x": 180, "overlap_y": 20,
+                  "both_have_text": True}],
+    "contrast_warnings": [{"shape_id": "4", "shape_name": "Caption", "font_color": "#777777", "bg_color": "#666666",
+                           "ratio": 1.23,
+                           "msg": "Text and fill are almost the same colour, so the text can hardly be seen"}],
+}
 REVIEW_QUERY = "make slide 1 about our quarterly revenue"
 REVIEWING = ["read_presentation_context", "read_slide_image", "verify_slide_visual"]
 
@@ -209,7 +230,7 @@ def _verify(**arguments) -> ToolCall:
 
 
 def _capture(*, slide_id: str = "256#1", geometry=GEOMETRY, images=(RENDER,)) -> dict:
-    text = json.dumps({"slide_id": slide_id, "slide_index": 0, "geometry": geometry})
+    text = json.dumps({"slide_id": slide_id, "geometry": geometry})
     return {"content": [{"type": "text", "text": text}, *({"type": "image", "data_url": url} for url in images)]}
 
 
@@ -219,6 +240,14 @@ def _evidence(result: str) -> dict:
 
 def test_the_review_checklist_asks_for_the_line_the_verdict_reads() -> None:
     assert f"respond with exactly this first line:\n{NO_ISSUES_SENTINEL}\n" in REVIEW_CHECKLIST
+
+
+def test_the_review_summary_counts_what_the_task_pane_measures_and_nothing_else() -> None:
+    lines = review.geometry_summary(GEOMETRY).splitlines()
+
+    assert "n/a" not in "\n".join(lines)
+    assert "1 bounding-box overlap(s) and 3 overflow(s)" in lines[0]
+    assert lines[1:] == ["- Shapes: 3", "- Contrast warnings: 1"]
 
 
 @pytest.mark.parametrize("vision_configured", [True, False], ids=["with-models-vision", "without-models-vision"])
@@ -232,7 +261,7 @@ async def test_a_visual_review_pauses_once_and_shows_the_conversation_s_model_on
     async with conversation([[_verify()], review_text], native_images=True) as pane:
         [request] = await pane.turn(REVIEW_QUERY)
         assert (request["tool_name"], request["arguments"]) == ("verify_slide_visual", {"slide_id": "256#1"})
-        assert request["client_tool"] == {"downloads": {}, "render": {"width": 960}}
+        assert request["client_tool"] == {"downloads": {}}
 
         assert await pane.answer((request, _capture())) == []
         result = pane.model.tool_results()["verify-1"]
@@ -250,7 +279,7 @@ async def test_a_visual_review_pauses_once_and_shows_the_conversation_s_model_on
     geometry, image = user["content"]
     assert image == {"type": "image_url", "image_url": {"url": RENDER}}
     assert geometry["text"].startswith("Measured geometry (from the presentation's object model): 1 bounding-box")
-    assert "- Shapes: 3" in geometry["text"] and "Title overlaps Logo" in geometry["text"]
+    assert geometry["text"] == review.geometry_summary(GEOMETRY)
     assert REVIEW_QUERY not in json.dumps(review_messages)
 
 
@@ -339,6 +368,7 @@ async def test_without_a_vision_model_a_visual_review_fails_at_once_and_the_task
     (_capture(images=()), "returned 0 images instead of one slide render"),
     (_capture(images=(RENDER, RENDER)), "returned 2 images instead of one slide render"),
     (_capture(slide_id="257#2"), "captured slide '257#2' instead of '256#1'"),
+    (_capture(geometry=None), "sent no geometry for the captured slide"),
     ({"content": [{"type": "text", "text": "rendered"}, {"type": "image", "data_url": RENDER}]},
      "did not describe the captured slide"),
     ({"content": [{"type": "text", "text": "slide 256#1 not found"}], "is_error": True}, "slide 256#1 not found"),
@@ -353,17 +383,6 @@ async def test_a_visual_review_without_the_requested_slide_s_capture_fails_unrev
         result = pane.model.tool_results()["verify-1"]
     assert reason in result and "verdict" not in result
     assert vision.requests == []
-
-
-async def test_a_slide_without_geometry_is_still_reviewed(conversation, attach_pane, vision):
-    attach_pane("deck-a", REVIEWING)
-    vision.reply(NO_ISSUES_SENTINEL)
-
-    async with conversation([[_verify()]]) as pane:
-        [request] = await pane.turn(REVIEW_QUERY)
-        await pane.answer((request, _capture(geometry=None)))
-        assert 'verdict="done"' in pane.model.tool_results()["verify-1"]
-    assert vision.requests[0]["messages"][1]["content"][0]["text"].startswith("Measured geometry: unavailable")
 
 
 @pytest.mark.parametrize(("replies", "reason"), [

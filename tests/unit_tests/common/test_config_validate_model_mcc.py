@@ -467,9 +467,7 @@ class TestProbeFailurePaths:
         assert api_key not in message
         assert "***" in message
 
-    async def test_retry_with_fixed_key_succeeds(self):
-        api_key = "sk-test-fixed-value"
-
+    async def test_retry_with_next_token_limit_succeeds(self):
         class _RetryingModel:
             def __init__(self):
                 self.calls = 0
@@ -477,7 +475,7 @@ class TestProbeFailurePaths:
             def invoke(self, **_kwargs):
                 self.calls += 1
                 if self.calls == 1:
-                    raise RuntimeError("401 Unauthorized")
+                    raise TimeoutError("request timed out")
 
                 async def _ok():
                     return {"content": "Hi"}

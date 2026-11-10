@@ -62,6 +62,7 @@ from jiuwenswarm.common.context_window import (
     parse_positive_int,
 )
 from jiuwenswarm.common.model_config_validation import probe_model_connection
+from jiuwenswarm.common.model_error_messages import user_facing_model_error
 from jiuwenswarm.common.opencode_go import is_opencode_go_client_config
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
@@ -1011,12 +1012,13 @@ async def config_validate_model_handler(
             log_context="cli config.validate_model",
         )
     except Exception as exc:  # noqa: BLE001
+        # 与 Web 侧保持一致：内部异常进日志，用户看到可执行的提示。
         logger.warning("[cli config.validate_model] LLM probe failed: %s", exc)
         await channel.send_response(
             ws,
             req_id,
             ok=False,
-            error=_redact_probe_error(str(exc), api_key) or "LLM request failed",
+            error=_redact_probe_error(user_facing_model_error(exc, api_base=api_base), api_key),
             code="LLM_ERROR",
         )
         return
