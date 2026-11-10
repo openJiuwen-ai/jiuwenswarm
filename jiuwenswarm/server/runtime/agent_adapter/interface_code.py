@@ -903,6 +903,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         if rail is not None:
             rail.eager_tools = list(dict.fromkeys([*rail.eager_tools, *_CODE_EAGER_TOOLS]))
+            # ②号防线 plan 态校验按本装配 plan 白名单收敛（评审 CR-1，
+            # 2026-11-10）：plan 态 _CODE_PLAN_ALLOWED_TOOLS 白名单外成员
+            # （switch_mode/tools_search/invoke_tool）设计性缺席，比对它们
+            # 会在 code plan 会话每轮假阳性。
+            rail.plan_check_allowed_tools = frozenset(_CODE_PLAN_ALLOWED_TOOLS)
             logger.info(
                 "[JiuwenSwarmCodeAdapter] ProgressiveToolRail mounted mode=%s sub_mode=%s",
                 "progressive" if rail.enabled else "skill-gate-only",

@@ -175,6 +175,12 @@ class ProgressiveToolRail(DeepAgentRail):
         super().__init__()
         self.enabled = bool(enabled)
         self.eager_tools = list(eager_tools or [])
+        # ②号防线 plan 态校验的设计可见集（None=全量校验）。装配方 plan
+        # 白名单（work：WORK_PLAN_ALLOWED_TOOLS；code：_CODE_PLAN_ALLOWED_TOOLS）
+        # 之外的 eager 成员（tools_search/invoke_tool 等 lazy 支柱、switch_mode）
+        # 由上游 mode rail 设计性排除，缺席非异常；按白名单收敛才不会每轮
+        # 假阳性（评审 CR-1，2026-11-10）。由适配器建轨时注入。
+        self.plan_check_allowed_tools: frozenset[str] | None = None
         self.language = language or "cn"
         self.agent_id = agent_id
         self.agent_card_id = str(agent_card_id or "").strip() or None
@@ -958,11 +964,21 @@ class ProgressiveToolRail(DeepAgentRail):
         # 仅 plan 态校验（评审 2026-11-09）：normal 态 enter/exit_plan_mode
         # 由 AgentModeRail 按设计过滤、switch_mode 由 WorkAgentModeRail 过滤，
         # 缺席是预期行为，全态比对会在热路径每轮固定误报、淹没真信号。
-        # plan 态三个 eager 工具均应可见，缺席即真异常（stale normal 竞速
-        # 丢失恰好落在该窗口）。读不了 plan 态时不校验，宁漏不误。
+        #
+        # 校验范围按装配方 plan 白名单收敛（评审 CR-1，2026-11-10）：work/code
+        # 装配 plan 态走白名单过滤，白名单外的 eager 成员（tools_search/
+        # invoke_tool 等 lazy 支柱、switch_mode）设计性缺席，比对它们同样每轮
+        # 误报。装配方经 plan_check_allowed_tools 注入设计可见集，只校验集内
+        # 成员（缺席即真异常）；未注入（None）保持全量校验。读不了 plan 态时
+        # 不校验，宁漏不误。
         if self._plan_mode_active_for_check(agent, ctx):
+            allowed = self.plan_check_allowed_tools
             missing_eager = sorted(
-                name for name in self.eager_tools if name and name not in input_tool_names
+                name
+                for name in self.eager_tools
+                if name
+                and name not in input_tool_names
+                and (allowed is None or name in allowed)
             )
             if missing_eager:
                 logger.warning(
