@@ -76,6 +76,27 @@ function sourceFilesUnder(path) {
 const zh = JSON.parse(source('src/i18n/locales/zh.json'));
 const en = JSON.parse(source('src/i18n/locales/en.json'));
 
+test('DDG and Bing retain independent persisted switches after removing 360', () => {
+  for (const name of ['ddg', 'bing']) {
+    const key = `free_search_${name}_enabled`;
+    assert.deepEqual(SETTINGS_CONFIG_FIELDS.find((item) => item.key === key), {
+      key, category: 'agent', kind: 'boolean', persistence: '.env', path: `FREE_SEARCH_${name.toUpperCase()}_ENABLED`,
+    });
+    for (const enabled of ['true', 'false']) {
+      assert.deepEqual(buildConfigSavePayload({ [key]: enabled }), { config: { [key]: enabled } });
+    }
+  }
+  assert.equal(SETTINGS_CONFIG_FIELDS.some((item) => item.key === 'free_search_360_enabled'), false);
+  assert.throws(() => buildConfigSavePayload({ free_search_360_enabled: 'true' }), /Unknown settings config key/);
+  for (const locale of [zh, en]) {
+    assert.equal(locale.settingsPanel.fields.free_search_360_enabled, undefined);
+    assert.ok(locale.settingsPanel.fields.free_search_ddg_enabled.title.includes('DuckDuckGo'));
+    assert.ok(locale.settingsPanel.fields.free_search_bing_enabled.title.includes('Bing'));
+  }
+  const definition = source('src/features/settings/modules/agent/definition.ts');
+  assert.doesNotMatch(definition, /free_search_360_enabled|360-search/);
+});
+
 function leafKeys(value, prefix = '') {
   return Object.entries(value).flatMap(([key, child]) => {
     const path = prefix ? `${prefix}.${key}` : key;
