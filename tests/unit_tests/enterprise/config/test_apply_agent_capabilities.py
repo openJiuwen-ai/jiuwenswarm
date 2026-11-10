@@ -32,3 +32,25 @@ def test_a4p_overlay_sets_the_confirm_switch() -> None:
         {"a4p": {"enabled": True}},
     )
     assert merged["a4p"]["enabled"] is True
+
+
+def test_symphony_overlay_keeps_local_paths() -> None:
+    merged = apply_capability_bodies(
+        {
+            "symphony": {
+                "enabled": False,
+                "paths": {"skills_root": "/data/skills", "graph_dir": "/data/graph"},
+            }
+        },
+        {
+            "symphony": {
+                "enabled": True,
+                "skill_retrieval": {"enabled": True},
+            }
+        },
+    )
+    symphony = merged["symphony"]
+    assert symphony["enabled"] is True
+    assert symphony["paths"]["skills_root"] == "/data/skills"
+    assert symphony["paths"]["graph_dir"] == "/data/graph"
+    assert symphony["skill_retrieval"]["enabled"] is True
