@@ -30,6 +30,9 @@ from tarfile import ReadError, TarError
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
+from openjiuwen.core.extension import ExtensionFailure
+from openjiuwen.core.extension.package_manager import PackageManager
+
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.gateway.extensions_v2.config import resolve_examples_dir
 from jiuwenswarm.gateway.extensions_v2.manifest import DOMAIN_AGENT_SERVER, DOMAIN_GATEWAY
@@ -411,6 +414,9 @@ _MANIFEST_LIMIT = 64 * 1024
 def _package_domain(path: Path) -> str | None:
     """Classify a source by ``package.domain`` and ``package_type`` without importing it."""
 
+    domain = _extension_source_domain(path)
+    if domain is not None:
+        return domain
     manifest = _read_manifest(path)
     if manifest is None:
         return None
@@ -421,6 +427,17 @@ def _package_domain(path: Path) -> str | None:
         return value if value in _KNOWN_DOMAINS else None
     package_type = manifest.get("package_type")
     return _PACKAGE_TYPES.get(package_type) if isinstance(package_type, str) else None
+
+
+def _extension_source_domain(path: Path) -> str | None:
+    """Read an extension source with Core's ZIP-root rules before routing it."""
+
+    try:
+        with PackageManager(path.parent).open_source(path) as opened:
+            domain = (opened.manifest.domain or "").strip().lower() or DOMAIN_AGENT_SERVER
+    except ExtensionFailure:
+        return None
+    return domain if domain in _KNOWN_DOMAINS else None
 
 
 def _read_manifest(path: Path) -> Mapping[str, Any] | None:
