@@ -1254,6 +1254,11 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
+      },
+      "cua_agent_enabled": {
+        "title": "Enable computer control",
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
+        "unavailableDescription": "Computer control is unavailable in this environment."
       }
     },
     "validation": {
@@ -2000,11 +2005,11 @@
       "weiboHotList": "Weibo hot searches",
       "baiduHotList": "Baidu hot searches",
       "hotListRank": "No. {{rank}}",
-      "hotListListedAt": "Listed {{time}}",
+      "hotListListedAt": "Listed at {{time}}",
       "viewHotListEntry": "See this trending item: {{source}}",
       "hotListEntry": "Trending",
-      "openNewsSearch": "Open the hot-search topic",
-      "searchRelatedNews": "Open hot search",
+      "openNewsSearch": "Open related coverage for this hot search",
+      "searchRelatedNews": "View related coverage",
       "statusPreparing": "Getting topics ready. You can start chatting now.",
       "statusPreparingWithCards": "Getting topics ready. You can start chatting now.",
       "statusUpdateIncomplete": "Getting topics ready. You can start chatting now.",
@@ -6762,6 +6767,11 @@
     "download": "Download",
     "quoteToChat": "Quote in chat",
     "renameFile": "Rename file",
+    "renameFileFailed": "Rename failed: {{reason}}",
+    "renameFileExists": "A file with that name already exists in this folder. Choose another name.",
+    "renameFileMissing": "The original file is missing. It may have been moved or deleted.",
+    "renameFilePermission": "Permission denied, or the file is in use by another application.",
+    "renameFileForbidden": "Only regular files in this group's workspace can be renamed, not symlinks or external files.",
     "fileName": "File name",
     "deleteFile": "Delete file",
     "deleteFileWarning": "The file will be removed from group messages and the file list. Files inside this group's workspace are also deleted from disk. This cannot be undone.",

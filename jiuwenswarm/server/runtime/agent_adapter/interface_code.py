@@ -2681,8 +2681,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     rails=[SubagentToolActivityRail()],
                     **resolve_cua_factory_options(cua_agent_cfg),
                 )
-                cua_spec.factory_kwargs["auto_create_workspace"] = False
-                subagents.append(cua_spec)
+                if cua_spec is not None:
+                    cua_spec.factory_kwargs["auto_create_workspace"] = False
+                    subagents.append(cua_spec)
 
         # ── 自定义 agent 不加入 deep_config.subagents ──
         # Code 模式下，自定义 agent 由 CodeAgentRail 的 Agent 工具管理，

@@ -1254,6 +1254,11 @@
         "title": "API Key",
         "description": "JEV 服务的密钥。",
         "placeholder": "输入 API Key"
+      },
+      "cua_agent_enabled": {
+        "title": "启用电脑操控",
+        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
+        "unavailableDescription": "当前环境不支持电脑操控。"
       }
     },
     "validation": {
@@ -2000,11 +2005,11 @@
       "weiboHotList": "微博热搜",
       "baiduHotList": "百度热搜",
       "hotListRank": "第 {{rank}}",
-      "hotListListedAt": "上榜 {{time}}",
+      "hotListListedAt": "上榜于 {{time}}",
       "viewHotListEntry": "看看这条热搜：{{source}}",
       "hotListEntry": "热搜",
-      "openNewsSearch": "打开热搜话题",
-      "searchRelatedNews": "打开热搜",
+      "openNewsSearch": "打开这条热搜相关内容",
+      "searchRelatedNews": "查看相关内容",
       "statusPreparing": "正在准备话题，你也可以直接开始聊。",
       "statusPreparingWithCards": "正在准备话题，你也可以直接开始聊。",
       "statusUpdateIncomplete": "正在准备话题，你也可以直接开始聊。",
@@ -6759,6 +6764,11 @@
     "download": "下载",
     "quoteToChat": "引用到对话",
     "renameFile": "重命名文件",
+    "renameFileFailed": "重命名失败：{{reason}}",
+    "renameFileExists": "同目录下已有同名文件，请使用其他名称。",
+    "renameFileMissing": "原文件不存在，可能已被移动或删除。",
+    "renameFilePermission": "没有权限修改该文件，或文件正被其他程序占用。",
+    "renameFileForbidden": "只能重命名本群工作区内的普通文件，不支持符号链接或外部文件。",
     "fileName": "文件名",
     "deleteFile": "删除文件",
     "deleteFileWarning": "删除后该文件将从群聊消息和产物列表中移除；位于本群工作区内的文件会同时从磁盘删除。此操作无法撤销。",

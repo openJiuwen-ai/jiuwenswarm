@@ -761,6 +761,11 @@ class AgentManager:
         return await self.request_view(namespace_id, request_id)
 
     @property
+    def service(self) -> PersistentAgentService:
+        """Read the employee service used for trusted binding checks."""
+        return self._service
+
+    @property
     def sessions(self) -> ExecutionRepository:
         """Request and execution records. Group traces read only this colleague's Session."""
         return self._sessions

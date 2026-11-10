@@ -8,13 +8,16 @@ PowerPoint 任务窗格在 AgentServer 侧的能力：工具合同、在任务�
 
 ```text
 contract.py            读 powerpoint/tools.json，校验 annotations，生成 ToolCard
-client_tools.py        PowerPointTool(ClientTool)：build_request 判断能否执行并给出下载链接，complete 处理截图
+client_tools.py        PowerPointTool(ClientTool)：build_request 判断能否执行并给出下载链接，complete 处理截图；
+                       VerifySlideVisualTool：verify_slide_visual
+review.py              视觉复核：选审稿模型、审稿调用（60s）、判定、几何摘要、返回给作者的结果
 rails.py               OfficeToolsRail：注册工具、按 supported_tools 过滤每次模型调用
 assets.py              publish_powerpoint_asset 与会话资产（office_assets/，经 /file-api/download 下发）
 documents.py           list_open_documents：同一用户其他已连接的文档及其对话
 runtime.py             会话目录、资产允许目录、把图片存进会话 uploads
 powerpoint/            合同 tools.json、profile.json（任务窗格构建时读取）；agent template：
-                       manifest.json、persona/（替换默认身份）、rails/（指向 OfficeToolsRail）、skills/
+                       manifest.json、persona/（替换默认身份）、rails/（指向 OfficeToolsRail）、skills/；
+                       review.md（verify_slide_visual 的审稿清单）
 ```
 
 ## 何时生效
@@ -35,7 +38,7 @@ powerpoint/            合同 tools.json、profile.json（任务窗格构建时�
 
 ## 工具执行
 
-- 合同里的 17 个工具都是 agent-core `ClientTool`。模型调用时先过所有 `before_tool_call`
+- 合同里的 18 个工具都是 agent-core `ClientTool`。模型调用时先过所有 `before_tool_call`
   rail（含权限），再以 `client_tool` 中断暂停；流里发 `chat.client_tool_request`，
   `arguments` 是本次调用的参数，`client_tool.downloads` 是参数里各资产 handle 的下载链接。
   任务窗格执行后用 `chat.send`（`source: "client_tool_interrupt"`）续跑。
@@ -45,6 +48,14 @@ powerpoint/            合同 tools.json、profile.json（任务窗格构建时�
   不会占住这一轮；已发出的调用若窗格消失，由 attach 的 sweep 答成 `client_gone`。
 - 截图：当前模型能看图时，图片只送进下一次模型调用（`keep_in_context: False`）；
   不能看图时存进本对话 uploads，结果里给出 `visual_attachment.path`。
+- 视觉复核 `verify_slide_visual`：审稿只看清单和这一页，不带对话内容。审稿模型是本对话当前的模型
+  （能看图时，判断同上一条），否则是 `models.vision`（与 agent 自己的视觉工具同一门控）；两者都没有时，
+  build_request 在上面的检查之后立即失败、不可重试。通过后 `client_tool.render.width` 为 960。任务窗格在
+  一次答复里给出这一页的截图和几何测量（`{slide_id, slide_index, geometry|null}`）。complete 校验答复
+  （恰好一张图、`slide_id` 一致）后，把审稿清单（`review.md`）、几何摘要和截图交给审稿模型，只有这两条消息；
+  60s 内没有答复、供应商报错或两次空答复时，返回不带 verdict 的结果。作者拿到 `done|needs_work`、
+  `hard_defects`/`advisories`/`expected_change_checks` 和同一张截图（截图的去向同上一条）。
+  怎么用这个结果（`needs_work` 不算完成、同一页三轮就停、没有 verdict 时自己看图并说明）只写在人设的编辑循环里。
 - 跨文档协作走 `list_open_documents` + 现有的 `session_send_message`，session 之间只传文字。
 
 ## 资产

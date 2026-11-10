@@ -238,7 +238,12 @@ def test_membership_does_not_reactivate_from_late_message_and_rejoin_resets_visi
     groups.update_membership("local", "agent", group_id, "app", status="active",
                              observed_at=NOW + timedelta(seconds=10), source_ref="joined:2")
     access = groups.access_for("local", "agent", group_id)
-    assert access.visible_from == NOW + timedelta(seconds=10)
+    assert access.status == "left"
+    groups.observe_access("local", "agent", group_id, "app", observed_at=NOW + timedelta(seconds=11),
+                          message_time=NOW + timedelta(seconds=11), source_ref="message:rejoined")
+    access = groups.access_for("local", "agent", group_id)
+    assert access.status == "active"
+    assert access.visible_from == NOW + timedelta(seconds=11)
 
 
 def test_literal_unicode_search_and_visibility_filter(records):
@@ -296,7 +301,12 @@ def test_joining_after_binding_retirement_starts_a_new_visibility_period(records
                                      source_ref="binding:retired")
     records.groups.update_membership(*args, status="active", observed_at=NOW + timedelta(seconds=2),
                                      source_ref="event:joined-again")
-    assert records.groups.access_for(*args[:3]).visible_from == NOW + timedelta(seconds=2)
+    assert records.groups.access_for(*args[:3]).status == "unknown"
+    records.groups.observe_access(*args, observed_at=NOW + timedelta(seconds=3),
+                                 message_time=NOW + timedelta(seconds=3), source_ref="message:rejoined")
+    access = records.groups.access_for(*args[:3])
+    assert access.status == "active"
+    assert access.visible_from == NOW + timedelta(seconds=3)
 
 
 def test_edited_message_keeps_scan_identity_and_old_redelivery_does_not_undo_it(records):
