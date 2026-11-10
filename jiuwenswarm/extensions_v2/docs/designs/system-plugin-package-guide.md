@@ -3,7 +3,7 @@
 | 项 | 说明 |
 | --- | --- |
 | 类型 | 开发指南；系统插件包（`package_type: extension`）的清单与说明文档写法 |
-| 最近修订 | 2026-11-06 |
+| 最近修订 | 2026-11-10 |
 | 所属模块 | `jiuwenswarm/extensions_v2/` |
 | 字段契约 | [S_02 §1.2、§1.3](../specs/S_02_backend-package-management.md) |
 | 界面项 | [F_07](../features/F_07_ui-contributions.md)、[S_17](../specs/S_17_webui-component-props.md) |
@@ -21,7 +21,7 @@ example.fs-probe/
 ├── README_EN.md           # 英文说明
 ├── assets/
 │   ├── avatar.png         # 可选，≤ 1 MB
-│   └── preview.png        # 可选，≤ 10 MB
+│   └── preview.png        # 可选，≤ 5 MB
 └── fs_probe/
     └── extension.py       # extensions[].module 指向的入口
 ```
@@ -107,7 +107,7 @@ example.fs-probe/
 | `name` | `{zh, en}`，缺省回退包 ID |
 | `description` | `{zh, en}`，一句话说明能力范围 |
 | `tags` | 双语文本数组，2～4 个为宜 |
-| `avatar` | 包内相对路径，支持 png、svg、jpg、jpeg、webp，≤ 1 MB |
+| `avatar` | 包内相对路径，推荐 `assets/avatar.png`；本地加载支持 png、svg、jpg、jpeg、webp，发布到 SkillHub 时仅 PNG 会生成市场图标，≤ 1 MB |
 | `details` | `{zh, en}` Markdown，补充用法与配置说明 |
 | `events` | `[{name, description}]`，列出插件注册的事件 |
 
@@ -162,11 +162,11 @@ example.fs-probe/
 
 | 文件 | 约束 | 说明 |
 | --- | --- | --- |
-| `assets/avatar.*` | ≤ 1 MB | 包图标，png、svg、jpg、jpeg、webp |
-| `assets/preview.png` | ≤ 10 MB | 能力预览图，固定路径与文件名 |
+| `assets/avatar.*` | ≤ 1 MB | 包图标；本地加载支持 png、svg、jpg、jpeg、webp，SkillHub 市场图标仅取 PNG（优先 `assets/avatar.png`） |
+| `assets/preview.png` | ≤ 5 MB | 能力预览图，固定路径与文件名；发布到 SkillHub 时自动缩放到最长边 1600px 内并压缩到 2 MB 以内 |
 | `README.md`、`README_EN.md` | ≤ 64 KiB | 单一语言缺失时回落到另一语言，超出部分截断 |
 
-头像与预览图超限时按缺失处理；README 超过限制时只保留前 64 KiB。这些情况都不影响包加载。
+本地加载时，头像与预览图超限按缺失处理；SkillHub 发布时预览图超限或压缩后仍超过 2 MB 会直接报错。README 超过限制时只保留前 64 KiB，这些情况都不影响包加载。
 
 ## 5. 交付前自检
 

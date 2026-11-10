@@ -1628,6 +1628,11 @@ def _nest_preview_tree(entries: list[tuple[str, int]]) -> list[dict]:
     return walk(root, "")
 
 
+def preview_file_tree(entries: list[tuple[str, int]]) -> list[dict]:
+    """Build the preview tree JSON from package-relative (path, size) entries."""
+    return _nest_preview_tree(entries)
+
+
 def _reject_preview_path_symlink(pkg_dir: Path, rel: str) -> Path:
     """Resolve a package-relative path, rejecting any symlink segment."""
     pkg_resolved = pkg_dir.resolve()
