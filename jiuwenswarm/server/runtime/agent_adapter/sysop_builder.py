@@ -547,10 +547,15 @@ def build_yuanrong_sandbox_status_view() -> dict[str, Any]:
 def _team_context_from_spec(spec: Any) -> dict[str, str] | None:
     """Derive the team mount context from a ``TeamAgentSpec``.
 
-    The team home is derived from the workspace root, never hardcoded to the
-    default ``.agent_teams`` layout: group-chat child teams carry their own
-    private workspace root, and distributed deployments may relocate it. An
-    empty or missing ``workspace.root_path`` falls back to the default
+    The team home is derived from the workspace root ONLY when the root ends
+    with the canonical ``team-workspace`` segment (the default layout, where
+    ``<root>/.agent_teams/<team>/team-workspace`` parent IS the team home).
+    A relocated workspace root (e.g. a group-chat child team's private runs
+    workspace) has no such relationship — its parent is a runs directory, not
+    a team home — so no team home is guessed: the caller receives ``None`` and
+    team mounts are skipped (a missing mount degrades loudly; a WRONG mount
+    binds unrelated host directories into the sandbox). An empty or missing
+    ``workspace.root_path`` falls back to the default
     ``team_home(team_name) / "team-workspace"`` (same expression as the
     swarm assembly path).
 
@@ -581,7 +586,20 @@ def _team_context_from_spec(spec: Any) -> dict[str, str] | None:
     # workspace_root is <team_home>/team-workspace (or a relocated equivalent):
     # the team home is its parent, so group-chat children and relocated roots
     # derive their own subtree without hardcoding the .agent_teams layout.
-    team_home_dir = workspace_root.parent
+    if workspace_root.name == "team-workspace":
+        team_home_dir = workspace_root.parent
+    else:
+        # Relocated layout (group-chat runs workspace &c.): the parent is not
+        # a team home. Skipping is the conservative choice — binding the runs
+        # directory tree as if it were the team's would both miss the real
+        # member directories and expose unrelated host paths rw.
+        logger.warning(
+            "[sysop_builder] team workspace root %s does not follow the "
+            "team-workspace layout (team=%s); skipping team mounts",
+            workspace_root,
+            team_name,
+        )
+        return None
     return {
         "team_name": team_name,
         "session_id": "",
@@ -610,14 +628,30 @@ def _team_mount_intent(team_context: dict[str, str] | None) -> list[tuple[str, s
     if not team_context:
         return []
     team_home_dir = Path(team_context["team_home"])
-    session_id = str(team_context.get("session_id") or "").strip() or "default"
+    # Sanitize the session id through openjiuwen's canonical rule (the same
+    # one team_session_dir uses) so an untrusted id can never escape the team
+    # tree: "../../etc" becomes a single segment, never a path traversal.
+    from openjiuwen.agent_teams.paths import safe_path_segment
+
+    session_id = safe_path_segment(str(team_context.get("session_id") or ""), "default")
     paths = [
         team_home_dir / "workspaces",
         team_home_dir / "team-workspace",
         team_home_dir / "sessions" / session_id / "worktrees",
         team_home_dir.parent / "jiuwen_team_members",
     ]
-    return [(str(p), "rw") for p in paths]
+    # Defense in depth: every in-team path must stay inside team_home (the
+    # members dir is the sanctioned sibling). A composed path that escaped
+    # (impossible with the sanitizer above, kept as a guard) is dropped.
+    team_home_resolved = team_home_dir
+    safe_paths = []
+    for p in paths:
+        if "jiuwen_team_members" in p.name:
+            if p.parent == team_home_dir.parent:
+                safe_paths.append(p)
+        elif team_home_resolved == p or team_home_resolved in p.parents:
+            safe_paths.append(p)
+    return [(str(p), "rw") for p in safe_paths]
 
 
 def build_filesystem_policy(

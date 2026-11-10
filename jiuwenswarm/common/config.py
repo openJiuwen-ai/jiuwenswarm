@@ -3920,7 +3920,7 @@ def get_sandbox_team_fail_closed() -> bool:
     sandbox = cfg.get("sandbox")
     if not isinstance(sandbox, dict):
         return False
-    return bool(sandbox.get("team_fail_closed", False))
+    return coerce_config_bool(sandbox.get("team_fail_closed"), False)
 
 
 def get_sandbox_network_mode() -> str:

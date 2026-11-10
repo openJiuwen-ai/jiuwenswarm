@@ -2395,7 +2395,9 @@ async def _initialize_team_agent_db(
 _ENTERPRISE_BOUNDARY_NOTED: set[str] = set()
 
 
-def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
+def _rebuild_member_sandbox_gate(
+    spec: Any, *, session_id: str, project_dir: str | None = None
+) -> None:
     """Re-encode team entry sandbox specs against THIS node's config (KD6).
 
     The leader-side enrich built every entry's ``SysOperationSpec`` from the
@@ -2411,6 +2413,13 @@ def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
     silent; enterprise known-boundary info once per team; endpoint unresolved
     or unsupported type → loud warning, members stay LOCAL — or, when
     ``sandbox.team_fail_closed`` is set, the member is rejected instead.
+
+    Args:
+        project_dir: The request's project directory, mounted rw into every
+            rebuilt entry (same as the leader-side enrich). Without it the
+            policy builder falls back to the agent-server cwd — not what the
+            members work on. A dir that does not exist on THIS node is simply
+            not mounted (the builder's project-dir resolution skips it).
 
     Idempotent: re-running only recomputes the same values.
     """
@@ -2491,6 +2500,7 @@ def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
             fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
             isolation_custom_id=entry_slug,
             team_context=team_ctx,
+            project_dir=project_dir,
         )
         if card is None:
             failed_entries.append(entry_name)
@@ -2527,6 +2537,52 @@ def _rebuild_member_sandbox_gate(spec: Any, *, session_id: str) -> None:
         failed_entries,
         getattr(spec, "team_name", ""),
     )
+
+
+async def _apply_member_sandbox_gate_with_cleanup(
+    *,
+    spec_obj: Any,
+    team_manager: Any,
+    sid: str,
+    leader_team_agent: Any,
+    leader_member_name: str,
+    member: str,
+    assembly_project_dir: str = "",
+) -> bool:
+    """Run the local sandbox rebuild gate with fail-closed-safe cleanup.
+
+    Wraps ``_rebuild_member_sandbox_gate`` so a ``team_fail_closed`` rejection
+    (RuntimeError) is NOT swallowed by the caller loop's broad ``except``:
+    the same cleanup the normal path runs (discard the auxiliary team agent,
+    clean the auxiliary leader workspace, stop the stale member agent) executes
+    first, an explicit "sandbox rejected" warning is logged, and the caller
+    receives ``False`` to stop adoption. Any other exception propagates.
+
+    Returns:
+        True when the gate passed (caller proceeds); False when the member was
+        rejected (caller must abort adoption).
+    """
+    try:
+        _rebuild_member_sandbox_gate(
+            spec_obj, session_id=sid, project_dir=assembly_project_dir or None
+        )
+    except RuntimeError as exc:
+        await _discard_auxiliary_team_agent(team_manager, sid, leader_team_agent)
+        _cleanup_auxiliary_leader_workspace(
+            str(getattr(spec_obj, "team_name", "") or ""),
+            leader_member_name,
+        )
+        await _stop_dynamic_member_agent(sid, member)
+        logger.warning(
+            "[RemoteMemberBootstrap] sandbox rejected (team_fail_closed): "
+            "member=%s session_id=%s cleaned up auxiliary agent/workspace, "
+            "adoption aborted (%s)",
+            member,
+            sid,
+            exc,
+        )
+        return False
+    return True
 
 
 async def _ensure_dynamic_member_execution_loop(
@@ -2676,7 +2732,16 @@ async def _ensure_dynamic_member_execution_loop(
         # (design D-20261105-1041 KD6): each entry keeps the deterministic
         # entry id (same derivation on both nodes) while base_url and mounts
         # resolve locally, so the member runs in a container on its own node.
-        _rebuild_member_sandbox_gate(spec_obj, session_id=sid)
+        if not await _apply_member_sandbox_gate_with_cleanup(
+            spec_obj=spec_obj,
+            team_manager=team_manager,
+            sid=sid,
+            leader_team_agent=leader_team_agent,
+            leader_member_name=leader_member_name,
+            member=member,
+            assembly_project_dir=assembly_project_dir,
+        ):
+            return False, False
         payload = {
             "spec": spec_obj.model_dump(mode="json"),
             "context": teammate_ctx.model_dump(mode="json"),

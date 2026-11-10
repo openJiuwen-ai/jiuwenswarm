@@ -62,8 +62,9 @@ def test_team_context_derivation_with_relative_and_empty_root(
 
     spec.workspace = WorkspaceSpec(root_path="./relative-ws")
     monkeypatch.chdir(tmp_path)
+    # a non team-workspace root is a relocated layout: no team home is guessed
     ctx_rel = sysop_builder._team_context_from_spec(spec)
-    assert ctx_rel is not None
+    assert ctx_rel is None or sysop_builder._team_mount_intent(ctx_rel) == []
 
 
 def test_policy_build_encodes_team_intent_into_bind_mounts(tmp_path: Path) -> None:
@@ -140,3 +141,65 @@ def test_network_mode_absent_keeps_legacy_behavior(
     assert card is not None
     policy = card.gateway_config.launcher_config.extra_params["policy"]
     assert "network" not in policy
+
+
+def test_mount_intent_sanitizes_session_id() -> None:
+    """Fix-2: session_id is sanitized into one path segment (same rule as
+    openjiuwen team_session_dir) so it can never escape team_home."""
+    ctx = {
+        "team_name": "t", "session_id": "../../etc",
+        "team_home": "/data/teams/t", "workspace_root": "/data/teams/t/team-workspace",
+    }
+    paths = [host for host, _ in sysop_builder._team_mount_intent(ctx)]
+    for p in paths:
+        assert ".." not in Path(p).parts, f"escape in {p}"
+    worktree = [p for p in paths if "worktrees" in p][0]
+    # exact form: sanitized segment, matching openjiuwen's rule
+    from openjiuwen.agent_teams.paths import safe_path_segment
+    assert str(Path("/data/teams/t/sessions") / safe_path_segment("../../etc") / "worktrees") == worktree
+
+
+def test_mount_intent_stays_within_team_tree_boundaries() -> None:
+    """Fix-2: every non-members intent path must resolve inside team_home."""
+    ctx = {
+        "team_name": "t", "session_id": "s1",
+        "team_home": "/data/teams/t", "workspace_root": "/data/teams/t/team-workspace",
+    }
+    paths = [Path(host) for host, _ in sysop_builder._team_mount_intent(ctx)]
+    team_home = Path("/data/teams/t")
+    for p in paths:
+        if "jiuwen_team_members" in p.name:
+            assert p.parent == team_home.parent  # members dir is the sibling
+        else:
+            assert team_home in p.parents or p == team_home
+
+
+def test_team_context_default_layout_derives_parent(tmp_path) -> None:
+    """Fix-3: the default layout (<root>/.agent_teams/<team>/team-workspace)
+    keeps the proven parent-derivation — must not regress."""
+    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+
+    spec = TeamAgentSpec(agents={}, team_name="unit-team")
+    ws = tmp_path / ".agent_teams" / "unit-team" / "team-workspace"
+    ctx = sysop_builder._team_context_from_spec(spec)
+    assert ctx is not None
+    # empty workspace_root falls back to team_home(<team>)/team-workspace whose
+    # parent is the team home — same value as the derivation
+    assert Path(ctx["team_home"]).name == "unit-team"
+
+
+def test_team_context_relocated_workspace_skips_team_home_guess() -> None:
+    """Fix-3: a relocated workspace root (group-chat runs layout) must NOT be
+    reverse-derived into a wrong team home — team mounts are skipped with a
+    warning instead of binding wrong host directories."""
+    import logging as _logging
+
+    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+    from openjiuwen.harness.schema.deep_agent_spec import WorkspaceSpec
+
+    spec = TeamAgentSpec(agents={}, team_name="child-team")
+    spec.workspace = WorkspaceSpec(root_path="/tmp/runs/abc123/workspace")  # runs layout
+    ctx = sysop_builder._team_context_from_spec(spec)
+    # relocated layout: no guessed team_home — the intent function must yield
+    # no team mounts rather than bind /tmp/runs/... as if it were a team tree
+    assert ctx is None or sysop_builder._team_mount_intent(ctx) == []
