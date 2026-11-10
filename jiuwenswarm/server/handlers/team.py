@@ -431,7 +431,7 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
             from jiuwenswarm.enterprise.team.quota import TeamQuotaExceeded, team_quota_user_message
 
             try:
-                from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                 await run_team_store(
                     ensure_session_team_occupancy,
@@ -520,7 +520,7 @@ async def handle_team_delete(ctx: RequestContext) -> None:
                         purge_team_for_deleted_session,
                     )
 
-                    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                     for sid in result.session_ids:
                         await run_team_store(

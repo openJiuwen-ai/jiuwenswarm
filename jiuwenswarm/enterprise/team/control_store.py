@@ -785,14 +785,14 @@ def get_team_control_store() -> TeamControlStore:
     if _DEFAULT_STORE is None:
         with _DEFAULT_STORE_LOCK:
             if _DEFAULT_STORE is None:
-                from jiuwenswarm.infrastructure.db.team_mysql_actor import use_team_mysql
+                from jiuwenswarm.infrastructure.db.team_store_actor import use_shared_team_store
 
-                if use_team_mysql():
-                    from jiuwenswarm.enterprise.team.control_mysql import (
-                        MysqlTeamControlStore,
+                if use_shared_team_store():
+                    from jiuwenswarm.enterprise.team.control_shared import (
+                        SharedTeamControlStore,
                     )
 
-                    _DEFAULT_STORE = MysqlTeamControlStore()
+                    _DEFAULT_STORE = SharedTeamControlStore()
                 else:
                     _DEFAULT_STORE = SqliteTeamControlStore()
     return _DEFAULT_STORE

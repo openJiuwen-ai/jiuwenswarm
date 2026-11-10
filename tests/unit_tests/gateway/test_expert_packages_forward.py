@@ -11,7 +11,7 @@ from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import (
-    _assemble_with_allowlist,
+    _assemble_with_expert_packages,
 )
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     identity_headers,
@@ -72,7 +72,7 @@ def _http_request(headers: dict[str, str]) -> Request:
     )
 
 
-def test_personal_identity_headers_omit_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_personal_identity_headers_omit_expert_packages(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     with bind_outbound_allowlist(_KEEP):
         headers = identity_headers(_envelope(), accept="application/json")
@@ -103,7 +103,7 @@ async def test_http_assemble_reads_db_row(monkeypatch: pytest.MonkeyPatch) -> No
         return list(_KEEP)
 
     monkeypatch.setattr(_PACKAGES, _read)
-    assembled = await _assemble_with_allowlist(_envelope(), "http://10.0.0.8:8766")
+    assembled = await _assemble_with_expert_packages(_envelope(), "http://10.0.0.8:8766")
     assert decode_expert_packages_header(assembled.headers[HEADER_NAME]) == _KEEP
 
 
@@ -114,15 +114,15 @@ async def test_personal_http_assemble_does_not_read(
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
 
     async def _read() -> list[dict]:
-        raise AssertionError("personal edition read the allowlist")
+        raise AssertionError("personal edition read the expert packages")
 
     monkeypatch.setattr(_PACKAGES, _read)
-    assembled = await _assemble_with_allowlist(_envelope(), "http://10.0.0.8:8766")
+    assembled = await _assemble_with_expert_packages(_envelope(), "http://10.0.0.8:8766")
     assert HEADER_NAME not in assembled.headers
 
 
 @pytest.mark.asyncio
-async def test_websocket_stamp_overwrites_client_allowlist(
+async def test_websocket_stamp_overwrites_client_expert_packages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
@@ -147,7 +147,7 @@ async def test_personal_websocket_stamp_skips_read(
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
 
     async def _read() -> list[dict]:
-        raise AssertionError("personal edition read the allowlist")
+        raise AssertionError("personal edition read the expert packages")
 
     monkeypatch.setattr(_PACKAGES, _read)
     envelope = _envelope()
@@ -155,7 +155,7 @@ async def test_personal_websocket_stamp_skips_read(
     assert envelope.channel_context[METADATA_KEY] == _EVIL
 
 
-def test_corrupt_allowlist_header_becomes_empty_metadata(
+def test_corrupt_expert_packages_header_becomes_empty_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
@@ -165,7 +165,7 @@ def test_corrupt_allowlist_header_becomes_empty_metadata(
     assert metadata[METADATA_KEY] == []
 
 
-def test_missing_allowlist_header_becomes_empty_metadata(
+def test_missing_expert_packages_header_becomes_empty_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
@@ -175,7 +175,7 @@ def test_missing_allowlist_header_becomes_empty_metadata(
     assert metadata[METADATA_KEY] == []
 
 
-def test_allowlist_header_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_expert_packages_header_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     encoded = encode_expert_packages_header(_KEEP)
     _user_id, metadata = _rebuild_identity_from_headers(

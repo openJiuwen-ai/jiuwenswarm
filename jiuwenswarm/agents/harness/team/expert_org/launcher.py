@@ -1104,7 +1104,7 @@ class JiuwenExpertTeamLauncher:
             raise ValueError("organization_id is required")
         if not str(session_id or "").strip():
             raise ValueError("session_id is required")
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import require_allowed
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import require_allowed
 
         require_allowed("agent_group", group_name)
         self.ensure_turn_runner_installed()

@@ -140,19 +140,19 @@ def _configure_openjiuwen_logging() -> None:
         )
 
 
-def _start_team_mysql_before_traffic() -> None:
+def _start_team_store_before_traffic() -> None:
     """Create team tables before this process accepts chat.
 
-    Personal edition does not use Gateway MySQL, so this returns immediately.
+    Personal edition does not use the shared team store, so this returns immediately.
     """
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import (
-        get_team_mysql_actor,
-        use_team_mysql,
+    from jiuwenswarm.infrastructure.db.team_store_actor import (
+        get_team_store_actor,
+        use_shared_team_store,
     )
 
-    if not use_team_mysql():
+    if not use_shared_team_store():
         return
-    get_team_mysql_actor()
+    get_team_store_actor()
 
 
 async def _run(host: str, port: int) -> None:
@@ -176,7 +176,7 @@ async def _run(host: str, port: int) -> None:
         time.monotonic() - startup_t0,
     )
 
-    await asyncio.to_thread(_start_team_mysql_before_traffic)
+    await asyncio.to_thread(_start_team_store_before_traffic)
     front = AgentServerFront(host=host, port=port)
     from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
 

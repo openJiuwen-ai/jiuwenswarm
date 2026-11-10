@@ -5,7 +5,7 @@
 Default skip. Run::
 
     TEAM_CONTROL_MYSQL_TEST=1 python3 -m pytest -m mysql \\
-      tests/unit_tests/agentserver/test_team_control_mysql.py --no-cov -q
+      tests/unit_tests/agentserver/test_team_control_shared.py --no-cov -q
 
 Rows use prefix ``_ut_team_`` and are deleted in teardown.
 """
@@ -41,9 +41,9 @@ STRANGER = OwnerIdentity(user_id="u-x", group_id="g2", bot_id="b1")
 
 
 def _sql(sql: str, params: dict | None = None):
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import fetch_all, get_team_mysql_actor
+    from jiuwenswarm.infrastructure.db.team_store_actor import fetch_all, get_team_store_actor
 
-    actor = get_team_mysql_actor()
+    actor = get_team_store_actor()
 
     async def _op():
         return await fetch_all(actor.handler, sql, params or {})
@@ -54,18 +54,18 @@ def _sql(sql: str, params: dict | None = None):
 @pytest.fixture(scope="module")
 def mysql_stores():
     """One actor for the module: re-init_table on a new handler raises SAWarning (error)."""
-    from jiuwenswarm.enterprise.team.route_binding_mysql import MysqlTeamRouteBindingStore
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import reset_team_mysql_actor
-    from jiuwenswarm.enterprise.team.control_mysql import MysqlTeamControlStore
+    from jiuwenswarm.enterprise.team.route_binding_shared import SharedTeamRouteBindingStore
+    from jiuwenswarm.infrastructure.db.team_store_actor import reset_team_store_actor
+    from jiuwenswarm.enterprise.team.control_shared import SharedTeamControlStore
     from jiuwenswarm.enterprise.team.control_store import set_team_control_store
 
-    reset_team_mysql_actor()
-    control = MysqlTeamControlStore()
-    routes = MysqlTeamRouteBindingStore()
+    reset_team_store_actor()
+    control = SharedTeamControlStore()
+    routes = SharedTeamRouteBindingStore()
     set_team_control_store(control)
     yield control, routes
     set_team_control_store(None)
-    reset_team_mysql_actor()
+    reset_team_store_actor()
 
 
 @pytest.fixture

@@ -2594,10 +2594,10 @@ def _release_uncommitted_team_create(lease: Any) -> None:
         get_team_quota_service,
     )
 
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import use_team_mysql
+    from jiuwenswarm.infrastructure.db.team_store_actor import use_shared_team_store
 
     quota = get_team_quota_service()
-    if use_team_mysql():
+    if use_shared_team_store():
         quota.release_reserved_create(key[len(prefix):])
         return
     row = quota.peek_team_create_lease(key[len(prefix):])
@@ -2608,9 +2608,68 @@ def _release_uncommitted_team_create(lease: Any) -> None:
 
 async def _release_team_create_off_loop(lease: Any) -> None:
     """Release a chat reservation without blocking the HTTP event loop."""
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
     await run_team_store(_release_uncommitted_team_create, lease)
+
+
+def _release_uncommitted_session_team_create(session_id: str) -> None:
+    """Release a chat reservation that is still reserved when its stream ends."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not is_enterprise():
+        return
+    from jiuwenswarm.enterprise.team.quota import get_team_quota_service
+
+    get_team_quota_service().release_reserved_create(sid)
+
+
+async def _release_stream_team_create(session_id: str) -> None:
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+    await run_team_store(_release_uncommitted_session_team_create, session_id)
+
+
+def _hold_uncommitted_team_create(session_id: str) -> None:
+    """Keep a still-reserved chat lease occupying while its stream is alive."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not is_enterprise():
+        return
+    from jiuwenswarm.enterprise.team.quota import get_team_quota_service
+
+    get_team_quota_service().hold_reserved_create(sid)
+
+
+async def _hold_team_create_off_loop(session_id: str) -> None:
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+    await run_team_store(_hold_uncommitted_team_create, session_id)
+
+
+async def _refresh_team_create_hold(session_id: str) -> None:
+    """Refresh a held team-create reservation until this stream task ends.
+
+    The first wait is the full interval. A committed lease matches no row.
+    """
+    from jiuwenswarm.enterprise.team.quota import HOLD_REFRESH_INTERVAL_SEC
+
+    while True:
+        await asyncio.sleep(HOLD_REFRESH_INTERVAL_SEC)
+        try:
+            await _hold_team_create_off_loop(session_id)
+        except Exception:
+            logger.debug(
+                "[TeamHelpers] team-create hold refresh failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
 
 
 async def _apply_enterprise_runtime_ready_hooks(
@@ -2622,7 +2681,7 @@ async def _apply_enterprise_runtime_ready_hooks(
     request: Any | None = None,
 ) -> None:
     """Attach the teammate quota guard and back-fill team identity on ready."""
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
     await run_team_store(
         _record_session_team_occupancy,
@@ -2638,7 +2697,7 @@ async def _apply_enterprise_runtime_ready_hooks(
             team_id = ""
             owner = None
             try:
-                from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
                 from jiuwenswarm.enterprise.team.control_store import get_team_control_store
 
                 def _entity_for_session() -> Any:
@@ -2660,7 +2719,7 @@ async def _apply_enterprise_runtime_ready_hooks(
             )
             if team_id:
                 try:
-                    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
                     from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
                     backend = getattr(team_agent, "team_backend", None)
@@ -2696,7 +2755,7 @@ async def _apply_enterprise_runtime_ready_hooks(
 
     try:
         from jiuwenswarm.enterprise.team.control_bridge import entity_payload
-        from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+        from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
         entity = await run_team_store(
             entity_payload,
@@ -4000,12 +4059,13 @@ async def _process_team_message_stream(
             return
 
     enterprise_create_lease = None
+    stream_kept_lease = False
     try:
         if is_first_request:
             from jiuwenswarm.enterprise.edition import is_enterprise
 
             if is_enterprise():
-                from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                 notice, enterprise_create_lease = await run_team_store(
                     _enterprise_prereserve_team_slot,
@@ -4905,6 +4965,10 @@ async def _process_team_message_stream(
                 raise
             await startup.aclose()
             await _finish_round_submission(accepted=True)
+            if enterprise_create_lease is not None:
+                # 流任务已经接过这次建队。预留跟着流走，这次 HTTP 结束不再释放。
+                stream_kept_lease = True
+                await _hold_team_create_off_loop(session_id)
             if session_live_queue is not None:
                 # 提交已经进 runner。拆掉这次 HTTP 对队列的引用，
                 # finally 才不会把会话等待者一起摘掉。
@@ -5107,7 +5171,8 @@ async def _process_team_message_stream(
         _schedule_unstarted_organization_close(session_id, recorded_organization_plan_id)
         raise
     finally:
-        await _release_team_create_off_loop(enterprise_create_lease)
+        if not stream_kept_lease:
+            await _release_team_create_off_loop(enterprise_create_lease)
         if request_queue is not None:
             _remove_team_waiter(
                 team_manager,
@@ -5329,7 +5394,12 @@ async def _consume_stream_with_query(
                 exc_info=True,
             )
 
+    hold_refresh_task: asyncio.Task | None = None
     try:
+        hold_refresh_task = asyncio.create_task(
+            _refresh_team_create_hold(session_id),
+            name="team-create-hold-refresh",
+        )
         logger.info(
             "[TeamHelpers] stream started: source=stream_started is_processing=True "
             "channel_id=%s session_id=%s round_id=%s",
@@ -5981,6 +6051,20 @@ async def _consume_stream_with_query(
                 session_id,
                 generation=generation,
             )
+            if hold_refresh_task is not None:
+                hold_refresh_task.cancel()
+                try:
+                    await hold_refresh_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            try:
+                await _release_stream_team_create(session_id)
+            except Exception:
+                logger.debug(
+                    "[TeamHelpers] stream end team-create release failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
 
 
 async def _consume_monitor_events(
