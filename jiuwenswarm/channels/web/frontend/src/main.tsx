@@ -4,6 +4,7 @@ import { A2UIProvider } from '@a2ui/react';
 import type { A2UIClientEventMessage } from '@a2ui/react';
 import { injectStyles } from '@a2ui/react/styles';
 import App from './App.tsx'
+import { UserLoginPage } from './auth/manager/UserLoginPage';
 import { EnterpriseEntry } from './EnterpriseEntry.tsx'
 import { SkillPackInstallPlanHost } from './components/SkillPanel/SkillPackInstallPlan';
 import { ShareImageExportRunner } from './features/shareImageExport'
@@ -71,6 +72,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         locale={runnerQuery.get('locale')}
         client={browserRunner}
       />
+    ) : isEnterprise() && (window.location.pathname === '/auth' || window.location.pathname.startsWith('/auth/')) ? (
+      <UserLoginPage />
     ) : (
       <EnterpriseEntry>
         <App

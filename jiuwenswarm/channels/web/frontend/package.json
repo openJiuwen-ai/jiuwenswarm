@@ -289,6 +289,7 @@
     "micromark-util-classify-character": "^2.0.1",
     "micromark-util-sanitize-uri": "^2.0.1",
     "micromark-util-symbol": "^2.0.1",
+    "oidc-client-ts": "^3.5.0",
     "onnxruntime-web": "1.20.1",
     "qrcode.react": "^4.2.0",
     "react": "^18.2.0",
