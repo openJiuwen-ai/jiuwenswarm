@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import xml.etree.ElementTree as ET
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,51 @@ def is_group_notice(part: str) -> bool:
     return _NOTICE.match(str(part)) is not None
 
 
+async def expand_public_group_inputs(parts: list[str], backend: Any, member_name: str) -> None:
+    """Normalize public broadcasts delivered by the ordinary mailbox handler.
+
+    Only the outer envelope identifies a message; its body and archived
+    excerpts are never searched for routing identity. Persisted metadata is
+    authoritative, and unverified public input must not inherit an old turn.
+    """
+    from openjiuwen.agent_teams.group_chat.handler import context_for
+
+    for index, part in enumerate(parts):
+        header = re.match(r'\A<team-inbound\b[^>]*>', str(part))
+        if header is None:
+            continue
+        try:
+            attrs = ET.fromstring(header.group(0)[:-1] + " />").attrib
+        except ET.ParseError:
+            parts[index] = "Group message notice.\nInvalid inbound envelope."
+            continue
+        if attrs.get("from") != "user" or attrs.get("type") != "broadcast":
+            continue
+        # A failed lookup is public input with unknown identity, not an
+        # internal reminder that may keep the previous message binding.
+        parts[index] = "Group message notice.\nUnverified public broadcast."
+        trigger_id = attrs.get("message_id")
+        if not trigger_id:
+            continue
+        try:
+            message = await backend.db.message.get_message(trigger_id)
+            raw = getattr(message, "meta", None)
+            meta = json.loads(raw) if isinstance(raw, str) else raw
+            if (message is None or not isinstance(meta, dict)
+                    or meta.get("type") != "group_chat"
+                    or message.team_name != backend.team_name
+                    or message.from_member_name != "user" or not message.broadcast
+                    or message.message_id != trigger_id
+                    or not isinstance(meta.get("client_message_id"), str)
+                    or not meta["client_message_id"].strip()
+                    or not isinstance(meta.get("mentions"), list)
+                    or member_name not in meta["mentions"]):
+                continue
+            parts[index] = await context_for(backend, member_name, message)
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+
+
 def _prepend_steering(ctx: Any, surplus: list[str]) -> None:
     """Restore consumed input before the backlog without losing runtime contexts."""
     from openjiuwen.core.single_agent.rail.base import SteeringInput
@@ -87,6 +133,11 @@ def _unaccepted_organization(turn: GroupTurn | None) -> bool:
         organization_plan_accepted, recorded_organization_plan,
     )
 
+    from jiuwenswarm.agents.swarm.group_route import candidate
+
+    item = candidate(turn.session_id, turn.client_message_id)
+    if item is not None and item["owner_member"] == turn.member_name and item["status"] in {"pending", "chat", "clarification"}:
+        return True
     plan = recorded_organization_plan(turn.session_id, turn.member_name, turn.client_message_id)
     return (
         plan is not None and plan.get("status") in {"pending", "running"}
@@ -125,6 +176,10 @@ async def bind_consumed_group_turn(ctx: Any, backend: Any, session_id: str, memb
     parts = ctx.inputs.parts
     if getattr(ctx.inputs, "source", None) == "resume":
         return
+    from jiuwenswarm.agents.swarm.group_route import expand_route_notices
+
+    await expand_route_notices(parts, backend, session_id, member_name)
+    await expand_public_group_inputs(parts, backend, member_name)
     notice_parts = [part for part in parts if str(part).startswith(("群聊消息通知。", "Group message notice."))]
     if not notice_parts:
         # Internal reminders and interrupt answers do not introduce another
