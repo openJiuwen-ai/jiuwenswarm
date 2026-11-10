@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -189,6 +190,77 @@ async def test_runtime_death_and_owner_timeout_stop_pending_bubble(env, monkeypa
     monkeypatch.setattr(route.time, "time", lambda: now + route.PENDING_SECONDS + 1)
     assert route.public_routes(SESSION)[1]["status"] == "failed"
 
+
+class _OwnerProcess:
+    pid = 12345
+    created = 100.0
+    identity = 42
+
+    def create_time(self):
+        return self.created
+
+    def status(self):
+        return route.psutil.STATUS_RUNNING
+
+    def __hash__(self):
+        return self.identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["gone", "reused", "zombie"])
+async def test_confirmed_owner_loss_still_blocks_proxy_launch(env, monkeypatch, failure):
+    group, backend, context = env
+    process = _OwnerProcess()
+    monkeypatch.setattr(route.psutil, "Process", lambda *args: process)
+    await record()
+    await route.set_status(SESSION, "one", "clarification", expected={"pending"}, **route.owner_process_fields())
+    if failure == "gone":
+        monkeypatch.setattr(route.psutil, "Process", Mock(side_effect=route.psutil.NoSuchProcess(process.pid)))
+    elif failure == "reused":
+        process.identity += 1
+    else:
+        process.status = lambda: route.psutil.STATUS_ZOMBIE
+    assert route.public_routes(SESSION)[0]["status"] == "failed"
+    tool = group_chat.RunTeam(backend, context, {})
+    launch = AsyncMock()
+    monkeypatch.setattr(tool, "_invoke_bound_organization", launch)
+    token = group_turn.bind_group_turn(group_turn.GroupTurn(SESSION, "business", "one", "organization"))
+    try:
+        result = await tool.invoke({"action": "start"})
+    finally:
+        group_turn.reset_group_turn(token)
+    assert not result.success
+    launch.assert_not_awaited()
+    assert not group.state.get("organization_plans")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("probe_error", [route.psutil.AccessDenied(12345), OSError("temporary process probe error")])
+async def test_unobservable_owner_is_not_failed_and_is_checked_again(env, monkeypatch, probe_error):
+    process = _OwnerProcess()
+    monkeypatch.setattr(route.psutil, "Process", lambda *args: process)
+    await record()
+    await route.set_status(SESSION, "one", "clarification", expected={"pending"}, **route.owner_process_fields())
+    monkeypatch.setattr(route.psutil, "Process", Mock(side_effect=probe_error))
+    assert route.public_routes(SESSION)[0]["status"] == "clarification"
+    assert route.routes(SESSION)["one"]["status"] == "clarification"
+    monkeypatch.setattr(route.psutil, "Process", Mock(side_effect=route.psutil.NoSuchProcess(process.pid)))
+    assert route.public_routes(SESSION)[0]["status"] == "failed"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS psutil clock adjustment regression")
+def test_real_psutil_clock_adjustment_keeps_owner_identity(monkeypatch):
+    from psutil import _psosx
+
+    if not _psosx.INIT_BOOT_TIME:
+        pytest.skip("OS boot-time reads are denied in this environment")
+    item = dict(status="clarification", plan_id="clock", updated_at=0, **route.owner_process_fields())
+    # Simulate the integer boot-time boundary crossed by a system clock update;
+    # neither the actual system clock nor the running Worker is modified.
+    monkeypatch.setattr(_psosx, "boot_time", lambda: _psosx.INIT_BOOT_TIME + 1)
+    assert route.psutil.Process().create_time() != item["owner_process"][1]
+    assert route._effective(item)["status"] == "clarification"
+
 @pytest.mark.asyncio
 async def test_reply_in_flight_does_not_overwrite_later_request(env):
     _, backend, context = env
@@ -347,6 +419,8 @@ async def test_mailbox_owner_run_team_never_falls_back_to_old_instance(env, monk
     ctx = AgentCallbackContext(agent=None, inputs=UserMessageInputs(parts=[inbound('a')]))
     await rail.on_user_message(ctx)
     assert ctx.extra[group_turn.TURN_KEY].route == 'organization'
+    if candidate_exists:
+        assert route.routes(SESSION)['client-a']['owner_process_identity'] == str(hash(route.psutil.Process()))
     tool = group_chat.RunTeam(backend, context, {})
     launch = AsyncMock(return_value=ToolOutput(success=True, data={'accepted': True}))
     if candidate_exists:
@@ -374,15 +448,26 @@ async def test_mailbox_owner_run_team_never_falls_back_to_old_instance(env, monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('missing_plan', [False, True])
-async def test_fresh_clarification_invoke_restores_exact_org_before_run_team(env, monkeypatch, missing_plan):
+@pytest.mark.parametrize('owner_probe', ['unchanged', 'clock_shift', 'access_denied'])
+async def test_fresh_clarification_invoke_restores_exact_org_before_run_team(env, monkeypatch, missing_plan, owner_probe):
     from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs, ToolCallInputs
     from jiuwenswarm.agents.swarm.group_questions import GroupAskUserRail
     from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
     from jiuwenswarm.server.runtime.group_questions import register_question_target
 
     group, backend, context = env
+    process = _OwnerProcess()
+    monkeypatch.setattr(route.psutil, 'Process', lambda *args: process)
     await record('one', 'Original report')
-    await route.set_status(SESSION, 'one', 'clarification', expected={'pending'})
+    await route.set_status(SESSION, 'one', 'clarification', expected={'pending'}, **route.owner_process_fields())
+    if owner_probe == 'clock_shift':
+        process.created += 1
+    elif owner_probe == 'access_denied':
+        def probe(pid=None):
+            if pid is not None:
+                raise route.psutil.AccessDenied(pid)
+            return process
+        monkeypatch.setattr(route.psutil, 'Process', probe)
     await record('two', 'Later report')
     owner = Mock()
     target = register_question_target(SESSION, SESSION, 'business', owner)
@@ -408,6 +493,9 @@ async def test_fresh_clarification_invoke_restores_exact_org_before_run_team(env
     tool = group_chat.RunTeam(backend, context, {})
     launch = AsyncMock(return_value=ToolOutput(success=True, data={'accepted': True}))
     monkeypatch.setattr(tool, '_invoke_bound_organization', launch)
+    # Restoring the answer must not create the organization or launch instances.
+    launch.assert_not_awaited()
+    assert not group.state.get('organization_plans')
     await rail.before_tool_call(ctx)
     try:
         output = await tool.invoke({'action': 'start', 'run_id': 'job', 'task': 'Report'})

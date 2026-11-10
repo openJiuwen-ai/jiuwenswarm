@@ -24,7 +24,7 @@ from jiuwenswarm.agents.swarm.group_questions import GroupAskUserRail
 from jiuwenswarm.server.runtime.group_questions import GroupQuestions, register_question_target
 from jiuwenswarm.server.runtime import group_service
 from tests.agents.swarm.test_group_org_bootstrap import _Pool
-from tests.agents.swarm.test_group_route import env, record, SESSION
+from tests.agents.swarm.test_group_route import env, record, SESSION, _OwnerProcess
 from tests.agents.swarm.test_group_turn import notice
 
 
@@ -34,13 +34,16 @@ def tool_call(name, call_id, arguments):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('clarify_again', [False, True])
-async def test_answer_native_scheduler_and_three_proxy_tools_join_one_org(env, monkeypatch, tmp_path, clarify_again, caplog):
+@pytest.mark.parametrize('clock_shift', [False, True])
+async def test_answer_native_scheduler_and_three_proxy_tools_join_one_org(env, monkeypatch, tmp_path, clarify_again, clock_shift, caplog):
     group, owner_backend, _ = env
     members = ['business', 'insight', 'market']
     group.state.update(status='active', channel_id='web', session_id=SESSION,
                        members=[dict(kind='agent_group', id=name, member_name=name) for name in members])
     await record('original', 'Original report', members)
-    await route.set_status(SESSION, 'original', 'clarification', expected={'pending'})
+    process = _OwnerProcess()
+    monkeypatch.setattr(route, 'psutil', SimpleNamespace(**{**vars(route.psutil), 'Process': lambda *args: process}))
+    await route.set_status(SESSION, 'original', 'clarification', expected={'pending'}, **route.owner_process_fields())
     await record('later', 'Later report', members)
     history = tmp_path / 'history.jsonl'
     history.write_text(json.dumps(dict(message_id='trigger', client_message_id='original', sender='user',
@@ -178,6 +181,10 @@ async def test_answer_native_scheduler_and_three_proxy_tools_join_one_org(env, m
                         client_message_id='original')
         question = store.pending()[0]
         answers = [dict(question='Market?', custom_input='China')]
+        if clock_shift:
+            process.created += 1
+        assert route.public_routes(SESSION)[0]['status'] == 'clarification'
+        assert not launches
         await store.answer(question['request_id'], answers)
         await asyncio.wait_for(done.wait(), 10)
         await store.answer(question['request_id'], answers)

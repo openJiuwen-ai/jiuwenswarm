@@ -261,14 +261,12 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
         turn = getattr(ctx, "extra", {}).get(TURN_KEY)
         if turn is not None and turn.route == "organization" and turn.client_message_id:
-            import psutil
-            from jiuwenswarm.agents.swarm.group_route import candidate, set_status
+            from jiuwenswarm.agents.swarm.group_route import candidate, set_status, owner_process_fields
 
             item = candidate(self.context.session_id, turn.client_message_id)
             if item is not None and item["owner_member"] == self.context.member_name and item["status"] == "pending":
-                process = psutil.Process()
                 await set_status(self.context.session_id, turn.client_message_id, "pending", expected={"pending"},
-                                 owner_process=[process.pid, process.create_time()])
+                                 **owner_process_fields())
             if item is not None and item["owner_member"] != self.context.member_name and item["status"] != "task":
                 return
             ctx.extra.pop("swarm_group_route_waiting", None)
