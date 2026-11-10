@@ -149,6 +149,7 @@ async def test_import_upload_already_exists(manager: SkillManager, tmp_path: Pat
     with pytest.raises(SkillRpcError) as exc:
         await manager.handle_skills_import_upload({"path": str(zip_path), "overwrite": False})
     assert exc.value.code == ERROR_SKILL_ALREADY_EXISTS
+    assert exc.value.message == "Skill demo-skill already exists. Confirm overwrite."
 
 
 @pytest.mark.asyncio

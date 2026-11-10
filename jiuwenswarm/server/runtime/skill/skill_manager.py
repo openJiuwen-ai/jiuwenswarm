@@ -6132,7 +6132,7 @@ class SkillManager:
             if not force:
                 raise SkillRpcError(
                     conflict_code or ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
-                    f"skill {skill_name} 已存在，需确认覆盖",
+                    f"Skill {skill_name} already exists. Confirm overwrite.",
                 )
             preserved_source = self._resolve_display_source_for_import(skill_name)
             try:
@@ -6519,7 +6519,7 @@ class SkillManager:
                 if not force:
                     raise SkillRpcError(
                         ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
-                        f"skill {skill_name} 已存在，需确认覆盖（force=true）",
+                        f"Skill {skill_name} already exists. Confirm overwrite (force=true).",
                     )
                 # 单文件覆盖：保留 .archive，仅替换该 md
                 preserved_version = None
@@ -10352,7 +10352,7 @@ class SkillManager:
             if item["existing"] and not overwrite:
                 raise SkillRpcError(
                     ERROR_SKILL_ALREADY_EXISTS,
-                    f"skill {item['name']} 已存在，需确认覆盖",
+                    f"Skill {item['name']} already exists. Confirm overwrite.",
                 )
             if item["builtin"]:
                 raise SkillRpcError(
