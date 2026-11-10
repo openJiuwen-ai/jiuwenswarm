@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 CRON_TOOLS = "swarm.cron_tools"
 SEND_FILE = "swarm.send_file"
 SESSION_MESSAGING_TOOLS = "swarm.session_messaging_tools"
+REPORT_ISSUE = "swarm.report_issue"
 ORGANIZATION_MODEL_TOOLS = "swarm.organization_model_tools"
 ORGANIZATION_OWNER_INBOX_TOOLS = "swarm.organization_owner_inbox_tools"
 
@@ -85,6 +86,23 @@ def build_session_messaging_tools(
     if str(getattr(ctx, "role", "") or "") != "leader":
         return []
     return list(SessionMessagingToolkit().get_tools())
+
+
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=REPORT_ISSUE,
+    description="Leader-only public JiuwenSwarm bug reporting with Web confirmation.",
+)
+def build_report_issue_tool(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Expose the reporting tool on personal Web Team leaders."""
+    from jiuwenswarm.agents.harness.common.tools.report_issue import ReportIssueTool
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if str(ctx.role) != "leader" or ctx.channel_id != "web" or is_enterprise():
+        return []
+    if not ctx.session_id or is_cron_execution_session(ctx.session_id):
+        return []
+    return [ReportIssueTool(ctx.session_id, language=ctx.language)]
 
 
 class CronToolsInput(ConstructionInput):
@@ -325,9 +343,11 @@ __all__ = [
     "CRON_TOOLS",
     "SEND_FILE",
     "SESSION_MESSAGING_TOOLS",
+    "REPORT_ISSUE",
     "ORGANIZATION_MODEL_TOOLS",
     "build_organization_model_tools",
     "build_cron_tools",
     "build_send_file_tools",
     "build_session_messaging_tools",
+    "build_report_issue_tool",
 ]
