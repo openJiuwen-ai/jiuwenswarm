@@ -436,9 +436,9 @@ async function setPageVisibility(state) {
 
 
 function scopeParams(request) {
-  const { visit_id, manual_retry, ...scope } = request.params;
+  const { visit_id, ...scope } = request.params;
   assert.match(visit_id, /^topic-visit-/);
-  assert.equal(manual_retry, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(request.params, 'manual_retry'), false);
   return scope;
 }
 

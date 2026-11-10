@@ -56,6 +56,7 @@ _EVENT_PAYLOAD_QUERY_FIELDS = frozenset(
         "model",
         "provider_response_id",
         "status",
+        "work_mode",
         "generation_trigger_key.context_scope",
         "generation_trigger_key.model",
         "generation_trigger_key.work_mode",
