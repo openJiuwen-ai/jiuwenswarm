@@ -323,6 +323,11 @@ class PersistentAgentService:
         )
 
     @property
+    def db_path(self) -> Path:
+        """The SQLite file shared by colleague and Web conversation storage."""
+        return self._repository.db_path
+
+    @property
     def workspaces(self) -> WorkspaceStore:
         return self._workspaces
 
@@ -688,7 +693,9 @@ class PersistentAgentService:
         if initializing:
             selection = (models or self._models).default_selection()
             if selection is None:
-                raise PersistentAgentError("configure a model before initializing this employee", code="MODEL_NOT_CONFIGURED")
+                raise PersistentAgentError(
+                    "configure a model before initializing this employee", code="MODEL_NOT_CONFIGURED",
+                )
             settings = replace(settings, capabilities=replace(settings.capabilities, model=selection))
         initialize_model = initializing and settings.capabilities.model != definition.settings.capabilities.model
         if settings.capabilities.model is None:
