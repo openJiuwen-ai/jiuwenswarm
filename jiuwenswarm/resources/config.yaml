@@ -1575,7 +1575,7 @@ updater:
   # Fallback for whichever platform pattern above is left empty.
   asset_name_pattern: ""
   timeout_seconds: 20
-  pypi_mirror: "https://mirrors.aliyun.com/pypi"
+  pypi_mirror: "https://mirrors.aliyun.com/pypi/simple/"
 
 extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
