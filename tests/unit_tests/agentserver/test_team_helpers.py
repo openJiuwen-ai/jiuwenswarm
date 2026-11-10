@@ -226,6 +226,16 @@ class _InactiveTeamRuntimeManagerMixin:
         return False
 
     @staticmethod
+    def is_pause_in_progress(session_id: str) -> bool:
+        _ = session_id
+        return False
+
+    @staticmethod
+    async def wait_pause_finished(session_id: str, timeout_sec: float = 120.0) -> bool:
+        _ = session_id, timeout_sec
+        return True
+
+    @staticmethod
     def has_waiters(session_id: str) -> bool:
         return False
 
@@ -1637,6 +1647,182 @@ async def test_process_team_message_stream_emits_deferred_marker_for_followup(mo
         "session_id": "sess-team-followup",
     }
     assert chunks[0].is_complete is False
+
+
+@pytest.mark.anyio
+async def test_interact_rejected_while_pause_in_progress(monkeypatch):
+    """pause 执行期间 interact 必须在投递 Runner 前拒绝。
+
+    pause 窗口内旧 stream/waiter 注定被拆除，此时受理的 follow-up 按单 waiter
+    契约只回 deferred，pause 收尾后事件流所有权归零、永久失联。拒绝发生在
+    Runner.interact_agent_team 之前——消息未投递，上层才能安全重分类。
+    """
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.agents.harness.team import team_manager as tm_mod
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    tm = TeamManager()
+    tm._pause_in_progress.add("sess-pause-race")
+    runner_interact = AsyncMock(return_value=True)
+    monkeypatch.setattr(tm_mod.Runner, "interact_agent_team", runner_interact)
+
+    ok, reason = await tm.interact("sess-pause-race", "补充信息")
+
+    assert ok is False and reason == "pause_in_progress"
+    runner_interact.assert_not_called()
+
+
+def test_pause_in_progress_is_followup_boundary_reason():
+    """pause_in_progress 登记为 follow-up 投递边界原因，
+    使既有重分类管线（重试窗→first_request_ready→首请求恢复）接管。"""
+    assert team_helpers._is_followup_delivery_boundary_reason("pause_in_progress")
+    assert "pause_in_progress" in team_helpers._INTERACT_REASON_ERROR_MAP
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_waits_for_pause_before_classification(monkeypatch):
+    """pause 执行中到达的追问先等 pause 收尾再分类——
+
+    等待期间零产出、零投递；pause 完成（旧 stream/waiter/initialized 已清）后
+    重读标记按首请求处理。这钉住受理-接管所有权不变量：不再出现「旧资源尚在
+    误判 follow-up → deferred 受理 → pause 拆旧资源 → 永久失联」。
+    """
+    pause_gate = asyncio.Event()
+    state = {"pause_done": False}
+    preparation_calls: list[dict] = []
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.interact_calls: list = []
+
+        def is_pause_in_progress(self, session_id: str) -> bool:
+            return not state["pause_done"]
+
+        async def wait_pause_finished(self, session_id: str, timeout_sec: float = 120.0) -> bool:
+            await pause_gate.wait()
+            return True
+
+        def has_stream_task(self, session_id: str) -> bool:
+            return not state["pause_done"]
+
+        async def interact(self, session_id: str, query, *, request_metadata=None):
+            self.interact_calls.append((session_id, query))
+            return True, None
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+
+    async def _fake_preparation(**kwargs):
+        preparation_calls.append(kwargs)
+        return team_helpers._FirstTeamRequestPreparation(
+            recovered_runtime=False,
+            query=kwargs["query"],
+            hide_dm=False,
+            debug=False,
+            error_chunks=[
+                team_helpers.AgentResponseChunk(
+                    request_id=kwargs["request_id"],
+                    channel_id=kwargs["channel_id"],
+                    payload={"event_type": "chat.error", "error": "test-stop"},
+                    is_complete=True,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(team_helpers, "_prepare_first_team_request", _fake_preparation)
+
+    request = AgentRequest(
+        session_id="sess-pause-race",
+        request_id="req-pause-race",
+        channel_id="web",
+        metadata={},
+        params={"mode": "team"},
+    )
+
+    chunks = []
+
+    async def _drive():
+        async for chunk in team_helpers.process_team_message_stream(
+                request, {"query": "补充信息"}, object(),
+        ):
+            chunks.append(chunk)
+
+    driver = asyncio.create_task(_drive())
+    await asyncio.sleep(0.05)
+    # pause 等待期间：零产出、零投递（不得 deferred 后失联）
+    assert chunks == []
+    assert manager.interact_calls == []
+
+    # 模拟 pause 收尾：旧资源已清，完成事件置位
+    state["pause_done"] = True
+    pause_gate.set()
+    await asyncio.wait_for(driver, timeout=2)
+
+    # 追问按首请求重新分类（进入 preparation），全程未走 follow-up 通道
+    assert len(preparation_calls) == 1
+    assert manager.interact_calls == []
+    assert all(
+        not (isinstance(c.payload, dict)
+             and c.payload.get("event_type") == "chat.processing_status_deferred")
+        for c in chunks
+    ), "pause 中追问不得回 deferred"
+    assert chunks and chunks[0].payload.get("error") == "test-stop"
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_pause_wait_timeout_rejects(monkeypatch):
+    """超时路径：pause 等待超时回诚实可重试错误——
+    消息未投递，不得只发 deferred 后静默失联。
+
+    帧形态钉死：终帧即错误帧（单个 is_complete=True 的 chat.error）。
+    旧形态「非终态 chat.error + payload=None 空终帧」被 gateway_normalize 转成
+    e2a.complete succeeded，前端把从未投递的被拒消息记成「已完成」。"""
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.interact_calls: list = []
+
+        @staticmethod
+        def is_pause_in_progress(session_id: str) -> bool:
+            return True
+
+        @staticmethod
+        async def wait_pause_finished(session_id: str, timeout_sec: float = 120.0) -> bool:
+            return False
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+        async def interact(self, session_id: str, query, *, request_metadata=None):
+            self.interact_calls.append((session_id, query))
+            return True, None
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+
+    request = AgentRequest(
+        session_id="sess-pause-timeout",
+        request_id="req-pause-timeout",
+        channel_id="web",
+        metadata={},
+        params={"mode": "team"},
+    )
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+            request, {"query": "补充信息"}, object(),
+    ):
+        chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert chunks[0].payload["event_type"] == "chat.error"
+    assert "pausing" in chunks[0].payload["error"]
+    assert chunks[0].is_complete is True, "终帧即错误帧：空终帧会被转成 succeeded 误记已完成"
+    assert manager.interact_calls == [], "等待超时拒绝的消息不得投递"
 
 
 @pytest.mark.anyio

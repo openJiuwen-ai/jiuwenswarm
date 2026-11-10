@@ -441,6 +441,8 @@ class TeamManager(metaclass=_TeamManagerMeta):
         # pause 语义是回合挂起待续而非终结，此时流尽不得补终态帧（否则 settle
         # 复核必然非 True，误补带 error 的终态帧，前端「已停止」被翻成「失败」）。
         self._pause_in_progress: set[str] = set()
+        # pause 完成事件：供追问受理方在分类前等待 pause 收尾。
+        self._pause_done_events: dict[str, asyncio.Event] = {}
         self._active_team_names: dict[str, str] = {}
         self._pending_team_names: dict[str, str] = {}
         # session_id → list of (request_id, asyncio.Queue) waiters
@@ -534,6 +536,21 @@ class TeamManager(metaclass=_TeamManagerMeta):
         挂起待续而非终结，不得补终态帧。
         """
         return session_id in self._pause_in_progress
+
+    async def wait_pause_finished(self, session_id: str, timeout_sec: float = 120.0) -> bool:
+        """等待本会话进行中的 pause 收尾；返回 False 表示超时。
+
+        供追问受理方在请求分类前调用。事件驱动而非定长 sleep；pause 的 finally 保证事件
+        必置位（含 cancel 抢占中止的分支），不永等。不加 shield：调用方（请求流）被取消时等待应随之取消。
+        """
+        event = self._pause_done_events.get(session_id)
+        if event is None:
+            return True
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout_sec)
+        except (asyncio.TimeoutError, TimeoutError):
+            return False
+        return True
 
     def pop_stream_task(self, session_id: str) -> asyncio.Task | None:
         return self._stream_tasks.pop(session_id, None)
@@ -1861,6 +1878,18 @@ class TeamManager(metaclass=_TeamManagerMeta):
         # pending_interaction_turn 成立，同轮晚到的 final/delta 随即误清
         # 挂起标记，流末强制兜底给仍在等待作答的回合补带 error 的终态帧。
         try:
+            # pause 准入闸：pause 执行期间旧 stream/waiter 注定被
+            # 拆除，此时受理的 follow-up 按单 waiter 契约只回 deferred，
+            # pause 收尾后事件流所有权归零、永久失联。在投递 Runner 前拒绝——
+            # 消息未投递，上层按边界原因重分类为首请求（pause 完成后走
+            # RESUME_FROM_PAUSE 新流恢复），同一 query 不会重复投递。
+            # interact 是追问/HITL 作答/human 回复的统一漏斗，三类同规。
+            if self.is_pause_in_progress(session_id):
+                logger.warning(
+                    "[TeamManager] interact rejected (pause in progress): session_id=%s",
+                    session_id,
+                )
+                return False, "pause_in_progress"
             if not self.is_runtime_active(session_id):
                 restored = await self.wait_for_resumable_runtime(session_id)
                 if restored:
@@ -2919,6 +2948,8 @@ class TeamManager(metaclass=_TeamManagerMeta):
                 return False
 
             self._pause_in_progress.add(session_id)
+            pause_done = asyncio.Event()                 # 与 add 之间无 await，对等待方原子可见
+            self._pause_done_events[session_id] = pause_done
             try:
                 logger.info(
                     "[TeamManager] %s pause team session runtime: session_id=%s",
@@ -2980,6 +3011,11 @@ class TeamManager(metaclass=_TeamManagerMeta):
                 # 标记须覆盖到 _wait_for_stream_task_exit 之后：流任务 finally 的
                 # 流末强制补终态判定在该等待窗口内执行，须能看到 pause 进行中。
                 self._pause_in_progress.discard(session_id)
+                # PM-63 F3：先摘标记再 pop 最后 set——等待方被唤醒后重读的
+                # 必是 pause 完成后的资源现场；pop 之后才进来的等待方查不到
+                # 事件且标记已摘，直接放行，无丢失唤醒窗口。
+                self._pause_done_events.pop(session_id, None)
+                pause_done.set()
 
         logger.info(
             "[TeamManager] %steam session paused: session_id=%s runner_paused=%s",

@@ -163,6 +163,8 @@ _INTERACT_REASON_ERROR_MAP: dict[str, str] = {
     "human_agent_not_enabled": "Human agent is not yet available, please try again later",
     "no_team_backend": "Team backend not ready, please try again later",
     "agent_unavailable": "Target member not available, please check the member name",
+    # pause 执行中拒绝受理：消息未投递，用户可安全重试
+    "pause_in_progress": "Team is pausing, please retry in a moment",
 }
 
 # ── fan_out 规则（表驱动）──────────────────────────────────────
@@ -285,7 +287,9 @@ def _build_logical_targets(event: dict) -> list[dict]:
 def _is_followup_delivery_boundary_reason(reason: str | None) -> bool:
     """Return whether follow-up delivery likely hit a runtime boundary."""
     normalized = str(reason or "")
-    if normalized in {"agent_unavailable", "gate_closed", "not_active"}:
+    # pause_in_progress（PM-63 F1）：消息未投递，重试窗内 pause 收尾则
+    # first_request_ready → 转首请求 RESUME_FROM_PAUSE 恢复；超时回诚实错误。
+    if normalized in {"agent_unavailable", "gate_closed", "not_active", "pause_in_progress"}:
         return True
     return normalized.startswith("deliver_to_leader_failed:")
 
@@ -1795,6 +1799,36 @@ async def process_team_message_stream(
     # 4. 否则 → True（首次请求，需要创建 team spec + stream）
     # 例外见 _fresh_start_if_round_terminal：回合已终态但长寿命流未收时，
     # 本消息按新流首请求处理（收旧流、清标记），不落入 follow-up 旧流断链。
+    # pause 执行中到达的请求：等 pause 收尾后再分类。否则旧
+    # stream/waiter 尚在会被误判 follow-up，受理后 pause 拆旧资源致事件流
+    # 所有权归零、永久失联。不持生命周期锁等待（pause 自身持锁，持锁等=死锁）；
+    # 等待结束后自然落到下方既有分类代码重读标记，不缓存等待前的判断。
+    if team_manager.is_pause_in_progress(session_id):
+        logger.info(
+            "[TeamHelpers] pause in progress, deferring request classification: "
+            "session_id=%s",
+            session_id,
+        )
+        if not await team_manager.wait_pause_finished(session_id):
+            logger.warning(
+                "[TeamHelpers] pause wait timed out, rejecting request: session_id=%s",
+                session_id,
+            )
+            # 终帧即错误帧（is_complete=True 的 chat.error）：gateway_normalize 把
+            # is_complete 且 event_type=chat.error 的 chunk 转换为 failed 终帧。
+            # 非终态错误帧 + payload=None 空终帧会被转成 succeeded，前端把这条
+            # 从未投递的被拒消息记成"已完成"（与下方 TeamAgent create 失败分支
+            # 的既有口径一致）。
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=channel_id,
+                payload={
+                    "event_type": "chat.error",
+                    "error": _INTERACT_REASON_ERROR_MAP["pause_in_progress"],
+                },
+                is_complete=True,
+            )
+            return
     await _fresh_start_if_round_terminal(team_manager, session_id, query)
 
     has_active_waiters = team_manager.has_waiters(session_id)
