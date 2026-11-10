@@ -378,7 +378,11 @@ def _node_frames_for_chunk(
     # Parallel Brief chapters need independent lifecycle identities too.
     section_idx = str(chunk.get("section_idx") or "0").strip()
     if nested_process and agent == "brief_sub_reporter" and section_idx != "0":
-        title = _text_field(chunk.get("section_title")) or state.section_titles.get(section_idx) or f"撰写第 {section_idx} 章"
+        title = (
+            _text_field(chunk.get("section_title"))
+            or state.section_titles.get(section_idx)
+            or f"撰写第 {section_idx} 章"
+        )
         state.section_titles[section_idx] = title
         for frame in frames:
             frame.update(stream_source_id=f"deepresearch_section_{section_idx}", task_content=title)
@@ -1151,7 +1155,12 @@ def route_chunk(chunk: dict, state: RouterState, *, nested_process: bool = False
         if nested_process:
             node_state = state.active_nodes.get(key)
             if node_state is None:
-                state.active_nodes[key] = {"started": True, "done": False, "agent_name": agent, "section_idx": section_idx}
+                state.active_nodes[key] = {
+                    "started": True,
+                    "done": False,
+                    "agent_name": agent,
+                    "section_idx": section_idx,
+                }
                 frames.append({"event_type": "task.start", "task_id": "deepresearch_stage_2",
                                "task_content": display[0], "stream_source_id": "dr_outline"})
             if event == "done" and not state.active_nodes[key]["done"]:

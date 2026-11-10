@@ -514,12 +514,8 @@ class DeepResearchExecutionRail(DeepAgentRail):
             requested_report_type=requested_type,
         )
         # The legacy delivery index has no artifact paths for downstream todos.
-        if (
-            args.get("task_mode") != "main_agent"
-            and hit is not None
-            and not is_upgrade
-            and workflow_id not in states
-        ):
+        allow_legacy_delivery = args.get("task_mode") != "main_agent" and not is_upgrade
+        if allow_legacy_delivery and hit is not None and workflow_id not in states:
             from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
                 _completion_content,
                 _persist_delivered_state,
