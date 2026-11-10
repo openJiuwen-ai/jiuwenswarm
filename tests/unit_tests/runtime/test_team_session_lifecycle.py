@@ -178,12 +178,12 @@ async def test_pause_completion_uses_existing_push_fallback_without_waiters(
 ) -> None:
     from jiuwenswarm.agents.harness.team import TeamManager
     from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.runtime import host_services
 
     manager = TeamManager()
     server = AsyncMock()
     server.send_push.return_value = delivered
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", lambda: server)
+    monkeypatch.setattr(host_services, "send_runtime_push", server.send_push)
     monkeypatch.setattr(team_manager_module.logger, "handlers", [caplog.handler])
     adapter = TeamSessionLifecycleAdapter(coordinator=_RecordingCoordinator(), team_manager=manager)
 

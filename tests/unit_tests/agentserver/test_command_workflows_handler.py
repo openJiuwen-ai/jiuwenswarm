@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
 
@@ -53,14 +53,6 @@ class _FakeWS:
 
     async def send(self, data: str) -> None:
         self.sent.append(data)
-
-
-class _FakeTeamManager:
-    def __init__(self, workflow_handler: Any | None = None) -> None:
-        self._workflow_handler = workflow_handler
-
-    def get_workflow_handler(self, session_id: str) -> Any | None:
-        return self._workflow_handler
 
 
 class _FakeWorkflowHandler:
@@ -220,11 +212,11 @@ class TestHandleCommandWorkflows:
         send_lock = asyncio.Lock()
 
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=None),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=None,
         ), patch(
-            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.restore_workflow_runs",
-            return_value={},
+            "jiuwenswarm.server.management.workflow_reader.restored_workflows",
+            return_value=[],
         ):
             await _call_workflows(ws, request, send_lock)
 
@@ -243,7 +235,8 @@ class TestHandleCommandWorkflows:
         events will ever arrive for it, and the buttons must grey) — the same
         view ensure_monitor_handlers builds, not the raw snapshot.
         """
-        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        from jiuwenswarm.server.management.workflow_state import WorkflowRunState
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
         zombie = WorkflowRunState(status="running")
         zombie.id = "wf_z"
@@ -255,14 +248,17 @@ class TestHandleCommandWorkflows:
         persisted: list[dict] = []
 
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=None),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=None,
         ), patch(
-            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.restore_workflow_runs",
-            return_value={"wf_z": zombie, "wf_d": done},
+            "jiuwenswarm.server.runtime.session.session_metadata._read_metadata",
+            return_value={
+                "session_id": "sess-1",
+                "workflow_runs": {"wf_z": zombie.model_dump(), "wf_d": done.model_dump()},
+            },
         ), patch(
-            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.persist_workflow_runs",
-            side_effect=lambda runs, sid, **kw: persisted.append(dict(runs)),
+            "jiuwenswarm.server.runtime.session.session_metadata._enqueue_write",
+            side_effect=lambda sid, metadata, **kw: persisted.append(dict(metadata["workflow_runs"])),
         ):
             await _call_workflows(ws, request, send_lock)
 
@@ -283,8 +279,8 @@ class TestHandleCommandWorkflows:
 
         fake_handler = _FakeWorkflowHandler(snapshot=_snapshot_two_workflows())
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=fake_handler),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=fake_handler,
         ):
             await _call_workflows(ws, request, send_lock)
 
@@ -312,8 +308,8 @@ class TestHandleCommandWorkflows:
 
         fake_handler = _FakeWorkflowHandler(snapshot=_snapshot_two_workflows())
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=fake_handler),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=fake_handler,
         ):
             await _call_workflows(ws, request, send_lock)
 
@@ -346,8 +342,8 @@ class TestHandleCommandWorkflows:
 
         fake_handler = _FakeWorkflowHandler(snapshot=_snapshot_two_workflows())
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=fake_handler),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=fake_handler,
         ):
             await _call_workflows(ws, request, send_lock)
 
@@ -384,8 +380,8 @@ class TestHandleCommandWorkflows:
             params={"action": "get_workflow", "workflow_id": "wf_v"},
         )
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=fake_handler),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=fake_handler,
         ):
             await _call_workflows(ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
@@ -408,8 +404,8 @@ class TestHandleCommandWorkflows:
             params={"action": "get_phase", "workflow_id": "wf_v", "phase_id": "phase-v"},
         )
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=fake_handler),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=fake_handler,
         ):
             await _call_workflows(ws2, request2, asyncio.Lock())
         payload2 = _extract_payload(json.loads(ws2.sent[0]))
@@ -440,8 +436,8 @@ class TestHandleCommandWorkflows:
 
         fake_handler = _FakeWorkflowHandler(snapshot=_snapshot_two_workflows())
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=fake_handler),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=fake_handler,
         ):
             await _call_workflows(ws, request, send_lock)
 
@@ -462,11 +458,11 @@ class TestHandleCommandWorkflows:
         send_lock = asyncio.Lock()
 
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=None),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=None,
         ), patch(
-            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.restore_workflow_runs",
-            return_value={},
+            "jiuwenswarm.server.management.workflow_reader.restored_workflows",
+            return_value=[],
         ):
             await _call_workflows(ws, request, send_lock)
 
@@ -484,8 +480,8 @@ class TestHandleCommandWorkflows:
         send_lock = asyncio.Lock()
 
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=_FailingWorkflowHandler()),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=_FailingWorkflowHandler(),
         ):
             await _call_workflows(ws, request, send_lock)
 
@@ -502,11 +498,11 @@ class TestHandleCommandWorkflows:
         send_lock = asyncio.Lock()
 
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=None),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=None,
         ), patch(
-            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.restore_workflow_runs",
-            return_value={},
+            "jiuwenswarm.server.management.workflow_reader.restored_workflows",
+            return_value=[],
         ):
             await _call_workflows(ws, request, send_lock)
 
@@ -528,8 +524,8 @@ class TestHandleCommandWorkflows:
 
         fake_handler = _FakeWorkflowHandler(snapshot=snapshot)
         with patch(
-            "jiuwenswarm.agents.harness.team.get_team_manager",
-            return_value=_FakeTeamManager(workflow_handler=fake_handler),
+            "jiuwenswarm.server.management.workflow_reader.existing_workflow_handler",
+            return_value=fake_handler,
         ):
             await _call_workflows(ws, request, send_lock)
 

@@ -299,7 +299,7 @@ def test_agentserver_does_not_bypass_runtime_for_global_team_cancel() -> None:
 
 
 def test_agentserver_session_delete_is_transport_only() -> None:
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "worker" / "execution_requests.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     handlers = [
         node

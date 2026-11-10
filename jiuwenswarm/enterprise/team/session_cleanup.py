@@ -12,7 +12,6 @@ the session directory (pod recycled).
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
 import time
 from contextlib import contextmanager
@@ -495,13 +494,13 @@ def _owner_session_dir(owner: OwnerIdentity, session_id: str) -> Path:
 @contextmanager
 def _sweep_lock(volume: Path) -> Iterator[None]:
     """One AgentServer replica sweeps at a time. The purge itself is idempotent."""
-    handle = open(volume / _SWEEP_LOCK_NAME, "a+")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    import portalocker
+
+    with portalocker.Lock(
+        str(volume / _SWEEP_LOCK_NAME), mode="a+",
+        flags=portalocker.LOCK_EX, timeout=None,
+    ):
         yield
-    finally:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
 
 
 def reconcile_teams_with_sessions(*, identity: OwnerIdentity | None = None) -> int:

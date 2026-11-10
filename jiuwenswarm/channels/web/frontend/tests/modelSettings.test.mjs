@@ -740,7 +740,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(tabLayout, /const \[activeTab, setActiveTab\] = useState<TabId>\(defaultTab\)/);
   assert.match(tabLayout, /value: tab\.id,[\s\S]*label: t\(tab\.labelKey\)/);
   assert.match(tabLayout, /suffix: tab\.helpKey \? <HelpTips content=\{t\(tab\.helpKey\)\} size="large" \/> : undefined/);
-  assert.match(page, /void loadCatalog\(\);[\s\S]{0,180}setDialog\(nextDialog\)/);
+  assert.match(page, /if \(modelDialogOpen\) void loadCatalog\(\)/);
   assert.match(page, /type SaveModelsOptions = \{ errorScope\?: SettingsSaveErrorScope \};/);
   assert.match(page, /saveQueue\.enqueue\([\s\S]{0,320}\{ errorScope \},/);
   assert.match(page, /if \(errorScope === 'page'\) setSaveError\(message\)/);
@@ -785,7 +785,8 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(provider, /useEffect\(\(\) => \{\s*if \(!open\) setQuery\(''\);\s*\}, \[open\]\)/);
   assert.doesNotMatch(provider, /useEffect\(\(\) => \{\s*if \(!open\) return;\s*setQuery\(''\)/);
   assert.match(dialog, /<OpenAIAccountSettings[\s\S]{0,260}onRequestLogout/);
-  assert.match(dialog, /confirmDisabled=\{[\s\S]{0,300}account && openAIAccount\.busy/);
+  assert.match(dialog, /const saveDisabled =[\s\S]{0,350}account && openAIAccount\.busy/);
+  assert.match(dialog, /confirmDisabled=\{saveDisabled\}/);
   assert.match(account, /OPENAI_ACCOUNT_RPC\.pendingLogin/);
   assert.match(account, /OPENAI_ACCOUNT_RPC\.startLogin/);
   assert.match(account, /OPENAI_ACCOUNT_RPC\.pollLogin/);

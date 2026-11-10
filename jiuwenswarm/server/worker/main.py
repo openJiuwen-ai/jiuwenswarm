@@ -118,6 +118,10 @@ def main() -> None:
     parser.add_argument("--stub-exit-on-request", action="store_true")
     parser.add_argument("--identity-from-parent", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if not args.stub:
+        from jiuwenswarm.server.worker.early_import import start_early_import
+
+        start_early_import()
     from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
 
     mode = runtime_ipc_mode()

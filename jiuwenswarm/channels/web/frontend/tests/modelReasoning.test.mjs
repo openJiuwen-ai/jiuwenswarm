@@ -318,6 +318,8 @@ async function mountDialog(t, modelOverrides = {}, propOverrides = {}) {
   let props = {
     model,
     models: [],
+    modelsLoading: false,
+    modelsError: '',
     catalog,
     catalogLoading: false,
     catalogError: '',
@@ -329,6 +331,7 @@ async function mountDialog(t, modelOverrides = {}, propOverrides = {}) {
       saved.push(entry);
     },
     onRetryCatalog: () => undefined,
+    onRetryModels: () => undefined,
     ...propOverrides,
   };
   const request = async (method, params) => {

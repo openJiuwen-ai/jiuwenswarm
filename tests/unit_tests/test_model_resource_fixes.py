@@ -387,6 +387,10 @@ def test_model_selection_read_rides_out_metadata_replacement(tmp_path, monkeypat
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
     selection = {"type": "model_group", "id": "mgp_a", "route_id": "rte_b"}
+    from jiuwenswarm.common import external_providers
+
+    # Exercise the standalone reader even when collection registered Server.
+    monkeypatch.delitem(external_providers._providers, "session_metadata", raising=False)
     metadata_path = tmp_path / "design_race" / "metadata.json"
     metadata_path.parent.mkdir()
     metadata_path.write_text(json.dumps({"model_selection": selection}), encoding="utf-8")

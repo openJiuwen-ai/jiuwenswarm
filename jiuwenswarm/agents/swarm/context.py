@@ -20,20 +20,10 @@ from typing import Any
 
 from openjiuwen.agent_teams import paths as ojw_paths
 from openjiuwen.agent_teams.schema.build_context import BuildContext
-
-
-_heartbeat_job_service: Any | None = None
-
-
-def set_heartbeat_job_service(service: Any | None) -> None:
-    """Publish the AgentServer-owned Heartbeat service to Team builders."""
-    global _heartbeat_job_service
-    _heartbeat_job_service = service
-
-
-def get_heartbeat_job_service() -> Any | None:
-    """Return the process-local Heartbeat service, if AgentServer installed it."""
-    return _heartbeat_job_service
+from jiuwenswarm.common.heartbeat_service import (
+    get_heartbeat_job_service,
+    set_heartbeat_job_service,
+)
 
 
 @dataclass

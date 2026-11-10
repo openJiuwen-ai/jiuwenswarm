@@ -1,3 +1,4 @@
+import os
 """Resource identity, retirement, isolation and concurrent construction."""
 import asyncio
 import gc
@@ -13,6 +14,87 @@ from jiuwenswarm.runtime.kernel import KernelIdentity, ResourceKernel, ResourceK
 def key():
     identity = KernelIdentity("trusted-owner", "data-a", "project-a", "agent", "definition", "caps", "v1")
     return ResourceKey(identity, "model", "stable-model-id", "route", "credential-ref", "recipe")
+
+
+@pytest.mark.asyncio
+async def test_process_service_survives_retirement_eviction_and_closes_after_models():
+    kernel = ResourceKernel(max_idle=0)
+    calls, closed = [], []
+    pool_key = replace(key(), kind="model_connections")
+
+    def factory():
+        calls.append(object())
+        return calls[-1]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        values = list(executor.map(lambda _: kernel.own_lifetime(pool_key, factory, close=closed.append), range(16)))
+    assert len(calls) == 1 and all(value is values[0] for value in values)
+    model = kernel.acquire(key(), lambda: "model", close=closed.append)
+    kernel.retire(lambda _: True)
+    assert closed == []
+    await model.release()
+    assert closed == ["model"]
+    assert kernel.own_lifetime(pool_key, factory, close=closed.append) is values[0]
+    await kernel.close()  # Process ownership must not create an active lease.
+    assert closed == ["model", values[0]]
+
+
+@pytest.mark.asyncio
+async def test_failed_process_service_can_retry_and_does_not_hide_active_leases():
+    kernel = ResourceKernel()
+    pool_key = replace(key(), kind="model_connections")
+    with pytest.raises(ValueError):
+        kernel.own_lifetime(pool_key, lambda: (_ for _ in ()).throw(ValueError("retry")), close=lambda _: None)
+    value = kernel.own_lifetime(pool_key, object, close=lambda _: None)
+    model = kernel.acquire(key(), object)
+    with pytest.raises(RuntimeError, match="active resource leases"):
+        await kernel.close()
+    assert kernel.own_lifetime(pool_key, object, close=lambda _: None) is value
+    await model.release()
+    await kernel.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retire_inflight", [False, True])
+async def test_process_service_cannot_promote_an_inflight_ordinary_resource(retire_inflight):
+    kernel = ResourceKernel()
+    began, release = threading.Event(), threading.Event()
+    built, closed, lifetime_built = [], [], []
+    resource_key = key()
+
+    def ordinary_factory():
+        value = object()
+        built.append(value)
+        began.set()
+        assert release.wait(5)
+        return value
+
+    def lifetime_factory():
+        lifetime_built.append(object())
+        return lifetime_built[-1]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        ordinary = executor.submit(kernel.acquire, resource_key, ordinary_factory, close=closed.append)
+        assert await asyncio.to_thread(began.wait, 2)
+        try:
+            if retire_inflight:
+                kernel.retire(lambda candidate: candidate == resource_key)
+            promotion = executor.submit(
+                kernel.own_lifetime, resource_key, lifetime_factory, close=closed.append,
+            )
+            with pytest.raises(ValueError, match="ordinary resource"):
+                await asyncio.to_thread(promotion.result, 1)
+            assert resource_key not in kernel._lifetime_keys
+            assert lifetime_built == []
+        finally:
+            release.set()
+        lease = ordinary.result(timeout=2)
+    # Rejected promotion must not disable the ordinary resource's existing
+    # retirement/disposal contract, including an older retired construction.
+    kernel.retire(lambda candidate: candidate == resource_key)
+    await lease.release()
+    await kernel.close()
+    assert len(closed) == len(built) and set(closed) == set(built)
 
 
 @pytest.mark.asyncio
@@ -609,11 +691,11 @@ def test_enterprise_kernel_resources_are_scoped_to_trusted_tenant_root(monkeypat
     monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
     inputs = dict(project_dir="", work_mode="agent", definition=None,
                   capabilities={}, configuration={})
-    with TenantContext.scoped("group::bot::alice"):
+    with TenantContext.scoped("group-bot-alice"):
         alice = KernelIdentity.for_agent(**inputs)
         assert alice == KernelIdentity.for_agent(**inputs)
-        assert alice.data_dir == str(TenantContext.current_tenant_root().resolve())
-    with TenantContext.scoped("group::bot::bob"):
+        assert alice.data_dir == os.path.normcase(str(TenantContext.current_tenant_root().resolve()))
+    with TenantContext.scoped("group-bot-bob"):
         bob = KernelIdentity.for_agent(**inputs)
     assert alice != bob
     assert alice.owner != bob.owner
@@ -633,4 +715,4 @@ def test_personal_kernel_identity_keeps_process_root(monkeypatch, tmp_path):
     with TenantContext.scoped("second"):
         second = KernelIdentity.for_agent(**inputs)
     assert first == second
-    assert first.data_dir == str(tmp_path.resolve())
+    assert first.data_dir == os.path.normcase(str(tmp_path.resolve()))

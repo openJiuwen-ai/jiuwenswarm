@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.common import config as config_module
+from jiuwenswarm.common import yaml_utils
 from jiuwenswarm.common.config import _read_with_retry
 
 
@@ -26,13 +27,13 @@ def _yaml_file(tmp_path: Path) -> Path:
 def _parse_count(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     """Count how often the YAML parser actually runs."""
     calls = {"n": 0}
-    real_load = config_module.yaml.safe_load
+    real_load = yaml_utils.safe_yaml_load
 
-    def _counting_load(stream):
+    def _counting_load(stream, *args, **kwargs):
         calls["n"] += 1
-        return real_load(stream)
+        return real_load(stream, *args, **kwargs)
 
-    monkeypatch.setattr(config_module.yaml, "safe_load", _counting_load)
+    monkeypatch.setattr(yaml_utils, "safe_yaml_load", _counting_load)
     return calls
 
 

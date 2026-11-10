@@ -51,7 +51,7 @@ def _forward_sets_contain(method: str) -> bool:
 
 def test_enterprise_install_http_route_reaches_web_install_handler(tmp_path) -> None:
     method = "skills.enterprise.install"
-    interface = _ROOT / "jiuwenswarm/server/runtime/agent_adapter/interface.py"
+    interface = _ROOT / "jiuwenswarm/server/runtime/agent_adapter/management_routes.py"
     handler_name = _assigned_handler(interface, "SKILLS_ENTERPRISE_INSTALL")
     from jiuwenswarm.common.schema.message import ReqMethod
     assert ReqMethod.SKILLS_ENTERPRISE_INSTALL.value == method

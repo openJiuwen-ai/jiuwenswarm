@@ -182,7 +182,11 @@ def _remember_blank_registration(
         "endpoint": str(endpoint or "").strip(),
     }
     _REGISTERED_BLANK_REGISTRATIONS[cache_key] = registration
-    setattr(client, "_jiuwen_blank_agent_registration", registration)
+    while len(_REGISTERED_BLANK_REGISTRATIONS) > 128:
+        retired = next(iter(_REGISTERED_BLANK_REGISTRATIONS))
+        _REGISTERED_BLANK_REGISTRATIONS.pop(retired, None)
+        _REGISTERED_BLANK_ENDPOINTS.discard(retired)
+    setattr(client, "_jiuwen_blank_agent_registration", registration.copy())
     setattr(client, "_jiuwen_blank_agent_dataset", registration["dataset"])
     setattr(client, "_jiuwen_blank_agent_service_id", registration["service_id"])
     setattr(client, "_jiuwen_blank_agent_endpoint", registration["endpoint"])
@@ -194,6 +198,26 @@ async def register_blank_agent_if_teammate(
     *,
     source: str,
 ) -> bool:
+    from jiuwenswarm.agents.harness.team.a2x.lazy_client import resource_key
+    from jiuwenswarm.runtime.kernel import process_kernel
+
+    if not config.get("distributed_mode") or config.get("role") != "teammate":
+        return False
+    key = resource_key(config, kind="a2x-registration-lock")
+    lock = process_kernel().recipe(key, asyncio.Lock)
+    async with lock:
+        return await _register_blank_agent_if_teammate(client, config, source=source)
+
+
+def _registration_key(config: dict, dataset: Any, endpoint: Any) -> tuple[str, str, str]:
+    from jiuwenswarm.agents.harness.team.a2x.lazy_client import resource_key
+    from jiuwenswarm.runtime.kernel import identity_reference
+
+    key = resource_key(config)
+    return key.identity.owner, key.routing, identity_reference((config, dataset, endpoint))
+
+
+async def _register_blank_agent_if_teammate(client: Any, config: dict[str, Any], *, source: str) -> bool:
     """Register the configured teammate endpoint as a blank A2X agent."""
     if not config.get("distributed_mode"):
         logger.debug("[A2XRegistryRuntime] blank agent registration skipped source=%s: non-distributed mode", source)
@@ -211,7 +235,7 @@ async def register_blank_agent_if_teammate(
         )
         return False
 
-    cache_key = (str(config.get("base_url") or ""), str(dataset), str(endpoint))
+    cache_key = _registration_key(config, dataset, endpoint)
     if cache_key in _REGISTERED_BLANK_ENDPOINTS:
         cached_registration = _REGISTERED_BLANK_REGISTRATIONS.get(cache_key)
         if cached_registration:
@@ -351,15 +375,10 @@ async def restore_teammate_blank_agent_on_destroy(
                     )
                 restored_service_id = result.service_id
             _REGISTERED_BLANK_ENDPOINTS.add(
-                (str(config.get("base_url") or ""), resolved_dataset, resolved_endpoint)
+                _registration_key(config, resolved_dataset, resolved_endpoint)
             )
-            _REGISTERED_BLANK_REGISTRATIONS[
-                (str(config.get("base_url") or ""), resolved_dataset, resolved_endpoint)
-            ] = {
-                "dataset": resolved_dataset,
-                "service_id": str(restored_service_id or "").strip(),
-                "endpoint": resolved_endpoint,
-            }
+            _remember_blank_registration(client, _registration_key(config, resolved_dataset, resolved_endpoint),
+                dataset=resolved_dataset, service_id=restored_service_id, endpoint=resolved_endpoint)
             logger.info(
                 "[A2XRegistryRuntime] blank agent restored after team destroy "
                 "source=%s dataset=%s service_id=%s endpoint=%s",
@@ -542,7 +561,11 @@ async def replace_teammate_agent_card_after_bootstrap(
 
 
 
-def clear_blank_registration_cache_for_tests() -> None:
+def clear_blank_registration_cache() -> None:
     """Clear in-process registration cache for isolated tests."""
     _REGISTERED_BLANK_ENDPOINTS.clear()
     _REGISTERED_BLANK_REGISTRATIONS.clear()
+
+
+def clear_blank_registration_cache_for_tests() -> None:
+    clear_blank_registration_cache()

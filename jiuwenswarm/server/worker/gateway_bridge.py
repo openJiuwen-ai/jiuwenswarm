@@ -40,9 +40,20 @@ class ConnHolder:
 
     def open_session(self, conn: IpcConnection, *, generation: int | None = None) -> int:
         """Bind a new supervisor connection and return its generation."""
+        generation = self.begin_session(generation=generation)
+        self.activate_session(conn, generation)
+        return generation
+
+    def begin_session(self, *, generation: int | None = None) -> int:
+        """Reserve a HELLO generation without publishing to an unvalidated peer."""
         self.generation = self.generation + 1 if generation is None else generation
-        self.conn = conn
+        self.conn = None
         return self.generation
+
+    def activate_session(self, conn: IpcConnection, generation: int) -> None:
+        if generation != self.generation or self.conn is not None:
+            raise RuntimeError("Worker connection acceptance is stale")
+        self.conn = conn
 
     def close_session(self) -> int:
         """Detach the current connection without reusing its generation."""

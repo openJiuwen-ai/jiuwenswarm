@@ -92,7 +92,7 @@ def test_worker_installs_providers_before_parallel_required_preparation(monkeypa
     from jiuwenswarm.server.worker import runtime_backend
 
     events = []
-    original_install = provider_setup.install
+    original_install = provider_setup.install_front
 
     def install() -> None:
         assert ("cleanup" in events) is (workspace_ready != "1")
@@ -105,7 +105,7 @@ def test_worker_installs_providers_before_parallel_required_preparation(monkeypa
 
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", workspace_ready)
     monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: events.append("cleanup"))
-    monkeypatch.setattr(provider_setup, "install", install)
+    monkeypatch.setattr(provider_setup, "install_front", install)
     monkeypatch.setattr(runtime_backend, "_prepare_worker_configuration", lambda: prepare("config"))
     monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules", lambda: prepare("sdk"))
     monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging", lambda: None)
@@ -114,6 +114,38 @@ def test_worker_installs_providers_before_parallel_required_preparation(monkeypa
     assert events.count("providers") == 1
     assert set(events) == ({"providers", "config", "sdk", "cleanup"} if workspace_ready != "1"
                            else {"providers", "config", "sdk"})
+
+
+def test_worker_provider_binding_does_not_import_sdk_before_parallel_preparation() -> None:
+    """Provider bindings cannot race the Worker's early SDK import thread."""
+    code = (
+        "import os, sys\n"
+        "os.environ['JIUWENSWARM_RUNTIME_WORKSPACE_READY'] = '1'\n"
+        "from jiuwenswarm.server.worker import runtime_backend\n"
+        "from jiuwenswarm.common.external_providers import registered_domains\n"
+        "def check():\n"
+        "    assert 'openjiuwen' not in sys.modules\n"
+        "    assert not any(key.startswith('openjiuwen.agent_teams') for key in sys.modules)\n"
+        "runtime_backend._prepare_worker_configuration = check\n"
+        "runtime_backend._preload_sdk_execution_modules = check\n"
+        "class PreparationJoined(Exception): pass\n"
+        "def stop_after_join(): raise PreparationJoined\n"
+        "runtime_backend._configure_openjiuwen_logging = stop_after_join\n"
+        "try: runtime_backend.preload_runtime_backend()\n"
+        "except PreparationJoined: pass\n"
+        "check()\n"
+        "print(sorted(registered_domains()))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stderr[-800:]
+    assert str(sorted(SERVER_PROVIDER_DOMAINS)) in result.stdout, result.stdout
 
 
 @pytest.mark.slow

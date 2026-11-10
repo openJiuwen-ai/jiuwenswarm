@@ -74,6 +74,10 @@ class TeamMemberStreamHistory:
     def __init__(self) -> None:
         self._segments: dict[str, _MemberSegment] = {}
 
+    def member_keys(self) -> tuple[str, ...]:
+        """Snapshot the members whose pending output belongs to this stream."""
+        return tuple(self._segments)
+
     def _segment(self, member_key: str, payload: dict[str, Any]) -> _MemberSegment:
         segment = self._segments.get(member_key)
         if segment is None:

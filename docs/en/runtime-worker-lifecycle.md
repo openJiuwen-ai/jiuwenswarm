@@ -2,6 +2,18 @@
 
 A resident Worker keeps Runtime loaded across Front restarts for desktop and ordinary services. The application or service owner controls final shutdown. HarmonyOS defaults to `front_loopback`: its Worker exits when the Front disconnects and does not use resident endpoint election or reattachment. Both modes verify actual process exit at final shutdown.
 
+## Startup and configuration readiness
+
+Front prepares control-plane configuration reads first. The Web application dismisses its loading-config notification after `config.get` succeeds for the current connection and the configuration is applied. Model discovery and execution resources can continue preparing; configuration readiness does not imply Agent execution readiness. Reconnection refreshes the configuration, and a failed read exposes an error and retry action.
+
+After connection, users can open Add model and fill a draft while the existing model list and vendor catalog load. Saving still waits for both to preserve validation, identity, and conflict checks. Background results retain entered fields; initialization failures allow retrying or canceling the draft.
+
+Worker IPC uses v3. The Supervisor validates the HELLO protocol, build identity, and data directory before granting startup permission; old-protocol Workers are not reused directly. Safe SDK imports can start earlier, while configuration migration, Runtime resource construction, and execution remain gated by startup permission.
+
+Bounded `runtime_prewarm` is enabled by default for one configured profile. It creates no Session and sends no model request. Defaults are a 1-second idle delay, two attempts, and budgets of 10 seconds wall time, 5 seconds process CPU, and 256 MB RSS growth. Foreground activity prevents subsequent background steps. Synchronous imports cannot be forcibly preempted; CPU/RSS budgets are observations that stop subsequent work. Set `runtime_prewarm.enabled: false` to disable prewarm. Measure true cold starts with prewarm disabled and report them separately from product-default results.
+
+## Shutdown, upgrades, and recovery
+
 - In resident mode, a normal Front restart or Supervisor `stop()` detaches and preserves the Worker.
 - In HarmonyOS's default `front_loopback` mode, Supervisor `stop()` shuts down and reaps its attached Worker.
 - Final desktop exit and upgrade stop the Front, then explicitly drain the current deployment's Worker, including a reattached Worker.

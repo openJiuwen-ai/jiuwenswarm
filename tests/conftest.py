@@ -31,6 +31,19 @@ for _name, _value in {
 
 
 def pytest_unconfigure(config):
+    # Windows cannot remove the private collection home while its log is open.
+    loggers = [logging.getLogger()]
+    loggers.extend(
+        logger for logger in logging.Logger.manager.loggerDict.values()
+        if isinstance(logger, logging.Logger)
+    )
+    for logger in loggers:
+        for handler in list(logger.handlers):
+            if not isinstance(handler, logging.FileHandler):
+                continue
+            if Path(handler.baseFilename).resolve().is_relative_to(_home.resolve()):
+                logger.removeHandler(handler)
+                handler.close()
     _test_environment.undo()
     _collection_home.cleanup()
 

@@ -869,7 +869,12 @@ async def test_file_delete_does_not_follow_symlinks_out_of_workspace(service, tm
     target.write_text("keep", encoding="utf-8")
     link = gs.group_files.team_home(group["team_name"]) / "outputs" / "link.txt"
     link.parent.mkdir(parents=True)
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows account cannot create symbolic links")
+        raise
     _publish_file(group, link, name="link.txt")
     result = await service.file_delete(group["group_id"], {"path": str(link)}, user_id="owner", channel_id="web")
     assert result["file_removed"] is False

@@ -14,7 +14,7 @@ from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.front.request_registry import RequestRegistry
 from jiuwenswarm.server.front.router import MethodRouter
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
-from jiuwenswarm.server.lifecycle import Readiness
+from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ class AgentServerFront:
         port: int = 18092,
         *,
         readiness: Readiness | None = None,
+        forwarder: EventForwarder | None = None,
         ping_interval: float | None = 30.0,
         ping_timeout: float | None = 300.0,
     ) -> None:
@@ -37,7 +38,7 @@ class AgentServerFront:
         self._ping_timeout = ping_timeout
         self.readiness = readiness or Readiness()
         self.registry = RequestRegistry()
-        self.forwarder = EventForwarder()
+        self.forwarder = forwarder if forwarder is not None else EventForwarder()
         self.admission = ExecutionAdmission(
             self.readiness,
             registry=self.registry,
@@ -98,9 +99,16 @@ class AgentServerFront:
                 ping_timeout=self._ping_timeout,
                 max_size=AGENT_WS_MAX_MESSAGE_BYTES,
             )
-        self.readiness.mark_transport_ready()
-        self.readiness.mark_control_ready()
-        self.readiness.mark_runtime_warming()
+        # A resident Worker can finish reattachment before Front's import/bind.
+        # Only initialize Front state; never erase an already received ready,
+        # degraded or capability-progress signal.
+        if self.readiness.state in {
+            ReadinessState.STARTING, ReadinessState.TRANSPORT_READY, ReadinessState.CONTROL_READY,
+        }:
+            self.readiness.mark_transport_ready()
+            self.readiness.mark_control_ready()
+            self.readiness.mark_runtime_warming()
+        self.router.start_control_warmup()
         logger.info("[Front] 已启动: ws://%s:%s", self._host, self._port)
 
     def begin_drain(self) -> None:
@@ -118,6 +126,7 @@ class AgentServerFront:
             return False
 
     async def stop(self) -> None:
+        await self.router.close_control_warmup()
         if self._server is None:
             return
         self._server.close()

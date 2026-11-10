@@ -849,7 +849,9 @@ async def broadcast_evolution_progress(
             or team_evolution_terminal_progress(evt) is not None
         ):
             continue
-        parsed = await run_stream_parser(parse_stream_chunk, evt)
+        parsed = await run_stream_parser(
+            parse_stream_chunk, evt, projection_parent_session_id=session_id,
+        )
         if parsed is not None:
             result = broadcast_event(channel_id, session_id, parsed)
             if inspect.isawaitable(result):
@@ -872,7 +874,9 @@ async def push_evolution_progress(
         ):
             continue
         try:
-            parsed = await run_stream_parser(parse_stream_chunk, evt)
+            parsed = await run_stream_parser(
+                parse_stream_chunk, evt, projection_parent_session_id=push_context.session_id,
+            )
             if parsed is None:
                 continue
             await push_context.transport.send_push(

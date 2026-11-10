@@ -170,7 +170,10 @@ def _extract_compact_summary_processor(summary: str) -> str:
 async def handle_command_workflows(ctx: RequestContext) -> None:
     """Handle command.workflows RPC — list summaries or get one workflow detail."""
     request = ctx.request
-    from jiuwenswarm.agents.harness.team import get_team_manager
+    from jiuwenswarm.server.management.workflow_reader import (
+        existing_workflow_handler,
+        restored_workflows,
+    )
 
     session_id = request.session_id or ""
     channel_id = request.channel_id or "web"
@@ -188,8 +191,7 @@ async def handle_command_workflows(ctx: RequestContext) -> None:
         wf_id_log,
     )
 
-    team_manager = get_team_manager(channel_id)
-    workflow_handler = team_manager.get_workflow_handler(session_id)
+    workflow_handler = existing_workflow_handler(session_id)
     source = "live" if workflow_handler is not None else "checkpoint"
     detail_raw_bytes: int | None = None
 
@@ -201,19 +203,7 @@ async def handle_command_workflows(ctx: RequestContext) -> None:
         # left ``running`` gets no more events and must read as ``paused``
         # + ``recovered`` (buttons grey, advisory lists it), not as live.
         try:
-            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-                _normalize_recovered_runs,
-                restore_workflow_runs,
-            )
-
-            restored = _normalize_recovered_runs(
-                restore_workflow_runs(session_id), session_id,
-            )
-            workflows = (
-                [run.to_workflow_run_dict() for run in restored.values()]
-                if restored
-                else []
-            )
+            workflows = restored_workflows(session_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[WF_DBG] command.workflows checkpoint_restore_failed session_id=%s error=%s",

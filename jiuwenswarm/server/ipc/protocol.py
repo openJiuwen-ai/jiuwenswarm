@@ -17,11 +17,12 @@ from typing import Any
 from jiuwenswarm.common.schema.agent import AgentRef, AgentRequest, PermissionContext
 from jiuwenswarm.common.schema.message import ReqMethod
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 HEADER = struct.Struct("!I")
 MAX_FRAME_BYTES = 32 * 1024 * 1024
 
 KIND_HELLO = "hello"
+KIND_STARTUP_ACCEPTED = "startup.accepted"
 KIND_REQUEST = "request"
 KIND_REQUEST_DONE = "request.done"
 KIND_WIRE = "wire"

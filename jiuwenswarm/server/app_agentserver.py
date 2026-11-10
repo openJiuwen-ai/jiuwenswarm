@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Standalone AgentServer entrypoint.
 
-Front listens first. A Runtime Supervisor then attaches a resident Worker
+Front and Runtime Supervisor start concurrently. The Supervisor attaches a resident Worker
 over local IPC. OpenJiuwen and Agent Runtime load in that Worker, not in
 this process.
 
@@ -156,8 +156,9 @@ def _start_team_mysql_before_traffic() -> None:
 
 
 async def _run(host: str, port: int) -> None:
-    _install_common_providers()
-    from jiuwenswarm.server.front.server import AgentServerFront
+    from jiuwenswarm.server.front.event_forwarder import EventForwarder
+    from jiuwenswarm.server.lifecycle import Readiness
+    from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 
     _configure_openjiuwen_logging()
 
@@ -177,39 +178,56 @@ async def _run(host: str, port: int) -> None:
     )
 
     await asyncio.to_thread(_start_team_mysql_before_traffic)
-    front = AgentServerFront(host=host, port=port)
     from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
 
     websocket_enabled = resolve_websocket_enabled(config_section=ws_server_config())
-    if websocket_enabled:
-        await front.start()
-        logger.info(
-            "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
-            host,
-            port,
-            time.monotonic() - startup_t0,
-        )
-        logger.info(
-            "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
-            "agent_ws_listening",
-            time.monotonic() - _PROCESS_START_T0,
-            time.monotonic() - startup_t0,
-            front.readiness.snapshot().get("control_ready"),
-        )
-    else:
-        logger.info("[AgentServer] WebSocket 门关闭，不听端口")
+    readiness = Readiness()
+    forwarder = EventForwarder()
+    supervisor = RuntimeSupervisor(readiness, forwarder=forwarder, host=host, port=port)
+    backend_task = asyncio.create_task(supervisor.run_until_ipc_ready(), name="runtime-supervisor")
 
-    stop_event = asyncio.Event()
-    supervisor: object | None = None
-    backend_task = asyncio.create_task(
-        _start_supervisor(front, host, port),
-        name="runtime-supervisor",
+    def load_front():
+        _install_common_providers()
+        from jiuwenswarm.server.front.server import AgentServerFront
+
+        return AgentServerFront
+
+    front = None
+    try:
+        # Importing control/transport code must not hold up Worker creation.
+        front_type = await asyncio.to_thread(load_front)
+        front = front_type(host=host, port=port, readiness=readiness, forwarder=forwarder)
+        front.attach_runtime_backend(supervisor)
+        if websocket_enabled:
+            await front.start()
+        else:
+            logger.info("[AgentServer] WebSocket disabled; transport will not listen")
+    except BaseException:
+        backend_task.cancel()
+        await asyncio.gather(backend_task, return_exceptions=True)
+        await supervisor.abort_startup()
+        if front is not None:
+            await front.stop()
+        raise
+    logger.info(
+        "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
+        host,
+        port,
+        time.monotonic() - startup_t0,
+    )
+    logger.info(
+        "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
+        "agent_ws_listening",
+        time.monotonic() - _PROCESS_START_T0,
+        time.monotonic() - startup_t0,
+        front.readiness.snapshot().get("control_ready"),
     )
 
+    stop_event = asyncio.Event()
+
     async def _watch_backend() -> None:
-        nonlocal supervisor
         try:
-            supervisor = await backend_task
+            await backend_task
         except Exception as exc:  # noqa: BLE001
             logger.exception("[AgentServer] runtime supervisor failed: %s", exc)
             mark_failed = getattr(front.readiness, "mark_failed", None)
@@ -241,18 +259,13 @@ async def _run(host: str, port: int) -> None:
         if callable(begin_drain):
             begin_drain()
         await asyncio.sleep(0)
-        if supervisor is None and backend_task.done() and not backend_task.cancelled():
-            try:
-                supervisor = backend_task.result()
-            except Exception:  # noqa: BLE001
-                supervisor = None
-        if supervisor is not None:
-            # Detach only. The Worker keeps its loaded Runtime for the next Front.
-            stop = getattr(supervisor, "stop", None)
-            if callable(stop):
-                await stop()
-        elif not backend_task.done():
+        if not backend_task.done():
             backend_task.cancel()
+            await asyncio.gather(backend_task, return_exceptions=True)
+            await supervisor.abort_startup()
+        else:
+            # A successfully started Worker remains resident for the next Front.
+            await supervisor.stop()
         if not watcher.done():
             watcher.cancel()
         pending = [task for task in (backend_task, watcher) if not task.done()]

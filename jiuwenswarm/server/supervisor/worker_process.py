@@ -206,16 +206,15 @@ class WorkerProcess:
         return self._proc.poll()
 
     async def spawn(self) -> None:
-        from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, launch_identity_payload
+        from jiuwenswarm.server.supervisor.identity import data_scope, launch_identity_payload
+        from jiuwenswarm.server.supervisor.identity_probe import probe_identity
 
-        # Verify source once before the spawn, then hand that exact observation
-        # to the child. Reattached resident Workers still require fresh checks.
-        self.launch_identity = await asyncio.to_thread(code_identity)
         runtime_ipc = None
+        observation = None
         if self._ipc_listener is not None:
+            self.launch_identity, observation = await probe_identity()
             await self._ipc_listener.start(code_identity=self.launch_identity, data_scope=data_scope())
             runtime_ipc = self._ipc_listener.launch_payload()
-        payload = launch_identity_payload(self.launch_identity, runtime_ipc=runtime_ipc)
         command = build_worker_command(
             self.socket_path if self._ipc_listener is None else None,
             host=self._host,
@@ -243,12 +242,23 @@ class WorkerProcess:
                 raise OSError(exc.errno, f"runtime_ipc=front_loopback stage=spawn errno={exc.errno}") from None
             raise
         try:
+            # The child can import code while the private launch identity is
+            # calculated. It cannot migrate configuration or execute yet.
+            if runtime_ipc is None:
+                self.launch_identity, observation = await probe_identity()
+            payload = launch_identity_payload(
+                self.launch_identity, source_observation=observation, runtime_ipc=runtime_ipc,
+            )
             self._proc.stdin.write(payload)
             self._proc.stdin.close()
-        except OSError as exc:
-            self._proc.kill()
-            await self.wait(timeout=5)
-            if self._ipc_listener is not None:
+        except BaseException as exc:
+            if self._proc.stdin is not None:
+                try:
+                    self._proc.stdin.close()
+                except OSError:
+                    logger.debug("[Supervisor] closing failed launch pipe", exc_info=True)
+            await self.stop(timeout=5)
+            if isinstance(exc, OSError) and self._ipc_listener is not None:
                 raise OSError(exc.errno, f"runtime_ipc=front_loopback stage=launch-pipe errno={exc.errno}") from None
             raise
         logger.info("[Supervisor] worker pid=%s stderr=%s", self.pid, self._stderr_path)

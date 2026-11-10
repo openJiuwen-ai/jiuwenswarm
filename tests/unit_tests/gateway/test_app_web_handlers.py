@@ -592,7 +592,7 @@ class _OfflineRemoteAgentClient:
     server_ready = False
 
 
-_OfflineRemoteAgentClient.__module__ = "jiuwenswarm.extensions.yuanrong.agent_client"
+_OfflineRemoteAgentClient.__module__ = "agent_gateway.extensions.yuanrong.agent_client"
 
 
 class _CapturingCronController:

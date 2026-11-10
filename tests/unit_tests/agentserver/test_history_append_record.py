@@ -21,6 +21,8 @@ async def _append(request: AgentRequest) -> None:
         build_ws_request_context(SimpleNamespace(), _FakeWebSocket(), request, asyncio.Lock())
     )
 
+from jiuwenswarm.server.handlers import session as owner_history
+
 
 class _FakeWebSocket:
     pass
@@ -58,12 +60,12 @@ async def test_history_append_record_persists_and_waits_for_completion(monkeypat
     receipt.set_result(None)
 
     monkeypatch.setattr(
-        session_handlers,
+        owner_history,
         "append_history_record",
         lambda **kwargs: appended.update(kwargs),
     )
     monkeypatch.setattr(
-        session_handlers,
+        owner_history,
         "enqueue_history_request_completion",
         lambda *_args, **_kwargs: receipt,
     )
@@ -126,10 +128,10 @@ async def test_history_append_record_backfills_empty_title(monkeypatch) -> None:
     receipt: Future[None] = Future()
     receipt.set_result(None)
     monkeypatch.setattr(
-        session_handlers, "append_history_record", lambda **kwargs: None
+        owner_history, "append_history_record", lambda **kwargs: None
     )
     monkeypatch.setattr(
-        session_handlers,
+        owner_history,
         "enqueue_history_request_completion",
         lambda *_args, **_kwargs: receipt,
     )
@@ -154,7 +156,7 @@ async def test_history_append_record_backfills_empty_title(monkeypatch) -> None:
     stored = {"title": ""}
     updates: list[dict] = []
     monkeypatch.setattr(
-        session_handlers, "get_session_metadata", lambda _sid, **_kw: dict(stored)
+        owner_history, "get_session_metadata", lambda _sid, **_kw: dict(stored)
     )
     monkeypatch.setattr(
         session_metadata, "update_session_metadata", lambda **kw: updates.append(kw)
@@ -262,3 +264,5 @@ async def test_history_append_record_rejects_invalid_session_id(monkeypatch) -> 
             },
         }
     ]
+
+

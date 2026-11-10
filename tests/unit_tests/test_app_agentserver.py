@@ -40,44 +40,42 @@ async def test_run_does_not_delete_agent_teams_directory(
 ) -> None:
     removed_paths: list[Path] = []
     fake_front = _FakeFront("127.0.0.1", 18092)
-    captured: dict[str, asyncio.Event] = {}
-    real_event = asyncio.Event
-
-    def _event_factory() -> asyncio.Event:
-        event = real_event()
-        captured["ev"] = event
-        return event
+    events = []
+    caller = asyncio.current_task()
 
     def _fake_rmtree(path, *args, **kwargs) -> None:
         _ = args, kwargs
         removed_paths.append(Path(path))
 
     class _NoopSupervisor:
-        async def stop(self) -> None:
-            return None
+        def __init__(self, *args, **kwargs):
+            pass
 
-    async def _fake_supervisor(front, host, port):
-        _ = host, port
-        front.attach_runtime_backend(_NoopSupervisor())
-        captured["ev"].set()
-        return _NoopSupervisor()
+        async def run_until_ipc_ready(self):
+            events.append("worker_started")
+            asyncio.get_running_loop().call_later(.05, caller.cancel)
 
-    monkeypatch.setattr(app_agentserver.asyncio, "Event", _event_factory)
+        async def stop(self):
+            events.append("detached")
+
+        async def abort_startup(self):
+            events.append("aborted")
+
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.runtime_supervisor.RuntimeSupervisor", _NoopSupervisor)
     monkeypatch.setattr("shutil.rmtree", _fake_rmtree)
     monkeypatch.setattr(
         "jiuwenswarm.server.front.server.AgentServerFront",
         lambda host, port, **kwargs: fake_front,
     )
-    monkeypatch.setattr(app_agentserver, "_start_supervisor", _fake_supervisor)
     # Logging config would import openjiuwen; this case only cares about Front/Supervisor ordering.
     monkeypatch.setattr(app_agentserver, "_configure_openjiuwen_logging", lambda: None)
 
     await app_agentserver._run("127.0.0.1", 18092)
 
-    assert fake_front.events[0] == "front_start"
+    assert events == ["worker_started", "detached"]
     assert "attach" in fake_front.events
     assert "front_stop" in fake_front.events
-    assert fake_front.events.index("front_start") < fake_front.events.index("attach")
+    assert fake_front.events.index("attach") < fake_front.events.index("front_start")
     assert removed_paths == []
 
 
@@ -128,7 +126,7 @@ def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
 
     app_agentserver._configure_openjiuwen_logging()
 
-    assert captured["log_path"] == f"{tmp_path}/infra/logs/core/"
+    assert Path(captured["log_path"]) == tmp_path / "infra" / "logs" / "core"
     assert captured["log_file"] == "run/jiuwen.log"
     # Control-plane errors must stay visible: the fallback must not silence
     # OpenJiuwen loggers after configuring them.
@@ -209,4 +207,4 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
     app_agentserver._configure_openjiuwen_logging()
 
     assert captured.get("log_file") == "run/jiuwen.log"
-    assert captured.get("log_path", "") == f"{tmp_path}/infra/logs/core/"
+    assert Path(captured["log_path"]) == tmp_path / "infra" / "logs" / "core"

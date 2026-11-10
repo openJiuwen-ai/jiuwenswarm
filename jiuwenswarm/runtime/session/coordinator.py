@@ -1167,7 +1167,18 @@ class RuntimeSessionCoordinator:
             parents.append(handle)
         if not parents:
             return None
-        return max(parents, key=lambda handle: handle.started_at or handle.created_at)
+        # A reissued interaction belongs to the nested continuation. Clock
+        # ticks can tie (notably on Windows), so ancestry must win over time.
+        selected = parents[0]
+        for candidate in parents[1:]:
+            if self._in_execution_lineage(candidate, selected.execution_id):
+                selected = candidate
+            elif not self._in_execution_lineage(selected, candidate.execution_id):
+                candidate_time = candidate.started_at or candidate.created_at
+                selected_time = selected.started_at or selected.created_at
+                if candidate_time > selected_time:
+                    selected = candidate
+        return selected
 
     def _control_target(
         self, record: _SessionRecord, answered: tuple[str, ...]

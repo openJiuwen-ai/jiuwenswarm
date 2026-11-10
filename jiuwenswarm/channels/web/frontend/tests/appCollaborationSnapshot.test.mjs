@@ -7,7 +7,7 @@ import { build } from 'esbuild';
 const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const startMarker = 'const fetchConfig = useCallback(';
 const start = appSource.indexOf(startMarker) + startMarker.length;
-const end = appSource.indexOf('}, [request, t, setAvailableModelGroups, setAvailableModels]);', start);
+const end = appSource.indexOf('}, [request, t]);', start);
 assert.ok(start >= startMarker.length && end > start, 'App configuration callback is present');
 const callback = appSource.slice(start, end + 1);
 assert.match(callback, /getMultiModelCollaborationRevision\(\)/);
@@ -23,6 +23,7 @@ const dependencyNames = [
   'isEnterprise',
   'setActiveNav', 'setModelSetupGuideStep', 'setAvailableModels', 'setAvailableModelGroups',
   'parseModelGroups', 't',
+  'configRequestRevisionRef', 'setConfigReady', 'setModelSetupGuideAvailable',
 ];
 const updateAnchor = appSource.indexOf('startupUpdateCheckRef.current = true;');
 const updateStart = appSource.lastIndexOf('useEffect(', updateAnchor) + 'useEffect('.length;
@@ -52,19 +53,20 @@ const { createAppFetchConfig, createAppStartupUpdateEffect, isMultiModelCollabor
   await import('../node_modules/.cache/app-collaboration-snapshot.mjs');
 
 function deferred() {
-  let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { resolve, promise };
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { resolve, reject, promise };
 }
-function appFixture(reads, { enterprise = false, preview = false, guideEvaluated = true } = {}) {
+function appFixture(reads, { enterprise = false, preview = false, guideEvaluated = true, ...overrides } = {}) {
   const serverConfigs = [];
   const dispatchSnapshots = [];
-  const guideSteps = [];
+  const methods = [], ready = [], errors = [], guide = [], guideSteps = [];
   const noop = () => {};
   const dependencies = Object.fromEntries(dependencyNames.map((name) => [name, noop]));
   let index = 0;
   Object.assign(dependencies, {
     request: async (method) => {
+      methods.push(method);
       if (method === 'config.get') return reads[index++].promise;
       assert.equal(method, 'models.list');
       return { models: [], model_groups: [] };
@@ -72,13 +74,20 @@ function appFixture(reads, { enterprise = false, preview = false, guideEvaluated
     setServerConfig: (config) => serverConfigs.push(config),
     setTeamScheduledDispatchEnabled: (enabled) => dispatchSnapshots.push(enabled),
     isEnterprise: () => enterprise,
-    modelSetupGuideEvaluatedRef: { current: guideEvaluated },
+    configRequestRevisionRef: { current: 0 },
+    setConfigReady: (value) => ready.push(value),
+    setConfigError: (value) => errors.push(value),
+    setModelSetupGuideAvailable: (value) => guide.push(value),
+    setModelSetupGuideStep: (value) => guideSteps.push(value),
+    isSetupGuideEnabled: (value) => value !== false,
     shouldPreviewModelSetupGuide: () => preview,
-    isSetupGuideEnabled: (value) => value === true,
-    setModelSetupGuideStep: (step) => guideSteps.push(step),
+    t: (key) => key,
+    modelSetupGuideEvaluatedRef: { current: guideEvaluated },
     parseModelGroups: (value) => value,
+    ...overrides,
   });
-  return { fetchConfig: createAppFetchConfig(dependencies), serverConfigs, dispatchSnapshots, guideSteps };
+  return { fetchConfig: createAppFetchConfig(dependencies), serverConfigs, dispatchSnapshots,
+    methods, ready, errors, guide, guideSteps, dependencies };
 }
 
 test('late App config read cannot revert a confirmed settings save in either feature store or serverConfig', async () => {
@@ -141,13 +150,13 @@ test('App config reads retain upstream scheduled dispatch synchronization alongs
 
 for (const enterprise of [false, true]) {
   for (const preview of [false, true]) {
-    test(`${enterprise ? 'enterprise skips' : 'personal retains'} model setup guide with preview=${preview}`, async () => {
+    test(`explicit model setup preview: enterprise=${enterprise}, preview=${preview}`, async () => {
       const read = deferred();
       const app = appFixture([read], { enterprise, preview, guideEvaluated: false });
       const pending = app.fetchConfig();
       read.resolve({ setup_guide_enabled: !preview });
       await pending;
-      assert.deepEqual(app.guideSteps, enterprise ? [] : [1]);
+      assert.deepEqual(app.guideSteps, !enterprise && preview ? [1] : []);
       assert.equal(app.serverConfigs.length, 1);
     });
   }
@@ -203,3 +212,57 @@ for (const enterprise of [false, true]) {
     }
   });
 }
+
+test('real configuration completion does not request a model catalogue or open an automatic guide', async () => {
+  const read = deferred();
+  const app = appFixture([read], { modelSetupGuideEvaluatedRef: { current: false } });
+  const loading = app.fetchConfig();
+  read.resolve({ setup_guide_enabled: true });
+  assert.equal(await loading, true);
+  assert.deepEqual(app.methods, ['config.get']);
+  assert.deepEqual(app.ready, [true]);
+  assert.deepEqual(app.guide, [true]);
+  assert.deepEqual(app.guideSteps, []);
+});
+
+test('a newer configuration read wins when responses complete in reverse order', async () => {
+  const first = deferred(), second = deferred();
+  const app = appFixture([first, second]);
+  const old = app.fetchConfig(), current = app.fetchConfig();
+  second.resolve({ marker: 'current', multi_model_collaboration_enabled: false });
+  assert.equal(await current, true);
+  first.resolve({ marker: 'stale', multi_model_collaboration_enabled: true });
+  assert.equal(await old, false);
+  assert.deepEqual(app.serverConfigs.map((v) => v.marker), ['current']);
+  assert.deepEqual(app.ready, [true]);
+  assert.equal(isMultiModelCollaborationEnabled(), false);
+});
+
+test('invalidating a disconnected request prevents late configuration application', async () => {
+  const read = deferred(), app = appFixture([read]);
+  const loading = app.fetchConfig();
+  app.dependencies.configRequestRevisionRef.current += 1;
+  read.resolve({ marker: 'old-connection' });
+  assert.equal(await loading, false);
+  assert.deepEqual(app.serverConfigs, []);
+  assert.deepEqual(app.ready, []);
+});
+
+test('configuration failure preserves the last projection and allows a successful retry', async () => {
+  const initial = deferred(), failed = deferred(), retry = deferred();
+  const app = appFixture([initial, failed, retry]);
+  const first = app.fetchConfig();
+  initial.resolve({ marker: 'saved' });
+  assert.equal(await first, true);
+  const second = app.fetchConfig();
+  failed.reject(new Error('injected config failure'));
+  assert.equal(await second, false);
+  assert.equal(app.serverConfigs.at(-1).marker, 'saved');
+  assert.equal(app.errors.at(-1), 'app.configError');
+  const third = app.fetchConfig();
+  retry.resolve({ marker: 'recovered' });
+  assert.equal(await third, true);
+  assert.equal(app.serverConfigs.at(-1).marker, 'recovered');
+  assert.equal(app.errors.at(-1), null);
+  assert.deepEqual(app.ready, [true, false, true]);
+});

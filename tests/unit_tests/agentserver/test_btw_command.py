@@ -28,6 +28,8 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _try_add_cache_control,
 )
 
+from jiuwenswarm.server.management import commands as owner_commands
+
 
 # =============================================================================
 # Fixtures & harness (mirrors test_agentserver_cli_commands.py)
@@ -1043,7 +1045,8 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
+            owner_commands,
+            "resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1116,7 +1119,8 @@ class TestHandleCommandBtw:
             mock_get_agent_none,
         )
         monkeypatch.setattr(
-            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
+            owner_commands,
+            "resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1153,7 +1157,8 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
+            owner_commands,
+            "resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1195,7 +1200,8 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
+            owner_commands,
+            "resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1231,7 +1237,8 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
+            owner_commands,
+            "resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1276,7 +1283,8 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
+            owner_commands,
+            "resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1445,7 +1453,8 @@ class TestHandleCommandRecap:
         get_agent = AsyncMock(return_value=mock_agent)
         monkeypatch.setattr(server.get_agent_manager_for_test(), "get_agent", get_agent)
         monkeypatch.setattr(
-            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
+            owner_commands,
+            "resolve_request_project_dir",
             lambda _request: None,
         )
         request = AgentRequest(
@@ -1472,3 +1481,5 @@ class TestHandleCommandRecap:
             "status": "ok",
             "summary": "team code recap",
         }
+
+

@@ -18,6 +18,7 @@ import ssl
 import stat
 import tarfile
 import tempfile
+import time
 import uuid
 from contextlib import contextmanager
 from functools import wraps
@@ -1069,8 +1070,6 @@ def _safe_rmtree(path: Path) -> bool:
         except OSError:
             return True
 
-    import time
-
     max_retries = 3
     retry_delay = 0.2
 
@@ -1238,6 +1237,10 @@ class SkillManager:
         self._service_id = str(service_id or "").strip() or None
         self._agent_id = str(agent_id or "").strip() or None
         self._source_registry = SourceRegistry()
+        began = time.monotonic()
+        from jiuwenswarm.agents.harness.team.bootstrap import TeamStoragePreparation
+
+        self._team_storage_preparation = TeamStoragePreparation()
         # 若传入 workspace_dir（harness adapter 使用），优先通过 Workspace/WorkspaceNode
         # 解析 skills 路径；否则使用全局默认路径（react adapter 或无参数时）。
         if workspace_dir is not None:
@@ -1282,6 +1285,8 @@ class SkillManager:
             self._register_unmanaged_local_skills()
         # SkillNet 异步安装：install 立即返回 install_id，后台下载；完成后调用 hook 重载 Agent
         self._skillnet_install_complete_hook: Callable[[], Awaitable[None]] | None = None
+        logger.info("[Worker] preparation stage=skill_discovery duration_ms=%.3f",
+                    (time.monotonic() - began) * 1000)
 
     @property
     def _skillnet_install_jobs(self) -> dict[str, dict[str, Any]]:
@@ -1875,8 +1880,7 @@ class SkillManager:
             return f"技能包包含已禁用的技能{suffix}，请先在「包含技能」中启用后再启用技能包"
         return f"技能包包含未安装的技能{suffix}，请先在「包含技能」中安装，或重新下载完整技能包后再启用"
 
-    @staticmethod
-    def _resolve_skill_visibility_target(params: dict) -> tuple[str, str, Path] | dict:
+    def _resolve_skill_visibility_target(self, params: dict) -> tuple[str, str, Path] | dict:
         """Resolve the visibility document addressed by an RPC request.
 
         Args:
@@ -1903,17 +1907,24 @@ class SkillManager:
             return {"success": False, "detail": str(exc)}
 
         if scope == SCOPE_TEAM:
-            return SCOPE_TEAM, team_name, team_skill_visibility_path(team_name)
+            with self._team_storage_preparation.activate():
+                return SCOPE_TEAM, team_name, team_skill_visibility_path(team_name)
 
         try:
             member_name = _safe_path_name(params.get("member_name"), "member")
         except ValueError as exc:
             _log_rejected_name("skills.visibility", "member", params.get("member_name"), exc)
             return {"success": False, "detail": str(exc)}
-        return SCOPE_MEMBER, member_name, member_skill_visibility_path(team_name, member_name)
+        with self._team_storage_preparation.activate():
+            return SCOPE_MEMBER, member_name, member_skill_visibility_path(team_name, member_name)
+
+    def _compose_skill_visibility_for_params(self, params: dict, scope: str) -> tuple[set[str], set[str]]:
+        """Compose against this request's prepared SDK directory bindings."""
+        with self._team_storage_preparation.activate():
+            return self._compose_prepared_skill_visibility(params, scope)
 
     @staticmethod
-    def _compose_skill_visibility_for_params(params: dict, scope: str) -> tuple[set[str], set[str]]:
+    def _compose_prepared_skill_visibility(params: dict, scope: str) -> tuple[set[str], set[str]]:
         """Compose the effective allow / deny sets addressed by an RPC request.
 
         Args:
@@ -6838,6 +6849,12 @@ class SkillManager:
         return obj
 
     @staticmethod
+    def _read_skill_metadata(path: Path) -> dict | None:
+        from jiuwenswarm.server.runtime.skill.metadata_index import read_metadata
+
+        return read_metadata(path, SkillManager._parse_skill_md_uncached)
+
+    @staticmethod
     def _parse_skill_md(path: Path) -> dict | None:
         from jiuwenswarm.runtime.kernel import KernelIdentity, ResourceKey, identity_reference, process_kernel
         try:
@@ -7109,7 +7126,7 @@ class SkillManager:
             if is_container_skillpack(child):
                 return self._build_container_pack_meta(child, source_default)
             return None
-        meta = self._parse_skill_md(md)
+        meta = self._read_skill_metadata(md)
         if meta is None:
             return None
 
@@ -7291,7 +7308,7 @@ class SkillManager:
             md = self._try_find_skill_file(child)
             if md is None:
                 continue
-            meta = self._parse_skill_md(md)
+            meta = self._read_skill_metadata(md)
             if meta is None:
                 continue
 
@@ -9810,7 +9827,7 @@ class SkillManager:
                 if is_container_skillpack(child):
                     names.add(child.name)
                 continue
-            meta = self._parse_skill_md(md)
+            meta = self._read_skill_metadata(md)
             if not isinstance(meta, dict):
                 continue
             names.add(child.name)
@@ -9849,7 +9866,7 @@ class SkillManager:
             md = self._try_find_skill_file(child)
             if md is None:
                 continue
-            meta = self._parse_skill_md(md)
+            meta = self._read_skill_metadata(md)
             if not isinstance(meta, dict):
                 continue
             name = child.name

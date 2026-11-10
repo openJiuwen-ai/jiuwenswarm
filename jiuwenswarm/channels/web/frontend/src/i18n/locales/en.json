@@ -758,6 +758,7 @@
       "missingCustomName": "Unnamed configuration",
       "reloadAfterFailure": "Reload and verify",
       "modelsResponseInvalid": "The model-list response is invalid. Please try again.",
+      "modelsLoadFailedDraftAvailable": "Existing model configurations could not be loaded. Your entries are retained. Retry before saving.",
       "catalogResponseInvalid": "The model-provider catalog response is invalid. Please try again.",
       "catalogLoadingCustomAvailable": "Loading built-in model providers. You can still choose Custom to continue.",
       "catalogLoadFailedCustomAvailable": "Built-in model providers failed to load. You can still choose Custom to continue.",
@@ -917,6 +918,10 @@
       "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again."
     },
     "fields": {
+      "cua_agent_enabled": {
+        "title": "Enable computer control",
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
+      },
       "preferred_language": {
         "title": "Language",
         "description": "Set the display language for the application interface."
@@ -1142,10 +1147,6 @@
       "rsi_enabled": {
         "title": "Enable RSI",
         "description": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
-      },
-      "cua_agent_enabled": {
-        "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",

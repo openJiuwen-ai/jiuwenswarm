@@ -247,7 +247,14 @@ def configure(mode: str) -> None:
         return runtime
 
     service._load_runtime = load_runtime
+    # This fixture replaces Runtime construction. Keep SDK imports out of its
+    # injected transport/logging stalls; real SDK startup is tested separately.
+    from jiuwenswarm.server.worker import early_import
+
+    early_import.start_early_import = lambda: None
     if mode == "heartbeat-loss":
+        # Mute the transport responder, not the business loop. Both resident
+        # pipes and Front loopback otherwise answer heartbeats off-loop.
         def mute_heartbeats(conn, _beat):
             conn.set_heartbeat_responder(lambda _message: None)
 
