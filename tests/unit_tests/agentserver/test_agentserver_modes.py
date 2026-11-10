@@ -318,17 +318,50 @@ def test_build_inputs_propagates_user_interaction_capability(monkeypatch):
     assert inputs["supports_user_interaction"] is False
 
 
-def test_build_inputs_disables_user_interaction_by_default_for_xiaoyi(monkeypatch):
+def test_build_inputs_gates_xiaoyi_user_interaction_by_app_ver(monkeypatch):
+    """xiaoyi 交互能力按手机端 app_ver 判定（gateway 随 metadata.xiaoyi_app_ver
+    透传，源自 systemVariables.app_ver）：
+
+    - > 11.7.9（如 11.7.10.200）→ 交互开启（选项卡可渲染可回答）；
+    - ≤ 11.7.9 / 未上报 → fail-closed 关闭（旧端侧不识别选项卡契约字段）。
+    """
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+
+    def _build(app_ver):
+        metadata = {"xiaoyi_app_ver": app_ver} if app_ver else None
+        return AgentRequest(
+            request_id=f"req-xiaoyi-{app_ver or 'nover'}",
+            channel_id="xiaoyi",
+            session_id="xiaoyi_session",
+            params={"query": "hello"},
+            metadata=metadata,
+        )
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.10.200"))
+    assert inputs["supports_user_interaction"] is True
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9.200"))
+    assert inputs["supports_user_interaction"] is False
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build(""))
+    assert inputs["supports_user_interaction"] is False
+
+
+def test_build_inputs_disables_user_interaction_when_xiaoyi_explicitly_opts_out(monkeypatch):
+    """显式 supports_user_interaction=False 仍然生效（渠道无差异）。"""
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
 
     request = AgentRequest(
-        request_id="req-xiaoyi",
+        request_id="req-xiaoyi-optout",
         channel_id="xiaoyi",
         session_id="xiaoyi_session",
-        params={"query": "hello"},
+        params={"query": "hello", "supports_user_interaction": False},
     )
 
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(request)
@@ -1350,7 +1383,14 @@ def test_deep_adapter_build_agent_rails_adds_ask_user_for_agent_modes(monkeypatc
     assert ask_user_rail in fast_rails
 
 
-def test_deep_adapter_skips_interactive_and_permission_rails_for_xiaoyi(monkeypatch):
+def test_deep_adapter_gates_xiaoyi_rails_by_app_ver(monkeypatch):
+    """xiaoyi 渠道 ask_user/permission rails 按手机端 app_ver 判定。
+
+    装配期 app_ver 尚未上报（会话 adapter 创建先于首条请求）→ 保守摘除，
+    与 11.7.9 及以下已发端侧行为一致；上报 11.7.10+（支持选项卡）→ 装配
+    即挂载。运行期补挂/摘除由 _set_user_interaction_enabled/
+    _set_permission_rail_enabled（_update_runtime_config）按请求版本执行。
+    """
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     class FakeHooksConfig:
@@ -1379,10 +1419,16 @@ def test_deep_adapter_skips_interactive_and_permission_rails_for_xiaoyi(monkeypa
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda **_kwargs: None)
     monkeypatch.setattr(interface_deep_module, "load_hooks_config", lambda _config: FakeHooksConfig())
 
+    # 装配期版本未上报：保守摘除（app_ver 未上报按不支持处理）
     rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
-
     assert ask_user_rail not in rails
     assert permission_rail not in rails
+
+    # 上报支持选项卡的版本（> 11.7.9）：装配即挂载
+    adapter._client_app_ver = "11.7.10.200"
+    rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
+    assert ask_user_rail in rails
+    assert permission_rail in rails
 
 
 def test_deep_adapter_unregisters_evolution_runtime_rails_when_leaving_plan(monkeypatch):
