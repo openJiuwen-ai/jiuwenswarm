@@ -32,6 +32,7 @@ from jiuwenswarm.common.log_context import (
     current_log_session_id,
     unbind_log_session,
 )
+from jiuwenswarm.common.request_ext import METADATA_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import http_chat
@@ -489,7 +490,6 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
         metadata["targets"] = cron_targets
     from jiuwenswarm.common.request_ext import (
         INTERNAL_HEADER_NAME,
-        METADATA_KEY,
         RequestExtCodecError,
         decode_internal_header,
     )
@@ -589,6 +589,12 @@ def _context_from_mapping(
     is_stream: bool,
 ) -> RequestContext:
     params = body.get("params")
+    metadata = body.get("metadata")
+    if isinstance(metadata, dict):
+        # Request-scoped credentials must not come from client-supplied metadata.
+        metadata = {key: value for key, value in metadata.items() if key != METADATA_KEY}
+    else:
+        metadata = None
     agent_request = AgentRequest(
         request_id=str(body.get("request_id") or "http"),
         channel_id=str(body.get("channel_id") or "http"),
@@ -596,7 +602,7 @@ def _context_from_mapping(
         req_method=req_method,
         params=params if isinstance(params, dict) else {},
         is_stream=is_stream,
-        metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+        metadata=metadata,
         user_id=str(body.get("user_id") or "").strip(),
     )
     return RequestContext(
