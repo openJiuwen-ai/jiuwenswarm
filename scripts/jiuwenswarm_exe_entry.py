@@ -589,6 +589,10 @@ def _dispatch() -> int | None:
 
         restore_legacy_upgrade_config()
         return 0
+    if len(sys.argv) >= 2 and sys.argv[1].lower() == "presentation":
+        from jiuwenswarm.channels.cli.presentation import main as presentation_main
+
+        return presentation_main(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "extension":
         from jiuwenswarm.channels.cli.extension import main as extension_main
 

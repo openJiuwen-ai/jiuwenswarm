@@ -1,6 +1,6 @@
 # 应用形态
 
-最近修订：2026-11-09。实施与验证记录见 [F_15](../features/F_15_application-presentation.md)。
+最近修订：2026-11-10。实施与验证记录见 [F_15](../features/F_15_application-presentation.md)。
 本文定义已选定的目标契约，实现验收状态由 F_15 维护。
 
 ## 槽位与身份
@@ -13,10 +13,38 @@ AP-01：`application.presentation` 是 Gateway 所有、按可信 Web 连接隔�
 AP-02：每个已发布的 `ApplicationSurface` 实例登记一个形态候选，身份由包与 instance_key 决定。
 桌面宿主保留系统原生窗口标题栏，在工作台页面右下角提供“切换应用形态”悬浮按钮，菜单列出全部候选；选择后只打开该候选的小窗。
 安装、资源导入及设置保存只登记或更新候选，不自动进入；资源包格式、导入和配置由插件定义。
+用户或智能体可以在安装成功后另行调用下述本机启动入口，复用菜单选择的同一窗口流程。
 浏览器端明确提示该能力需要桌面客户端。
 主窗口继续拥有连接和聊天状态，隐藏期间保持后台调度；小窗不创建聊天连接。收到沙箱 `ready` 后才隐藏主窗口。
 工作台恢复、窗口关闭、插件停用或卸载、主页面重载与窗口加载失败均结束当前窗口代次；过期消息不执行。
 断线时停止接受写入并恢复工作台。错误须可见，不能把未知发送结果当作成功后自动重发。
+
+## 本机启动入口
+
+本节的实现与验证范围见 F_15。
+
+`jiuwenswarm presentation query [package_id] --json` 查询当前实例 Gateway 已发布的形态候选。
+每项包含 `connection_id`、`package_id`、`instance_key`、`revision` 和双语 `title`，不包含会话正文或凭据。
+浏览器连接也可能发布候选；启动到浏览器时明确返回 `DESKTOP_REQUIRED`。
+
+`jiuwenswarm presentation start <package_id> <instance_key> --connection-id <id> --revision <revision> --json`
+只启动查询中明确指定的连接及版本，不猜测首个连接或最新资源。DMG/EXE 使用
+`JIUWENSWARM_EXECUTABLE` 对应后端程序，参数不变；本机实例发现与授权复用 extension CLI。
+
+Gateway 重新校验连接、活动包和当前候选，将一次性请求发送给该连接。
+Web Client 再校验当前渲染版本，复用菜单的 activate；原生窗口 ready、会话选择成功后才回报 `started`。
+同一连接同时只允许一次启动；启动中返回 `BUSY`。目标已更新、释放或连接结束时拒绝旧请求。
+已启动的同一候选再次显式启动不重建窗口。安装、导入及保存不会自行调用此入口。
+
+下行事件为 `webui.presentation.start`，字段为 `request_id`、`target`、`revision`、`deadline`（UTC Unix 毫秒）；过期通知不启动窗口。target 沿用应用级渲染目标，
+不携带连接 ID、脚本、页面地址或原生窗口 ID。上行方法为 `webui.presentation.result`，字段为
+`request_id`、`code`；code 为 `STARTED`、`DESKTOP_REQUIRED`、`TARGET_INACTIVE`、`BUSY`、`OPEN_FAILED`。
+回执只接受原请求连接，且必须对应仍有效的活动包及渲染版本；USER 请求策略仍可以拒绝上行方法。
+请求、Future 与连接锁由 Gateway 持有，只在当前实例内存在；断线、包释放、停机及等待结束时清理。
+
+退出码 0 表示确认启动成功，1 表示明确拒绝，2 表示发出前输入或环境错误，3 表示结果未知。
+30 秒内没有有效完成回执，或发出请求后连接/版本变化，返回 `UNKNOWN`，不自动重发。
+未知结果须查看当前桌面；不能以通知已送达或 CLI 退出超时推断窗口是否已打开。
 
 ## 沙箱协议
 

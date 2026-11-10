@@ -7,6 +7,9 @@ import { PresentationHostContext, type PresentationDeclaration } from './hostCon
 import { presentationConversations } from './conversations.ts';
 import { selectConversationModel } from '../../../multi-session/state/modelSelectionActions.ts';
 import { createPresentationReplyReader } from './reply.ts';
+import { webClient } from '../../../services/webClient';
+import { useWebUIRuntime } from '../react/WebUIProvider.tsx';
+import { createPresentationStartHandler, PRESENTATION_START_EVENT, PRESENTATION_RESULT_METHOD } from './start.ts';
 import {
   createPresentationRequests, parsePresentationRequest, PRESENTATION_SLOT,
   type PresentationConversation, type PresentationRequest, type PresentationState,
@@ -53,6 +56,8 @@ export function ApplicationPresentationHost(props: ApplicationPresentationHostPr
   const [available, setAvailable] = useState(new Map<string, PresentationDeclaration>());
   const [menuOpen, setMenuOpen] = useState(false);
   const [opening, setOpening] = useState(false);
+  const starting = useRef(false);
+  const runtime = useWebUIRuntime();
   const api = window.jiuwenDesktop?.presentation;
   const callbacks = useRef(props);
   callbacks.current = props;
@@ -106,6 +111,9 @@ export function ApplicationPresentationHost(props: ApplicationPresentationHostPr
   const port = useMemo(() => ({
     async activate(declaration: PresentationDeclaration) {
       if (!api || !callbacks.current.connected) fail('DISCONNECTED');
+      if (starting.current) fail('BUSY');
+      if (active.current?.key === declaration.key && generation.current) return;
+      starting.current = true;
       active.current = declaration;
       latest.current = readSnapshotRef.current();
       setIsActive(true);
@@ -132,6 +140,8 @@ export function ApplicationPresentationHost(props: ApplicationPresentationHostPr
           void api!.close(declaration.key);
         }
         throw error;
+      } finally {
+        starting.current = false;
       }
     },
     update(declaration: PresentationDeclaration) {
@@ -156,6 +166,21 @@ export function ApplicationPresentationHost(props: ApplicationPresentationHostPr
       void api?.close(key);
     },
   }), [api, fail]);
+
+  useEffect(() => {
+    const handle = createPresentationStartHandler({
+      runtime, language: () => i18n.resolvedLanguage ?? i18n.language ?? 'zh', desktop: () => !!api,
+      activate: async (declaration) => {
+        setOpening(true);
+        try { await port.activate(declaration); }
+        finally { setOpening(false); }
+      },
+      result: (params) => webClient.request(PRESENTATION_RESULT_METHOD, params),
+    });
+    return webClient.on(PRESENTATION_START_EVENT, (event) => {
+      void handle(event.payload).catch(() => setNotice(words.current('webuiPresentation.openFailed')));
+    });
+  }, [api, i18n, port, runtime]);
 
   useEffect(() => {
     if (!api) return;

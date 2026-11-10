@@ -66,6 +66,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.runtime import GatewayWebUIRuntime
 from jiuwenswarm.gateway.extensions_v2.webui.transport import GatewayTransport
 from jiuwenswarm.gateway.extensions_v2.webui.bridge import BrowserBridge
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import HOST_METHODS
+from jiuwenswarm.gateway.extensions_v2.webui.presentation_control import RESULT_METHOD
 from jiuwenswarm.common.system_plugin_recovery import begin_system_plugin_recovery_session
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,7 @@ class GatewayRuntime:
         for activation in self._activations.values():
             activation.release()
         self._activations.clear()
+        self.browser.presentations.invalidate()
         await self.browser.settle()
         await self.webui.shutdown()
         self.store.clear()
@@ -586,7 +588,7 @@ class GatewayRuntime:
 
         platform = self._started and self.browser.is_platform_frame(method, params)
         # Host methods are answered by the Gateway even without USER handlers (S_10 section 3).
-        host = self._started and method in HOST_METHODS
+        host = self._started and (method in HOST_METHODS or method == RESULT_METHOD)
         if not self.active and not platform and not host:
             return False, dict(params)
         connection_id = await self._connection_id(ws)

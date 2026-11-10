@@ -64,6 +64,10 @@ class GatewayTransport:
 
         return await self._send(connection_id, FRAME_SPLASH_PLAY, payload)
 
+    async def send_presentation_start(self, connection_id: str, payload: Mapping[str, Any]) -> bool:
+        """Request one explicit presentation start; the caller separately awaits its receipt."""
+        return await self._send(connection_id, "webui.presentation.start", payload)
+
     async def send_error(
         self,
         target: RenderTarget,
