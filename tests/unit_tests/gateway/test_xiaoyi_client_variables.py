@@ -82,6 +82,7 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     ch._answer_receipts = {}
     ch._streamed_chain_texts = {}
     ch._pending_resume_seeds = {}
+    ch._delivered_tool_call_ids = {}
     ch._latest_platform_tasks = {}
     ch._team_sessions = set()
     ch._team_tasks = set()
@@ -1730,3 +1731,78 @@ def test_build_ask_user_command_payload_shape():
     }
     assert questions[0]["question_id"] == "call_001"
     assert questions[1]["question_id"] == "call_001#2"
+
+
+@pytest.mark.asyncio
+async def test_tool_event_replay_dedup_on_resume(cfg_file):
+    """中断恢复重执行的工具事件按 tool_call_id 去重（repeat.md 建议二）。
+
+    恢复会重新执行被中断的工具并重发 tool_call/update 事件；端侧按 id
+    配对渲染工具卡，重发会产生第二张"已完成"卡——网关按会话记录已下发
+    id，重发整帧抑制；tool_result 是新事件照常放行，把原卡补成已完成态。
+    """
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        def _tool_msg(event_type, payload):
+            m = type("M", (), {})()
+            m.event_type = event_type
+            m.payload = payload
+            m.metadata = {
+                "xiaoyi_session_id": "conv-1",
+                "xiaoyi_task_id": "task-2",
+                "xiaoyi_conversation_id": "conv-1",
+            }
+            m.session_id = "conv-1"
+            m.id = "task-2"
+            return m
+
+        def _tool_parts(frame):
+            result = frame["result"]
+            return (
+                (result.get("status", {}).get("message", {}).get("parts"))
+                or []
+            )
+
+        call_payload = {
+            "tool_call": {"tool_call_id": "call_dup", "name": "ask_user",
+                          "arguments": "{}"},
+            "is_processing": True,
+        }
+        await ch._send_legacy(_tool_msg(EventType.CHAT_TOOL_CALL, call_payload))
+        first_parts = [
+            p for f in (json.loads(s["msgDetail"]) for s in sent)
+            for p in _tool_parts(f)
+            if p.get("kind") == "data"
+        ]
+        assert any(
+            p["data"].get("toolCall", {}).get("id") == "call_dup"
+            for p in first_parts
+        )
+
+        # 恢复重发同名 tool_call / tool_update：整帧抑制
+        sent.clear()
+        await ch._send_legacy(_tool_msg(EventType.CHAT_TOOL_CALL, call_payload))
+        await ch._send_legacy(_tool_msg(EventType.CHAT_TOOL_UPDATE, {
+            "tool_call_id": "call_dup", "tool_name": "ask_user",
+        }))
+        assert sent == []
+
+        # tool_result 是新事件：照常放行（把原卡补成已完成态）
+        await ch._send_legacy(_tool_msg(EventType.CHAT_TOOL_RESULT, {
+            "tool_call_id": "call_dup", "tool_name": "ask_user",
+            "result": "问1？: 选项A",
+        }))
+        assert sent, "tool_result must pass through"
+        result_parts = [
+            p for f in (json.loads(s["msgDetail"]) for s in sent)
+            for p in _tool_parts(f)
+            if p.get("kind") == "data"
+        ]
+        assert any(
+            p["data"].get("toolCall", {}).get("id") == "call_dup"
+            and p["data"].get("toolCall", {}).get("status") == "completed"
+            for p in result_parts
+        )
+    finally:
+        _cleanup_tasks(ch)

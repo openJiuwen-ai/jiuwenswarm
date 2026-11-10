@@ -805,6 +805,10 @@ class XiaoyiChannel(BaseChannel):
         # 就绪），改为挂起、随续跑首个正文帧下发（秒级延迟，路径已验证可达），
         # 见 _send_legacy 文本分支；续跑无正文时由终态分支兜底补发。
         self._pending_resume_seeds: dict[tuple[str, str], str] = {}
+        # 已下发过工具卡的 tool_call_id（按会话）：ask_user 等中断恢复会重执行
+        # 被中断的工具并重发同名 tool_call/update 事件，端侧按 id 配对渲染
+        # 工具卡，重发会产生第二张"已完成"卡——重发事件按 id 去重。
+        self._delivered_tool_call_ids: dict[str, set[str]] = {}
         self._sessions_waiting_for_push: dict[str, str] = {}  # {session: task} waiting for push
         self._team_sessions: set[str] = set()  # Team rounds stay active across member outputs
         self._team_tasks: set[tuple[str, str]] = set()
@@ -1452,6 +1456,7 @@ class XiaoyiChannel(BaseChannel):
             self._clear_task_timeout(session_id)
             self._clear_session_timeout(session_id)
             self._sessions_waiting_for_push.pop(session_id, None)
+            self._delivered_tool_call_ids.pop(session_id, None)
             self._clear_team_session(session_id)
             return
 
@@ -1645,6 +1650,21 @@ class XiaoyiChannel(BaseChannel):
                 await self._flush_text_stream_segment(
                     session_id, task_id, team_task_key, reason="tool_phase"
                 )
+                # 中断恢复重执行去重：恢复会重新执行被中断的工具并重发同名
+                # tool_call/update 事件，端侧按 tool_call_id 配对渲染工具卡，
+                # 重发会产生第二张"已完成"卡——重发事件整帧抑制。tool_result
+                # 不抑制：首次执行被中断不会产生结果，恢复产生的结果是新事件，
+                # 用于把原卡补成已完成态。
+                _dup_tool_call_id = self._replayed_tool_call_id(msg, session_id)
+                if _dup_tool_call_id:
+                    logger.info(
+                        "XiaoYi: suppress replayed tool event session=%s "
+                        "tool_call_id=%s event_type=%s",
+                        session_id,
+                        _dup_tool_call_id,
+                        getattr(msg.event_type, "value", msg.event_type),
+                    )
+                    return
             is_processing = (
                 msg.payload.get("is_processing", True)
                 if isinstance(msg.payload, dict)
@@ -4054,6 +4074,39 @@ class XiaoyiChannel(BaseChannel):
         # 回执：状态条提示已收到回复（append 到任务流，不关闭气泡）
         for url_key in list(self._ws_connections.keys()):
             await self._send_status_update(task_id, session_id, "已收到您的回复，继续执行…")
+
+    def _replayed_tool_call_id(self, msg: Message, session_id: str) -> str:
+        """判定工具事件是否为中断恢复的重发事件，是则返回其 tool_call_id。
+
+        恢复会重新执行被中断的工具并重发 tool_call/tool_update 事件；端侧
+        按 tool_call_id 配对渲染工具卡，重发会产生第二张"已完成"卡。已下发
+        过的 id 记录在 _delivered_tool_call_ids（按会话）。tool_result 永不
+        判定为重发：首次执行被中断不会产生结果，恢复产生的结果是新事件，
+        用于把原卡补成已完成态。
+        """
+        if not isinstance(msg.payload, dict):
+            return ""
+        if msg.event_type == EventType.CHAT_TOOL_CALL:
+            tool_call = msg.payload.get("tool_call")
+            call_id = (
+                str(tool_call.get("tool_call_id") or tool_call.get("id") or "")
+                if isinstance(tool_call, dict)
+                else ""
+            )
+        elif msg.event_type == EventType.CHAT_TOOL_UPDATE:
+            call_id = str(
+                msg.payload.get("tool_call_id") or msg.payload.get("id") or ""
+            )
+        else:
+            return ""
+        call_id = call_id.strip()
+        if not call_id:
+            return ""
+        delivered = self._delivered_tool_call_ids.setdefault(session_id, set())
+        if call_id in delivered:
+            return call_id
+        delivered.add(call_id)
+        return ""
 
     def _ask_user_tabs_enabled(self, logical_session: str) -> bool:
         """本会话手机端是否支持 AskUser 结构化选项卡（app_ver > 11.7.9）。
