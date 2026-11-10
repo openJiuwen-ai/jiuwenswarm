@@ -132,7 +132,7 @@ From the TUI, one Run looks like this (the engine advances Phases / Nodes; the T
 
 ```bash
 # Install
-pip install jiuwenswarm
+pip install workswarm
 
 # Initialize (first time)
 jiuwenswarm-init

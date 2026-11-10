@@ -33,7 +33,7 @@ Suitable for users who manage their own Python environment. Follow these steps:
   source .venv/bin/activate
 
   # Install JiuwenSwarm
-  pip install jiuwenswarm
+  pip install workswarm
 
   # Install JiuwenSwarm-tui
   pip install jiuwenswarm-tui
