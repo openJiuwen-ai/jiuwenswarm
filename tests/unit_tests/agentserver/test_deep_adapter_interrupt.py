@@ -44,6 +44,18 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_voice_context_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Permission fixtures have no persisted speech or real history cursor.
+
+    Voice import and restore validation run in the shared conversation tests;
+    these tests exercise only interruption and permission dispatch ownership.
+    """
+    from jiuwenswarm.extensions.video_duplex.backend import conversation_context
+
+    monkeypatch.setattr(conversation_context, "sync_conversation_context", AsyncMock())
+
+
 def _build_cancel_request(session_id: str = "tui_sess_1") -> AgentRequest:
     return AgentRequest(
         request_id="req-cancel",

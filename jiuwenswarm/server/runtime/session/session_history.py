@@ -890,8 +890,12 @@ def _ensure_jsonl_bootstrap(session_id: str) -> Path:
                          session_id, exc.code, exc)
             raise
         except OSError as exc:
-            logger.error("Legacy history conversion I/O failed; original preserved: session=%s code=HISTORY_RESTORE_FAILED",
-                         session_id, exc_info=True)
+            logger.error(
+                "Legacy history conversion I/O failed; original preserved: "
+                "session=%s code=HISTORY_RESTORE_FAILED",
+                session_id,
+                exc_info=True,
+            )
             raise HistoryReplayError("Legacy history conversion I/O failed") from exc
         with _BOOTSTRAP_ERROR_LOCK:
             _BOOTSTRAP_ERRORS.pop(legacy_path, None)
