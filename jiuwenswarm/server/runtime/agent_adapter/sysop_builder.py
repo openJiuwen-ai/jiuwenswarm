@@ -22,6 +22,7 @@ from openjiuwen.core.sys_operation.config import (
 
 from jiuwenswarm.common.config import (
     get_sandbox_endpoint,
+    get_sandbox_network_mode,
     get_sandbox_runtime,
     get_sandbox_startup_mode,
 )
@@ -923,6 +924,14 @@ def create_sandbox_sysop_card(
             startup_mode=startup_mode,
             team_context=team_context,
         )
+        # Forward the configured sandbox network mode in the client policy
+        # fragment: jiuwenbox's append-merge only preserves fields present in
+        # the fragment, so a root-policy-only ``network.mode`` (e.g. ``host``
+        # on privilege-limited hosts) is lost after merge and the sandbox
+        # creation would fall back to isolated networking.
+        network_mode = get_sandbox_network_mode()
+        if network_mode:
+            policy = {**policy, "network": {"mode": network_mode}}
         extra_params = {
             "policy": policy,
             "policy_mode": "append",

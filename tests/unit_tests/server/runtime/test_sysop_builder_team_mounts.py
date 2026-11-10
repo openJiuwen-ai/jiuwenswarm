@@ -112,3 +112,31 @@ def test_create_sandbox_sysop_card_accepts_custom_id_and_team_context(tmp_path: 
     launcher = card.gateway_config.launcher_config
     assert launcher.sandbox_type == "jiuwenbox"
     assert card.gateway_config.isolation.custom_id == "entry_unit-team_browser-usd-sgd"
+
+
+def test_network_mode_forwarded_into_policy_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sandbox.network_mode rides in the client fragment (append-merge keeps it)."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.sysop_builder.get_sandbox_network_mode",
+        lambda: "host",
+    )
+    card = sysop_builder.create_sandbox_sysop_card("http://sandbox.local", "jiuwenbox")
+    assert card is not None
+    policy = card.gateway_config.launcher_config.extra_params["policy"]
+    assert policy["network"] == {"mode": "host"}
+
+
+def test_network_mode_absent_keeps_legacy_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No sandbox.network_mode configured: fragment stays filesystem-only."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.sysop_builder.get_sandbox_network_mode",
+        lambda: "",
+    )
+    card = sysop_builder.create_sandbox_sysop_card("http://sandbox.local", "jiuwenbox")
+    assert card is not None
+    policy = card.gateway_config.launcher_config.extra_params["policy"]
+    assert "network" not in policy

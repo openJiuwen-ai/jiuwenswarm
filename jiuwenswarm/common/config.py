@@ -3923,6 +3923,22 @@ def get_sandbox_team_fail_closed() -> bool:
     return bool(sandbox.get("team_fail_closed", False))
 
 
+def get_sandbox_network_mode() -> str:
+    """Read ``sandbox.network_mode`` (default empty = do not forward).
+
+    When set (e.g. ``host``), the sandbox card's client policy fragment
+    carries ``network.mode`` explicitly: jiuwenbox's append-merge only keeps
+    fields present in the fragment, so a root-policy-only network mode is
+    lost after merge and creation falls back to isolated networking — which
+    needs ``ip netns`` privileges the host may not have.
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return ""
+    return str(sandbox.get("network_mode") or "").strip().lower()
+
+
 # ``preserve_file_sharing_mode`` 当前合法取值集合 = ``{"mount"}``; 空值表示
 # "未配置, 按默认走"。
 _VALID_PRESERVE_FILE_SHARING_MODES = ("mount",)
