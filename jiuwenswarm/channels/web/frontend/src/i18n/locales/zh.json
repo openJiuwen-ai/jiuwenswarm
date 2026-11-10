@@ -1934,6 +1934,27 @@
     }
   },
   "chat": {
+    "llmAudit": {
+      "title": "模型调用记录",
+      "refresh": "刷新调用记录",
+      "close": "关闭",
+      "loadFailed": "调用记录或原文读取失败，请刷新重试。",
+      "loading": "正在加载调用记录…",
+      "empty": "本会话暂无模型调用记录。",
+      "select": "选择一次模型调用，查看输入、工具定义和回复原文。",
+      "original": "原文类型",
+      "messages": "输入消息",
+      "tools": "工具定义",
+      "response": "模型回复",
+      "more": "加载更早的调用",
+      "previous": "上一段",
+      "next": "下一段",
+      "tokens": "Token",
+      "running": "调用中",
+      "completed": "已完成",
+      "failed": "失败",
+      "interrupted": "已中断"
+    },
     "recordingInProgress": "正在录音，点击停止后转写。",
     "duplexControls": {
       "sharingVideo": "WorkSwarm 正在接收共享画面",

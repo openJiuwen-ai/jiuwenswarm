@@ -20532,6 +20532,7 @@ class JiuWenSwarmDeepAdapter:
                 moa_stream = moa_progress.stream(interaction_stream)
                 runner_stream = moa_stream
             last_llm_prompt: str | None = None
+            last_llm_call_id: str | None = None
             # Call-start time — anchors the chat.usage_metadata record so the LLM
             # Call card renders before the response text (recorded at completion).
             last_llm_start_ts: float | None = None
@@ -20653,13 +20654,18 @@ class JiuWenSwarmDeepAdapter:
                     )
                     continue
 
-                if chunk_type in ("llm_call_start", "llm_call_end"):
+                if chunk_type in ("llm_call_start", "llm_call_input", "llm_call_end"):
                     payload = chunk.payload if isinstance(chunk.payload, dict) else {}
                     forward: dict[str, Any] = {
                         "event_type": "chat." + chunk_type,
                         "member_name": payload.get("member_name"),
                         "role": payload.get("role"),
                     }
+                    for key in ("audit_schema", "call_id", "input_ref", "response_ref", "status", "error", "usage", "latency_ms"):
+                        if key in payload:
+                            forward[key] = payload[key]
+                    if chunk_type == "llm_call_start":
+                        last_llm_call_id = payload.get("call_id")
                     prompt = payload.get("prompt")
                     if prompt:
                         forward["prompt"] = prompt
@@ -20704,6 +20710,10 @@ class JiuWenSwarmDeepAdapter:
                         # prompt stays available for the LLM call.
                         if last_llm_prompt and not usage_meta.get("prompt"):
                             usage_meta = {**usage_meta, "prompt": last_llm_prompt}
+                            if isinstance(chunk.payload, dict):
+                                chunk.payload["usage_metadata"] = usage_meta
+                        if last_llm_call_id:
+                            usage_meta = {**usage_meta, "call_id": last_llm_call_id}
                             if isinstance(chunk.payload, dict):
                                 chunk.payload["usage_metadata"] = usage_meta
                     yield AgentResponseChunk(

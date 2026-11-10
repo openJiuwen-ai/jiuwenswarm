@@ -432,3 +432,36 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 结构；Server 不可用、传输失败或 Hub 查询失败时，返回空 `items` 与错误说明。
 不回退到 Gateway 本地查询。缓存冷启动与后台刷新语义沿用 Server 现有实现。
 `hub.expert_packages.catalog` 由锁定版本的 `openjiuwen-protocol` 正式定义，无需应用侧临时注册。
+
+## 模型调用审计与原文读取
+
+Core 原生 `call_id` 关联调用开始、输入、结束和用量事件；一次用户请求可包含多次调用。
+`chat.llm_call_start` 只携带最多 2048 字符的预览；`chat.llm_call_input.input_ref` 引用有序输入清单；
+`chat.llm_call_end` 携带状态、耗时、用量和回复引用。模型客户端输入回调采集提示词注入和上下文处理后的输入。
+失败调用保留已采集输入；所属进程退出而未完成的调用在读取时标记为 `interrupted`。
+工件失败不阻断模型调用，不发布不可用引用，记录可携带 `capture_error`。
+
+完整消息、工具定义和回复按 JSON 内容摘要分别保存，相同块不重复写入，每次调用只保留有序清单和少量元数据。
+审计数据随会话归档、删除；fork 复制被历史引用的工件，不依赖源会话继续存在。截止在调用完成前的 fork
+不复制未来的回复和用量。正文不参与会话上下文恢复。
+
+非流式 `history.get` 的 `params` 增加 `llm_audit` 查询对象，例如：
+
+```json
+{"session_id":"session-1","llm_audit":{"action":"list","limit":30,"cursor":null}}
+{"session_id":"session-1","llm_audit":{"action":"call","call_id":"native-call-id"}}
+{"session_id":"session-1","llm_audit":{"action":"parts","call_id":"native-call-id","collection":"messages","start":0,"limit":30}}
+{"session_id":"session-1","llm_audit":{"action":"read","call_id":"native-call-id","collection":"messages","index":0,"offset":0,"max_bytes":65536}}
+```
+
+`collection` 为 `messages`、`tools` 或 `response`，页大小为 1–100。每次原文读取最多 64 KiB，返回
+`content`、`offset`、`next_offset`、`eof`、完整块的 `sha256` 和 `bytes`。偏移按 UTF-8 字节计算，
+使用 `next_offset` 继续读取，完整重组后可校验摘要。非法参数、错误会话、缺失或损坏清单返回
+`LLM_AUDIT_FAILED`。普通历史分页行为不变。
+
+Web 的“模型调用记录”入口按需分页查看调用和原文，每次只展示一段。锁定 Gateway 的 HTTP 历史路由只接受
+历史分页参数，因此此入口复用已有鉴权 WebSocket RPC，通过 `session.get_metadata` 携带同名 `llm_audit`
+查询，返回 `{"llm_audit": ...}`，避免 Gateway 的活动状态投影覆盖调用状态。已有 WebSocket 连接复用；
+HTTP 主通道的独立 RPC 连接随面板关闭释放。
+
+本能力修复调用审计的重复正文保存和读取，不替代超大旧历史的有界恢复、迁移或检查点修复。

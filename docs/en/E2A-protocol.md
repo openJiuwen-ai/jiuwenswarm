@@ -495,3 +495,40 @@ empty `items` and an error message, without a local Gateway fallback. Existing S
 cold-cache and background-refresh semantics remain in place. The pinned
 `openjiuwen-protocol` package defines `hub.expert_packages.catalog`; no application-side
 enum registration is required.
+
+## Model call audit and original content
+
+Core's native `call_id` associates call-start, input, completion and usage events. One request may contain several
+calls. `chat.llm_call_start` carries at most 2048 preview characters; `chat.llm_call_input.input_ref` identifies the
+ordered final-input manifest; `chat.llm_call_end` carries status, latency, usage and a response reference. The
+model-client callback captures input after prompt injection and context processing. Failed calls retain captured
+input. An unfinished call whose owning process has exited is projected as `interrupted`. Artifact failures do not
+stop the model; unavailable references are omitted and the record may contain `capture_error`.
+
+Complete messages, tool definitions and responses are separate JSON content-addressed blocks. Calls store ordered
+references and small metadata, so identical bodies are not rewritten. Files follow session archive/delete; a fork
+copies referenced blocks and remains readable after source deletion. A cutoff before completion excludes the
+future response and usage. Audit bodies are not replayed into conversation context.
+
+Unary `history.get` accepts `session_id` and an `llm_audit` query object. Query examples:
+
+```json
+{"action":"list","limit":30,"cursor":null}
+{"action":"call","call_id":"native-call-id"}
+{"action":"parts","call_id":"native-call-id","collection":"messages","start":0,"limit":30}
+{"action":"read","call_id":"native-call-id","collection":"messages","index":0,"offset":0,"max_bytes":65536}
+```
+
+Collections are `messages`, `tools` and `response`; page sizes are 1–100. Reads return at most 64 KiB with `content`,
+`offset`, `next_offset`, `eof`, and the complete block's `sha256` and `bytes`. Continue at the UTF-8 byte offset
+`next_offset`; verify the digest after full reconstruction. Invalid parameters, a wrong session or a missing/corrupt
+manifest return `LLM_AUDIT_FAILED`. Ordinary history paging is unchanged.
+
+The Web "Model calls" entry loads call records and original parts on demand, displaying one bounded chunk at a time.
+The pinned Gateway HTTP history route accepts only history paging parameters, so this entry reuses authenticated
+WebSocket RPC with the same query on `session.get_metadata`. Its result is nested under `llm_audit`, preserving call
+status across Gateway activity projection. Existing WebSocket connections are reused; HTTP-mode clients release
+their separate RPC connection when the panel closes.
+
+This feature fixes repeated audit-body persistence and retrieval; it does not replace bounded recovery, migration
+or checkpoint repairs for existing oversized conversation histories.

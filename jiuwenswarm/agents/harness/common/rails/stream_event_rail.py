@@ -378,6 +378,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
     def init(self, agent: Any) -> None:
         self._deep_agent = agent
+        from jiuwenswarm.agents.harness.common.llm_audit_observer import install_llm_audit_observer
+
+        install_llm_audit_observer()
 
     def _get_prompt_language(self) -> str:
         """Get the current prompt language from the agent's system_prompt_builder."""
@@ -823,6 +826,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # fire their own before_invoke (ctx.session is None → early return above).
         ctx.extra[self._SID_KEY] = sid
         try:
+            carrier = root_decision_context_from_extra(getattr(ctx.inputs.run_context, "extra", None))
+            ctx.extra["_llm_audit_request_id"] = carrier.request_id
+        except (AttributeError, TypeError, ValueError):
+            ctx.extra["_llm_audit_request_id"] = ""
+        try:
             from openjiuwen.core.sys_operation.shell_process_registry import (
                 set_shell_session_id,
             )
@@ -836,19 +844,19 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             if isinstance(ctx.inputs, InvokeInputs) and ctx.session is not None:
                 await self._project_complete_interruption(ctx)
         finally:
-            token = ctx.extra.pop(self._SHELL_SID_TOKEN_KEY, None)
-            if token is not None:
-                try:
-                    from openjiuwen.core.sys_operation.shell_process_registry import (
-                        reset_shell_session_id,
-                    )
+            from jiuwenswarm.agents.harness.common.llm_audit_observer import finish_pending_calls
 
-                    reset_shell_session_id(token)
-                except Exception:
-                    logger.debug(
-                        "[StreamEventRail] reset_shell_session_id failed",
-                        exc_info=True,
-                    )
+            try:
+                await finish_pending_calls()
+            finally:
+                token = ctx.extra.pop(self._SHELL_SID_TOKEN_KEY, None)
+                if token is not None:
+                    try:
+                        from openjiuwen.core.sys_operation.shell_process_registry import reset_shell_session_id
+
+                        reset_shell_session_id(token)
+                    except Exception:
+                        logger.debug("[StreamEventRail] reset_shell_session_id failed", exc_info=True)
 
     async def _project_complete_interruption(
         self,
@@ -1008,7 +1016,24 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if self._abort_requested.get(sid, False):
             raise asyncio.CancelledError("Agent abort requested")
 
-        await self._emit_llm_call_signal(ctx, "llm_call_start")
+        from jiuwenswarm.agents.harness.common.llm_audit_observer import bind_audit_scope
+
+        build_context = getattr(self._deep_agent, "_build_context", None)
+        request_id = ""
+        try:
+            request_id = root_decision_context_from_extra(getattr(ctx.inputs.run_context, "extra", None)).request_id
+        except (AttributeError, TypeError, ValueError):
+            request_id = ctx.extra.get("_llm_audit_request_id", "")
+        if not request_id:
+            from jiuwenswarm.agents.harness.agent_observability import _PARENT_REQ_BY_SESSION
+
+            request_id = _PARENT_REQ_BY_SESSION.get(sid, ("", "", ""))[0]
+        from jiuwenswarm.agents.harness.agent_observability import _PARENT_REQ_BY_SESSION
+
+        owner = _PARENT_REQ_BY_SESSION.get(sid, (request_id, "web", "agent"))
+        bind_audit_scope(session_id=getattr(build_context, "session_id", None) or sid,
+                         request_id=request_id, member_name=self._member_name, role=self._role,
+                         channel_id=owner[1], mode=owner[2])
 
         self._inject_tool_call_goal_schema(ctx)
 
@@ -1073,7 +1098,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
-        await self._emit_llm_call_signal(ctx, "llm_call_end")
         build_context = getattr(self._deep_agent, "_build_context", None)
         usage_role = self._role or getattr(build_context, "role", None)
         await record_model_token_usage(
@@ -1117,7 +1141,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             payload["role"] = self._role
         try:
             if phase == "llm_call_start":
-                prompt_preview = self._summarize_call_prompt(ctx)
+                prompt_preview = self._summarize_call_prompt(ctx, max_chars=2048)
                 if prompt_preview:
                     payload["prompt"] = prompt_preview
             elif phase == "llm_call_end":
@@ -1181,13 +1205,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         return None
 
     @staticmethod
-    def _summarize_call_prompt(ctx: AgentCallbackContext, max_chars: int | None = None) -> str | None:
-        """Serialize the full prompt sent to the model.
+    def _summarize_call_prompt(ctx: AgentCallbackContext, max_chars: int | None = 2048) -> str | None:
+        """Format a bounded preview; native model callbacks preserve full input.
 
-        Carried inside ``llm_call_start`` so the IDE can show the exact final
-        prompt: system message included, tool results kept, no truncation by
-        default. Inline base64 images are replaced with ``[image]`` to keep the
-        dump readable.
+        Inline base64 images are replaced with ``[image]`` in this display-only
+        preview. Exact input messages and tool schemas live in the audit store.
         """
         messages = getattr(ctx.inputs, "messages", None) or []
         if not messages:
@@ -1213,6 +1235,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 text = str(content) if content else ""
             if "data:image" in text:
                 text = "[image]"
+            if max_chars is not None:
+                text = text[:max(0, max_chars - total) + 1]
             segment = f"<{role}>\n{text}"
             if max_chars is not None and total + len(segment) > max_chars:
                 parts.append(segment[: max(0, max_chars - total)] + "\n… (truncated)")
@@ -1373,6 +1397,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     # ------------------------------------------------------------------
 
     async def on_model_exception(self, ctx: AgentCallbackContext) -> None:
+        from jiuwenswarm.agents.harness.common.llm_audit_observer import finish_pending_calls
+
+        await finish_pending_calls(str(getattr(ctx, "exception", None) or "Model call failed"))
         if ctx.context is not None:
             logger.info("[StreamEventRail] Attempting context repair after model exception")
             await self._fix_incomplete_tool_context(ctx)

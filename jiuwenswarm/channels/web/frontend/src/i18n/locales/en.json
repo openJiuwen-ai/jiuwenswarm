@@ -1934,6 +1934,27 @@
     }
   },
   "chat": {
+    "llmAudit": {
+      "title": "Model calls",
+      "refresh": "Refresh model calls",
+      "close": "Close",
+      "loadFailed": "Could not read the call record or original content. Refresh to retry.",
+      "loading": "Loading model calls…",
+      "empty": "This session has no model call records yet.",
+      "select": "Select a model call to inspect its original input, tool definitions and response.",
+      "original": "Original content type",
+      "messages": "Input messages",
+      "tools": "Tool definitions",
+      "response": "Model response",
+      "more": "Load earlier calls",
+      "previous": "Previous chunk",
+      "next": "Next chunk",
+      "tokens": "Tokens",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "interrupted": "Interrupted"
+    },
     "recordingInProgress": "Recording. Select Stop to transcribe.",
     "duplexControls": {
       "sharingVideo": "WorkSwarm is receiving shared video",

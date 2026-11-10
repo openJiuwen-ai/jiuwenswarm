@@ -97,7 +97,7 @@ function logDevWsTraffic(entry: DevWsLogEntry): void {
   });
 }
 
-class WebClient {
+export class WebClient {
   private readonly runtimeResume = new RuntimeResume();
   private resumeOwner = '';
   private connectedOnce = false;

@@ -133,7 +133,8 @@ class MethodRouter:
             if request.req_method == ReqMethod.HEALTH_CHECK_GET_CONF:
                 await self._dispatch_health(ws, request, send_lock)
                 return
-            if request.req_method == ReqMethod.HISTORY_GET and request.is_stream:
+            if (request.req_method == ReqMethod.HISTORY_GET and request.is_stream
+                    and "llm_audit" not in (request.params or {})):
                 await self._dispatch_history_stream(ws, request, send_lock)
                 return
             await self._dispatch_control(ws, request, send_lock)

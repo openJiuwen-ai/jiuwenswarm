@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:llm-audit": "node tests/runLlmAuditTests.mjs",
     "test:designer-entry": "node --test tests/designerEntry.test.mjs tests/appDesignerMoaRouting.test.mjs",
     "test:skill-marketplace": "esbuild src/components/SkillPanel/MarketplaceView.tsx src/components/SkillPanel/skillPanelUtils.ts --bundle --splitting --packages=external --platform=node --format=esm --jsx=automatic --out-extension:.js=.mjs --outdir=node_modules/.cache/skill-marketplace --loader:.svg=dataurl --loader:.png=dataurl --loader:.css=empty --define:import.meta.env={} && node --test tests/skillMarketplace.test.mjs",
     "test:skillpack-install": "esbuild src/components/SkillPanel/skillPackInstall.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/skillpack-install/skillPackInstall.mjs && node --test tests/skillPackInstall.test.mjs",

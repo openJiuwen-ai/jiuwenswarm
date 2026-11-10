@@ -502,7 +502,9 @@ def _has_persistable_assistant_payload(
         return isinstance(answers, list) and bool(answers)
     # Prompt / usage capture records — no display content but persisted so
     # the exact LLM prompt can be retrieved offline.
-    if et == "chat.llm_call_start" and str(payload.get("prompt") or "").strip():
+    if et == "chat.llm_call_start" and (payload.get("call_id") or str(payload.get("prompt") or "").strip()):
+        return True
+    if et == "chat.llm_call_input" and payload.get("input_ref"):
         return True
     if et == "chat.usage_metadata" and payload.get("metadata"):
         return True
