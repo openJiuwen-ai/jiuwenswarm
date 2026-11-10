@@ -1213,7 +1213,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                             getattr(ctx.inputs, "tools", None) or [],
                         )}
                     except OSError:
-                        logger.warning("[StreamEventRail] prompt artifact unavailable; emitting call end", exc_info=True)
+                        logger.warning(
+                            "[StreamEventRail] prompt artifact unavailable; emitting call end",
+                            exc_info=True,
+                        )
                 response_text = self._extract_response_text(ctx)
                 if response_text:
                     payload["content"] = response_text
