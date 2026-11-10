@@ -207,7 +207,8 @@ jiuwenswarm = [
     # styles markdown 与 index.json，运行期由 designer.skills_loader 读取
     "server/runtime/designer/skills/*",
     "server/runtime/designer/skills/**/*",
-    # Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json), read at runtime
+    # Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md),
+    # read at runtime
     "office/powerpoint/*",
     "office/powerpoint/**/*",
 ]
