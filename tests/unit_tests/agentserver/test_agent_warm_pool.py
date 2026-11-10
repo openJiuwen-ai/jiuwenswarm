@@ -53,6 +53,7 @@ class _FakeManager:
         self.agent = agent
         self.pins = 0
         self.get_agent_calls: list[dict] = []
+        self.cleanup_calls: list[tuple[str, str, int]] = []
 
     async def get_agent(self, **kwargs):
         self.get_agent_calls.append(kwargs)
@@ -63,6 +64,10 @@ class _FakeManager:
 
     def unpin_agent(self, _agent) -> None:
         self.pins -= 1
+
+    async def cleanup_session_runtime(self, *, channel_id: str, session_id: str) -> bool:
+        self.cleanup_calls.append((channel_id, session_id, self.pins))
+        return True
 
 
 async def _wait_until(predicate, *, attempts: int = 100) -> None:
@@ -291,6 +296,7 @@ async def test_flash_reload_replaces_unclaimed_prewarm_slot_without_history_loss
         "agent",
     ]
     assert flash_slot_ids.issubset(set(agent.cleaned))
+    assert all(("web", sid, 0) in pool._manager.cleanup_calls for sid in flash_slot_ids)
     await pool.close()
 
 

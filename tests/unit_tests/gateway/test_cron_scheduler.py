@@ -1217,7 +1217,7 @@ class TestTeamModeWake:
         await task
 
         assert len(agent.stream_requests) == 1
-        assert [env.method for env in agent.unary_requests] == ["chat.interrupt"]
+        assert agent.unary_requests == []
         env = agent.stream_requests[0]
         assert env.is_stream is True
         assert env.channel == "tui"

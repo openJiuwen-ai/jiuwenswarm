@@ -755,7 +755,12 @@ class AgentWarmPool:
         finally:
             if pinned:
                 self._manager.unpin_agent(agent)
-            self.clear_marker(session_id)
+            try:
+                await self._manager.cleanup_session_runtime(
+                    channel_id=channel_id, session_id=session_id
+                )
+            finally:
+                self.clear_marker(session_id)
 
     async def _dispose_slot(self, slot: WarmSlot) -> None:
         await self._dispose_runtime(
