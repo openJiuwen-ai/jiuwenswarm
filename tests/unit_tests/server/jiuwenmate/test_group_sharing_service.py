@@ -154,8 +154,13 @@ async def test_recalled_source_is_not_released_after_owner_approval(sharing):
     assert not result.hits and result.status in {"forbidden", "unavailable"}
 
 
-async def test_once_does_not_authorize_another_query(sharing):
+async def test_once_does_not_authorize_new_content_in_another_query(sharing):
     await approve(sharing)
+    hit = sharing.result.hits[0]
+    changed = hit.model_copy(update={'message': hit.message.model_copy(
+        update={'message_id': 'm-new', 'text': 'new unapproved content'},
+    )})
+    sharing.delegate.search_messages.return_value = sharing.result.model_copy(update={'hits': (changed,)})
     with pytest.raises(core.GroupContentApprovalRequired):
         await sharing.port.search_messages(sharing.execution, core.GroupMessageQuery(query="another"))
 
