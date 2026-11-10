@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="880" viewBox="0 0 1200 880">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <!-- Overall gray canvas -->
+  <rect width="1200" height="880" fill="#e5e7eb"/>
+
+  <!-- All relations use the same solid arrow style. -->
+  <line x1="510" y1="200" x2="510" y2="270" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="530" y="242" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">扩展行为进入宿主流程</text>
+
+  <line x1="510" y1="435" x2="510" y2="505" stroke="#64748b" stroke-width="1.6" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="530" y="480" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">触发 Event / 接收结果</text>
+
+  <!-- EventBus calls USER handlers and the handler uses the framework capabilities. -->
+  <path d="M 100 725 C 40 725, 40 150, 100 150" fill="none" stroke="#64748b" stroke-width="1.6" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="57" y="438" transform="rotate(-90 57 438)" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">匹配并调用 USER Handler</text>
+
+  <!-- Package registration and optional frontend rendering -->
+  <line x1="360" y1="150" x2="380" y2="150" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="370" y="139" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="10">注册</text>
+  <line x1="625" y1="150" x2="645" y2="150" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="635" y="139" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="10">构造 UI</text>
+  <path d="M 895 150 C 940 175, 950 245, 960 320" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="920" y="230" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">返回渲染树</text>
+  <line x1="920" y1="360" x2="960" y2="360" stroke="#64748b" stroke-width="1.6" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="940" y="350" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="10">交互请求</text>
+
+  <!-- Developer extension package -->
+  <rect x="100" y="40" width="820" height="160" rx="10" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="125" y="76" fill="#1f2937" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="20" font-weight="700">开发者扩展包</text>
+  <text x="125" y="101" fill="#64748b" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="12">负责组合已有能力完成业务行为</text>
+
+  <rect x="125" y="120" width="235" height="60" rx="7" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="242" y="147" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="15" font-weight="600">manifest.yaml</text>
+  <text x="242" y="166" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">身份、宿主和入口</text>
+
+  <rect x="380" y="120" width="245" height="60" rx="7" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="502" y="147" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="15" font-weight="600">USER Handler</text>
+  <text x="502" y="166" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">处理 Event、调用 Ops</text>
+
+  <rect x="645" y="120" width="250" height="60" rx="7" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="770" y="147" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="15" font-weight="600">view.py</text>
+  <text x="770" y="166" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">可选：构造 WebClient 渲染树</text>
+
+  <!-- Host business layer: only Gateway and AgentServer remain. -->
+  <rect x="100" y="285" width="820" height="150" rx="10" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="125" y="321" fill="#1f2937" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="20" font-weight="700">宿主业务层</text>
+  <text x="125" y="346" fill="#64748b" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="12">拥有状态、权限和默认动作</text>
+
+  <rect x="125" y="365" width="370" height="50" rx="7" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="310" y="396" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="15" font-weight="600">Gateway</text>
+
+  <rect x="520" y="365" width="375" height="50" rx="7" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="707" y="396" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="15" font-weight="600">AgentServer</text>
+  <line x1="495" y1="390" x2="520" y2="390" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="507" y="380" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="10">转发</text>
+
+  <!-- Narrow frontend layer placed to the side -->
+  <rect x="960" y="285" width="160" height="150" rx="10" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="1040" y="321" text-anchor="middle" fill="#1f2937" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="18" font-weight="700">前端界面</text>
+  <rect x="980" y="345" width="120" height="34" rx="6" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="1040" y="367" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="13" font-weight="600">开放槽位</text>
+  <rect x="980" y="389" width="120" height="34" rx="6" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="1040" y="411" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="13" font-weight="600">展示与交互</text>
+
+  <!-- Framework extension layer -->
+  <rect x="100" y="505" width="820" height="300" rx="10" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="125" y="541" fill="#1f2937" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="20" font-weight="700">框架扩展层</text>
+  <text x="125" y="566" fill="#64748b" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="12">由 ExtensionEventBus 组织事件、能力和默认处理</text>
+
+  <!-- Three parallel concepts sit above ExtensionEventBus. -->
+  <rect x="125" y="585" width="235" height="62" rx="7" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="242" y="613" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="15" font-weight="600">Event</text>
+  <text x="242" y="633" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">描述宿主发生的事情</text>
+
+  <rect x="380" y="585" width="245" height="62" rx="7" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="502" y="613" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="15" font-weight="600">Ops 方法</text>
+  <text x="502" y="633" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">提供受控的平台能力</text>
+
+  <rect x="645" y="585" width="250" height="62" rx="7" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="770" y="613" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="15" font-weight="600">Core Handler</text>
+  <text x="770" y="633" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">完成事件的默认动作</text>
+
+  <!-- The three concepts connect down into the bus. -->
+  <line x1="242" y1="647" x2="242" y2="705" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="255" y="680" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="10">分发</text>
+  <line x1="502" y1="647" x2="502" y2="705" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="515" y="680" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="10">调用</text>
+  <line x1="770" y1="647" x2="770" y2="705" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="783" y="680" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="10">默认处理</text>
+
+  <rect x="125" y="705" width="770" height="62" rx="7" fill="#dbeafe" stroke="#93c5fd"/>
+  <text x="510" y="731" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="15" font-weight="600">ExtensionEventBus</text>
+  <text x="510" y="751" text-anchor="middle" fill="#475569" font-family="Microsoft YaHei, Segoe UI, sans-serif" font-size="11">登记、匹配、分发、执行链和生命周期</text>
+</svg>
