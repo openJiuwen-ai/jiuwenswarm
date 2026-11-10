@@ -4861,6 +4861,8 @@
     },
     "systemPlugin": {
       "badge": "系统插件",
+      "sourceHub": "OpenJiuwen Agentic Hub",
+      "sourceLocal": "本地",
       "install": "安装",
       "uninstall": "卸载",
       "reload": "重载",
@@ -4882,7 +4884,14 @@
       "tabsLabel": "插件详情分区",
       "noDetails": "暂无内容详情",
       "expandReadme": "展开全文",
-      "uninstallConfirm": "确定卸载「{{name}}」？卸载会删除已安装的插件包。"
+      "version": "版本",
+      "installedVersion": "已安装 v{{version}}",
+      "switchVersion": "切换版本",
+      "switchVersionConfirm": "将「{{name}}」从 v{{installed}} 切换到 v{{target}}？切换后当前版本将停止生效，但文件会保留在工作区（不会删除），之后可随时切回。",
+      "publish": "发布",
+      "uninstallConfirm": "请选择卸载方式：「仅卸载 v{{version}}」只删除该版本，其他已安装版本会保留但不再生效；「全部卸载」会删除「{{name}}」留在工作区的所有版本文件，不可恢复。",
+      "uninstallVersion": "仅卸载 v{{version}}",
+      "uninstallAll": "全部卸载"
     },
     "common": {
       "back": "返回",

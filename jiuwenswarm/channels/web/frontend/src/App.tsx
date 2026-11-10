@@ -138,7 +138,6 @@ import {
   useCronStore,
   useSubagentStore,
   usePersonalContextStore,
-  useTeamSelectorStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import { ApplicationPresentationHost } from './features/webui/presentation/ApplicationPresentationHost';

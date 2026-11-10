@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RefreshCw, Zap } from 'lucide-react';
-import { CloseButton, DetailSection, Dialog, EntityHeader, MarkdownPane, PageCard, PageToolbar, Tabs } from '../ui';
+import { CloseButton, DetailSection, Dialog, EntityHeader, MarkdownPane, PageCard, PageToolbar, Select, Tabs } from '../ui';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import { IconAvatar } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -11,8 +11,10 @@ import { systemPluginApi } from '../../services/extensionsV2Api';
 import { useSystemPluginStore } from '../../stores/systemPluginStore';
 import { localizedText } from '../../types/localized';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
+import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import { Switch } from '../Switch';
+import { openAssetPublish } from '../../features/assetPublishEvents';
 import './ConnectorMarket.css';
 
 const README_DIALOG_TITLE_ID = 'system-plugin-readme-dialog-title';
@@ -33,7 +35,8 @@ function messageOf(error: unknown): string {
 export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDetailPageProps) {
   const { t, i18n } = useTranslation();
   const detail = useSystemPluginStore((s) => s.detailCache[id]);
-  const busy = useSystemPluginStore((s) => !!s.busyIds[id]);
+  const packageId = detail?.packageId || id;
+  const busy = useSystemPluginStore((s) => !!s.busyIds[id] || !!s.busyIds[packageId]);
   const loadDetail = useSystemPluginStore((s) => s.loadDetail);
   const install = useSystemPluginStore((s) => s.install);
   const uninstall = useSystemPluginStore((s) => s.uninstall);
@@ -42,6 +45,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const [loading, setLoading] = useState(!detail);
   const [failed, setFailed] = useState(false);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
+  const [pendingVersion, setPendingVersion] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>('content');
   const [files, setFiles] = useState<DefinitionFileEntry[]>([]);
@@ -54,7 +58,10 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const [previewOpen, setPreviewOpen] = useState(false);
   const [readmeOpen, setReadmeOpen] = useState(false);
   const [readmeClipped, setReadmeClipped] = useState(false);
+  const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
+  const [versionLoading, setVersionLoading] = useState(false);
   const readmeRef = useRef<HTMLDivElement>(null);
+  const versionRef = useRef<string | undefined>(undefined);
   const filesRevisionRef = useRef(0);
   const fileRevisionRef = useRef(0);
 
@@ -65,7 +72,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
       setFileStatus('loading');
       setFileError(null);
       try {
-        const content = await systemPluginApi.file(id, path);
+        const content = await systemPluginApi.file(id, path, versionRef.current);
         if (revision !== fileRevisionRef.current) return;
         setFileContent(content);
         setFileStatus('success');
@@ -84,7 +91,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
     setFilesStatus('loading');
     setFilesError(null);
     try {
-      const tree = await systemPluginApi.files(id);
+      const tree = await systemPluginApi.files(id, versionRef.current);
       if (revision !== filesRevisionRef.current) return;
       setFiles(tree);
       setFilesStatus('success');
@@ -106,12 +113,9 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
     });
   };
 
-  useEffect(() => {
+  const resetPanes = useCallback(() => {
     filesRevisionRef.current += 1;
     fileRevisionRef.current += 1;
-    setTab('content');
-    setReadmeOpen(false);
-    setReadmeClipped(false);
     setFiles([]);
     setFilesStatus('idle');
     setFilesError(null);
@@ -119,9 +123,27 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
     setFileContent(null);
     setFileStatus('idle');
     setFileError(null);
+  }, []);
+
+  useEffect(() => {
+    setTab('content');
+    setReadmeOpen(false);
+    setReadmeClipped(false);
+    setSelectedVersion(null);
+    setPendingVersion(null);
+    versionRef.current = undefined;
+    resetPanes();
     requestDetail();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, loadDetail]);
+  }, [id, loadDetail, resetPanes]);
+
+  useEffect(() => {
+    if (selectedVersion !== null || !detail) return;
+    const installed = detail.installedVersion || (detail.installed ? detail.version : '');
+    versionRef.current = installed && (detail.versions ?? []).includes(installed)
+      ? installed
+      : detail.version || undefined;
+  }, [detail, selectedVersion]);
 
   useEffect(() => {
     if (tab === 'files' && filesStatus === 'idle') void requestFiles();
@@ -172,25 +194,109 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
       : detail.active
         ? t('connectorMarket.systemPlugin.statusActive')
         : t('connectorMarket.systemPlugin.statusInstalled');
-  const busyBlocked = busy || loading;
+  const source = detail.source === 'hub'
+    ? t('connectorMarket.systemPlugin.sourceHub')
+    : detail.source === 'local'
+      ? t('connectorMarket.systemPlugin.sourceLocal')
+      : '';
+  const busyBlocked = busy || loading || versionLoading;
+  const versions = detail.versions ?? [];
+  const installedVersion = detail.installedVersion || (detail.installed ? detail.version : '');
+  const initialVersion = installedVersion && versions.includes(installedVersion)
+    ? installedVersion
+    : detail.version;
+  const currentVersion = selectedVersion && versions.includes(selectedVersion)
+    ? selectedVersion
+    : initialVersion;
+  const uninstallTarget = installedVersion || currentVersion;
+  const versionOptions = [...versions]
+    .reverse()
+    .map((version) => ({ value: version, label: version }));
 
   async function runAction(
-    action: (packageId: string) => Promise<{ ok: boolean; error?: string }>,
+    action: () => Promise<{ ok: boolean; error?: string }>,
     onDone?: () => void,
-  ) {
+  ): Promise<boolean> {
     setActionError(null);
-    const result = await action(id);
-    if (result.ok) onDone?.();
-    else setActionError(result.error ?? t('connectorMarket.common.loadFailed'));
+    const result = await action();
+    if (result.ok) {
+      onDone?.();
+      return true;
+    }
+    setActionError(result.error ?? t('connectorMarket.common.loadFailed'));
+    return false;
   }
 
-  async function handleUninstall() {
+  async function handleInstall(version = currentVersion) {
+    return runAction(async () => {
+      const result = await install(id, version);
+      if (result.ok) await loadDetail(id, version);
+      return result;
+    });
+  }
+
+  async function handleReload() {
+    await runAction(async () => {
+      const result = await reload(packageId);
+      if (result.ok) await loadDetail(id, currentVersion);
+      return result;
+    });
+  }
+
+  async function handleUninstall(version?: string) {
     setConfirmUninstall(false);
-    await runAction(uninstall, onDeleted);
+    const ok = await runAction(() => uninstall(packageId, version));
+    if (!ok) return;
+    if (!version) {
+      onDeleted?.();
+      return;
+    }
+    setSelectedVersion(null);
+    resetPanes();
+    if (!(await loadDetail(id))) onDeleted?.();
+  }
+
+  async function handleVersionChange(version: string) {
+    if (!version || version === currentVersion) return;
+    setActionError(null);
+    setSelectedVersion(version);
+    versionRef.current = version;
+    resetPanes();
+    setVersionLoading(true);
+    const ok = await loadDetail(id, version);
+    setVersionLoading(false);
+    if (!ok) setActionError(t('connectorMarket.common.loadFailed'));
+  }
+
+  function handleVersionSelect(version: string) {
+    if (!version || version === currentVersion) return;
+    if (detail.installed && installedVersion && version !== installedVersion) {
+      setPendingVersion(version);
+      return;
+    }
+    void handleVersionChange(version);
+  }
+
+  async function handleSwitchVersion() {
+    const version = pendingVersion;
+    if (!version) return;
+    const previous = versionRef.current || currentVersion;
+    setPendingVersion(null);
+    setSelectedVersion(version);
+    versionRef.current = version;
+    resetPanes();
+    if (await handleInstall(version)) return;
+    setSelectedVersion(previous);
+    versionRef.current = previous;
+    await loadDetail(id, previous);
   }
 
   async function handleEnabledChange(enable: boolean) {
-    await runAction((packageId) => setEnabled(packageId, enable));
+    await runAction(async () => {
+      const result = await setEnabled(packageId, enable);
+      if (result.ok) await loadDetail(id, currentVersion);
+      return result;
+    });
   }
 
   return (
@@ -211,27 +317,47 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
               label: t('connectorMarket.systemPlugin.badge'),
               testId: 'connector-market-system-plugin-detail-integration-type',
             },
-            status,
+            ...(source
+              ? [{ label: source, testId: 'connector-market-system-plugin-detail-source' }]
+              : []),
+            { label: status, testId: 'connector-market-system-plugin-detail-status' },
             ...detail.tags.map((tag) => localizedText(tag, i18n.language)),
           ]}
           actions={
             <div className="detail-actions" data-testid="connector-market-system-plugin-detail-actions">
+              {versions.length > 0 && (
+                <Select
+                  value={currentVersion}
+                  options={versionOptions}
+                  onChange={handleVersionSelect}
+                  disabled={busyBlocked}
+                  aria-label={t('connectorMarket.systemPlugin.version')}
+                  title={t('connectorMarket.systemPlugin.version')}
+                  className="h-7 min-w-[112px] text-[13px]"
+                  data-testid="connector-market-system-plugin-detail-versions"
+                />
+              )}
               {!detail.installed && (
                 <button
                   type="button"
                   className="detail-action detail-action--install"
                   disabled={busyBlocked}
-                  onClick={() => { void runAction(install); }}
+                  onClick={() => { void handleInstall(); }}
                 >
                   {t('connectorMarket.systemPlugin.install')}
                 </button>
+              )}
+              {installedVersion && (
+                <span className="detail-action detail-action--installed" data-testid="connector-market-system-plugin-detail-installed">
+                  {t('connectorMarket.systemPlugin.installedVersion', { version: installedVersion })}
+                </span>
               )}
               {detail.installed && (
                 <button
                   type="button"
                   className="detail-action"
                   disabled={busyBlocked}
-                  onClick={() => { void runAction(reload); }}
+                  onClick={() => { void handleReload(); }}
                 >
                   <RefreshCw size={14} />
                   {t('connectorMarket.systemPlugin.reload')}
@@ -246,6 +372,18 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
                 >
                   <UninstallIcon aria-hidden="true" />
                   {t('connectorMarket.systemPlugin.uninstall')}
+                </button>
+              )}
+              {detail.installed && detail.origin === 'user' && (
+                <button
+                  type="button"
+                  className="detail-action"
+                  disabled={busyBlocked}
+                  onClick={() => openAssetPublish({ kind: 'system_plugin', local_id: packageId })}
+                  data-testid="connector-market-system-plugin-detail-publish"
+                >
+                  <PromptSendIcon aria-hidden="true" />
+                  {t('connectorMarket.systemPlugin.publish')}
                 </button>
               )}
               {detail.installed && (
@@ -350,9 +488,9 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
             title={t('connectorMarket.systemPlugin.events')}
           >
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {detail.events.map((event) => (
+              {detail.events.map((event, index) => (
                 <PageCard
-                  key={event.name}
+                  key={`${event.name}-${index}`}
                   avatar={<IconAvatar icon={<Zap size={21} />} />}
                   title={event.name}
                   description={localizedText(event.description, i18n.language) || '—'}
@@ -404,10 +542,31 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
       {confirmUninstall && (
         <ConfirmDialog
           title={t('connectorMarket.systemPlugin.uninstall')}
-          message={t('connectorMarket.systemPlugin.uninstallConfirm', { name: title })}
-          confirmLabel={t('connectorMarket.systemPlugin.uninstall')}
+          message={t('connectorMarket.systemPlugin.uninstallConfirm', {
+            name: title,
+            version: uninstallTarget,
+          })}
+          confirmLabel={t('connectorMarket.systemPlugin.uninstallAll')}
+          secondaryLabel={t('connectorMarket.systemPlugin.uninstallVersion', {
+            version: uninstallTarget,
+          })}
+          onSecondary={() => { void handleUninstall(uninstallTarget); }}
           onCancel={() => setConfirmUninstall(false)}
           onConfirm={() => { void handleUninstall(); }}
+        />
+      )}
+
+      {pendingVersion && (
+        <ConfirmDialog
+          title={t('connectorMarket.systemPlugin.switchVersion')}
+          message={t('connectorMarket.systemPlugin.switchVersionConfirm', {
+            name: title,
+            installed: installedVersion,
+            target: pendingVersion,
+          })}
+          confirmLabel={t('connectorMarket.systemPlugin.switchVersion')}
+          onCancel={() => setPendingVersion(null)}
+          onConfirm={() => { void handleSwitchVersion(); }}
         />
       )}
 

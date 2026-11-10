@@ -97,10 +97,8 @@ interface RawPluginPackageDetail extends RawPluginPackageSummary {
   mcps: PluginCapabilityRef[];
   // v2 §3.2：仅 show 有，未就绪的待连 MCP 名单。
   pending_connectors?: string[];
-  // 2026-08-21 后端新增（extension_package_manager.py _build_show_card）：manifest 的
-  // quick_inputs 双语示例问法，字段名后端已经是驼峰 quickInputs，不用像 connection_state 那样
-  // 转写。
-  quickInputs?: LocalizedText[];
+  // 本地包为双语对象，Hub profile 为纯字符串；统一交给 localizedText 处理。
+  quickInputs?: Array<LocalizedText | string>;
 }
 
 function fromRawDetail(raw: RawPluginPackageDetail): PluginPackageDetail {

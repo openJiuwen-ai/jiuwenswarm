@@ -141,9 +141,11 @@ const messages = {
     resultVersion: '版本',
     resultTime: '更新时间',
     invalidAssetName: '仅支持小写字母、数字、下划线和连字符，最长 64 个字符。',
+    invalidAssetNameSystemPlugin: '请以小写字母开头，仅使用小写字母、数字、点和连字符，最长 64 个字符。',
     invalidVersion: '请输入 1.0.0 格式版本号或七位小写提交号。',
     invalidDisplayName: '请输入展示名称，最长 128 个字符。',
     assetNameHelp: '发布名称是 Hub 中资源包的技术标识，只支持小写字母、数字、下划线和连字符，最长 64 个字符。',
+    assetNameHelpSystemPlugin: '系统插件名称以小写字母开头，可包含小写字母、数字、点与连字符，最长 64 个字符。',
     displayNameHelp: '展示名称用于 Hub 广场卡片和详情页展示，可以使用中文，最长 128 个字符。',
     descriptionHelp: '简介发布后显示在 Hub 广场卡片和详情页中，用于说明资源的主要能力。',
     tagsHelp: '标签用于 Hub 的分类、搜索和资源识别，多个标签使用逗号分隔。',
@@ -237,10 +239,14 @@ const messages = {
     resultVersion: 'Version',
     resultTime: 'Updated',
     invalidAssetName: 'Use lowercase letters, numbers, underscores, or hyphens; maximum 64 characters.',
+    invalidAssetNameSystemPlugin:
+      'Start with a lowercase letter and use only lowercase letters, numbers, dots, and hyphens; maximum 64 characters.',
     invalidVersion: 'Enter a version such as 1.0.0 or a seven-character lowercase revision.',
     invalidDisplayName: 'Enter a display name of at most 128 characters.',
     assetNameHelp:
       'The package identifier in Hub. Use lowercase letters, numbers, underscores, or hyphens; maximum 64 characters.',
+    assetNameHelpSystemPlugin:
+      'System plugin names start with a lowercase letter and may contain lowercase letters, numbers, dots, and hyphens; maximum 64 characters.',
     displayNameHelp: 'The user-facing name shown on Hub cards and detail pages; maximum 128 characters.',
     descriptionHelp: 'Shown on Hub cards and detail pages to explain the main capabilities of the resource.',
     tagsHelp: 'Used for Hub categories, search, and discovery. Separate multiple tags with commas.',
@@ -427,11 +433,11 @@ function AssetPublishDrawer({
     // The hook listens for this event to re-read the authorization scope.
     window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
   };
-  const invalid = validateMetadata(state.metadata).length > 0;
-  const invalidFields = new Set(validateMetadata(state.metadata));
+  const invalid = validateMetadata(state.metadata, reference.kind).length > 0;
+  const invalidFields = new Set(validateMetadata(state.metadata, reference.kind));
   const fields = ['asset_name', 'version', 'display_name', 'description', 'tags', 'version_desc'] as const;
   const fieldHints: Partial<Record<(typeof fields)[number], MessageKey>> = {
-    asset_name: 'assetNameHelp',
+    asset_name: reference.kind === 'system_plugin' ? 'assetNameHelpSystemPlugin' : 'assetNameHelp',
     display_name: 'displayNameHelp',
     description: 'descriptionHelp',
     tags: 'tagsHelp',
@@ -466,9 +472,10 @@ function AssetPublishDrawer({
     agent_group: zh ? '专家团' : 'Expert group',
     plugin: zh ? '插件' : 'Plugin',
     mcp: zh ? '连接器' : 'Connector',
+    system_plugin: zh ? '系统插件' : 'System plugin',
   }[reference.kind];
   const invalidText: Partial<Record<(typeof fields)[number], MessageKey>> = {
-    asset_name: 'invalidAssetName',
+    asset_name: reference.kind === 'system_plugin' ? 'invalidAssetNameSystemPlugin' : 'invalidAssetName',
     version: 'invalidVersion',
     display_name: 'invalidDisplayName',
   };
@@ -968,7 +975,7 @@ export function AssetPublishHost() {
         if (!value) return;
         const saved = JSON.parse(value);
         if (
-          ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp'].includes(saved.reference?.kind) &&
+          ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp', 'system_plugin'].includes(saved.reference?.kind) &&
           typeof saved.reference?.local_id === 'string'
         )
           setSelection(saved);
