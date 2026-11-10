@@ -1488,23 +1488,29 @@ def _start_or_get_history_flush() -> concurrent.futures.Future[None]:
 
 
 def append_compact_history_records(
-    *,
-    session_id: str,
-    request_id: str,
-    channel_id: str,
-    summary: str | None,
-    timestamp: float,
-    trigger: str = "auto",
-    stats: dict[str, Any] | None = None,
-    mode: str | None = None,
+        *,
+        session_id: str,
+        request_id: str,
+        channel_id: str,
+        summary: str | None,
+        timestamp: float,
+        trigger: str = "auto",
+        stats: dict[str, Any] | None = None,
+        mode: str | None = None,
+        member_name: str | None = None,
 ) -> None:
-    """Persist a compact boundary and optional transcript-only summary."""
+    """Persist a compact boundary and optional transcript-only summary.
+
+    member_name：团队模式的成员归因。写记录级字段（回放按 member_name
+    分流到成员视图），不只是 compact_metadata 里的统计旁注。
+    """
     clean_summary = (summary or "").strip()
     metadata = {
         "compact_metadata": {
             "trigger": trigger,
             **(_serialize_value(stats) if isinstance(stats, dict) else {}),
         },
+        **({"member_name": member_name} if member_name else {}),
     }
 
     append_history_record(

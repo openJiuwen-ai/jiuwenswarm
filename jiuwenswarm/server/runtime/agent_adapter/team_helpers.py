@@ -49,7 +49,10 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     increment_session_round_count,
     update_session_metadata,
 )
-from jiuwenswarm.server.runtime.session.session_history import append_history_record
+from jiuwenswarm.server.runtime.session.session_history import (
+    append_compact_history_records,
+    append_history_record,
+)
 from jiuwenswarm.common.invocation_context import (
     TRACE_CONTEXT_METADATA_KEY,
     TRACE_HEADER_EXPORTER_METADATA_KEY,
@@ -3830,6 +3833,21 @@ async def _consume_stream_with_query(
                         #（process_team_message_stream 的判定依据）
                         tm_.mark_stream_round_terminal(session_id)
                     continue
+                # 团队压缩事件落盘——boundary 记录是收尾分隔条的唯一来源，
+                # 修复前团队链路只广播不落盘，重进会话/重启后压缩痕迹全丢。
+                if _parsed_event_type == "context.compression_state":
+                    _compression_member = getattr(chunk, "source_member", None)
+                    _persist_team_compression_state(
+                        channel_id,
+                        session_id,
+                        round_id,
+                        parsed,
+                        member_name=(
+                            None
+                            if is_leader or not _compression_member
+                            else str(_compression_member)
+                        ),
+                    )
                 await _broadcast_event(channel_id, session_id, parsed)
 
         # If stream ended without any chunks, broadcast an error event
@@ -4276,6 +4294,52 @@ async def _consume_workflow_events(
             session_id,
             exc,
         )
+
+
+def _persist_team_compression_state(
+        channel_id: str | None,
+        session_id: str,
+        round_id: str,
+        payload: dict[str, Any],
+        *,
+        member_name: str | None = None,
+) -> None:
+    """团队链路 compression_state 落盘（修复前只广播不落盘 → 收尾分隔条永缺）。
+
+    口径对齐单 agent 路径（interface._append_compact_history_from_payload）：
+    只落成功压缩（compact_summary 非空、状态非 error/failed/skipped、无 error 字段）；
+    成员帧把归因写进 compact_metadata.member_name，供历史回放分流到成员视图。
+    """
+    summary_text = str(payload.get("compact_summary") or "").strip()
+    status = str(payload.get("status") or "").strip().lower()
+    if not summary_text or payload.get("error") or status in {"error", "failed", "skipped"}:
+        return
+    stats = {
+        key: payload.get(key)
+        for key in ("status", "phase", "processor", "model", "before", "after", "saved", "duration_ms")
+        if key in payload
+    }
+    if member_name:
+        stats["member_name"] = member_name
+    append_compact_history_records(
+        session_id=session_id,
+        request_id=round_id,
+        channel_id=_resolve_channel_id(channel_id),
+        summary=summary_text,
+        timestamp=time.time(),
+        trigger="auto",
+        stats=stats,
+        mode="team",
+        member_name=member_name,
+    )
+    logger.info(
+        "[TeamHelpers] persisted team compression boundary: session_id=%s round_id=%s"
+        " member=%s status=%s",
+        session_id,
+        round_id,
+        member_name or "leader",
+        status,
+    )
 
 
 def _persist_team_history_event(
