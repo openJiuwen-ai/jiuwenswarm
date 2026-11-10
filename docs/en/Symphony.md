@@ -547,6 +547,8 @@ Disabling discovery stops new automatic work, distillation, installation and pub
 
 Ask the Agent to distill a completed multi-Skill workflow. `skillpack_distill` reads persisted real execution evidence and produces a candidate. Installation requires confirmation after inspecting the members and instructions.
 
+Automatic discovery checks currently installed Packs. A Pack with the same complete members and directed execution chain suppresses duplicate creation offers across sessions and restarts, even when disabled. A different execution order remains a different combination. Explicit distillation requests, installation confirmation and execution validation are unchanged.
+
 Installed Packs appear in My Skills and the existing task Skill picker with a SkillPack label. Member changes affect Pack availability. A complete query match offers a confirmation or a choice of Packs before bypassing Symphony composition. Partial or uncertain matches continue through the existing path. Explicitly picking one Pack confirms the selection; mixed selections require a choice. Existing side-effect permissions remain in force. Failure after member execution does not automatically restart composition.
 
 ### Install and manage
