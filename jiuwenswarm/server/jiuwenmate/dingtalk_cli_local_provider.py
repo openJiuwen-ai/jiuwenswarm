@@ -31,7 +31,11 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     dingtalk_apps,
 )
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope, valid_document_search
+from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import (
+    DingTalkCliScope,
+    valid_document_search,
+    valid_group_conversation_id,
+)
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 
 logger = logging.getLogger(__name__)
@@ -880,7 +884,8 @@ class LocalDingTalkCliRuntime:
         if result.returncode != 0 or not valid_response:
             if history_read or bots_read or groups_read:
                 reason = payload.get('errorCode') if isinstance(payload, dict) else 'invalid_json'
-                reason = reason if isinstance(reason, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', reason) else 'unconfirmed_response'
+                if not isinstance(reason, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', reason):
+                    reason = 'unconfirmed_response'
                 logger.warning('DingTalk group read CLI failed: operation=%s exit=%s reason=%s',
                                ' '.join(argv[:3]), result.returncode, reason)
             raise PersistentAgentError(message, code=code)
@@ -944,24 +949,34 @@ class LocalDingTalkCliRuntime:
 
     async def discover_groups(self, scope: DingTalkCliScope, *, cursor: int | None = None) -> dict[str, Any]:
         """Discover a bounded page without reading messages from unrelated groups."""
-        if cursor is not None and (isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0):
-            raise PersistentAgentError("Invalid group discovery cursor", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
+        if cursor is not None:
+            if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+                raise PersistentAgentError("Invalid group discovery cursor", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
         if not self.is_available(scope):
             raise PersistentAgentError("DingTalk app is unavailable", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
         auth = await self.dingtalk_auth_status(scope)
         if auth.get('status') == 'error':
-            raise PersistentAgentError("DingTalk authorization check failed", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE")
+            raise PersistentAgentError(
+                "DingTalk authorization check failed", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE",
+            )
         profile = auth.get('_profile')
         if auth.get('status') != 'connected' or not isinstance(profile, str) or not profile.strip():
-            raise PersistentAgentError("Employee DingTalk authorization is required", code="DINGTALK_CLI_USER_AUTH_REQUIRED")
+            raise PersistentAgentError(
+                "Employee DingTalk authorization is required", code="DINGTALK_CLI_USER_AUTH_REQUIRED",
+            )
         config = self._config()
         channels = config.get('channels') if isinstance(config, Mapping) else None
         raw = channels.get('dingtalk') if isinstance(channels, Mapping) else None
-        apps = [app for app in dingtalk_apps(raw)
-                if app['enabled'] and app['persistent_agent_id'] == scope.agent_id
-                and (scope.app_id is None or app['client_id'] == scope.app_id)]
+        apps = []
+        for app in dingtalk_apps(raw):
+            if not app['enabled'] or app['persistent_agent_id'] != scope.agent_id:
+                continue
+            if scope.app_id is None or app['client_id'] == scope.app_id:
+                apps.append(app)
         if len(apps) != 1:
-            raise PersistentAgentError("Employee DingTalk bot binding is unavailable", code="DINGTALK_CLI_GROUP_BOT_NOT_PRESENT")
+            raise PersistentAgentError(
+                "Employee DingTalk bot binding is unavailable", code="DINGTALK_CLI_GROUP_BOT_NOT_PRESENT",
+            )
         robot_code = apps[0]['robot_code'] or apps[0]['client_id']
         command = ['chat', 'group', 'list-all', '--limit', '5']
         if cursor is not None:
@@ -971,16 +986,20 @@ class LocalDingTalkCliRuntime:
         groups = page.get('groups') if isinstance(page, dict) else None
         has_more = page.get('hasMore') if isinstance(page, dict) else None
         next_cursor = page.get('nextCursor') if isinstance(page, dict) else None
-        if (
-            not isinstance(groups, list) or len(groups) > 5 or not isinstance(has_more, bool)
-            or (has_more and (isinstance(next_cursor, bool) or not isinstance(next_cursor, int)
-                             or next_cursor <= (cursor or 0)))
-            or any(not isinstance(group, dict) or not isinstance(group.get('openConversationId'), str)
-                   or not group['openConversationId'] or len(group['openConversationId']) > 512
-                   or any(char.isspace() or ord(char) < 32 for char in group['openConversationId'])
-                   for group in groups)
-        ):
-            raise PersistentAgentError("Invalid DingTalk group discovery page", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
+        invalid_page = not isinstance(groups, list) or len(groups) > 5 or not isinstance(has_more, bool)
+        if not invalid_page and has_more:
+            invalid_page = (
+                isinstance(next_cursor, bool) or not isinstance(next_cursor, int) or next_cursor <= (cursor or 0)
+            )
+        if not invalid_page:
+            for group in groups:
+                if not valid_group_conversation_id(group, 'openConversationId'):
+                    invalid_page = True
+                    break
+        if invalid_page:
+            raise PersistentAgentError(
+                "Invalid DingTalk group discovery page", code="DINGTALK_CLI_GROUP_HISTORY_INVALID",
+            )
         verified = []
         failed = False
         seen = set()
@@ -1976,7 +1995,9 @@ class LocalDingTalkCliRuntime:
             shutil.copyfile(binary, temporary)
             os.chmod(temporary, 0o700)
             os.replace(temporary, target)
-            manifest.write_text(json.dumps({"name": "dingtalk-workspace-cli", "version": _CLI_VERSION}), encoding="utf-8")
+            manifest.write_text(
+                json.dumps({"name": "dingtalk-workspace-cli", "version": _CLI_VERSION}), encoding="utf-8",
+            )
             os.chmod(manifest, 0o600)
             os.replace(manifest, package / "package.json")
             return target
@@ -2160,7 +2181,10 @@ class LocalDingTalkCliRuntime:
                 operation_id = self._oauth_current(scope).read_text(encoding="utf-8").strip()
             except OSError:
                 operation_id = ""
-            if _DINGTALK_AUTH_OPERATION.fullmatch(operation_id) and operation_id.startswith(f"{self._scope_digest(scope)}."):
+            if (
+                _DINGTALK_AUTH_OPERATION.fullmatch(operation_id)
+                and operation_id.startswith(f"{self._scope_digest(scope)}.")
+            ):
                 _, pid_path, _ = self._oauth_paths(scope, operation_id)
                 if not self._oauth_process_running(pid_path):
                     self._clear_dingtalk_auth(scope, operation_id)
@@ -2222,7 +2246,7 @@ class LocalDingTalkCliRuntime:
                 ["--version"], env=self._oauth_environment(scope), cwd=self._oauth_root(scope),
                 timeout=_DINGTALK_CLI_PREPARE_TIMEOUT_SECONDS,
             )
-        except (OSError, subprocess.TimeoutExpired, TimeoutError) as exc:
+        except (OSError, subprocess.TimeoutExpired) as exc:
             raise PersistentAgentError(
                 "准备钉钉 CLI 超时或失败，请稍后重新发起授权。", code="DINGTALK_CLI_PREPARE_FAILED",
             ) from exc
@@ -2375,11 +2399,11 @@ class LocalDingTalkCliRuntime:
                         and pid_path.resolve().is_relative_to(root.resolve())):
                     self._stop_oauth_process(pid_path)
             shutil.rmtree(root)
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             if root.exists():
                 raise PersistentAgentError(
                     "Failed to clear DingTalk user authorization; try again", code="DINGTALK_CLI_AUTH_CLEANUP_FAILED",
-                )
+                ) from exc
         except OSError as exc:
             raise PersistentAgentError(
                 "Failed to clear DingTalk user authorization; try again", code="DINGTALK_CLI_AUTH_CLEANUP_FAILED",

@@ -387,7 +387,8 @@ class PersistentAgentRepository(SQLiteStore):
         settings_json = json.dumps(published_settings.with_persona("").to_dict(), ensure_ascii=False)
         with self._transaction() as conn:
             row = conn.execute(
-                "SELECT revision, is_default FROM colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, config_id)
+                "SELECT revision, is_default FROM colleagues WHERE namespace_id = ? AND agent_id = ?",
+                (namespace_id, config_id),
             ).fetchone()
             connection_rows = conn.execute(
                 "SELECT agent_id FROM colleague_connections WHERE namespace_id = ? AND config_id = ?",

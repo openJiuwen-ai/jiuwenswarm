@@ -221,7 +221,9 @@ class ConversationArchive:
             for row in conn.execute('SELECT message_id,payload,source_ref FROM messages'):
                 item = GroupMessage.model_validate_json(row['payload'])
                 non_agent_or_abnormal = item.sender_kind != "agent" or item.status != "normal"
-                if non_agent_or_abnormal or not item.text or not item.text.strip() or item.attachment_refs:
+                if non_agent_or_abnormal or not item.text or not item.text.strip():
+                    continue
+                if item.attachment_refs:
                     continue
                 if row['source_ref'].startswith('delivery:') and item.sender_id in bot_senders:
                     receipts.append((row, item))
@@ -230,12 +232,11 @@ class ConversationArchive:
                         echoes.setdefault((item.sender_id, text_key), []).append((row, item))
             candidates, echo_counts = [], {}
             for row, receipt in receipts:
-                by_message_id = {
-                    pair[0]['message_id']: pair
-                    for text_key in _dingtalk_echo_keys(receipt.text, markdown=True)
-                    for pair in echoes.get((bot_senders[receipt.sender_id], text_key), ())
-                    if abs((pair[1].received_at - receipt.received_at).total_seconds()) <= 10
-                }
+                by_message_id = {}
+                for text_key in _dingtalk_echo_keys(receipt.text, markdown=True):
+                    for pair in echoes.get((bot_senders[receipt.sender_id], text_key), ()):
+                        if abs((pair[1].received_at - receipt.received_at).total_seconds()) <= 10:
+                            by_message_id[pair[0]['message_id']] = pair
                 matches = list(by_message_id.values())
                 candidates.append((row, receipt, matches))
                 for echo_row, _ in matches:
