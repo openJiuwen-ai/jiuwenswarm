@@ -298,6 +298,7 @@ def create_default_persistent_group_fanout(
         budgets,
         delivery_service=delivery_service,
         thinking_notice_sender=thinking_notice_sender,
+        schedules_enabled=False,
         approval_channels=frozenset({"feishu", "dingtalk", "welink"}),
     )
     if verify_membership is not None:

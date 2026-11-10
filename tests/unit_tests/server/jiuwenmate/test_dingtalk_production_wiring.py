@@ -253,7 +253,8 @@ async def test_history_plain_text_uses_existing_scheduler_and_bound_bot_delivery
 
 
 @pytest.mark.asyncio
-async def test_shared_history_creates_independent_requests_and_deliveries_for_both_employees(host):
+@pytest.mark.parametrize('canonical', [False, True])
+async def test_shared_history_creates_independent_requests_and_deliveries_for_both_employees(host, canonical):
     from jiuwenswarm.server.jiuwenmate.dingtalk_group_polling import DingTalkGroupPoller
 
     group = _known_history_group(host)
@@ -261,6 +262,9 @@ async def test_shared_history_creates_independent_requests_and_deliveries_for_bo
                   'robot_code': 'robot-learning'}
     host.config['channels']['dingtalk']['apps'].append(second_app)
     host.connections['agent-learning'] = _connection('agent-learning', 'dingtalk', 'app-learning')
+    if canonical:
+        host.connections.clear()
+        host.service.get_config = lambda namespace, agent: SimpleNamespace(agent_id=agent)
     host.service.get_colleague = lambda ns, agent: SimpleNamespace(enabled=True)
     host.manager.group_chats.observe_access(
         'local', 'agent-learning', group.group_chat_id, 'app-learning',
@@ -297,6 +301,75 @@ async def test_shared_history_creates_independent_requests_and_deliveries_for_bo
     assert len(host.contexts) == 2
     assert len(host.sent) == 2
     await poller.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('discovery_delay', [0, 120])
+async def test_first_group_discovery_dispatches_new_ordinary_messages_without_replaying_history(host, discovery_delay):
+    from jiuwenswarm.server.jiuwenmate.dingtalk_group_polling import DingTalkGroupPoller
+    host.connections.clear()
+    host.service.get_config = lambda ns, agent: SimpleNamespace(agent_id=agent)
+    host.service.get_colleague = lambda ns, agent: SimpleNamespace(enabled=True)
+    now = [NOW]
+    async def discover(scope, *, cursor=None):
+        now[0] += timedelta(seconds=discovery_delay)
+        return {
+            'readerKey': 'a' * 64, 'groups': [{'conversation_id': 'conversation-test', 'name': 'Discovered group'}],
+            'hasMore': False, 'nextCursor': None, 'failed': False,
+        }
+    host.manager.dingtalk_cli_runtime = SimpleNamespace(
+        group_history_identity=AsyncMock(return_value='a' * 64),
+        discover_groups=discover,
+        read_group_history=AsyncMock(return_value={
+            'readerKey': 'a' * 64, 'messages': [
+                _history_message(messageId='old-task', openMessageId='old-task', createTime=(NOW - timedelta(seconds=1)).isoformat()),
+                _history_message(messageId='new-task', openMessageId='new-task', createTime=(NOW + timedelta(seconds=1)).isoformat()),
+            ], 'complete': True, 'hasMore': False, 'botCodes': ['robot-test'],
+        }),
+    )
+    poller = DingTalkGroupPoller(host.manager, host.inbound, config_loader=lambda: host.config, clock=lambda: now[0])
+    assert not host.manager.group_chats.active_accesses('local', 'agent-dingtalk')
+    try:
+        assert await poller.poll_once() == 1
+        await settle(lambda: len(host.contexts) == 1 and len(host.sent) == 1)
+        group, = host.manager.group_chats.active_accesses('local', 'agent-dingtalk')
+        session = host.repository.find_session('local', 'agent-dingtalk', ConversationRef.group(group.group_id))
+        request, = host.repository.session_requests('local', session.session_id)
+        assert request.record.request_input.source.message_id == 'new-task'
+        assert host.sent[0]['robotCode'] == 'robot-test'
+        await poller.poll_once()
+        assert len(host.contexts) == 1 and len(host.sent) == 1
+    finally:
+        await poller.aclose()
+
+
+@pytest.mark.asyncio
+async def test_first_successful_dingtalk_authorization_starts_the_im_runtime_before_any_callback(host):
+    from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.gateway_adapter import AdapterRegistry, GatewayAdapter
+
+    started = asyncio.Event()
+    class AuthAdapter(GatewayAdapter):
+        methods = frozenset({ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS.value})
+        async def handle(self, request):
+            return AgentResponse(request_id=request.request_id, channel_id='web', ok=True,
+                                 payload={'dingtalk_auth': {'status': 'connected'}})
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._adapter_registry = AdapterRegistry()
+    server._adapter_registry.register(AuthAdapter())
+    async def start():
+        started.set()
+        return SimpleNamespace()
+    server._ensure_persistent_group_fanout = start
+    class Collector:
+        async def send(self, value):
+            pass
+    collector = Collector()
+    request = AgentRequest(request_id='first-auth', channel_id='web',
+                           req_method=ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS, params={})
+    assert await server._dispatch_gateway_adapter_request(collector, request, asyncio.Lock())
+    assert started.is_set(), 'A successful user authorization must start group discovery without an IM callback'
 
 
 @pytest.mark.asyncio
@@ -850,6 +923,8 @@ class _AgentServer:
             return SimpleNamespace(ok=True, payload={"agent_id": f"agent-{envelope.params['connection_key']}"})
         if envelope.method == ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS.value:
             return SimpleNamespace(ok=True, payload={"connections": self.connections})
+        if envelope.method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value:
+            return SimpleNamespace(ok=True, payload={"dingtalk_auth": {"status": "not_connected"}})
         return SimpleNamespace(ok=True, payload={"removed": True})
 
 
@@ -1037,7 +1112,66 @@ async def test_unbinding_deletes_only_that_jm_app_and_leaves_the_agent_to_agent_
     assert (await _call(web, "channel.dingtalk.unbind_agent", {"client_id": "ordinary"}))["ok"]
     assert [app["client_id"] for app in web.saved()["apps"]] == ["ordinary", "jm-b"]
     assert web.cm.configs["dingtalk"]["apps"] == web.saved()["apps"]
-    assert all(item.method == "agent.reload_config" for item in web.server.envelopes)
+    assert [(request.method, request.params) for request in web.server.envelopes if request.method.startswith('jiuwenmate.')] == [
+        (ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value,
+         {"agent_id": "agent-jm-a", "connection_key": "jm-a"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dingtalk_unbind_clears_private_login_before_removal_and_rebinding(web, tmp_path):
+    from jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider import LocalDingTalkCliRuntime
+    from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope
+
+    web.seed({"apps": [
+        {"client_id": "jm-a", "client_secret": "fake", "persistent_agent_id": "agent-jm-a"},
+        {"client_id": "jm-b", "client_secret": "fake", "persistent_agent_id": "agent-jm-b"},
+    ]})
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path / 'private-oauth', config_loader=lambda: {"channels": {"dingtalk": web.saved()}},
+    )
+    scope = DingTalkCliScope('local', 'agent-jm-a', app_id='jm-a')
+    other_scope = DingTalkCliScope('local', 'agent-jm-b', app_id='jm-b')
+    private = runtime._oauth_root(scope)
+    (private / 'private-account').write_text('fake-login', encoding='utf-8')
+    other = runtime._oauth_root(other_scope) / 'private-account'
+    other.write_text('other-fake-login', encoding='utf-8')
+    send = web.server.send_request
+    async def handle(envelope):
+        if envelope.method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value:
+            assert any(app['client_id'] == 'jm-a' for app in web.saved()['apps'])
+            assert envelope.params == {'agent_id': 'agent-jm-a', 'connection_key': 'jm-a'}
+            result = await runtime.dingtalk_auth_disconnect(scope)
+            return SimpleNamespace(ok=True, payload={'dingtalk_auth': result})
+        return await send(envelope)
+    web.server.send_request = handle
+    assert (await _call(web, 'channel.dingtalk.unbind_agent', {'client_id': 'jm-a'}))['ok']
+    assert not private.exists()
+    assert other.read_text(encoding='utf-8') == 'other-fake-login'
+    assert (await _call(web, 'channel.dingtalk.unbind_agent', {'client_id': 'jm-a'}))['ok']
+    assert (await _call(web, 'channel.dingtalk.bind_agent', {
+        'client_id': 'jm-a', 'client_secret': 'fake', 'config_id': 'colleague-a',
+    }))['ok']
+    assert not (runtime._oauth_root(scope) / 'private-account').exists()
+    assert (await runtime.dingtalk_auth_status(scope))['status'] == 'not_connected'
+
+
+@pytest.mark.parametrize('failure', ['unavailable', 'refused', 'not_cleared'])
+@pytest.mark.asyncio
+async def test_dingtalk_unbind_keeps_the_binding_when_authorization_cleanup_is_unconfirmed(web, failure):
+    web.seed({'apps': [{'client_id': 'jm-a', 'client_secret': 'fake', 'persistent_agent_id': 'agent-jm-a'}]})
+    if failure == 'unavailable':
+        web.server.running = False
+    elif failure == 'refused':
+        web.server.refuse = 'DINGTALK_CLI_AUTH_CLEANUP_FAILED'
+    else:
+        async def connected(envelope):
+            return SimpleNamespace(ok=True, payload={'dingtalk_auth': {'status': 'connected'}})
+        web.server.send_request = connected
+    result = await _call(web, 'channel.dingtalk.unbind_agent', {'client_id': 'jm-a'})
+    assert not result['ok']
+    assert [app['client_id'] for app in web.saved()['apps']] == ['jm-a']
+    assert web.cm.configs['dingtalk']['apps'][0]['persistent_agent_id'] == 'agent-jm-a'
 
 
 @pytest.mark.parametrize("mode", ["unbind", "purge"])
