@@ -196,6 +196,30 @@ def _result(kind: str, state: dict[str, Any], **fields: Any) -> dict[str, Any]:
         **fields,
         "state": state,
     }
+    if (
+        kind == "completed"
+        and fields.get("report_prepared") is True
+        and fields.get("report_delivered") is False
+        and state.get("requested_report_type") == "brief"
+        and state.get("conversation_id")
+    ):
+        report_files = fields.get("report_files", [])
+        paths = [
+            item["path"] for item in report_files
+            if isinstance(item, Mapping)
+            and isinstance(item.get("path"), str)
+            and item.get("mime_type") in {"text/html", "text/markdown"}
+        ]
+        if paths:
+            result["prepared_brief_report"] = {
+                "v": 1,
+                "report_type": "brief",
+                "report_delivered": False,
+                "report_id": state["conversation_id"],
+                "title": str(state.get("file_name") or "研究报告")[:200],
+                "upgrade_available": state.get("brief_upgrade_available") is True,
+                "paths": paths,
+            }
     windows = state.get("timing_windows")
     if isinstance(windows, list) and windows:
         result["timing_windows"] = windows
@@ -1126,6 +1150,7 @@ async def _handle_outcome(
             completed_updates.update(
                 report_files=outcome.get("report_files", []),
                 report_prepared=prepared_for_main_agent,
+                brief_upgrade_available=outcome.get("brief_upgrade_available") is True,
                 report_delivered=outcome.get("report_delivered") is True,
             )
         if html_style_status is not None:

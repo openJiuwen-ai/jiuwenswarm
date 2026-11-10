@@ -4292,8 +4292,9 @@ async def test_main_agent_prepared_report_completes_and_replays_without_claiming
     files = [{"path": "/workspace/report.html", "name": "report.html", "mime_type": "text/html"}]
     with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
         "status": "completed", "report_delivered": False, "report_prepared": True, "report_files": files,
+        "conversation_id": "brief-test", "brief_upgrade_available": True,
     })) as stream:
-        result, _ = await _invoke(task_mode="main_agent")
+        result, _ = await _invoke(task_mode="main_agent", report_type="brief")
         replay, _ = await _invoke(state=result["state"])
     assert result["kind"] == "completed"
     assert result["report_prepared"] is True
@@ -4301,6 +4302,11 @@ async def test_main_agent_prepared_report_completes_and_replays_without_claiming
     assert result["report_files"] == replay["report_files"] == files
     assert replay["report_prepared"] is True
     assert "未发送" in result["content"]
+    assert "brief_report" not in result
+    assert result["prepared_brief_report"] == replay["prepared_brief_report"]
+    assert result["prepared_brief_report"]["paths"] == ["/workspace/report.html"]
+    assert result["prepared_brief_report"]["report_delivered"] is False
+    assert result["prepared_brief_report"]["upgrade_available"] is True
     stream.assert_awaited_once()
 
 
