@@ -228,7 +228,8 @@ def active_skill_permissions(tmp_path, monkeypatch):
         "skill_authorization": {"enabled": True},
     }
     rail = SkillAuthorizationPermissionRail(config=baseline)
-    gate = SkillAuthorizationRail(engine=rail._engine, grant_store=store)
+    # 会话 publish 已停用：Skill overlay 在 _check_tool_permission 里临时 config=。
+    gate = SkillAuthorizationRail(permission_key=rail.permission_key, grant_store=store)
     rail.set_skill_scope_resolver(gate.resolve_scope)
     ctx = SimpleNamespace(session=SimpleNamespace(session_id="session-1"))
     return rail, ctx, store, manifest, baseline
@@ -238,20 +239,22 @@ def active_skill_permissions(tmp_path, monkeypatch):
 async def test_active_skill_overlay_survives_missing_task_context(active_skill_permissions):
     rail, ctx, _, _, baseline = active_skill_permissions
     original = copy.deepcopy(baseline)
-    rail._refresh_permissions_for_tool_call(ctx)
-    declared = await rail._engine.check_permission("get_current_user", {})
-    undeclared = await rail._engine.check_permission("write_file", {})
+    declared = await rail._check_tool_permission("get_current_user", {}, ctx)
+    undeclared = await rail._check_tool_permission("write_file", {}, ctx)
     assert declared.permission.value == "allow"
     assert undeclared.permission.value == "ask"
     assert baseline == original
     assert rail._static_config == original
 
 
-def test_permission_composition_reads_one_snapshot(active_skill_permissions):
+@pytest.mark.asyncio
+async def test_permission_composition_reads_one_snapshot(active_skill_permissions):
     rail, ctx, store, _, _ = active_skill_permissions
     with patch.object(store, "get_active", wraps=store.get_active) as read:
-        rail._refresh_permissions_for_tool_call(ctx)
-    read.assert_called_once_with("session-1", "main")
+        # Skill 临时 config 只在 _check_tool_permission 合成时读 grant。
+        assert rail.permission_key_for(ctx) == rail.permission_key
+        await rail._check_tool_permission("get_current_user", {}, ctx)
+    read.assert_called_with("session-1", "main")
 
 
 @pytest.mark.parametrize(
@@ -313,10 +316,8 @@ def test_gate_storage_failure_aborts_instead_of_skipping_authorization(
 @pytest.mark.asyncio
 async def test_missing_context_cannot_use_another_session_grant(active_skill_permissions):
     rail, ctx, _, _, _ = active_skill_permissions
-    rail._refresh_permissions_for_tool_call(ctx)
     ctx.session.session_id = "session-2"
-    rail._refresh_permissions_for_tool_call(ctx)
-    assert (await rail._engine.check_permission("get_current_user", {})).permission.value == "ask"
+    assert (await rail._check_tool_permission("get_current_user", {}, ctx)).permission.value == "ask"
 
 
 @pytest.mark.asyncio
@@ -324,11 +325,9 @@ async def test_missing_context_cannot_use_main_grant_for_child(active_skill_perm
     from jiuwenswarm.agents.harness.common.rails.skill_authorization_rail import SkillAuthorizationRail
 
     rail, ctx, store, _, _ = active_skill_permissions
-    rail._refresh_permissions_for_tool_call(ctx)
     child_gate = SkillAuthorizationRail(grant_store=store, agent_scope_id="child-1")
     rail.set_skill_scope_resolver(child_gate.resolve_scope)
-    rail._refresh_permissions_for_tool_call(ctx)
-    assert (await rail._engine.check_permission("get_current_user", {})).permission.value == "ask"
+    assert (await rail._check_tool_permission("get_current_user", {}, ctx)).permission.value == "ask"
 
 
 @pytest.mark.asyncio
@@ -337,32 +336,27 @@ async def test_missing_context_preserves_deny_and_revocation(active_skill_permis
     denied = copy.deepcopy(baseline)
     denied["tools"]["get_current_user"] = "deny"
     rail.update_config(denied)
-    rail._refresh_permissions_for_tool_call(ctx)
-    assert (await rail._engine.check_permission("get_current_user", {})).permission.value == "deny"
+    assert (await rail._check_tool_permission("get_current_user", {}, ctx)).permission.value == "deny"
 
     rail.update_config(baseline)
-    rail._refresh_permissions_for_tool_call(ctx)
-    assert (await rail._engine.check_permission("get_current_user", {})).permission.value == "allow"
+    assert (await rail._check_tool_permission("get_current_user", {}, ctx)).permission.value == "allow"
     store.invalidate_scope("session-1", "main", reason="skill_complete")
     store.revoke_grants("session-1", "main", skill_name=manifest.skill_name, reason="skill_complete")
-    rail._refresh_permissions_for_tool_call(ctx)
-    assert (await rail._engine.check_permission("get_current_user", {})).permission.value == "ask"
+    assert (await rail._check_tool_permission("get_current_user", {}, ctx)).permission.value == "ask"
 
 
 @pytest.mark.asyncio
 async def test_missing_session_or_unbound_resolver_keeps_baseline(active_skill_permissions):
     rail, ctx, _, _, _ = active_skill_permissions
     ctx.session = None
-    rail._refresh_permissions_for_tool_call(ctx)
-    assert (await rail._engine.check_permission("get_current_user", {})).permission.value == "ask"
+    assert (await rail._check_tool_permission("get_current_user", {}, ctx)).permission.value == "ask"
     del rail._skill_scope_resolver
     ctx.session = SimpleNamespace(session_id="session-1")
-    rail._refresh_permissions_for_tool_call(ctx)
-    assert (await rail._engine.check_permission("get_current_user", {})).permission.value == "ask"
+    assert (await rail._check_tool_permission("get_current_user", {}, ctx)).permission.value == "ask"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("session_id, expected", [("session-1", None), ("session-2", ("approve",))])
+@pytest.mark.parametrize("session_id, expected", [("session-1", None), ("session-2", None)])
 @pytest.mark.parametrize("overlay_permission", ["ask", "deny"])
 async def test_owner_allow_cannot_skip_active_skill_overlay(
     active_skill_permissions, monkeypatch, tmp_path, session_id, expected, overlay_permission,
@@ -384,6 +378,7 @@ async def test_owner_allow_cannot_skip_active_skill_overlay(
     )
     rail = build_permission_rail({})
     rail.set_skill_scope_resolver(original_rail._skill_scope_resolver)
+    rail.update_session_config("session-1", config)
     skill_dir = tmp_path / "permission-probe"
     (skill_dir / "skill_permissions.json").write_text(json.dumps({
         "risk": {"level": "low"},
@@ -399,28 +394,27 @@ async def test_owner_allow_cannot_skip_active_skill_overlay(
     ctx.session.session_id = session_id
     inp = PermissionSceneHookInput(
         ctx=ctx, tool_call=None, user_input=None,
-        normalized_tool_name="get_current_user", tool_args={}, engine=rail._engine,
+        normalized_tool_name="get_current_user", tool_args={}, permission_key=rail.permission_key,
     )
     token = TOOL_PERMISSION_CONTEXT.set(PermissionContext(channel_id="web", principal_user_id="test-owner"))
     try:
         assert await rail._host.permission_scene_hook(inp) == expected
-        rail._refresh_permissions_for_tool_call(ctx)
-        permission = (await rail._engine.check_permission("get_current_user", {})).permission.value
+        permission = (await rail._check_tool_permission("get_current_user", {}, ctx)).permission.value
         assert permission == (overlay_permission if session_id == "session-1" else "allow")
     finally:
         TOOL_PERMISSION_CONTEXT.reset(token)
 
 
 @pytest.mark.asyncio
-async def test_disabled_policy_does_not_apply_persisted_grant(active_skill_permissions, monkeypatch):
+async def test_disabled_policy_does_not_apply_persisted_grant(active_skill_permissions):
     rail, ctx, _, _, baseline = active_skill_permissions
     disabled = copy.deepcopy(baseline)
-    disabled['skill_authorization'] = {'enabled': False}
-    monkeypatch.setattr(rail, '_get_permissions_snapshot', lambda context: disabled)
-    # Parent refresh must also consume the disabled baseline snapshot.
-    monkeypatch.setattr(type(rail).__mro__[1], '_get_permissions_snapshot', lambda self, context: disabled)
-    rail._refresh_permissions_for_tool_call(ctx)
-    assert (await rail._engine.check_permission('get_current_user', {})).permission.value == 'ask'
+    disabled["skill_authorization"] = {"enabled": False}
+    # Config update is explicit (1B); check path must not pull snapshots.
+    rail.update_config(disabled)
+    assert (
+        await rail._check_tool_permission("get_current_user", {}, ctx)
+    ).permission.value == "ask"
 
 
 @pytest.mark.asyncio

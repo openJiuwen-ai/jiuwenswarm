@@ -66,6 +66,8 @@ from jiuwenswarm.common.config import (
     update_proactive_recommendation_in_config,
     update_trajectory_ui_in_config,
     update_diagnosis_in_config,
+    get_sandbox_runtime,
+    update_sandbox_runtime,
 )
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.request_identity import (
@@ -1008,6 +1010,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "kv_cache_release_enabled",
     "kv_cache_affinity_enabled",
     "permissions_enabled",
+    "sandbox_enabled",
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
@@ -2379,6 +2382,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             perm_cfg = raw.get("permissions") or {}
             payload["permissions_enabled"] = "true" if perm_cfg.get("enabled", False) else "false"
+            payload["sandbox_enabled"] = (
+                "true" if get_sandbox_runtime().get("enabled") else "false"
+            )
             # skill_create: tip 优先，fallback to config.yaml
             evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
             payload["evolution_enabled"] = "true" if get_evolution_enabled(raw) else "false"
@@ -2417,6 +2423,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("kv_cache_release_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
+            payload.setdefault("sandbox_enabled", "false")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("trajectory_ui_enabled", "false")
             payload.setdefault("diagnosis_enabled", "false")
@@ -2619,6 +2626,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_kv_cache_affinity_enabled_in_config(parsed)
                 elif param_key == "permissions_enabled":
                     await update_permissions_enabled_in_config(parsed)
+                elif param_key == "sandbox_enabled":
+                    update_sandbox_runtime({"enabled": parsed})
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
                 elif param_key == "trajectory_ui_enabled":
@@ -6416,6 +6425,34 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             logger.warning("[locale.set_conf] 写回 config.yaml 失败: %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
+    async def _sensitive_mask_get_conf(ws, req_id, params, session_id):
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import get_sensitive_mask_config
+
+        try:
+            await channel.send_response(ws, req_id, ok=True, payload=get_sensitive_mask_config())
+        except Exception as e:
+            logger.exception("[sensitive_mask.get_conf] %s", e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
+    async def _sensitive_mask_set_conf(ws, req_id, params, session_id):
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import set_sensitive_mask_config
+
+        if not isinstance(params, dict):
+            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
+            return
+        rules = params.get("rules")
+        if not isinstance(rules, list):
+            await channel.send_response(ws, req_id, ok=False, error="rules must be a list", code="BAD_REQUEST")
+            return
+        try:
+            payload = set_sensitive_mask_config(bool(params.get("enabled")), rules)
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except (TypeError, ValueError) as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+        except Exception as e:
+            logger.warning("[sensitive_mask.set_conf] 写回 config.yaml 失败: %s", e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
     async def _heartbeat_get_conf(ws, req_id, params, session_id):
         """返回当前心跳配置（every / target / active_hours）。"""
         hb = _resolve(heartbeat_service)
@@ -7562,6 +7599,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("history.get", _history_get)
     channel.register_method("locale.get_conf", _locale_get_conf)
     channel.register_method("locale.set_conf", _locale_set_conf)
+    channel.register_method("sensitive_mask.get_conf", _sensitive_mask_get_conf)
+    channel.register_method("sensitive_mask.set_conf", _sensitive_mask_set_conf)
     channel.register_method("updater.get_status", _updater_get_status)
     channel.register_method("updater.check", _updater_check)
     channel.register_method("updater.download", _updater_download)

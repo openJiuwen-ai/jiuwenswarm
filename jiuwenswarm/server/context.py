@@ -32,6 +32,7 @@ SERVICE_MEMBERS: dict[str, str] = {
     "scheduler_service": "_scheduler_service",
     "scheduler_agent": "_scheduler_agent",
     "jiuwenbox_runner": "_jiuwenbox_runner",
+    "sync_sandbox_runtime": "_sync_sandbox_runtime",
     "proactive_engine": "_proactive_engine",
     "model_cache": "_model_cache",
     "default_model": "_default_model",
