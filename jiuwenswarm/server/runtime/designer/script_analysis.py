@@ -1756,7 +1756,8 @@ async def analyze_creative_brief(
                     '"blocking":{"landmark":"...","positions":[{"character_id":"char_1",'
                     '"zone":"center","facing":"...","looks_at":"char_2"}]},'
                     '"clip_prompt":"...","timeline":"0-5s",'
-                    '"crowd_spec":{"present":true,"density":"sparse","placement":"background"}}]}'
+                    '"crowd_spec":{"present":true,"density":"sparse","placement":"background"}}],'
+                    '"scenes":[{"id":"set_1","name":"2-6 word place label","description":"..."}]}'
                 )
                 payload["retry"] = True
             sys_msg = sys_msg + language_rules

@@ -1487,7 +1487,7 @@ def build_smart_video_graph(
         first_of_setting = int(shot_ord_by_setting.get(setting_id) or 0) == 0
         layout_bits = (
             f"Reference shot, setting {setting_id}: character sheets {solo_ref_list} "
-            f"for {cast_who}, then scene specs {scene_nid or 'scene'} as the room. "
+            f"for {cast_who}, then scene specs {scene_nid or 'scene'} as the environment. "
             "Place those people into that scene for THIS storyboard shot. "
             "The image-number binding is appended to the video call by the system. "
             "Keep the film STYLE LOCK. "

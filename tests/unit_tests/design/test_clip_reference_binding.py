@@ -254,3 +254,25 @@ def test_scene_plate_without_place_raises() -> None:
 
     with pytest.raises(ValueError, match="no place"):
         compose_scene_specs_prompt(cfg={"role": "scene"}, seed="")
+
+
+@pytest.mark.asyncio
+async def test_analysis_retry_system_message_shows_the_scenes_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.designer import model_tools, script_analysis
+    from jiuwenswarm.server.runtime.designer.model_tools import DesignerLlmError
+
+    systems: list[str] = []
+
+    async def fake_model_call(**kwargs: object) -> dict[str, object]:
+        systems.append(str(kwargs.get("system") or ""))
+        return {"ok": True, "text": "not a json object"}
+
+    monkeypatch.setattr(model_tools, "call_model_tool", fake_model_call)
+
+    with pytest.raises(DesignerLlmError):
+        await script_analysis.analyze_creative_brief("Ada reads in a library.", timeout_sec=5)
+
+    assert len(systems) == 2
+    assert '"scenes"' in systems[1]

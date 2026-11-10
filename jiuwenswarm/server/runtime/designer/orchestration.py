@@ -2656,8 +2656,8 @@ class Director:
                     prompt = (
                         prompt
                         + "\nCHARACTER CONSISTENCY LOCK: animate ONLY on-screen people from "
-                        "character specs bound as character1/character2… (attach order). "
-                        "The LAST reference is the Scene specs (environment) — not a person. "
+                        "the attached character spec sheets (identity references). "
+                        "The LAST attached reference is the Scene specs (environment) — not a person. "
                         f"Keep faces, body types, ages, and costumes"
                         f"{(' for ' + cast_who) if cast_who else ''}. "
                         "Do not recast, redesign clothing, or invent unlabeled extras."

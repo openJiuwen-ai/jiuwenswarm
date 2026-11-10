@@ -103,7 +103,7 @@ def hollywood_leaf_instructions(role: str) -> str:
             shared
             + "ROLE=scene specs. Write ONE positive Qwen-ready environment prompt "
             "from the locks (place, lighting/time-of-day, style, props). "
-            "Furniture, walls, windows, light, and props as a clear empty room. "
+            "Show the place itself — structures, landmarks, light, and props — empty of people. "
             "No LOCK banners, no forbid lists, no examples. "
             "Then call_image_model with that prompt only. Finish with designer_node_complete "
             "preferring the PNG uri (text notes are optional debug only)."
