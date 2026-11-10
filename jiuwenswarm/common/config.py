@@ -338,10 +338,9 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 
 
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
-    """Return whether both Symphony and its evolution switch are enabled."""
+    """Read the persisted Discover SkillPack setting without deployment overrides."""
 
     from jiuwenswarm.common.symphony_config import (
-        resolve_symphony_enabled,
         resolve_symphony_evolution_enabled,
     )
 
@@ -358,10 +357,7 @@ def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
     if flow_enabled is None:
         flow_enabled = evolution.get("enabled")
-    return (
-        resolve_symphony_enabled(symphony.get("enabled"))
-        and resolve_symphony_evolution_enabled(flow_enabled)
-    )
+    return resolve_symphony_evolution_enabled(flow_enabled)
 
 
 def coerce_config_bool(value: Any, default: bool) -> bool:
