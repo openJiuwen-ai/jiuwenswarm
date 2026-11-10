@@ -603,9 +603,11 @@ class RuntimeSupervisor:
                 # Complete requests only after publishing the recovery decision.
                 # Retirement can take seconds when a blocked loop ignores SIGTERM.
                 await self._fail_pending("runtime worker closed")
-                if self._ipc_mode == FRONT_LOOPBACK:
-                    if retired_conn is not None:
-                        await retired_conn.close()
+                # A failed session owns these tasks and this transport even when
+                # its resident Worker remains alive or the restart budget is gone.
+                await self._cancel_side_tasks()
+                if retired_conn is not None:
+                    await retired_conn.close()
                 if unhealthy_reason or self._ipc_mode == FRONT_LOOPBACK:
                     try:
                         await self._retire_unhealthy_worker()
@@ -1256,7 +1258,12 @@ class RuntimeSupervisor:
             self._readiness.mark_agent_ready()
             logger.info("[Supervisor] runtime worker agent_ready pid=%s", self._worker_pid)
         elif state == ReadinessState.DEGRADED.value:
-            if self._readiness.snapshot()["agent_ready"] or message.get("agent_ready") is True:
+            if message.get("agent_ready") is not False and (
+                self._readiness.snapshot()["agent_ready"] or message.get("agent_ready") is True
+            ):
+                # Optional failures do not make an execution-ready reconnect fail.
+                self._fatal = False
+                self._restart_count = 0
                 if not self._readiness.snapshot()["agent_ready"]:
                     self._readiness.mark_agent_ready()
                 self._readiness.mark_degraded()
