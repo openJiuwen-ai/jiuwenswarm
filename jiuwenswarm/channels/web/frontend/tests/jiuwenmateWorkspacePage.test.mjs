@@ -48,7 +48,7 @@ const webResult = {
 };
 
 /** Renders the real page with a recording chat API and timers the test drives itself. */
-async function renderWorkspace() {
+async function renderWorkspace({ withChannels = false } = {}) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
   const previous = {
     window: globalThis.window,
@@ -58,14 +58,27 @@ async function renderWorkspace() {
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  const ticks = [];
-  dom.window.setInterval = (callback) => {
-    ticks.push(callback);
-    return ticks.length;
+  const ticks = new Map();
+  let nextTimerId = 0;
+  dom.window.setInterval = (callback, delay) => {
+    const id = ++nextTimerId;
+    ticks.set(id, { callback, delay });
+    return id;
   };
-  dom.window.clearInterval = () => undefined;
+  dom.window.clearInterval = (id) => ticks.delete(id);
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-  const state = { webConversations: [] };
+  const state = { webConversations: [], channels: [], channelCalls: [], channelFailure: false };
+  Object.defineProperty(dom.window.document, 'visibilityState', { configurable: true, get: () => state.hidden ? 'hidden' : 'visible' });
+  const channelApi = {
+    listChannels: async (agentId) => {
+      state.channelCalls.push(agentId);
+      if (state.channelGate) await state.channelGate;
+      if (state.channelFailure === true || state.channelFailure === agentId) throw new Error('Temporary channel failure');
+      return state.channelsByAgent?.[agentId] ?? (agentId === 'config-web' ? state.channels : []);
+    },
+    channelMessages: async () => ({ messages: [], nextCursor: null }),
+    channelTrace: async () => ({ rows: [], startedAt: '' }),
+  };
   const calls = [];
   const chat = {
     listConversations: async (agentId) => {
@@ -107,6 +120,7 @@ async function renderWorkspace() {
       colleagues: [colleague],
       selectedColleagueId: colleague.id,
       chat,
+      channelApi: withChannels ? channelApi : undefined,
       connectionEpoch,
       onSelectColleague: () => undefined,
       onCreateSchedule: () => undefined,
@@ -123,6 +137,20 @@ async function renderWorkspace() {
     container,
     select,
     flush,
+    timers: ticks,
+    async management() {
+      await act(async () => container.querySelector('[data-testid="jiuwenmate-open-management-panel"]').click());
+      await flush();
+    },
+    async focus() {
+      await act(async () => dom.window.dispatchEvent(new dom.window.Event('focus')));
+      await flush();
+    },
+    async visibility(hidden) {
+      state.hidden = hidden;
+      await act(async () => dom.window.document.dispatchEvent(new dom.window.Event('visibilitychange')));
+      await flush();
+    },
     async reconnect() {
       connectionEpoch += 1;
       await act(async () => render());
@@ -138,7 +166,7 @@ async function renderWorkspace() {
     /** One round of the page's two-second poll. */
     async poll() {
       await act(async () => {
-        for (const tick of ticks) tick();
+        for (const { callback } of ticks.values()) callback();
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
       await flush();
@@ -197,6 +225,123 @@ test('a Web result found while an IM workspace is chosen is offered, and message
   } finally {
     await page.close();
   }
+});
+
+const joinedGroup = { id: 'group-new', platform: 'feishu', name: 'New Feishu group', messageCount: 0 };
+
+test('joining a group updates an open channel directory without remounting the workspace', async () => {
+  const page = await renderWorkspace({ withChannels: true });
+  try {
+    await page.management();
+    page.state.channels = [joinedGroup];
+    await page.poll();
+    const panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
+    assert.ok(panel.textContent.includes(joinedGroup.name));
+  } finally { await page.close(); }
+});
+
+test('opening the channel panel catches up immediately and a closed panel does not poll', async () => {
+  const page = await renderWorkspace({ withChannels: true });
+  try {
+    page.state.channelCalls.length = 0;
+    await page.poll();
+    assert.equal(page.state.channelCalls.length, 0);
+    page.state.channels = [joinedGroup];
+    await page.management();
+    assert.ok(page.state.channelCalls.length > 0);
+    assert.ok(page.container.querySelector('[data-testid="jiuwenmate-management-panel"]').textContent.includes(joinedGroup.name));
+    await page.management();
+    page.state.channelCalls.length = 0;
+    await page.poll();
+    assert.equal(page.state.channelCalls.length, 0);
+  } finally { await page.close(); }
+});
+
+test('channel refresh skips hidden pages and catches up on visibility, focus and reconnect', async () => {
+  const page = await renderWorkspace({ withChannels: true });
+  try {
+    await page.management();
+    await page.visibility(true);
+    page.state.channelCalls.length = 0;
+    await page.poll();
+    assert.equal(page.state.channelCalls.length, 0);
+    page.state.channels = [joinedGroup];
+    await page.visibility(false);
+    assert.ok(page.state.channelCalls.length > 0);
+    page.state.channelCalls.length = 0;
+    await page.focus();
+    assert.ok(page.state.channelCalls.length > 0);
+    page.state.channelCalls.length = 0;
+    await page.reconnect();
+    assert.ok(page.state.channelCalls.length > 0);
+  } finally { await page.close(); }
+});
+
+test('channel polling waits for its previous batch instead of stacking requests', async () => {
+  const page = await renderWorkspace({ withChannels: true });
+  let release;
+  try {
+    await page.management();
+    page.state.channelCalls.length = 0;
+    page.state.channelGate = new Promise((resolve) => { release = resolve; });
+    await page.poll();
+    const firstBatch = page.state.channelCalls.length;
+    assert.ok(firstBatch > 0);
+    await page.poll(); await page.focus();
+    assert.equal(page.state.channelCalls.length, firstBatch);
+  } finally {
+    release?.(); page.state.channelGate = null;
+    await page.flush(); await page.close();
+  }
+});
+
+test('failed channel refresh retains existing groups and successful refresh applies renames and leaves', async () => {
+  const page = await renderWorkspace({ withChannels: true });
+  try {
+    page.state.channels = [joinedGroup];
+    await page.management();
+    page.state.channelFailure = true;
+    await page.poll();
+    let panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
+    assert.ok(panel.textContent.includes(joinedGroup.name));
+    page.state.channelFailure = false;
+    page.state.channels = [{ ...joinedGroup, name: 'Renamed Feishu group' }];
+    await page.poll();
+    panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
+    assert.ok(panel.textContent.includes('Renamed Feishu group'));
+    page.state.channels = [];
+    await page.poll();
+    assert.ok(!panel.textContent.includes('Renamed Feishu group'));
+  } finally { await page.close(); }
+});
+
+test('a failed connection keeps its known groups while other connections refresh', async () => {
+  const page = await renderWorkspace({ withChannels: true });
+  try {
+    page.state.channelsByAgent = { 'runtime-feishu': [joinedGroup] };
+    await page.management();
+    page.state.channelFailure = 'runtime-feishu';
+    page.state.channelsByAgent['config-web'] = [{ ...joinedGroup, id: 'other-group', name: 'Another group' }];
+    await page.poll();
+    const panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
+    assert.ok(panel.textContent.includes(joinedGroup.name));
+    assert.ok(panel.textContent.includes('Another group'));
+  } finally { await page.close(); }
+});
+
+test('the channel timer runs every ten seconds only while needed and is cleaned up on unmount', async () => {
+  const page = await renderWorkspace({ withChannels: true });
+  try {
+    const channelTimers = () => [...page.timers.values()].filter(({ delay }) => delay === 10_000);
+    assert.equal(channelTimers().length, 0);
+    await page.management();
+    assert.equal(channelTimers().length, 1);
+    await page.management();
+    assert.equal(channelTimers().length, 0);
+    await page.management();
+    assert.equal(channelTimers().length, 1);
+  } finally { await page.close(); }
+  assert.equal(page.timers.size, 0);
 });
 
 test('in the Web workspace a new Web result still opens by itself', async () => {

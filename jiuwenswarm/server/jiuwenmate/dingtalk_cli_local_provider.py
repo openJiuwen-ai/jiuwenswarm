@@ -874,6 +874,47 @@ class LocalDingTalkCliRuntime:
             raise PersistentAgentError(message, code=code)
         return payload
 
+    async def inspect_group_membership(self, scope: DingTalkCliScope, *, conversation_id: str) -> dict[str, str]:
+        """Read Bot codes using this employee's private OAuth profile, never group messages."""
+        if not isinstance(conversation_id, str) or not conversation_id or len(conversation_id) > 512:
+            return {"status": "unknown"}
+        if any(char.isspace() or ord(char) < 32 for char in conversation_id):
+            return {"status": "unknown"}
+        config = self._config()
+        channels = config.get("channels", {}) if isinstance(config, Mapping) else {}
+        apps = []
+        for app in dingtalk_apps(channels.get("dingtalk")):
+            if not app["enabled"] or app["persistent_agent_id"] != scope.agent_id:
+                continue
+            if scope.app_id in (None, app["client_id"]):
+                apps.append(app)
+        if len(apps) != 1:
+            return {"status": "unknown"}
+        if self._dws_path is None and self._cached_dws_binary() is None:
+            # Background discovery must not install packages or contend for the npx cache.
+            return {"status": "unknown"}
+        auth = await self.dingtalk_auth_status(scope)
+        profile = auth.get("_profile")
+        if auth.get("status") != "connected" or not isinstance(profile, str) or not profile:
+            return {"status": "unknown"}
+        response = await self._execute_oauth_command(
+            scope, ["chat", "group", "bots", "--group", conversation_id], profile,
+        )
+        result = response.get("result")
+        bots = result.get("bots") if isinstance(result, dict) else None
+        if not isinstance(bots, list) or result.get("hasMore") is True:
+            return {"status": "unknown"}
+        codes = []
+        for bot in bots:
+            code = bot.get("robotCode") if isinstance(bot, dict) else None
+            if not isinstance(code, str) or not code or len(code) > 512:
+                return {"status": "unknown"}
+            if any(char.isspace() or ord(char) < 32 for char in code):
+                return {"status": "unknown"}
+            codes.append(code)
+        robot_code = apps[0]["robot_code"] or apps[0]["client_id"]
+        return {"status": "active" if robot_code in codes else "left"}
+
     async def group_history_identity(self, scope: DingTalkCliScope) -> str | None:
         """Identify the isolated authorized reader without exposing its profile."""
         if not self.is_available(scope):
