@@ -432,6 +432,7 @@ def test_terminal_completed_updates_tool_msg_to_completion_content():
     assert "已完成" in ctx.inputs.tool_msg.content
     assert "暂停" not in ctx.inputs.tool_msg.content
     assert len(ctx.force_finish_requests) == 1
+    assert "wf_done" in sess.get_state(rail.DEEPRESEARCH_DELIVERY_INDEX_KEY)
 
 
 def test_terminal_completed_preserves_structured_tool_result_for_usage_accounting():
@@ -493,3 +494,49 @@ async def test_main_agent_is_not_force_finished_by_standalone_delivery_record():
         assert ctx.inputs.tool_result is None
     finally:
         await instance.after_tool_call(ctx)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivered", [False, True], ids=["prepared-only", "delivered"])
+async def test_standalone_retry_only_short_circuits_after_main_agent_report_delivery(delivered):
+    session = _fake_session()
+    args = {"query": "研究红果 App", "file_name": "红果报告", "report_type": "brief"}
+    first = _build_callback_ctx(session, tool_call_id="main", args={**args, "task_mode": "main_agent"})
+    files = [{"path": "/workspace/report.html"}]
+    state = {
+        "phase": "completed",
+        "task_mode": "main_agent",
+        "query": args["query"],
+        "file_name": args["file_name"],
+        "requested_report_type": args["report_type"],
+        "conversation_id": "report-cid",
+        "report_files": files,
+        "report_prepared": not delivered,
+        "report_delivered": delivered,
+    }
+    first.inputs.tool_result = {
+        "schema_version": rail.EXECUTION_SCHEMA,
+        "kind": "completed",
+        "state": state,
+        "content": "研究已完成",
+        "report_files": files,
+        "report_prepared": not delivered,
+        "report_delivered": delivered,
+    }
+    instance = rail.DeepResearchExecutionRail(model_provider=lambda: None)
+    await instance.after_tool_call(first)
+    assert first.force_finish_requests == []
+    assert session.get_state(rail.DEEPRESEARCH_EXECUTION_STATE_KEY)["main"] == state
+
+    retry = _build_callback_ctx(session, tool_call_id="standalone", args=args)
+    try:
+        await instance.before_tool_call(retry)
+        assert bool(retry.force_finish_requests) is delivered
+        if delivered:
+            assert retry.inputs.tool_result["kind"] == "completed"
+        else:
+            assert retry.inputs.tool_result is None
+    finally:
+        await instance.after_tool_call(retry)
+
+    assert ("main" in session.get_state(rail.DEEPRESEARCH_DELIVERY_INDEX_KEY)) is delivered

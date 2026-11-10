@@ -12,6 +12,7 @@ import logging
 import re
 import time
 import uuid
+from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Literal, Mapping
@@ -1444,6 +1445,14 @@ async def _run_sdk_step(
 _material_execution_locks = weakref.WeakValueDictionary()
 
 
+def _validated_task_mode(state: Mapping[str, Any], requested_mode: str) -> str:
+    # HITL resumes and stopped claims retain the initial ownership decision.
+    mode = state.get("task_mode", requested_mode)
+    if mode not in {"standalone", "main_agent"}:
+        raise ValueError("invalid DeepResearch task_mode")
+    return mode
+
+
 @tool(
     name="deepresearch_execute",
     description=(
@@ -1485,40 +1494,34 @@ async def deepresearch_execute(
     task_mode: Literal["standalone", "main_agent"] = "standalone",
 ) -> dict[str, Any]:
     context = _execution_context.get()
-    # HITL resumes and stopped claims retain the initial ownership decision.
-    mode = (context.state or {}).get("task_mode", task_mode) if context else task_mode
-    if mode not in {"standalone", "main_agent"}:
-        raise ValueError("invalid DeepResearch task_mode")
-    plan_token = _deepresearch_main_agent_plan_ctx.set(mode == "main_agent")
-    owner = str((context.state or {}).get("parent_task_id") or context.parent_task_id).strip() if context else ""
-    scope_token = _deepresearch_process_scope_ctx.set(
-        (owner, context.tool_call_id) if mode == "main_agent" and owner and context else None
-    )
-    try:
-        context = _execution_context.get()
-        if context is None or not (context.materials_context or (context.state or {}).get("materials_prepared")):
-            return await _execute_workflow(
-                query, file_name, report_type, conversation_id,
-                upgrade_from_brief=upgrade_from_brief,
-            )
-        key = (str((context.materials_context or {}).get("scope") or ""), context.tool_call_id)
-        lock = _material_execution_locks.setdefault(key, asyncio.Lock())
-        if lock.locked():
+    state = (context.state or {}) if context is not None else {}
+    async with AsyncExitStack() as stack:
+        if context is not None and (context.materials_context or state.get("materials_prepared")):
+            key = (str((context.materials_context or {}).get("scope") or ""), context.tool_call_id)
+            lock = _material_execution_locks.setdefault(key, asyncio.Lock())
+            if lock.locked():
+                _validated_task_mode(state, task_mode)
+                latest = context.load_state() if context.load_state else context.state
+                return _result("in_progress", dict(latest or {}), error_code="execution_uncertain")
+            await stack.enter_async_context(lock)
             latest = context.load_state() if context.load_state else context.state
-            return _result("in_progress", dict(latest or {}), error_code="execution_uncertain")
-        async with lock:
-            latest = context.load_state() if context.load_state else context.state
-            token = _execution_context.set(replace(context, state=latest))
-            try:
-                return await _execute_workflow(
-                    query, file_name, report_type, conversation_id,
-                    upgrade_from_brief=upgrade_from_brief,
-                )
-            finally:
-                _execution_context.reset(token)
-    finally:
-        _deepresearch_process_scope_ctx.reset(scope_token)
-        _deepresearch_main_agent_plan_ctx.reset(plan_token)
+            context = replace(context, state=latest)
+            context_token = _execution_context.set(context)
+            stack.callback(_execution_context.reset, context_token)
+            state = latest or {}
+
+        # 交付模式和进度归属须与工作流读取同一份状态快照。
+        main_agent = _validated_task_mode(state, task_mode) == "main_agent"
+        owner = str(state.get("parent_task_id") or context.parent_task_id).strip() if context else ""
+        scope = (owner, context.tool_call_id) if main_agent and owner and context else None
+        plan_token = _deepresearch_main_agent_plan_ctx.set(main_agent)
+        stack.callback(_deepresearch_main_agent_plan_ctx.reset, plan_token)
+        scope_token = _deepresearch_process_scope_ctx.set(scope)
+        stack.callback(_deepresearch_process_scope_ctx.reset, scope_token)
+        return await _execute_workflow(
+            query, file_name, report_type, conversation_id,
+            upgrade_from_brief=upgrade_from_brief,
+        )
 
 
 async def _execute_workflow(

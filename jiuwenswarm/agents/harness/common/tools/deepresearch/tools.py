@@ -897,21 +897,29 @@ def _encode_deepresearch_config(
         payload, ensure_ascii=False, separators=(",", ":"),
     ).encode("utf-8") + b"\n"
     error = None
-    if len(frame) > DEEPRESEARCH_CONFIG_MAX_BYTES:
+    frame_limit = DEEPRESEARCH_CONFIG_MAX_BYTES
+    if len(frame) > frame_limit:
         error = "DeepResearch config frame exceeds 64 KiB"
     elif request_query is not None:
         if not isinstance(request_query, str) or not request_query.strip():
             raise ValueError("DeepResearch request query must be nonempty text")
         payload["request_query"] = request_query
         frame = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
-        if len(frame) > DEEPRESEARCH_QUERY_FRAME_MAX_BYTES:
+        frame_limit = DEEPRESEARCH_QUERY_FRAME_MAX_BYTES
+        if len(frame) > frame_limit:
             error = "DeepResearch query frame exceeds 1 MiB"
     if error is None:
         return frame
     if "LLM_CUSTOM_HEADERS" in config:
         required_config = dict(config)
         required_config.pop("LLM_CUSTOM_HEADERS")
-        return _encode_deepresearch_config(required_config, request_query=request_query)
+        fallback_frame = _encode_deepresearch_config(required_config, request_query=request_query)
+        logger.warning(
+            "[deepresearch_stream] 配置帧超限，已省略可选 LLM_CUSTOM_HEADERS "
+            "reason=%s size_bytes=%d limit_bytes=%d",
+            error, len(frame), frame_limit,
+        )
+        return fallback_frame
     raise ValueError(error)
 
 
@@ -4455,9 +4463,15 @@ async def _write_native_html_artifacts(
             "response_content": markdown,
             "response_content_type": "text/markdown",
         }
-        artifacts["md"] = await asyncio.to_thread(
-            _write_report_markdown, markdown_result, file_name, conversation_id
-        )
+        try:
+            artifacts["md"] = await asyncio.to_thread(
+                _write_report_markdown, markdown_result, file_name, conversation_id
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "[deepresearch_stream] Markdown 副产物写入失败，保留原生 HTML type=%s",
+                type(exc).__name__,
+            )
     return artifacts
 
 

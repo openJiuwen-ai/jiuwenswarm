@@ -106,6 +106,7 @@ async def _invoke(
     mcp_servers=None,
     task_mode=None,
     parent_task_id="",
+    load_state=None,
 ):
     saved: list[dict] = []
     token = de.bind_deepresearch_execution_context(
@@ -119,6 +120,7 @@ async def _invoke(
         deepresearch_followup=deepresearch_followup,
         materials_context=materials_context,
         mcp_servers=mcp_servers,
+        load_state=load_state,
     )
     try:
         result = await de.deepresearch_execute._func(
@@ -4245,6 +4247,43 @@ async def test_main_agent_process_owner_is_persisted_and_not_rebound_on_resume()
         state = {**result["state"], "phase": "wait_outline", "outline_presented": True}
         await _invoke(state=state, parent_task_id="todo:word", user_input={"status": "answered", "answers": [{"selected_options": ["确认大纲，继续研究"]}]})
     assert scopes == [("todo:research", "call-1"), ("todo:research", "call-1")]
+    assert dt._deepresearch_process_scope_ctx.get() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound_state", [{}, {"task_mode": "main_agent"}])
+async def test_material_resume_uses_mode_and_owner_from_reloaded_state(bound_state):
+    latest = {
+        "phase": "wait_outline",
+        "task_mode": "main_agent",
+        "parent_task_id": "todo:research",
+        "query": "q",
+        "conversation_id": "C1",
+        "materials_prepared": True,
+    }
+    files = [{"path": "/workspace/report.md"}]
+    load_state = Mock(return_value=latest)
+
+    async def stream(**kwargs):
+        assert kwargs["action"] == "resume"
+        assert dt._deepresearch_main_agent_plan_ctx.get() is True
+        assert dt._deepresearch_process_scope_ctx.get() == ("todo:research", "call-1")
+        return {"status": "completed", **dt._report_completion_fields(files)}
+
+    with patch.object(de, "_call_deepresearch_stream_impl", new=stream):
+        result, _ = await _invoke(
+            state=bound_state,
+            load_state=load_state,
+            parent_task_id="todo:word",
+            materials_context={"scope": "session-A"},
+            user_input={"status": "skipped", "answers": []},
+        )
+
+    load_state.assert_called_once_with()
+    assert result["kind"] == "completed"
+    assert result["report_files"] == files
+    assert result["report_delivered"] is False
+    assert dt._deepresearch_main_agent_plan_ctx.get() is False
     assert dt._deepresearch_process_scope_ctx.get() is None
 
 

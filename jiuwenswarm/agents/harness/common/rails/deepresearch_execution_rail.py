@@ -727,10 +727,13 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 )
                 return
 
-            # 幂等守卫：completed 终态在清理 state 前记录交付索引，供下一轮
-            # 同主题×同 file_name 调用 before_tool_call 短路返回「已交付」，
-            # 阻止深度研究报告交付后再次对话重复执行（issue #5131）。
-            if payload.get("kind") == "completed" and isinstance(state, Mapping):
+            # 仅记录已交付报告，供下一轮同主题×同 file_name 调用去重（issue #5131）。
+            # standalone 的 completed 结果可以省略 report_delivered，因为已在工具内确认交付。
+            if (
+                payload.get("kind") == "completed"
+                and isinstance(state, Mapping)
+                and payload.get("report_delivered", state.get("task_mode") != "main_agent") is True
+            ):
                 _record_delivery(
                     ctx.session,
                     workflow_id,

@@ -517,7 +517,7 @@ async def test_stream_forwards_model_http_headers_in_config_frame_only(action, m
 
 
 @pytest.mark.parametrize("with_query", [False, True])
-def test_optional_headers_do_not_overflow_stdin_frame(with_query):
+def test_optional_headers_do_not_overflow_stdin_frame(with_query, caplog):
     query = None
     config = _valid_config()
     if with_query:
@@ -525,8 +525,26 @@ def test_optional_headers_do_not_overflow_stdin_frame(with_query):
     else:
         config["FILLER"] = "q" * (dt.DEEPRESEARCH_CONFIG_MAX_BYTES - 1000)
     baseline = dt._encode_deepresearch_config(config, request_query=query)
-    config["LLM_CUSTOM_HEADERS"] = json.dumps({"x-officeace-message-meta": "m" * 2000})
+    header_value = "private-attribution-marker" * 100
+    config["LLM_CUSTOM_HEADERS"] = json.dumps({"x-officeace-message-meta": header_value})
+    oversized_payload = json.loads(baseline)
+    oversized_payload["config"] = config
+    oversized_frame = json.dumps(oversized_payload, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
     assert dt._encode_deepresearch_config(config, request_query=query) == baseline
+    limit = dt.DEEPRESEARCH_QUERY_FRAME_MAX_BYTES if with_query else dt.DEEPRESEARCH_CONFIG_MAX_BYTES
+    assert ("query frame" if with_query else "config frame") in caplog.text
+    assert f"size_bytes={len(oversized_frame)} limit_bytes={limit}" in caplog.text
+    assert header_value not in caplog.text
+
+
+def test_unrecoverable_frame_overflow_does_not_log_header_fallback(caplog):
+    config = _valid_config(
+        FILLER="q" * dt.DEEPRESEARCH_CONFIG_MAX_BYTES,
+        LLM_CUSTOM_HEADERS='{"x-officeace-client":"pc"}',
+    )
+    with pytest.raises(ValueError, match="config frame exceeds"):
+        dt._encode_deepresearch_config(config)
+    assert "LLM_CUSTOM_HEADERS" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -7345,6 +7363,68 @@ async def test_main_agent_recovery_prepares_files_without_frontend_delivery(path
         assert Path(files[1]["path"]).read_text(encoding="utf-8").strip() == "# SDK report"
     assert not any(c.args[0].get("event_type") == "chat.file" for c in send.await_args_list)
     assert not any(c.args[0]["payload"].get("event_type") == "chat.file" for c in push.send_push.await_args_list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["stream", "race"])
+async def test_main_agent_keeps_native_html_when_companion_write_fails(path, tmp_path, caplog):
+    route = _race_route()
+    native_html = "<!doctype html><html><body>Brief</body></html>"
+    final_result = {
+        "response_content": native_html,
+        "response_content_type": "text/html",
+        "response_markdown": "# SDK report",
+    }
+    private_detail = "private-companion-write-detail"
+    push = AsyncMock()
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+        stack.enter_context(patch.object(dt, "_get_effective_request_output_dir", return_value=tmp_path))
+        write_markdown = stack.enter_context(
+            patch.object(dt, "_write_report_markdown", side_effect=PermissionError(private_detail))
+        )
+        token = dt._deepresearch_main_agent_plan_ctx.set(True)
+        stack.callback(dt._deepresearch_main_agent_plan_ctx.reset, token)
+        if path == "stream":
+            proc = _Proc(_completed_stream_lines(final_result))
+            for item in _stream_patches(proc, route=route):
+                stack.enter_context(item)
+            outcome = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+        else:
+            outcome = await dt._deliver_race_completed_report(
+                chunk={"__deepsearch_status__": "completed", "conversation_id": "C1", "final_result": final_result},
+                route=route, conversation_id="C1", file_name="report", secrets=(),
+            )
+
+    write_markdown.assert_called_once()
+    assert outcome["status"] == "completed"
+    assert outcome["report_prepared"] is True
+    assert outcome["report_delivered"] is False
+    html_file, = outcome["report_files"]
+    assert html_file["mime_type"] == "text/html"
+    assert Path(html_file["path"]).read_text(encoding="utf-8") == native_html
+    assert not any(c.args[0]["payload"].get("event_type") == "chat.file" for c in push.send_push.await_args_list)
+    assert "PermissionError" in caplog.text
+    assert private_detail not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["primary_write", "cancelled"])
+async def test_native_html_artifacts_propagate_primary_failures_and_cancellation(failure, tmp_path):
+    final_result = {"response_content": "<html>Brief</html>", "response_markdown": "# Brief"}
+    error = OSError if failure == "primary_write" else asyncio.CancelledError
+    write_html = AsyncMock(side_effect=error) if failure == "primary_write" else AsyncMock(
+        return_value=str(tmp_path / "r.html")
+    )
+    token = dt._deepresearch_main_agent_plan_ctx.set(True)
+    try:
+        with patch.object(dt, "_write_report_html", write_html), \
+             patch.object(dt, "_write_report_markdown", side_effect=asyncio.CancelledError) as write_markdown:
+            with pytest.raises(error):
+                await dt._write_native_html_artifacts(final_result, "report", "C1")
+            assert write_markdown.call_count == (0 if failure == "primary_write" else 1)
+    finally:
+        dt._deepresearch_main_agent_plan_ctx.reset(token)
 
 
 @pytest.mark.asyncio
