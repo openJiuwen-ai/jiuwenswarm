@@ -922,6 +922,7 @@ def build_terminal_card(
         "category": plan["category"],
         "context_scope": context_scope,
         "project_id": project_id,
+        "work_mode": normalize_topic_work_mode(trigger_key.get("work_mode")),
         "interest_summary_id": plan.get("interest_summary_id"),
         "source_starter_id": plan.get("source_starter_id"),
         "intent": plan["intent"],
@@ -1394,6 +1395,7 @@ def _cold_start_corpus_card(
         "category": _corpus_category(str(starter.topic)),
         "context_scope": context_scope,
         "project_id": project_id,
+        "work_mode": normalize_topic_work_mode(trigger_key.get("work_mode")),
         "interest_summary_id": None,
         "source_starter_id": starter.starter_id,
         "intent": title,
@@ -1737,8 +1739,10 @@ def find_exact_terminal_card(
 def _card_opened(store: TopicStarterStore, card: dict[str, Any]) -> bool:
     """A card the user already started a conversation from stays out of later windows.
 
-    A fixed starter counts as opened under any of its revisions in the scope, and
-    so does a card a successor generation carried forward under a new revision.
+    A fixed starter counts as opened under any of its revisions in the same
+    scope × work_mode, and so does a card a successor generation carried forward
+    under a new revision. Clicks in work do not hide the same corpus card in
+    design or code.
     """
 
     if store.query_events(
@@ -1748,18 +1752,36 @@ def _card_opened(store: TopicStarterStore, card: dict[str, Any]) -> bool:
         limit=1,
     ):
         return True
+    work_mode = normalize_topic_work_mode(card.get("work_mode"))
     for field in ("card_id", "source_starter_id"):
         value = card.get(field)
-        if _nonempty(value) and store.query_events(
+        if not _nonempty(value):
+            continue
+        base = {
+            "context_scope": card.get("context_scope"),
+            field: value,
+        }
+        if store.query_events(
             event_type="topic_click",
             policy_id=POLICY_ID,
-            payload_equals={
-                "context_scope": card.get("context_scope"),
-                field: value,
-            },
+            payload_equals={**base, "work_mode": work_mode},
             limit=1,
         ):
             return True
+        # Legacy clicks omitted work_mode; treat them as the default work pool only.
+        if work_mode != DEFAULT_TOPIC_WORK_MODE:
+            continue
+        for row in store.query_events(
+            event_type="topic_click",
+            policy_id=POLICY_ID,
+            payload_equals=base,
+            limit=32,
+        ):
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if "work_mode" not in payload or payload.get("work_mode") in (None, ""):
+                return True
     return False
 
 
@@ -2910,7 +2932,13 @@ def _eligible_pool_cards(
             continue
         if not _valid_evidence(card):
             continue
-        if _card_opened(store, card):
+        opened_card = card
+        if not _nonempty(card.get("work_mode")):
+            opened_card = {
+                **card,
+                "work_mode": normalize_topic_work_mode(manifest.get("work_mode")),
+            }
+        if _card_opened(store, opened_card):
             continue
         if not _project_sources_still_belong(manifest, card):
             continue

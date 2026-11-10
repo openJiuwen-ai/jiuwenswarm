@@ -2898,6 +2898,7 @@ async def test_turning_recommendation_on_prepares_past_the_preset_pool(tmp_path)
         assert off["preparation_state"] == "disabled"
         assert off["topics"]
         await service.set_enabled(True, persist=False)
+        await asyncio.wait_for(started.wait(), timeout=5)
         on = service.serve(
             "session-new",
             context_scope=GLOBAL_NEW_CHAT_SCOPE,
@@ -2905,7 +2906,97 @@ async def test_turning_recommendation_on_prepares_past_the_preset_pool(tmp_path)
         )
         assert on["preparation_state"] == "preparing"
         assert on["topics"]
-        await asyncio.wait_for(started.wait(), timeout=5)
+        design = service.serve(
+            "session-design",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        assert design.get("preparation_state") != "preparing"
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_preset_click_does_not_suppress_other_work_modes(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
+        NewPageOutcomeQueue,
+        TopicStarterStoreOutcomeSink,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
+
+    clock = [1_700_000_000.0]
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: clock[0],
+    )
+    try:
+        work = service.serve(
+            "session-work",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="work",
+        )
+        assert len(work["topics"]) == 4
+        assert service.record_exposure({
+            "session_id": "session-work",
+            "slate_id": work["slate_id"],
+            "manifest_id": work["manifest_id"],
+            "generation_batch_id": work["generation_batch_id"],
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "exposure_slice_id": work["exposure_slice_id"],
+            "topics": [{"card_revision_id": topic["id"]} for topic in work["topics"]],
+        }) is True
+        queue = NewPageOutcomeQueue()
+        assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
+        clicked = work["topics"][0]
+        assert service.record_interaction(
+            {
+                "session_id": "session-work",
+                "slate_id": work["slate_id"],
+                "event_type": "topic_click",
+                "topic_id": clicked["id"],
+                "payload": {
+                    "manifest_id": work["manifest_id"],
+                    "generation_batch_id": work["generation_batch_id"],
+                    "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+                    "project_id": None,
+                    "card_revision_id": clicked["id"],
+                },
+            },
+            outcome_queue=queue,
+        )["recorded"] is True
+
+        clock[0] += 1.0
+        work_again = service.serve(
+            "session-work",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="work",
+        )
+        assert clicked["source_starter_id"] not in {
+            topic["source_starter_id"] for topic in work_again["topics"]
+        }
+
+        design = service.serve(
+            "session-design",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        assert any(
+            topic["source_starter_id"] == clicked["source_starter_id"]
+            for topic in design["topics"]
+        )
     finally:
         await service.shutdown()
 

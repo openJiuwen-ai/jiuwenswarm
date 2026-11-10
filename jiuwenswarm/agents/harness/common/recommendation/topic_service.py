@@ -1571,9 +1571,17 @@ class TopicService:
             "selection_mode": str(rows[0].get("selection_mode") or ""),
         }
 
-    def _opened_cold_start_card_filter(self) -> Callable[[dict[str, Any]], bool]:
-        """A preset card the user already opened stays out of a rebuilt pool."""
+    def _opened_cold_start_card_filter(
+        self,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
+    ) -> Callable[[dict[str, Any]], bool]:
+        """A preset card the user already opened stays out of a rebuilt pool.
 
+        Suppression is scoped to the same work_mode so a work click does not
+        remove the corpus card from design/code rebuilds.
+        """
+
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
         opened_cards: set[str] = set()
         opened_starters: set[str] = set()
         for row in self.store.query_events(
@@ -1583,6 +1591,13 @@ class TopicService:
             if not isinstance(payload, dict):
                 continue
             if payload.get("context_scope") not in (None, GLOBAL_NEW_CHAT_SCOPE):
+                continue
+            click_mode = payload.get("work_mode")
+            if click_mode in (None, ""):
+                # Legacy clicks without work_mode only suppress the work pool.
+                if normalized_work_mode != DEFAULT_TOPIC_WORK_MODE:
+                    continue
+            elif normalize_topic_work_mode(click_mode) != normalized_work_mode:
                 continue
             card_id = str(payload.get("card_id") or "")
             starter_id = str(payload.get("source_starter_id") or "")
@@ -1641,7 +1656,9 @@ class TopicService:
             trigger_key=trigger_key,
             now=self._now(),
             feedback=feedback,
-            exclude=self._opened_cold_start_card_filter(),
+            exclude=self._opened_cold_start_card_filter(
+                normalize_topic_work_mode(trigger_key.get("work_mode")),
+            ),
         )
         if not cards:
             return empty
@@ -1836,8 +1853,10 @@ class TopicService:
             slot = self._runs.get(
                 self._slot_key(context_scope, normalized_work_mode)
             )
-            # schedule_seed tracks work before the scope slot turns busy.
-            if (slot is not None and slot.busy) or self._tasks:
+            # Only this scope × work_mode slot. Global _tasks include other
+            # scopes' successors and outcome collection, which must not paint
+            # an unrelated welcome page as preparing.
+            if slot is not None and slot.busy:
                 state = "preparing"
         if state in {
             "preparing",

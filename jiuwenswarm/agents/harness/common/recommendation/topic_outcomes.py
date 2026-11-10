@@ -30,6 +30,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     interest_session_ids,
     is_cold_start_card,
     memory_sessions_by_unit,
+    normalize_topic_work_mode,
     project_id_for_scope,
     valid_search_receipt,
 )
@@ -1357,6 +1358,7 @@ def record_terminal_interaction(
         "source_starter_id": card.get("source_starter_id"),
         "context_scope": context_scope,
         "project_id": project_id,
+        "work_mode": normalize_topic_work_mode(card.get("work_mode")),
         "user_state_snapshot_id": card.get("generation_input_snapshot_id"),
         "version_refs": _version_refs(card),
         "component_request_ids": [list(item) for item in component_request_ids],
