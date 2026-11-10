@@ -13,6 +13,7 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest

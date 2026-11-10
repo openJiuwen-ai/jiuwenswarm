@@ -10,7 +10,10 @@ from typing import Any, AsyncIterator
 
 import pytest
 
-from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowProgress
+from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
+    WorkflowProgress,
+    WorkflowRunState,
+)
 from jiuwenswarm.agents.harness.team.handlers.workflow_monitor_handler import WorkflowMonitorHandler
 
 

@@ -148,7 +148,9 @@ def test_find_returns_none_without_any_candidate(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_rail(tmp_path: Path, *, max_chars: int = 12_000) -> tuple[AgentMdPromptRail, PromptAttachmentManager, FakeContext]:
+def _make_rail(
+    tmp_path: Path, *, max_chars: int = 12_000
+) -> tuple[AgentMdPromptRail, PromptAttachmentManager, AgentCallbackContext]:
     manager = PromptAttachmentManager(language="en")
     rail = AgentMdPromptRail(max_chars=max_chars)
     rail.init(FakeAgent(manager))

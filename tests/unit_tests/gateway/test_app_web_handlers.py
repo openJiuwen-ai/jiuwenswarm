@@ -3731,6 +3731,7 @@ async def test_install_gate_team_collision_top_level_wins(monkeypatch):
 async def test_config_set_starts_codex_dependency_install_without_saving_codex(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[str], str | None]] = []
+    saved_profiles: list[dict] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client()))
@@ -3770,6 +3771,7 @@ async def test_config_set_starts_codex_dependency_install_without_saving_codex(m
     # 响应携带安装状态；安装完成后前端重发，配置才落盘（终态与原
     # "过滤安装中 agent 的部分写入"一致）。
     assert updates == []
+    assert saved_profiles == []
     assert channel.responses[-1]["ok"] is True
     installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
     assert installs["codex"]["status"] == "running"
