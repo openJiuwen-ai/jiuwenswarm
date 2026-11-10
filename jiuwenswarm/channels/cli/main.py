@@ -13,6 +13,10 @@ logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 
 
 def main() -> None:
+    if len(sys.argv) >= 2 and sys.argv[1] == "presentation":
+        from jiuwenswarm.channels.cli.presentation import main as presentation_main
+
+        sys.exit(presentation_main(sys.argv[2:]))
     if len(sys.argv) >= 2 and sys.argv[1] == "extension":
         from jiuwenswarm.channels.cli.extension import main as extension_main
 
