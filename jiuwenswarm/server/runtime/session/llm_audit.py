@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-import time
 import uuid
 from contextlib import closing, ExitStack
 from typing import Any, Iterable
