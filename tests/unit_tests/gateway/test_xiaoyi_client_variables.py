@@ -83,6 +83,8 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     ch._streamed_chain_texts = {}
     ch._pending_resume_seeds = {}
     ch._delivered_tool_call_ids = {}
+    ch._last_ask_user_chain = {}
+    ch._card_time_chain_migrated = set()
     ch._latest_platform_tasks = {}
     ch._team_sessions = set()
     ch._team_tasks = set()
@@ -1804,5 +1806,68 @@ async def test_tool_event_replay_dedup_on_resume(cfg_file):
             and p["data"].get("toolCall", {}).get("status") == "completed"
             for p in result_parts
         )
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_chained_card_time_chain_migration_seeds_new_chain(cfg_file):
+    """链式 ask_user 卡片期链迁移：前链累积并进新链，应答时随种子补齐。
+
+    链式后续卡片可能被云端开到新交互链（卡片期迁移，应答帧与待答表同
+    链，应答期迁移判定探测不到）——新链从零累积，非发起端还可能整段收
+    不到新链正文。卡片登记时把前链累积并入新链并打迁移标记，应答期按
+    标记播种，随确认后首个正文事件 partial 补进新链消息。
+    """
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        # 第一卡在链 task-a：累积含第一问前正文与确认后续写
+        # （累积器键与卡片/应答桥的 session 取值一致）
+        ch._streamed_chain_texts[("conv-1", "task-a")] = (
+            "第一问正文。你选的是樱花粉。\n"
+        )
+        ch._last_ask_user_chain["conv-1"] = "task-a"
+
+        ask = type("M", (), {})()
+        ask.event_type = EventType.CHAT_ASK_USER_QUESTION
+        ask.payload = {
+            "event_type": "chat.ask_user_question",
+            "request_id": "req-2nd",
+            "source": "ask_user_interrupt",
+            "questions": [{
+                "question": "第二个问题？",
+                "options": [{"label": "选项A"}, {"label": "选项B"}],
+            }],
+        }
+        ask.metadata = {
+            "xiaoyi_session_id": "conv-1",
+            "xiaoyi_task_id": "task-b",
+            "xiaoyi_conversation_id": "conv-1",
+        }
+        ask.session_id = "conv-1"
+        ask.id = "req-2nd"
+        await ch._send_legacy(ask)
+
+        # 卡片期迁移：前链累积并入新链，迁移标记登记
+        assert ch._streamed_chain_texts.get(("conv-1", "task-b")) == (
+            "第一问正文。你选的是樱花粉。\n"
+        )
+        assert ("conv-1", "task-a") not in ch._streamed_chain_texts
+        assert "conv-1" in ch._card_time_chain_migrated
+
+        # 应答二（应答帧与待答表同链 task-b）：按卡片期迁移标记播种
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": False,
+            "answers": [{
+                "question_id": "req-2nd",
+                "selected_options": ["选项A"],
+                "custom_text": None,
+            }],
+        }, task="task-b"))
+        seed = ch._pending_resume_seeds.get(("conv-1", "task-b"))
+        assert seed == "第一问正文。你选的是樱花粉。\n"
+        # 链跟踪归一到本轮实际链路
+        assert ch._last_ask_user_chain.get("conv-1") == "task-b"
     finally:
         _cleanup_tasks(ch)

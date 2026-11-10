@@ -805,6 +805,11 @@ class XiaoyiChannel(BaseChannel):
         # 就绪），改为挂起、随续跑首个正文帧下发（秒级延迟，路径已验证可达），
         # 见 _send_legacy 文本分支；续跑无正文时由终态分支兜底补发。
         self._pending_resume_seeds: dict[tuple[str, str], str] = {}
+        # 链式 ask_user 的链迁移跟踪：_last_ask_user_chain 记录最近一张卡
+        # 所在链；后续卡片换链即为卡片期迁移，累积正文并链、应答时随种子
+        # 补进新链消息。
+        self._last_ask_user_chain: dict[str, str] = {}
+        self._card_time_chain_migrated: set[str] = set()
         # 已下发过工具卡的 tool_call_id（按会话）：ask_user 等中断恢复会重执行
         # 被中断的工具并重发同名 tool_call/update 事件，端侧按 id 配对渲染
         # 工具卡，重发会产生第二张"已完成"卡——重发事件按 id 去重。
@@ -1457,6 +1462,8 @@ class XiaoyiChannel(BaseChannel):
             self._clear_session_timeout(session_id)
             self._sessions_waiting_for_push.pop(session_id, None)
             self._delivered_tool_call_ids.pop(session_id, None)
+            self._last_ask_user_chain.pop(session_id, None)
+            self._card_time_chain_migrated.discard(session_id)
             self._clear_team_session(session_id)
             return
 
@@ -3996,7 +4003,14 @@ class XiaoyiChannel(BaseChannel):
         # 轮末话题重拉把重复内容渲染到 PC。同链卡片帧为 append=true（不重置
         # 端侧缓冲），发起端实时链路本就送达的段1 不会丢；其他端由轮末重拉
         # 补齐（存储内容完整）。
-        if session_id and task_id and task_id != pending_task_id:
+        # 卡片期链迁移标记：链式 ask_user 的第二张卡起，云端可能为新卡片
+        # 开新交互（卡片期迁移）——应答帧与待答表同链，应答期迁移判定探测
+        # 不到，靠卡片期登记的标记补判。
+        _migrated_at_card = logical_session in self._card_time_chain_migrated
+        self._card_time_chain_migrated.discard(logical_session)
+        if session_id and task_id and (
+            task_id != pending_task_id or _migrated_at_card
+        ):
             _seed_key = (session_id, pending_task_id)
             seed_text = str(self._streamed_chain_texts.get(_seed_key) or "")
             # 格式对齐：把源链扣住的尾片并入种子并补段间换行。旧链路的尾片
@@ -4027,8 +4041,13 @@ class XiaoyiChannel(BaseChannel):
             # 作用域=本轮（按链键控）：跨轮不带入（上一轮内容在上一轮消息里，
             # 其累积器随轮次终态 finalize / 顶替收口清理）。
             self._streamed_chain_texts[(session_id, task_id)] = seed_text
-            # 链迁移：原链累积清理（已迁到新链）
-            self._streamed_chain_texts.pop((session_id, pending_task_id), None)
+            if task_id != pending_task_id:
+                # 链迁移：原链累积清理（已迁到新链并并入种子）
+                self._streamed_chain_texts.pop((session_id, pending_task_id), None)
+        if session_id and task_id:
+            # 链跟踪同步到本轮实际链路（应答期迁移/同链均归一），下一张卡
+            # 的卡片期迁移判定以此为前链。
+            self._last_ask_user_chain[logical_session] = task_id
         params: dict[str, Any] = {
             "query": "",
             "task_id": task_id,
@@ -4225,6 +4244,30 @@ class XiaoyiChannel(BaseChannel):
         """
         ask_user_command = _build_ask_user_command_payload(payload)
         if request_id and logical_session:
+            # 卡片期链迁移检测：链式 ask_user 的后续卡片可能被云端开到新交互
+            # 链上（新链从零累积），此前各链的累积正文并入新链，应答时随种子
+            # 一次性补进新链消息（否则新链消息缺失前文，非发起端还可能整段
+            # 收不到续写）。
+            _prev_chain = self._last_ask_user_chain.get(logical_session)
+            if _prev_chain and _prev_chain != task_id:
+                _src = (session_id, _prev_chain)
+                _dst = (session_id, task_id)
+                self._streamed_chain_texts[_dst] = (
+                    self._streamed_chain_texts.get(_src, "")
+                    + self._streamed_chain_texts.get(_dst, "")
+                )
+                self._streamed_chain_texts.pop(_src, None)
+                _held_src = self._text_stream_pending.pop(_src, None)
+                if _held_src:
+                    _held_dst = self._text_stream_pending.pop(_dst, None)
+                    self._text_stream_pending[_dst] = (
+                        _held_src[0] + (_held_dst[0] if _held_dst else ""),
+                        _held_dst[1] if _held_dst else _held_src[1],
+                    )
+                self._text_stream_prefix.pop(_src, None)
+                self._text_stream_prefix.pop(_dst, None)
+                self._card_time_chain_migrated.add(logical_session)
+            self._last_ask_user_chain[logical_session] = task_id
             invoke_questions = [
                 q
                 for q in ask_user_command["payload"].get("questions") or []
