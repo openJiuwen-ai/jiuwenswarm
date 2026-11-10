@@ -48,8 +48,8 @@ from jiuwenswarm.common.config import (
     get_evolution_review_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
+    get_team_ttse_enabled,
     get_ttse_embedding_config,
-    get_ttse_enabled,
     resolve_string_or_list_config,
     resolve_shared_ttse_bank,
 )
@@ -766,7 +766,7 @@ def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
                 params={"skill_create": get_skill_create_enabled(config)},
             ),
         ]
-        if get_ttse_enabled(config):
+        if get_team_ttse_enabled(config):
             specs.append(
                 RailSpec(type=registry.TEAM_TTSE, params=_ttse_rail_params(config))
             )
@@ -777,7 +777,7 @@ def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
             params=_member_evolution_rail_params(config),
         ),
     ]
-    if get_ttse_enabled(config):
+    if get_team_ttse_enabled(config):
         specs.append(RailSpec(type=registry.MEMBER_TTSE, params=_ttse_rail_params(config)))
     return specs
 

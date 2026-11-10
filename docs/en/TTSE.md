@@ -2,12 +2,15 @@
 
 TTSE (Two-Track Self-Evolution) induces environment facts (FACT) and capability-selection hints (TIP) from dialogue trajectories and injects catalog guidance. It is independent of [Skill-body evolution](SkillSelfEvolution.md): **it does not rewrite SKILL.md or show an approval dialog**.
 
-It is gated by `react.ttse.enabled` and applies to **agent mode only** (code / team do not mount it). The shipped template is **on by default**: agent mode mounts `TTSERail` and puts `ttse_consult` in the first-turn schema (no `tools_search` required). Set `enabled: false` to turn it off.
+Single-agent TTSE is gated by `react.ttse.enabled` and mounts `TTSERail` in **agent mode only** (code does not mount it). In the shipped template this switch is **on by default**: agent mode mounts `TTSERail` and puts `ttse_consult` in the first-turn schema (no `tools_search` required). Set `enabled: false` to turn off single-agent TTSE only.
+
+Expert-team TTSE is gated separately by `react.ttse.team_enabled` and is independent of `enabled`. A missing key stays **off**. Set it to `true` to mount `TEAM_TTSE` on the leader and `MEMBER_TTSE` on members.
 
 ```yaml
 react:
   ttse:
-    enabled: true           # mount TTSERail in agent mode
+    enabled: true           # single agent; mount TTSERail in agent mode
+    team_enabled: false     # expert team; independent of enabled, off by default
     evolve_enabled: true    # induce FACT/TIP from trajectories
     inject_enabled: true    # inject system-prompt guidance
     # Auto-dream (silent bank hygiene; does not hijack the user turn)
