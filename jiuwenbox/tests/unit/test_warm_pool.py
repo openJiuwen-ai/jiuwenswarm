@@ -16,6 +16,7 @@ from jiuwenbox.models.policy import SecurityPolicy
 from jiuwenbox.server.runtime.process import ProcessRuntime
 from jiuwenbox.server.runtime.warm_pool import (
     WarmPool,
+    boot_policy,
     warm_pool_compatible,
     warm_pool_mismatches,
     warm_pool_size,
@@ -37,6 +38,27 @@ def test_bwrap_uses_numeric_run_as():
     config = BwrapConfig.from_policy(policy, ["true"])
     assert config.uid == 1000
     assert config.gid == 1000
+
+
+def test_boot_policy_keeps_the_loaded_filesystem_and_stays_root():
+    template = SecurityPolicy.model_validate({
+        "filesystem_policy": {
+            "bind_mounts": [
+                {"host_path": "/opt", "sandbox_path": "/opt", "mode": "ro"},
+            ],
+        },
+        "process": {"run_as_user": "sandbox", "run_as_group": "sandbox"},
+    })
+
+    booted = boot_policy(template)
+
+    assert [
+        (mount.host_path, mount.sandbox_path, mount.mode)
+        for mount in booted.filesystem_policy.bind_mounts
+    ] == [("/opt", "/opt", "ro")]
+    assert booted.process.run_as_user == "0"
+    assert booted.process.run_as_group == "0"
+    assert template.process.run_as_user == "sandbox"
 
 
 def test_warm_pool_allows_filesystem_and_run_as_to_differ():
@@ -136,7 +158,7 @@ def test_create_logs_why_the_warm_pool_was_not_used(caplog, monkeypatch):
     runtime = ProcessRuntime()
     policy = SecurityPolicy()
     with caplog.at_level(logging.INFO):
-        adopted = asyncio.run(runtime._try_warm_adopt("sb-off", policy, Path("policy.yaml"), None))
+        adopted = asyncio.run(runtime.claim_warm_sandbox("sb-off", policy, Path("policy.yaml"), None))
     assert adopted is None
     assert "Warm pool not used for sb-off: pool was not started" in caplog.text
 
@@ -144,7 +166,9 @@ def test_create_logs_why_the_warm_pool_was_not_used(caplog, monkeypatch):
     monkeypatch.setenv("JIUWENBOX_WARM_POOL", "0")
     with caplog.at_level(logging.INFO):
         runtime.start_warm_pool(policy)
-        adopted = asyncio.run(runtime._try_warm_adopt("sb-disabled", policy, Path("policy.yaml"), None))
+        adopted = asyncio.run(
+            runtime.claim_warm_sandbox("sb-disabled", policy, Path("policy.yaml"), None),
+        )
     assert adopted is None
     assert "Warm pool disabled (JIUWENBOX_WARM_POOL='0')" in caplog.text
     assert "Warm pool not used for sb-disabled: disabled (JIUWENBOX_WARM_POOL='0')" in caplog.text
@@ -163,11 +187,11 @@ def test_create_logs_why_the_warm_pool_was_not_used(caplog, monkeypatch):
 
     request = policy.model_copy(deep=True)
     request.network.mode = "host"
-    runtime._warm_pool = _Pool()
+    runtime.attach_warm_pool(_Pool())
     caplog.clear()
     with caplog.at_level(logging.INFO):
         adopted = asyncio.run(
-            runtime._try_warm_adopt("sb-policy", request, Path("policy.yaml"), None),
+            runtime.claim_warm_sandbox("sb-policy", request, Path("policy.yaml"), None),
         )
     assert adopted is None
     assert (
@@ -181,10 +205,12 @@ def test_create_logs_why_the_warm_pool_was_not_used(caplog, monkeypatch):
             del request
             return True, None
 
-    runtime._warm_pool = _EmptyPool()
+    runtime.attach_warm_pool(_EmptyPool())
     caplog.clear()
     with caplog.at_level(logging.INFO):
-        adopted = asyncio.run(runtime._try_warm_adopt("sb-empty", policy, Path("policy.yaml"), None))
+        adopted = asyncio.run(
+            runtime.claim_warm_sandbox("sb-empty", policy, Path("policy.yaml"), None),
+        )
     assert adopted is None
     assert "Warm pool not used for sb-empty: no parked sandbox available (depth=4)" in caplog.text
 
