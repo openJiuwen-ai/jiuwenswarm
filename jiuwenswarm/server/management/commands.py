@@ -2,19 +2,27 @@
 
 """Commands management; resources remain owned by its injected host."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import logging
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.agent import AgentResponse
 from typing import Any
 import datetime as _dt
+import asyncio
+import os
+
+from agent_gateway.common.mode_matrix import deprecate_mode
+from agent_gateway.common.mode_matrix import is_team_mode
+
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.server.runtime.session.session_history import (
     append_compact_history_records,
 )
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
-import asyncio
-from agent_gateway.common.mode_matrix import deprecate_mode
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_all_sessions_metadata,
 )
@@ -24,9 +32,7 @@ from jiuwenswarm.common.config import get_default_models
 from jiuwenswarm.common.config import get_mcp_servers
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
-from agent_gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.utils import mask_sensitive
-import os
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import (
     persist_cli_trusted_directory,
 )
@@ -39,7 +45,55 @@ logger = logging.getLogger(__name__)
 _MANUAL_COMPACT_PROCESSOR_TYPES = ["MessageSummaryOffloader", "RoundLevelCompressor"]
 
 
-_SIMPLIFY_PROMPT_TEMPLATE = '# Simplify: Code Review and Cleanup\n\nReview all changed files for reuse, quality, and efficiency. Fix any issues found.\n\n## Scope\n\nThis review covers **reuse, quality, and efficiency only** — the three dimensions below. It is NOT a security review.\n\n- Do NOT flag, fix, or report security vulnerabilities (injection, XSS, hard-coded secrets, auth flaws, etc.). Those are out of scope here and are handled by `/security-review`, which reports findings without modifying code.\n- If you happen to notice a likely security issue while reviewing, do not fix it — at most note it in one line at the end ("possible security concern in <file>:<line>, run /security-review") and continue with the reuse/quality/efficiency review.\n\n## Phase 1: Identify Changes\n\nRun `git diff` (or `git diff HEAD` if there are staged changes) to see what changed. If there are no git changes, review the most recently modified files that the user mentioned or that you edited earlier in this conversation.\n\n## Phase 2: Launch Three Review Agents in Parallel\n\nIf sub-agent tools are available (e.g. task_tool / Agent tool), launch all three agents concurrently in a single message. Pass each agent the full diff so it has the complete context. Otherwise, perform all three reviews yourself directly.\n\n### Agent 1: Code Reuse Review\n\nFor each change:\n\n1. **Search for existing utilities and helpers** that could replace newly written code. Look for similar patterns elsewhere in the codebase — common locations are utility directories, shared modules, and files adjacent to the changed ones.\n2. **Flag any new function that duplicates existing functionality.** Suggest the existing function to use instead.\n3. **Flag any inline logic that could use an existing utility** — hand-rolled string manipulation, manual path handling, custom environment checks, ad-hoc type guards, and similar patterns are common candidates.\n\n### Agent 2: Code Quality Review\n\nReview the same changes for hacky patterns:\n\n1. **Redundant state**: state that duplicates existing state, cached values that could be derived, observers/effects that could be direct calls\n2. **Parameter sprawl**: adding new parameters to a function instead of generalizing or restructuring existing ones\n3. **Copy-paste with slight variation**: near-duplicate code blocks that should be unified with a shared abstraction\n4. **Leaky abstractions**: exposing internal details that should be encapsulated, or breaking existing abstraction boundaries\n5. **Stringly-typed code**: using raw strings where constants, enums (string unions), or branded types already exist in the codebase\n6. **Unnecessary JSX nesting**: wrapper Boxes/elements that add no layout value — check if inner component props (flexShrink, alignItems, etc.) already provide the needed behavior\n7. **Unnecessary comments**: comments explaining WHAT the code does (well-named identifiers already do that), narrating the change, or referencing the task/caller — delete; keep only non-obvious WHY (hidden constraints, subtle invariants, workarounds)\n\n### Agent 3: Efficiency Review\n\nReview the same changes for efficiency:\n\n1. **Unnecessary work**: redundant computations, repeated file reads, duplicate network/API calls, N+1 patterns\n2. **Missed concurrency**: independent operations run sequentially when they could run in parallel\n3. **Hot-path bloat**: new blocking work added to startup or per-request/per-render hot paths\n4. **Recurring no-op updates**: state/store updates inside polling loops, intervals, or event handlers that fire unconditionally — add a change-detection guard so downstream consumers aren\'t notified when nothing changed. Also: if a wrapper function takes an updater/reducer callback, verify it honors same-reference returns (or whatever the "no change" signal is) — otherwise callers\' early-return no-ops are silently defeated\n5. **Unnecessary existence checks**: pre-checking file/resource existence before operating (TOCTOU anti-pattern) — operate directly and handle the error\n6. **Memory**: unbounded data structures, missing cleanup, event listener leaks\n7. **Overly broad operations**: reading entire files when only a portion is needed, loading all items when filtering for one\n\n## Phase 3: Fix Issues\n\nWait for all reviewers to complete. Aggregate their findings and fix each issue directly. If a finding is a false positive or not worth addressing, note it and move on — do not argue with the finding, just skip it.\n\nWhen done, briefly summarize what was fixed (or confirm the code was already clean).\n'
+_SIMPLIFY_PROMPT_TEMPLATE = (
+    '# Simplify: Code Review and Cleanup\n\nReview all changed files for reuse, quality, and efficiency. '
+    'Fix any issues found.\n\n## Scope\n\nThis review covers **reuse, quality, and efficiency only** — the '
+    'three dimensions below. It is NOT a security review.\n\n- Do NOT flag, fix, or report security '
+    'vulnerabilities (injection, XSS, hard-coded secrets, auth flaws, etc.). Those are out of scope here '
+    'and are handled by `/security-review`, which reports findings without modifying code.\n- If you '
+    'happen to notice a likely security issue while reviewing, do not fix it — at most note it in one line '
+    'at the end ("possible security concern in <file>:<line>, run /security-review") and continue with the '
+    'reuse/quality/efficiency review.\n\n## Phase 1: Identify Changes\n\nRun `git diff` (or `git diff '
+    'HEAD` if there are staged changes) to see what changed. If there are no git changes, review the most '
+    'recently modified files that the user mentioned or that you edited earlier in this '
+    'conversation.\n\n## Phase 2: Launch Three Review Agents in Parallel\n\nIf sub-agent tools are '
+    'available (e.g. task_tool / Agent tool), launch all three agents concurrently in a single message. '
+    'Pass each agent the full diff so it has the complete context. Otherwise, perform all three reviews '
+    'yourself directly.\n\n### Agent 1: Code Reuse Review\n\nFor each change:\n\n1. **Search for existing '
+    'utilities and helpers** that could replace newly written code. Look for similar patterns elsewhere in '
+    'the codebase — common locations are utility directories, shared modules, and files adjacent to the '
+    'changed ones.\n2. **Flag any new function that duplicates existing functionality.** Suggest the '
+    'existing function to use instead.\n3. **Flag any inline logic that could use an existing utility** — '
+    'hand-rolled string manipulation, manual path handling, custom environment checks, ad-hoc type guards, '
+    'and similar patterns are common candidates.\n\n### Agent 2: Code Quality Review\n\nReview the same '
+    'changes for hacky patterns:\n\n1. **Redundant state**: state that duplicates existing state, cached '
+    'values that could be derived, observers/effects that could be direct calls\n2. **Parameter sprawl**: '
+    'adding new parameters to a function instead of generalizing or restructuring existing ones\n3. '
+    '**Copy-paste with slight variation**: near-duplicate code blocks that should be unified with a shared '
+    'abstraction\n4. **Leaky abstractions**: exposing internal details that should be encapsulated, or '
+    'breaking existing abstraction boundaries\n5. **Stringly-typed code**: using raw strings where '
+    'constants, enums (string unions), or branded types already exist in the codebase\n6. **Unnecessary '
+    'JSX nesting**: wrapper Boxes/elements that add no layout value — check if inner component props '
+    '(flexShrink, alignItems, etc.) already provide the needed behavior\n7. **Unnecessary comments**: '
+    'comments explaining WHAT the code does (well-named identifiers already do that), narrating the '
+    'change, or referencing the task/caller — delete; keep only non-obvious WHY (hidden constraints, '
+    'subtle invariants, workarounds)\n\n### Agent 3: Efficiency Review\n\nReview the same changes for '
+    'efficiency:\n\n1. **Unnecessary work**: redundant computations, repeated file reads, duplicate '
+    'network/API calls, N+1 patterns\n2. **Missed concurrency**: independent operations run sequentially '
+    'when they could run in parallel\n3. **Hot-path bloat**: new blocking work added to startup or '
+    'per-request/per-render hot paths\n4. **Recurring no-op updates**: state/store updates inside polling '
+    'loops, intervals, or event handlers that fire unconditionally — add a change-detection guard so '
+    "downstream consumers aren't notified when nothing changed. Also: if a wrapper function takes an "
+    'updater/reducer callback, verify it honors same-reference returns (or whatever the "no change" signal '
+    "is) — otherwise callers' early-return no-ops are silently defeated\n5. **Unnecessary existence "
+    'checks**: pre-checking file/resource existence before operating (TOCTOU anti-pattern) — operate '
+    'directly and handle the error\n6. **Memory**: unbounded data structures, missing cleanup, event '
+    'listener leaks\n7. **Overly broad operations**: reading entire files when only a portion is needed, '
+    'loading all items when filtering for one\n\n## Phase 3: Fix Issues\n\nWait for all reviewers to '
+    'complete. Aggregate their findings and fix each issue directly. If a finding is a false positive or '
+    'not worth addressing, note it and move on — do not argue with the finding, just skip it.\n\nWhen '
+    'done, briefly summarize what was fixed (or confirm the code was already clean).\n'
+)
 
 
 def _is_env_api_base_placeholder(env_updates: dict) -> bool:
@@ -251,7 +305,10 @@ class CommandsManagement:
                         )
                     else:
                         rate = 0
-                    stats_summary = f"✓ Context compacted: {after_tokens / 1000:.1f}K/{before_tokens / 1000:.1f}K tokens ({rate:.1f}% saved)"
+                    stats_summary = (
+                        f"✓ Context compacted: {after_tokens / 1000:.1f}K/"
+                        f"{before_tokens / 1000:.1f}K tokens ({rate:.1f}% saved)"
+                    )
                     if summary:
                         append_compact_history_records(
                             session_id=session_id,
@@ -830,8 +887,8 @@ class CommandsManagement:
                                 created, tz=_dt.timezone.utc
                             ).strftime("%Y-%m-%d")
                             active_days_set.add(day_str)
-                        except Exception:
-                            pass
+                        except (TypeError, ValueError, OverflowError, OSError) as exc:
+                            logger.debug("Ignoring invalid session creation timestamp: %s", exc)
                     if created and last:
                         longest_hours = max(longest_hours, (last - created) / 3600)
                 models_used = [

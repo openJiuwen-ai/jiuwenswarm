@@ -18,6 +18,8 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server import agent_ws_server
 from jiuwenswarm.server.worker import execution_support
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers._default import handle_stream
 
 
 class _SessionRuntimeStub:
@@ -73,7 +75,7 @@ async def test_keepalive_failure_is_logged_without_escaping(
     """An auxiliary send failure must not replace the stream outcome."""
     logged: list[tuple] = []
     monkeypatch.setattr(
-        agent_ws_server.logger,
+        execution_support.logger,
         "exception",
         lambda *args: logged.append(args),
     )

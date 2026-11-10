@@ -423,7 +423,7 @@ class TestWsDispatchStillKeepsUnmovedMethods:
     def test_unmoved_methods_stay_on_the_server(self) -> None:
         from pathlib import Path
 
-        source = Path("jiuwenswarm/server/agent_ws_server.py").read_text(encoding="utf-8")
+        source = Path("jiuwenswarm/server/worker/execution_requests.py").read_text(encoding="utf-8")
         start = source.index("async def dispatch_parsed_request")
         end = source.index("\n    async def ", start + 1)
         body = source[start:end]

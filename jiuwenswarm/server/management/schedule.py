@@ -2,17 +2,22 @@
 
 """Schedule management; resources remain owned by its injected host."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import logging
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.agent import AgentResponse
 from typing import Any
 from typing import Optional
+import asyncio
+
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.runtime.request import (
     apply_resolved_mode_to_request as _apply_resolved_mode_to_request,
 )
-import asyncio
 from jiuwenswarm.common.config import get_available_models
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.runtime.request import resolve_request_project_dir

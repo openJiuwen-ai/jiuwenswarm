@@ -2,29 +2,33 @@
 
 """Teams management; resources remain owned by its injected host."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
+
+import logging
+from typing import Any
+import asyncio
+import time
+
+from agent_gateway.common.mode_matrix import is_team_mode
 
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.server.worker.execution_support import _group_organization_owner_team_ids
 from jiuwenswarm.server.ws_send import send_wire_payload
-
 from jiuwenswarm.common.schema.message import ReqMethod
-
-import logging
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
-from typing import Any
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
-import asyncio
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.runtime.request import resolve_agent_request_mode
-import time
-from agent_gateway.common.mode_matrix import is_team_mode
 
 logger = logging.getLogger(__name__)
 
@@ -840,7 +844,8 @@ class TeamsManagement:
         if error:
             if precheck_failed:
                 logger.warning(
-                    "[AgentWebSocketServer] targeted expert chat denied session=%s owner_team=%s target_team=%s owner_org=%s target_org=%s error=%s",
+                    '[AgentWebSocketServer] targeted expert chat denied session=%s owner_team=%s '
+                    'target_team=%s owner_org=%s target_org=%s error=%s',
                     session_id,
                     owner_team_id,
                     team_id,
@@ -1376,7 +1381,8 @@ class TeamsManagement:
             payload: dict[str, Any] = dict(empty_payload)
         elif requested_organization_id and requested_organization_id != organization_id:
             logger.warning(
-                "[AgentWebSocketServer] org.snapshot organization mismatch: session_id=%s team_id=%s requested=%s bound=%s",
+                '[AgentWebSocketServer] org.snapshot organization mismatch: session_id=%s team_id=%s '
+                'requested=%s bound=%s',
                 session_id or "-",
                 team_id or "-",
                 requested_organization_id,
@@ -1461,7 +1467,8 @@ class TeamsManagement:
                 )
             except Exception as e:
                 logger.warning(
-                    "[AgentWebSocketServer] org.snapshot pending reviews failed: organization_id=%s team_id=%s error=%s",
+                    '[AgentWebSocketServer] org.snapshot pending reviews failed: organization_id=%s '
+                    'team_id=%s error=%s',
                     organization_id,
                     team_id,
                     e,
@@ -1602,13 +1609,12 @@ class TeamsManagement:
                 team_name,
             )
             members_raw = []
-        members = [
-            m for m in members_raw
-            if isinstance(m, dict)
-            and m.get("role") == "human_agent"
-            and m.get("member_id")
-            and not is_departed_member(m.get("status"))
-        ]
+        members = []
+        for member in members_raw:
+            if not isinstance(member, dict) or member.get("role") != "human_agent":
+                continue
+            if member.get("member_id") and not is_departed_member(member.get("status")):
+                members.append(member)
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=channel_id,

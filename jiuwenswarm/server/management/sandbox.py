@@ -2,16 +2,22 @@
 
 """Sandbox management; resources remain owned by its injected host."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import logging
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.agent import AgentResponse
 from typing import Any
-from jiuwenswarm.common.config import DEFAULT_SANDBOX_POLICY_FILE
-from jiuwenswarm.common.config import DEFAULT_SANDBOX_STARTUP_MODE
 from pathlib import Path
 import asyncio
+import sys
+
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.config import DEFAULT_SANDBOX_POLICY_FILE
+from jiuwenswarm.common.config import DEFAULT_SANDBOX_STARTUP_MODE
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
 )
@@ -37,7 +43,6 @@ from jiuwenswarm.common.config import resolve_preserve_file_sharing_mode_default
 from jiuwenswarm.common.config import resolve_sandbox_api_token
 from jiuwenswarm.common.config import resolve_sandbox_policy_path
 from jiuwenswarm.common.config import sync_sandbox_api_token_environ
-import sys
 from jiuwenswarm.common.config import update_sandbox_endpoint
 from jiuwenswarm.common.config import update_sandbox_runtime
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
@@ -61,7 +66,9 @@ def _require_sandbox_supported() -> None:
     """
     if not sys.platform.startswith("linux"):
         raise ValueError(
-            f"/sandbox is only supported on Linux (current platform: {sys.platform!r}); jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) and cannot run on Windows or macOS."
+            f"/sandbox is only supported on Linux (current platform: {sys.platform!r}); "
+            f"jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) "
+            f"and cannot run on Windows or macOS."
         )
 
 
@@ -145,7 +152,8 @@ def _reject_extra_sandbox_files_params(params: dict[str, Any]) -> None:
     extra = set(params.keys()) - _SANDBOX_FILES_PARAMS
     if extra:
         raise ValueError(
-            f"unexpected parameter(s): {', '.join(sorted(extra))}; /sandbox files allow|deny|remove accepts a single path only"
+            f"unexpected parameter(s): {', '.join(sorted(extra))}; /sandbox files "
+            f"allow|deny|remove accepts a single path only"
         )
 
 
@@ -264,11 +272,14 @@ class SandboxManagement:
         policy_path = resolve_sandbox_policy_path(effective_policy_file)
         if policy_path is None:
             raise RuntimeError(
-                f"sandbox.policy_file={effective_policy_file!r} 无法解析: 仅给出文件名时需能定位到 jiuwenbox/configs 目录, 否则请在 config.yaml::sandbox.policy_file 里配置绝对路径。"
+                f"sandbox.policy_file={effective_policy_file!r} 无法解析: 仅给出文件名时需能定位到 "
+                f"jiuwenbox/configs 目录, 否则请在 config.yaml::sandbox.policy_file 里配置绝对路径。"
             )
         if not policy_path.is_file():
             raise RuntimeError(
-                f"sandbox policy 文件不存在: {policy_path} (原始配置 sandbox.policy_file={raw_policy or f'<default:{DEFAULT_SANDBOX_POLICY_FILE}>'!r})"
+                f"sandbox policy 文件不存在: {policy_path} (原始配置 "
+                f"sandbox.policy_file="
+                f"{raw_policy or f'<default:{DEFAULT_SANDBOX_POLICY_FILE}>'!r})"
             )
         host, preferred_port = host._parse_sandbox_host_port(url)
         if startup_mode == "internal":
@@ -294,7 +305,10 @@ class SandboxManagement:
         if not ok:
             if startup_mode == "external":
                 raise RuntimeError(
-                    f"jiuwenbox 未在 {host}:{port} 监听 (sandbox.startup_mode=external); 请在另一终端先启动 jiuwenbox-server, 例如:\n  sudo -E .venv/bin/python -m uvicorn jiuwenbox.server.app:app --host {host} --port {port}\n  (JIUWENBOX_POLICY_PATH={policy_path})"
+                    f"jiuwenbox 未在 {host}:{port} 监听 (sandbox.startup_mode=external); "
+                    f"请在另一终端先启动 jiuwenbox-server, 例如:\n  sudo -E .venv/bin/python -m uvicorn "
+                    f"jiuwenbox.server.app:app --host {host} --port {port}\n  "
+                    f"(JIUWENBOX_POLICY_PATH={policy_path})"
                 )
             stderr_tail = host._jiuwenbox_runner.get_stderr_tail(20)
             hint = (
@@ -352,7 +366,8 @@ class SandboxManagement:
                 )
         else:
             logger.debug(
-                "[AgentWebSocketServer] /sandbox disable: no owned jiuwenbox to stop (external startup_mode or never started)"
+                '[AgentWebSocketServer] /sandbox disable: no owned jiuwenbox to stop (external '
+                'startup_mode or never started)'
             )
         payload: dict[str, Any] = {
             "runtime": runtime,
@@ -448,7 +463,8 @@ class SandboxManagement:
         if match is not None:
             matched_bucket, canonical = match
             raise ValueError(
-                f"path is auto-managed (always in {matched_bucket}): {canonical}; cannot add via /sandbox files {bucket}"
+                f"path is auto-managed (always in {matched_bucket}): {canonical}; cannot add "
+                f"via /sandbox files {bucket}"
             )
         current = get_sandbox_runtime()
         files = dict(current.get("files") or {})
@@ -458,13 +474,16 @@ class SandboxManagement:
         for existing in target_list:
             if _file_entry_matches_path(existing, path):
                 raise ValueError(
-                    f"sandbox.files.{bucket} already contains {path!r}; use `/sandbox files remove {path}` first if you want to change it"
+                    f"sandbox.files.{bucket} already contains {path!r}; use `/sandbox files "
+                    f"remove {path}` first if you want to change it"
                 )
         opposite_bucket = "deny" if bucket == "allow" else "allow"
         for existing in files.get(opposite_bucket) or []:
             if _file_entry_matches_path(existing, path):
                 raise ValueError(
-                    f"sandbox.files.{opposite_bucket} already contains {path!r}; cannot add the same path to {bucket}. `/sandbox files remove {path}` first if you want to flip it"
+                    f"sandbox.files.{opposite_bucket} already contains {path!r}; cannot add "
+                    f"the same path to {bucket}. `/sandbox files remove {path}` first if you "
+                    f"want to flip it"
                 )
         nested_error = find_nested_files_conflict(path, bucket, files)
         if nested_error is not None:
@@ -502,7 +521,8 @@ class SandboxManagement:
         if match is not None:
             matched_bucket, canonical = match
             raise ValueError(
-                f"path is auto-managed (always in {matched_bucket}): {canonical}; cannot remove via /sandbox files remove"
+                f"path is auto-managed (always in {matched_bucket}): {canonical}; cannot "
+                f"remove via /sandbox files remove"
             )
         current = get_sandbox_runtime()
         files = dict(current.get("files") or {})

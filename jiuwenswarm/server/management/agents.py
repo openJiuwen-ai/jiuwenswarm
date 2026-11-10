@@ -2,16 +2,20 @@
 
 """Agents management; resources remain owned by its injected host."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
+
+import logging
+from typing import Any
+import asyncio
 
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
-
-import logging
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
-from typing import Any
-import asyncio
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.config import remove_subagent_from_config
 from jiuwenswarm.common.config import upsert_subagent_in_config
@@ -24,7 +28,8 @@ async def _reset_active_browser_runtimes_if_available(browser_move: Any) -> int:
     reset_runtimes = getattr(browser_move, "reset_active_browser_runtimes", None)
     if not callable(reset_runtimes):
         logger.warning(
-            "[AgentWebSocketServer] installed openjiuwen does not support reset_active_browser_runtimes; restarting the local browser runtime server only"
+            '[AgentWebSocketServer] installed openjiuwen does not support '
+            'reset_active_browser_runtimes; restarting the local browser runtime server only'
         )
         return 0
     return await reset_runtimes()
@@ -47,7 +52,28 @@ async def _reset_requested_browser_runtime_if_available(
     return await _reset_active_browser_runtimes_if_available(browser_move)
 
 
-_AGENT_CREATION_SYSTEM_PROMPT = 'You are an elite AI agent architect. When given an agent name and description, your job is to design a high-performance agent that EXECUTES tasks to completion — not just analyzes and reports.\n\nThe agent will have access to tools (Read, Write, Edit, Bash, etc.) to complete tasks. Design it as an autonomous expert capable of handling its designated tasks with minimal additional guidance. The system prompt you write is the agent\'s complete operational manual.\n\n1. **whenToUse**: A precise description of when the main assistant should dispatch to this agent.\n   - Start with "Use this agent when..."\n   - Include concrete triggering conditions\n   - Add 2-3 <example> blocks showing specific scenarios where the assistant uses the Agent tool to fully delegate the task\n   - Each <example> should show: user says X → assistant dispatches to this agent with the Agent tool, passing the complete task\n   - Write in the same language as the agent description (Chinese description → Chinese whenToUse)\n\n2. **systemPrompt**: The complete system prompt governing the agent\'s behavior.\n   - Define expert persona and role\n   - Specify workflow and methodology — end-to-end, from analysis through execution\n   - Establish clear behavioral boundaries and operational parameters\n   - Provide specific methodologies and best practices for task execution\n   - Define output format expectations when relevant\n   - Include self-verification steps\n   - Write in the same language as the agent description\n\nKey principles:\n- Be specific rather than generic — avoid vague instructions\n- Include concrete examples when they would clarify behavior\n- Balance comprehensiveness with clarity — every instruction should add value\n- Ensure the agent has enough context to handle variations of the core task\n- Build in quality assurance and self-correction mechanisms\n\nReturn ONLY a JSON object:\n{"whenToUse": "...", "systemPrompt": "..."}\n'
+_AGENT_CREATION_SYSTEM_PROMPT = (
+    'You are an elite AI agent architect. When given an agent name and description, your job is to design '
+    'a high-performance agent that EXECUTES tasks to completion — not just analyzes and reports.\n\nThe '
+    'agent will have access to tools (Read, Write, Edit, Bash, etc.) to complete tasks. Design it as an '
+    'autonomous expert capable of handling its designated tasks with minimal additional guidance. The '
+    "system prompt you write is the agent's complete operational manual.\n\n1. **whenToUse**: A precise "
+    'description of when the main assistant should dispatch to this agent.\n   - Start with "Use this '
+    'agent when..."\n   - Include concrete triggering conditions\n   - Add 2-3 <example> blocks showing '
+    'specific scenarios where the assistant uses the Agent tool to fully delegate the task\n   - Each '
+    '<example> should show: user says X → assistant dispatches to this agent with the Agent tool, passing '
+    'the complete task\n   - Write in the same language as the agent description (Chinese description → '
+    "Chinese whenToUse)\n\n2. **systemPrompt**: The complete system prompt governing the agent's "
+    'behavior.\n   - Define expert persona and role\n   - Specify workflow and methodology — end-to-end, '
+    'from analysis through execution\n   - Establish clear behavioral boundaries and operational '
+    'parameters\n   - Provide specific methodologies and best practices for task execution\n   - Define '
+    'output format expectations when relevant\n   - Include self-verification steps\n   - Write in the '
+    'same language as the agent description\n\nKey principles:\n- Be specific rather than generic — avoid '
+    'vague instructions\n- Include concrete examples when they would clarify behavior\n- Balance '
+    'comprehensiveness with clarity — every instruction should add value\n- Ensure the agent has enough '
+    'context to handle variations of the core task\n- Build in quality assurance and self-correction '
+    'mechanisms\n\nReturn ONLY a JSON object:\n{"whenToUse": "...", "systemPrompt": "..."}\n'
+)
 
 
 class AgentsManagement:
@@ -170,7 +196,10 @@ class AgentsManagement:
             return None
         from openjiuwen.core.foundation.llm.schema.message import UserMessage
 
-        full_prompt = f"{_AGENT_CREATION_SYSTEM_PROMPT}\n\n---\n请为以下 agent 生成配置：\n\n名称: {name}\n描述: {description}\n\n返回 JSON 对象，包含 whenToUse 和 systemPrompt 两个字段。不要返回其他内容。"
+        full_prompt = (
+            f"{_AGENT_CREATION_SYSTEM_PROMPT}\n\n---\n请为以下 agent 生成配置：\n\n名称: {name}\n描述: "
+            f"{description}\n\n返回 JSON 对象，包含 whenToUse 和 systemPrompt 两个字段。不要返回其他内容。"
+        )
         try:
             result = await model.invoke(
                 [UserMessage(content=full_prompt)], max_tokens=2000, temperature=0.3
@@ -620,7 +649,8 @@ class AgentsManagement:
                     )
                     if stopped:
                         logger.info(
-                            "[AgentWebSocketServer] stopped paused team runtimes after agent.reload_config: count=%s request_id=%s reload_scopes=%s",
+                            '[AgentWebSocketServer] stopped paused team runtimes after '
+                            'agent.reload_config: count=%s request_id=%s reload_scopes=%s',
                             stopped,
                             request.request_id,
                             sorted(reload_scopes),

@@ -815,7 +815,7 @@ async def test_server_dispatches_dingtalk_without_personal_chat(monkeypatch):
     server = object.__new__(module.AgentWebSocketServer)
     server._ensure_persistent_group_fanout = AsyncMock(return_value=SimpleNamespace(dingtalk_inbound=inbound))
     sender = AsyncMock()
-    monkeypatch.setattr(module, "send_wire_payload", sender)
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.send_wire_payload", sender)
     request = e2a_to_agent_request(E2AEnvelope(request_id="test-transport", channel="dingtalk",
         method=ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value, params={"event": _event().to_payload()}))
     await server.dispatch_parsed_request(object(), request, asyncio.Lock())

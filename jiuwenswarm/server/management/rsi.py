@@ -2,17 +2,22 @@
 
 """Rsi management; resources remain owned by its injected host."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import logging
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.agent import AgentResponse
 from typing import Any
 from pathlib import Path
 import asyncio
 import inspect
 import json
 import os
+
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.agent import AgentResponse
 
 logger = logging.getLogger(__name__)
 

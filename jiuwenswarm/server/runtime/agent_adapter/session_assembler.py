@@ -2,6 +2,10 @@
 
 """Session assembly ownership, singleflight and retryable preparation."""
 
+# This component implements its adapter owner and deliberately shares its
+# private session state. It does not expose that state to external callers.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import asyncio
@@ -11,10 +15,11 @@ import inspect
 import time
 from typing import Any, Callable
 
+from agent_gateway.common.mode_matrix import is_team_mode
+
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.config import get_config
-from agent_gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.server.client_attachments.registry import conversation_app
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import discard_restored_permission_batch
 from jiuwenswarm.server.runtime.agent_adapter.session_identity import resolve_cron_session_identity
@@ -191,6 +196,10 @@ class SessionAssembler:
                     or existing._has_live_root_permission_owner(sid)  # pylint: disable=protected-access
                 )
                 if busy:
+                    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+                        _model_name_names_selection,
+                    )
+
                     installed_selection = existing._collaboration_model_selection  # pylint: disable=protected-access
                     if (
                         installed_selection is None
@@ -304,12 +313,12 @@ class SessionAssembler:
                     remove_runtime_state=False,
                 )
                 existing = None
-            if (existing is not None and not is_external_harness and not busy
-                    and callable(getattr(existing, "_tool_retrieval_enable_flip_pending", None))
-                    and existing._tool_retrieval_enable_flip_pending()):
-                await existing.cleanup()
-                owner._drop_session_adapter_cache_entry(sid, remove_lock=False)
-                existing = None
+            if existing is not None and not is_external_harness and not busy:
+                retrieval_changed = getattr(existing, "_tool_retrieval_enable_flip_pending", None)
+                if callable(retrieval_changed) and retrieval_changed():
+                    await existing.cleanup()
+                    owner._drop_session_adapter_cache_entry(sid, remove_lock=False)
+                    existing = None
             if existing is not None:
                 first_mcp_reconcile = requested_mcp_scan_names is not None and not bool(
                     getattr(
@@ -540,7 +549,9 @@ class SessionAssembler:
                             ),
                         )
                         if restoring_permission:
-                            from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueueError
+                            from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+                                RootPermissionQueueError,
+                            )
 
                             if not restored:
                                 raise RootPermissionQueueError("permission_continuation_context_missing")

@@ -89,8 +89,9 @@ class ProductionHostServices:
         )
         self._hooks = hooks if hooks is not None else ExtensionHookDispatcher()
 
+    @staticmethod
     def encode_response(
-        self, response: Any, *, response_id: str, sequence: int = 0
+        response: Any, *, response_id: str, sequence: int = 0
     ) -> dict[str, Any]:
         from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 
@@ -98,8 +99,9 @@ class ProductionHostServices:
             response, response_id=response_id, sequence=sequence
         )
 
+    @staticmethod
     def encode_chunk(
-        self, chunk: Any, *, response_id: str, sequence: int, is_stream: bool = True
+        chunk: Any, *, response_id: str, sequence: int, is_stream: bool = True
     ) -> dict[str, Any]:
         from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
 
@@ -117,12 +119,14 @@ class ProductionHostServices:
         except ConnectionClosed as exc:
             raise TransportClosed(str(exc)) from exc
 
-    def push_payload(self, message: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def push_payload(message: dict[str, Any]) -> dict[str, Any]:
         from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
         return build_server_push_wire(message)
 
-    def is_transport_closed(self, exc: BaseException) -> bool:
+    @staticmethod
+    def is_transport_closed(exc: BaseException) -> bool:
         if isinstance(exc, TransportClosed):
             return True
         from websockets.exceptions import ConnectionClosed

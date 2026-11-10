@@ -246,7 +246,9 @@ class WorkerProcess:
             # calculated. It cannot migrate configuration or execute yet.
             if runtime_ipc is None:
                 self.launch_identity, observation = await probe_identity()
-            payload = launch_identity_payload(self.launch_identity, source_observation=observation, runtime_ipc=runtime_ipc)
+            payload = launch_identity_payload(
+                self.launch_identity, source_observation=observation, runtime_ipc=runtime_ipc,
+            )
             self._proc.stdin.write(payload)
             self._proc.stdin.close()
         except BaseException as exc:

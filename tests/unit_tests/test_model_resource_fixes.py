@@ -346,7 +346,7 @@ async def test_config_adapter_registers_resource_methods(catalog_state):
 def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
     # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
-    store = import_module("agent_gateway.common.model_selection_store")
+    store = import_module("jiuwenswarm.common.model_selection_store")
     from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
@@ -366,7 +366,7 @@ def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, r
 def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
     # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
-    store = import_module("agent_gateway.common.model_selection_store")
+    store = import_module("jiuwenswarm.common.model_selection_store")
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
     session_id = "__cron___1a1231c0004_53dd13fcf709"
@@ -383,10 +383,14 @@ def test_model_selection_read_rides_out_metadata_replacement(tmp_path, monkeypat
     import json
     from pathlib import Path
 
-    store = import_module("agent_gateway.common.model_selection_store")
+    store = import_module("jiuwenswarm.common.model_selection_store")
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
     selection = {"type": "model_group", "id": "mgp_a", "route_id": "rte_b"}
+    from jiuwenswarm.common import external_providers
+
+    # Exercise the standalone reader even when collection registered Server.
+    monkeypatch.delitem(external_providers._providers, "session_metadata", raising=False)
     metadata_path = tmp_path / "design_race" / "metadata.json"
     metadata_path.parent.mkdir()
     metadata_path.write_text(json.dumps({"model_selection": selection}), encoding="utf-8")

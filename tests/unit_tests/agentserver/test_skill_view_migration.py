@@ -230,7 +230,7 @@ def test_strict_preparation_retries_unreadable_or_corrupt_visibility_without_del
     damaged_bytes = metadata.read_bytes()
     seed = Mock(wraps=visibility.bootstrap_skill_visibility)
     monkeypatch.setattr(visibility, "bootstrap_skill_visibility", seed)
-    monkeypatch.setattr(bootstrap, "get_user_workspace_dir", lambda: openjiuwen_home)
+    monkeypatch.setattr(bootstrap, "get_domain_data_dir", lambda: openjiuwen_home)
     monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: library)
     preparation = bootstrap.TeamStoragePreparation()
 

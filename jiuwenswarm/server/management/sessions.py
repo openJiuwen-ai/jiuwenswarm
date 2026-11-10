@@ -2,14 +2,19 @@
 
 """Sessions management; resources remain owned by its injected host."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import logging
+from typing import Any
+import asyncio
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
-from typing import Any
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
-import asyncio
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_all_sessions_metadata,
 )
@@ -211,13 +216,13 @@ class SessionsManagement:
                         )
 
                         try:
-                            host = active_recommendation_host()
+                            recommendation_host = active_recommendation_host()
                             if (
-                                host is not None
+                                recommendation_host is not None
                                 and previous_project_id
                                 and previous_project_id != project.project_id
                             ):
-                                await host.session_left_project(previous_project_id, sid)
+                                await recommendation_host.session_left_project(previous_project_id, sid)
                         except Exception:  # noqa: BLE001 - rebind already persisted
                             logger.warning(
                                 "[AgentWebSocketServer] session rebind recommendation "
@@ -373,7 +378,8 @@ class SessionsManagement:
             )
             if pair is None:
                 logger.warning(
-                    "[AgentWS] session.rewind: no agent for context rebuild (session_id=%s channel=%s); history truncated but model context may still contain rewound turns",
+                    '[AgentWS] session.rewind: no agent for context rebuild (session_id=%s '
+                    'channel=%s); history truncated but model context may still contain rewound turns',
                     target_sid,
                     request.channel_id,
                 )

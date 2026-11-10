@@ -403,8 +403,9 @@ class RuntimeSupervisor:
         worker_id = self._affinity.worker_for(request.session_id)
         # connect() publishes the transport before hello validates its identity
         # and registers the Worker. Requests must wait for that whole barrier.
-        if (self._conn is None or self._validated_conn is not self._conn
-                or self._registry.get(worker_id) is None) and not self._fatal:
+        connection_unvalidated = self._conn is None or self._validated_conn is not self._conn
+        worker_unready = connection_unvalidated or self._registry.get(worker_id) is None
+        if worker_unready and not self._fatal:
             try:
                 await asyncio.wait_for(self.run_until_ipc_ready(), timeout=self._connect_timeout)
             except asyncio.TimeoutError:

@@ -70,11 +70,11 @@ def _load_server_main() -> Callable[[], None]:
     with redirect_stdout(sys.stderr):
         from openjiuwen.core.common.logging.log_config import configure_log_config
 
+        route_names = ("common", "interface", "prompt_builder", "performance", "*")
         configure_log_config({
             "backend": "loguru",
             "sinks": {"mcp_stderr": {"target": "stderr", "colorize": False}},
-            "routes": {name: ["mcp_stderr"] for name in (
-                "common", "interface", "prompt_builder", "performance", "*")},
+            "routes": {name: ["mcp_stderr"] for name in route_names},
         })
         from openjiuwen.agent_teams.mcp.server import main as server_main
 

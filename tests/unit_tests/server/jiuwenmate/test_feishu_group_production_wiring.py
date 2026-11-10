@@ -91,7 +91,7 @@ async def test_group_inspect_returns_the_push_lock_before_feishu_responds():
 @pytest.mark.asyncio
 async def test_group_server_rejects_wrong_app_response_and_cleans_up_query(monkeypatch):
     server = object.__new__(_agent_websocket_server_type())
-    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", AsyncMock())
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.send_wire_payload", AsyncMock())
 
     async def push(message):
         params = message["payload"]
@@ -123,7 +123,7 @@ async def test_group_query_crosses_gateway_forwarding_and_returns_to_server(
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     server = object.__new__(_agent_websocket_server_type())
-    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", AsyncMock())
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.send_wire_payload", AsyncMock())
     handler = object.__new__(MessageHandler)
     manager = ChannelManager(handler)
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
@@ -168,7 +168,7 @@ async def test_group_channel_checks_live_bot_membership_and_fails_closed():
 ])
 async def test_group_response_must_match_query_kind(monkeypatch, message_ids, valid_status, wrong_status):
     server = object.__new__(_agent_websocket_server_type())
-    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", AsyncMock())
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.send_wire_payload", AsyncMock())
 
     async def push(message):
         payload = message["payload"]
@@ -638,7 +638,7 @@ async def test_agent_server_dispatches_feishu_request_without_entering_personal_
     async def capture_send(_ws, wire):
         sends.append(wire)
 
-    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", capture_send)
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.send_wire_payload", capture_send)
 
     await server.dispatch_parsed_request(object(), request, asyncio.Lock())
 
@@ -747,7 +747,7 @@ async def test_agent_server_routes_result_delivery_ack_to_persistent_manager(mon
     async def capture_send(_ws, wire):
         sent.append(wire)
 
-    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", capture_send)
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.send_wire_payload", capture_send)
 
     await server.dispatch_parsed_request(object(), request, asyncio.Lock())
 

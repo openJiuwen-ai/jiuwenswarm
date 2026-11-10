@@ -51,7 +51,10 @@ def worker_process(
     expected_pid: int | None = None,
 ) -> tuple[psutil.Process, float]:
     """Establish ownership from the OS as well as the peer's HELLO fields."""
-    if not isinstance(hello, dict) or hello.get("kind") != "hello" or hello.get("protocol") not in (1, 2, PROTOCOL_VERSION):
+    if (
+        not isinstance(hello, dict) or hello.get("kind") != "hello"
+        or hello.get("protocol") not in (1, 2, PROTOCOL_VERSION)
+    ):
         raise RuntimeError("Worker lifecycle refused an unknown IPC protocol")
     legacy = hello.get("deployment_scope") is None
     if legacy and not allow_legacy:

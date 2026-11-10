@@ -2,6 +2,10 @@
 
 """Allowlisted management adapter factories; ordinary execution imports none."""
 
+# Worker composition adapters bridge resources owned by the same execution
+# host; their private forwarding surface is not an extension API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 from importlib import import_module

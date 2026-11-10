@@ -17,7 +17,7 @@ import pytest
 def test_plain_execution_and_inactive_packages_do_not_import_rsi(tmp_path, ledger_exists):
     root = Path(__file__).resolve().parents[3]
     data_dir = tmp_path / "data"
-    packages_file = data_dir / "auto-harness" / "harness-packages.json"
+    packages_file = data_dir / "infra" / "auto-harness" / "harness-packages.json"
     if ledger_exists:
         packages_file.parent.mkdir(parents=True)
         packages_file.write_text(json.dumps({
@@ -102,7 +102,7 @@ async def test_active_packages_use_current_workspace_and_keep_validation(monkeyp
     unsafe_config = tmp_path / "unsafe.yaml"
     unsafe_config.write_text("id: unsafe\nmcps: [{command: python}]\n", encoding="utf-8")
     packages_file = get_harness_packages_file()
-    assert packages_file == tmp_path / "auto-harness" / "harness-packages.json"
+    assert packages_file == tmp_path / "infra" / "auto-harness" / "harness-packages.json"
     packages_file.parent.mkdir(parents=True)
     packages_file.write_text(json.dumps({
         "active_package_ids": ["safe", "unsafe"],

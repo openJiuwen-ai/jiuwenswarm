@@ -152,7 +152,9 @@ def _read_raw_config() -> dict[str, Any]:
         return {}
     try:
         with path.open("r", encoding="utf-8") as handle:
-            loaded = yaml.load(handle, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
+            from jiuwenswarm.common.yaml_utils import safe_yaml_load
+
+            loaded = safe_yaml_load(handle) or {}
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] failed to read config.yaml: %s", exc)
         return {}

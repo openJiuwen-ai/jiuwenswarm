@@ -8,75 +8,9 @@
 
 from __future__ import annotations
 
-from agent_gateway.common.interrupt_resume import answers_paused_calls
-from agent_gateway.common.interrupt_resume import is_client_tool_resume
-from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
-from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import SubagentToolActivityRail
-from jiuwenswarm.agents.harness.common.rsi.errors import RsiError
-from jiuwenswarm.agents.harness.common.tools import SkillRetrievalToolkit
-from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import apply_discovery_metadata
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import add_collection
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import call_phone
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import convert_timestamp_to_utc8_time
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import create_alarm
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import create_calendar_event
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import create_note
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import delete_alarm
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import delete_collection
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import get_user_location
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import image_reading
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import modify_alarm
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import modify_note
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import query_collection
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import save_file_to_file_manager
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import save_media_to_gallery
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import search_alarms
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import search_calendar_event
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import search_contact
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import search_file
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import search_message
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import search_notes
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import search_photo_gallery
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import send_message
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import upload_file
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import upload_photo
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import view_push_result
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import xiaoyi_gui_agent
-from jiuwenswarm.common.cua_config import is_cua_agent_enabled
-from jiuwenswarm.common.mcp_dynamic_token_patch import _registry_token_url
-from jiuwenswarm.common.mcp_dynamic_token_patch import apply_mcp_dynamic_token_patch
-from jiuwenswarm.common.mcp_dynamic_token_patch import mark_dynamic_token_server
-from jiuwenswarm.common.mcp_dynamic_token_patch import unmark_dynamic_token_server
-from jiuwenswarm.observability.turn import SessionTurnTracker
-from jiuwenswarm.runtime.client_tools import client_tool_request_event
-from jiuwenswarm.server.client_attachments.registry import Capability
-from jiuwenswarm.server.client_attachments.registry import conversation_app
-from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import discard_restored_permission_batch
-from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import has_live_pending_interrupt
-from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import unanswered_permission_batch
-from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import validate_client_tool_answers
-from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import PermissionRailGroup
-from jiuwenswarm.server.runtime.agent_adapter.session_identity import (
-    resolve_cron_session_identity as _resolve_cron_session_identity,
-)
-from jiuwenswarm.server.runtime.mcp.apps import apply_mcp_apps_patch
-from openjiuwen.core.common.exception.errors import AgentError
-from openjiuwen.core.foundation.tool import McpToolCard
-from openjiuwen.core.single_agent.interrupt.state import ToolInterruptionState
-from openjiuwen.core.single_agent.interrupt.state import match_answers
-from openjiuwen.core.single_agent.interrupt.state import pending_interrupts
-from openjiuwen.harness.subagent_runtime import SUBAGENT_ACTIVITY_EVENT_TYPE
-from openjiuwen.harness.subagent_runtime import SUBAGENT_MESSAGE_EVENT_TYPE
-from openjiuwen.harness.subagent_runtime import SUBAGENT_UPDATED_EVENT_TYPE
 from shutil import copytree
 from shutil import ignore_patterns
 from tempfile import TemporaryDirectory
-
-from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
-from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import build_jiuwen_memory_rail, is_jiuwen_builtin_memory, jiuwen_builtin_config_fingerprint
-from jiuwenswarm.agents.harness.common.tools.multimodal_config import MULTIMODAL_TOOL_GROUPS
-from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
-
 import asyncio
 import copy
 import hashlib
@@ -98,13 +32,16 @@ from pathlib import Path
 from shutil import which
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
 
-if TYPE_CHECKING:
-    from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
-    from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
-    from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
-    from jiuwenswarm.common.auth.login_credentials import LoginAuth
-    from jiuwenswarm.server.runtime.agent_adapter.session_input import SessionInputGuard
-
+from agent_gateway.common.interrupt_resume import answers_paused_calls
+from agent_gateway.common.interrupt_resume import is_client_tool_resume
+from openjiuwen.core.common.exception.errors import AgentError
+from openjiuwen.core.foundation.tool import McpToolCard
+from openjiuwen.core.single_agent.interrupt.state import ToolInterruptionState
+from openjiuwen.core.single_agent.interrupt.state import match_answers
+from openjiuwen.core.single_agent.interrupt.state import pending_interrupts
+from openjiuwen.harness.subagent_runtime import SUBAGENT_ACTIVITY_EVENT_TYPE
+from openjiuwen.harness.subagent_runtime import SUBAGENT_MESSAGE_EVENT_TYPE
+from openjiuwen.harness.subagent_runtime import SUBAGENT_UPDATED_EVENT_TYPE
 import yaml
 from pydantic import ValidationError
 from openjiuwen.core.context_engine.schema.config import (
@@ -167,7 +104,6 @@ from openjiuwen.harness.rails import (
 )
 from openjiuwen.harness.rails.personal_context import PersonalContextRail
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
-
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
@@ -186,18 +122,54 @@ from openjiuwen.harness.schema.interaction import (
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402
+from agent_gateway.common.mode_matrix import (
+    NEW_AGENT_WORK_NORMAL,
+    NEW_AGENT_WORK_PLAN,
+    deprecate_mode,
+    is_code_profile_mode,
+    is_team_mode,
+)
 
+from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import SubagentToolActivityRail
+from jiuwenswarm.agents.harness.common.rsi.errors import RsiError
+from jiuwenswarm.agents.harness.common.tools import SkillRetrievalToolkit
+from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import apply_discovery_metadata
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
+from jiuwenswarm.common.mcp_dynamic_token_patch import _registry_token_url
+from jiuwenswarm.common.mcp_dynamic_token_patch import apply_mcp_dynamic_token_patch
+from jiuwenswarm.common.mcp_dynamic_token_patch import mark_dynamic_token_server
+from jiuwenswarm.common.mcp_dynamic_token_patch import unmark_dynamic_token_server
+from jiuwenswarm.observability.turn import SessionTurnTracker
+from jiuwenswarm.runtime.client_tools import client_tool_request_event
+from jiuwenswarm.server.client_attachments.registry import Capability
+from jiuwenswarm.server.client_attachments.registry import conversation_app
+from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import discard_restored_permission_batch
+from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import has_live_pending_interrupt
+from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import unanswered_permission_batch
+from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import validate_client_tool_answers
+from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import PermissionRailGroup
+from jiuwenswarm.server.runtime.agent_adapter.session_identity import (
+    resolve_cron_session_identity as _resolve_cron_session_identity,
+)
+from jiuwenswarm.server.runtime.mcp.apps import apply_mcp_apps_patch
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
+from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
+    build_jiuwen_memory_rail,
+    is_jiuwen_builtin_memory,
+    jiuwen_builtin_config_fingerprint,
+)
+from jiuwenswarm.agents.harness.common.tools.multimodal_config import MULTIMODAL_TOOL_GROUPS
+from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 from jiuwenswarm.runtime.checkpointer import (
     ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
 )
-
 from jiuwenswarm.server.runtime.agent_adapter.subagent_projection import (
     SUBAGENT_PROJECTION, SubagentStreamEvent, parse_subagent_event,
 )
 from jiuwenswarm.server.runtime.session.history_io import (
     run_history_io, run_stream_parser, stream_chunk_writes_history,
 )
-
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
     discard_pending_permission_interrupt_for_target,
     discard_permission_continuation, validate_manual_resume,
@@ -209,11 +181,20 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
 from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import (
     SessionPermissionState,
 )
-
 from jiuwenswarm.server.runtime.agent_adapter.trusted_web_search import (
     TrustedWebFreeSearchTool,
 )
 from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
+from jiuwenswarm.server.runtime.agent_adapter.deferred_capabilities import deferred
+
+if TYPE_CHECKING:
+    from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
+    from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
+    from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
+    from jiuwenswarm.common.auth.login_credentials import LoginAuth
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import SessionInputGuard
+
+AutoHarnessService = deferred("jiuwenswarm.agents.harness.common.auto_harness.service", "AutoHarnessService")
 
 GOAL_UPDATED_EVENT_TYPE = InteractionEventType.GOAL_UPDATED.value
 _ERROR_EVENT = getattr(InteractionEventType, "EXECUTION_ERROR", None)
@@ -400,7 +381,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (  #
     resolve_declared_auto_workspace,
     supports_phase_auto_root,
 )
-from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402
 from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
@@ -636,14 +616,6 @@ from jiuwenswarm.common.utils import (
     mask_sensitive,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from agent_gateway.common.mode_matrix import (
-    NEW_AGENT_WORK_NORMAL,
-    NEW_AGENT_WORK_PLAN,
-    deprecate_mode,
-    is_code_profile_mode,
-    is_team_mode,
-)
-from jiuwenswarm.server.runtime.agent_adapter.deferred_capabilities import deferred
 
 build_browser_agent_config = deferred("openjiuwen.harness.subagents.browser_agent", "build_browser_agent_config")
 build_model_discovery_settings = deferred(
@@ -668,7 +640,10 @@ if TYPE_CHECKING:
     from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 else:
     SessionTurnTracker = deferred("jiuwenswarm.observability.turn", "SessionTurnTracker")
-    PermissionRailGroup = deferred("jiuwenswarm.server.runtime.agent_adapter.permission_rail_group", "PermissionRailGroup")
+    PermissionRailGroup = deferred(
+        "jiuwenswarm.server.runtime.agent_adapter.permission_rail_group",
+        "PermissionRailGroup",
+    )
     SkillRetrievalToolkit = deferred(
         "jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits", "SkillRetrievalToolkit")
 
@@ -1895,6 +1870,7 @@ async def _agent_template_version(pkg_dir: Path) -> str:
     except ValueError:
         return ""
 
+
 class JiuWenSwarmDeepAdapter:
     SESSION_ADAPTER_IDLE_TTL_SEC = 2 * 60 * 60
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
@@ -2093,6 +2069,10 @@ class JiuWenSwarmDeepAdapter:
         # killed remote MCP server fails fast instead of hanging on the MCP
         # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
+        self._execution_driver = None
+        self._session_assembler = None
+        self._model_factory = None
+        self._agent_kernel = None
         # MCP Apps: tag UI-linked MCP tool results with an ``mcp_app`` block
         # (resourceUri + raw CallToolResult) for the web renderer. Idempotent.
         apply_mcp_apps_patch()
@@ -7249,7 +7229,10 @@ class JiuWenSwarmDeepAdapter:
     def _create_model(self, config: dict) -> Model:
         if getattr(self, "_moa_runtime", None) is not None:
             return self._moa_runtime.aggregator
-        return self._get_model_factory().configure(self, config, is_placeholder=is_placeholder_model_entry, client_view=model_client_config_view)
+        return self._get_model_factory().configure(
+            self, config, is_placeholder=is_placeholder_model_entry,
+            client_view=model_client_config_view,
+        )
 
     def _configured_default_model(self) -> Model | None:
         """Materialize the configured fallback only when a request needs it.
@@ -8985,7 +8968,12 @@ class JiuWenSwarmDeepAdapter:
         global TTSERail, TTSEConfig
         if TTSERail is _UNLOADED_TTSE or TTSEConfig is _UNLOADED_TTSE:
             try:
-                from openjiuwen.harness.rails.evolution import TTSERail, TTSEConfig
+                from openjiuwen.harness.rails.evolution import (
+                    TTSERail as ttse_rail_type,
+                    TTSEConfig as ttse_config_type,
+                )
+
+                TTSERail, TTSEConfig = ttse_rail_type, ttse_config_type
             except ImportError:
                 TTSERail = TTSEConfig = None
         if TTSERail is None or TTSEConfig is None:
@@ -11570,7 +11558,8 @@ class JiuWenSwarmDeepAdapter:
             KernelIdentity.for_agent(project_dir=str(getattr(self, "_project_dir", "") or ""),
                 work_mode=mode, definition=agent_definition, capabilities=self._instance_overrides,
                 configuration=config_base),
-            definition=agent_definition, language=self._resolve_prompt_language(), rail_config=config_base.get("react", {}),
+            definition=agent_definition, language=self._resolve_prompt_language(),
+            rail_config=config_base.get("react", {}),
             prompt_factory=lambda language: build_agent_identity_prompt(language=language))
         self._session_instance_agent_definition = self._agent_kernel.definition_snapshot()
         if self._skill_retrieval_session_enabled is None:
@@ -14311,7 +14300,9 @@ class JiuWenSwarmDeepAdapter:
         *,
         send_without_output: bool,
     ) -> tuple[Any | None, bool]:
-        return await self._get_execution_driver().attach_and_send(request, inputs, send_without_output=send_without_output)
+        return await self._get_execution_driver().attach_and_send(
+            request, inputs, send_without_output=send_without_output,
+        )
 
     async def _send_input_with_permission_resume_guard(
         self, request: SendInputRequest, *, send: Any = None,

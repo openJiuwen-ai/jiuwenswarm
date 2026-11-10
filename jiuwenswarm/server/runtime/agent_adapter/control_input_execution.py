@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Session-owned continuation execution with durable output boundaries."""
+
+# This component implements its adapter owner and deliberately shares its
+# private session state. It does not expose that state to external callers.
+# pylint: disable=protected-access
 from __future__ import annotations
 
 import asyncio
@@ -114,9 +118,10 @@ class ControlInputExecutionService:
         if self.closed:
             return
         runner = self._runner
-        if self._running and runner is not None and runner is not asyncio.current_task() and not runner.done():
-            runner.cancel()
-            await asyncio.gather(runner, return_exceptions=True)
+        if self._running and runner is not None:
+            if runner is not asyncio.current_task() and not runner.done():
+                runner.cancel()
+                await asyncio.gather(runner, return_exceptions=True)
         async with self._close_lock:
             if self.closed:
                 return

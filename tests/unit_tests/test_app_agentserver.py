@@ -67,7 +67,6 @@ async def test_run_does_not_delete_agent_teams_directory(
         "jiuwenswarm.server.front.server.AgentServerFront",
         lambda host, port, **kwargs: fake_front,
     )
-    monkeypatch.setattr(app_agentserver, "_start_supervisor", _fake_supervisor)
     # Logging config would import openjiuwen; this case only cares about Front/Supervisor ordering.
     monkeypatch.setattr(app_agentserver, "_configure_openjiuwen_logging", lambda: None)
 
@@ -127,7 +126,7 @@ def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
 
     app_agentserver._configure_openjiuwen_logging()
 
-    assert captured["log_path"] == f"{tmp_path}/infra/logs/core/"
+    assert Path(captured["log_path"]) == tmp_path / "infra" / "logs" / "core"
     assert captured["log_file"] == "run/jiuwen.log"
     # Control-plane errors must stay visible: the fallback must not silence
     # OpenJiuwen loggers after configuring them.
@@ -208,4 +207,4 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
     app_agentserver._configure_openjiuwen_logging()
 
     assert captured.get("log_file") == "run/jiuwen.log"
-    assert captured.get("log_path", "") == f"{tmp_path}/infra/logs/core/"
+    assert Path(captured["log_path"]) == tmp_path / "infra" / "logs" / "core"

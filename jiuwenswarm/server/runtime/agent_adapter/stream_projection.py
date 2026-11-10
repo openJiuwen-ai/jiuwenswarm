@@ -66,7 +66,7 @@ class StreamResponsePipeline:
         )
 
         self.projector = StreamProjector(
-            block_buffer=self.ports.TeamA2UIBlockBuffer(),
+            block_buffer=self.ports.team_a2ui_block_buffer(),
             split_probe=self.ports.split_a2ui_stream_content,
             extend_probe=self.ports.extend_a2ui_stream_probe,
         )

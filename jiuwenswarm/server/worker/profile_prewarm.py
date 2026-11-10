@@ -114,7 +114,10 @@ class ProfilePrewarmer:
             self._task.add_done_callback(self._completed)
 
     def _completed(self, task: asyncio.Task) -> None:
-        if not task.cancelled() and (error := task.exception()) is not None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
             self._state = "failed"
             logger.warning("[Worker] profile prewarm stopped: %s", type(error).__name__)
 
@@ -136,7 +139,9 @@ class ProfilePrewarmer:
         return hit
 
     def note_model_use(self, model: Any) -> bool:
-        if self._closed or self._state != "ready" or self._warm_model is None or model is not self._warm_model:
+        if self._closed or self._state != "ready":
+            return False
+        if self._warm_model is None or model is not self._warm_model:
             return False
         config = self._get_config()
         hit = _options(config).get("enabled") is True and _identity(config) == self._identity
@@ -224,12 +229,14 @@ class ProfilePrewarmer:
             delta_mb = max(0, _rss() - before) / (1024 * 1024)
             self._metrics.update(wall_ms=elapsed * 1000, cpu_ms=cpu_elapsed * 1000,
                                  rss_delta_mb=delta_mb, attempt_completed_at_ns=time.perf_counter_ns())
-            if self._state not in {"cancelled", "stale"} and (
-                cpu_elapsed > _number(options, "max_cpu_seconds", 5, 0.001, 5)
-                or delta_mb > _number(options, "max_rss_delta_mb", 256, 0.001, 256)
-                or elapsed > _number(options, "timeout_seconds", 10, 0.1, 10)
-            ):
-                self._state = "budget_exceeded"
+            if self._state not in {"cancelled", "stale"}:
+                exceeded = (
+                    cpu_elapsed > _number(options, "max_cpu_seconds", 5, 0.001, 5)
+                    or delta_mb > _number(options, "max_rss_delta_mb", 256, 0.001, 256)
+                    or elapsed > _number(options, "timeout_seconds", 10, 0.1, 10)
+                )
+                if exceeded:
+                    self._state = "budget_exceeded"
             logger.info("[Worker] profile_prewarm=%s", self.snapshot())
 
     async def checkpoint(self) -> None:

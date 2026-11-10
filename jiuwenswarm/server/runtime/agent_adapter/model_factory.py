@@ -2,6 +2,10 @@
 
 """Model construction and Kernel leases, independent of session execution."""
 
+# This component implements its adapter owner and deliberately shares its
+# private session state. It does not expose that state to external callers.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import logging
@@ -160,8 +164,8 @@ class ModelFactory:
                 cache[alias] = model
         return model
 
+    @staticmethod
     def register_recipe(
-        self,
         owner,
         entry: dict[str, Any],
         name_counter: dict[str, int],
@@ -199,8 +203,9 @@ class ModelFactory:
 
         return cache_key
 
+    @staticmethod
     def register_catalog(
-        self, owner, config: dict, *, available_models: Callable
+        owner, config: dict, *, available_models: Callable
     ) -> None:
         """从 models.defaults 列表构建模型缓存。
 
@@ -222,7 +227,8 @@ class ModelFactory:
             if cache_key is not None:
                 owner._global_index_to_cache_key[global_idx] = cache_key
 
-    def build_legacy(self, owner, config: dict) -> None:
+    @staticmethod
+    def build_legacy(owner, config: dict) -> None:
         """回退到旧格式（models.default / react 段）构建单条目缓存。"""
         default_model_config = config.get("models", {}).get("default", {})
         react_config = config.get("react", {})
@@ -306,13 +312,12 @@ class ModelFactory:
         owner._configured_default_model_keys = list(
             dict.fromkeys([*default_keys, *recipes])
         )
-        default_groups = [
-            group
-            for group in (config.get("models", {}).get("groups") or [])
-            if isinstance(group, dict)
-            and group.get("enabled", True)
-            and group.get("is_default")
-        ]
+        default_groups = []
+        for group in config.get("models", {}).get("groups") or []:
+            if not isinstance(group, dict):
+                continue
+            if group.get("enabled", True) and group.get("is_default"):
+                default_groups.append(group)
         owner._configured_default_group_id = (
             str(default_groups[0].get("model_group_id") or "") if default_groups else ""
         )

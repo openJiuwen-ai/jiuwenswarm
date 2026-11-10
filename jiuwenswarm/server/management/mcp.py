@@ -2,26 +2,30 @@
 
 """Mcp management; resources remain owned by its injected host."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import os
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
-from jiuwenswarm.server.ws_send import send_wire_payload
-
 import logging
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.agent import AgentResponse
 from typing import Any
 from typing import NamedTuple
 from pathlib import Path
 import asyncio
+import shutil
+
+from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.server.ws_send import send_wire_payload
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.config import get_config_yaml_mcp_servers
 from jiuwenswarm.common.config import get_mcp_server_config
 from jiuwenswarm.common.config import get_mcp_servers
 from jiuwenswarm.common.config import remove_mcp_server
 from jiuwenswarm.common.config import set_mcp_server_enabled
-import shutil
 from jiuwenswarm.common.config import upsert_mcp_server
 
 logger = logging.getLogger(__name__)

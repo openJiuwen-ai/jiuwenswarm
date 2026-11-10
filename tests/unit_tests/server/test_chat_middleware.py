@@ -29,7 +29,7 @@ from jiuwenswarm.server.middleware.chat import (
 )
 
 _SERVER_FILE = (
-    Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "worker" / "execution_requests.py"
 )
 
 

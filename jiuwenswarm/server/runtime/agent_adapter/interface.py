@@ -10,20 +10,8 @@
 
 from __future__ import annotations
 
-from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
-from agent_gateway.extensions.registry import ExtensionRegistry
-from jiuwenswarm.common.hook_event import AgentServerHookEvents
-from jiuwenswarm.common.hooks_context import MemoryHookContext
-from jiuwenswarm.common.utils import get_agent_home_dir
-from jiuwenswarm.common.utils import mask_sensitive
-from jiuwenswarm.enterprise import is_enterprise
-from jiuwenswarm.runtime.client_tools import client_tool_answers
-from jiuwenswarm.runtime.session.model import TEAM_EXECUTION_CONTEXT_METADATA_KEY
-
 import json
 from concurrent.futures import Future
-from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
-
 import asyncio
 from contextlib import aclosing
 from copy import deepcopy
@@ -35,13 +23,31 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
-from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
+from agent_gateway.extensions.registry import ExtensionRegistry
 from agent_gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     SESSION_MESSAGE_ORIGIN,
     with_cross_session_history_metadata,
 )
+from agent_gateway.common.mode_matrix import (
+    canonicalize_mode_text,
+    is_code_profile_mode,
+    is_team_mode as is_team_runtime_mode,
+    is_team_plan_mode,
+    is_web_composable_mode,
+    read_request_work_mode,
+)
 
+from jiuwenswarm.common.hook_event import AgentServerHookEvents
+from jiuwenswarm.common.hooks_context import MemoryHookContext
+from jiuwenswarm.common.utils import get_agent_home_dir
+from jiuwenswarm.common.utils import mask_sensitive
+from jiuwenswarm.enterprise import is_enterprise
+from jiuwenswarm.runtime.client_tools import client_tool_answers
+from jiuwenswarm.runtime.session.model import TEAM_EXECUTION_CONTEXT_METADATA_KEY
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
+from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
     AgentAdapter,
     create_adapter,
@@ -96,14 +102,6 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     is_keep_planning_value,
     normalize_option_value,
     resolve_permission_action,
-)
-from agent_gateway.common.mode_matrix import (
-    canonicalize_mode_text,
-    is_code_profile_mode,
-    is_team_mode as is_team_runtime_mode,
-    is_team_plan_mode,
-    is_web_composable_mode,
-    read_request_work_mode,
 )
 from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_CHANNEL_CONTEXT_KEY,
@@ -171,6 +169,7 @@ from jiuwenswarm.server.runtime.agent_adapter.request_completion import (
     _session_message_owns_completion, _await_history_receipt,
     _announce_durable_completion, _complete_history_request,
 )
+
 
 def _person_drove_turn(request: AgentRequest, *, is_team_mode: bool) -> bool:
     """The person asked for this turn: a message they sent, or their answer to the agent's question.
@@ -273,6 +272,7 @@ def _starter_interaction_context(params: Any, query: Any) -> str:
             "publication_date_provenance": evidence.get("publication_date_provenance"),
         }, ensure_ascii=False)
     )
+
 
 class _TeamPlanApprovalPayloadError(ValueError):
     """Raised when a structured team.plan approval payload is malformed."""
@@ -1323,6 +1323,8 @@ class JiuWenSwarm:
 
     def __init__(self) -> None:
         self._adapter: AgentAdapter | None = None
+        self._hook_services = None
+        self._control_input_executions: set[Any] = set()
         # PersonalContext Rail follows the Host runtime switch.  Keep the
         # latest snapshot on the facade so a lazily-created adapter inherits
         # the current state before its first rail synchronization.
@@ -1374,15 +1376,18 @@ class JiuWenSwarm:
 
     @_session_asset_manager.setter
     def _session_asset_manager(self, manager):
+        # pylint: disable-next=protected-access
         self._get_management_requests()._session_asset_manager = manager
 
     @property
     def _skilldev_service(self):
         provider = getattr(self, "_management_requests", None)
+        # pylint: disable-next=protected-access
         return provider._skilldev_service if provider is not None else None
 
     @_skilldev_service.setter
     def _skilldev_service(self, service):
+        # pylint: disable-next=protected-access
         self._get_management_requests()._skilldev_service = service
 
     def set_heartbeat_service(self, service: Any | None) -> None:
@@ -1410,6 +1415,7 @@ class JiuWenSwarm:
 
     def _get_skilldev_service(self):
         """Delegate to the optional management provider."""
+        # pylint: disable-next=protected-access
         return self._get_management_requests()._get_skilldev_service()
 
     def _ensure_adapter(self, *, mode: str = "agent") -> AgentAdapter:
@@ -2169,18 +2175,21 @@ class JiuWenSwarm:
         """Delegate to the optional management provider."""
         if request.req_method not in _SKILLDEV_METHODS:
             return None
+        # pylint: disable-next=protected-access
         return await self._get_management_requests()._handle_skilldev_request(request)
 
     async def _handle_skills_request(self, request: AgentRequest) -> AgentResponse | None:
         """Delegate to the optional management provider."""
         if request.req_method not in (_SKILL_ROUTES.keys() | _SKILL_SYNC_WS_REJECTED):
             return None
+        # pylint: disable-next=protected-access
         return await self._get_management_requests()._handle_skills_request(request)
 
     async def _handle_session_asset_request(self, request: AgentRequest) -> AgentResponse | None:
         """Delegate to the optional management provider."""
         if request.req_method not in _SESSION_ASSET_ROUTES:
             return None
+        # pylint: disable-next=protected-access
         return await self._get_management_requests()._handle_session_asset_request(request)
 
     @staticmethod
@@ -2188,6 +2197,7 @@ class JiuWenSwarm:
         """Delegate to the optional management provider."""
         from jiuwenswarm.server.runtime.agent_adapter.management_requests import ManagementRequests
 
+        # pylint: disable-next=protected-access
         return ManagementRequests._is_skills_rebuild_followup(payload)
 
     @staticmethod
@@ -2195,6 +2205,7 @@ class JiuWenSwarm:
         """Delegate to the optional management provider."""
         from jiuwenswarm.server.runtime.agent_adapter.management_requests import ManagementRequests
 
+        # pylint: disable-next=protected-access
         return ManagementRequests._is_skills_create_from_knowledge_followup(payload)
 
     async def _run_skills_rebuild_followup(
@@ -2203,6 +2214,7 @@ class JiuWenSwarm:
         payload: dict[str, Any],
     ) -> None:
         """Delegate to the optional management provider."""
+        # pylint: disable-next=protected-access
         return await self._get_management_requests()._run_skills_rebuild_followup(request, payload)
 
     @staticmethod
@@ -2210,6 +2222,7 @@ class JiuWenSwarm:
         """Delegate to the optional management provider."""
         from jiuwenswarm.server.runtime.agent_adapter.management_requests import ManagementRequests
 
+        # pylint: disable-next=protected-access
         return ManagementRequests._coerce_optional_str_list(raw)
 
     @staticmethod
@@ -2224,13 +2237,18 @@ class JiuWenSwarm:
         """Delegate to the optional management provider."""
         from jiuwenswarm.server.runtime.agent_adapter.management_requests import ManagementRequests
 
-        return ManagementRequests._build_skills_knowledge_followup_request(request, followup=followup, skills=skills, trusted_dirs=trusted_dirs, input_file=input_file)
+        # pylint: disable-next=protected-access
+        return ManagementRequests._build_skills_knowledge_followup_request(
+            request, followup=followup, skills=skills, trusted_dirs=trusted_dirs,
+            input_file=input_file,
+        )
 
     @staticmethod
     def _cleanup_knowledge_upload_file(input_file: str) -> None:
         """Delegate to the optional management provider."""
         from jiuwenswarm.server.runtime.agent_adapter.management_requests import ManagementRequests
 
+        # pylint: disable-next=protected-access
         return ManagementRequests._cleanup_knowledge_upload_file(input_file)
 
     async def _run_skills_create_from_knowledge_silent(
@@ -2239,12 +2257,14 @@ class JiuWenSwarm:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         """Delegate to the optional management provider."""
+        # pylint: disable-next=protected-access
         return await self._get_management_requests()._run_skills_create_from_knowledge_silent(request, payload)
 
     async def _handle_plugins_request(self, request: AgentRequest) -> AgentResponse | None:
         """Delegate to the optional management provider."""
         if request.req_method not in _PLUGIN_ROUTES:
             return None
+        # pylint: disable-next=protected-access
         return await self._get_management_requests()._handle_plugins_request(request)
 
     async def _handle_package_catalog_request(self, request: AgentRequest) -> AgentResponse | None:
@@ -2255,6 +2275,7 @@ class JiuWenSwarm:
 
         # Catalog read operations also support the legacy unbound entry point.
         provider = self._get_management_requests() if isinstance(self, JiuWenSwarm) else ManagementRequests(self)
+        # pylint: disable-next=protected-access
         return await provider._handle_package_catalog_request(request)
 
     async def _process_interrupt(self, request: AgentRequest) -> AgentResponse:
@@ -3004,8 +3025,8 @@ class JiuWenSwarm:
             get_config=get_config,
             is_auto_memory_enabled=is_auto_memory_enabled,
             is_memory_enabled=is_memory_enabled,
-            TeamA2UIBlockBuffer=TeamA2UIBlockBuffer,
-            TeamPlanApprovalPayloadError=_TeamPlanApprovalPayloadError,
+            team_a2ui_block_buffer=TeamA2UIBlockBuffer,
+            team_plan_approval_payload_error=_TeamPlanApprovalPayloadError,
             person_drove_turn=_person_drove_turn,
             complete_history_request=_complete_history_request,
             session_message_owns_completion=_session_message_owns_completion,

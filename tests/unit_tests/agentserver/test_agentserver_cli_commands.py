@@ -19,7 +19,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 
 from jiuwenswarm.server.management import authorization as owner_authorization
 from jiuwenswarm.server.management import commands as owner_commands
-from jiuwenswarm.server.management import mcp as owner_mcp
+from jiuwenswarm.server.handlers import mcp as owner_mcp
 from jiuwenswarm.server.worker import execution_host as owner_execution_host
 
 
@@ -339,8 +339,7 @@ async def test_handle_command_add_dir_returns_path_and_remember(
         "tiered_overrides": True,
     }
     monkeypatch.setattr(
-        owner_commands,
-        "persist_cli_trusted_directory",
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist.persist_cli_trusted_directory",
         lambda _raw: persist_stub,
     )
     reload_notify = MagicMock()
@@ -378,8 +377,7 @@ async def test_handle_command_add_dir_reports_reload_schedule_failure(
 ):
     monkeypatch.setattr(server.get_agent_manager(), "has_smart_permission_lifecycle", lambda _: True)
     monkeypatch.setattr(
-        owner_commands,
-        "persist_cli_trusted_directory",
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist.persist_cli_trusted_directory",
         lambda _raw: {"ok": True, "normalized": "/tmp/demo"},
     )
     monkeypatch.setattr(
@@ -417,8 +415,7 @@ async def test_handle_command_add_dir_sends_no_target_dirty_signal_without_waiti
         "normalized": "/tmp/demo",
     }
     monkeypatch.setattr(
-        owner_commands,
-        "persist_cli_trusted_directory",
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist.persist_cli_trusted_directory",
         lambda _raw: persist_stub,
     )
     reload_started = asyncio.Event()
@@ -657,8 +654,7 @@ async def test_handle_command_compact_pushes_and_persists_usage_event(server, fa
     )
     monkeypatch.setattr(server, "send_push", mock_send_push)
     monkeypatch.setattr(
-        owner_commands,
-        "append_history_record",
+        "jiuwenswarm.server.handlers.commands.append_history_record",
         lambda **kwargs: persisted.append(kwargs),
     )
 
@@ -1764,7 +1760,7 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
     )
     reload_calls = []
     captured = {"models": {"default": "captured"}}
-    monkeypatch.setattr(owner_authorization, "get_config", lambda: captured)
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: captured)
 
     async def _slow_reload(_config, _env, **kwargs):
         reload_calls.append((_config, _env, kwargs))

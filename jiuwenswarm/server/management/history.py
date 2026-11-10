@@ -2,19 +2,27 @@
 
 """History management; resources remain owned by its injected host."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
+
+import logging
+from typing import Any
+import datetime as _dt
+import asyncio
+import math
+
+from agent_gateway.common.mode_matrix import is_team_mode
 
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
-
 from jiuwenswarm.server.runtime.session.session_history import list_session_subagent_ids
-
-import logging
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
-from typing import Any
 from jiuwenswarm.server.runtime.session.session_history import HistorySnapshotChanged
 from jiuwenswarm.server.runtime.session.session_history import InvalidHistoryCursor
 from jiuwenswarm.server.wire_truncate import _HISTORY_PAGE_SIZE
@@ -26,21 +34,17 @@ from jiuwenswarm.server.wire_truncate import _TEAM_HISTORY_MAX_LIMIT
 from jiuwenswarm.server.wire_truncate import _TEAM_HISTORY_MAX_MAX_BYTES
 from jiuwenswarm.server.wire_truncate import _TEAM_HISTORY_MIN_MAX_BYTES
 from jiuwenswarm.server.wire_truncate import _coerce_int
-import datetime as _dt
 from jiuwenswarm.server.wire_truncate import _sanitize_history_record_for_wire
 from jiuwenswarm.server.wire_truncate import _select_history_record_page
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
-import asyncio
 from jiuwenswarm.server.runtime.session.session_history import (
     enqueue_history_request_completion,
 )
 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 from jiuwenswarm.server.runtime.session.session_history import history_exists
-from agent_gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
 from jiuwenswarm.server.runtime.session.session_history import load_history_records
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
-import math
 from jiuwenswarm.server.runtime.session.session_history import read_history_cursor_page
 from jiuwenswarm.server.runtime.session.session_history import (
     read_member_history_records,
@@ -493,7 +497,8 @@ class HistoryManagement:
                 sent_todo = await host.services.send(ws, wire_todo)
             if not sent_todo:
                 logger.warning(
-                    "[AgentWebSocketServer] history todo.updated snapshot send failed (oversized or replaced): request_id=%s session_id=%s seq=%s todo_count=%s",
+                    '[AgentWebSocketServer] history todo.updated snapshot send failed (oversized or '
+                    'replaced): request_id=%s session_id=%s seq=%s todo_count=%s',
                     request.request_id,
                     session_id.strip(),
                     next_seq,
@@ -600,7 +605,8 @@ class HistoryManagement:
         end = start + page_size
         page_messages = list(ordered[start:end])
         logger.debug(
-            "[history.get] session_id=%s subagent_id=%s page_idx=%s raw_total=%s restorable_total=%s total_pages=%s returned=%s",
+            '[history.get] session_id=%s subagent_id=%s page_idx=%s raw_total=%s restorable_total=%s '
+            'total_pages=%s returned=%s',
             normalized_session_id,
             normalized_subagent_id or "",
             page_idx,

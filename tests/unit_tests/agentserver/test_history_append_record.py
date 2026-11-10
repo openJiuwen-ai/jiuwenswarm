@@ -21,7 +21,7 @@ async def _append(request: AgentRequest) -> None:
         build_ws_request_context(SimpleNamespace(), _FakeWebSocket(), request, asyncio.Lock())
     )
 
-from jiuwenswarm.server.management import history as owner_history
+from jiuwenswarm.server.handlers import session as owner_history
 
 
 class _FakeWebSocket:

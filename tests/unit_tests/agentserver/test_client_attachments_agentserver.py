@@ -140,7 +140,7 @@ def _pushing_server(monkeypatch) -> tuple[AgentWebSocketServer, list[dict]]:
     server.send_push = push
     server._heartbeat_runtime.retain_agent = lambda *args: None
     server._execution_runtime = lambda: _AsksTheClient()
-    monkeypatch.setattr(agent_ws_server, "enqueue_history_request_completion", lambda *a, **k: None)
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.enqueue_history_request_completion", lambda *a, **k: None)
     return server, pushed
 
 
@@ -150,7 +150,7 @@ async def _cross_session_message(server: AgentWebSocketServer, store_path, monke
     from jiuwenswarm.server.runtime.session.session_message_service import SessionMessageService
     from jiuwenswarm.server.runtime.session.session_message_store import SessionMessageStore
 
-    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda *a, **k: {
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.get_session_metadata", lambda *a, **k: {
         "user_id": "user-1", "channel_id": "web", "mode": "agent.code.normal"})
     store = SessionMessageStore(store_path)
     service = SessionMessageService(store=store, admission=SessionRunAdmission(),
@@ -163,7 +163,7 @@ async def _cross_session_message(server: AgentWebSocketServer, store_path, monke
         target_session_id="session-1", content="update the deck", hop_count=1, input_mode="")
     result = await server.execute_internal_session_message(
         store.claim(queued.message_id, f"execution-{uuid.uuid4().hex}", "run-1"))
-    assert result.status == "waiting_user"
+    assert result.status == "waiting_user", result
     await service.stop()
 
 
@@ -299,7 +299,7 @@ class _AsksForAnotherCall(_DocumentAgent):
 
 @pytest.mark.parametrize("is_stream", [False, True])
 def test_a_resume_whose_turn_runs_another_client_tool_sends_its_request(is_stream, monkeypatch) -> None:
-    monkeypatch.setattr(agent_ws_server, "enqueue_history_request_completion", lambda *a, **k: None)
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.enqueue_history_request_completion", lambda *a, **k: None)
     session_id = "session-1"
 
     async def scenario():

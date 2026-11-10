@@ -4,20 +4,20 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
-from jiuwenswarm.runtime.plan import PlanModeController
-from jiuwenswarm.runtime.session.model import NoControlTargetError
-from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 from weakref import WeakValueDictionary
-
 import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
 
+from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
+from jiuwenswarm.runtime.plan import PlanModeController
+from jiuwenswarm.runtime.session.model import NoControlTargetError
+from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES, RuntimeEvent
+from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS
 from jiuwenswarm.server.worker.execution_services import HostServices, TransportClosed
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,7 @@ class _TurnOutcomeTracker:
             "chat.processing_status_deferred",
         }:
             self.saw_team_input_accepted = True
-        elif event_type == "chat.ask_user_question":
+        elif event_type in USER_INTERACTION_EVENTS:
             self.waiting_user = True
         if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
             self.fail(self._event_error(event))
@@ -323,6 +323,8 @@ def _renew_server_plan_controller() -> PlanModeController:
 
 
 _SERVER_PLAN_CONTROLLER = PlanModeController()
+_session_mode_sync_locks = _SERVER_PLAN_CONTROLLER.sync_locks
+_plan_exited_sessions = _SERVER_PLAN_CONTROLLER.exited_sessions
 
 
 def _group_organization_owner_team_ids(session_id: str) -> set[str]:

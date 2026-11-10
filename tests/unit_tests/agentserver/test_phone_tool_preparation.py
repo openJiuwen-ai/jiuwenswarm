@@ -134,6 +134,7 @@ async def test_phone_capability_gates_tool_registration(
         _xiaoyi_phone_tools_registered=registered,
         _skill_manager=object(),
         _config_base_cache=config,
+        _resolve_runtime_language=lambda: "cn",
         _register_shared_tool=captured_tools.append,
         _register_agent_owned_tool=lambda tool, owner: None,
         _iter_runtime_audio_tools=lambda owner: [],

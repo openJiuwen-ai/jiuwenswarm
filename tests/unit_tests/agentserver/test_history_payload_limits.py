@@ -7,7 +7,8 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 
-from jiuwenswarm.server.management import history as owner_history
+from jiuwenswarm.server.handlers import session as owner_history
+from jiuwenswarm.server.handlers import team as owner_team
 
 
 class FakeWebSocket:
@@ -94,7 +95,7 @@ async def test_team_history_get_paginates_and_bounds_large_records(monkeypatch):
     records = make_large_tool_result_records()
 
     monkeypatch.setattr(
-        owner_history,
+        owner_team,
         "read_team_history_records",
         lambda session_id: records,
     )
@@ -126,7 +127,7 @@ async def test_team_history_get_cursor_continues_next_page(monkeypatch):
     records = make_large_tool_result_records()
 
     monkeypatch.setattr(
-        owner_history,
+        owner_team,
         "read_team_history_records",
         lambda session_id: records,
     )
@@ -239,7 +240,7 @@ async def test_team_history_get_preserves_too_large_first_record_as_placeholder(
     ]
 
     monkeypatch.setattr(
-        owner_history,
+        owner_team,
         "read_team_history_records",
         lambda session_id: records,
     )

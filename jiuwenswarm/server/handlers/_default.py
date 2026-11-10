@@ -19,6 +19,7 @@ from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.worker.execution_services import TransportClosed
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +28,7 @@ async def handle_unary(ctx: RequestContext) -> None:
     """非流式处理：调用 process_message，返回一条 E2AResponse 线 JSON。"""
     request = ctx.request
     services = ctx.services
-    import jiuwenswarm.server.agent_ws_server as _ws_server
-    TurnOutcomeTracker = _ws_server.TurnOutcomeTracker
+    from jiuwenswarm.server.worker.execution_support import _TurnOutcomeTracker
     runtime = services.execution_runtime()
     resume_state = await services.open_session_message_resume(request)
     resume_outcome = "unknown"
@@ -42,7 +42,7 @@ async def handle_unary(ctx: RequestContext) -> None:
             sequence=0,
         )
 
-    outcome_tracker = TurnOutcomeTracker()
+    outcome_tracker = _TurnOutcomeTracker()
     try:
         if request.req_method == ReqMethod.CHAT_ANSWER:
             events = await runtime.answer_interaction(
@@ -100,8 +100,7 @@ async def handle_stream(ctx: RequestContext) -> None:
     """流式处理：调用 process_message_stream，逐条发送 E2AResponse 线 JSON。"""
     request = ctx.request
     services = ctx.services
-    import jiuwenswarm.server.agent_ws_server as _ws_server
-    TurnOutcomeTracker = _ws_server.TurnOutcomeTracker
+    from jiuwenswarm.server.worker.execution_support import _TurnOutcomeTracker
     from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
         PLAN_MODE_EXITED_EVENT_TYPE,
     )
@@ -124,7 +123,7 @@ async def handle_stream(ctx: RequestContext) -> None:
         services.session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
 
     chunk_count = 0
-    outcome_tracker = TurnOutcomeTracker()
+    outcome_tracker = _TurnOutcomeTracker()
     keepalive = ctx.sink.open_stream_keepalive(request)
     runtime_stream: Any | None = None
 
@@ -173,7 +172,7 @@ async def handle_stream(ctx: RequestContext) -> None:
                         chunk_count - 1,
                     )
                     return
-            except WebSocketConnectionClosed:
+            except (WebSocketConnectionClosed, TransportClosed):
                 logger.info(
                     "[AgentWebSocketServer] 流式响应停止，WebSocket 已关闭: request_id=%s",
                     request.request_id,

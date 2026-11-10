@@ -53,7 +53,7 @@ async def test_saved_binding_automatically_prepares_agent_cli(tmp_path, monkeypa
     async def send_wire(_ws, payload):
         responses.append(payload)
 
-    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", send_wire)
+    monkeypatch.setattr("jiuwenswarm.server.worker.execution_requests.send_wire_payload", send_wire)
     forwarded = []
 
     async def send_request(envelope):

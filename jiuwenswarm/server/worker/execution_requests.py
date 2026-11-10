@@ -2,10 +2,33 @@
 
 from __future__ import annotations
 
+import uuid
+import asyncio
+import datetime as _dt
+import logging
+import sys
+from typing import Any, Optional
+from weakref import WeakValueDictionary
+
 from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 from agent_gateway.common.ws_diagnostics import describe_ws_exception
 from agent_gateway.common.ws_diagnostics import describe_ws_peer
 from agent_gateway.common.ws_diagnostics import format_ws_diagnostics
+from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
+from openjiuwen.core.common.logging import server_logger
+from agent_gateway.common.mode_matrix import (
+    deprecate_mode,
+    is_plan_mode,
+    is_single_agent_mode,
+    is_team_mode,
+)
+from agent_gateway.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_INTERNAL_KEY,
+    SESSION_MESSAGE_ORIGIN,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+)
+
 from jiuwenswarm.common.request_ext import lift_from_metadata
 from jiuwenswarm.common.request_ext import reset_ext
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
@@ -15,31 +38,15 @@ from jiuwenswarm.server.client_attachments import CLIENT_ATTACH_REQ_METHODS
 from jiuwenswarm.server.client_attachments import handle_client_attach_request
 from jiuwenswarm.server.middleware.chat import should_trigger_before_chat_request
 from jiuwenswarm.server.middleware.chat import trigger_before_chat_request
-from jiuwenswarm.server.personal_context.ws_handler import PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS
+from jiuwenswarm.server.personal_context.ws_handler import (
+    PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS,
+)
 from jiuwenswarm.server.personal_context.ws_handler import handle_personal_context_request
 from jiuwenswarm.server.worker.execution_support import _DIAGNOSIS_REQ_METHODS
 from jiuwenswarm.server.worker.execution_support import _UNDELIVERED_ANSWER_ERRORS
-from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
-import uuid
-
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
-
-_DIAGNOSIS_METHOD_NAMES = frozenset({
-    "diagnosis.run", "diagnosis.list", "diagnosis.get", "diagnosis.cancel",
-    "diagnosis.delete", "diagnosis.ttse.trigger",
-})
-
-import asyncio
-import datetime as _dt
-import logging
-import sys
-from typing import Any, Optional
-from weakref import WeakValueDictionary
-
-from openjiuwen.core.common.logging import server_logger
 from jiuwenswarm.common.stage_timer import async_stage
-
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )
@@ -60,24 +67,12 @@ from jiuwenswarm.common.e2a.constants import (
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
 from jiuwenswarm.common.log_preview import preview_text
-from agent_gateway.common.mode_matrix import (
-    deprecate_mode,
-    is_plan_mode,
-    is_single_agent_mode,
-    is_team_mode,
-)
 from jiuwenswarm.common.schema.agent import (
     AgentRequest,
     AgentResponse,
     AgentResponseChunk,
 )
 from jiuwenswarm.common.schema.message import ReqMethod
-from agent_gateway.common.session_message import (
-    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
-    SESSION_MESSAGE_INTERNAL_KEY,
-    SESSION_MESSAGE_ORIGIN,
-    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
-)
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES, RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanModeController
@@ -122,9 +117,20 @@ from jiuwenswarm.server.worker.execution_support import (
     _TurnOutcomeTracker,
 )
 
+_DIAGNOSIS_METHOD_NAMES = frozenset({
+    "diagnosis.run", "diagnosis.list", "diagnosis.get", "diagnosis.cancel",
+    "diagnosis.delete", "diagnosis.ttse.trigger",
+})
+
+
 logger = logging.getLogger("jiuwenswarm.server.agent_ws_server")
 
 _session_switch_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def get_session_switch_locks() -> WeakValueDictionary[str, asyncio.Lock]:
+    """Share the execution owner's switch locks with transport-neutral handlers."""
+    return _session_switch_locks
 
 
 _TRAJECTORY_REQ_METHODS = frozenset(
@@ -147,6 +153,12 @@ class ExecutionRequests:
     """Request execution and durable mailbox handlers bound to one host."""
 
     _stateless_fallback_agents: dict[str, Any]
+    _stateless_fallback_lock: asyncio.Lock | None
+    _startup_preparation_tokens: set[Any]
+    _expert_stream_requests: dict[asyncio.Task, AgentRequest]
+    _archive_service: Any
+    _feishu_group_waiters: dict[str, Any]
+    _thinking_notice_waiters: dict[str, Any]
 
     async def _dispatch_gateway_adapter_request(
         self,
@@ -415,7 +427,6 @@ class ExecutionRequests:
                 await handle_client_attach_request(ws, request, send_lock, self.send_push)
                 return
             if request.req_method in _PERSONAL_CONTEXT_REQ_METHODS:
-                from jiuwenswarm.server.personal_context.ws_handler import handle_personal_context_request
                 preparation = getattr(self, "_personal_context_start_task", None)
                 if preparation is not None:
                     if registry is not None:
@@ -1055,7 +1066,9 @@ class ExecutionRequests:
                 request.request_id,
                 e,
             )
-            await self._send_error_response(ws, request, send_lock, str(e), e.code)
+            wire = self._send_error_response(ws, request, send_lock, str(e), e.code)
+            async with send_lock:
+                await self.services.send(ws, wire)
         except Exception as e:
             if self.services.is_transport_closed(e):
                 logger.info(
@@ -2576,6 +2589,8 @@ class ExecutionRequests:
         return _SessionMessageResumeState(
             message_id=record.message_id,
             target_session_id=target_session_id,
+            interrupt_request_id=record.interrupt_request_id,
+            interrupt_source=record.interrupt_source,
         )
 
     async def _finalize_session_message_resume(

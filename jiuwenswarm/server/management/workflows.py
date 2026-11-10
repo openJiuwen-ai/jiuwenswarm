@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+import asyncio
+import logging
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
-from typing import Any
 from jiuwenswarm.server.wire_truncate import _WORKFLOW_AGENT_DEFAULT_LIMIT
 from jiuwenswarm.server.wire_truncate import _WORKFLOW_AGENT_MAX_LIMIT
 from jiuwenswarm.server.wire_truncate import _WORKFLOW_LIST_DEFAULT_LIMIT
@@ -19,8 +22,6 @@ from jiuwenswarm.server.wire_truncate import _build_workflow_detail_paginated
 from jiuwenswarm.server.wire_truncate import _build_workflow_list_payload
 from jiuwenswarm.server.wire_truncate import _coerce_int
 from jiuwenswarm.server.wire_truncate import _json_wire_size
-import asyncio
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +278,8 @@ class WorkflowsManagement:
         log_level = logging.WARNING if not resp.ok or has_more else logging.INFO
         logger.log(
             log_level,
-            "[WF_DBG] command.workflows res ok=%s action=%s source=%s session_id=%s workflow_id=%s count=%d source_bytes=%d payload_bytes=%d has_more=%s error=%s",
+            '[WF_DBG] command.workflows res ok=%s action=%s source=%s session_id=%s workflow_id=%s '
+            'count=%d source_bytes=%d payload_bytes=%d has_more=%s error=%s',
             resp.ok,
             action,
             source,

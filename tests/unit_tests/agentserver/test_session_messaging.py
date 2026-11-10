@@ -2296,9 +2296,9 @@ async def test_a_message_paused_by_client_tools_and_questions_waits_on_the_whole
         return True
 
     server.send_push = send_push
-    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
-    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
-    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+    monkeypatch.setattr(execution_requests_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(execution_requests_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(execution_requests_module, "enqueue_history_request_completion", lambda *a, **k: None)
 
     result = await server.execute_internal_session_message(record)
 
@@ -2497,7 +2497,7 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server.send_runtime_event = _send_runtime_event_ok
+    server._send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
@@ -2537,7 +2537,7 @@ async def test_a_question_is_correlated_by_its_request_id_alone(tmp_path, monkey
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
     server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(0, result=True)
-    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+    monkeypatch.setattr(execution_requests_module, "enqueue_history_request_completion", lambda *a, **k: None)
 
     await server._handle_stream_impl(object(), request, asyncio.Lock())
 
@@ -2580,9 +2580,9 @@ async def test_a_first_turn_question_is_correlated_by_its_request_id_alone(
         return True
 
     server.send_push = send_push
-    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
-    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
-    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+    monkeypatch.setattr(execution_requests_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(execution_requests_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(execution_requests_module, "enqueue_history_request_completion", lambda *a, **k: None)
 
     result = await server.execute_internal_session_message(record)
 
@@ -2627,7 +2627,7 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server.send_runtime_event = _send_runtime_event_fail
+    server._send_runtime_event = _send_runtime_event_fail
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
@@ -2680,7 +2680,7 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
     server._execution_runtime = lambda: _Runtime()
-    server.send_runtime_event = disconnect
+    server._send_runtime_event = disconnect
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
@@ -2734,7 +2734,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server.send_runtime_event = _send_runtime_event_ok
+    server._send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
@@ -3077,7 +3077,7 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server.send_runtime_event = _send_runtime_event_ok
+    server._send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
@@ -4374,7 +4374,7 @@ async def test_a_resumed_mailbox_turn_that_asks_its_client_again_moves_the_corre
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
     server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(0, result=True)
-    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+    monkeypatch.setattr(execution_requests_module, "enqueue_history_request_completion", lambda *a, **k: None)
 
     if streaming:
         await server._handle_stream_impl(object(), request, asyncio.Lock())
@@ -4423,9 +4423,9 @@ async def test_a_first_turn_interaction_without_a_request_id_fails_the_message(
         return True
 
     server.send_push = send_push
-    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
-    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
-    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+    monkeypatch.setattr(execution_requests_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(execution_requests_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(execution_requests_module, "enqueue_history_request_completion", lambda *a, **k: None)
 
     result = await server.execute_internal_session_message(record)
 

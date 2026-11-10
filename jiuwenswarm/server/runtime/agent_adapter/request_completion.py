@@ -6,8 +6,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from concurrent.futures import Future
-from jiuwenswarm.common.schema.agent import AgentRequest
+
 from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+
+from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.session.session_history import (
     enqueue_history_request_completion, SESSION_REQUEST_COMPLETED_EVENT,
 )
@@ -16,6 +18,7 @@ from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransp
 logger = logging.getLogger(__name__)
 _COMPLETION_ANNOUNCEMENTS: set[asyncio.Task[None]] = set()
 _HISTORY_RECEIPT_WAIT_SECONDS = 30.0
+
 
 def _announce_durable_completion(
     session_id: str,

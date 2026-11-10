@@ -237,6 +237,7 @@ class AgentManager:
         self._retirement_tasks: dict[int, asyncio.Task] = {}
         self._permissions_reload_tasks: set[asyncio.Task[None]] = set()
         self._permissions_reload_closing = False
+        self._cleanup_pending = False
         self._permissions_reload_tail: asyncio.Task[None] | None = None
         self._permissions_reload_schedule_failure: tuple[object, Exception] | None = None
         self._agent_create_locks: WeakValueDictionary[

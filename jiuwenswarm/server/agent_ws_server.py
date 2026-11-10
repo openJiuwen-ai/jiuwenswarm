@@ -16,18 +16,6 @@ from importlib import import_module
 from typing import Any, ClassVar
 
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
-
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_INTERNAL_METADATA_KEYS
-from jiuwenswarm.common.e2a.gateway_normalize import (
-    E2A_FALLBACK_FAILED_KEY,
-    E2A_INTERNAL_CONTEXT_KEY,
-    E2A_LEGACY_AGENT_REQUEST_KEY,
-)
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import encode_json_parse_error_wire
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
 from agent_gateway.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
@@ -42,6 +30,18 @@ from agent_gateway.common.ws_diagnostics import (
     format_ws_diagnostics,
 )
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.e2a.constants import E2A_WIRE_INTERNAL_METADATA_KEYS
+from jiuwenswarm.common.e2a.gateway_normalize import (
+    E2A_FALLBACK_FAILED_KEY,
+    E2A_INTERNAL_CONTEXT_KEY,
+    E2A_LEGACY_AGENT_REQUEST_KEY,
+)
+from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.e2a.wire_codec import encode_json_parse_error_wire
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 from jiuwenswarm.server.worker.execution_services import ProductionHostServices, TransportClosed
@@ -79,6 +79,20 @@ def _renew_server_plan_controller() -> PlanModeController:
 def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
     """Retain the historical import surface of the shared plan controller."""
     PlanModeController.inject_activation_reminder(request)
+
+
+def get_plan_active_sessions() -> set[str]:
+    """Expose the compatibility Runtime's plan markers to request handlers."""
+    return _plan_active_sessions
+
+
+def get_session_switch_locks() -> Any:
+    """Use the execution owner's lock table for both switch entry points."""
+    from jiuwenswarm.server.worker.execution_requests import (
+        get_session_switch_locks as execution_switch_locks,
+    )
+
+    return execution_switch_locks()
 
 
 def _parse_single_byte_range(
@@ -1314,6 +1328,7 @@ def _uses_projectless_task_workspace(params: dict[str, object], channel_id: str)
     """Retain the historical predicate through its current Runtime owner."""
     from jiuwenswarm.runtime.session_provisioner import RuntimeSessionProvisioner
 
+    # pylint: disable-next=protected-access
     return RuntimeSessionProvisioner._uses_projectless_workspace(params, channel_id)
 
 

@@ -209,7 +209,9 @@ class AgentServerServices:
                 streaming=streaming,
                 sequence=sequence,
             )
-        return await self._connection.send_runtime_event(
+        # The request context bridges the transport to its Worker owner.
+        # pylint: disable-next=protected-access
+        return await self._connection._send_runtime_event(
             getattr(sink, "_ws", None),
             event,
             getattr(sink, "_send_lock", None),
@@ -221,7 +223,8 @@ class AgentServerServices:
         """如果这是在回答一个挂起的问题，先记下那封排队消息。"""
         if self._connection is None:
             return None
-        return await self._connection.open_session_message_resume(request)
+        # pylint: disable-next=protected-access
+        return await self._connection._open_session_message_resume(request)
 
     async def finalize_session_message_resume(
         self,
@@ -234,7 +237,8 @@ class AgentServerServices:
         """这一轮结束时，把排队消息收尾。"""
         if self._connection is None:
             return
-        await self._connection.finalize_session_message_resume(
+        # pylint: disable-next=protected-access
+        await self._connection._finalize_session_message_resume(
             request,
             resume_state,
             outcome=outcome,
@@ -245,13 +249,15 @@ class AgentServerServices:
         """用户还要再答一次时，把下一题和上一题对上。"""
         if self._connection is None:
             return
-        await self._connection.persist_repeated_session_question(event, resume_state)
+        # pylint: disable-next=protected-access
+        await self._connection._persist_repeated_session_question(event, resume_state)
 
     async def cleanup_client_disconnect_session_runtime(self, request: Any) -> bool:
         """对方断开后，清掉这条连接上还占着的会话运行状态。"""
         if self._connection is None:
             return False
-        return await self._connection.cleanup_client_disconnect_session_runtime(request)
+        # pylint: disable-next=protected-access
+        return await self._connection._cleanup_client_disconnect_session_runtime(request)
 
     async def send_push(self, msg: Any) -> bool:
         """往当前连接主动推一条消息。压缩上下文这类命令会在回包之外再用它。"""
@@ -291,7 +297,7 @@ def build_ws_request_context(
 
     return RequestContext(
         request=request,
-        sink=WSSink(ws, send_lock),
+        sink=WSSink(ws, send_lock, services=getattr(server, "services", None)),
         connection_id=str(id(ws)),
         services=AgentServerServices(server),
     )

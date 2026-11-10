@@ -1542,15 +1542,11 @@ class WorkflowRunState(BaseModel):
                 if isinstance(v.get("name"), str) and v["name"]
             }
             if vote_names:
-                group = next(
-                    (
-                        g
-                        for g in reversed(phase.verify_groups)
-                        if g.label == label
-                        and self._verify_group_shares_roster(g, vote_names)
-                    ),
-                    None,
-                )
+                group = None
+                for candidate in reversed(phase.verify_groups):
+                    if candidate.label == label and self._verify_group_shares_roster(candidate, vote_names):
+                        group = candidate
+                        break
         if group is None:
             group = next(
                 (g for g in reversed(phase.verify_groups) if g.label == label),

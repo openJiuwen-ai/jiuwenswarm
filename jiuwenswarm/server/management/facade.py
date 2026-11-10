@@ -2,22 +2,28 @@
 
 """Stable management API delegating explicitly to independently loaded domains."""
 
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 from typing import Any, Optional, TYPE_CHECKING
 from pathlib import Path
+import asyncio
+
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.wire_truncate import _HISTORY_PAGE_SIZE
+from jiuwenswarm.server.management.registry import ManagementServices
 
 if TYPE_CHECKING:
     from jiuwenswarm.server.management.mcp import McpUpsertTypes
-import asyncio
-
-from jiuwenswarm.server.management.registry import ManagementServices
 
 
 class ManagementFacade:
     """Management delegation shares its host's Runtime, tasks and persistence."""
+
+    _management_services: ManagementServices | None
 
     @property
     def management(self) -> ManagementServices:
@@ -957,7 +963,9 @@ class ManagementFacade:
     async def _await_host_oauth_auth(
         self, name: str, *, max_attempts: int = 200, delay: float = 1.0
     ) -> dict[str, Any]:
-        return await self.management.provider("mcp")._await_host_oauth_auth(name, max_attempts=max_attempts, delay=delay)
+        return await self.management.provider("mcp")._await_host_oauth_auth(
+            name, max_attempts=max_attempts, delay=delay,
+        )
 
     @staticmethod
     def _command_mcp_internal_state(request: AgentRequest) -> AgentResponse:

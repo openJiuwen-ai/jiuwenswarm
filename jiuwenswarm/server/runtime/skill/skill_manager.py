@@ -1070,8 +1070,6 @@ def _safe_rmtree(path: Path) -> bool:
         except OSError:
             return True
 
-    import time
-
     max_retries = 3
     retry_delay = 0.2
 

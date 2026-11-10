@@ -55,11 +55,16 @@ def read_metadata(path: Path, parse: Callable[..., dict | None]) -> dict | None:
     key = ResourceKey(identity, "skill-metadata", absolute, "", "", json.dumps(stamp))
 
     def load() -> str:
-        index = get_user_workspace_dir() / "cache/skill-metadata" / (hashlib.sha256(absolute.encode()).hexdigest() + ".json")
+        index = (
+            get_user_workspace_dir() / "cache/skill-metadata"
+            / (hashlib.sha256(absolute.encode()).hexdigest() + ".json")
+        )
         try:
             cached = json.loads(index.read_text(encoding="utf-8"))
-            if (cached.get("schema") == 1 and cached.get("path") == absolute
-                    and cached.get("stamp") == stamp and isinstance(cached.get("metadata"), dict)):
+            current_index = (
+                cached.get("schema") == 1 and cached.get("path") == absolute and cached.get("stamp") == stamp
+            )
+            if current_index and isinstance(cached.get("metadata"), dict):
                 cached["metadata"].pop("body", None)
                 cached["metadata"]["path"] = str(path)
                 return json.dumps(cached["metadata"], ensure_ascii=False)
@@ -74,14 +79,12 @@ def read_metadata(path: Path, parse: Callable[..., dict | None]) -> dict | None:
             if _stamp(path) != stamp:
                 return encoded
             index.parent.mkdir(parents=True, exist_ok=True)
-            descriptor, temporary = tempfile.mkstemp(prefix=".skill-", dir=index.parent)
-            try:
-                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            with tempfile.TemporaryDirectory(prefix=".skill-", dir=index.parent) as directory:
+                temporary = Path(directory) / "index.json"
+                with temporary.open("w", encoding="utf-8") as stream:
                     json.dump({"schema": 1, "path": absolute, "stamp": stamp,
                                "metadata": metadata}, stream, ensure_ascii=False, default=str)
                 os.replace(temporary, index)
-            finally:
-                Path(temporary).unlink(missing_ok=True)
             return encoded
         except (OSError, UnicodeError):
             # A read-only index directory must not hide an otherwise usable skill.

@@ -69,7 +69,10 @@ def _is_launch_parent(parent_pid: int) -> bool:
         return False
 
 
-def launch_identity_payload(fingerprint: str, *, source_observation: dict | None = None, runtime_ipc: dict | None = None) -> bytes:
+def launch_identity_payload(
+    fingerprint: str, *, source_observation: dict | None = None,
+    runtime_ipc: dict | None = None,
+) -> bytes:
     """Describe the parent's validated deployment on a private spawn pipe."""
     observation = source_observation
     if not getattr(sys, "frozen", False) and not _identity_path().is_file():

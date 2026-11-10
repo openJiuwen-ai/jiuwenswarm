@@ -98,7 +98,7 @@ def fixture_visibility_home(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_skills_dir", lambda: skills_dir)
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.bootstrap.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.team.bootstrap.get_domain_data_dir",
         lambda: tmp_path / "openjiuwen_home",
     )
     configure_openjiuwen_home(tmp_path / "openjiuwen_home")

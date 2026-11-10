@@ -224,6 +224,7 @@ async def _run(host: str, port: int) -> None:
     )
 
     stop_event = asyncio.Event()
+
     async def _watch_backend() -> None:
         try:
             await backend_task

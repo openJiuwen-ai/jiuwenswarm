@@ -1,13 +1,17 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from __future__ import annotations
+# These domain providers and their compatibility facade are one Worker
+# implementation, sharing host-owned lifecycle state rather than a public API.
+# pylint: disable=protected-access
 
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
-from jiuwenswarm.server.ws_send import send_wire_payload
+from __future__ import annotations
 
 import asyncio
 import logging
 from typing import Any
+
+from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 
 logger = logging.getLogger(__name__)

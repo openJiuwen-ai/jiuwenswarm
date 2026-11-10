@@ -27,7 +27,7 @@ items = [dict(id='a', content='one', status='waiting'),
          dict(id='c', status='deleted'), dict(id='d', status='canceled')]
 assert [i['status'] for i in format_todos_for_frontend(items)] == ['pending','in_progress','cancelled']
 assert load_todo_snapshot_for_frontend('missing-session') == []
-assert not any(name.startswith('openjiuwen') for name in sys.modules)
+assert not any(name == 'openjiuwen' or name.startswith('openjiuwen.') for name in sys.modules)
 """
     environment = dict(os.environ, JIUWENSWARM_HOME=str(tmp_path),
                        PYTHONPATH=str(Path(__file__).parents[3]), PYTHONUTF8="1")

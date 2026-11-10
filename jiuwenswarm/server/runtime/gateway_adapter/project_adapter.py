@@ -13,18 +13,17 @@ import os
 import time
 from typing import Any, Callable
 
-from jiuwenswarm.runtime.project_activity import (
-    project_busy_sessions as _project_busy_sessions,  # noqa: F401 - compatibility export
-    project_conversation_state as _project_conversation_state,
-)
-
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
-from jiuwenswarm.common.schema.message import ReqMethod
 from agent_gateway.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     is_default_project_id,
 )
 
+from jiuwenswarm.runtime.project_activity import (
+    project_busy_sessions as _project_busy_sessions,  # noqa: F401 - compatibility export
+    project_conversation_state as _project_conversation_state,
+)
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import (

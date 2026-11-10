@@ -7,6 +7,10 @@ supplies routing and compatibility policy through explicit ports; the execution
 driver owns SDK output lifetime and each request owns projector/committer state.
 """
 
+# This component implements its adapter owner and deliberately shares its
+# private session state. It does not expose that state to external callers.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import logging
@@ -57,8 +61,8 @@ class StreamExecutionPorts:
     get_config: Callable[..., Any]
     is_auto_memory_enabled: Callable[..., Any]
     is_memory_enabled: Callable[..., Any]
-    TeamA2UIBlockBuffer: Callable[..., Any]
-    TeamPlanApprovalPayloadError: Callable[..., Any]
+    team_a2ui_block_buffer: Callable[..., Any]
+    team_plan_approval_payload_error: Callable[..., Any]
     person_drove_turn: Callable
     complete_history_request: Callable
     session_message_owns_completion: Callable
@@ -261,7 +265,7 @@ class StreamExecutionService:
 
             try:
                 inputs, memory_mode, user_turn = facade._build_inputs(request)
-            except ports.TeamPlanApprovalPayloadError as exc:
+            except ports.team_plan_approval_payload_error as exc:
                 completion.status = "error"
                 yield AgentResponseChunk(
                     request_id=rid,
@@ -359,7 +363,9 @@ class StreamExecutionService:
             completion.complete("error")
             if not is_team_mode:
                 raise
-            async for chunk in ports.team_preflight_failure_chunks(request.request_id, request.channel_id, session_id, exc):
+            async for chunk in ports.team_preflight_failure_chunks(
+                request.request_id, request.channel_id, session_id, exc,
+            ):
                 yield chunk
         except Exception:
             completion.complete("error")

@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.server.worker.execution_support import _AppField
+from typing import Protocol
+import logging
+from typing import Any
+from typing import Optional
+import asyncio
+import sys
+import time
 
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+
+from jiuwenswarm.server.worker.execution_support import _AppField
 from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.server.app_services import AppServices
@@ -12,27 +20,17 @@ from jiuwenswarm.server.client_attachments import close_client_attachments
 from jiuwenswarm.server.client_attachments import set_conversation_access
 from jiuwenswarm.server.client_attachments import start_client_attachment_sweep
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
-from jiuwenswarm.server.personal_context import PersonalContextHostAPI
-from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 from jiuwenswarm.server.worker.execution_support import _SERVER_PLAN_CONTROLLER
 from jiuwenswarm.server.worker.execution_support import _conversation_route
 from jiuwenswarm.server.worker.execution_support import _renew_server_plan_controller
 from jiuwenswarm.server.ws_send import send_wire_payload
-
 from jiuwenswarm.common.schema.agent import AgentRequest
-
-from typing import Protocol
 from jiuwenswarm.server.worker.execution_requests import ExecutionRequests
-
 from jiuwenswarm.server.management.facade import ManagementFacade
-
-import logging
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 from jiuwenswarm.runtime import AgentRuntime
-from typing import Any
 from jiuwenswarm.common.config import DEFAULT_SANDBOX_POLICY_FILE
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
-from typing import Optional
 from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageRecord,
@@ -41,7 +39,6 @@ from jiuwenswarm.server.runtime.session.session_message_service import (
     SessionMessageService,
 )
 from jiuwenswarm.server.runtime.session.session_message_store import SessionMessageStore
-import asyncio
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import (
     get_acp_output_manager,
 )
@@ -55,8 +52,6 @@ from jiuwenswarm.common.config import resolve_sandbox_api_token
 from jiuwenswarm.common.config import resolve_sandbox_policy_path
 from jiuwenswarm.runtime.host_services import restore_runtime_push_handler
 from jiuwenswarm.common.config import sync_sandbox_api_token_environ
-import sys
-import time
 from jiuwenswarm.common.config import update_sandbox_endpoint
 from jiuwenswarm.common.config import update_sandbox_runtime
 from jiuwenswarm.server.worker.execution_services import (
@@ -146,8 +141,8 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
     @property
     def _personal_context_host(self) -> Any:
         if getattr(self, "_personal_context_host_instance", None) is None:
-            from jiuwenswarm.server.personal_context import PersonalContextHostAPI
             from jiuwenswarm.common.utils import get_domain_data_dir
+            from jiuwenswarm.server.personal_context import PersonalContextHostAPI
 
             self._personal_context_host_instance = PersonalContextHostAPI(
                 home=get_domain_data_dir() / ".personal_context",
@@ -296,7 +291,10 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
 
         def completed(value: asyncio.Task) -> None:
             tasks.discard(value)
-            if not value.cancelled() and (error := value.exception()) is not None:
+            if value.cancelled():
+                return
+            error = value.exception()
+            if error is not None:
                 logger.warning("[Worker] background task %s failed: %s", name, type(error).__name__)
 
         task.add_done_callback(completed)

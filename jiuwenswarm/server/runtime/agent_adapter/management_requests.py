@@ -6,6 +6,10 @@ The facade retains the execution/session owner and its compatibility methods.
 This provider owns optional SkillDev and task-asset services; neither is created
 by ordinary chat or by a lookup for an unrelated method.
 """
+
+# This component implements its adapter owner and deliberately shares its
+# private session state. It does not expose that state to external callers.
+# pylint: disable=protected-access
 from __future__ import annotations
 
 import asyncio

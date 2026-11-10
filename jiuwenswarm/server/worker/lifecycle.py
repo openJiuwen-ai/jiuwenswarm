@@ -169,6 +169,7 @@ def _start_profile_prewarm(runtime: WorkerRuntime) -> None:
     # Runtime owns the full foreground turn. Pause this optional profile with
     # a token distinct from startup priority released at the actual SDK entry.
     manager.set_preparation_admission(runtime.profile_prewarmer)
+    # pylint: disable-next=protected-access
     runtime.server._profile_prewarmer = runtime.profile_prewarmer
     try:
         runtime.profile_prewarmer.start()

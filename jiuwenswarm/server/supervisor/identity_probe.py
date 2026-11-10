@@ -43,8 +43,13 @@ def main() -> None:
     from jiuwenswarm.server.supervisor.identity_cache import launch_source_observation
 
     fingerprint = code_identity()
-    print(json.dumps({"package": os.path.normcase(str(Path(__file__).resolve().parents[2])),
-                      "code_identity": fingerprint, "source_observation": None if _identity_path().is_file() else launch_source_observation()}))
+    payload = {
+        "package": os.path.normcase(str(Path(__file__).resolve().parents[2])),
+        "code_identity": fingerprint,
+        "source_observation": None if _identity_path().is_file() else launch_source_observation(),
+    }
+    # Stdout carries the identity subprocess protocol, rather than diagnostics.
+    sys.stdout.write(json.dumps(payload) + "\n")
 
 
 if __name__ == "__main__":

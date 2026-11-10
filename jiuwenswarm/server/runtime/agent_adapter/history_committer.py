@@ -4,12 +4,12 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
-
 import asyncio
 import copy
 import time
 from typing import Any, Awaitable, Callable
+
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
 
 
 class HistoryCommitter:
@@ -321,6 +321,9 @@ class HistoryCommitter:
         accepted-write cancellation barriers with an ordinary request stream.
         """
         await self.retry_pending_writes()
+        # MOA progress is transient UI state, including during a resumed turn.
+        if payload.get("event_type") == "chat.moa_status":
+            return
         if await self.handle_team_member_event(payload):
             return
         event_type = payload.get("event_type")
@@ -386,7 +389,10 @@ class HistoryCommitter:
             content=payload["content"],
             timestamp=payload["timestamp"] / 1000,
             extra={
-                **((self._history_user_extra({"media_items": payload.get("media_items")}) or {}) if self._history_user_extra is not None else {}),
+                **(
+                    (self._history_user_extra({"media_items": payload.get("media_items")}) or {})
+                    if self._history_user_extra is not None else {}
+                ),
                 "output_order": payload.get("output_order"),
                 "is_supplemental_input": True,
                 **{

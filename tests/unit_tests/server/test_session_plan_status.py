@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -27,27 +28,26 @@ def _request(session_id: str | None, *, params: dict | None = None) -> AgentRequ
 
 
 def _server(*, agents: dict | None = None) -> SimpleNamespace:
-    return SimpleNamespace(_agent_manager=SimpleNamespace(agents=agents or {}))
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = SimpleNamespace(agents=agents or {})
+    server._execution_runtime = lambda: SimpleNamespace(
+        plan_controller=agent_ws_server_module._SERVER_PLAN_CONTROLLER,
+    )
+    return server
 
 
 async def _call_handler(server: SimpleNamespace, request: AgentRequest) -> AgentResponse:
     captured: dict[str, AgentResponse] = {}
 
-    class _Sink:
-        async def send_response(self, response: AgentResponse) -> None:
-            captured["resp"] = response
+    async def send(_sink, response):
+        captured["resp"] = response
+        return True
 
-        async def send_chunk(self, chunk, *, sequence: int) -> bool:
-            return True
-
-    await handle_session_plan_status(
-        RequestContext(
-            request=request,
-            sink=_Sink(),
-            connection_id="1",
-            services=AgentServerServices(server),
-        )
+    server._host_services = SimpleNamespace(
+        encode_response=lambda response, **kwargs: response,
+        send=send,
     )
+    await server._handle_session_plan_status(object(), request, asyncio.Lock())
     return captured["resp"]
 
 
@@ -143,9 +143,8 @@ def test_try_read_live_plan_mode_from_cached_agent():
         "jiuwenswarm.agents.harness.common.session_ops_service.resolve_live_agent_session",
         return_value=object(),
     ):
-        manager = server._agent_manager
-        assert _try_read_live_plan_mode(manager, session_id) == "plan"
-        assert _try_read_live_plan_mode(manager, "other") is None
+        assert server._try_read_live_plan_mode(session_id) == "plan"
+        assert server._try_read_live_plan_mode("other") is None
 
 
 @pytest.mark.asyncio
@@ -201,7 +200,9 @@ async def test_handler_live_plan_mode_overrides_stale_metadata():
         "get_session_metadata",
         return_value=meta,
     ):
-        resp = await _call_handler(_server(), _request("s1"))
+        server = _server()
+        live = server._try_read_live_plan_mode = MagicMock(return_value="normal")
+        resp = await _call_handler(server, _request("s1"))
     assert resp.ok is True
     assert resp.payload["in_plan"] is False
     assert meta["mode"] == "agent.work.plan"
@@ -214,13 +215,13 @@ async def test_handler_live_plan_mode_overrides_stale_metadata():
 @pytest.mark.asyncio
 async def test_handler_team_plan_ignores_live_agent_plan_mode():
     server = _server()
-    server._try_read_live_plan_mode = MagicMock(return_value="normal")
+    live = server._try_read_live_plan_mode = MagicMock(return_value="normal")
     with patch.object(
         execution_requests,
         "get_session_metadata",
         return_value={"session_id": "s-team", "mode": "team.work.plan"},
     ):
-        resp = await _call_handler(_server(), _request("s-team"))
+        resp = await _call_handler(server, _request("s-team"))
     assert resp.ok is True
     assert resp.payload == {"session_id": "s-team", "in_plan": True}
     live.assert_not_called()

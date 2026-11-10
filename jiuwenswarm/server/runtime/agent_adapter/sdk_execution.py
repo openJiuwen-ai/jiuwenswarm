@@ -7,6 +7,10 @@ selected owner: attaching output precedes send, permission reservations precede
 SDK dispatch, and failure releases both the reservation and output lease.
 """
 
+# This component implements its adapter owner and deliberately shares its
+# private session state. It does not expose that state to external callers.
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import logging
@@ -15,9 +19,9 @@ from typing import Any, Callable
 
 from openjiuwen.harness.goal.schema import GoalStatus
 from openjiuwen.harness.schema.interaction import InputDispatchMode, SendInputRequest
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
-from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
     ROOT_PERMISSION_ANSWER_KEY as _ROOT_PERMISSION_ANSWER_KEY,
     ROOT_PERMISSION_HANDOFF_KEY as _ROOT_PERMISSION_HANDOFF_KEY,

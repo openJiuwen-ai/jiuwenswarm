@@ -206,8 +206,7 @@ def test_session_create_handler_is_runtime_adapter_only() -> None:
         "prepare_session_create",
         "commit_session_provision",
         "abort_session_provision",
-        "encode_response",
-        "send",
+        "send_response",
     } <= called_attributes
     assert {
         "SessionCreateInput",

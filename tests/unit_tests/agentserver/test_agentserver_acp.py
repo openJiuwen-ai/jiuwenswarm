@@ -300,6 +300,11 @@ def patch_session_roots(monkeypatch, sessions_root):
         lambda: sessions_root,
     )
     monkeypatch.setattr(
+        agent_ws_server_module,
+        "get_agent_sessions_dir",
+        lambda: sessions_root,
+    )
+    monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
         lambda: sessions_root,
     )
@@ -1294,7 +1299,7 @@ async def test_handle_tui_session_create_accepts_explicit_id_without_prewarm(
     import jiuwenswarm.server.handlers.bootstrap as bootstrap_handlers
 
     monkeypatch.setattr(
-        execution_requests.logger,
+        bootstrap_handlers.logger,
         "warning",
         lambda message, *args: warning_messages.append(message % args),
     )
@@ -2405,7 +2410,7 @@ async def test_handle_team_binding_create_persists_team_entity(monkeypatch, tmp_
         }
     }
 
-    monkeypatch.setattr(teams_management_module, "get_config", lambda: config)
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: config)
     monkeypatch.setattr(
         ACPTestHostServices,
         "response_encoder",
@@ -2475,7 +2480,7 @@ async def test_handle_team_binding_generate_uses_default_template_and_resolves_c
         assert template_id == "research"
         return "research_team"
 
-    monkeypatch.setattr(teams_management_module, "get_config", lambda: config)
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: config)
     monkeypatch.setattr(
         ACPTestHostServices,
         "response_encoder",
@@ -2536,7 +2541,7 @@ async def test_handle_team_binding_generate_uses_tiny_agent_result_for_name(monk
         }
     }
 
-    monkeypatch.setattr(teams_management_module, "get_config", lambda: config)
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: config)
     monkeypatch.setattr(
         ACPTestHostServices,
         "response_encoder",
@@ -2723,7 +2728,7 @@ async def test_handle_team_bindings_list_selects_entity_when_template_deleted(mo
         created_at=binding.created_at,
     )
 
-    monkeypatch.setattr(teams_management_module, "get_config", lambda: {"modes": {"team": {}}})
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"modes": {"team": {}}})
     monkeypatch.setattr(
         ACPTestHostServices,
         "response_encoder",
@@ -3341,7 +3346,7 @@ async def legacy_handle_team_delete_deletes_all_matching_team_sessions(monkeypat
         fake_delete_agent_team,
     )
     monkeypatch.setattr(
-        teams_management_module,
+        agent_ws_server_module,
         "get_agent_sessions_dir",
         lambda: FakeSessionsRoot(),
     )
@@ -3455,7 +3460,7 @@ async def legacy_handle_team_delete_warns_when_local_team_directory_cleanup_fail
         lambda **kwargs: asyncio.sleep(0, result=True),
     )
     monkeypatch.setattr(
-        teams_management_module,
+        agent_ws_server_module,
         "get_agent_sessions_dir",
         lambda: FakeSessionsRoot(),
     )
@@ -3634,7 +3639,7 @@ async def legacy_handle_team_delete_keeps_catalog_when_session_directory_delete_
         lambda **kwargs: asyncio.sleep(0, result=True),
     )
     monkeypatch.setattr(
-        teams_management_module,
+        agent_ws_server_module,
         "get_agent_sessions_dir",
         lambda: FakeSessionsRoot(),
     )
@@ -4366,7 +4371,7 @@ async def test_find_team_session_ids_uses_metadata_team_name(monkeypatch, tmp_pa
     }
 
     monkeypatch.setattr(
-        teams_management_module,
+        agent_ws_server_module,
         "get_agent_sessions_dir",
         lambda: sessions_root,
     )

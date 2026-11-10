@@ -529,8 +529,13 @@ async def test_failed_startup_reclaims_listener_stream_and_process(monkeypatch, 
     monkeypatch.setattr(FrontLoopbackListener, "launch_payload", record)
     monkeypatch.setattr(worker_process.WorkerProcess, "spawn", spawn)
     if failure == "spawn":
+        original_popen = worker_process.subprocess.Popen
+
         def fail_popen(*args, **kwargs):
-            raise OSError("injected spawn failure")
+            if "jiuwenswarm.server.worker.main" in args[0]:
+                raise OSError("injected spawn failure")
+            return original_popen(*args, **kwargs)
+
         monkeypatch.setattr(worker_process.subprocess, "Popen", fail_popen)
     elif failure == "exit-before-auth":
         monkeypatch.setattr(worker_process, "build_worker_command", lambda *args, **kwargs:

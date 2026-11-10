@@ -32,9 +32,10 @@ class ResponseSink(Protocol):
 class WSSink:
     """把一条完整响应编码后写回当前 WebSocket 连接。"""
 
-    def __init__(self, ws: Any, send_lock: asyncio.Lock) -> None:
+    def __init__(self, ws: Any, send_lock: asyncio.Lock, *, services: Any = None) -> None:
         self._ws = ws
         self._send_lock = send_lock
+        self._services = services
 
     async def send_response(self, response: AgentResponse) -> None:
         wire = encode_agent_response_for_wire(
@@ -62,6 +63,8 @@ class WSSink:
     def open_stream_keepalive(self, request: Any) -> Any:
         """流式对话一阵没新内容时，往这条连接发一块“还在”的提示。"""
 
-        import jiuwenswarm.server.agent_ws_server as ws_server
+        from jiuwenswarm.server.worker.execution_support import _StreamKeepalive
+        from jiuwenswarm.server.worker.execution_services import ProductionHostServices
 
-        return ws_server.StreamKeepalive(self._ws, request, self._send_lock)
+        services = self._services if self._services is not None else ProductionHostServices()
+        return _StreamKeepalive(self._ws, request, self._send_lock, services=services)

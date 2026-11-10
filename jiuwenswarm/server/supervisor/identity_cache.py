@@ -385,7 +385,10 @@ def _compute(package: Path, cache_path: Path | None) -> str:
             for name in tracked:
                 if name in current:
                     continue
-                source_prefixes = (package.name + "/", "gateway/") if package.name == "jiuwenswarm" else (package.name + "/",)
+                source_prefixes = (
+                    (package.name + "/", "gateway/")
+                    if package.name == "jiuwenswarm" else (package.name + "/",)
+                )
                 if (name.startswith(source_prefixes) and name.endswith(".py")) or name in dependencies:
                     dirty.append(name)
         identity = _fingerprint(canonical, files, dependencies, version)
