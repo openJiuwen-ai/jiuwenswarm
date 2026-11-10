@@ -38,7 +38,6 @@ from jiuwenswarm.agents.harness.common.a4p.file_scope import (
     read_scope_matches,
 )
 from jiuwenswarm.agents.harness.common.a4p.token_expiry import token_expired
-from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.permission_mode import is_auto_permission_mode
 from jiuwenswarm.common.utils import get_config_dir, logger
 
@@ -62,7 +61,14 @@ class A4PIdentity:
 
 
 def get_a4p_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    cfg = config if isinstance(config, dict) else get_config()
+    if isinstance(config, dict):
+        cfg = config
+    else:
+        from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+            resolved_agent_config_or_yaml,
+        )
+
+        cfg = resolved_agent_config_or_yaml()
     a4p_cfg = cfg.get("a4p") if isinstance(cfg, dict) else None
     if not isinstance(a4p_cfg, dict):
         return {}
@@ -75,7 +81,14 @@ def is_a4p_enabled(config: dict[str, Any] | None = None) -> bool:
 
 def is_a4p_preauthorization_active(config: dict[str, Any] | None = None) -> bool:
     """Enable preauthorization only for the default permission profile."""
-    cfg = config if isinstance(config, dict) else get_config()
+    if isinstance(config, dict):
+        cfg = config
+    else:
+        from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+            resolved_agent_config_or_yaml,
+        )
+
+        cfg = resolved_agent_config_or_yaml()
     permissions = cfg.get("permissions")
     permissions = permissions if isinstance(permissions, dict) else {}
     return (

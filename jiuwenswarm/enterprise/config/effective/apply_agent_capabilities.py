@@ -22,6 +22,7 @@ _RESOLVED_AGENT_CONFIG: ContextVar[dict[str, Any] | None] = ContextVar(
 
 _SECTION_TABLES: tuple[tuple[str, str], ...] = (
     ("a2ui_config", "a2ui"),
+    ("a4p_config", "a4p"),
 )
 
 

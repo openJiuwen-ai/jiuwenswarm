@@ -24,3 +24,11 @@ def test_a2ui_overlay_keeps_fields_the_manager_did_not_send() -> None:
     assert a2ui["enabled"] is True
     assert a2ui["protocol_version"] == "0.9"
     assert a2ui["stream_validation_enabled"] is True
+
+
+def test_a4p_overlay_sets_the_confirm_switch() -> None:
+    merged = apply_capability_bodies(
+        {"a4p": {"enabled": False}},
+        {"a4p": {"enabled": True}},
+    )
+    assert merged["a4p"]["enabled"] is True
