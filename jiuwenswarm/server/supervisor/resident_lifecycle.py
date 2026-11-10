@@ -76,6 +76,10 @@ def worker_process(
         expected = {os.path.normcase(str(Path(sys.executable).resolve()))}
         if not getattr(sys, "frozen", False):
             expected.add(os.path.normcase(str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())))
+            if sys.platform == "darwin" and executable not in expected:
+                # Framework Python execs Python.app behind its launcher path.
+                # Compare with our own OS executable, retaining all peer checks.
+                expected.add(os.path.normcase(str(Path(psutil.Process().exe()).resolve())))
         argv = process.cmdline()
         if executable not in expected or argv[1:3] != ["-m", "jiuwenswarm.server.worker.main"]:
             raise RuntimeError("Worker lifecycle refused an unrelated process")

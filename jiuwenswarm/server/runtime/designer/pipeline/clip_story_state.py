@@ -47,31 +47,19 @@ _LOCK_MARKERS = (
     "COMPOSED SCENE MASTER",
 )
 
-_EXIT_RE = re.compile(
-    r"\b(?:walk(?:s|ed|ing)?\s+away|leave(?:s|ing)?|left|exit(?:s|ed|ing)?|"
-    r"depart(?:s|ed|ing)?|gone)\b",
-    re.I,
-)
-_ONSET_RE = re.compile(
-    r"\b(?:start(?:s|ed|ing)?|begin(?:s|ning)?)\s+(?:to\s+)?\w+",
-    re.I,
-)
-# Domain-agnostic finished beats: gaze / turn / reach / check / speak onset, etc.
-_BEAT_RE = re.compile(
-    r"\b(?:"
-    r"turn(?:s|ed|ing)?|look(?:s|ed|ing)?|gaze(?:s|d)?|glance(?:s|d)?|"
-    r"face(?:s|d|ing)?|check(?:s|ed|ing)?|reach(?:es|ed|ing)?|"
-    r"pick(?:s|ed|ing)?\s+up|open(?:s|ed|ing)?|grab(?:s|bed|bing)?|"
-    r"point(?:s|ed|ing)?|nod(?:s|ded|ding)?|stand(?:s|ing)?\s+up|"
-    r"sit(?:s|ting)?\s+down|arrive(?:s|d|ing)?|enter(?:s|ed|ing)?"
-    r")\b",
-    re.I,
-)
-_CROWD_WORD_RE = re.compile(
-    r"\b(?:crowd|colleagues?|coworkers?|extras?|bystanders?|people|"
-    r"office\s+floor|staff|workers|passers[- ]?by)\b",
-    re.I,
-)
+
+def _tri_state(value: Any) -> bool | None:
+    """Agent-declared presence; ``None`` means the agent did not decide."""
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"", "none", "null", "unknown", "unspecified"}:
+        return None
+    if text in {"true", "yes", "present", "1"}:
+        return True
+    if text in {"false", "no", "absent", "0"}:
+        return False
+    return None
 
 
 def extract_finished_events(
@@ -80,17 +68,21 @@ def extract_finished_events(
     characters: list[dict[str, Any]] | None = None,
     on_screen: list[str] | None = None,
     clip_index: int | None = None,
+    source: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
-    """Typed already-done events from prior Wan/storyboard text (domain-agnostic).
+    """Already-done events the storyboard agent declared for the prior shot.
 
-    Only exit + motion-onset — never sit/stand or genre-specific pose rules.
-    Placement continuity comes from seat_anchors / storyboard, not hardcodes.
+    The storyboard already writes ``end_state {pose, seats, facing, exited,
+    speech_done}`` and ``exiting_character_ids`` per shot, so prior exits and
+    completed beats are structured facts. Nothing is inferred from the prose any
+    more: the old ``_EXIT_RE`` / ``_ONSET_RE`` / ``_BEAT_RE`` scans only matched
+    English wording, so a Chinese storyboard never produced any event (#10377).
+
+    ``text`` is accepted for call-site compatibility and is intentionally unused.
     """
-    blob = str(text or "").strip()
-    if not blob:
-        return []
+    state = source if isinstance(source, dict) else {}
+    ended = state.get("end_state") if isinstance(state.get("end_state"), dict) else {}
     names = character_name_map(characters)
-    present = [str(x) for x in (on_screen or []) if str(x).strip()] or list(names)
     prefix = f"shot {clip_index}: " if clip_index else ""
     events: list[dict[str, str]] = []
 
@@ -103,48 +95,35 @@ def extract_finished_events(
             }
         )
 
-    matched_exit = False
-    sentences = [s.strip() for s in re.split(r"[.\n;]+", blob) if s.strip()]
-    for cid in present:
+    # Merge every declared source: an `or` chain would let a truthy non-list
+    # (a bare "char_1, char_2" string) win and silently drop the other two.
+    exited_ids = list(
+        dict.fromkeys(
+            _norm_ids(ended.get("exited"))
+            + _norm_ids(state.get("exiting_character_ids"))
+            + _norm_ids(state.get("exited_ids"))
+        )
+    )
+    for cid in exited_ids:
         who = names.get(cid, cid)
-        token = str(who or "").strip()
-        if not token or len(token) < 2:
-            continue
-        hits = [s for s in sentences if token.lower() in s.lower()]
-        if not hits:
-            continue
-        local = " ".join(hits)
-        if _EXIT_RE.search(local):
-            add(
-                "exit",
-                f"{who} left this setting — omit from later same-setting prompts until storyboard returns them",
-                cid,
-            )
-            matched_exit = True
-        if _ONSET_RE.search(local) or _BEAT_RE.search(local):
-            # Prefer a concrete clause from the prior sentence over a generic onset note.
-            clause = hits[0].rstrip(".")
-            add(
-                "beat",
-                f"{who} already finished: {clause} — open this shot already past that beat",
-                cid,
-            )
-    if _EXIT_RE.search(blob) and not matched_exit:
-        add("exit", "exit already happened — omit that cast from later same-setting prompts until returned")
-    if _CROWD_WORD_RE.search(blob) and _EXIT_RE.search(blob):
         add(
-            "crowd_exit",
-            "crowd/extras exit already happened — keep them gone or off-camera unless storyboard returns them",
+            "exit",
+            f"{who} left this setting in the prior shot — omit until the storyboard returns them",
+            cid,
         )
-    if _BEAT_RE.search(blob) and not any(e["type"] == "beat" for e in events):
-        # Generic beat without a matched name — still block restage.
-        clause = next(
-            (s.rstrip(".") for s in sentences if _BEAT_RE.search(s)),
-            "prior beat",
-        )
-        add("beat", f"already finished: {clause} — open this shot past that beat")
-    elif _ONSET_RE.search(blob) and not any(e["type"] in {"onset", "beat"} for e in events):
-        add("onset", "onset already happened — continue without restarting that motion")
+
+    speech_done = str(ended.get("speech_done") or state.get("speech_done") or "").strip()
+    if speech_done and speech_done.lower() not in {"false", "none", "no"}:
+        add("beat", f"already said: {speech_done[:160]} — do not replay that line")
+
+    pose = str(ended.get("pose") or "").strip()
+    if pose:
+        add("beat", f"prior shot ended in pose: {pose[:160]} — open already in that pose")
+
+    for note in state.get("already_done") or []:
+        text_note = str(note or "").strip()
+        if text_note:
+            add("beat", text_note[:200])
 
     out: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -158,7 +137,10 @@ def extract_finished_events(
 
 
 def _norm_ids(raw: Any) -> list[str]:
-    if not isinstance(raw, (list, tuple)):
+    """Normalize an id list, tolerating a bare id or a comma-separated string."""
+    if isinstance(raw, str):
+        raw = [part for part in re.split(r"[,;、\s]+", raw) if part]
+    if not isinstance(raw, (list, tuple, set)):
         return []
     return [str(x).strip() for x in raw if str(x).strip()]
 
@@ -408,6 +390,7 @@ def apply_story_state_to_next_cfg(
         characters=characters,
         on_screen=src_on,
         clip_index=from_clip_index,
+        source=src,
     )
     done = [str(x).strip() for x in (cfg.get("already_done") or []) if str(x).strip()]
     for item in events:
@@ -502,6 +485,7 @@ _STORY_STATE_PHRASES: dict[str, dict[str, str]] = {
         "crowd_off_camera": "Extras are off-camera elsewhere in the setting.",
         "crowd_exited": "The area is clear of the earlier crowd — they already left.",
         "crowd_empty": "The setting is empty of extras.",
+        "crowd_returned": "The earlier crowd has returned to the scene.",
         "crowd_density": "{hold}, density {density}.",
     },
     "zh": {
@@ -511,6 +495,7 @@ _STORY_STATE_PHRASES: dict[str, dict[str, str]] = {
         "crowd_off_camera": "群众演员在场景中的别处，不在镜头内。",
         "crowd_exited": "此前的人群已经离开，这片区域空了下来。",
         "crowd_empty": "场景中没有群众演员。",
+        "crowd_returned": "此前离开的人群又回到了场景中。",
         "crowd_density": "{hold}，密度：{density}。",
     },
 }
@@ -530,7 +515,14 @@ def infer_crowd_state(
     prior_text: str = "",
     events: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Per-shot crowd disposition for story-form prompts (domain-agnostic)."""
+    """Per-shot crowd disposition for story-form prompts (domain-agnostic).
+
+    The disposition comes from the shot's agent-authored crowd declaration, from a
+    structured ``crowd_exit`` event, or from the prior shot's declaration when the
+    group carries over. ``prior_text`` is accepted for call-site compatibility but
+    is no longer scanned: reading prose here made the decision language-dependent
+    and was the root cause of #10377.
+    """
     cfg = cfg if isinstance(cfg, dict) else {}
     prior = prior_cfg if isinstance(prior_cfg, dict) else {}
     crowd = cfg.get("crowd_lock") if isinstance(cfg.get("crowd_lock"), dict) else {}
@@ -543,62 +535,61 @@ def infer_crowd_state(
 
     disposition = str(crowd.get("disposition") or "").strip().lower()
     present = crowd.get("present")
+    if isinstance(present, str):
+        present = _tri_state(present)
     density = str(crowd.get("density") or prior_lock.get("density") or "").strip()
-    rule = str(crowd.get("rule") or prior_lock.get("rule") or bible.get("crowd") or "").strip()
+    rule = str(crowd.get("rule") or prior_lock.get("rule") or "").strip()
+    if not rule and isinstance(bible.get("crowd"), dict):
+        rule = str(bible["crowd"].get("rule") or "").strip()
 
-    done_notes = " ".join(str(e.get("already_done") or "") for e in (events or []))
-    # Conditional lock rules constrain continuity; they do not describe past events.
-    story_history = " ".join(x for x in (prior_text, done_notes) if x)
-
+    # Structured events are agent-declared facts; never inferred from prose here.
     if any(str(e.get("type") or "") == "crowd_exit" for e in (events or [])):
-        disposition = "exited"
-        present = False
-    elif _CROWD_WORD_RE.search(story_history) and _EXIT_RE.search(story_history):
         disposition = "exited"
         present = False
     elif str(prior_crowd.get("disposition") or "").lower() == "exited":
         # Carry exited unless this shot's lock says they returned.
-        if present is True or str(crowd.get("disposition") or "").lower() in {
-            "in_frame",
-            "background_hold",
-            "returned",
-        }:
+        if present is True or disposition in {"in_frame", "background_hold", "returned"}:
             disposition = disposition or "in_frame"
         else:
             disposition = "exited"
             present = False
 
     if not disposition:
-        if present is False or (isinstance(present, str) and present.lower() in {"false", "0", "no", "none"}):
+        if present is False:
             disposition = "empty"
-        elif present is True or density or rule:
-            # Explicit off-camera rule wins.
-            if re.search(r"(?i)\b(?:off[- ]?camera|elsewhere|out of frame|corridor|hallway)\b", rule):
-                disposition = "off_camera"
-            elif re.search(r"(?i)\b(?:empty|cleared|deserted|no\s+crowd|nobody)\b", rule):
-                disposition = "empty"
-            elif re.search(r"(?i)\b(?:background|distant|far)\b", rule):
-                disposition = "background_hold"
-            else:
-                disposition = "in_frame"
-        elif str(bible.get("crowd") or "").strip():
+        elif present is True:
+            disposition = "in_frame"
+        elif isinstance(bible.get("crowd"), dict) and bible["crowd"].get("present") is True:
             disposition = "in_frame"
         else:
+            # Nothing decided by the agent: say nothing rather than assert "empty".
             disposition = "unspecified"
 
-    if present is None:
-        present = disposition in {"in_frame", "background_hold", "off_camera"}
+    if present is None and disposition != "unspecified":
+        # "returned" means the group is back on screen, matching the derivation
+        # in clip_policy._crowd_lock_for_setting for the same declaration.
+        present = disposition in {"in_frame", "background_hold", "off_camera", "returned"}
 
     lang = current_content_language()
     hold = str(crowd.get("hold") or "").strip()
-    if not hold and f"crowd_{disposition}" in _STORY_STATE_PHRASES[lang]:
+    if disposition == "unspecified":
+        # The agent did not decide whether a crowd is present — emit no crowd
+        # sentence at all instead of asserting the setting is empty.
+        hold = ""
+    elif not hold and f"crowd_{disposition}" in _STORY_STATE_PHRASES[lang]:
         hold = phrase(_STORY_STATE_PHRASES, lang, f"crowd_{disposition}")
-    if density and disposition in {"in_frame", "background_hold"} and density.lower() not in hold.lower():
+    needs_density = (
+        bool(hold)
+        and bool(density)
+        and disposition in {"in_frame", "background_hold", "returned"}
+        and density.lower() not in hold.lower()
+    )
+    if needs_density:
         hold = phrase(_STORY_STATE_PHRASES, lang, "crowd_density", hold=strip_phrase(hold), density=density)
 
     return {
         "disposition": disposition,
-        "present": bool(present),
+        "present": present,
         "density": density,
         "rule": rule,
         "hold": hold,

@@ -32,6 +32,7 @@ from jiuwenswarm.common.log_context import (
     current_log_session_id,
     unbind_log_session,
 )
+from jiuwenswarm.common.request_ext import METADATA_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import http_chat
@@ -457,7 +458,8 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     """从 Gateway 透传的 ``X-*`` 头重建 ``user_id`` 和 ``metadata``。
 
     Gateway 的 REST 正文只有业务参数。身份在头里：``X-User-Id``、路由三维、
-    企业租户三字段，以及内部扩展头。企业版的专家包名单在
+    企业租户三字段，以及内部扩展头。定时任务推送真渠道在 ``X-Cron-Targets``，
+    重建为顶层 ``metadata["targets"]``。企业版的专家包名单在
     ``X-Jiuwenswarm-Expert-Packages``。没有 ``X-User-Id`` 时 ``user_id`` 为空，
     表示这次请求按匿名处理，和 WebSocket 入口缺省身份时一样。
     """
@@ -483,9 +485,11 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
         value = _header(request, header_name, "")
         if value:
             metadata[field] = value
+    cron_targets = _header(request, "x-cron-targets", "")
+    if cron_targets:
+        metadata["targets"] = cron_targets
     from jiuwenswarm.common.request_ext import (
         INTERNAL_HEADER_NAME,
-        METADATA_KEY,
         RequestExtCodecError,
         decode_internal_header,
     )
@@ -585,6 +589,12 @@ def _context_from_mapping(
     is_stream: bool,
 ) -> RequestContext:
     params = body.get("params")
+    metadata = body.get("metadata")
+    if isinstance(metadata, dict):
+        # Request-scoped credentials must not come from client-supplied metadata.
+        metadata = {key: value for key, value in metadata.items() if key != METADATA_KEY}
+    else:
+        metadata = None
     agent_request = AgentRequest(
         request_id=str(body.get("request_id") or "http"),
         channel_id=str(body.get("channel_id") or "http"),
@@ -592,7 +602,7 @@ def _context_from_mapping(
         req_method=req_method,
         params=params if isinstance(params, dict) else {},
         is_stream=is_stream,
-        metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+        metadata=metadata,
         user_id=str(body.get("user_id") or "").strip(),
     )
     return RequestContext(

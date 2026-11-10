@@ -118,16 +118,27 @@ _OWNER_PROMPT_SUFFIX = (
     "org_update_task(action='set_aggregation_mode'). If the user named "
     "SUMMARY_TEAM or HIERARCHICAL, use that mode. If the user named neither, "
     "choose one from the task. Then start the root if it is still CLAIMED. "
-    "In that same turn, create one organization child for every mentioned "
-    "expert team, including this Owner team, and leave each child OPEN. "
+    "Create organization children for the mentioned expert teams in dependency order, "
+    "including this Owner team's work. Downstream tasks, such as PPT production, may be "
+    "created after upstream outputs are ready; leave each child OPEN. "
     "Do not set delegated_to_team_id and do not call org_delegate_task unless "
     "the user asks to delegate. Set each child's required_capabilities to "
     "exactly [\"group-member:{that proxy's member_name}\"]. Copy claim_capability "
     "from the AgentGroup availability snapshot; do not substitute agent_group_name "
     "or the display name. The matching team is then woken and claims it with "
-    "org_claim_task. Create every child "
-    "before any of them finishes, and do not start this Owner team's own "
-    "writing until the other children exist. Then review their submissions. "
+    "org_claim_task. This Owner must explicitly claim its own child with org_claim_task "
+    "and start it with org_update_task(action='start'); creating it or claiming the root "
+    "does not claim the child, and its creation does not wake the creating team. Start this Owner "
+    "team's private work only after its own child is IN_PROGRESS; other teams' children "
+    "do not have to exist yet. Before final aggregation, check the full request and every "
+    "mentioned expert's work, including tasks not yet created. Accepted existing children "
+    "alone do not mean the request is complete. "
+    "Private create_task work belongs inside that claimed child; complete it with "
+    "org_update_task(action='complete') when the private work is done. Then review "
+    "their submissions with org_review_task using organization child IDs, never private task IDs. "
+    "For a failed or rejected child, create a repair with repairs_task_id set to the original "
+    "child ID and preserve its required_capabilities; an unrelated v2/v3 task does not replace it. "
+    "Only create expert children for the teams mentioned in this organization's request. "
     "When describing the final deliverable in organization children or a summary task, preserve the "
     "user's original length requirements. Keep approximate length approximate: 'about 500 words' or "
     "'约500字' does not authorize percentage tolerances, strict ranges, per-section quotas, or a "
@@ -168,14 +179,16 @@ _OWNER_START_REMINDER = (
     "aggregation mode is not selected yet, select it now with "
     "org_update_task(action='set_aggregation_mode'). Follow a mode the user "
     "named. If the user named neither SUMMARY_TEAM nor HIERARCHICAL, choose one "
-    "from the task. Then start the root if it is still CLAIMED and, in this "
-    "turn, create one OPEN child per mentioned expert. Leave them claimable: "
+    "from the task. Then start the root if it is still CLAIMED and create the OPEN "
+    "children needed for the current stage. Create downstream expert tasks when their "
+    "dependencies are ready. Leave them claimable: "
     "set required_capabilities to exactly [\"group-member:{member_name}\"] by "
     "copying that team's claim_capability. Do not substitute agent_group_name, and "
-    "do not delegate unless the user asks. Do not wait for one child to finish "
-    "before creating the next. Do not "
-    "use swarmflow, ordinary create_task, or org_create_and_invite_expert_team, "
-    "and do not answer in prose. The mentioned teams are already members. For "
+    "do not delegate unless the user asks. Explicitly claim and start "
+    "your own child before private-team work; its creation does not wake its creator. Do not "
+    "use swarmflow or ordinary create_task for cross-Team coordination, or org_create_and_invite_expert_team, "
+    "and do not answer in prose. The mentioned teams are already members. Check for "
+    "remaining work, including downstream tasks not yet created, before final aggregation. For "
     "SUMMARY_TEAM, finish through org review, org_create_summary_execution, and "
     "complete_team_run. For HIERARCHICAL, accept the children, complete the root "
     "with the final report, and then call complete_team_run. That report is only "
@@ -1523,6 +1536,10 @@ async def ensure_member_instance(
     """Reuse or launch the instance owned by one group proxy."""
     member_name = str(member["member_name"])
     team_id = instance_team_id(session_id, member_name)
+    from jiuwenswarm.agents.swarm.group_org_lifecycle import (
+        install_organization_lifecycle, organization_lifecycle_spec,
+    )
+
     entry = await runtime.pool.get(team_id)
     if entry is not None and getattr(entry, "current_session_id", None) == session_id:
         await _sync_reused_member_role(
@@ -1531,6 +1548,8 @@ async def ensure_member_instance(
             member_name=member_name,
             is_owner=is_owner,
         )
+        if enable_organization:
+            await install_organization_lifecycle(entry.agent, session_id=session_id, member_name=member_name)
         return team_id
 
     tools = leader_tools
@@ -1557,12 +1576,17 @@ async def ensure_member_instance(
         team_id=team_id,
         enable_organization=enable_organization,
         leader_tools=tools,
+        leader_rails=[organization_lifecycle_spec(member_name)] if enable_organization else None,
         leader_prompt_suffix=suffix,
         extra_capabilities=[
             f"group-member:{member_name}",
             *(["group-coordination"] if is_owner else []),
         ],
     )
+    if enable_organization:
+        entry = await runtime.pool.get(team_id)
+        if entry is not None:
+            await install_organization_lifecycle(entry.agent, session_id=session_id, member_name=member_name)
     return team_id
 
 

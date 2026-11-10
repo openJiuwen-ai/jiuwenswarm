@@ -143,6 +143,7 @@
       "removeAttachment": "Remove reference",
       "attachHint": "Images, video, or audio. Up to 5 images, 1 video, and 1 audio file.",
       "limitImages": "You can attach at most 5 reference images.",
+      "multipleMentions": "Referencing several nodes with @ in one message is not supported yet. Reference one node at a time.",
       "limitVideo": "You can attach at most 1 reference video.",
       "limitAudio": "You can attach at most 1 reference audio file.",
       "tooLarge": "File is larger than 6MB. Use a smaller file or a local path.",
@@ -385,7 +386,6 @@
       "security": "The current security policy blocks screen sharing",
       "unknown": "Screen capture or frame initialization failed; check the native error and diagnostic ID in the logs"
     },
-    "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings.",
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
     "status": {
@@ -854,7 +854,6 @@
       "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
     "experimental": {
-      "computerControl": "Computer control",
       "taskAsr": "Speech transcription",
       "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-party agents",
@@ -892,9 +891,10 @@
       "videoSectionTitle": "Video model",
       "saveSettings": "Save settings",
       "loadError": "Unable to load full-duplex model settings",
+      "extensionUnavailable": "The full-duplex extension is unavailable. Check the extension search directories in the instance configuration.",
+      "httpRouteUnavailable": "The current HTTP connection does not support reading full-duplex settings.",
       "saveError": "Unable to save full-duplex model settings",
       "notConfigured": "Full-duplex model is not configured",
-      "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again.",
       "dialogTitle": "Configure full-duplex model",
       "providerLabel": "Model channel",
       "joyaiModelLabel": "JoyAI model",
@@ -1257,7 +1257,8 @@
       },
       "cua_agent_enabled": {
         "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
+        "unavailableDescription": "Computer control is unavailable in this environment."
       }
     },
     "validation": {
@@ -2004,11 +2005,11 @@
       "weiboHotList": "Weibo hot searches",
       "baiduHotList": "Baidu hot searches",
       "hotListRank": "No. {{rank}}",
-      "hotListListedAt": "Listed {{time}}",
+      "hotListListedAt": "Listed at {{time}}",
       "viewHotListEntry": "See this trending item: {{source}}",
       "hotListEntry": "Trending",
-      "openNewsSearch": "Open the hot-search topic",
-      "searchRelatedNews": "Open hot search",
+      "openNewsSearch": "Open related coverage for this hot search",
+      "searchRelatedNews": "View related coverage",
       "statusPreparing": "Getting topics ready. You can start chatting now.",
       "statusPreparingWithCards": "Getting topics ready. You can start chatting now.",
       "statusUpdateIncomplete": "Getting topics ready. You can start chatting now.",
@@ -6766,6 +6767,11 @@
     "download": "Download",
     "quoteToChat": "Quote in chat",
     "renameFile": "Rename file",
+    "renameFileFailed": "Rename failed: {{reason}}",
+    "renameFileExists": "A file with that name already exists in this folder. Choose another name.",
+    "renameFileMissing": "The original file is missing. It may have been moved or deleted.",
+    "renameFilePermission": "Permission denied, or the file is in use by another application.",
+    "renameFileForbidden": "Only regular files in this group's workspace can be renamed, not symlinks or external files.",
     "fileName": "File name",
     "deleteFile": "Delete file",
     "deleteFileWarning": "The file will be removed from group messages and the file list. Files inside this group's workspace are also deleted from disk. This cannot be undone.",

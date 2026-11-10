@@ -1367,7 +1367,9 @@ class AgentWebSocketServer:
         # Gateway user-business RPCs execute in the current AgentServer's
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
-        self._jiuwenmate_web = JiuwenMateWebAdapter(push=self.send_push)
+        self._jiuwenmate_web = JiuwenMateWebAdapter(
+            push=self.send_push, inspect_feishu_group=self._inspect_feishu_group,
+        )
         self._adapter_registry = AdapterRegistry()
         for adapter in (
             VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
@@ -3139,13 +3141,23 @@ class AgentWebSocketServer:
         disposition = InboundDisposition.REJECTED
         try:
             params = request.params if isinstance(request.params, dict) else {}
-            event = DingTalkInboundEvent.from_payload(params.get("event"))
+            raw_event = params.get("event")
+            lifecycle = isinstance(raw_event, dict) and raw_event.get("event_kind") == "group_lifecycle"
+            if lifecycle:
+                from jiuwenswarm.server.jiuwenmate.dingtalk_group_events import DingTalkGroupEvent
+
+                event = DingTalkGroupEvent.from_payload(raw_event)
+            else:
+                event = DingTalkInboundEvent.from_payload(raw_event)
             if not isinstance(event.expected_agent_id, str) or not event.expected_agent_id.strip():
                 disposition = InboundDisposition.REJECTED
             else:
                 fanout = await self._ensure_persistent_group_fanout()
                 if fanout is not None:
-                    disposition = await fanout.dingtalk_inbound.handle(event)
+                    if lifecycle:
+                        disposition = await fanout.dingtalk_inbound.handle_group_change(event)
+                    else:
+                        disposition = await fanout.dingtalk_inbound.handle(event)
         except Exception as exc:
             logger.warning(
                 "[AgentWebSocketServer] JM-21 inbound event rejected: error_type=%s",
@@ -9723,6 +9735,11 @@ class AgentWebSocketServer:
 
             if agent is None:
                 raise ValueError("Failed to get agent")
+
+            # command.compact_partial 同 /compact、/btw：非 chat 通道 RPC 需先
+            # ensure_instance 懒构建根 DeepAgent，否则 self._instance 为 None 时
+            # 压缩逻辑直接 noop（误报"无需压缩"）。
+            await agent.ensure_instance()
 
             result_data = await agent.compact_partial(
                 session_id=session_id,

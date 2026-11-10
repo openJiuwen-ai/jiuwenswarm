@@ -737,12 +737,9 @@ export class WebHttpClient {
       throw error;
     }
     if (!assembled) {
-      throw this.createWebError(
-        i18n.t('network.requestFailed'),
-        'METHOD_NOT_FOUND',
-        requestId,
-        false
-      );
+      const error = this.createWebError(i18n.t('network.requestFailed'), 'METHOD_NOT_FOUND', requestId);
+      error.httpRouteMissing = true;
+      throw error;
     }
 
     const controller = new AbortController();

@@ -5977,7 +5977,6 @@ class JiuWenSwarmDeepAdapter:
             )
 
         # cua_agent (desktop automation via screenshots + real input) — 按配置启用。
-        # No runtime switch beyond the config gate: it drives the host desktop.
         cua_agent_cfg = (
             subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
         )
@@ -5988,21 +5987,21 @@ class JiuWenSwarmDeepAdapter:
                 "and cua_agent sees the screen only through screenshots"
             )
         elif is_cua_agent_enabled(cua_agent_cfg):
-            subagents.append(
-                build_cua_agent_config(
-                    model,
-                    card=build_cua_agent_card(resolved_language),
-                    workspace=workspace,
-                    sys_operation=sys_operation,
-                    language=resolved_language,
-                    max_iterations=parse_int(
-                        cua_agent_cfg.get("max_iterations"),
-                        DEFAULT_CUA_AGENT_MAX_ITERATIONS,
-                    ),
-                    rails=[SubagentToolActivityRail()],
-                    **resolve_cua_factory_options(cua_agent_cfg),
-                )
+            cua_spec = build_cua_agent_config(
+                model,
+                card=build_cua_agent_card(resolved_language),
+                workspace=workspace,
+                sys_operation=sys_operation,
+                language=resolved_language,
+                max_iterations=parse_int(
+                    cua_agent_cfg.get("max_iterations"),
+                    DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+                ),
+                rails=[SubagentToolActivityRail()],
+                **resolve_cua_factory_options(cua_agent_cfg),
             )
+            if cua_spec is not None:
+                subagents.append(cua_spec)
 
         # ── 加载自定义 agent（.jiuwenswarm/agents/*.md）──
         try:

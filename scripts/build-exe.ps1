@@ -362,7 +362,7 @@ Pop-Location
 
 # 3. Run PyInstaller
 Write-Host "`n[3/4] Running PyInstaller..." -ForegroundColor Yellow
-uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts\jiuwenswarm.spec --noconfirm
+uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Verify the actual frozen runtime, not only the PyInstaller source configuration.

@@ -18,9 +18,11 @@ functions, hence this hook.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -170,3 +172,24 @@ def pytest_runtest_setup(item) -> None:
     else:
         _utils.get_config_file = _REAL_GET_CONFIG_FILE
         _utils.get_agent_workspace_dir = _REAL_GET_AGENT_WORKSPACE_DIR
+
+
+@pytest.fixture(scope="session")
+def event_loop_policy(
+    event_loop_policy: asyncio.AbstractEventLoopPolicy,
+) -> Iterator[asyncio.AbstractEventLoopPolicy]:
+    """Prevent implicit loop creation before pytest-asyncio enters its runner."""
+    if sys.version_info >= (3, 14):
+        yield event_loop_policy
+        return
+
+    # pytest-asyncio looks up the current loop before installing its runner.
+    # On older Python versions, a fresh policy may create an unowned loop on
+    # that lookup. Explicitly start with no current loop in an isolated policy.
+    policy = asyncio.DefaultEventLoopPolicy()
+    policy.set_event_loop(None)
+    asyncio.set_event_loop_policy(policy)
+    try:
+        yield policy
+    finally:
+        asyncio.set_event_loop_policy(event_loop_policy)

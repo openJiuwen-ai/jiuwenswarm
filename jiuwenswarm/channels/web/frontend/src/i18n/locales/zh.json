@@ -143,6 +143,7 @@
       "removeAttachment": "移除参考素材",
       "attachHint": "支持图片、视频、音频。最多 5 张图、1 个视频、1 段音频。",
       "limitImages": "最多只能附 5 张参考图。",
+      "multipleMentions": "暂不支持在一条消息中 @ 多个节点，请每次只引用一个节点。",
       "limitVideo": "最多只能附 1 个参考视频。",
       "limitAudio": "最多只能附 1 段参考音频。",
       "tooLarge": "文件超过 6MB，请改用更小的文件，或从本机路径添加。",
@@ -385,7 +386,6 @@
       "security": "当前环境的安全策略禁止屏幕共享",
       "unknown": "屏幕采集或画面初始化发生异常，请根据原始错误与诊断编号核对日志"
     },
-    "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。",
     "modelFallback": "视频模型",
     "subtitle": "实时多屏音视频问答",
     "status": {
@@ -854,7 +854,6 @@
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
     "experimental": {
-      "computerControl": "电脑操控",
       "taskAsr": "语音转写",
       "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
@@ -892,9 +891,10 @@
       "videoSectionTitle": "视频模型",
       "saveSettings": "保存设置",
       "loadError": "无法读取全双工模型配置",
+      "extensionUnavailable": "全双工扩展未加载，请检查实例配置中的扩展搜索目录。",
+      "httpRouteUnavailable": "当前 HTTP 连接不支持读取全双工设置。",
       "saveError": "无法保存全双工模型配置",
       "notConfigured": "尚未配置全双工模型",
-      "requiredFields": "带 * 的项目为必填项，填写完整后才能保存。已保存的 API 密钥无需重新输入。",
       "dialogTitle": "配置全双工模型",
       "providerLabel": "模型通道",
       "joyaiModelLabel": "JoyAI 模型",
@@ -1257,7 +1257,8 @@
       },
       "cua_agent_enabled": {
         "title": "启用电脑操控",
-        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
+        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
+        "unavailableDescription": "当前环境不支持电脑操控。"
       }
     },
     "validation": {
@@ -2004,11 +2005,11 @@
       "weiboHotList": "微博热搜",
       "baiduHotList": "百度热搜",
       "hotListRank": "第 {{rank}}",
-      "hotListListedAt": "上榜 {{time}}",
+      "hotListListedAt": "上榜于 {{time}}",
       "viewHotListEntry": "看看这条热搜：{{source}}",
       "hotListEntry": "热搜",
-      "openNewsSearch": "打开热搜话题",
-      "searchRelatedNews": "打开热搜",
+      "openNewsSearch": "打开这条热搜相关内容",
+      "searchRelatedNews": "查看相关内容",
       "statusPreparing": "正在准备话题，你也可以直接开始聊。",
       "statusPreparingWithCards": "正在准备话题，你也可以直接开始聊。",
       "statusUpdateIncomplete": "正在准备话题，你也可以直接开始聊。",
@@ -6763,6 +6764,11 @@
     "download": "下载",
     "quoteToChat": "引用到对话",
     "renameFile": "重命名文件",
+    "renameFileFailed": "重命名失败：{{reason}}",
+    "renameFileExists": "同目录下已有同名文件，请使用其他名称。",
+    "renameFileMissing": "原文件不存在，可能已被移动或删除。",
+    "renameFilePermission": "没有权限修改该文件，或文件正被其他程序占用。",
+    "renameFileForbidden": "只能重命名本群工作区内的普通文件，不支持符号链接或外部文件。",
     "fileName": "文件名",
     "deleteFile": "删除文件",
     "deleteFileWarning": "删除后该文件将从群聊消息和产物列表中移除；位于本群工作区内的文件会同时从磁盘删除。此操作无法撤销。",

@@ -239,6 +239,10 @@ export function resolvedNodeCanvasSize(
   node: DesignerGraphNode,
   metadata?: Record<string, unknown> | null,
 ): { width: number; height: number } {
+  // Audio cards cannot be resized and the player needs the full default card; planner layouts may be smaller.
+  if (node.type === DESIGNER_NODE_TYPE_AUDIO) {
+    return { width: DESIGNER_CANVAS_NODE_WIDTH, height: DESIGNER_CANVAS_NODE_HEIGHT };
+  }
   const layout = node.layout;
   const storedWidth = typeof layout?.width === 'number' ? layout.width : undefined;
   const storedHeight = typeof layout?.height === 'number' ? layout.height : undefined;

@@ -1,6 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Explicit, fail-closed Ark JSON adapter for topic recommendation background jobs."""
+"""Fail-closed JSON stage invoker for topic recommendation background jobs.
+
+Uses the same OpenAI-compatible core ``Model`` stack as settings connection probes.
+``ArkBackgroundConfig`` is the historical name for the dedicated recommendation
+connection (api_key / model / base_url / decoding), not a separate vendor lane.
+"""
 
 from __future__ import annotations
 
@@ -15,12 +20,31 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable
 
-# One extra_body for every model. Qwen ignores thinking.type and reads enable_thinking.
-# reasoning_effort stays off this request; Doubao rejects it together with thinking disabled.
+# One extra_body for every model. Same trio as Symphony's thinking_disabled_request_overrides:
+# Qwen ignores thinking.type and reads enable_thinking / chat_template_kwargs; Doubao rejects
+# reasoning_effort together with thinking disabled. Always-think models (e.g. some GLM routes)
+# reject this body; callers retry once with those fields stripped — no user-facing
+# reasoning_level for recommendation.
 _THINKING_DISABLED_EXTRA_BODY = {
     "thinking": {"type": "disabled"},
     "enable_thinking": False,
+    "chat_template_kwargs": {"enable_thinking": False},
 }
+_THINKING_DISABLE_BODY_KEYS = frozenset({"thinking", "enable_thinking", "chat_template_kwargs"})
+_ALWAYS_THINK_UNSUPPORTED_MARKERS = (
+    "不支持关闭",
+    "始终思考",
+    "cannot disable",
+    "always think",
+    "unsupported",
+)
+_ALWAYS_THINK_DISABLE_MARKERS = (
+    "关闭思考",
+    "disable",
+    "disabled",
+    "thinking.type",
+    "enable_thinking",
+)
 
 # A result whose consumer fails before record_validation keeps its receipt here; bound how many
 # such unconsumed results stay referenced, since a caller is not obliged to call aclose().
@@ -149,7 +173,8 @@ def background_configuration_status(
         setting for setting, present in _source_items if not present
     ]
     return {
-        "provider": "ark",
+        # Historical status key; value means OpenAI-compatible recommendation model.
+        "provider": "recommendation",
         "model": config.model if config else str(values.get("ARK_MODEL") or ""),
         "context_window_tokens": context if context > 0 else None,
         "configured": config is not None,
@@ -186,16 +211,126 @@ def provider_failure_reason(exc: BaseException) -> str:
     return reasons.get(getattr(exc, "status_code", None), "provider_request_failed")
 
 
-def _default_client_factory(**kwargs: Any) -> Any:
-    from openai import AsyncOpenAI
+def _default_model_factory(config: ArkBackgroundConfig) -> Any:
+    """Build the same OpenAI-compatible core Model used by settings probes."""
 
-    return AsyncOpenAI(max_retries=0, **kwargs)
+    from openjiuwen.core.foundation.llm import Model
+    from openjiuwen.core.foundation.llm.schema.config import (
+        ModelClientConfig,
+        ModelRequestConfig,
+    )
+
+    return Model(
+        model_config=ModelRequestConfig(
+            model_name=config.model,
+            temperature=config.effective_temperature,
+            top_p=config.effective_top_p,
+            context_window=config.context_window_tokens,
+        ),
+        model_client_config=ModelClientConfig(
+            client_id="topic-recommendation",
+            client_provider="OpenAI",
+            api_key=config.api_key,
+            api_base=config.base_url,
+            timeout=120.0,
+            max_retries=0,
+        ),
+    )
+
+
+def _usage_as_dict(usage: Any) -> dict[str, Any] | None:
+    if usage is None:
+        return None
+    dumper = getattr(usage, "model_dump", None)
+    if callable(dumper):
+        dumped = dumper(exclude_none=True)
+        return dumped if isinstance(dumped, dict) else None
+    if isinstance(usage, Mapping):
+        return dict(usage)
+    return None
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part if isinstance(part, str) else str(part.get("text") or "")
+            for part in content
+            if isinstance(part, (str, dict))
+        )
+    return ""
+
+
+def _looks_like_always_think_rejection(exc: BaseException) -> bool:
+    """Whether a provider refused the hard-disabled thinking request body."""
+
+    text = str(exc).lower()
+    if "thinking" not in text and "reasoning" not in text and "思考" not in text:
+        return False
+    if not any(marker in text for marker in _ALWAYS_THINK_UNSUPPORTED_MARKERS):
+        return False
+    return any(marker in text for marker in _ALWAYS_THINK_DISABLE_MARKERS)
+
+
+def _without_thinking_disable_body(extra_body: Mapping[str, Any] | None) -> dict[str, Any]:
+    cleaned = {
+        key: value
+        for key, value in dict(extra_body or {}).items()
+        if key not in _THINKING_DISABLE_BODY_KEYS
+    }
+    chat_kwargs = (extra_body or {}).get("chat_template_kwargs")
+    if isinstance(chat_kwargs, Mapping):
+        kept = {
+            key: value
+            for key, value in chat_kwargs.items()
+            if key != "enable_thinking"
+        }
+        if kept:
+            cleaned["chat_template_kwargs"] = kept
+    return cleaned
+
+
+async def _create_completion_prefer_thinking_disabled(
+    create: Callable[..., Awaitable[Any]],
+    request: Mapping[str, Any],
+) -> Any:
+    """Send disabled-thinking first; if the model forbids it, retry without those fields."""
+
+    try:
+        return await create(**dict(request))
+    except Exception as exc:
+        if not _looks_like_always_think_rejection(exc):
+            raise
+        retry = dict(request)
+        retry["extra_body"] = _without_thinking_disable_body(
+            request.get("extra_body")
+            if isinstance(request.get("extra_body"), Mapping)
+            else None
+        )
+        return await create(**retry)
+
+
+async def _invoke_model_prefer_thinking_disabled(
+    model: Any,
+    messages: list[dict[str, str]],
+    invoke_kwargs: Mapping[str, Any],
+) -> Any:
+    """Production Model path: reuse core's one-shot strip-and-retry for always-think models."""
+
+    from openjiuwen.core.foundation.llm.request_context import (
+        disabled_thinking_fallback_scope,
+    )
+
+    with disabled_thinking_fallback_scope():
+        return await model.invoke(messages, **dict(invoke_kwargs))
 
 
 def build_ark_stage_invoker(
     config: ArkBackgroundConfig,
     *,
-    client_factory: Callable[..., Any] = _default_client_factory,
+    client_factory: Callable[..., Any] | None = None,
+    model_factory: Callable[[ArkBackgroundConfig], Any] | None = None,
     response_schema_for_stage: Callable[[str, str], Mapping[str, Any] | None] | None = None,
     require_response_metadata: bool = False,
     receipt_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -205,9 +340,18 @@ def build_ark_stage_invoker(
     | None = None,
     return_response_metadata: bool = False,
 ) -> Callable[[str, str, str], Awaitable[Any]]:
-    """Build one request-independent adapter with explicit model/decoding."""
+    """Build one request-independent adapter with explicit model/decoding.
 
-    client = client_factory(api_key=config.api_key, base_url=config.base_url)
+    Production uses core ``Model``. Tests may inject ``client_factory`` returning an
+    OpenAI-shaped client (``chat.completions.create``) to avoid a live stack.
+    """
+
+    client = (
+        None
+        if client_factory is None
+        else client_factory(api_key=config.api_key, base_url=config.base_url)
+    )
+    model = None if client is not None else (model_factory or _default_model_factory)(config)
     invocation_receipts: list[dict[str, Any]] = []
     validation_receipts: dict[int, tuple[Any, dict[str, Any]]] = {}
 
@@ -231,28 +375,21 @@ def build_ark_stage_invoker(
             }
         max_tokens = max_tokens_for_stage(stage) if max_tokens_for_stage is not None else None
         started_at = time.perf_counter()
-        request: dict[str, Any] = {
-            "model": config.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": payload},
-            ],
-            "temperature": config.effective_temperature,
-            "top_p": config.effective_top_p,
-            "response_format": response_format,
-        }
-        if max_tokens is not None:
-            request["max_tokens"] = max_tokens
-        # thinking 和 enable_thinking 都不是 create() 的类型化参数，放顶层会在 SDK 校验时 TypeError。
-        request["extra_body"] = dict(_THINKING_DISABLED_EXTRA_BODY)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": payload},
+        ]
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
             data = {}
         request_id = data.get("request_id") if isinstance(data, dict) else None
-        call_context = {**_INVOCATION_CONTEXT.get(), "provider": "ark",
-                        "model": config.expected_model or config.model}
-        attempt_id = f"ark-attempt-{uuid.uuid4().hex}"
+        call_context = {
+            **_INVOCATION_CONTEXT.get(),
+            "provider": "recommendation",
+            "model": config.expected_model or config.model,
+        }
+        attempt_id = f"recommendation-attempt-{uuid.uuid4().hex}"
         status = "started"
         receipt: dict[str, Any] = {
             "stage": stage,
@@ -287,55 +424,85 @@ def build_ark_stage_invoker(
         invocation_receipts.append(receipt)
         save()
         try:
-            response = await client.chat.completions.create(**request)
-            usage = getattr(response, "usage", None)
-            usage_dumper = getattr(usage, "model_dump", None)
-            choices = getattr(response, "choices", None)
-            choice = choices[0] if choices else None
-            message = getattr(choice, "message", None)
-            receipt.update({
-                "provider_response_id": getattr(response, "id", None),
-                "response_object": getattr(response, "object", None),
-                "actual_model": getattr(response, "model", None),
-                "finish_reason": getattr(choice, "finish_reason", None),
-                "usage": (
-                    usage_dumper(exclude_none=True)
-                    if callable(usage_dumper)
-                    else dict(usage) if isinstance(usage, Mapping) else None
-                ),
-            })
+            refusal: Any = None
+            if client is not None:
+                request: dict[str, Any] = {
+                    "model": config.model,
+                    "messages": messages,
+                    "temperature": config.effective_temperature,
+                    "top_p": config.effective_top_p,
+                    "response_format": response_format,
+                    "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
+                }
+                if max_tokens is not None:
+                    request["max_tokens"] = max_tokens
+                response = await _create_completion_prefer_thinking_disabled(
+                    client.chat.completions.create,
+                    request,
+                )
+                usage = getattr(response, "usage", None)
+                choices = getattr(response, "choices", None)
+                choice = choices[0] if choices else None
+                message = getattr(choice, "message", None)
+                receipt.update({
+                    "provider_response_id": getattr(response, "id", None),
+                    "response_object": getattr(response, "object", None),
+                    "actual_model": getattr(response, "model", None),
+                    "finish_reason": getattr(choice, "finish_reason", None),
+                    "usage": _usage_as_dict(usage),
+                })
+                refusal = getattr(message, "refusal", None)
+                content = getattr(message, "content", None)
+            else:
+                if model is None:
+                    raise RuntimeError("recommendation model is not configured")
+                invoke_kwargs: dict[str, Any] = {
+                    "temperature": config.effective_temperature,
+                    "top_p": config.effective_top_p,
+                    "response_format": response_format,
+                    "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
+                }
+                if max_tokens is not None:
+                    invoke_kwargs["max_tokens"] = max_tokens
+                assistant = await _invoke_model_prefer_thinking_disabled(
+                    model,
+                    messages,
+                    invoke_kwargs,
+                )
+                usage = getattr(assistant, "usage_metadata", None)
+                receipt.update({
+                    "provider_response_id": getattr(assistant, "response_id", None),
+                    "response_object": "chat.completion",
+                    "actual_model": (
+                        getattr(assistant, "response_model", None) or config.model
+                    ),
+                    "finish_reason": getattr(assistant, "finish_reason", None),
+                    "usage": _usage_as_dict(usage),
+                })
+                content = getattr(assistant, "content", None)
             status = "received"
             save()
             status = (
-                "refused" if getattr(message, "refusal", None)
+                "refused" if refusal
                 else "truncated" if receipt["finish_reason"] == "length"
                 else "metadata_failed"
             )
             if require_response_metadata:
                 expected_model = config.expected_model or config.model
-                _rejected2 = (
+                rejected = (
                     not isinstance(receipt["provider_response_id"], str)
                     or not receipt["provider_response_id"]
                     or receipt["response_object"] != "chat.completion"
                     or receipt["actual_model"] != expected_model
-                    or usage is None
+                    or receipt["usage"] is None
                     or receipt["finish_reason"] != "stop"
                 )
-                if (
-                    _rejected2
-                ):
-                    raise RuntimeError("Ark response metadata contract failed")
+                if rejected:
+                    raise RuntimeError("recommendation response metadata contract failed")
             status = "json_failed"
-            content = getattr(message, "content", None)
-            if isinstance(content, list):
-                content = "".join(
-                    part if isinstance(part, str) else str(part.get("text") or "")
-                    for part in content
-                    if isinstance(part, (str, dict))
-                )
-            if getattr(message, "refusal", None):
+            if refusal:
                 status = "refused"
-            result = json.loads(content if isinstance(content, str) else "")
+            result = json.loads(_content_text(content))
             status = "lineage_failed"
             lineage = (
                 invocation_lineage_for_stage(stage, payload, result)
@@ -345,7 +512,7 @@ def build_ark_stage_invoker(
             if lineage is not None:
                 receipt["lineage"] = dict(lineage)
             status = (
-                "refused" if getattr(message, "refusal", None)
+                "refused" if refusal
                 else "truncated" if receipt["finish_reason"] == "length"
                 else "parsed"
             )
@@ -382,7 +549,10 @@ def build_ark_stage_invoker(
 
     async def aclose() -> None:
         validation_receipts.clear()
-        await client.close()
+        if client is not None:
+            closer = getattr(client, "close", None)
+            if callable(closer):
+                await closer()
 
     setattr(invoke, "record_validation", record_validation)
     setattr(invoke, "invocation_receipts", invocation_receipts)

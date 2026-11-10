@@ -236,7 +236,7 @@ datas += collect_data_files(
     include_py_files=True,
     includes=EXTENSION_DATA_FILE_PATTERNS,
 )
-# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json), read at runtime;
+# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md), read at runtime;
 # the template loads its rail from rails/*.py.
 datas += collect_data_files(
     "jiuwenswarm.office",
@@ -296,6 +296,8 @@ for lazy_package in (
 hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
     "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
     "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
+    # Full-duplex Python sources load by path, outside the static import graph.
+    "jiuwenswarm.common.asr_client",
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
