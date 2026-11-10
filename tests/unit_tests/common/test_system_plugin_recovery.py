@@ -9,7 +9,7 @@ import pytest
 
 from jiuwenswarm.common import system_plugin_recovery
 from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
-from jiuwenswarm.common.system_plugin_recovery_sidecar import _RecoveryHandler, _page
+from jiuwenswarm.common.system_plugin_recovery_sidecar import _RecoveryHandler, _page, _parent_origin
 
 
 def _write_package(root: Path, package_id: str, version: str, enabled: bool) -> Path:
@@ -30,11 +30,18 @@ def _enabled(package: Path) -> bool:
     return document["enable"]
 
 
-def test_recovery_page_marks_the_confirm_action_as_dangerous() -> None:
+def test_recovery_page_keeps_its_confirmation_dialog() -> None:
     page = _page("token", "zh")
 
     assert '<button id="confirm-restore" class="danger" type="button"></button>' in page
     assert ".dialog-actions .danger { background: var(--danger); }" in page
+    assert "RECOVERY_DIALOG_POSITION_MESSAGE" in page
+    assert "function updateDialogPosition(centerY)" in page
+    assert "body.is-embedded .page-header { display: none; }" in page
+    assert "status.textContent = texts.restoring;" not in page
+    assert "status.textContent = texts.restored;" not in page
+    assert '"restoring":' not in page
+    assert '"restored":' not in page
 
 
 def test_recovery_page_renders_collapsible_details() -> None:
@@ -59,13 +66,25 @@ def test_recovery_page_renders_collapsible_details() -> None:
     assert "detail.hidden" not in page
     assert "restoreButton.onclick = () => {" in page
     assert "if (selectedRecordId) confirmRestore(selectedRecordId, restoreButton);" in page
+    assert "RECOVERY_SELECTED_RECORD_MESSAGE" in page
     assert "detail.append(detailCopy);" in page
     assert "detail.append(detailCopy, restoreButton);" not in page
     assert "header.append(selector, toggle);" in page
     assert "item.append(header, detail);" in page
     assert "item.append(copy, button);" not in page
-    assert "new ResizeObserver(scheduleContentHeight).observe(page);" in page
-    assert "jiuwenswarm.system-plugin-recovery.height" in page
+    assert '<button id="restore" type="button"></button>' in page
+    assert ".restore-actions" not in page
+    assert 'records.replaceChildren(...data.records.map((record) => row(record)));' in page
+    assert 'RECORDS_PER_PAGE' not in page
+    assert 'new ResizeObserver(scheduleContentHeight).observe(page);' in page
+    assert 'jiuwenswarm.system-plugin-recovery.height' in page
+
+
+def test_parent_origin_rejects_non_origin_urls() -> None:
+    assert _parent_origin("https://example.com") == "https://example.com"
+    assert _parent_origin("http://127.0.0.1:3000") == "http://127.0.0.1:3000"
+    assert _parent_origin("https://example.com/path") == ""
+    assert _parent_origin("javascript:alert(1)") == ""
 
 
 def test_restore_disables_packages_installed_after_the_selected_record(tmp_path: Path) -> None:
