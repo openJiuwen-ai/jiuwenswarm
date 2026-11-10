@@ -158,6 +158,95 @@ def test_persist_team_history_event_keeps_human_spawn_details(
     }
 
 
+def test_persist_team_compression_state_leader_persists_boundary(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """leader 成功压缩帧落盘 boundary + summary 两条记录（mode=team）。"""
+    recorded: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        team_helpers,
+        "append_compact_history_records",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    team_helpers._persist_team_compression_state(
+        "web",
+        "sess-team-compact",
+        "round-1",
+        {
+            "status": "completed",
+            "compact_summary": "压缩摘要正文",
+            "before": {"tokens": 45230},
+            "after": {"tokens": 8140},
+            "saved": {"percent": 82.0},
+            "duration_ms": 3200,
+        },
+    )
+
+    assert len(recorded) == 1
+    call = recorded[0]
+    assert call["session_id"] == "sess-team-compact"
+    assert call["request_id"] == "round-1"
+    assert call["mode"] == "team"
+    assert call["trigger"] == "auto"
+    assert call["summary"] == "压缩摘要正文"
+    assert call["stats"]["status"] == "completed"
+    assert call["stats"]["before"] == {"tokens": 45230}
+    assert "member_name" not in call["stats"]
+
+
+def test_persist_team_compression_state_member_carries_attribution(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """成员压缩帧把 member_name 归因写进 compact_metadata（stats）。"""
+    recorded: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        team_helpers,
+        "append_compact_history_records",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    team_helpers._persist_team_compression_state(
+        "web",
+        "sess-team-compact",
+        "round-2",
+        {"status": "completed", "compact_summary": "成员压缩摘要"},
+        member_name="teammate-a",
+    )
+
+    assert len(recorded) == 1
+    assert recorded[0]["stats"]["member_name"] == "teammate-a"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "skipped", "compact_summary": "有摘要但跳过"},
+        {"status": "failed", "compact_summary": "失败摘要", "error": "boom"},
+        {"status": "completed", "compact_summary": ""},
+        {"status": "completed", "compact_summary": "有摘要", "error": "boom"},
+        {"status": "noop"},
+    ],
+)
+def test_persist_team_compression_state_skips_unsuccessful(
+        monkeypatch: pytest.MonkeyPatch,
+        payload: dict[str, Any],
+) -> None:
+    """skipped/failed/error/无摘要帧一律不落盘（对齐单 agent 口径）。"""
+    recorded: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        team_helpers,
+        "append_compact_history_records",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    team_helpers._persist_team_compression_state(
+        "web", "sess-team-compact", "round-3", payload,
+    )
+
+    assert recorded == []
+
+
 class _InactiveTeamRuntimeManagerMixin:
     """Provide the session-scoped runtime state API for inactive test managers."""
 
