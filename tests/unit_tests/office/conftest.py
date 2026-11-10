@@ -30,9 +30,12 @@ from jiuwenswarm.common.file_download_token import WebFileDownloadManager
 from jiuwenswarm.office import review, runtime
 from jiuwenswarm.office.rails import OfficeToolsRail
 from jiuwenswarm.runtime.client_tools import client_tool_answers, client_tool_request_event
-from jiuwenswarm.server.client_attachments import attach, close_client_attachments, get_attachment_directory
+from jiuwenswarm.server.client_attachments import attach, close_client_attachments, get_attachment_directory, registry
 from jiuwenswarm.server.runtime.attachments import media_attachments
 from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, isolated  # noqa: F401 - the fixture
+
+# The package JiuwenSwarm ships for the app, read before a test's ``isolated`` fixture replaces the apps.
+POWERPOINT_PACKAGE = registry.client_apps()[CLIENT_APP].package_dir
 
 
 @pytest.fixture(autouse=True)
@@ -180,7 +183,7 @@ class Conversation:
     async def __aenter__(self) -> "Conversation":
         await Runner.start()
         await self.agent.ensure_initialized()
-        await self.agent.register_rail(OfficeToolsRail())
+        await self.agent.register_rail(OfficeToolsRail(POWERPOINT_PACKAGE))
         session = create_agent_session(session_id=self.session_id, card=self.agent.card)
         await session.pre_run(inputs={})
         await self.agent.start(session=session)

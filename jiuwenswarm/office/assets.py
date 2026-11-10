@@ -1,11 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Files the task pane inserts into the presentation: an image, or a .pptx to import slides from.
+"""Files the task pane inserts into the document: an image, or a .pptx to import slides from.
 
-``publish_powerpoint_asset`` copies a file of the conversation (its project,
+``publish_office_asset`` copies a file of the conversation (its project,
 the agent workspace, its uploads) into the conversation's ``office_assets``
 directory and gives the model its descriptor (an opaque handle, and the size
-and SHA-256 the task pane checks the download against). A PowerPoint tool call
+and SHA-256 the task pane checks the download against). A task pane tool call
 that names the handle gets a ``/file-api/download`` link for it in the request
 to the task pane (``client_tools``); the model never sees the link.
 """
@@ -43,7 +43,7 @@ class OfficeAsset:
     sha256: str
 
     def descriptor(self) -> dict[str, Any]:
-        """The reference the model passes to a PowerPoint tool, which the task pane checks the download against."""
+        """The reference the model passes to a task pane tool, which the task pane checks the download against."""
         return {"handle": self.handle, "purpose": self.purpose, "mime_type": self.mime_type,
                 "size": self.size, "sha256": self.sha256}
 
@@ -107,21 +107,20 @@ def detect_mime_type(data: bytes) -> str:
     raise ValueError("an asset must be a PNG or JPEG image or a .pptx presentation")
 
 
-class PublishPowerPointAssetTool(Tool):
+class PublishOfficeAssetTool(Tool):
     def __init__(self, store: OfficeAssetStore | None = None) -> None:
         super().__init__(ToolCard(
-            name="publish_powerpoint_asset",
+            name="publish_office_asset",
             description=(
                 "Publish one PNG, JPEG or .pptx file from the active backend project/workspace so this "
-                "presentation can use it; it is the only way image bytes reach the deck. Obtain or generate the file "
+                "document can use it; it is the only way image bytes reach the document. Obtain or generate the file "
                 "in the backend first: it must already exist under the active project/workspace or this Session's "
                 "uploads directory (images the user attached); this tool does not download, generate, or modify it. "
-                "For an image, add a short key to the returned descriptor in the assets of presentation_apply_patch "
-                "and reference that key from an add_image operation. For a .pptx, pass the descriptor unchanged as "
-                "import_slides.asset. Inspect an image's pixels, source, crop and watermark before inserting it, and "
-                "never substitute a rectangle for a requested picture. Treat a logo's visible canvas as part of the "
-                "asset: do not shrink a wordmark into an unreadable tile or put an opaque white logo box on a dark "
-                "field; use a compatible placement or a transparent variant."
+                "Pass the returned descriptor to the tool that inserts the file as that tool's schema says. "
+                "Inspect an image's pixels, source, crop and watermark before inserting it, and never substitute a "
+                "rectangle for a requested picture. Treat a logo's visible canvas as part of the asset: do not shrink "
+                "a wordmark into an unreadable tile or put an opaque white logo box on a dark field; use a compatible "
+                "placement or a transparent variant."
             ),
             input_params={
                 "type": "object",
