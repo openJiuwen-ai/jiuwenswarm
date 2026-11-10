@@ -106,7 +106,15 @@ def test_tail_bytes_returns_trailing_window_and_marks_truncation(harness) -> Non
     handler = harness("agent/workspace/data.log", payload, query="tail_bytes=1024")
     handler.call()
     assert handler.sent_responses[-1][0] == 200
-    assert handler.wfile.getvalue() == payload[-1024:]
+    body = handler.wfile.getvalue()
+    # The window may start mid-line; the handler aligns it to the next
+    # newline, so at most one line is dropped and every returned line is
+    # complete.
+    assert len(body) <= 1024
+    lines = body.decode("utf-8").splitlines()
+    assert len(lines) > 0
+    assert all(line.startswith("line-") and len(line) == 11 for line in lines)
+    assert lines[-1] == "line-%06d" % 59999
     assert handler.sent_headers["X-Truncated"] == "1"
 
 
@@ -119,17 +127,78 @@ def test_tail_bytes_larger_than_file_returns_everything(harness) -> None:
     assert handler.sent_headers["X-Truncated"] == "0"
 
 
+def test_tail_bytes_on_oversized_file_is_clamped_to_limit(harness) -> None:
+    # A huge tail_bytes must not reopen the whole-file read: the window is
+    # clamped to MAX_FILE_CONTENT_BYTES before reading.
+    line = b"L" * 60 + b"\n"
+    total = MAX_FILE_CONTENT_BYTES + 4096
+    payload = (line * (total // len(line) + 1))[:total]
+    handler = harness(
+        "agent/workspace/huge.log", payload, query="tail_bytes=999999999999"
+    )
+    handler.call()
+    assert handler.sent_responses[-1][0] == 200
+    body = handler.wfile.getvalue()
+    assert len(body) <= MAX_FILE_CONTENT_BYTES
+    assert len(body) > MAX_FILE_CONTENT_BYTES - 2 * len(line)
+    lines = body.split(b"\n")
+    assert all(part == b"L" * 60 for part in lines[:-1])
+    assert 0 < len(lines[-1]) < len(line)
+    assert handler.sent_headers["X-Truncated"] == "1"
+
+
+def test_tail_digits_beyond_int_limit_is_treated_as_no_tail(harness) -> None:
+    # CPython caps int() at 4300 digits; a longer digit string must not raise
+    # out of the handler, just fall back to the plain (gate-protected) read.
+    payload = "small log line\n".encode("utf-8") * 10
+    handler = harness("agent/.logs/ws-dev.log", payload, query="tail_bytes=" + "9" * 5000)
+    handler.call()
+    assert handler.sent_responses[-1][0] == 200
+    assert handler.wfile.getvalue() == payload
+    assert handler.sent_headers["X-Truncated"] == "0"
+
+
+def test_tail_offset_inside_utf8_char_aligns_to_line_start(harness) -> None:
+    # "中文日志行\n" is 16 bytes in UTF-8; tail_bytes=1454 puts the seek at
+    # byte 2 of a 3-byte character, which strict decoding would reject.
+    payload = "中文日志行\n".encode("utf-8") * 100
+    assert len(payload) == 1600
+    handler = harness("agent/.logs/utf8-cut.log", payload, query="tail_bytes=1454")
+    handler.call()
+    assert handler.sent_responses[-1][0] == 200
+    lines = handler.wfile.getvalue().decode("utf-8").splitlines()
+    assert len(lines) > 1
+    assert all(line == "中文日志行" for line in lines)
+    assert handler.sent_headers["X-Truncated"] == "1"
+
+
+def test_tail_offset_inside_gbk_char_aligns_to_line_start(harness) -> None:
+    # Same cut through GBK double-byte characters with an explicit encoding;
+    # strict decoding used to answer 400 invalid_encoding here.
+    payload = "中文日志行\n".encode("gbk") * 100
+    assert len(payload) == 1100
+    handler = harness(
+        "agent/.logs/gbk-cut.log", payload, query="tail_bytes=989&encoding=gbk"
+    )
+    handler.call()
+    assert handler.sent_responses[-1][0] == 200
+    lines = handler.wfile.getvalue().decode("utf-8").splitlines()
+    assert len(lines) > 1
+    assert all(line == "中文日志行" for line in lines)
+    assert handler.sent_headers["X-Truncated"] == "1"
+
+
 def test_tail_with_explicit_encoding_decodes_trailing_window(harness) -> None:
     payload = ("中文日志行\n".encode("gbk")) * 200
     handler = harness("agent/.logs/gbk.log", payload, query="tail_bytes=1024&encoding=gbk")
     handler.call()
     assert handler.sent_responses[-1][0] == 200
     text = handler.wfile.getvalue().decode("utf-8")
+    # The window is aligned to a line boundary before decoding, so every
+    # line - including the first - must be intact.
     lines = text.splitlines()
-    # The window starts mid-file, so the first line may be a cut-off remnant;
-    # every line after it must be an intact "中文日志行".
     assert len(lines) > 1
-    assert all(line == "中文日志行" for line in lines[1:])
+    assert all(line == "中文日志行" for line in lines)
 
 
 def test_auto_encoding_still_detected_for_small_file(harness) -> None:

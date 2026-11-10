@@ -168,11 +168,13 @@ def _parse_single_byte_range(
 MAX_FILE_CONTENT_BYTES = 10 * 1024 * 1024
 
 
-def _decode_bytes_auto(raw_data: bytes) -> tuple[str, str]:
+def _decode_bytes_auto(raw_data: bytes, errors: str = "strict") -> tuple[str, str]:
     """Decode raw bytes with charset detection plus CJK fallbacks.
 
     Shared by the whole-file and tail reads of ``/file-api/file-content`` so
-    both paths get identical encoding behaviour.
+    both paths get identical encoding behaviour.  ``errors`` is forwarded to
+    ``bytes.decode``; tail reads pass ``"replace"`` because the window may
+    start mid-character even after line alignment.
     """
     import charset_normalizer
 
@@ -182,11 +184,11 @@ def _decode_bytes_auto(raw_data: bytes) -> tuple[str, str]:
     else:
         detected_encoding = detected.encoding or "utf-8"
     try:
-        return raw_data.decode(detected_encoding), detected_encoding
+        return raw_data.decode(detected_encoding, errors), detected_encoding
     except (UnicodeDecodeError, LookupError) as decode_exc:
         for try_encoding in ["gbk", "gb2312", "big5", "shift_jis", "euc_kr"]:
             try:
-                return raw_data.decode(try_encoding), try_encoding
+                return raw_data.decode(try_encoding, errors), try_encoding
             except (UnicodeDecodeError, LookupError):
                 continue
     raise OSError("Unable to decode file with any known encoding") from decode_exc
@@ -1600,7 +1602,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     self._write_json(404, {"error": "file_not_found", "fullPath": str(full_path)})
                     return
 
-            tail_bytes = int(tail_arg) if tail_arg.isascii() and tail_arg.isdecimal() else 0
+            # A length cap keeps int() away from the CPython digit-limit
+            # ValueError on absurdly long digit strings; anything longer is
+            # treated as "no tail" and lands in the 413 gate below.
+            tail_bytes = int(tail_arg) if tail_arg.isascii() and tail_arg.isdecimal() and len(tail_arg) <= 12 else 0
             try:
                 file_size = full_path.stat().st_size
             except OSError as exc:
@@ -1615,8 +1620,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return
             # Tail mode reads only the trailing bytes so callers like the
             # logs panel can poll a growing log without transferring (or
-            # decoding) the whole file every interval.
-            read_size = min(tail_bytes, file_size) if tail_bytes > 0 else file_size
+            # decoding) the whole file every interval.  The window is also
+            # clamped to MAX_FILE_CONTENT_BYTES: an unbounded tail_bytes
+            # would otherwise reopen the whole-file read this limit exists
+            # to prevent.
+            read_size = min(tail_bytes, file_size, MAX_FILE_CONTENT_BYTES) if tail_bytes > 0 else file_size
             read_offset = file_size - read_size
             truncated = file_size > read_size
 
@@ -1625,9 +1633,19 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     with file_path.open("rb") as file_obj:
                         file_obj.seek(read_offset)
                         raw_data = file_obj.read()
+                    if truncated:
+                        # The seek lands on an arbitrary byte, possibly inside
+                        # a multi-byte character.  Align to the next newline
+                        # ('\n' never occurs inside UTF-8/GBK/Big5/Shift-JIS
+                        # sequences) so callers always get complete lines;
+                        # decode then uses "replace" as a last resort for
+                        # windows without any newline at all.
+                        newline_pos = raw_data.find(b"\n")
+                        if newline_pos >= 0:
+                            raw_data = raw_data[newline_pos + 1:]
                     if encoding == "auto":
-                        return _decode_bytes_auto(raw_data)
-                    return raw_data.decode(encoding), encoding
+                        return _decode_bytes_auto(raw_data, errors="replace")
+                    return raw_data.decode(encoding, errors="replace"), encoding
                 if encoding == "auto":
                     return _decode_bytes_auto(file_path.read_bytes())
                 return file_path.read_text(encoding=encoding), encoding
