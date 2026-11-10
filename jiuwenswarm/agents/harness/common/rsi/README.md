@@ -33,5 +33,10 @@ RSI versions are independent of the newer Plugin catalog. The production
 factory registers only the HARNESS adapter. Unsupported artifact scenarios and
 package declarations fail explicitly.
 
-`uv sync --locked` uses the matching agent-core revision pinned in
+New tasks record continuous scoring and the two-stage promotion policy in the
+task profile. Resume uses the policy in the existing task snapshot. Harness
+previews use the task's immutable snapshot ID and leave the active artifact
+reference intact.
+
+`uv sync --locked` uses the matching rebased agent-core commit pinned in
 `pyproject.toml` and `uv.lock`.

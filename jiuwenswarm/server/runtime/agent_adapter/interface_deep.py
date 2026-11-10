@@ -20145,18 +20145,18 @@ class JiuWenSwarmDeepAdapter:
         # Parse and validate before removing the currently active resources.
         spec = load_plugin_package(config_path) if operation == "activate" else None
         if record is not None:
-            await instance.unload_expert_harness(record)
+            await instance.unload_extension(record)
         self._rsi_harness_load_record = None
         self._rsi_harness_install_id = None
         self._rsi_harness_config_path = None
         if spec is None:
             return {"status": "INACTIVE", "resources": []}
         try:
-            record = await instance.load_expert_harness_from_spec(spec)
+            record = await instance.load_plugin_spec(spec)
         except Exception as exc:
             if previous:
                 try:
-                    self._rsi_harness_load_record = await instance.load_expert_harness_from_spec(load_plugin_package(previous))
+                    self._rsi_harness_load_record = await instance.load_plugin_spec(load_plugin_package(previous))
                     self._rsi_harness_install_id = current
                     self._rsi_harness_config_path = previous
                 except Exception as restore:
