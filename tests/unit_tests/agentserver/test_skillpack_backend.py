@@ -38,6 +38,7 @@ from jiuwenswarm.server.runtime.skill.skillpack import (
     SkillPackService,
     SkillPackValidationError,
     load_skillpack,
+    read_skill_kind,
 )
 from jiuwenswarm.server.runtime.skill.skillpack_install import (
     SkillPackInstaller,
@@ -204,6 +205,97 @@ def _install_container_pack(manager: SkillManager) -> None:
     container = manager._skills_dir / "container-pack"
     _write_skill(container / "skills" / "first-skill", "first-skill")
     _write_skill(container / "skills" / "second-skill", "second-skill")
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        ("---\nname: ordinary\ndescription: 普通技能\n---\n# Skill\n", ""),
+        ("---\nkind: skill\n---\n# Skill\n", "skill"),
+        ("---\nkind: '  SkIlLpAcK  '\n---\n# 技能包\n", "skillpack"),
+        ("# Ordinary Skill\n普通 Markdown，无 YAML frontmatter。\n", ""),
+    ],
+)
+def test_read_skill_kind_accepts_readable_roots(
+    tmp_path: Path, strict: bool, document: str, expected: str,
+) -> None:
+    (tmp_path / "SKILL.md").write_text(document, encoding="utf-8")
+
+    assert read_skill_kind(tmp_path, strict=strict) == expected
+
+
+@pytest.mark.parametrize("target", ["none", "missing_directory", "missing_root", "file"])
+def test_read_skill_kind_strict_rejects_missing_roots(tmp_path: Path, target: str) -> None:
+    skill_dir = tmp_path
+    if target == "none":
+        skill_dir = None
+    elif target == "missing_directory":
+        skill_dir = tmp_path / "missing"
+    elif target == "file":
+        skill_dir = tmp_path / "not-a-directory"
+        skill_dir.write_text("not a skill root", encoding="utf-8")
+
+    assert read_skill_kind(skill_dir) == ""
+    with pytest.raises(SkillPackValidationError, match="SKILL.md"):
+        read_skill_kind(skill_dir, strict=True)
+
+
+def test_read_skill_kind_strict_rejects_unreadable_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_skill(tmp_path, "ordinary")
+    original_read = Path.read_text
+
+    def read_text(path: Path, *args, **kwargs):
+        if path == tmp_path / "SKILL.md":
+            raise PermissionError("permission denied")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    assert read_skill_kind(tmp_path) == ""
+    with pytest.raises(SkillPackValidationError, match="无法读取 SKILL.md") as failure:
+        read_skill_kind(tmp_path, strict=True)
+    assert isinstance(failure.value.__cause__, PermissionError)
+
+
+def test_read_skill_kind_strict_rejects_invalid_utf8(tmp_path: Path) -> None:
+    (tmp_path / "SKILL.md").write_bytes(b"\xff\xfe")
+
+    assert read_skill_kind(tmp_path) == ""
+    with pytest.raises(SkillPackValidationError, match="无法读取 SKILL.md") as failure:
+        read_skill_kind(tmp_path, strict=True)
+    assert isinstance(failure.value.__cause__, UnicodeDecodeError)
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "legacy_kind", "error"),
+    [
+        ("kind: skillpack\nskills: [", "skillpack", "YAML 无效"),
+        ("[skillpack]", "", "必须是 YAML 对象"),
+        ("null", "", "必须是 YAML 对象"),
+        ("ordinary", "", "必须是 YAML 对象"),
+    ],
+)
+def test_read_skill_kind_strict_rejects_invalid_yaml_without_changing_legacy_fallback(
+    tmp_path: Path, frontmatter: str, legacy_kind: str, error: str,
+) -> None:
+    (tmp_path / "SKILL.md").write_text(
+        f"---\n{frontmatter}\n---\n# Skill\n", encoding="utf-8",
+    )
+
+    assert read_skill_kind(tmp_path) == legacy_kind
+    with pytest.raises(SkillPackValidationError, match=error):
+        read_skill_kind(tmp_path, strict=True)
+
+
+def test_read_skill_kind_strict_rejects_unclosed_frontmatter(tmp_path: Path) -> None:
+    (tmp_path / "SKILL.md").write_text("---\nkind: skillpack\n", encoding="utf-8")
+
+    assert read_skill_kind(tmp_path) == ""
+    with pytest.raises(SkillPackValidationError, match="缺少合法 YAML frontmatter"):
+        read_skill_kind(tmp_path, strict=True)
 
 
 def test_skillpack_service_reads_current_enabled_state(manager: SkillManager) -> None:

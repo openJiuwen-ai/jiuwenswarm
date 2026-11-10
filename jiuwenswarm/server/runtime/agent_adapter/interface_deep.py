@@ -11524,6 +11524,7 @@ class JiuWenSwarmDeepAdapter:
                     manager=lambda: self._skill_manager,
                     toolkit=lambda: self._get_or_create_skill_retrieval_toolkit(),
                     model=lambda: self._model,
+                    skills_for_session=lambda session: self._skill_rail.get_skills_for_session(session),
                 ),
             )
         except Exception as exc:
