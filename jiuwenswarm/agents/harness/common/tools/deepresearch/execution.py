@@ -196,20 +196,24 @@ def _result(kind: str, state: dict[str, Any], **fields: Any) -> dict[str, Any]:
         **fields,
         "state": state,
     }
-    if (
+    is_prepared_completion = (
         kind == "completed"
         and fields.get("report_prepared") is True
         and fields.get("report_delivered") is False
+    )
+    if (
+        is_prepared_completion
         and state.get("requested_report_type") == "brief"
         and state.get("conversation_id")
     ):
-        report_files = fields.get("report_files", [])
-        paths = [
-            item["path"] for item in report_files
-            if isinstance(item, Mapping)
-            and isinstance(item.get("path"), str)
-            and item.get("mime_type") in {"text/html", "text/markdown"}
-        ]
+        paths = []
+        for item in fields.get("report_files", []):
+            if (
+                isinstance(item, Mapping)
+                and isinstance(item.get("path"), str)
+                and item.get("mime_type") in {"text/html", "text/markdown"}
+            ):
+                paths.append(item["path"])
         if paths:
             result["prepared_brief_report"] = {
                 "v": 1,
