@@ -55,6 +55,10 @@ a2ui:
   non_web_fallback_enabled: false
   dev_smoke_tools_enabled: false
 
+# RSI 递归自我改进实验入口；默认开启
+rsi:
+  enabled: true
+
 symphony:
   enabled: false
   paths:
@@ -665,6 +669,9 @@ react:
   # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
   subagent_runtime:
     enabled: true
+    max_spawn_depth: 2            # 1 = 关闭嵌套。2 = general-purpose 下面一层 fork
+    max_concurrent_running: 20    # 整棵树同时 running
+    max_subagents: 20             # 整棵树同时存活，必须 >= 并发
     # 把子代理的思考/工具帧原样镜像到父会话流，并带 stream_source_id=子代理 id，
     # 供按 source 路由的宿主（RelayClaw）渲染成嵌套子代理行。进程级开关：
     # 打开后同一进程服务的所有 channel 都会收到这些帧，默认开启。

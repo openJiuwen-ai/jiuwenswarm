@@ -724,6 +724,57 @@ def _move_ttse_file(source: Path, target: Path) -> None:
         logger.warning("[ttse] bank copied to %s but old file remains: %s", target, exc)
 
 
+def _runtime_limit_int(name: str, raw: Any) -> int:
+    """Parse one nesting limit. Bool and float are refused, not coerced."""
+    if isinstance(raw, bool):
+        raise ValueError(f"react.subagent_runtime.{name} must be an integer")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and _signed_digits(raw.strip()):
+        return int(raw.strip())
+    raise ValueError(f"react.subagent_runtime.{name} must be an integer")
+
+
+def _signed_digits(text: str) -> bool:
+    digits = text[1:] if text.startswith("-") else text
+    return bool(digits) and digits.isdigit()
+
+
+def subagent_runtime_limits(config: dict[str, Any] | None = None) -> dict[str, int]:
+    """Read nesting limits from ``react.subagent_runtime``.
+
+    Missing keys use the product defaults: depth 2, 20 running, 20 alive.
+    Depth, running, and alive must be integers >= 1, and alive must be
+    at least the running cap. Bool and non-integral numbers are refused.
+    """
+    cfg = config if config is not None else get_config()
+    react = cfg.get("react") if isinstance(cfg, dict) else None
+    runtime_cfg = react.get("subagent_runtime") if isinstance(react, dict) else None
+    runtime_cfg = runtime_cfg if isinstance(runtime_cfg, dict) else {}
+
+    def _read(name: str, default: int) -> int:
+        return _runtime_limit_int(name, runtime_cfg.get(name, default))
+
+    depth = _read("max_spawn_depth", 2)
+    concurrent = _read("max_concurrent_running", 20)
+    alive = _read("max_subagents", 20)
+    if depth < 1:
+        raise ValueError("react.subagent_runtime.max_spawn_depth must be >= 1")
+    if concurrent < 1 or alive < 1:
+        raise ValueError(
+            "react.subagent_runtime.max_concurrent_running and max_subagents must be >= 1"
+        )
+    if alive < concurrent:
+        raise ValueError(
+            "react.subagent_runtime.max_subagents must be >= max_concurrent_running"
+        )
+    return {
+        "max_spawn_depth": depth,
+        "max_concurrent_running": concurrent,
+        "max_subagents": alive,
+    }
+
+
 def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return ``react.subagent_runtime.enabled`` for persistent subagent tools.
 
@@ -1450,6 +1501,19 @@ def update_setup_guide_enabled_in_config(value: bool) -> None:
             section = {}
             data["setup_guide"] = section
         section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
+def update_rsi_enabled_in_config(value: bool) -> None:
+    """原子更新 rsi.enabled（RSI 优化平台开关）。"""
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rsi")
+        if not isinstance(section, dict):
+            section = {}
+            data["rsi"] = section
+        section["enabled"] = bool(value)
         return data
 
     update_config(mutator)

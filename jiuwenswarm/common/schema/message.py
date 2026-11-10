@@ -165,6 +165,11 @@ class ReqMethod(Enum):
     SKILLS_ENTERPRISE_SOURCE_PROVIDERS = "skills.enterprise.source.providers"
     SKILLS_ENTERPRISE_SOURCE_SEARCH = "skills.enterprise.source.search"
 
+    # Team/member Skill visibility metadata (skills-visibility.json).
+    SKILLS_VISIBILITY_GET = "skills.visibility.get"
+    SKILLS_VISIBILITY_SET = "skills.visibility.set"
+    SKILLS_VISIBILITY_UPDATE = "skills.visibility.update"
+
     # Skill Graph Web panel transport. The implementation is provided by
     # agent-core Symphony, while the public transport remains skill-domain API.
     SKILLS_GRAPH_BUILD = "skills.graph.build"
@@ -341,6 +346,26 @@ class ReqMethod(Enum):
     IM_HOSTING_HISTORY = "im.hosting.history"
     IM_HOSTING_LOGIN_START = "im.hosting.login.start"
     IM_HOSTING_LOGIN_STATUS = "im.hosting.login.status"
+
+    # RSI 优化平台（rsi.* web method；分发统一走 server.rsi，见 agent_ws_server）
+    RSI_DATASET_VALIDATE = "rsi.dataset.validate"
+    RSI_TASK_CREATE = "rsi.task.create"
+    RSI_TASK_LIST = "rsi.task.list"
+    RSI_TASK_GET = "rsi.task.get"
+    RSI_TASK_DELETE = "rsi.task.delete"
+    RSI_TRAINING_START = "rsi.training.start"
+    RSI_TRAINING_PAUSE = "rsi.training.pause"
+    RSI_TRAINING_RESUME = "rsi.training.resume"
+    RSI_TRAINING_TERMINATE = "rsi.training.terminate"
+    RSI_REPORT_GET = "rsi.report.get"
+    RSI_USAGE_GET = "rsi.usage.get"
+    RSI_ARTIFACT_DOWNLOAD = "rsi.artifact.download"
+    RSI_ARTIFACT_FILES_LIST = "rsi.artifact.files.list"
+    RSI_ARTIFACT_FILES_GET = "rsi.artifact.files.get"
+    RSI_TREE_GET = "rsi.tree.get"
+    RSI_HARNESS_INSTALL = "rsi.harness.install"
+    RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
+    RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
 
 
 class EventType(Enum):
