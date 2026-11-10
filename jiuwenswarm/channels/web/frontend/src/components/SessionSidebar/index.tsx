@@ -125,13 +125,13 @@ const experimentsNavIcon = (
 );
 
 const mainNavItems: NavItem[] = [
-  { key: 'experiments', labelKey: 'nav.experiments', icon: workspaceNavIcon },
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
   { key: 'channels', labelKey: 'nav.channels', icon: <ChannelIcon aria-hidden /> },
   { key: 'digitalavatar', labelKey: 'nav.digitalAvatar', icon: digitalAvatarNavIcon },
   { key: 'agents', labelKey: 'nav.workspace', icon: workspaceNavIcon },
   { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },
+  { key: 'experiments', labelKey: 'nav.experiments', icon: workspaceNavIcon },
   { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },
   { key: 'experiments', labelKey: 'nav.experiments', icon: experimentsNavIcon },
 ];

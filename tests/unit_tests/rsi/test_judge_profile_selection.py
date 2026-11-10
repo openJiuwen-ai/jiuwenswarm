@@ -76,9 +76,8 @@ async def test_selected_judger_evaluates_response_with_configured_threshold(tmp_
     )
     invoke.assert_awaited_once()
     assert result.method == "llm_as_judge"
-    # openjiuwen 0.1.18 exposes the thresholded verdict as ``score`` and
-    # preserves the continuous model score in optimization signals.
-    assert result.score == float(passed)
+    # The generated profile keeps the score continuous and the verdict thresholded.
+    assert result.score == score
     assert result.passed is passed
     assert result.metadata["optimization_signals"]["continuous_score"]["value"] == score
     assert result.metadata["pass_threshold"] == 0.8

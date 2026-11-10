@@ -117,6 +117,7 @@ from jiuwenswarm.server.runtime.enterprise_config.loader import (
 )
 from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
@@ -635,6 +636,8 @@ class _DummyBus:
         pass
 
 
+_RSI_FORWARD_METHODS = frozenset(method.value for method in ReqMethod if method.value.startswith("rsi."))
+
 # 仅转发到 Agent 的 Web method
 _FORWARD_REQ_METHODS = frozenset({
     "initialize",
@@ -824,7 +827,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "im.hosting.history",
     "im.hosting.login.start",
     "im.hosting.login.status",
-})
+}) | _RSI_FORWARD_METHODS
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "chat.steer",
@@ -990,7 +993,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "im.hosting.history",
     "im.hosting.login.start",
     "im.hosting.login.status",
-})
+}) | _RSI_FORWARD_METHODS
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
 # default 模型 + video/audio/vision 多模型

@@ -62,10 +62,17 @@ def test_artifact_execution_is_rejected_by_the_task_service(tmp_path):
         service.create({"scenario": "ARTIFACT", "artifact_type": "PAPER"})
 
 
-def test_rsi_methods_use_the_stable_dispatch_registry():
+def test_rsi_methods_route_from_web_gateway_to_stable_dispatch():
+    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+        _FORWARD_NO_LOCAL_HANDLER_METHODS,
+        _FORWARD_REQ_METHODS,
+    )
     from jiuwenswarm.server.dispatch import HANDLERS
+
     for method in ReqMethod:
         if method.value.startswith("rsi."):
+            assert method.value in _FORWARD_REQ_METHODS
+            assert method.value in _FORWARD_NO_LOCAL_HANDLER_METHODS
             assert HANDLERS[method].fn is rsi.handle_rsi
 
 

@@ -169,7 +169,11 @@ async def test_production_factory_executes_real_engine_through_registered_wire_h
         assert status == "COMPLETED", detail
         assert (await call(ReqMethod.RSI_REPORT_GET, {"task_id": task_id}))["status"] == "COMPLETED"
         tree = await call(ReqMethod.RSI_TREE_GET, {"task_id": task_id})
-        assert tree["nodes"]
+        snapshot_id = next(node["snapshot_artifact_id"] for node in tree["nodes"] if node.get("snapshot_artifact_id"))
+        preview = await call(ReqMethod.RSI_ARTIFACT_FILES_LIST, {"task_id": task_id, "artifact_id": snapshot_id})
+        assert Path(preview["initial_path"]).name == "harness_config.yaml"
+        config = await call(ReqMethod.RSI_ARTIFACT_FILES_GET, {"task_id": task_id, "path": preview["initial_path"]})
+        assert yaml.safe_load(config["content"])["id"] == "rsi-native-agent-baseline"
         task_root = context.tasks_root / task_id
         answers = list((task_root / "run").rglob("answer.txt"))
         assert answers and all(path.read_text(encoding="utf-8") == "service evidence" for path in answers)
