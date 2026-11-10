@@ -2118,13 +2118,12 @@ class XiaoyiChannel(BaseChannel):
         # 能落到此处的只有 CHAT_SUBTASK_UPDATE（CHAT_REASONING 在 :640 前置分流、
         # CHAT_PROCESSING_STATUS 在 :724 status_update 分流）。
         # 链路正文累积（每批帧只记一次，在连接循环外）：供断链续投播种。
-        # ask_user 卡片经 _send_ask_user_question_prompt 直发（append=false 带
+        # ask_user 卡片经 _send_ask_user_question_prompt 直发（append=true 带
         # data part），不经过本分支，不会把题干污染进累积正文。
         if part_kind == "text":
-            # 断链续投种子下发：确认后首个正文事件先补发已流出正文
-            # （partial/append 帧，先于本批增量；登记时已处理累积，此处
-            # 不重复计入——同链形态累积本就含段1，链迁移形态登记时已播种
-            # 新链）。
+            # 断链续投种子下发（仅链迁移登记的种子会走到这里）：确认后
+            # 首个正文事件先补发已流出正文（partial 帧，先于本批增量；
+            # 登记时已处理累积，此处不重复计入）。
             _pending_seed = self._pending_resume_seeds.pop(
                 (session_id, task_id), None
             )
@@ -3963,25 +3962,24 @@ class XiaoyiChannel(BaseChannel):
             self._mark_session_completed(session_id, pending_task_id)
             self._clear_task_timeout(session_id, pending_task_id)
             self._clear_session_timeout(session_id, pending_task_id)
-        # 断链续投的正文连续性：确认后端侧/云端以 streamType=start 重开消息
-        # 流（缓冲重置）——实测确认后的流只含扣片尾片+续写正文，确认前已
-        # 流出的正文全部丢失（2026-11-06 a.py 轮：手机端仅剩"可恢复）。"）。
-        # 把已流出正文登记为播种，随确认后首个正文事件以 partial（append=
-        # true）帧补发（首个正文事件可能是扣片收尾 flush——种子必须先于
-        # 尾片，否则端侧缓冲序为 尾片+段1 错序）。两种形态都播种：链迁移
-        # （手机端点选，resume 跟随应答帧新链路，累积迁到新链，链式
-        # ask_user 组合）与同链（PC 端点选，应答帧带回原任务 id，累积不动
-        # ——链还在续写）。
-        if session_id and task_id:
-            _seed_source_task = (
-                pending_task_id if task_id != pending_task_id else task_id
-            )
-            _seed_key = (session_id, _seed_source_task)
+        # 断链续投正文播种——仅链迁移形态（手机端点选，云端开新交互，resume
+        # 跟随应答帧新链路）：新链的端侧缓冲与云端话题存储都从零累积，种子
+        # 把本轮已流出正文补进新链，随确认后首个正文事件以 partial（append=
+        # true）帧下发（首个正文事件可能是扣片收尾 flush——种子必须先于尾片，
+        # 否则端侧缓冲序为 尾片+段1 错序）。种子在新链是段1 的第一份拷贝，
+        # 存储不重复。
+        # 同链（PC 端点选，应答帧带回原任务 id）不播种：原链的云端话题存储
+        # 已含段1（实时 partial 帧逐条入存储），种子重发会使存储含段1 两份，
+        # 轮末话题重拉把重复内容渲染到 PC。同链卡片帧为 append=true（不重置
+        # 端侧缓冲），发起端实时链路本就送达的段1 不会丢；其他端由轮末重拉
+        # 补齐（存储内容完整）。
+        if session_id and task_id and task_id != pending_task_id:
+            _seed_key = (session_id, pending_task_id)
             seed_text = str(self._streamed_chain_texts.get(_seed_key) or "")
             # 格式对齐：把源链扣住的尾片并入种子并补段间换行。旧链路的尾片
             # 要么随 tool_phase flush（补 \n）发出、要么被续跑首增量裸放，
-            # 断链/缓冲重置后都不会再发生——不并入则段1 缺尾（2026-11-06
-            # 实测缺"可恢复）。"）、不补 \n 则续写首行与段1 粘连。
+            # 断链/缓冲重置后都不会再发生——不并入则段1 缺尾、不补 \n 则
+            # 续写首行与段1 粘连。
             _held_raw = self._text_stream_pending.pop(_seed_key, None)
             self._text_stream_prefix.pop(_seed_key, None)
             if _held_raw and _held_raw[0]:
@@ -3995,20 +3993,19 @@ class XiaoyiChannel(BaseChannel):
                     "partial 下发）session=%s seed_source_task=%s to_task=%s "
                     "len=%d",
                     logical_session,
-                    _seed_source_task,
+                    pending_task_id,
                     task_id,
                     len(seed_text),
                 )
             # 链式 ask_user 轮内累积（用户规则：输出 B → ask_user → B+C →
             # ask_user → B+C+D）：每次应答的端侧消息 = 此前全部正文 + 新段。
-            # 卡片帧 append=false 已重置端侧缓冲，种子整段重放不会重复；
+            # 链迁移形态下新链存储/缓冲从零开始，种子整段重放不重复；
             # 累积器=种子（B+C），续写 D 追加其上，下一次种子=B+C+D。
             # 作用域=本轮（按链键控）：跨轮不带入（上一轮内容在上一轮消息里，
             # 其累积器随轮次终态 finalize / 顶替收口清理）。
             self._streamed_chain_texts[(session_id, task_id)] = seed_text
-            if task_id != pending_task_id:
-                # 链迁移：原链累积清理（已迁到新链）
-                self._streamed_chain_texts.pop((session_id, pending_task_id), None)
+            # 链迁移：原链累积清理（已迁到新链）
+            self._streamed_chain_texts.pop((session_id, pending_task_id), None)
         params: dict[str, Any] = {
             "query": "",
             "task_id": task_id,
@@ -4216,18 +4213,21 @@ class XiaoyiChannel(BaseChannel):
             "kind": "data",
             "data": {"commands": [ask_user_command]},
         }
-        # artifact-update 承载：问题正文走
-        # text part，选项卡指令走 data part，同帧下发。final=false——任务仍在
-        # 等输入，true 会断开端云任务通道；last_chunk=true（本条 artifact 完整
-        # 发完）；append=false（新 artifact，不追加前序片段）。续跑结果继续落到
-        # 同一 task 气泡。
+        # artifact-update 承载：问题正文走 text part，选项卡指令走 data
+        # part，同帧下发。final=false——任务仍在等输入，true 会断开端云
+        # 任务通道；last_chunk=true（本条 artifact 完整发完）；append=true
+        # （partial 续写，不重置端侧缓冲）——卡片若 append=false 会整段重置
+        # 端侧消息正文，段1 已流出文本被清掉、确认后续跑在残缺消息上拼接，
+        # 且重置后需种子回补段1，种子重发又令云端话题存储（按任务拼接全部
+        # text part）含段1 两份、轮末重拉渲染到 PC 重复。不重置 + 同链不播种
+        # 则存储每段只有一份，两端视图一致。续跑结果继续落到同一 task 气泡。
         for url_key in list(self._ws_connections.keys()):
             await self._send_text_response(
                 session_id,
                 task_id,
                 prompt_text,
                 url_key,
-                append=False,
+                append=True,
                 last_chunk=True,
                 is_final=False,
                 kind="text",
@@ -4863,7 +4863,7 @@ class XiaoyiChannel(BaseChannel):
         """
         # 断链续投种子兜底：确认后首个正文事件可能是本收尾（续跑首个工具
         # 事件触发 tool_phase flush）——种子必须先于尾片发出，否则端侧缓冲
-        # 序为 尾片+段1 错序（2026-11-06 a.py 轮实测：手机端仅剩"可恢复）。"）。
+        # 序为 尾片+段1 错序。
         # 本函数对无扣片的链也会被调用（空收尾早退），种子检查须在早退之前。
         _pending_seed = self._pending_resume_seeds.pop(
             (session_id, task_id), None

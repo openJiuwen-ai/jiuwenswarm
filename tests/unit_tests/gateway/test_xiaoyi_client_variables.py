@@ -513,7 +513,9 @@ async def test_ask_user_question_prompt_and_resume(cfg_file, workspace):
         # artifact-update 承载
         assert result["kind"] == "artifact-update"
         assert result["final"] is False  # 任务等输入，final=true 会断开端云通道
-        assert result["append"] is False
+        # append=true（partial 续写）：不重置端侧缓冲——卡片若重置会清掉
+        # 已流出段1，且种子回补会使云端话题存储含段1 两份（PC 轮末重拉重复）
+        assert result["append"] is True
         assert result["lastChunk"] is True
         parts = result["artifact"]["parts"]
         text_part = parts[0]
@@ -1082,12 +1084,14 @@ async def test_ask_user_invoke_rsp_reply_routes_resume(cfg_file):
 async def test_ask_user_resume_seeds_streamed_text_to_follow_chain(cfg_file):
     """播种 v3：格式对齐（含扣片尾片+段间换行），双形态，随首正文帧 partial。
 
-    确认后端侧以 streamType=start 重开消息流（缓冲重置），确认前已流出的
-    正文会丢。播种=累积+扣片尾片+
-（格式与旧链路 tool_phase flush 对齐：
-    段完整、续写另起一行），挂起后随确认后首个正文事件以 append=true
-    （partial）帧发出。链迁移（手机点选，累积迁新链）与同链（PC 点选，
-    原链续写）双形态；种子吸收源链扣片后，flush/续增量不再重发尾片。
+    确认后端侧/云端以 streamType=start 重开消息流（缓冲重置），确认前已
+    流出的正文会丢。播种=累积+扣片尾片+
+（格式与旧链路 tool_phase
+    flush 对齐：段完整、续写另起一行），挂起后随确认后首个正文事件以
+    append=true（partial）帧发出。仅链迁移形态播种（新链存储/缓冲从零，
+    种子是段1 第一份拷贝不重复）；同链不播种——云端话题存储按任务拼接
+    全部 text part，同链重发使存储含段1 两份，轮末重拉渲染到 PC 重复。
+    种子吸收源链扣片后，flush/续增量不再重发尾片。
     """
     captured, sent = [], []
     ch = _make_channel(captured, sent)
@@ -1173,7 +1177,9 @@ async def test_ask_user_resume_seeds_streamed_text_to_follow_chain(cfg_file):
         assert ch._streamed_chain_texts.get(("conv-1", "task-10")) == seg2
         assert ("conv-1", "task-9") not in ch._streamed_chain_texts
 
-        # 形态二：同链（PC 端点选，应答帧带回原任务 id）——尾片并入种子
+        # 形态二：同链（PC 端点选，应答帧带回原任务 id）——不播种：
+        # 云端话题存储按任务拼接全部 text part，原链已含段1（实时 partial
+        # 入存储），种子重发会使存储含段1 两份，轮末重拉渲染到 PC 重复
         ch._streamed_chain_texts[("conv-1", "task-2")] = acc
         ch._text_stream_pending[("conv-1", "task-2")] = (held, "text")
         ch._pending_approvals["conv-1"] = {
@@ -1193,20 +1199,19 @@ async def test_ask_user_resume_seeds_streamed_text_to_follow_chain(cfg_file):
                 "custom_text": None,
             }],
         }, task=""))
-        # 同链：种子挂起（含尾片+换行），累积对齐到种子（续写在种子上追加）
-        assert ch._pending_resume_seeds.get(("conv-1", "task-2")) == seg1
-        # 同链形态：累积器=种子（含尾片+换行），续写追加其上
-        assert ch._streamed_chain_texts.get(("conv-1", "task-2")) == seg1
-        assert ("conv-1", "task-2") not in ch._text_stream_pending
-        # 确认后首个正文事件=tool_phase flush：种子发出，尾片已被吸收不再重发
+        # 同链：无种子，累积器保留（续写在其上追加）
+        assert ch._pending_resume_seeds.get(("conv-1", "task-2")) is None
+        assert ch._streamed_chain_texts.get(("conv-1", "task-2")) == acc
+        # 同链无种子：扣片尾片留在 pending，随续写首增量/收尾 flush 流出
+        assert ("conv-1", "task-2") in ch._text_stream_pending
+        # 确认后首个正文事件=tool_phase flush：尾片补换行发出（同链收尾语义）
         await ch._flush_text_stream_segment(
             "conv-1", "task-2", ("conv-1", "task-2"), reason="tool_phase"
         )
-        seed2 = json.loads(sent[1]["msgDetail"])  # sent[0]=回执状态帧
-        assert seed2["result"]["taskId"] == "task-2"
-        assert seed2["result"]["append"] is True
-        assert seed2["result"]["artifact"]["parts"][0]["text"] == seg1
-        assert len(sent) == 2  # 无独立尾片帧（已并入种子）
+        tail_frame = json.loads(sent[-1]["msgDetail"])
+        assert tail_frame["result"]["taskId"] == "task-2"
+        assert tail_frame["result"]["append"] is True
+        assert tail_frame["result"]["artifact"]["parts"][0]["text"] == held + "\n"
         assert ("conv-1", "task-2") not in ch._pending_resume_seeds
     finally:
         _cleanup_tasks(ch)
