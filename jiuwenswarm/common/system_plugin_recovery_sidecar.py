@@ -239,6 +239,7 @@ let pendingRestore = null;
 let expandedRow = null;
 let previewRequestId = 0;
 let selectedRecordId = null;
+let restoring = false;
 let heightAnimationFrame = null;
 
 function postToParent(message) {
@@ -252,6 +253,7 @@ function reportRecoveryState() {
     restoreLabel: texts.restore,
     title: texts.title,
     description: texts.description,
+    restoring: restoring,
   });
 }
 
@@ -300,6 +302,7 @@ async function load() {
   const data = await response.json();
   expandedRow = null;
   selectedRecordId = null;
+  restoring = false;
   restoreButton.disabled = true;
   reportRecoveryState();
   records.replaceChildren(...data.records.map((record) => row(record)));
@@ -430,6 +433,7 @@ function renderPackageMessage(container, message) {
 }
 
 function confirmRestore(id, button) {
+  if (restoring || confirmDialog.open) return;
   pendingRestore = { id, button };
   confirmTitle.textContent = texts.restoreConfirmTitle;
   confirmDescription.textContent = texts.restoreConfirmDescription;
@@ -482,6 +486,8 @@ confirmRestoreButton.onclick = () => {
 
 async function restore(id, button) {
   button.disabled = true;
+  restoring = true;
+  reportRecoveryState();
   try {
     const query = encodeURIComponent(token);
     const response = await fetch(`${endpoint}/api/restore?token=${query}`, {
@@ -492,6 +498,8 @@ async function restore(id, button) {
     if (!response.ok) throw new Error('restore failed');
     await load();
   } catch {
+    restoring = false;
+    reportRecoveryState();
     status.textContent = texts.restoreFailed;
     button.disabled = false;
   }
