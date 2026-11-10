@@ -3574,6 +3574,18 @@ def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
         user_data[APPLICATION_KV_CACHE_CONFIG_KEY] = deepcopy(legacy)
 
 
+def _has_local_team_config(config: dict[str, Any]) -> bool:
+    """Check that the instance uses local team defaults or explicit local settings."""
+    team = config.get("team", {})
+    if not isinstance(team, dict):
+        return False
+    for section, key, local_value in (("runtime", "mode", "local"), ("transport", "type", "inprocess")):
+        settings = team.get(section, {})
+        if not isinstance(settings, dict) or str(settings.get(key, local_value)).strip().lower() != local_value:
+            return False
+    return True
+
+
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
@@ -3637,6 +3649,15 @@ def migrate_config_from_template(
 
         # Deep merge: template provides defaults, user values preserved.
         # user_data is updated in place, which keeps comments and formatting.
+        if "extensions" in user_data and user_data["extensions"] is None:
+            template_extensions = template_data.get("extensions")
+            if (
+                isinstance(template_extensions, dict)
+                and template_extensions.get("extension_dirs") == "${EXTENSION_DIRS:-jiuwenswarm/extensions}"
+                and _has_local_team_config(user_data)
+            ):
+                # Environment-driven markers can resolve differently after a child reloads its dotenv files.
+                user_data["extensions"] = {}
         changes = _deep_merge(template_data, user_data, prune=prune)
 
         # Guard against an empty result overwriting a valid user config

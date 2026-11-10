@@ -62,6 +62,7 @@ def _fixture(tmp_path, monkeypatch, *, agents=2, groups=1):
 
     manager = SimpleNamespace(
         _service=service,
+        service=service,
         group_chats=SimpleNamespace(
             active_accesses=lambda ns, agent: accesses[agent],
             get=lambda ns, group: SimpleNamespace(platform='dingtalk', platform_chat_id=f'cid-{group}'),

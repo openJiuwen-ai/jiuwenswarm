@@ -185,13 +185,13 @@ _EXPERT_SYSTEM_PROMPT = (
 )
 
 _MEMORY_INCREMENTAL_SYSTEM_PROMPT = (
-    "按 RecGPT-V3 Evolving Memory Curation，在一次输出中联合完成 Update/"
-    "Retain/New。对每个旧 unit 恰好给出一个操作：有相关新行为时"
-    " {unit_id, operation: \"update\", core: {...}}，core 基于旧单元与相关"
-    " delta 整体重新综合（不含 timestamp）；无关时 {unit_id, operation:"
-    " \"retain\"}，不要附带 core。未匹配但形成一致新模式的 delta 写入"
-    " new_units（结构同 update.core）；零散行为进 unmatched_behavior_indices。"
-    "没有 Delete、衰减、置信度或合并操作。输出 JSON {\"updated_units\": [...],"
+    "按 RecGPT-V3 Evolving Memory Curation 一次输出 Update/Retain/New。"
+    "快速决定，只返回 JSON。每个旧 unit 恰好一个操作：有相关新行为时"
+    " {unit_id, operation: \"update\", core: {...}}，core 综合旧单元与相关"
+    " delta（不含 timestamp）；无关时 {unit_id, operation: \"retain\"}，"
+    "不要附带 core。未匹配但形成一致新模式的 delta 写入 new_units"
+    "（结构同 update.core）；零散行为进 unmatched_behavior_indices。"
+    "无 Delete/衰减/置信度/合并。输出 {\"updated_units\": [...],"
     " \"new_units\": [...], \"unmatched_behavior_indices\": [...]}。"
 )
 
@@ -3695,12 +3695,19 @@ def build_v4_stage_invoker(model: Any) -> StageInvoker:
 
     async def invoke(stage: str, system_prompt: str, payload: str) -> Any:
         del stage  # prompts already identify the stage; the Model is shared
-        response = await model.invoke(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": payload},
-            ]
+        # Prefer disabled thinking when the entry injects it; always-think models
+        # get one core strip-and-retry without a user-facing reasoning setting.
+        from openjiuwen.core.foundation.llm.request_context import (
+            disabled_thinking_fallback_scope,
         )
+
+        with disabled_thinking_fallback_scope():
+            response = await model.invoke(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": payload},
+                ]
+            )
         content = getattr(response, "content", None)
         if isinstance(content, list):
             # Official AssistantMessage.content is str | list[str | dict];
