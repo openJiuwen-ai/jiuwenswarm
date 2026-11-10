@@ -29,6 +29,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_audit import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
     ArkBackgroundConfig,
     build_ark_stage_invoker,
+    invoke_stage_with_shape_repair,
     persist_provider_invocation,
     provider_validation,
     record_provider_validation,
@@ -60,6 +61,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_prepare import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     COMPONENT_INVOCATION_RECEIPT_VERSION,
     DEFAULT_TOPIC_WORK_MODE,
+    TOPIC_WORK_MODES,
     GLOBAL_NEW_CHAT_SCOPE,
     GLOBAL_PROJECT_BUCKETS,
     GROUNDING_DECISION_RECEIPT_VERSION,
@@ -128,6 +130,8 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_selection import (
     DiversityScoringResult,
     ListSearchConstraints,
     SelectionCandidate,
+    coerce_diversity_scorer_payload,
+    coerce_utility_scorer_payload,
     hybrid_list_search,
     news_only_search_result,
     score_diversity,
@@ -871,13 +875,29 @@ def _v6_system_prompt(stage: str, supplied_prompt: str) -> str:
 
 
 def _v6_max_tokens(stage: str) -> int | None:
-    """Cap the one answer that grows with its input, a scope's summaries, above provider defaults.
+    """Cap stages whose answers grow with input or batch size above provider defaults.
 
-    Doubao's default 4,096 answer tokens cut a global summary off; every other
-    stage answers well within any default and keeps it.
+    Doubao's default 4,096 answer tokens cut summaries and multi-candidate scorer
+    batches off; truncated JSON then fails closed into cold corpus.
     """
 
-    return 16384 if stage == "v6_session_summarizer" else None
+    if stage == "v6_session_summarizer":
+        return 16384
+    if stage in {
+        "v6_utility_scorer",
+        "v6_diversity_scorer",
+        "v6_global_interest_generator",
+        "v6_recent_candidate_generator",
+        "v6_project_continuation_generator",
+        "v6_project_domain_candidate_generator",
+        "v6_recent_finalizer",
+        "behavior_map_batch",
+        "memory_init",
+        "memory_incremental",
+        "rid_interest_distiller",
+    }:
+        return 8192
+    return None
 
 
 _V6_PROMPT_VERSIONS = {
@@ -1036,10 +1056,12 @@ def build_v6_ark_stage_invoker(
     client_factory: Callable[..., Any] | None = None,
     receipt_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> StageInvoker:
-    """Use strict JSON Schema and require immutable provider metadata."""
+    """Prompt-json stage invoker with lineage receipts and provider metadata checks."""
 
     kwargs: dict[str, Any] = {
         "receipt_sink": receipt_sink,
+        # Schema hook kept for call-site compatibility; invoker does not send
+        # API response_format (general models / Flash / DeepSeek).
         "response_schema_for_stage": _v6_response_schema,
         "require_response_metadata": True,
         "max_tokens_for_stage": _v6_max_tokens,
@@ -1996,7 +2018,10 @@ Return only {"scores":[{"candidate_id":"...",
 "given_conditions":[{"card_quote":"...","condition":"...","source":"user","source_quote":"..."}],
 "reason":"premise support and specific justification","admitted":true,
 "click_score_nullable":0.0,"depth_score_nullable":0.0,"combined_utility_nullable":0.0}]}.
-Cover every input ID exactly once with finite numbers in [0,1].
+Cover every input ID exactly once. Each score object uses exactly those keys —
+no extras, no markdown fence. admitted must be a JSON boolean (true/false), not a
+string. Score fields must be finite numbers in [0,1] or null. Empty
+assertion_spans / given_conditions are [] when the card asserts nothing.
 
 Keep question_focus within 40 Chinese characters. Keep reason within 140 Chinese
 characters (or 100 English words). Preserve the required closest-question
@@ -2009,7 +2034,9 @@ Estimate uncalibrated semantic diversity only for requested_pairs and
 requested_marginal_candidate_ids. Return only {"pairwise_scores":[{
 "left_candidate_id":"...","right_candidate_id":"...",
 "reason":"the core explanation each answer rests on","compatible":true,"diversity_score_nullable":0.0}],"marginal_scores":[{"candidate_id":"...",
-"marginal_diversity_nullable":0.0}]}. Echo every requested unordered pair and
+"marginal_diversity_nullable":0.0}]}. Use exactly those keys — no extras, no
+markdown fence. compatible must be a JSON boolean; score fields number or null.
+Echo every requested unordered pair and
 marginal ID exactly once, return no unrequested IDs, and return an empty output
 array when its corresponding requested input array is empty.
 For each pair, write reason before compatible: state the core explanation the left
@@ -2184,6 +2211,7 @@ def _validate_diversity_api_batch(
     requested_pairs: Sequence[tuple[str, str]],
     requested_marginal_ids: Sequence[str],
 ) -> dict[str, list[dict[str, Any]]]:
+    raw = coerce_diversity_scorer_payload(raw)
     _rejected2 = (
         not isinstance(raw, dict)
         or set(raw) != {"pairwise_scores", "marginal_scores"}
@@ -2310,33 +2338,44 @@ async def _invoke_batched_diversity_proxy(
         requested_marginal_ids = (
             marginal_batches[index] if index < len(marginal_batches) else []
         )
-        raw = await invoke_stage(
+        request_payload = json.dumps(
+            {
+                "input_snapshot_id": payload.get("input_snapshot_id"),
+                "discussion_coverage": payload.get("discussion_coverage", []),
+                "candidates": candidates,
+                "requested_pairs": [
+                    {
+                        "left_candidate_id": left,
+                        "right_candidate_id": right,
+                    }
+                    for left, right in requested_pairs
+                ],
+                "requested_marginal_candidate_ids": requested_marginal_ids,
+                "request_id": payload.get("request_id"),
+            },
+            ensure_ascii=False,
+        )
+
+        validated: list[dict[str, list[dict[str, Any]]]] = []
+
+        def validate(raw: Any) -> None:
+            validated.append(
+                _validate_diversity_api_batch(
+                    raw,
+                    requested_pairs=requested_pairs,
+                    requested_marginal_ids=requested_marginal_ids,
+                )
+            )
+
+        await invoke_stage_with_shape_repair(
+            invoke_stage,
             "v6_diversity_scorer",
             _DIVERSITY_PROMPT,
-            json.dumps(
-                {
-                    "input_snapshot_id": payload.get("input_snapshot_id"),
-                    "discussion_coverage": payload.get("discussion_coverage", []),
-                    "candidates": candidates,
-                    "requested_pairs": [
-                        {
-                            "left_candidate_id": left,
-                            "right_candidate_id": right,
-                        }
-                        for left, right in requested_pairs
-                    ],
-                    "requested_marginal_candidate_ids": requested_marginal_ids,
-                    "request_id": payload.get("request_id"),
-                },
-                ensure_ascii=False,
-            ),
+            request_payload,
+            coerce=coerce_diversity_scorer_payload,
+            validate=validate,
         )
-        with provider_validation(invoke_stage, raw):
-            return _validate_diversity_api_batch(
-                raw,
-                requested_pairs=requested_pairs,
-                requested_marginal_ids=requested_marginal_ids,
-            )
+        return validated[-1]
 
     batch_tasks = tuple(
         asyncio.create_task(invoke_batch(index)) for index in range(batch_count)
@@ -5428,11 +5467,20 @@ class TopicPipeline:
                 ]
             return result
         except TerminalGenerationRejection as exc:
-            logger.info(
-                "Topic Starter v6 terminal generation rejected: %s",
-                exc.reason,
-            )
-            return failed_result(
+            cause = exc.__cause__
+            if cause is not None:
+                logger.info(
+                    "Topic Starter v6 terminal generation rejected: %s cause=%s:%s",
+                    exc.reason,
+                    type(cause).__name__,
+                    cause,
+                )
+            else:
+                logger.info(
+                    "Topic Starter v6 terminal generation rejected: %s",
+                    exc.reason,
+                )
+            result = failed_result(
                 exc.reason,
                 grounding_decision_receipt=(
                     exc.grounding_decision_receipt or latest_grounding_receipt
@@ -5443,15 +5491,29 @@ class TopicPipeline:
                 ),
                 rid_result=exc.rid_result,
             )
-        except Exception:  # noqa: BLE001 - no partial cards leave this boundary
-            logger.warning("Topic Starter v6 terminal generation failed", exc_info=True)
-            return failed_result(
+            if cause is not None:
+                result.manifest["failure_cause"] = {
+                    "exc_type": type(cause).__name__,
+                    "message": str(cause)[:500],
+                }
+            return result
+        except Exception as exc:  # noqa: BLE001 - no partial cards leave this boundary
+            logger.warning(
+                "Topic Starter v6 terminal generation failed",
+                exc_info=True,
+            )
+            result = failed_result(
                 "terminal_generation_failed",
                 grounding_decision_receipt=latest_grounding_receipt,
                 grounding_evidence_receipt=(
                     latest_grounding_evidence_receipt
                 ),
             )
+            result.manifest["failure_cause"] = {
+                "exc_type": type(exc).__name__,
+                "message": str(exc)[:500],
+            }
+            return result
         finally:
             if owned_search_provider is not None:
                 close = getattr(owned_search_provider, "aclose", None)
@@ -5486,8 +5548,13 @@ class TopicPipeline:
         if loaded is None:
             return failed("no_news_card_to_replace")
         predecessor, predecessor_cards = loaded
+        work_mode = normalize_topic_work_mode(
+            trigger_key.get("work_mode") if isinstance(trigger_key, Mapping) else None
+        )
         try:
-            snapshot = await asyncio.to_thread(self._context_loader, GLOBAL_NEW_CHAT_SCOPE)
+            snapshot = await asyncio.to_thread(
+                self._context_loader, GLOBAL_NEW_CHAT_SCOPE, work_mode
+            )
         except StateUnavailableError:
             return failed("state_unavailable")
         except Exception:  # noqa: BLE001 - generation input is fail closed
@@ -6061,21 +6128,40 @@ class TopicPipeline:
             logger.warning("Topic Starter v6 summary preparation failed", exc_info=True)
             return
         scopes = sorted(pending_by_scope)
+        jobs = [
+            (scope, work_mode)
+            for scope in scopes
+            for work_mode in TOPIC_WORK_MODES
+        ]
         reasons = await asyncio.gather(*(
-            self._summarize_scope_sessions(config, scope, pending_by_scope[scope]) for scope in scopes
+            self._summarize_scope_sessions(
+                config, scope, pending_by_scope[scope], work_mode=work_mode,
+            )
+            for scope, work_mode in jobs
         ))
-        for scope, reason in zip(scopes, reasons):
+        for (scope, work_mode), reason in zip(jobs, reasons):
             if reason:
-                logger.info("Topic Starter v6 session summaries not written for %s: %s", scope, reason)
+                logger.info(
+                    "Topic Starter v6 session summaries not written for %s work_mode=%s: %s",
+                    scope,
+                    work_mode,
+                    reason,
+                )
 
     async def _summarize_scope_sessions(
         self,
         config: ArkBackgroundConfig,
         context_scope: str,
         session_ids: set[str],
+        *,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
     ) -> str:
         try:
-            snapshot = await asyncio.to_thread(self._context_loader, context_scope)
+            snapshot = await asyncio.to_thread(
+                self._context_loader,
+                context_scope,
+                normalize_topic_work_mode(work_mode),
+            )
         except TerminalGenerationRejection as exc:
             return exc.reason
         except StateUnavailableError:
@@ -7163,11 +7249,22 @@ class TopicPipeline:
     ) -> list[dict[str, Any]]:
         if (
             not isinstance(response, dict)
-            or set(response) != {"candidates"}
+            or "candidates" not in response
             or not isinstance(response["candidates"], list)
         ):
             raise TerminalGenerationRejection("global_interest_contract_failed")
         required = set(_GLOBAL_INTEREST_CANDIDATE_ITEM_SCHEMA)
+        # Drop top-level and per-row extras general models often append.
+        response = {
+            "candidates": [
+                (
+                    {key: item[key] for key in required if key in item}
+                    if isinstance(item, dict)
+                    else item
+                )
+                for item in response["candidates"]
+            ]
+        }
         slot_interest_by_id = {
             str(item.get("slot_id") or ""): str(item.get("interest_summary_id") or "")
             for item in candidate_slots
@@ -7247,7 +7344,7 @@ class TopicPipeline:
     ) -> list[dict[str, Any]]:
         if (
             not isinstance(response, dict)
-            or set(response) != {"candidates"}
+            or "candidates" not in response
             or not isinstance(response["candidates"], list)
         ):
             raise TerminalGenerationRejection("recent_candidate_contract_failed")
@@ -7264,6 +7361,16 @@ class TopicPipeline:
         directional = context_scope == GLOBAL_NEW_CHAT_SCOPE and category == "profile_recent_progress"
         if directional:
             required.add("direction")
+        response = {
+            "candidates": [
+                (
+                    {key: item[key] for key in required if key in item}
+                    if isinstance(item, dict)
+                    else item
+                )
+                for item in response["candidates"]
+            ]
+        }
         slot_interest_by_id = {
             str(item.get("slot_id") or ""): str(
                 item.get("interest_summary_id") or ""
@@ -8914,18 +9021,30 @@ class TopicPipeline:
             batches = [candidates[sum(sizes[:index]):sum(sizes[:index + 1])] for index in range(count)]
 
             async def invoke_batch(batch: list[dict[str, Any]]) -> list[Any]:
-                raw = await invoke_stage(
-                    "v6_utility_scorer",
-                    _UTILITY_PROMPT,
-                    json.dumps({
+                candidate_ids = [
+                    str(candidate["candidate_id"]) for candidate in batch
+                ]
+                request_payload = json.dumps(
+                    {
                         **shared,
                         "candidates": batch,
                         "current_time_utc": current_time,
                         "request_id": payload["request_id"],
-                    }, ensure_ascii=False),
+                    },
+                    ensure_ascii=False,
                 )
-                with provider_validation(invoke_stage, raw):
-                    utility_scores_by_id(raw, [str(candidate["candidate_id"]) for candidate in batch])
+
+                def validate(raw: Any) -> None:
+                    utility_scores_by_id(raw, candidate_ids)
+
+                raw = await invoke_stage_with_shape_repair(
+                    invoke_stage,
+                    "v6_utility_scorer",
+                    _UTILITY_PROMPT,
+                    request_payload,
+                    coerce=coerce_utility_scorer_payload,
+                    validate=validate,
+                )
                 return raw["scores"]
 
             batch_tasks = tuple(asyncio.create_task(invoke_batch(batch)) for batch in batches)
@@ -10007,6 +10126,12 @@ class TopicPipeline:
                     grounding_evidence_receipt=grounding_batch.evidence_receipt,
                 ) from exc
             except Exception as exc:
+                logger.warning(
+                    "Topic Starter v6 terminal stage failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
                 raise TerminalGenerationRejection(
                     "terminal_generation_failed",
                     grounding_decision_receipt=grounding_batch.decision_receipt,
