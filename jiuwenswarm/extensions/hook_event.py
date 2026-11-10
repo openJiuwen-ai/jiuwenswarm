@@ -31,4 +31,5 @@ class AgentServerHookEvents(HookEventBase):
     MEMORY_PROFILE_SETTINGS_SET = HookEventBase.get_event("memory_profile_settings_set")
     MEMORY_PROFILE_GET = HookEventBase.get_event("memory_profile_get")
     MEMORY_PROFILE_MODIFY = HookEventBase.get_event("memory_profile_modify")
+    MEMORY_PROFILE_RESET = HookEventBase.get_event("memory_profile_reset")
     BEFORE_SYSTEM_PROMPT_BUILD = HookEventBase.get_event("before_system_prompt_build")

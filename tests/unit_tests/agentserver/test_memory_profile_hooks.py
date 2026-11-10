@@ -56,8 +56,9 @@ async def request(method, params, *, session_id=None, is_stream=False):
     (ReqMethod.MEMORY_PROFILE_SETTINGS_SET, {"enabled": False}),
     (ReqMethod.MEMORY_PROFILE_GET, {}),
     (ReqMethod.MEMORY_PROFILE_MODIFY, {"instruction": "private profile"}),
+    (ReqMethod.MEMORY_PROFILE_RESET, {}),
 ])
-async def test_four_methods_reach_only_the_selected_hook(registry, method, params):
+async def test_memory_methods_reach_only_the_selected_hook(registry, method, params):
     seen = []
 
     async def provider(context):
@@ -87,6 +88,10 @@ async def test_four_methods_reach_only_the_selected_hook(registry, method, param
     (ReqMethod.MEMORY_PROFILE_GET, {"project_dir": 1}, {}),
     (ReqMethod.MEMORY_PROFILE_GET, {"session_id": "b"}, {"session_id": "a"}),
     (ReqMethod.MEMORY_PROFILE_GET, {}, {"is_stream": True}),
+    (ReqMethod.MEMORY_PROFILE_RESET, {"userId": "another-user"}, {}),
+    (ReqMethod.MEMORY_PROFILE_RESET, {"dryRun": True}, {}),
+    (ReqMethod.MEMORY_PROFILE_RESET, {"instruction": "clear"}, {}),
+    (ReqMethod.MEMORY_PROFILE_RESET, {}, {"is_stream": True}),
 ])
 async def test_invalid_requests_never_trigger_hooks(registry, method, params, options):
     registry.trigger = AsyncMock()

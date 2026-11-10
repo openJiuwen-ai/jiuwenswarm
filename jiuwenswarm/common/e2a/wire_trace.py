@@ -64,7 +64,7 @@ _TRUE_VALUES = {"1", "true", "on", "yes", "enable", "enabled"}
 _FALSE_VALUES = {"0", "false", "off", "no", "disable", "disabled"}
 _PRIVATE_MEMORY_METHODS = {
     "memory.profile.settings.get", "memory.profile.settings.set",
-    "memory.profile.get", "memory.profile.modify",
+    "memory.profile.get", "memory.profile.modify", "memory.profile.reset",
 }
 
 # 开关文件：新名优先，旧名兼容

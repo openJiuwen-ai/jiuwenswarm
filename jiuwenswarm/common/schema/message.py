@@ -99,6 +99,7 @@ class ReqMethod(Enum):
     MEMORY_PROFILE_SETTINGS_SET = "memory.profile.settings.set"
     MEMORY_PROFILE_GET = "memory.profile.get"
     MEMORY_PROFILE_MODIFY = "memory.profile.modify"
+    MEMORY_PROFILE_RESET = "memory.profile.reset"
 
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
     COMMAND_GOAL = "command.goal"
