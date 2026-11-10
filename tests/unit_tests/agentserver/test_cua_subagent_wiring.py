@@ -678,6 +678,7 @@ def test_enabled_cua_is_skipped_when_the_host_has_no_backend(monkeypatch, tmp_pa
 @pytest.mark.parametrize(
     ("language", "guidance"),
     [("cn", "直接调用同步 SDK 方法"), ("en", "Call SDK methods synchronously")],
+    ids=("cn", "en"),
 )
 def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, tmp_path, legacy_available, language, guidance):
     from openjiuwen.harness.tools.cua.rails import CuaProgressRail
