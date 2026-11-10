@@ -14,14 +14,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from jiuwenswarm.common.version import __version__
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common.utils import get_infra_data_dir
 
 
 DOWNLOAD_CHUNK_SIZE = 1024 * 512
 
 
 def _updates_dir() -> Path:
-    path = get_user_workspace_dir() / ".updates"
+    path = get_infra_data_dir() / ".updates"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -247,13 +247,15 @@ class PipExecutor(UpgradeExecutor):
         try:
             if uv_cmd:
                 result = subprocess.run(
-                    [uv_cmd, "pip", "show", "--format", "json", package],
+                    [uv_cmd, "pip", "show", package],
                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                 )
                 if result.returncode == 0:
-                    import json as _json
-                    data = _json.loads(result.stdout)
-                    if isinstance(data, dict) and data.get("editable"):
+                    if any(
+                        line.startswith("Editable project location:")
+                        and line.partition(":")[2].strip()
+                        for line in result.stdout.splitlines()
+                    ):
                         return (
                             f"'{package}' is installed as an editable package. "
                             "Use 'git pull && uv sync' to update instead."

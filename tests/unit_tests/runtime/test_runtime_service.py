@@ -56,6 +56,36 @@ from jiuwenswarm.runtime.session_provisioner import (
 test_logger = logging.getLogger("tests.runtime_service")
 
 
+def _reset_checkpointer_globals() -> None:
+    from jiuwenswarm.runtime import checkpointer
+
+    checkpointer._shared_checkpointer = None
+    checkpointer._PERSISTENT_CHECKPOINTER_READY = False
+    checkpointer._shared_engine = None
+    checkpointer._shared_engine_kind = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_checkpointer_state():
+    """Reset runtime.checkpointer module globals leaked by per-test stubs.
+
+    ``ensure_persistent_checkpointer()`` stores ``CheckpointerFactory.create()``'s
+    return value into the module-level ``_shared_checkpointer``. Tests that patch
+    ``create`` with a plain-object stub leak that stub past monkeypatch teardown
+    (plain module-global writes are not tracked by monkeypatch), and any later
+    ``ensure`` call while ``_PERSISTENT_CHECKPOINTER_READY`` is still truthy
+    installs the stub via ``set_default_checkpointer`` — cascading
+    ``'object' object has no attribute 'pre_agent_execute'`` into unrelated
+    tests sharing the same xdist worker. Earlier files (e.g.
+    ``test_checkpoint_journal.py``) leak the same way, so the reset runs on
+    both setup and teardown: every test in this file starts from a clean state
+    regardless of what previous files left behind on the worker.
+    """
+    _reset_checkpointer_globals()
+    yield
+    _reset_checkpointer_globals()
+
+
 async def _collect_events(stream) -> list[RuntimeEvent]:
     return [event async for event in stream]
 
@@ -1225,6 +1255,99 @@ async def test_prepare_chat_turn_requires_atomic_manager_admission() -> None:
         )
 
     manager.get_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_single_agent_pause_keeps_stream_execution_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #6163: 单 Agent pause 只挂起 ReAct 循环，不取消协调器执行。"""
+    cancel_execution = AsyncMock()
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: SimpleNamespace(
+            session_id=session_id,
+            generation=2,
+            state=RuntimeSessionState.READY,
+            executions=(),
+        ),
+        cancel_execution=cancel_execution,
+    )
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+    )
+    adapter_interrupt = AsyncMock(
+        return_value=AgentResponse(
+            request_id="pause-request",
+            channel_id="web",
+            payload={"success": True},
+        )
+    )
+    request = AgentRequest(
+        request_id="pause-request",
+        channel_id="web",
+        session_id="session-a",
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"mode": "agent", "intent": "pause"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.request.cancel_request", adapter_interrupt,
+    )
+
+    response = await runtime.cancel_request(request)
+
+    assert response.ok is True
+    adapter_interrupt.assert_awaited_once()
+    cancel_execution.assert_not_awaited()
+    test_logger.info("Single-agent pause kept the stream execution alive")
+
+
+@pytest.mark.asyncio
+async def test_single_agent_cancel_still_cancels_coordinator_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cancel 仍要取消协调器执行，pause 的豁免不能扩散。"""
+    cancel_execution = AsyncMock(
+        return_value=CancelExecutionResult(matched=1, cancelled=1, timed_out=())
+    )
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: SimpleNamespace(
+            session_id=session_id,
+            generation=2,
+            state=RuntimeSessionState.READY,
+            executions=(),
+        ),
+        cancel_execution=cancel_execution,
+    )
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+    )
+    adapter_interrupt = AsyncMock(
+        return_value=AgentResponse(
+            request_id="cancel-request",
+            channel_id="web",
+            payload={"success": True},
+        )
+    )
+    request = AgentRequest(
+        request_id="cancel-request",
+        channel_id="web",
+        session_id="session-a",
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"mode": "agent", "intent": "cancel"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.request.cancel_request", adapter_interrupt,
+    )
+
+    response = await runtime.cancel_request(request)
+
+    assert response.ok is True
+    adapter_interrupt.assert_awaited_once()
+    cancel_execution.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -3618,10 +3741,14 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
         _kv_store=SimpleNamespace(engine=SimpleNamespace(dispose=dispose))
     )
     replacement_checkpointer = object()
+    monkeypatch.setattr(checkpointer, "_shared_checkpointer", None, raising=False)
     create_checkpointer = AsyncMock(return_value=replacement_checkpointer)
     installed: list[object | None] = []
 
     monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", True)
+    for name in ("_shared_checkpointer", "_shared_engine", "_shared_engine_kind"):
+        if hasattr(checkpointer, name):
+            monkeypatch.setattr(checkpointer, name, None)
     monkeypatch.setattr(
         checkpointer,
         "PersistenceCheckpointerProvider",

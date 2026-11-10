@@ -20,7 +20,6 @@ from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
 )
 
 from .bridge import RemoteTaskEndpoint
-from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
 
 _settlements = set()
 # Requests whose settlement reporter is still waiting on native work.

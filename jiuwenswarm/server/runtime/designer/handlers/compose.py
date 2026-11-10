@@ -29,6 +29,7 @@ from jiuwenswarm.common.schema.designer_graph import (
 from jiuwenswarm.server.runtime.designer.ffmpeg_runner import (
     ENCODE_TIMEOUT_S,
     PROBE_TIMEOUT_S,
+    FfmpegCancelled,
     run_ffmpeg,
     run_off_loop,
 )
@@ -41,6 +42,13 @@ from jiuwenswarm.server.runtime.designer.handlers.types import (
     NodeExecutionContext,
     NodeResult,
     thread_snapshot,
+)
+from jiuwenswarm.server.runtime.designer.music_align import align_music
+from jiuwenswarm.server.runtime.designer.music_cues import (
+    CueSheet,
+    bpm_range,
+    build_cue_sheet,
+    storyboard_emotions,
 )
 
 logger = logging.getLogger(__name__)
@@ -670,12 +678,65 @@ def _mix_audio_tracks(
     return dest.resolve()
 
 
+def _edit_cue_sheet(ffmpeg: str, ctx: NodeExecutionContext, clip_paths: list[Path]) -> CueSheet | None:
+    """Cue sheet of the actual edit: rendered clip lengths with the storyboard's story curve."""
+    from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import film_bgm_lock
+
+    durations = [_media_duration_seconds(ffmpeg, path) or 0.0 for path in clip_paths]
+    emotions = storyboard_emotions(ctx.graph)
+    states = (ctx.run or {}).get("node_states") or {}
+    emotion_by_path: dict[Path, str] = {}
+    for node in ctx.graph.get("nodes") or []:
+        if not isinstance(node, dict) or node_pipeline(node) != NODE_ROLE_CLIP:
+            continue
+        state = states.get(str(node.get("id") or ""))
+        path = _video_from_state(state, require_completed=True) if isinstance(state, dict) else None
+        if path is not None:
+            emotion_by_path[path] = emotions.get(node_clip_index(node), "")
+    return build_cue_sheet(
+        durations,
+        [emotion_by_path.get(path, "") for path in clip_paths],
+        tempo=bpm_range(film_bgm_lock(ctx.graph)),
+    )
+
+
+def _align_music_tracks(
+    ffmpeg: str, ctx: NodeExecutionContext, tracks: list[Path], clip_paths: list[Path], work_dir: Path
+) -> list[Path]:
+    """Re-time generated BGM so its climax and ending land on the edit's cuts."""
+    from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import is_generated_music
+
+    music = {path for path in _collect_role_audio_paths(ctx, {"music"}) if is_generated_music(path)}
+    if not music or not clip_paths:
+        return tracks
+    sheet = _edit_cue_sheet(ffmpeg, ctx, clip_paths)
+    if sheet is None:
+        return tracks
+    aligned_tracks: list[Path] = []
+    for track in tracks:
+        if track not in music:
+            aligned_tracks.append(track)
+            continue
+        try:
+            aligned, notes = align_music(ffmpeg, track, sheet, work_dir / f"{track.stem}_aligned")
+        except FfmpegCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("compose BGM alignment failed for %s: %s", track.name, exc)
+            aligned, notes = None, []
+        if aligned is not None:
+            logger.info("compose aligned BGM %s: %s", track.name, "; ".join(notes))
+        aligned_tracks.append(aligned or track)
+    return aligned_tracks
+
+
 def mix_compose_soundtrack(
     video: Path,
     dest: Path,
     *,
     ctx: NodeExecutionContext | None = None,
     brief: str = "",
+    clip_paths: list[Path] | None = None,
 ) -> Path:
     """Mux soundtrack without destroying in-clip audio.
 
@@ -716,6 +777,8 @@ def mix_compose_soundtrack(
 
     score: Path | None = None
     if upstream:
+        if ctx is not None:
+            upstream = _align_music_tracks(ffmpeg, ctx, upstream, clip_paths or [], dest.parent)
         score = _mix_audio_tracks(
             ffmpeg, upstream, dest.parent / f"{dest.stem}_mix", duration
         )
@@ -894,14 +957,18 @@ def _assemble_film(
         inputs = _clips_for_supplied_music(ctx, paths, Path(scratch))
         merged = concatenate_clip_videos(inputs, dest)
     scored = Path(
-        mix_compose_soundtrack(merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief)
+        mix_compose_soundtrack(
+            merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief, clip_paths=paths
+        )
     )
     # The prepared clips gave up their own audio for the supplied score; without the score, keep it.
     if inputs != paths and scored.resolve() == Path(merged).resolve():
         logger.warning("compose could not lay the supplied music on; keeping the clips' own audio")
         merged = concatenate_clip_videos(paths, dest)
         scored = Path(
-            mix_compose_soundtrack(merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief)
+            mix_compose_soundtrack(
+                merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief, clip_paths=paths
+            )
         )
     if (
         not scored.is_file()

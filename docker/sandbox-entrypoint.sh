@@ -1,17 +1,17 @@
 #!/bin/sh
-# jiuwenbox 沙箱容器 entrypoint。
-#
-# 背景:OCI 运行时(runc/containerd)默认把 /proc/sys 以只读方式挂载,
-# 而 isolated 网络模式的沙箱创建(jiuwenbox supervisor/network.py 的
-# setup_network_uplink)第一步就要写 /proc/sys/net/ipv4/ip_forward。
-# 容器已具备 SYS_ADMIN(capabilities_add),启动时 remount 为 rw 即可,
-# 无需 privileged。
-#
-# remount 失败仅告警不阻断:服务照常启动,退化为"沙箱创建失败但
-# box-server 可用"的原状态,便于区分"网络 setup 失败"与"服务起不来"。
-#
-# exec "$@" 保持 launcher 为 PID 1,保留 jiuwenbox 的
-# PR_SET_CHILD_SUBREAPER / SIGCHLD 兜底逻辑。
+# jiuwenbox 沙箱容器入口。
+
+# bwrap 进入 user namespace 之后，访问 /home/app 只检查文件权限，root 不能绕过。
+# openEuler 的 useradd 受 UMASK 077 影响，家目录是 0700，其他人进不去。
+# 改成 0755，沙箱才能遍历作为 bind 源的这个目录。失败只告警，不阻止启动。
+chmod 755 /home/app 2>/dev/null || \
+    echo '[jiuwenbox-entrypoint] WARN: failed to chmod 755 /home/app, sandbox bind source traversal may fail'
+
+# 容器运行时默认把 /proc/sys 挂成只读。isolated 网络建立 uplink 时要写
+# /proc/sys/net/ipv4/ip_forward。容器已有 SYS_ADMIN，这里把它重新挂成可写。
+# 失败只告警：服务继续启动，沙箱网络若因此失败会在创建时报错。
 mount -o remount,rw /proc/sys 2>/dev/null || \
     echo '[jiuwenbox-entrypoint] WARN: failed to remount /proc/sys rw, sandbox network setup may fail'
+
+# exec 让后面的进程成为 PID 1，jiuwenbox 才能回收自己拉起的子进程。
 exec "$@"

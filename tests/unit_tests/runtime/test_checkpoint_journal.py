@@ -12,6 +12,7 @@ from jiuwenswarm.runtime import checkpointer
     {"workspace_sqlite": {"journal_mode": "DELETE"}},
 ])
 async def test_checkpoint_journal_mode_reaches_core_provider(monkeypatch, tmp_path, config):
+    monkeypatch.setattr(checkpointer, "_shared_checkpointer", None, raising=False)
     monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", False)
     monkeypatch.setattr(checkpointer, "get_checkpoint_dir", lambda: tmp_path)
     monkeypatch.setattr(checkpointer, "get_config", lambda: config, raising=False)

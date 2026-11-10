@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.common.utils import get_infra_data_dir
+
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import (
     ToolDecisionFacts,
 )
@@ -191,7 +193,8 @@ def resolve_persistent_audit_root(config: Mapping[str, Any] | None) -> Path | No
     if not raw_root:
         raw_root = os.environ.get(DATA_DIR_ENV_NAME)
     if not raw_root:
-        return None
+        # 审计落盘为 Pod 本地数据，默认落 infra/
+        return get_infra_data_dir()
     return Path(str(raw_root)).expanduser()
 
 

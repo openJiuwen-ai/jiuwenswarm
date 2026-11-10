@@ -126,6 +126,7 @@ from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_agent_sessions_dir,
     get_config_file,
+    get_domain_data_dir,
     get_user_workspace_dir,
     mask_sensitive,
 )
@@ -246,6 +247,7 @@ from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
     _HISTORY_PAGE_SIZE,
     _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
+    history_assistant_event_is_restorable,
     _HISTORY_WIRE_DEPTH_LIMIT,
     _HISTORY_WIRE_LIST_LIMIT,
     _HISTORY_WIRE_METADATA_STRING_LIMIT,
@@ -958,7 +960,7 @@ def _is_restorable_history_record(record: Any) -> bool:
     event_type = record.get("event_type")
     if not event_type:
         return has_content
-    return event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+    return history_assistant_event_is_restorable(record)
 
 
 def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:
@@ -1411,12 +1413,13 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # AgentServer 内唯一持有的进程内 PersonalContext Host；Context Rail 使用同一固定目录。
         self._personal_context_host = PersonalContextHostAPI(
-            home=get_user_workspace_dir() / ".personal_context",
+            home=get_domain_data_dir() / ".personal_context",
         )
         self._personal_context_start_task: asyncio.Task[None] | None = None
         self._sandbox_start_task: asyncio.Task[None] | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
         self._checkpointer_warmup_task: Optional[asyncio.Task] = None
+        self._team_session_reconcile_task: Optional[asyncio.Task] = None
         # MCP 连接缓存预热任务 (同上, 建 Runner.resource_mgr 供首轮对话命中)
         self._mcp_prewarm_task: Optional[asyncio.Task] = None
         # 图像模态探针重探任务 (模型配置变更时拉起, stop() 时 cancel)
@@ -1847,6 +1850,16 @@ class AgentWebSocketServer:
                 # Optional imports, downloads and recovery may start only after
                 # the required Runtime/Heartbeat initialization succeeded.
                 preparation.mark_minimum_ready()
+
+                from jiuwenswarm.enterprise.team.session_cleanup import (
+                    bind_startup_sweep,
+                    run_startup_sweep,
+                )
+
+                self._team_session_reconcile_task = asyncio.create_task(
+                    run_startup_sweep(), name="team-session-reconcile",
+                )
+                bind_startup_sweep(self._team_session_reconcile_task)
                 return
 
         self._checkpointer_warmup_task = asyncio.create_task(
@@ -2329,6 +2342,16 @@ class AgentWebSocketServer:
             await jiuwenmate_web.aclose()
         await self._heartbeat_runtime.stop()
         # 同理取消 MCP 连接缓存预热任务.
+        team_reconcile = self._team_session_reconcile_task
+        self._team_session_reconcile_task = None
+        if team_reconcile is not None and not team_reconcile.done():
+            team_reconcile.cancel()
+            try:
+                await team_reconcile
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] team reconcile cancel failed: %s", exc)
         mcp_prewarm = self._mcp_prewarm_task
         self._mcp_prewarm_task = None
         if mcp_prewarm is not None and not mcp_prewarm.done():
@@ -6799,21 +6822,9 @@ class AgentWebSocketServer:
                 )
             elif method == "project.lifecycle" and params.get("events"):
                 # Full-directory scan of lifecycle state: keep it off the loop.
-                payload = {"events": await asyncio.to_thread(lc.event_snapshots)}
+                payload = await asyncio.to_thread(lc.events_feed)
             elif method == "project.lifecycle" and params.get("inventory"):
-                from jiuwenswarm.server.runtime.session.project_store import (
-                    list_projects,
-                )
-                payload = {"projects": [dict(project_id=p.project_id,
-                            operation=lc.state("project", p.project_id).get("operation"))
-                            for p in list_projects(include_hidden=True, cache_bust=True)]}
-                known = {item["project_id"] for item in payload["projects"]}
-                directory = lc.get_agent_root_dir() / "lifecycle" / "resources"
-                for path in directory.glob("project_*.json"):
-                    operation = lc.read_json(path).get("operation") or {}
-                    project_id = operation.get("resource_id")
-                    if project_id and project_id not in known and operation.get("status") != "completed":
-                        payload["projects"].append(dict(project_id=project_id, operation=operation))
+                payload = await asyncio.to_thread(lc.inventory_feed)
             elif method == "project.lifecycle":
                 project_id = lc.validate_id(params.get("project_id"))
 
@@ -9801,6 +9812,11 @@ class AgentWebSocketServer:
 
             if agent is None:
                 raise ValueError("Failed to get agent")
+
+            # command.compact_partial 同 /compact、/btw：非 chat 通道 RPC 需先
+            # ensure_instance 懒构建根 DeepAgent，否则 self._instance 为 None 时
+            # 压缩逻辑直接 noop（误报"无需压缩"）。
+            await agent.ensure_instance()
 
             result_data = await agent.compact_partial(
                 session_id=session_id,
@@ -14359,6 +14375,7 @@ class AgentWebSocketServer:
                     model_selection=params.get("model_selection"),
                     moa_enabled=params.get("moa_enabled"),
                     cron_id=str(params.get("cron_id") or "").strip(),
+                    client_app=str(params.get("client_app") or "").strip(),
                 )
             )
             params.pop("_work_mode_explicit", None)

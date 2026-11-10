@@ -196,6 +196,12 @@ MULTIMODAL_RELOAD_ENV_KEYS = {
     "VISUAL_GEN_PROVIDER",
     "VISUAL_GEN_PROTOCOL",
     "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
+    "MUSIC_GEN_ENABLED",
+    "MUSIC_GEN_API_BASE",
+    "MUSIC_GEN_API_KEY",
+    "MUSIC_GEN_MODEL_NAME",
+    "MUSIC_GEN_PROVIDER",
+    "MUSIC_GEN_PROTOCOL",
 }
 ASR_ENV_KEYS = {
     *SPEECH_START_ENV.values(),
@@ -327,6 +333,13 @@ CONFIG_SET_ENV_MAP = {
     "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
     "visual_gen_context_window_tokens": "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
     "visual_gen_enabled": "VISUAL_GEN_ENABLED",
+    # music generation - Design BGM slot.
+    "music_gen_api_base": "MUSIC_GEN_API_BASE",
+    "music_gen_api_key": "MUSIC_GEN_API_KEY",
+    "music_gen_model": "MUSIC_GEN_MODEL_NAME",
+    "music_gen_provider": "MUSIC_GEN_PROVIDER",
+    "music_gen_protocol": "MUSIC_GEN_PROTOCOL",
+    "music_gen_enabled": "MUSIC_GEN_ENABLED",
     # audio 模型
     "audio_api_base": "AUDIO_API_BASE",
     "audio_api_key": "AUDIO_API_KEY",

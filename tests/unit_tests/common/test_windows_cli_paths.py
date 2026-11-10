@@ -706,12 +706,145 @@ def test_busy_cli_blocks_upgrade_without_stopping_it(tmp_path, preservation_runn
         process.wait(timeout=10)
 
 
-def test_pinned_runtime_and_migrated_dependency_work_after_old_app_is_removed(tmp_path, preservation_runner):
+@pytest.mark.parametrize("reference,busy", [
+    ('"{source}-backup\\readme.txt"', False),
+    ('"{source}.old\\readme.txt"', False),
+    ('"C:\\archive{source}\\cli.js"', False),
+    ('"{source}\\cli.js"', True),
+    ('--prefix="{source}"', True),
+    ('--prefix={source}', True),
+    ('{source}', True),
+    ('"{source}"', True),
+])
+def test_process_reference_respects_path_boundaries(tmp_path, preservation_runner, monkeypatch, reference, busy):
+    app = tmp_path / "old app"
+    source = _prefix(app)
+    monkeypatch.setenv("TEST_PROCESS_COMMAND", reference.format(source=source).replace("\\", "/"))
+    fixture = r'''
+function Get-CimInstance {
+    param([string]$ClassName)
+    [pscustomobject]@{ProcessId=($PID+10000); ExecutablePath='C:\tools\node.exe'; CommandLine=$env:TEST_PROCESS_COMMAND}
+}
+'''
+    script = preservation_runner.script
+    text = script.read_text(encoding="utf-8")
+    script.write_text(text.replace("$safeRoot=$false", "$safeRoot=$false\n" + fixture), encoding="utf-8")
+    result, report, _, _ = preservation_runner(app)
+    assert (result.returncode != 0) == busy, report.read_text(encoding="utf-8")
+    if busy:
+        assert "Close the CLI process" in report.read_text(encoding="utf-8")
+
+
+def test_real_sibling_process_does_not_block_preservation(tmp_path, preservation_runner):
+    import time
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("requires Node")
+    app = tmp_path / "app"
+    source = _prefix(app)
+    sibling = source.with_name(source.name + "-backup")
+    sibling.mkdir()
+    readme = sibling / "readme.txt"
+    readme.write_text("unrelated sibling")
+    ready = tmp_path / "ready.txt"
+    process = subprocess.Popen([
+        node, "-e", "require('fs').readFileSync(process.argv[1]);"
+        "require('fs').writeFileSync(process.argv[2],'ready');setInterval(()=>{},1000)",
+        str(readme), str(ready),
+    ], creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists()
+        result, report, _, _ = preservation_runner(app)
+        assert result.returncode == 0, report.read_text(encoding="utf-8")
+        assert process.poll() is None
+        mapping = json.loads(report.read_text(encoding="utf-8"))["mappings"][0]
+        assert (Path(mapping["target"]) / "unknown-user-file").read_text() == "must not be dropped"
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+@pytest.mark.parametrize("mode", ["Preserve", "Initialize"])
+@pytest.mark.parametrize("operation", ["open", "write"])
+def test_user_path_permission_denial_keeps_verified_environment(tmp_path, preservation_runner, mode, operation):
+    app = tmp_path / "app"
+    source = _prefix(app)
+    script = preservation_runner.script
+    text = script.read_text(encoding="utf-8")
+    if operation == "open":
+        text = text.replace("$key=$script:registry", "$key=$(throw [UnauthorizedAccessException]::new('registry denied'))")
+    else:
+        text = text.replace("$key.SetValue('Path',$updated,$kind)", "throw [Security.SecurityException]::new('registry denied')")
+    script.write_text(text, encoding="utf-8")
+    result, report, root, user_path = preservation_runner(app, mode=mode)
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    record = json.loads(report.read_text(encoding="utf-8"))
+    assert record["success"] and "process environment" in record["path_warning"]
+    target = Path(record["mappings"][0]["target"]) if mode == "Preserve" else root / "global"
+    assert (target / "unknown-user-file").read_text() == "must not be dropped"
+    assert (source / "unknown-user-file").read_text() == "must not be dropped"
+    assert not user_path.exists()
+
+
+def test_unexpected_path_failure_is_not_permission_fallback(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    _prefix(app)
+    script = preservation_runner.script
+    text = script.read_text(encoding="utf-8")
+    script.write_text(text.replace("$key.SetValue('Path',$updated,$kind)", "throw [IO.IOException]::new('unexpected registry failure')"), encoding="utf-8")
+    result, report, _, user_path = preservation_runner(app)
+    assert result.returncode != 0
+    assert "unexpected registry failure" in report.read_text(encoding="utf-8")
+    assert not user_path.exists()
+
+
+@pytest.mark.parametrize("mode,statement,layout", [
+    ("Preserve", "[IO.Directory]::Move((Long-Path $stage),(Long-Path $target))", "runtime/node-runtime"),
+    ("Preserve", "[IO.Directory]::Move((Long-Path $stage),(Long-Path $activeDirectory))", "runtime/node-runtime"),
+    ("Initialize", "[IO.Directory]::Move((Long-Path $stage),(Long-Path $globalPrefix))", "runtime/node-runtime"),
+    ("Preserve", "[IO.Directory]::Move((Long-Path $stage),(Long-Path $active))", "runtime/external-cli/claude/site-packages"),
+])
+def test_directory_move_denied_never_allows_cleanup(tmp_path, preservation_runner, mode, statement, layout):
+    app = tmp_path / "app"
+    source = _prefix(app, layout)
+    script = preservation_runner.script
+    text = script.read_text(encoding="utf-8")
+    assert statement in text
+    script.write_text(text.replace(statement, "throw [UnauthorizedAccessException]::new('directory move denied')"), encoding="utf-8")
+    result, report, root, user_path = preservation_runner(app, mode=mode)
+    assert result.returncode != 0
+    assert "directory move denied" in report.read_text(encoding="utf-8")
+    assert (source / "unknown-user-file").read_text() == "must not be dropped"
+    assert list(root.parent.rglob("unknown-user-file")), "Recovery material must remain available"
+    assert not user_path.exists()
+
+
+@pytest.mark.parametrize("path_denied", [False, True])
+def test_pinned_runtime_and_migrated_dependency_work_after_old_app_is_removed(tmp_path, preservation_runner, monkeypatch, path_denied):
+    import importlib
+
+    from jiuwenswarm.common import external_cli_runtime as runtime
+
     node = shutil.which("node")
     if not node:
         pytest.skip("requires Node for end-to-end launcher verification")
     app = tmp_path / "app"
+    if path_denied:
+        script = preservation_runner.script
+        text = script.read_text(encoding="utf-8")
+        script.write_text(text.replace("$key.SetValue('Path',$updated,$kind)", "throw [UnauthorizedAccessException]::new('registry denied')"), encoding="utf-8")
     source = _prefix(app)
+    sdk_source = app / "runtime/external-cli/claude/site-packages"
+    sdk_source.mkdir(parents=True)
+    (sdk_source / "preservation_fixture_sdk.py").write_text("def probe(): return 'preserved SDK loaded'\n")
+    (sdk_source / ".jiuwenswarm-runtime.json").write_text(json.dumps({
+        "agent": "claude", "platform": "windows-x86_64",
+        "packages": [{"name": "fixture-sdk", "version": "1.0"}],
+    }))
     shutil.copyfile(node, source / "node.exe")
     (source / "node_modules/npm/bin/npm-cli.js").write_text("require('fs').writeFileSync(process.env.TEST_NPM_RESULT,JSON.stringify({prefix:process.env.NPM_CONFIG_PREFIX,node:process.execPath}))")
     migrated, report, _, _ = preservation_runner(app)
@@ -722,11 +855,36 @@ def test_pinned_runtime_and_migrated_dependency_work_after_old_app_is_removed(tm
     # Delete only this test's synthetic installation, after checking containment.
     assert app.resolve().is_relative_to(tmp_path.resolve())
     shutil.rmtree(app)
+    sdk_target = root.parent / "external-cli/claude/site-packages"
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "_runtime_platform_key", lambda: "windows-x86_64")
+    monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: sdk_target)
+    monkeypatch.setattr(runtime, "_load_manifest", lambda: {"agents": {"claude": {
+        "required_modules": ["preservation_fixture_sdk"],
+        "platforms": {"windows-x86_64": [{"name": "fixture-sdk", "version": "1.0"}]},
+    }}})
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    # Use the real compatibility check and import hook, not a global PYTHONPATH.
+    assert runtime.get_external_cli_runtime_status("claude")["runtime_state"] == "current"
+    runtime.activate_external_cli_runtime_paths()
+    try:
+        sdk = importlib.import_module("preservation_fixture_sdk")
+        assert sdk.probe() == "preserved SDK loaded"
+        assert Path(sdk.__file__).parent == sdk_target
+    finally:
+        sys.modules.pop("preservation_fixture_sdk", None)
     run = subprocess.run([str(target / "node.exe"), str(target / "node_modules/@example/cli/index.js")], capture_output=True, text=True, timeout=15)
     assert run.returncode == 0 and "dependency retained" in run.stdout
     env = os.environ.copy()
-    env["NPM_CONFIG_PREFIX"] = str(root / "global")
     env["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32")
+    env["NPM_CONFIG_USERCONFIG"] = str(tmp_path / "absent.npmrc")
+    env.pop("NPM_CONFIG_PREFIX", None)
+    env.pop("npm_config_prefix", None)
+    monkeypatch.setattr(paths, "windows_npm_root", lambda: root)
+    monkeypatch.setattr(paths, "os", SimpleNamespace(name="nt", environ=env, path=os.path, pathsep=os.pathsep))
+    paths.configure_windows_npm_environment()
+    assert env["NPM_CONFIG_PREFIX"] == str(root / "global")
+    assert shutil.which("example.cmd", path=env["PATH"]) == str(root / "global" / "example.cmd")
     env["TEST_NPM_RESULT"] = str(tmp_path / "npm-result.json")
     for launcher in (target / "example.cmd", target / "node_modules/.bin/example.cmd"):
         env["TEST_CLI_LAUNCHER"] = str(launcher)
@@ -736,7 +894,6 @@ def test_pinned_runtime_and_migrated_dependency_work_after_old_app_is_removed(tm
         )
         assert run.returncode == 0 and "dependency retained" in run.stdout, run.stderr
     powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    env["PATH"] = str(root / "bin") + os.pathsep + env["PATH"]
     run = subprocess.run([
         str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted", "-Command",
         "$ErrorActionPreference='Stop'; npm --version; exit $LASTEXITCODE",

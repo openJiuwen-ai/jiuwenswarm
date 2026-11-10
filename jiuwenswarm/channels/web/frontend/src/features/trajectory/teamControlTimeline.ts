@@ -32,6 +32,7 @@ export type ScheduledControlEventKind =
   | 'vote'
   | 'revision'
   | 'verified'
+  | 'completed'
   | 'cancelled'
   | 'escalated'
   | 'anomaly'
@@ -133,8 +134,14 @@ interface MutableTask {
 }
 
 const MAIN_SUBJECT_ID = 'main';
-const TASK_CREATED = /^task\.([^.]+)\.created$/;
-const TASK_CHANGED = /^task\.([^.]+)\.(updated|unblocked|cancelled)$/;
+const TASK_CREATED = /^task\.(.+)\.created$/;
+const TASK_CHANGED = /^task\.(.+)\.(updated|unblocked|completed|cancelled)$/;
+const PHASE_FIXED_EVENT_KINDS = new Set<ScheduledControlEventKind>([
+  'verified',
+  'completed',
+  'cancelled',
+  'escalated',
+]);
 
 function firstSpan(record: TrajectoryDetailRecord): OtlpSpan | null {
   return record.otlp === null ? null : (spansOf(record.otlp)[0] ?? null);
@@ -294,7 +301,7 @@ function parseControlRecord(record: TrajectoryDetailRecord): ParsedControlRecord
     return {
       event: {
         ...base,
-        kind: changed[2] as 'updated' | 'unblocked' | 'cancelled',
+        kind: changed[2] as 'updated' | 'unblocked' | 'completed' | 'cancelled',
         taskId: changed[1],
         memberName: taskAssignee(span, data),
       },
@@ -428,6 +435,8 @@ function applyRecord(
       task.phase = 'rework';
     } else if (event.kind === 'verified') {
       task.phase = 'completed';
+    } else if (event.kind === 'completed') {
+      task.phase = 'completed';
     } else if (event.kind === 'cancelled') {
       task.phase = 'cancelled';
     } else if (event.kind === 'escalated') {
@@ -436,9 +445,7 @@ function applyRecord(
 
     const statusPhase = phaseFromStatus(status);
     if (statusPhase !== undefined
-      && event.kind !== 'verified'
-      && event.kind !== 'cancelled'
-      && event.kind !== 'escalated') {
+      && !PHASE_FIXED_EVENT_KINDS.has(event.kind)) {
       task.phase = statusPhase;
     }
   }

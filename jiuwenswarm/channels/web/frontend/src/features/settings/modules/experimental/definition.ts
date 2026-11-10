@@ -11,6 +11,7 @@ import {
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
+import { MusicGenSettings } from '../agent/AgentSettings';
 import { TtsProviderConfiguration, TtsSynthesisCheck, ttsModelOptions, ttsModelUpdates, ttsProviderOptions, ttsVoiceOptions } from './TtsSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
@@ -195,6 +196,7 @@ export const experimentalModule: SettingsModuleDefinition = {
           component: 'switch',
           key: 'comfyui_workflow_enabled',
         },
+        { id: 'music-gen-settings', component: 'custom', render: MusicGenSettings },
       ],
     },
   ],

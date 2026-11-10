@@ -344,9 +344,9 @@ class WorkflowRunState(BaseModel):
     # event for advisory cold-start context; distinct from ``script`` above.
     script_path: Optional[str] = None
     # Member name currently hosting the run (relaunch host on a resume; the
-    # leader's own name for a leader-hosted run). Refreshed on every started
-    # event, so badge and resume handoff always follow the latest host; None
-    # only for legacy events with no team context.
+    # leader's own name for a leader-hosted run). Latched from every progress
+    # event in apply(), so badge and resume handoff always follow the latest
+    # host; None only when no event ever carried team context.
     executor: Optional[str] = None
     # Disk-restored after a cold start with no live controller handle; the
     # frontend greys this run's control buttons until a launch-plane relaunch
@@ -372,9 +372,10 @@ class WorkflowRunState(BaseModel):
     # Private mutable state for ID generation sequencing (not serialized)
     _phase_counter: int = 0  # Global phase counter (1-based)
     _agent_slug_counter: dict[str, int] = {}  # Per-slug agent counter
-    # Last phase entered via agent events (not serialized). Drives phase sealing:
-    # when the next agent event carries a different phase name, the previous
-    # phase is finalized. See ``_switch_to_phase``.
+    # Last phase card entered via agent events (not serialized). Drives phase
+    # sealing: when the next agent event lands on another card — a different
+    # name, or the next iteration of the same name — the previous card is
+    # finalized. See ``_switch_to_phase``.
     _last_phase: Optional[WorkflowPhaseState] = None
 
     model_config = {"arbitrary_types_allowed": True}
@@ -494,12 +495,25 @@ class WorkflowRunState(BaseModel):
 
         Returns None if no push is needed (e.g. log, or unknown kind).
         """
+        # Run attribution: the publisher stamps executor on every progress
+        # event, so latch it here — an observer that missed the started event
+        # (recovered / re-attached mid-run) still learns the host, and the
+        # cold-restore snapshot reads it back. None clears nothing.
+        if progress.executor is not None:
+            self.executor = progress.executor
         kind = progress.kind
         handler = self._KIND_HANDLERS.get(kind)
         if handler is None:
             return None
         method = getattr(self, handler)
-        return method(progress)
+        delta = method(progress)
+        # Attach attribution to every emitted delta while known, so a consumer
+        # joining mid-run self-heals from the next frame. Never attach an
+        # explicit None: the frontend's incremental merge would overwrite a
+        # cold-restored name.
+        if delta is not None and self.executor is not None:
+            delta["executor"] = self.executor
+        return delta
 
     def finalize_if_running(self, terminal_status: str = "stopped") -> bool:
         """Force a non-terminal run to a terminal status. Returns True if changed.
@@ -670,6 +684,11 @@ class WorkflowRunState(BaseModel):
         iteration** (round 1/2/3 of ``phase("生成")`` → 3 distinct cards).
         Legacy events without ``iteration`` fall back to one-card-per-name.
 
+        Sealing is keyed on the **card**, not the name: entering another card
+        seals the previous one whether its name differs or it is the next
+        iteration of the same name. A card that still holds live agents is
+        left running and sealed by its own last terminal event.
+
         Returns ``(target_phase, sealed_phase_or_None)``.
         """
         iter_key = iteration or 1
@@ -704,7 +723,6 @@ class WorkflowRunState(BaseModel):
         can_seal_prev = (
             prev is not None
             and prev is not target
-            and prev.name != phase_name
             and prev.status == "running"
         )
         if can_seal_prev and self._phase_quiescent(prev):
@@ -1134,11 +1152,6 @@ class WorkflowRunState(BaseModel):
         self.name = progress.workflow_name or "workflow"
         self.summary = progress.description or ""
         self.script_path = progress.script_path
-        # Executor reflects whoever hosts the run right now (leader included);
-        # a None from an unattributed event clears nothing but a new member
-        # name takes over.
-        if progress.executor is not None:
-            self.executor = progress.executor
         self.status = "running"
         was_recovered = self.recovered
         self.recovered = False
@@ -1152,6 +1165,10 @@ class WorkflowRunState(BaseModel):
         relaunch_kind = progress.relaunch_kind
         if relaunch_kind == "relaunch":
             self.phases = []
+            # The seal slot points at a card from the discarded tree; leaving it
+            # set would seal that stale card on the next phase switch and push
+            # it back to the frontend as if it belonged to the fresh attempt.
+            self._last_phase = None
             # Drop every terminal leftover from the prior run so the frontend does
             # not show a stale "budget exhausted" / failed badge over the fresh
             # attempt, and the run-level counts rebuild from zero.
@@ -1811,9 +1828,6 @@ class WorkflowRunState(BaseModel):
             "name": self.name,
             "summary": self.summary,
             "status": self.status,
-            # Run attribution rides the top-level deltas (started / paused);
-            # the frontend's incremental merge keeps fields later deltas omit.
-            "executor": self.executor,
             "agent_count": self.agent_count,
             "completed_agent_count": self.completed_agent_count,
             "started_at": self.started_at,

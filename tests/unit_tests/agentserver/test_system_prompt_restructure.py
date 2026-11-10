@@ -1467,13 +1467,25 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "a partial label or unmapped field alone does not justify" in task_section.content["en"]
     assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
     assert "Preserve the original goal, budget, dates and object constraints" in task_section.content["en"]
-    assert "top AI/knowledge/weather answers with attribution" in task_section.content["en"]
-    assert "preserve explicit natural-result/detail-visit requests" in task_section.content["en"]
+    assert "available AI/knowledge/weather answers with attribution" in task_section.content["en"]
+    assert "A preference is not a requirement" in task_section.content["en"]
+    assert "site, natural-result and detail-visit constraints" in task_section.content["en"]
+    assert "greater than (>) must not become at least (>=)" in task_section.content["en"]
+    assert "opening its details does not approve its business button" in task_section.content["en"]
+    assert "a sort ACK cannot substitute for comparing content" in task_section.content["en"]
+    assert "Consult retained source text/recall_handle first" in task_section.content["en"]
+    assert "resume within the original deadline only for missing work" in task_section.content["en"]
+    assert "without replaying ACKed actions" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
     assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
     assert "派发描述保留原始目标、预算、时间和对象约束" in build_browser_task_prompt("cn")
-    assert "用户明确要求自然结果或进入详情时仍须执行" in build_browser_task_prompt("cn")
+    assert "用户明确限定站点、自然结果或要求进入详情时仍须遵守" in build_browser_task_prompt("cn")
+    assert "高于（>）不能改成至少（>=）" in build_browser_task_prompt("cn")
+    assert "候选详情页不代表已批准执行该页业务按钮" in build_browser_task_prompt("cn")
+    assert "不用翻页成功或排序点击替代内容比较" in build_browser_task_prompt("cn")
+    assert "先用已有原文/recall_handle" in build_browser_task_prompt("cn")
+    assert "确有缺失才在原 deadline 内续跑，不重新执行已 ACK 的动作" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
         SubAgentConfig(
@@ -1489,7 +1501,9 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
 
 
 @pytest.mark.asyncio
-async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
+@pytest.mark.parametrize("language", ["cn", "en"])
+@pytest.mark.parametrize("inner_context", [False, True])
+async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime(language, inner_context):
     browser_agent = SubAgentConfig(
         agent_card=AgentCard(name="browser_agent", description="browser"),
         system_prompt="browser",
@@ -1498,7 +1512,7 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
         agent_card=AgentCard(name="research_agent", description="research"),
         system_prompt="research",
     )
-    builder = SystemPromptBuilder(language="en")
+    builder = SystemPromptBuilder(language=language)
     agent = SimpleNamespace(
         card=AgentCard(name="main", description="main"),
         deep_config=SimpleNamespace(subagents=[browser_agent, research_agent]),
@@ -1510,7 +1524,7 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
     rail.init(agent)
     await rail.before_model_call(
         AgentCallbackContext(
-            agent=agent,
+            agent=SimpleNamespace() if inner_context else agent,
             inputs=None,
             session=_FakeSession(),
             extra={},
@@ -1530,9 +1544,9 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
     runtime_section = builder.get_section("subagent_tools")
     assert task_section is not None
     assert runtime_section is not None
-    assert "Browser Capability Routing Rules" in task_section.content["en"]
-    assert "Adding to a cart is reversible" in task_section.content["en"]
-    assert "Browser Capability Routing Rules" not in runtime_section.content["en"]
+    browser_prompt = build_browser_task_prompt(language)
+    assert task_section.content[language].count(browser_prompt) == 1
+    assert browser_prompt not in runtime_section.content[language]
 
 
 def test_task_planning_tools_remain_enabled_without_todo_prompt_section():
@@ -1583,7 +1597,7 @@ async def test_runtime_attachment_tracks_live_code_agent_mode(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_runtime_git_status_is_stable_system_context_for_one_invoke(tmp_path, monkeypatch):
-    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(_utils_mod, "get_domain_data_dir", lambda: tmp_path)
     runtime_state = tmp_path / "runtime_state" / "default.yaml"
     runtime_state.parent.mkdir(parents=True, exist_ok=True)
     runtime_state.write_text(
@@ -1648,7 +1662,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1706,7 +1720,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1766,7 +1780,7 @@ async def test_runtime_prompt_lists_installed_extensions_from_global_workspace(
         lambda: installed_workspace,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1830,7 +1844,7 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1867,7 +1881,7 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1902,7 +1916,7 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1941,7 +1955,7 @@ async def test_process_cli_directory_prompt_refreshes_across_requests(
     for directory in (internal, first, second, current):
         directory.mkdir()
     monkeypatch.setattr(runtime_module, "get_agent_workspace_dir", lambda: internal)
-    monkeypatch.setattr(runtime_module, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime_module, "get_domain_data_dir", lambda: tmp_path)
     monkeypatch.setattr(runtime_module, "get_runtime_state_path", lambda _: tmp_path / "absent.yaml")
     monkeypatch.setattr(RuntimePromptRail, "_configured_model_names", staticmethod(lambda: []))
     rail = RuntimePromptRail(language=language, channel="process_cli")

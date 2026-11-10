@@ -362,6 +362,53 @@ def ensure_visual_style_statement(
     return (body + f"\n\n## Visual Style\n\n{look}\n").strip()
 
 
+def ensure_audio_statement(
+    text: str,
+    audio_plan: dict[str, Any] | None,
+) -> str:
+    """State the audio plan deterministically, replacing any promised score.
+
+    The brief is the artifact the user reads, so it must not promise a score
+    that no backend can render while the clips stay unscored.
+    """
+    body = str(text or "").rstrip()
+    plan = audio_plan if isinstance(audio_plan, dict) else {}
+    if not plan:
+        return body
+    speech = plan.get("speech") if isinstance(plan.get("speech"), dict) else {}
+    sfx = plan.get("sfx") if isinstance(plan.get("sfx"), dict) else {}
+    music = plan.get("music") if isinstance(plan.get("music"), dict) else {}
+    lines: list[str] = []
+    if speech.get("include", True):
+        lines.append(f"- Speech: {speech.get('kind') or 'dialogue'} in the locked language.")
+    else:
+        lines.append("- Speech: none (the user asked for silence or mime).")
+    sfx_note = str(sfx.get("notes") or "").strip()
+    lines.append(
+        "- Diegetic sound: room tone and action sound only."
+        if not sfx_note
+        else f"- Diegetic sound: {sfx_note}"
+    )
+    if music.get("requested") and music.get("supported"):
+        lines.append("- Music: one film-level score, mixed after the clips are joined.")
+    elif music.get("requested"):
+        lines.append(
+            "- Music: **not supported in this build** — no music backend is configured, "
+            "so the film carries narration/dialogue and diegetic sound only (no score)."
+        )
+    elif speech.get("include", True):
+        lines.append("- Music: none; the clips carry dialogue and diegetic sound only.")
+    else:
+        lines.append("- Music: none; the clips carry diegetic sound only.")
+    block = "## Audio\n\n" + "\n".join(lines)
+    marker = "## Audio"
+    if marker in body:
+        head, _, tail = body.partition(marker)
+        rest = tail.split("\n## ", 1)
+        body = head.rstrip() + ("\n\n## " + rest[1] if len(rest) > 1 else "")
+    return (body.rstrip() + "\n\n" + block + "\n").strip()
+
+
 def synchronize_graph_style_from_brief(
     graph: dict[str, Any],
     text: str,

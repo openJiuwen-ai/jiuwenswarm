@@ -259,6 +259,12 @@ async def test_gateway_reads_obs_without_agent_or_snapshot(delivery):
         url = delivery.info["download_url"]
         full = await client.get(url)
         assert full.status_code == 200 and full.content == b"workspace file\n"
+        assert full.headers["content-disposition"].startswith("attachment")
+        inline = await client.get(url + "&inline=1")
+        assert inline.status_code == 200 and inline.content == b"workspace file\n"
+        assert inline.headers["content-disposition"].startswith("attachment")
+        assert inline.headers["content-security-policy"] == "sandbox"
+        assert inline.headers["x-content-type-options"] == "nosniff"
         assert delivery.client.closed and delivery.client.released
         count = len(delivery.client.reads)
         head = await client.head(url)

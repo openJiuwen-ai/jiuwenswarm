@@ -1,4 +1,4 @@
-// 视频生成 / 图像生成 这两个"生成类"能力的模型目录。
+// 视频生成 / 图像生成 / 音频生成 这几个"生成类"能力的模型目录。
 //
 // 生成类能力用的是专门的模型（不是对话模型），所以 vendors.list 里各厂商
 // 预设的 model_options（都是对话模型）不适用，这里按"厂商 → 协议 → 模型"单独
@@ -26,8 +26,11 @@
 //   /api/v1；密钥分区域（国内 dashscope / 国际 dashscope-intl），地址需要能改。
 // - vLLM-Omni：协议固定为 vllm-omni，自部署的推理服务，没有固定地址；API key 和模型名
 //   都可以留空（模型名留空时后端用服务实际加载的模型）。
+//
+// 音频生成（music_gen，设计模式的 BGM）后端只支持 OpenRouter（Lyria）和 vLLM-Omni
+// （MiniMax Music3 等自部署模型）；MiniMax 云端不作为音乐后端，火山和百炼没有音乐模型，目录为空。
 
-export type GenerationSlot = 'video_gen' | 'visual_gen';
+export type GenerationSlot = 'video_gen' | 'visual_gen' | 'music_gen';
 
 export type GenerationModel = { model: string; protocol: string };
 
@@ -77,27 +80,32 @@ const OPENROUTER_MODELS: Record<GenerationSlot, readonly string[]> = {
     'openai/gpt-5-image',
     'openai/gpt-5-image-mini',
   ],
+  music_gen: ['google/lyria-3-pro-preview'],
 };
 
 const MINIMAX_MODELS: Record<GenerationSlot, readonly string[]> = {
   video_gen: ['MiniMax-H3'],
   visual_gen: ['image-01'],
+  music_gen: [],
 };
 
 // 供旧配置的协议识别及自定义目录使用；选择火山时的下拉列表从 Ark API 动态获取。
 const MODELARK_MODELS: Record<GenerationSlot, readonly string[]> = {
   video_gen: ['doubao-seedance-2-5-260628'],
   visual_gen: ['doubao-seedream-5-0-flash-260915'],
+  music_gen: [],
 };
 
 const DASHSCOPE_MODELS: Record<GenerationSlot, readonly string[]> = {
   video_gen: ['wan3.0-video', 'wan3.0-video-prime'],
   visual_gen: ['qwen-image-3.0', 'qwen-image-3.0-pro'],
+  music_gen: [],
 };
 
 const VLLM_OMNI_MODELS: Record<GenerationSlot, readonly string[]> = {
   video_gen: ['MiniMaxAI/MiniMax-H3'],
   visual_gen: ['Qwen/Qwen-Image-2512', 'black-forest-labs/FLUX.2-dev'],
+  music_gen: ['MiniMaxAI/MiniMax-Music3', 'm-a-p/YuE2-3B'],
 };
 
 function openRouterModelProtocol(modelId: string): string {
@@ -105,36 +113,47 @@ function openRouterModelProtocol(modelId: string): string {
   return slash > 0 ? modelId.slice(0, slash) : '';
 }
 
-function withProtocol(models: Record<GenerationSlot, readonly string[]>, protocol: string) {
-  return {
-    video_gen: models.video_gen.map((model) => ({ model, protocol })),
-    visual_gen: models.visual_gen.map((model) => ({ model, protocol })),
-  };
+function withProtocol(
+  models: Record<GenerationSlot, readonly string[]>,
+  protocolOf: (model: string) => string,
+): Record<GenerationSlot, readonly GenerationModel[]> {
+  const entries = (slot: GenerationSlot) => models[slot].map((model) => ({ model, protocol: protocolOf(model) }));
+  return { video_gen: entries('video_gen'), visual_gen: entries('visual_gen'), music_gen: entries('music_gen') };
 }
+
+const fixed = (protocol: string) => () => protocol;
 
 const CATALOG: Record<
   'openrouter' | 'minimax' | 'modelark' | 'dashscope' | 'vllm-omni',
   Record<GenerationSlot, readonly GenerationModel[]>
 > = {
-  openrouter: {
-    video_gen: OPENROUTER_MODELS.video_gen.map((model) => ({ model, protocol: openRouterModelProtocol(model) })),
-    visual_gen: OPENROUTER_MODELS.visual_gen.map((model) => ({ model, protocol: openRouterModelProtocol(model) })),
-  },
-  minimax: withProtocol(MINIMAX_MODELS, MINIMAX_PROTOCOL),
-  modelark: withProtocol(MODELARK_MODELS, MODELARK_PROTOCOL),
-  dashscope: withProtocol(DASHSCOPE_MODELS, DASHSCOPE_PROTOCOL),
-  'vllm-omni': withProtocol(VLLM_OMNI_MODELS, VLLM_OMNI_PROTOCOL),
+  openrouter: withProtocol(OPENROUTER_MODELS, openRouterModelProtocol),
+  minimax: withProtocol(MINIMAX_MODELS, fixed(MINIMAX_PROTOCOL)),
+  modelark: withProtocol(MODELARK_MODELS, fixed(MODELARK_PROTOCOL)),
+  dashscope: withProtocol(DASHSCOPE_MODELS, fixed(DASHSCOPE_PROTOCOL)),
+  'vllm-omni': withProtocol(VLLM_OMNI_MODELS, fixed(VLLM_OMNI_PROTOCOL)),
 };
 
 export type GenerationVendor = keyof typeof CATALOG;
 
 export const DEFAULT_GENERATION_MODEL: Record<GenerationVendor, Record<GenerationSlot, string>> = {
-  openrouter: { video_gen: 'bytedance/seedance-2.0-fast', visual_gen: 'google/gemini-3.1-flash-image' },
-  minimax: { video_gen: 'MiniMax-H3', visual_gen: 'image-01' },
-  modelark: { video_gen: 'doubao-seedance-2-5-260628', visual_gen: 'doubao-seedream-5-0-flash-260915' },
-  dashscope: { video_gen: 'wan3.0-video', visual_gen: 'qwen-image-3.0' },
+  openrouter: {
+    video_gen: 'bytedance/seedance-2.0-fast',
+    visual_gen: 'google/gemini-3.1-flash-image',
+    music_gen: 'google/lyria-3-pro-preview',
+  },
+  minimax: { video_gen: 'MiniMax-H3', visual_gen: 'image-01', music_gen: '' },
+  modelark: { video_gen: 'doubao-seedance-2-5-260628', visual_gen: 'doubao-seedream-5-0-flash-260915', music_gen: '' },
+  dashscope: { video_gen: 'wan3.0-video', visual_gen: 'qwen-image-3.0', music_gen: '' },
   // 模型名可空：默认留空，由后端使用服务实际加载的模型。
-  'vllm-omni': { video_gen: '', visual_gen: '' },
+  'vllm-omni': { video_gen: '', visual_gen: '', music_gen: '' },
+};
+
+/** 每个槽位后端真正支持的厂商（GenerationModelConfigDialog 的厂商下拉）。 */
+export const GENERATION_SLOT_VENDORS: Record<GenerationSlot, readonly string[]> = {
+  video_gen: ['openrouter', 'volcengine', 'minimax', 'alibaba', 'vllm-omni'],
+  visual_gen: ['openrouter', 'volcengine', 'minimax', 'alibaba', 'vllm-omni'],
+  music_gen: ['openrouter', 'vllm-omni'],
 };
 
 /** 这些厂商的密钥分区域，API 地址需要能改（选完厂商后填入预设地址，用户可改成另一区域）。 */

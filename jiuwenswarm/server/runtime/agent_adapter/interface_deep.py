@@ -525,6 +525,7 @@ from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
 from jiuwenswarm.observability.turn import SessionTurnTracker, TurnIdentity
+from jiuwenswarm.server.client_attachments.registry import Capability, conversation_app
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.server.utils.utils import is_team_params  # noqa: E402
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
@@ -2363,6 +2364,10 @@ class JiuWenSwarmDeepAdapter:
         self._is_cron_execution: bool = False
         # (name, load_record, manifest.version)
         self._loaded_agent_template: tuple[str, Any, str] | None = None
+        # The DeepAgent the template of this conversation's client app (``client_app``) is loaded on.
+        self._client_app_agent: Any | None = None
+        # Turns of the conversation run concurrently: one of them loads the template on a new DeepAgent.
+        self._client_app_template_lock = asyncio.Lock()
         # name → (load_record, manifest.version)
         self._loaded_plugins: dict[str, tuple[Any, str]] = {}
         # RSI Harness activation is deliberately independent from the legacy
@@ -2988,6 +2993,13 @@ class JiuWenSwarmDeepAdapter:
         if mode in self._SKIP_EXTENSION_MODES or is_team_mode(mode):
             return None
 
+        app_package = self._client_app_package(request.session_id)
+        if app_package is not None and params.get("agent_template_name"):
+            return self._equipment_error_response(
+                request,
+                "当前会话属于客户端应用，不能使用专家；请新建会话后选择专家",
+            )
+
         # Equipment fields are tri-state at the chat boundary:
         #   omitted -> keep the session's current mount
         #   empty   -> explicitly unload
@@ -3062,6 +3074,8 @@ class JiuWenSwarmDeepAdapter:
                 await self._unload_agent_template_for_request(params)
                 await self._load_agent_template_for_request(params)
                 await self._load_plugins_for_request(params)
+            if app_package is not None:
+                await self._load_client_app_template(app_package)
         except (ValueError, RuntimeError, AgentError, OSError, RsiError) as exc:
             return self._equipment_error_response(request, str(exc))
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -3307,6 +3321,26 @@ class JiuWenSwarmDeepAdapter:
             if record is None:
                 record = await self._instance.load_plugin(str(pkg_dir))
             self._loaded_plugins[name] = (record, desired_version)
+
+    @staticmethod
+    def _client_app_package(session_id: str | None) -> Path | None:
+        """The package directory of the client app this conversation belongs to (``client_app``), if any."""
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+        app = conversation_app(get_session_metadata(session_id, enable_writeback=False) if session_id else None)
+        return app.package_dir if app is not None else None
+
+    async def _load_client_app_template(self, package_dir: Path) -> None:
+        """Load the client app's template on the conversation's DeepAgent, once per DeepAgent.
+
+        Every turn passes here, whoever started it: the app's client, another
+        conversation's message, a resume. A rebuilt DeepAgent loads it again.
+        """
+        async with self._client_app_template_lock:
+            if self._client_app_agent is self._instance:
+                return
+            await self._instance.load_agent_template(str(package_dir))
+            self._client_app_agent = self._instance
 
     @staticmethod
     def _requested_rsi_plugin(names: list[str]) -> str | None:
@@ -4501,8 +4535,10 @@ class JiuWenSwarmDeepAdapter:
             create_started_at = time.monotonic()
             if permission_project_dir is not None:
                 config = {**(config or {}), "project_dir": permission_project_dir}
+            client_app = conversation_app(metadata)
             config = {**(config or {}), "cron_execution": cron_execution, "moa_enabled": effective_moa,
-                      "moa_model_selection": selection.model_dump() if selection is not None else None}
+                      "moa_model_selection": selection.model_dump() if selection is not None else None,
+                      "left_out_capabilities": client_app.leaves_out if client_app else frozenset()}
             if moa_snapshot is not None:
                 config["moa_config_snapshot"] = moa_snapshot
                 config["moa_can_access"] = moa_can_access
@@ -5263,6 +5299,10 @@ class JiuWenSwarmDeepAdapter:
         raw = self._instance_overrides.get("enable_filesystem_rail", True)
         return bool(raw)
 
+    def _leaves_out(self, capability: Capability) -> bool:
+        """Whether this conversation's client app builds its agent without ``capability``."""
+        return capability in self._instance_overrides.get("left_out_capabilities", frozenset())
+
     def _skill_include_tools_for_profile(self) -> bool:
         if self._is_acp_tool_profile(self._instance_overrides):
             return False
@@ -5715,6 +5755,9 @@ class JiuWenSwarmDeepAdapter:
     ) -> list[Any] | None:
         """Use develop's Core injector while keeping root permission owners out of children."""
 
+        if self._leaves_out(Capability.SUBAGENTS):
+            # Any subagent would make create_deep_agent() add its own SubagentRail.
+            return []
         subagents, add_general = self._build_configured_subagents(
             model, config, config_base
         )
@@ -6516,6 +6559,36 @@ class JiuWenSwarmDeepAdapter:
             params,
         )
 
+    async def load_enterprise_mcp_names(self, request: AgentRequest) -> set[str] | None:
+        """Refresh this adapter's policy cache and return enabled MCP names.
+
+        Keep the resolved configuration local to this session adapter; do not
+        persist enterprise templates to shared YAML or marketplace state.
+        Return None on load failure so reconciliation keeps the message picker.
+        An empty set represents a successfully loaded policy without MCPs.
+        """
+        try:
+            resolved = await self._load_enterprise_config(
+                request, base=dict(self._config_base_cache or {}),
+            )
+        except Exception:  # noqa: BLE001 - policy read failures must not abort chat
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] enterprise MCP policy load failed; "
+                "keeping per-message selection",
+                exc_info=True,
+            )
+            return None
+        self._config_base_cache = resolved.config.copy()
+        mcp_section = resolved.config.get("mcp") or {}
+        names: set[str] = set()
+        for entry in mcp_section.get("servers", []):
+            if not isinstance(entry, dict) or not entry.get("enabled", True):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if name:
+                names.add(name)
+        return names
+
     async def reconcile_session_mcp(
         self,
         session_id: str | None,
@@ -6542,6 +6615,9 @@ class JiuWenSwarmDeepAdapter:
         by the refresh_skill_rails on change. Because reconcile can be the
         first session-child creation point, it also forwards the current
         request's disk-history boundary into context warmup.
+
+        In enterprise mode, the routed Agent's enabled MCP templates replace
+        the per-message selection when an execution request is available.
         """
         if (
             runtime_binding is not None
@@ -6566,6 +6642,16 @@ class JiuWenSwarmDeepAdapter:
             **({"moa_can_access": moa_can_access} if moa_can_access is not None else {}),
             **({"retain_moa_snapshot": True} if retain_moa_snapshot else {}),
         )
+        # Enterprise Web has no per-message MCP picker. Resolve the current
+        # routed Agent's enabled templates before name lookup/registration.
+        # Never write these entries into the shared YAML or marketplace state.
+        from jiuwenswarm.enterprise.config.config_provider import (
+            ConfigSource, resolve_config_source,
+        )
+        if execution_request is not None and resolve_config_source() == ConfigSource.ENTERPRISE:
+            enterprise_names = await child.load_enterprise_mcp_names(execution_request)
+            if enterprise_names is not None:
+                needed_set = enterprise_names
         if child._instance is None:
             pending_holder = getattr(
                 child,
@@ -10073,9 +10159,9 @@ class JiuWenSwarmDeepAdapter:
             from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
                 RsiHarnessActivationStore,
             )
-            from jiuwenswarm.common.utils import get_user_workspace_dir
+            from jiuwenswarm.common.utils import get_infra_data_dir
 
-            store = RsiHarnessActivationStore(get_user_workspace_dir() / "rsi" / "tasks")
+            store = RsiHarnessActivationStore(get_infra_data_dir() / "rsi" / "tasks")
             active = store.get_active()
         except Exception as exc:  # noqa: BLE001 - startup must remain available
             logger.warning("[JiuWenSwarmDeepAdapter] RSI Harness state unavailable: %s", exc)
@@ -11749,7 +11835,9 @@ class JiuWenSwarmDeepAdapter:
 
         rail_infos = [
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
-            _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
+            *([] if self._leaves_out(Capability.MESSAGE_RULES) else [
+                _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
+            ]),
             _RailBuildInfo(
                 "_multimodal_image_rail",
                 self._build_multimodal_image_rail,
@@ -11773,11 +11861,11 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
-            _RailBuildInfo(
+            *([] if self._leaves_out(Capability.SUBAGENTS) else [_RailBuildInfo(
                 "_subagent_rail",
                 self._build_subagent_rail,
                 {"config_base": config_base},
-            ),
+            )]),
             _RailBuildInfo(
                 "_cua_delegation_approval_rail",
                 self._build_cua_delegation_approval_rail,
@@ -14161,10 +14249,10 @@ class JiuWenSwarmDeepAdapter:
 
             if rail is None:
                 try:
-                    from jiuwenswarm.common.utils import get_user_workspace_dir
+                    from jiuwenswarm.common.utils import get_domain_data_dir
 
                     rail = PersonalContextRail(
-                        get_user_workspace_dir() / ".personal_context"
+                        get_domain_data_dir() / ".personal_context"
                     )
                     await self._instance.register_rail(rail)
                 except Exception as exc:  # noqa: BLE001
@@ -14588,7 +14676,9 @@ class JiuWenSwarmDeepAdapter:
             session_id
         ):
             self._drop_heartbeat_tools(channel)
-        send_file_enabled = is_send_file_enabled(config_base, channel)
+        send_file_enabled = is_send_file_enabled(config_base, channel) and not self._leaves_out(
+            Capability.FILE_DELIVERY
+        )
         if send_file_enabled and request_id and session_id:
             require_send_authorization = self._enable_auto_permission
             channel_for_tool = _CRON_TOOL_CHANNEL_ID.get()
