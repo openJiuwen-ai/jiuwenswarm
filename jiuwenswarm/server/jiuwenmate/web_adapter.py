@@ -32,6 +32,7 @@ from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import configured_feishu_
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
+from jiuwenswarm.server.jiuwenmate.group_access import configure_group_access
 from jiuwenswarm.server.jiuwenmate.model_refresh import ModelRefreshQueue
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WORKSPACE_WRITE
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
@@ -329,10 +330,12 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         model_catalog: Callable[[], dict[str, Any]] = configured_model_catalog,
         manager_factory: ManagerFactory = _default_manager,
         push: PushSink | None = None,
+        inspect_feishu_group: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self._service_factory = service_factory
         self._model_catalog = model_catalog
         self._manager_factory = manager_factory
+        self._inspect_feishu_group = inspect_feishu_group
         self._stream = None if push is None else StreamPublisher(push)
         self._service: PersistentAgentService | None = None
         self._service_lock = threading.Lock()
@@ -361,6 +364,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 await self.refresh_models()
                 observer = self._stream.observe if self._stream is not None else _ignore
                 manager = await asyncio.to_thread(self._manager_factory, service, on_event=observer)
+                configure_group_access(manager, self._inspect_feishu_group)
                 if self._stream is not None:
                     self._stream.start()
                 await manager.start()
