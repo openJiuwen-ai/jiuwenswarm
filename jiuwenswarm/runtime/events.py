@@ -101,11 +101,15 @@ class RuntimeEvent:
         error: BaseException,
         metadata: dict[str, Any] | None = None,
     ) -> RuntimeEvent:
+        payload = {"event_type": "runtime.error", "error": str(error)}
+        code = getattr(error, "code", None)
+        if isinstance(code, str) and code:
+            payload["code"] = code
         return cls(
             request_id=request_id,
             channel_id=channel_id,
             session_id=session_id,
-            payload={"event_type": "runtime.error", "error": str(error)},
+            payload=payload,
             metadata=dict(metadata) if metadata is not None else None,
             is_complete=True,
             ok=False,
