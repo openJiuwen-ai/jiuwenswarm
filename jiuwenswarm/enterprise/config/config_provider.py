@@ -203,9 +203,17 @@ class DefaultConfigProvider:
             if ctx.request is not None
             else ctx.cached_policy
         )
-        return AgentConfigResult(
-            config=_apply_enterprise_policy(base, loaded), policy=loaded
+        from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+            apply_agent_capability_configs,
+            bind_resolved_agent_config,
         )
+
+        config = await apply_agent_capability_configs(
+            _apply_enterprise_policy(base, loaded),
+            loaded,
+        )
+        bind_resolved_agent_config(config)
+        return AgentConfigResult(config=config, policy=loaded)
 
     async def refresh(self) -> None:
         source = resolve_config_source()

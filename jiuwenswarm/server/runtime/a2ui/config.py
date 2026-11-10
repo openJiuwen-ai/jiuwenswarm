@@ -25,7 +25,9 @@ __all__ = [
 
 
 def get_current_a2ui_config() -> A2UIConfig:
-    """Read A2UI config from the active jiuwenswarm runtime config."""
-    from jiuwenswarm.common.config import get_config
+    """Read A2UI config from the active agent snapshot, or local YAML."""
+    from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+        resolved_agent_config_or_yaml,
+    )
 
-    return get_a2ui_config(get_config() or {})
+    return get_a2ui_config(resolved_agent_config_or_yaml())
