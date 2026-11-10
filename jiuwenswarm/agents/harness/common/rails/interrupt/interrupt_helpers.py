@@ -137,6 +137,9 @@ _SUBAGENT_PERMISSION_APPROVAL_TIMEOUT = 120.0
 # ACP keeps native session/request_permission JSON-RPC — do not hijack it.
 _HOSTED_PERMISSION_CHANNELS = frozenset({"web", "officeclaw", "tui"})
 
+# web / tui 直接展示后端 options；其余 hosted 通道使用自定义权限卡按钮文案。
+_CUSTOM_OPTION_HINT_CHANNELS = _HOSTED_PERMISSION_CHANNELS - {"web", "tui"}
+
 _HOSTED_ALLOW_ONCE_LABELS = frozenset({
     "本次允许",
     "允许",
@@ -1448,6 +1451,11 @@ _PERMANENT_REMEMBER_HINT_RE = re.compile(
     r"[；;]?\s*选择「永久记住」[^。\n]*[。.]?",
 )
 
+_UNIFIED_OPTION_HINT = (
+    "\n\n> 选择「本次允许」仅放行本次调用；"
+    "选择「关闭安全审计」将关闭安全审计，后续工具调用不再询问。"
+)
+
 
 def _default_interrupt_options() -> list[dict[str, str]]:
     """权限审批默认选项。
@@ -1478,6 +1486,15 @@ def _is_permanent_remember_option(option: dict[str, Any]) -> bool:
 def _strip_permanent_remember_hint(message: str) -> str:
     cleaned = _PERMANENT_REMEMBER_HINT_RE.sub("", message or "")
     return cleaned.strip()
+
+
+def _rewrite_option_label_hint(message: str) -> str:
+    """把上游选项提示统一改写为前端实际按钮文案。"""
+    return re.sub(
+        r"\n\n>\s*选择「[^」]+」[^\n]*",
+        _UNIFIED_OPTION_HINT,
+        message or "",
+    )
 
 
 def _plan_approval_interrupt_options(
@@ -1592,8 +1609,15 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
         question = message
         if source == "permission_interrupt":
             question = apply_permission_intent(question, tool_name, tool_args)
-        if is_enterprise() and source == "permission_interrupt":
-            question = _strip_permanent_remember_hint(question)
+            from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+                TOOL_PERMISSION_CHANNEL_ID,
+            )
+
+            channel = (TOOL_PERMISSION_CHANNEL_ID.get() or "").strip().lower()
+            if channel in _CUSTOM_OPTION_HINT_CHANNELS:
+                question = _rewrite_option_label_hint(question)
+            elif is_enterprise():
+                question = _strip_permanent_remember_hint(question)
 
     return {
         "question": question,
