@@ -100,6 +100,22 @@ def _structured_tool_result_payload(result: Any) -> Any | None:
     return None
 
 
+def _artifact_failure_preview(value: Any) -> Any:
+    """Bound degraded event fields without constructing a giant repr/JSON."""
+    from jiuwenswarm.server.runtime.session.history_artifacts import INLINE_BYTES, PREVIEW_CHARS, json_chunks
+
+    if isinstance(value, str):
+        if len(value) <= PREVIEW_CHARS:
+            return value
+        return value[:PREVIEW_CHARS] + "\n[Full value unavailable: artifact storage failed]"
+    size = 0
+    for part in json_chunks(value):
+        size += len(part)
+        if size > INLINE_BYTES:
+            return "[Structured value unavailable: artifact storage failed]"
+    return value
+
+
 def _cut_long_strings(value: Any) -> Any:
     if isinstance(value, str):
         return value[:_TOOL_RESULT_TEXT_LIMIT]
@@ -1184,11 +1200,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 prompt_preview = self._summarize_call_prompt(ctx, max_chars=2048)
                 if prompt_preview:
                     payload["prompt"] = prompt_preview
-                    payload["payload_refs"] = {"prompt": await run_history_io(
-                        put_prompt, self._artifact_session_scope(session, self._resolve_sid(ctx, session)),
-                        getattr(ctx.inputs, "messages", None) or [],
-                        getattr(ctx.inputs, "tools", None) or [],
-                    )}
+                    try:
+                        payload["payload_refs"] = {"prompt": await run_history_io(
+                            put_prompt, self._artifact_session_scope(session, self._resolve_sid(ctx, session)),
+                            getattr(ctx.inputs, "messages", None) or [],
+                            getattr(ctx.inputs, "tools", None) or [],
+                        )}
+                    except OSError:
+                        logger.warning("[StreamEventRail] prompt artifact unavailable; emitting preview", exc_info=True)
             elif phase == "llm_call_end":
                 response_text = self._extract_response_text(ctx)
                 if response_text:
@@ -1518,10 +1537,21 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             if raw_output is not None:
                 full_values["raw_output"] = raw_output
             session_scope = self._artifact_session_scope(session)
-            projected = await run_history_io(
-                externalize_payload, session_scope,
-                full_values, fields=("result", "rendered_result", "raw_output"),
-            )
+            try:
+                projected = await run_history_io(
+                    externalize_payload, session_scope,
+                    full_values, fields=("result", "rendered_result", "raw_output"),
+                )
+            except OSError:
+                logger.warning("[StreamEventRail] tool result artifact unavailable; emitting preview", exc_info=True)
+                projected = {key: _artifact_failure_preview(value) for key, value in full_values.items()}
+                if raw_output is not None and isinstance(projected.get("raw_output"), str):
+                    mcp_app = raw_output.get("mcp_app") if isinstance(raw_output, dict) else None
+                    preview_app = _artifact_failure_preview(mcp_app) if mcp_app is not None else None
+                    projected["raw_output"] = (
+                        {"mcp_app": mcp_app} if preview_app is mcp_app and mcp_app is not None else {}
+                    )
+                    projected["raw_output_truncated"] = True
             # Only small values reach str(); large structured replies have
             # already been streamed to JSON without constructing a huge repr.
             projected["result"] = str(projected["result"]) if projected["result"] is not None else ""
@@ -1529,7 +1559,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             if raw_output is not None:
                 wire_source = (
                     projected.get("raw_output")
-                    if "raw_output" in projected.get("payload_refs", {}) else raw_output
+                    if "raw_output" in projected else raw_output
                 )
                 wire_raw_output, trimmed = _bounded_raw_output(wire_source)
                 externalized = "raw_output" in projected.get("payload_refs", {})

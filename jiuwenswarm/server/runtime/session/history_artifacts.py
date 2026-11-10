@@ -241,5 +241,7 @@ def copy_history_artifacts(value: dict[str, Any], source_session_id: str, target
     try:
         copy_refs(value)
         return rewrite(value)
-    except OSError as exc:
+    except ArtifactCopyError:
+        raise
+    except Exception as exc:
         raise ArtifactCopyError("A source history artifact could not be copied") from exc

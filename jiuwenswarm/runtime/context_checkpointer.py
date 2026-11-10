@@ -120,7 +120,11 @@ class ContextCheckpointer(Checkpointer):
         if _prepared.get() == owner.get("token"):
             return await method(_CheckpointSession(native_session))
         binding = _by_key.get(key)
-        if binding is None or binding.token != owner.get("token"):
+        if binding is None:
+            # Persisted owner tokens outlive the Worker that created them.
+            # A native commit before this process binds a window is still valid.
+            return await method(native_session)
+        if binding.token != owner.get("token"):
             raise HistoryReplayError("The context checkpoint owner is no longer active", code="HISTORY_RESTORE_CHANGED")
         async with binding.lock:
             return await self._commit_bound(native_session, method, binding, owner)

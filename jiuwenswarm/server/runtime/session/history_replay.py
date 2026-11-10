@@ -151,6 +151,8 @@ def read_history_replay(
             generation = int(lc.state("session", session_id).get("generation", 0))
             if not path.exists():
                 identity = (0, 0, 0, 0, 0)
+                if cursor is not None:
+                    _check_cursor(cursor, path, generation, identity)
                 empty = HistoryReplayCursor(path, generation, identity, 0)
                 return HistoryReplayBatch([], empty, empty, 0)
             identity = _identity(path.stat())
@@ -276,7 +278,7 @@ def _read_prefix(
         if path.suffix.lower() != ".jsonl":
             if start or end > limits.max_record_bytes:
                 raise HistoryReplayError("Legacy history requires bounded migration", code="HISTORY_RESTORE_LIMIT")
-            data = json.loads(source.read(end))
+            data = json.loads(source.read(end)) if end else []
             if not isinstance(data, list):
                 raise HistoryReplayError("Legacy history is not an array")
             for record in data:

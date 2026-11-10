@@ -14,6 +14,7 @@ import re
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import Future, InvalidStateError
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,8 @@ _WORKER_LOCK = threading.Lock()
 _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
+_BOOTSTRAP_ERRORS: OrderedDict[Path, tuple[tuple[int, int, int, int, int], str, str]] = OrderedDict()
+_BOOTSTRAP_ERROR_LOCK = threading.Lock()
 _PROBE_OK_TOKENS = {"HEALTH_CHECK_OK", "HEARTBEAT_OK"}
 SESSION_REQUEST_TERMINAL_STATUSES = frozenset({
     "success",
@@ -865,9 +868,33 @@ def _ensure_jsonl_bootstrap(session_id: str) -> Path:
 
     legacy_path = _history_file(session_id)
     if legacy_path.exists():
+        from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError, _identity
         from jiuwenswarm.server.runtime.session.history_stream import convert_legacy_jsonl
 
-        convert_legacy_jsonl(session_id, legacy_path, jsonl_path)
+        identity = _identity(legacy_path.stat())
+        with _BOOTSTRAP_ERROR_LOCK:
+            failure = _BOOTSTRAP_ERRORS.get(legacy_path)
+        if failure is not None and failure[0] == identity:
+            raise HistoryReplayError("Legacy conversion remains blocked until the source changes: " + failure[2],
+                                     code=failure[1])
+        try:
+            convert_legacy_jsonl(session_id, legacy_path, jsonl_path)
+        except HistoryReplayError as exc:
+            if exc.code in {"HISTORY_RESTORE_FAILED", "HISTORY_RESTORE_LIMIT"}:
+                with _BOOTSTRAP_ERROR_LOCK:
+                    _BOOTSTRAP_ERRORS[legacy_path] = (identity, exc.code, str(exc))
+                    _BOOTSTRAP_ERRORS.move_to_end(legacy_path)
+                    while len(_BOOTSTRAP_ERRORS) > 128:
+                        _BOOTSTRAP_ERRORS.popitem(last=False)
+            logger.error("Legacy history conversion failed; original preserved: session=%s code=%s error=%s",
+                         session_id, exc.code, exc)
+            raise
+        except OSError as exc:
+            logger.error("Legacy history conversion I/O failed; original preserved: session=%s code=HISTORY_RESTORE_FAILED",
+                         session_id, exc_info=True)
+            raise HistoryReplayError("Legacy history conversion I/O failed") from exc
+        with _BOOTSTRAP_ERROR_LOCK:
+            _BOOTSTRAP_ERRORS.pop(legacy_path, None)
     else:
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     return jsonl_path
@@ -1109,10 +1136,9 @@ def _ensure_legacy_json_bootstrap(session_id: str) -> Path:
 
     jsonl_path = _history_jsonl_file(session_id)
     if jsonl_path.exists():
-        from jiuwenswarm.server.runtime.session.history_replay import read_history_for_rewrite
+        from jiuwenswarm.server.runtime.session.history_stream import rewrite_legacy_json
 
-        jsonl_records = read_history_for_rewrite(jsonl_path)
-        _write_records_to_path(legacy_path, jsonl_records)
+        rewrite_legacy_json(session_id, jsonl_path, legacy_path)
     else:
         legacy_path.parent.mkdir(parents=True, exist_ok=True)
     return legacy_path
@@ -1331,13 +1357,13 @@ def _write_item(
 
         if use_legacy_history_json():
             target_path = _ensure_legacy_json_bootstrap(session_id)
-            from jiuwenswarm.server.runtime.session.history_replay import read_history_for_rewrite
+            from jiuwenswarm.server.runtime.session.history_artifacts import externalize_history_record
+            from jiuwenswarm.server.runtime.session.history_stream import rewrite_legacy_json
 
-            records = read_history_for_rewrite(target_path)
-            if _is_error_record(item) and _has_request_error(records, item):
-                return
-            records.append(item)
-            _write_records_to_path(target_path, records)
+            item = externalize_history_record(session_id, item)
+            skip_append = (lambda record: _has_request_error([record], item)) if _is_error_record(item) else None
+            rewrite_legacy_json(session_id, target_path, target_path, append_record=item,
+                                skip_append=skip_append)
             return
 
         target_path = _ensure_jsonl_bootstrap(session_id)

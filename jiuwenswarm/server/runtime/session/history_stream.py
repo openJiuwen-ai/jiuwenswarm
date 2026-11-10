@@ -6,6 +6,7 @@ receives a giant prompt merely to discover the row's event_type at its end.
 from __future__ import annotations
 
 import codecs
+from contextlib import nullcontext
 import json
 import os
 import re
@@ -13,7 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator
+from typing import Any, BinaryIO, Callable, Iterator
 
 from jiuwenswarm.server.runtime.session.history_artifacts import put_chunks
 from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError, is_context_record
@@ -22,7 +23,7 @@ _SPECIAL = re.compile(rb'["\\\x00-\x1f]')
 _WHITE = re.compile(rb'[^ \t\r\n]')
 _LARGE_FIELDS = {"content", "rendered_result", "result", "raw_output"}
 _OMIT_FIELDS = {"prompt", "event_payload", "usage", "session_usage"}
-_METADATA_FIELDS = {"role", "event_type", "request_id", "channel_id", "id", "compact_metadata"}
+_METADATA_FIELDS = {"role", "event_type", "request_id", "channel_id", "id", "compact_metadata", "cron_failure_record"}
 
 
 class _JSONStream:
@@ -69,7 +70,10 @@ class _JSONStream:
         while self.fill():
             match = _SPECIAL.search(self.buffer, self.index)
             stop = match.start() if match is not None else len(self.buffer)
-            decoder.decode(self.buffer[self.index:stop], final=match is not None)
+            try:
+                decoder.decode(self.buffer[self.index:stop], final=match is not None)
+            except UnicodeError as exc:
+                raise HistoryReplayError("Invalid UTF-8 in legacy history string") from exc
             self.advance(stop - self.index)
             if match is None:
                 continue
@@ -168,6 +172,8 @@ def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int |
     end = path.stat().st_size if end is None else end
     if end < start or end - start > max_scan_bytes:
         raise HistoryReplayError("Legacy history exceeds the migration disk budget", code="HISTORY_RESTORE_LIMIT")
+    if end == 0:
+        return
     with path.open("rb") as source, path.open("rb") as values:
         source.seek(start)
         reader = _JSONStream(source, end, deadline=time.monotonic() + max_seconds)
@@ -278,5 +284,58 @@ def convert_legacy_jsonl(session_id: str, source_path: Path, target_path: Path) 
             if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
                 raise HistoryReplayError("Legacy history changed during conversion", code="HISTORY_RESTORE_CHANGED")
             os.replace(temporary, target_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def rewrite_legacy_json(session_id: str, source_path: Path, target_path: Path, *,
+                        append_record: dict[str, Any] | None = None,
+                        skip_append: Callable[[dict[str, Any]], bool] | None = None) -> None:
+    """Atomically copy an array/JSONL prefix without retaining its records."""
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    from jiuwenswarm.server.runtime.session.context_snapshot import invalidate_snapshot_hint
+    from jiuwenswarm.server.runtime.session.history_artifacts import json_chunks
+    from jiuwenswarm.server.runtime.session.history_replay import _identity, invalidate_history_head
+
+    with lc.resource_lock("session", session_id):
+        lc.write_guard(session_id)
+        before = source_path.stat() if source_path.exists() else None
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target_path.with_name(f".{target_path.name}.{uuid.uuid4().hex}.tmp")
+        duplicate = False
+        try:
+            source = source_path.open("rb") if before is not None else nullcontext(None)
+            with (
+                source as raw,
+                os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output,
+            ):
+                output.write(b"[")
+                count = 0
+                if before is not None:
+                    for row in iter_history_rows(source_path, session_id=session_id, metadata_only=True):
+                        if count:
+                            output.write(b",")
+                        for chunk in _range_chunks(raw, row.start, row.value_end):
+                            output.write(chunk)
+                        count += 1
+                        if skip_append is not None and skip_append(row.record):
+                            duplicate = True
+                if append_record is not None and not duplicate:
+                    if count:
+                        output.write(b",")
+                    for chunk in json_chunks(append_record):
+                        output.write(chunk)
+                output.write(b"]")
+                output.flush()
+                os.fsync(output.fileno())
+            after = source_path.stat() if source_path.exists() else None
+            if ((before is None) != (after is None)
+                    or before is not None and _identity(before) != _identity(after)):
+                raise HistoryReplayError("History changed during rewrite", code="HISTORY_RESTORE_CHANGED")
+            if duplicate:
+                return
+            os.replace(temporary, target_path)
+            invalidate_history_head(target_path)
+            invalidate_snapshot_hint(session_id)
         finally:
             temporary.unlink(missing_ok=True)
