@@ -435,7 +435,7 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 
 ## 历史原文引用与分块读取
 
-大型工具结果保留短预览，并可携带 `payload_refs`。`chat.llm_call_start` 的完整模型输入（messages 和 tools）也可通过该字段引用。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径；路径供宿主使用，客户端通过会话和摘要读取原文。
+大型工具结果保留短预览，并可携带 `payload_refs`。主智能体的 `chat.llm_call_start` 只携带调用前预览；Core 完成系统提示词注入和上下文处理后的完整模型输入（messages 和 tools），在 `chat.llm_call_end.payload_refs.prompt` 中引用。子代理在模型输入回调中采集的完整输入仍可随 `chat.llm_call_start` 引用。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径；路径供宿主使用，客户端通过会话和摘要读取原文。
 
 `text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，模型/工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
 
