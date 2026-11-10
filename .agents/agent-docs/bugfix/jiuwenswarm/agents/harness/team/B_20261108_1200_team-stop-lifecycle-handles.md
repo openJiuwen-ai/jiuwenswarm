@@ -98,9 +98,11 @@ files:
 - `_find_runner_team_name(session_id, *, state=None)`：`team_name` 为空时的池兜底解析，
   缺省匹配任意状态。pause、stop、terminate 三处都用它；`_find_paused_runner_team_name` 以
   `state=PAUSED` 委托给同一实现，仅供 `stop_paused_session_runtime` 使用。
-- `_runner_pool_has_session_runtime(session_id)`：收尾前的池归属判据。池里仍有该会话**未被暂停 /
-  未被停止**的 Runtime 时不释放 A2X、不停 transport、不丢镜像，并返回 False——三条路径同一约定。
-  pause 成功时池里按设计仍留有 PAUSED 条目，所以 pause 只在 `runner_paused=False` 时才查这条判据。
+- `_runner_pool_has_session_runtime(session_id, *, include_paused=True)`：收尾前的池归属判据。池里
+  仍有该会话**未被暂停 / 未被停止**的 Runtime 时不释放 A2X、不停 transport、不丢镜像，并返回 False。
+  stop 与 terminate 用缺省值（任何状态都算仍在池里），pause 传 `include_paused=False`：PAUSED 条目
+  正是 pause 想要的产物。pause 成功后池里按设计仍留有 PAUSED 条目，所以 pause 只在
+  `runner_paused=False` 时才查这条判据，且只认尚未暂停的条目（见下节）。
 - `_dispatch_swarmflow_controller(action=...)` 先于 Runner 停止；`_runner_pool_has_session_runtime`
   列举异常按「仍持有」处理。
 
@@ -124,6 +126,31 @@ files:
 **顺带清理**：pause 里「再次检查 cancel 标志」原先被上移到 swarmflow 停放之前，与首次检查之间没有
 `await`，分支不可达；现在放回 `_pause_swarmflow_runs` 之后、`Runner.pause_agent_team` 之前，
 `test_pause_session_runtime_aborts_after_park_when_cancel_arrives` 覆盖这条路径。
+
+## 第四次评审：pause 的成功判定按状态看池
+
+评审指出 pause 的成功判定仍在用状态盲的池检查：`Runner.pause_agent_team` 返回 False 后，只要池里
+还有该会话的条目就判失败，而池里剩下的可能正是 PAUSED 条目——恰恰是 pause 要的结果。这与函数自己
+声明的契约（「池里不再留下**未暂停**的 Runtime 才算成功」）相反，也与紧接着的「已停泊早退」自相
+矛盾：同一个「池中只有 PAUSED 条目」的状态，早退分支判成功，兜底分支判失败，区别只在于是否还挂着
+stream task 等其他句柄。
+
+触发形状：会话 metadata / active 标记里记的队名与池中条目的队名不一致（团队重建过，池里停泊的是上一个
+runtime），`Runner.pause_agent_team` 按名字找不到条目返回 False，池里那个 PAUSED 条目却让状态盲的检查
+判成「仍有一个未暂停的 runtime」——网页「停止」于是给出 `success=false`，界面按失败处理，而团队实际
+已经停住。
+
+修复：池归属判据加 `include_paused` 关键字参数，缺省 True 保持 stop / terminate 的口径（它们必须把
+停泊条目也视为清除失败），pause 传 False，只把**仍未暂停**的条目当作「pause 没落到」。三条路径仍是
+同一实现、同一实现里的一个开关，不是第二份判据。`list_active_teams` 异常仍按「仍持有」处理，pause 在
+这种情况下继续报失败（Runner 本就没确认，不能凭空判成功）。
+
+新增两条用例：
+`test_pause_session_runtime_reports_success_when_pool_only_holds_paused_entry`（队名过期 + 池中
+PAUSED 条目 → True；在状态盲实现上断言失败）与
+`test_pause_session_runtime_reports_failure_when_pool_unlistable`（池不可列举 → False，锁住异常口径）。
+已有 `test_pause_session_runtime_reports_failure_when_runtime_stays_unpaused`（池中 RUNNING →
+False）与 stop / terminate 的 PAUSED 池用例继续守护「没有被放宽」的一面。
 
 **已知遗留（本次不动）**：`stop_paused_session_runtime` 仍是 stop 失败后照旧
 `_stop_runner_team_agent_transport` 且从不释放 A2X 的形状，`pause_session_runtime` 中
@@ -165,6 +192,10 @@ True」、「一次网页停止的两次 pause 调用都返回 True」、「paus
 「pause 失败（池中仍未暂停）返回 False」、「stop 按池兜底解析 team_name 并停下」、
 「stop 失败后保留 A2X 与 transport、返回 False」，另加「停放 run 期间 cancel 到达则中止 pause」
 覆盖不可达分支的修复。该文件因此 90 → 100 条，全部通过。
+
+第四次评审再新增两条（见上节），该文件 100 → 102 条，全部通过；同目录 `runtime/` 下
+`test_team_session_lifecycle.py`、`test_runtime_service.py`、`test_web_cron_cancellation.py` 与
+`test_interface_interrupts.py` 合计 208 条同轮回归通过。
 
 本补丁不包含 `sync_documents.py` 的索引重排（5 个索引文件、47 篇文档，含 `gateway/*` →
 `agent_gateway/*` 这类既有漂移与全量 author 改写），沿用仓内既有做法，索引由合并侧统一刷新。

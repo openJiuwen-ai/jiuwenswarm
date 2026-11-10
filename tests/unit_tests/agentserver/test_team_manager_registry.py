@@ -1975,6 +1975,75 @@ async def test_pause_session_runtime_reports_failure_when_runtime_stays_unpaused
 
 
 @pytest.mark.asyncio
+async def test_pause_session_runtime_reports_success_when_pool_only_holds_paused_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An entry already parked in the pool is the outcome pause wanted.
+
+    Runner.pause names the runtime from the session metadata, so a stale name
+    (the team was rebuilt and the pool still parks the previous runtime) makes
+    it acknowledge nothing even though the session's only pool entry already
+    rests in PAUSED. The success check has to read that entry as parked —
+    counting every state reports success=false for a stop that did pause the
+    session, and the web client shows the stop as failed.
+    """
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "rebuilt-team")
+    pool = [
+        SimpleNamespace(
+            current_session_id="sess-1",
+            state=RuntimeState.PAUSED,
+            team_name="parked-team",
+        )
+    ]
+    pause_calls: list[str] = []
+
+    async def fake_pause_agent_team(*, team_name: str, session_id: str) -> bool:
+        pause_calls.append(team_name)
+        return False
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.list_active_teams",
+        AsyncMock(side_effect=lambda: list(pool)),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.pause_agent_team",
+        fake_pause_agent_team,
+    )
+    monkeypatch.setattr(manager, "_cleanup_runtime_locals", AsyncMock())
+
+    paused = await manager.pause_session_runtime("sess-1", reason="stop: ")
+
+    assert paused is True
+    assert pause_calls == ["rebuilt-team"]
+
+
+@pytest.mark.asyncio
+async def test_pause_session_runtime_reports_failure_when_pool_unlistable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable pool cannot exonerate a pause the Runner never acknowledged."""
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "demo-team")
+    pause_agent_team = AsyncMock(return_value=False)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.list_active_teams",
+        AsyncMock(side_effect=RuntimeError("pool unavailable")),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.pause_agent_team",
+        pause_agent_team,
+    )
+    monkeypatch.setattr(manager, "_cleanup_runtime_locals", AsyncMock())
+
+    paused = await manager.pause_session_runtime("sess-1", reason="stop: ")
+
+    assert paused is False
+    pause_agent_team.assert_awaited_once_with(team_name="demo-team", session_id="sess-1")
+
+
+@pytest.mark.asyncio
 async def test_pause_session_runtime_aborts_after_park_when_cancel_arrives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

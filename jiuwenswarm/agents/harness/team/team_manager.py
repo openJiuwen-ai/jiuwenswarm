@@ -3094,7 +3094,8 @@ class TeamManager:
         full predicate. Everything after the early exit is shared: the pool
         fallback and ownership guard (``_find_runner_team_name`` /
         ``_runner_pool_has_session_runtime``) are used by pause, stop and
-        terminate alike.
+        terminate alike — pause asks the guard to ignore PAUSED entries, because
+        parking the runtime is what it set out to do.
         """
         return (
             self._has_local_team_runtime(session_id)
@@ -4001,14 +4002,26 @@ class TeamManager:
         )
 
     @staticmethod
-    async def _runner_pool_has_session_runtime(session_id: str) -> bool:
+    async def _runner_pool_has_session_runtime(
+        session_id: str,
+        *,
+        include_paused: bool = True,
+    ) -> bool:
         """Whether the Runner pool still holds a runtime owned by this session.
 
-        Every state counts: a runtime whose stop failed is still owned by the
-        pool (agent-core keeps the entry so callers can retry), so its mirror
-        must not be torn down. A pool that cannot be listed is reported as
-        owning the session, which keeps the runtime resumable rather than
-        releasing resources underneath it.
+        Every state counts by default: a runtime whose stop failed is still
+        owned by the pool (agent-core keeps the entry so callers can retry), so
+        its mirror must not be torn down. A pool that cannot be listed is
+        reported as owning the session, which keeps the runtime resumable rather
+        than releasing resources underneath it.
+
+        Args:
+            session_id: Session whose pool entries to inspect.
+            include_paused: Count an entry parked in PAUSED too. Stop and
+                terminate keep the default: a parked entry that outlived their
+                teardown is still a runtime they failed to remove. Pause passes
+                False, because a parked entry is the outcome it wanted — only an
+                entry that is still unpaused means the pause did not land.
         """
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
@@ -4026,8 +4039,11 @@ class TeamManager:
             return True
 
         for info in active_teams:
-            if str(info.current_session_id or "").strip() == normalized_session_id:
-                return True
+            if str(info.current_session_id or "").strip() != normalized_session_id:
+                continue
+            if not include_paused and getattr(info, "state", None) == RuntimeState.PAUSED:
+                continue
+            return True
         return False
 
     async def stop_paused_session_runtime(
@@ -4279,9 +4295,17 @@ class TeamManager:
             # Same convention as terminate: what the pool still holds decides
             # whether the call may report success. A runtime we failed to pause
             # (or could not name) stays live and must not be reported as paused.
+            # The guard ignores PAUSED entries: parking the runtime is what this
+            # call set out to do, so an entry already resting in PAUSED (a stale
+            # team name no longer matching it, or a pause another path landed
+            # first) is success, not a failed pause. Counting every state would
+            # report that entry as a runtime the pause left running.
             paused = runner_paused
             if not paused:
-                paused = not await self._runner_pool_has_session_runtime(session_id)
+                paused = not await self._runner_pool_has_session_runtime(
+                    session_id,
+                    include_paused=False,
+                )
             if not paused:
                 logger.warning(
                     "[TeamManager] %s pause left a Runner runtime unpaused: "
