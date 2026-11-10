@@ -276,3 +276,40 @@ async def test_analysis_retry_system_message_shows_the_scenes_schema(
 
     assert len(systems) == 2
     assert '"scenes"' in systems[1]
+
+
+def test_graph_build_fails_closed_when_a_setting_has_no_named_scene(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.designer.smart_graph import build_smart_video_graph
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.capabilities.detect_audio_backends",
+        lambda: {"can_speech": False, "can_music": False, "can_video_audio": True},
+    )
+    analysis = {
+        "source": "llm",
+        "characters": [{"id": "char_1", "name": "Ada"}],
+        "scenes": [{"id": "set_1", "name": "the old library"}],
+        "clips": [
+            {
+                "clip_index": 1,
+                "action": "Ada reads.",
+                "on_screen": ["char_1"],
+                "setting_id": "set_1",
+            },
+            {
+                "clip_index": 2,
+                "action": "Ada waves goodbye.",
+                "on_screen": ["char_1"],
+                "setting_id": "set_9",
+            },
+        ],
+    }
+
+    with pytest.raises(ValueError, match="no place"):
+        build_smart_video_graph(
+            project_id="p",
+            prompt="Ada reads, then waves goodbye.",
+            analysis=analysis,
+        )

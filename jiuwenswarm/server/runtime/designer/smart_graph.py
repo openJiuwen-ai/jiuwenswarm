@@ -727,16 +727,15 @@ def _ensure_setting_ids(
             continue
         blob = f"{shot.get('action') or ''} {shot.get('clip_prompt') or ''} {shot.get('title') or ''}"
         if i > 0 and new_place_re.search(blob):
-            # Prefer next unused scene id from analysis; else synthesize.
+            # Prefer the next unused named scene id; never invent a scene-less
+            # one (an invented id has no named scene to draw the plate from).
             used = {
                 str(s.get("setting_id") or "")
                 for s in shots
                 if isinstance(s, dict) and s.get("setting_id")
             }
             candidate = next((x for x in scene_ids if x not in used and x != prev), "")
-            if not candidate:
-                candidate = f"set_{i + 1}"
-            sid = candidate
+            sid = candidate or prev
         else:
             sid = prev
         shot["setting_id"] = sid
@@ -1096,20 +1095,17 @@ def build_smart_video_graph(
                 scene_by_id.setdefault(sid_k, sc)
 
     def _scene_name_for_setting(sid: str) -> str:
+        """The named place for a setting; "" when analysis named no scene for it.
+
+        A shot title is a beat name, not a place, and ``Scene N`` is a label,
+        not a place — neither may seed the scene plate prompt (the plate
+        composer fails closed instead).
+        """
         sc = scene_by_id.get(sid) or {}
         name = str(sc.get("scene_name") or sc.get("name") or sc.get("place") or "").strip()
         if name:
             return name
-        scene_text = str(setting_scene_names.get(sid) or "").strip()
-        if scene_text:
-            return scene_text
-        for sh in shots:
-            if str(sh.get("setting_id") or "") != sid:
-                continue
-            title = str(sh.get("title") or "").strip()
-            if title:
-                return title
-        return f"Scene {setting_num.get(sid, 1)}"
+        return str(setting_scene_names.get(sid) or "").strip()
 
     from jiuwenswarm.server.runtime.designer.script_analysis import (
         _cast_id_maps,
