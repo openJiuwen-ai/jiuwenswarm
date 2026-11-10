@@ -426,3 +426,20 @@ In PowerShell, use `& $env:JIUWENSWARM_EXECUTABLE extension ...`.
   Remote sandboxes require their own network and file mappings.
 
 Restart the host after updating the implementation. Desktop applications require a new build containing the command.
+
+## Application presentations
+
+Installation only registers candidates. When the user explicitly asks to enter a presentation, an agent can query
+the current instance and then start the exact returned target:
+
+```text
+jiuwenswarm presentation query "<package_id>" --json
+jiuwenswarm presentation start "<package_id>" "<instance_key>" --connection-id "<returned connection ID>" --revision <returned revision> --json
+```
+
+EXE/DMG installations use the backend identified by `JIUWENSWARM_EXECUTABLE` with the same arguments.
+Never guess a connection; query again after a resource or package changes. Browser targets return `DESKTOP_REQUIRED`.
+Success means the native window confirmed readiness. A concurrent start returns `BUSY`; outdated candidates are rejected.
+Exit codes are 0 for a confirmed start, 1 for a known rejection, 2 for failure before sending, and 3 for an unknown outcome.
+For an unknown outcome, inspect the desktop without automatically repeating the command.
+The original main window continues to own conversations and the workbench.

@@ -107,15 +107,16 @@ async def request(context: Mapping[str, Any], action: str, params: dict[str, Any
 
 
 class LocalControl:
-    """Expose four management operations to this local host's subprocesses.
+    """Expose this host's explicit local operations to its subprocesses.
 
     The random capability is scoped to one host lifetime. This uses the local
     account trust boundary, not browser login credentials or remote user IDs.
     """
 
-    def __init__(self, domain: str, handler: Handler) -> None:
+    def __init__(self, domain: str, handler: Handler, *, methods: frozenset[str] = METHODS) -> None:
         self.domain = domain
         self._handler = handler
+        self._methods = methods
         self._server: asyncio.Server | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
         self._slots = asyncio.Semaphore(16)
@@ -191,7 +192,7 @@ class LocalControl:
                     or frame.get("instance") != self._context["instance"]
                 ):
                     response = {"ok": False, "payload": {"code": "AUTH_REQUIRED", "error": "本机管理授权无效。"}}
-                elif not isinstance(frame.get("action"), str) or frame["action"] not in METHODS or not isinstance(
+                elif not isinstance(frame.get("action"), str) or frame["action"] not in self._methods or not isinstance(
                     frame.get("params"), dict,
                 ):
                     response = {"ok": False, "payload": {"code": "INVALID_PARAMS", "error": "无效的包管理请求。"}}
