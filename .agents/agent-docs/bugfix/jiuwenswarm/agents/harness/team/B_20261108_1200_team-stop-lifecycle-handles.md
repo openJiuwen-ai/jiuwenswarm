@@ -145,12 +145,16 @@ runtime），`Runner.pause_agent_team` 按名字找不到条目返回 False，�
 同一实现、同一实现里的一个开关，不是第二份判据。`list_active_teams` 异常仍按「仍持有」处理，pause 在
 这种情况下继续报失败（Runner 本就没确认，不能凭空判成功）。
 
-新增两条用例：
+新增三条用例：
 `test_pause_session_runtime_reports_success_when_pool_only_holds_paused_entry`（队名过期 + 池中
-PAUSED 条目 → True；在状态盲实现上断言失败）与
-`test_pause_session_runtime_reports_failure_when_pool_unlistable`（池不可列举 → False，锁住异常口径）。
-已有 `test_pause_session_runtime_reports_failure_when_runtime_stays_unpaused`（池中 RUNNING →
-False）与 stop / terminate 的 PAUSED 池用例继续守护「没有被放宽」的一面。
+PAUSED 条目 → True；在状态盲实现上断言失败）、
+`test_pause_session_runtime_reports_failure_when_pool_unlistable`（池不可列举 → False，锁住异常口径）
+与 `test_pause_session_runtime_reports_failure_when_pool_also_holds_running_entry`（同一会话的
+PAUSED 残留 + RUNNING 条目 → False）。第三条是评审判据：只有全部匹配条目都是 PAUSED 才算干净；
+把它误写成「存在任一 PAUSED 就判成功」（`any(state == PAUSED)`）时，前两条加
+`test_pause_session_runtime_reports_failure_when_runtime_stays_unpaused`（池中 RUNNING → False）
+三条用例都仍是绿的，只有混合池这条会失败——实测在注入该错误实现后正是它单独转红。
+stop / terminate 的 PAUSED 池用例继续守护「没有被放宽」的一面。
 
 **已知遗留（本次不动）**：`stop_paused_session_runtime` 仍是 stop 失败后照旧
 `_stop_runner_team_agent_transport` 且从不释放 A2X 的形状，`pause_session_runtime` 中
@@ -193,7 +197,7 @@ True」、「一次网页停止的两次 pause 调用都返回 True」、「paus
 「stop 失败后保留 A2X 与 transport、返回 False」，另加「停放 run 期间 cancel 到达则中止 pause」
 覆盖不可达分支的修复。该文件因此 90 → 100 条，全部通过。
 
-第四次评审再新增两条（见上节），该文件 100 → 102 条，全部通过；同目录 `runtime/` 下
+第四次评审再新增三条（见上节），该文件 100 → 103 条，全部通过；同目录 `runtime/` 下
 `test_team_session_lifecycle.py`、`test_runtime_service.py`、`test_web_cron_cancellation.py` 与
 `test_interface_interrupts.py` 合计 208 条同轮回归通过。
 

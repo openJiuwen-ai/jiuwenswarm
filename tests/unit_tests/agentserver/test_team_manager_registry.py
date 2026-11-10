@@ -2019,6 +2019,53 @@ async def test_pause_session_runtime_reports_success_when_pool_only_holds_paused
 
 
 @pytest.mark.asyncio
+async def test_pause_session_runtime_reports_failure_when_pool_also_holds_running_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parked leftover must not excuse a genuinely still-running runtime.
+
+    The session's pool can hold both: a PAUSED leftover from an earlier team
+    next to a RUNNING entry the pause failed to land on. Only a pool whose
+    matching entries are all PAUSED is clean — treating "some entry is PAUSED"
+    as success would report this pause as landed while a runtime keeps running.
+    """
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "rebuilt-team")
+    pool = [
+        SimpleNamespace(
+            current_session_id="sess-1",
+            state=RuntimeState.PAUSED,
+            team_name="parked-team",
+        ),
+        SimpleNamespace(
+            current_session_id="sess-1",
+            state=RuntimeState.RUNNING,
+            team_name="live-team",
+        ),
+    ]
+    pause_calls: list[str] = []
+
+    async def fake_pause_agent_team(*, team_name: str, session_id: str) -> bool:
+        pause_calls.append(team_name)
+        return False
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.list_active_teams",
+        AsyncMock(side_effect=lambda: list(pool)),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.pause_agent_team",
+        fake_pause_agent_team,
+    )
+    monkeypatch.setattr(manager, "_cleanup_runtime_locals", AsyncMock())
+
+    paused = await manager.pause_session_runtime("sess-1", reason="stop: ")
+
+    assert paused is False
+    assert pause_calls == ["rebuilt-team"]
+
+
+@pytest.mark.asyncio
 async def test_pause_session_runtime_reports_failure_when_pool_unlistable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
