@@ -107,7 +107,11 @@ def _watch_owner(scope: dict[str, Any], identity: str, state: dict[str, Any]) ->
         return
 
     def finished(_task: asyncio.Task) -> None:
-        if scope["calls"].get(identity) is state:
+        cancelled = _task.cancelled() or _task.cancelling() > 0
+        failed = not cancelled and _task.exception() is not None
+        # A streaming producer can finish normally before its consumer emits
+        # STREAM_COMPLETED in another task. Only abnormal task exit is terminal.
+        if (cancelled or failed) and scope["calls"].get(identity) is state:
             cleanup = asyncio.create_task(_finish_orphan(scope, identity, state))
             _CLEANUPS.add(cleanup)
             cleanup.add_done_callback(_CLEANUPS.discard)
