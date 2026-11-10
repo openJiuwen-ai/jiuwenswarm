@@ -1414,9 +1414,15 @@ async def test_team_skill_evolve_approval_passes_selected_record_ids(monkeypatch
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.find_team_skill_rail",
         lambda request_id, channel_id=None: rail,
     )
+    reload_calls: list[str | None] = []
+
+    async def _fake_reload(session_id=None):
+        reload_calls.append(session_id)
+        return 0
+
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.refresh_team_shared_skill_links_across_managers",
-        lambda session_id: None,
+        "jiuwenswarm.agents.harness.team.reload_team_skill_views_across_managers",
+        _fake_reload,
     )
 
     handled = await adapter.handle_team_skill_evolve_approval(
@@ -1433,6 +1439,7 @@ async def test_team_skill_evolve_approval_passes_selected_record_ids(monkeypatch
     assert handled is True
     assert rail.approved == [("team_skill_evolve_req1", ["team-rec-1", "team-rec-3"])]
     assert rail.rejected == []
+    assert reload_calls == ["sess-1"]
 
 
 @pytest.mark.asyncio
