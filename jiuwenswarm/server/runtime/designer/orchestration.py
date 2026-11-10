@@ -909,6 +909,62 @@ _JSON_RETRY_RULE = (
     "no reasoning, no markdown fences, and every newline or quote inside a string escaped."
 )
 
+_SCENE_DECLARATION_RETRY_RULE = (
+    "\nThe previous reply placed shots in settings that scenes[] never declared with a "
+    "real place name. Declare every distinct setting in scenes[] (id, a 2-6 word place "
+    "name, description) and make every shot.setting_id match one of those ids."
+)
+
+
+def _execution_graph_named_scenes(
+    parsed: dict[str, Any], analysis: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Scenes known after the execution-graph reply, keyed by id.
+
+    The Director may rename or add places; its entries win over the earlier
+    analysis. A name equal to the id carries no place information — prefer the
+    description, then the name the earlier analysis already had (mirrors
+    ``_normalize_llm_analysis``).
+    """
+    from jiuwenswarm.server.runtime.designer.script_analysis import _scene_name_is_placeholder
+
+    merged: dict[str, dict[str, Any]] = {}
+    for source in (analysis.get("scenes"), parsed.get("scenes")):
+        if not isinstance(source, list):
+            continue
+        for i, sc in enumerate(source, start=1):
+            if not isinstance(sc, dict):
+                continue
+            sid = str(sc.get("id") or f"set_{i}").strip()
+            name = str(sc.get("name") or "").strip()
+            desc = str(sc.get("description") or "").strip()
+            if not name or _scene_name_is_placeholder(name, sid):
+                name = desc
+            existing = merged.get(sid)
+            if not name and existing and str(existing.get("name") or "").strip():
+                name = str(existing["name"])
+            entry = dict(sc)
+            entry["id"] = sid
+            entry["name"] = name
+            if desc:
+                entry["description"] = desc
+            merged[sid] = entry
+    return list(merged.values())
+
+
+def _shots_without_named_scene(parsed: dict[str, Any], scenes: list[dict[str, Any]]) -> list[str]:
+    """Sorted setting_ids the shots cite without a named scene; empty when all valid."""
+    named = {str(sc.get("id") or "") for sc in scenes if str(sc.get("name") or "").strip()}
+    missing: list[str] = []
+    shots = [s for s in (parsed.get("clips") or []) if isinstance(s, dict)]
+    for i, sh in enumerate(shots, start=1):
+        sid = str(sh.get("setting_id") or "").strip()
+        if not sid:
+            sid = next(iter(named)) if len(named) == 1 else f"set_{i}"
+        if sid not in named and sid not in missing:
+            missing.append(sid)
+    return sorted(missing)
+
 
 async def _model_json_object(
     *, phase: str, prompt: str, system: str, max_tokens: int
@@ -1858,7 +1914,10 @@ class Director:
                 "List that id in on_screen wherever they are visible. "
                 "NOT every character in every scene. "
                 + CLOTHING_PARTS_RULE
-                + "MUST include shots[] grouped by setting_id (distinct places). "
+                + "MUST include scenes[] — one entry per distinct setting_id: id, a "
+                "2-6 word place name, and a description. Every shot's setting_id "
+                "must appear in scenes[]. "
+                "MUST include shots[] grouped by setting_id (distinct places). "
                 "Shots are consecutive TIME windows that concatenate to the film. "
                 "Each shot.action is THAT window only — do not paste the user prompt "
                 "into every clip. Preserve every distinct narrative/content shot from the "
@@ -1892,6 +1951,7 @@ class Director:
                 '"characters":[{"id":"char_1","name":"...","description":"...",'
                 '"clothing_parts":{"top":"...","bottom":"...","outerwear":"","footwear":"...",'
                 '"accessories":"","outfit":""}}],'
+                '"scenes":[{"id":"set_1","name":"2-6 word place label","description":"..."}],'
                 '"clips":[{"clip_index":1,"timeline":"<copy this shot timeline from the approved brief>",'
                 '"action":"...",'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
@@ -1903,37 +1963,60 @@ class Director:
             )
 
             shot_ceiling = infer_shot_budget(user_prompt, analysis)
-            parsed = await _model_json_object(
-                phase="execution graph",
-                prompt=json.dumps(
-                    {
-                        "user_prompt": user_prompt,
-                        "approved_brief": approved_brief,
-                        "approved_storyboard": approved_sb,
-                        "style_lock": analysis.get("style_lock"),
-                        "characters": characters,
-                        "current_shots": shots,
-                        "target_clip_count": shot_ceiling or analysis.get("target_clip_count"),
-                        "rule": (
-                            "Keep every distinct shot from the approved storyboard. "
-                            "Do not drop shots to fit a fixed count. Explicit N-shot / "
-                            "N分镜 from the user is the only ceiling. All character spec "
-                            "cards before clips; compose first clip per setting_id; "
-                            "edit_prior only within the same setting_id. Per-shot "
-                            "on_screen is authoritative for who appears — not every "
-                            "character spec in every clip."
-                        ),
-                    },
-                    ensure_ascii=False,
-                ),
-                system=system,
-                max_tokens=65536,
+            graph_prompt = json.dumps(
+                {
+                    "user_prompt": user_prompt,
+                    "approved_brief": approved_brief,
+                    "approved_storyboard": approved_sb,
+                    "style_lock": analysis.get("style_lock"),
+                    "characters": characters,
+                    "current_shots": shots,
+                    "target_clip_count": shot_ceiling or analysis.get("target_clip_count"),
+                    "rule": (
+                        "Keep every distinct shot from the approved storyboard. "
+                        "Do not drop shots to fit a fixed count. Explicit N-shot / "
+                        "N分镜 from the user is the only ceiling. All character spec "
+                        "cards before clips; compose first clip per setting_id; "
+                        "edit_prior only within the same setting_id. Per-shot "
+                        "on_screen is authoritative for who appears — not every "
+                        "character spec in every clip."
+                    ),
+                },
+                ensure_ascii=False,
             )
-            if parsed is None:
+            # Fail closed on undeclared settings: a shot in a scene-less setting
+            # has no named place to build the scene plate from, so re-ask once
+            # before failing the chain (mirrors script analysis strictness).
+            parsed: dict[str, Any] | None = None
+            for scene_attempt in (1, 2):
+                parsed = await _model_json_object(
+                    phase="execution graph",
+                    prompt=graph_prompt,
+                    system=system if scene_attempt == 1 else system + _SCENE_DECLARATION_RETRY_RULE,
+                    max_tokens=65536,
+                )
+                if parsed is None:
+                    raise DesignerLlmError(
+                        "Chat model did not return valid execution graph JSON.",
+                        code=LLM_API_ERROR,
+                    )
+                named_scenes = _execution_graph_named_scenes(parsed, analysis)
+                undeclared = _shots_without_named_scene(parsed, named_scenes)
+                if not undeclared:
+                    break
+                logger.info(
+                    "Director execution graph placed shots in undeclared settings %s (attempt %d)",
+                    ", ".join(undeclared),
+                    scene_attempt,
+                )
+            else:
                 raise DesignerLlmError(
-                    "Chat model did not return valid execution graph JSON.",
+                    "Chat model placed shots in settings it never declared as named "
+                    "scenes; please try again.",
                     code=LLM_API_ERROR,
                 )
+            if named_scenes:
+                analysis["scenes"] = named_scenes
             llm_chars = parsed.get("characters") if isinstance(parsed.get("characters"), list) else []
             cleaned_chars: list[dict[str, Any]] = []
             for i, raw in enumerate(llm_chars, start=1):
