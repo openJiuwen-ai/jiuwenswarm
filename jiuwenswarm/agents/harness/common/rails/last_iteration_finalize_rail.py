@@ -62,16 +62,20 @@ class LastIterationFinalizeRail(DeepAgentRail):
             if not tool_calls:
                 return
 
+        # ``max_iterations_reached`` 是给下游 (relay-claw) 分类用的固定标记。
+        # 它必须出现在 output 文本里：finish_reason 在流式层会被丢弃，
+        # 只有 output 能一路带到下游；relay-claw 靠匹配该标记归类 max_iterations。
         if self._language == "en":
             output = (
-                f"The maximum number of reasoning iterations "
-                f"({iteration}/{max_iterations}) was reached and the task did "
-                "not complete.\nNarrow the task scope or provide the missing data "
-                "source, then retry."
+                "max_iterations_reached: The maximum number of reasoning "
+                f"iterations ({iteration}/{max_iterations}) was reached and the "
+                "task did not complete.\nNarrow the task scope or provide the "
+                "missing data source, then retry."
             )
         else:
             output = (
-                f"已达到最大思考轮数（{iteration}/{max_iterations}），任务未完成。\n"
+                f"max_iterations_reached：已达到最大思考轮数"
+                f"（{iteration}/{max_iterations}），任务未完成。\n"
                 "建议：缩小任务范围，或补充数据源后重试。"
             )
 
