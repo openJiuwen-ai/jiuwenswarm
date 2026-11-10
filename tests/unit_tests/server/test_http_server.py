@@ -23,17 +23,23 @@ if _KV_CACHE_MOD not in sys.modules:
         sys.modules[_KV_CACHE_MOD] = _stub
 
 import httpx
+from fastapi import Request
 
 from jiuwenswarm.common.log_context import NO_SESSION_ID, current_log_session_id
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server.agent_http_routes import _event_frames, build_http_app
+from jiuwenswarm.server.agent_http_routes import (
+    _context_from_mapping,
+    _context_from_runtime,
+    _event_frames,
+    build_http_app,
+)
 from jiuwenswarm.server.agent_http_server import resolve_http_server_settings
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.http_chat import handle_http_chat
 from jiuwenswarm.server.http_invoke import invoke_stream
-from jiuwenswarm.server.transports.http_sink import SSESink
+from jiuwenswarm.server.transports.http_sink import SSESink, UnaryHTTPSink
 
 _HTTP_DIR = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server"
 
@@ -217,6 +223,91 @@ async def test_chat_keeps_the_user_id_from_the_body(monkeypatch) -> None:
         )
     assert response.status_code == 200
     assert seen == ["alice"]
+
+
+def test_missing_http_request_ids_get_unique_defaults() -> None:
+    """带头或正文 id 缺省时，每条请求都要拿到自己的 request_id，不再是常量。"""
+    contexts = [
+        _context_from_mapping(
+            AppServices(),
+            {"session_id": "sess-dup", "params": {}},
+            req_method=ReqMethod.CHAT_SEND,
+            sink=UnaryHTTPSink(),
+            is_stream=False,
+        )
+        for _ in range(2)
+    ]
+    assert contexts[0].request.channel_id == "http"
+    assert contexts[0].request.request_id.startswith("http-")
+    assert contexts[1].request.request_id.startswith("http-")
+    assert contexts[0].request.request_id != contexts[1].request.request_id
+
+    scopes = [
+        _context_from_runtime(
+            AppServices(),
+            Request({"type": "http", "method": "POST", "headers": []}),
+            {},
+            req_method=ReqMethod.CHAT_SEND,
+            sink=UnaryHTTPSink(),
+            is_stream=False,
+        )
+        for _ in range(2)
+    ]
+    assert scopes[0].request.request_id.startswith("http-")
+    assert scopes[0].request.request_id != scopes[1].request.request_id
+
+    explicit = _context_from_mapping(
+        AppServices(),
+        {"request_id": "client-1", "params": {}},
+        req_method=ReqMethod.CHAT_SEND,
+        sink=UnaryHTTPSink(),
+        is_stream=False,
+    )
+    assert explicit.request.request_id == "client-1"
+
+
+@pytest.mark.asyncio
+async def test_overlapping_default_http_chats_register_separate_push_routes(
+    monkeypatch,
+) -> None:
+    """同会话两条不带 id 的并发聊天要能同时在途：请求级 push 路由不再互相撞键。"""
+    seen: list[str] = []
+    pair = asyncio.Barrier(2)
+
+    async def _inner(ctx: RequestContext) -> None:
+        seen.append(ctx.request.request_id)
+        # 两条请求都要到达这里才算同时在途；缺省 id 撞键时第二条在登记
+        # push 路由那一步就失败，超时让测试快速变红而不是挂死。
+        await asyncio.wait_for(pair.wait(), timeout=10)
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={"echo": True},
+            )
+        )
+
+    monkeypatch.setattr("jiuwenswarm.server.http_chat._handle_http_chat", _inner)
+    app = build_http_app(AppServices())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        responses = await asyncio.gather(
+            client.post(
+                "/api/v1/chat",
+                json={"session_id": "sess-same", "params": {"query": "a"}},
+            ),
+            client.post(
+                "/api/v1/chat",
+                json={"session_id": "sess-same", "params": {"query": "b"}},
+            ),
+        )
+    for response in responses:
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+    assert all(request_id.startswith("http-") for request_id in seen)
 
 
 @pytest.mark.asyncio

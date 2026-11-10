@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import sys
+import uuid
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -405,6 +406,11 @@ def _header(request: Request, name: str, default: str) -> str:
     return text or default
 
 
+def _default_request_id() -> str:
+    """缺省 request_id 一次一个：同会话并发聊天不再登记同一条 push 路由。"""
+    return f"http-{uuid.uuid4().hex[:12]}"
+
+
 def _client_json(body: dict[str, Any]) -> dict[str, Any]:
     """收成 runtime 客户端认识的 ``{ok, data, error}``。"""
     ok = bool(body.get("ok"))
@@ -503,7 +509,7 @@ def _context_from_runtime(
         session_id = str(body.get("session_id") or "").strip()
     user_id, metadata = _rebuild_identity_from_headers(request)
     agent_request = AgentRequest(
-        request_id=_header(request, "x-request-id", "http"),
+        request_id=_header(request, "x-request-id", "") or _default_request_id(),
         channel_id=_header(request, "x-channel-id", "http"),
         session_id=session_id or None,
         req_method=req_method,
@@ -557,7 +563,7 @@ def _context_from_mapping(
 ) -> RequestContext:
     params = body.get("params")
     agent_request = AgentRequest(
-        request_id=str(body.get("request_id") or "http"),
+        request_id=str(body.get("request_id") or "") or _default_request_id(),
         channel_id=str(body.get("channel_id") or "http"),
         session_id=str(body.get("session_id") or "") or None,
         req_method=req_method,
