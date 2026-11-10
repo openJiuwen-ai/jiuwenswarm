@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     normalize_auto_permission_options,
