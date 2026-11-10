@@ -15,6 +15,7 @@ from typing import Any
 from filelock import FileLock
 from openjiuwen.symphony.flow import FlowStore, RecipeEvidence
 
+from jiuwenswarm.server.runtime.skill.skillpack import SkillPackDefinition, load_skillpack
 from jiuwenswarm.server.runtime.skill.skill_type import resolve_skillpack_member_type
 
 
@@ -125,6 +126,55 @@ def candidate_members(recipe: Any) -> list[str]:
     """Return canonical member IDs from a persisted Core recipe."""
     nodes = recipe.combination_structure.get("nodes")
     return list(nodes) if isinstance(nodes, dict) else []
+
+
+def _installed_chain_structure(definition: SkillPackDefinition) -> tuple[tuple[str, str, str], ...]:
+    """Recognize only a complete, unambiguous installed linear workflow."""
+    if definition.workflow_graph is None:
+        return ()
+    graph = definition.workflow_graph["graph"]
+    nodes = graph["nodes"]
+    skills = {node_id: node["metadata"]["skill"] for node_id, node in nodes.items()}
+    if len(skills) != len(definition.members) or set(skills.values()) != set(definition.members):
+        return ()
+    edges = tuple(sorted(
+        (skills[edge["source"]], skills[edge["target"]], edge["relation"])
+        for edge in graph["edges"]
+    ))
+    # Match the declared execution order as well as the graph. Missing edges,
+    # duplicate mappings, branches, cycles and contradictory order are not a
+    # reliable basis for suppressing a new creation offer.
+    expected = tuple(sorted(
+        (source, target, "can_feed")
+        for source, target in zip(definition.members, definition.members[1:])
+    ))
+    return edges if edges == expected else ()
+
+
+def installed_candidate_structures(skills_root: Path) -> set[tuple[tuple[str, str, str], ...]]:
+    """Read current inventory for automatic-offer deduplication, not approval.
+
+    Core identifies a candidate by its directed structure, not its generated
+    title or description. Read installed roots so older installations and
+    later sessions work without migrating session-bound confirmation keys.
+    Disabled Packs still exist; do not recreate them behind the user's back.
+    """
+    structures: set[tuple[tuple[str, str, str], ...]] = set()
+    if not skills_root.is_dir():
+        return structures
+    for directory in skills_root.iterdir():
+        if directory.name.startswith((".", "_")) or directory.is_symlink() or not directory.is_dir():
+            continue
+        if (directory / "SKILL.md").is_symlink():
+            continue
+        try:
+            definition = load_skillpack(directory, expected_name=directory.name)
+        except (OSError, ValueError):
+            continue
+        structure = _installed_chain_structure(definition)
+        if structure:
+            structures.add(structure)
+    return structures
 
 
 @dataclass(frozen=True)
