@@ -1,10 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Background pool of sandboxes parked before filesystem setup.
+"""Background pool of sandboxes parked before the request filesystem is applied.
 
-Network, cgroup and seccomp follow the server default policy. Checkout
-bind-mounts the request filesystem and only then drops privileges and
-applies Landlock. ``JIUWENBOX_WARM_POOL`` is the number of parked
-sandboxes. ``0`` turns the pool off. The default is 8.
+Network, cgroup, seccomp and the server default filesystem are applied when
+a slot is parked. Checkout bind-mounts any additional request filesystem and
+only then drops privileges and applies Landlock. ``JIUWENBOX_WARM_POOL`` is
+the number of parked sandboxes. ``0`` turns the pool off. The default is 8.
 """
 
 from __future__ import annotations
@@ -18,12 +18,7 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 
-from jiuwenbox.models.policy import (
-    BindMount,
-    FilesystemPolicy,
-    ProcessPolicy,
-    SecurityPolicy,
-)
+from jiuwenbox.models.policy import ProcessPolicy, SecurityPolicy
 from jiuwenbox.supervisor.bwrap import BwrapConfig
 
 if TYPE_CHECKING:
@@ -33,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 ENV_WARM_POOL = "JIUWENBOX_WARM_POOL"
 DEFAULT_WARM_POOL_SIZE = 8
-_INTERPRETER_PATHS = ("/usr", "/lib", "/lib64", "/bin", "/sbin")
 
 
 def warm_pool_size() -> int:
@@ -84,7 +78,8 @@ def warm_pool_compatible(template: SecurityPolicy, request: SecurityPolicy) -> b
     checkout. The slot's user namespace already identity-maps every id in
     ``0 .. 65535``, so ``setuid`` to the resolved user succeeds.
     Landlock must stay enabled: the parked process already mounted the
-    interpreter paths, and without Landlock those paths would stay visible.
+    server default filesystem, and without Landlock those paths would stay
+    visible.
     """
     return not warm_pool_mismatches(template, request)
 
@@ -119,16 +114,11 @@ def _brief(value: object) -> str:
 def boot_policy(template: SecurityPolicy) -> SecurityPolicy:
     """Policy used to start a parked process.
 
-    Only the interpreter directories are mounted. The process stays uid 0
-    inside an identity user-id map until checkout setuid/setgid.
+    The slot keeps the filesystem of the server default policy, so every
+    bind mount loaded with jiuwenbox is present before checkout. The process
+    stays uid 0 inside an identity user-id map until checkout setuid/setgid.
     """
-    binds = [
-        BindMount(host_path=path, sandbox_path=path, mode="ro")
-        for path in _INTERPRETER_PATHS
-        if os.path.isdir(path)
-    ]
     return template.model_copy(deep=True, update={
-        "filesystem_policy": FilesystemPolicy(bind_mounts=binds),
         "process": ProcessPolicy(run_as_user="0", run_as_group="0"),
     })
 

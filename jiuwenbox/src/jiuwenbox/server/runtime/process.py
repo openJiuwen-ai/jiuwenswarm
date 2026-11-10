@@ -2370,6 +2370,20 @@ class ProcessRuntime(RuntimeAdapter):
         self._teardown_cgroup(slot_id)
         self._cleanup_sandbox_artifacts(slot_id, netns_name)
 
+    def attach_warm_pool(self, pool: Any) -> None:
+        """Install ``pool`` without parking real sandboxes. Tests use this."""
+        self._warm_pool = pool
+
+    async def claim_warm_sandbox(
+        self,
+        sandbox_id: str,
+        policy: SecurityPolicy,
+        policy_path: Path,
+        env: dict[str, str] | None = None,
+    ) -> int | None:
+        """Adopt a parked sandbox, or return None when create stays on the cold path."""
+        return await self._try_warm_adopt(sandbox_id, policy, policy_path, env)
+
     async def _try_warm_adopt(
         self,
         sandbox_id: str,
