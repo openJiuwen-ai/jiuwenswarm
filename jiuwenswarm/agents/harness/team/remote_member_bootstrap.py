@@ -2390,6 +2390,8 @@ async def _initialize_team_agent_db(
 
 
 # Teams already covered by the one-time enterprise known-boundary note (KD7).
+# Per-process (deliberate): this gate runs on the teammate process while the
+# leader-side note lives in swarm.assembly's own set — each side logs once.
 _ENTERPRISE_BOUNDARY_NOTED: set[str] = set()
 
 

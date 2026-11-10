@@ -584,6 +584,9 @@ def enrich_team_spec_for_swarm(
 
 
 # Teams already covered by the one-time enterprise known-boundary note (KD7).
+# Per-process (deliberate): the leader and a remote teammate are separate
+# processes, so each logs the note once on its own side; sharing state across
+# processes is out of scope for an info-level note.
 _ENTERPRISE_BOUNDARY_NOTED: set[str] = set()
 
 
