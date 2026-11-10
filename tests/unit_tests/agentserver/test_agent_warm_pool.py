@@ -213,6 +213,7 @@ async def test_code_prewarm_uses_same_manager_cache_identity_as_code_chat(
             "mode": "code",
             "project_dir": key.project_dir,
             "sub_mode": "normal",
+            "session_id": claim.session_id,
         }
     ]
     await pool.end_foreground()
@@ -242,6 +243,7 @@ async def test_flash_work_prewarm_uses_flash_adapter_and_business_mode(
             "mode": "flash",
             "project_dir": None,
             "sub_mode": None,
+            "session_id": pool._slots[flash_key].session_id,
         }
     ]
     assert agent.prepare_calls == [

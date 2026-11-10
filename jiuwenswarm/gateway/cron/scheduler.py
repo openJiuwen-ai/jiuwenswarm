@@ -32,6 +32,7 @@ from jiuwenswarm.gateway.cron.models import (
 )
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from jiuwenswarm.common.e2a.constants import E2A_INTERNAL_CANCEL_SOURCE_KEY, E2A_CANCEL_SOURCE_CRON_COMPLETE
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
@@ -2314,6 +2315,20 @@ class CronSchedulerService:
                 sid,
             )
             return
+        try:
+            cleanup_env = e2a_from_agent_fields(
+                request_id=f"cron-cleanup-{sid}",
+                channel_id="__cron__",
+                session_id=sid,
+                req_method=ReqMethod.CHAT_CANCEL,
+                params={"intent": "cleanup"},
+                is_stream=False,
+                timestamp=self._now_fn(),
+            )
+            cleanup_env.channel_context[E2A_INTERNAL_CANCEL_SOURCE_KEY] = E2A_CANCEL_SOURCE_CRON_COMPLETE
+            await self._agent_client.send_request(cleanup_env)
+        except Exception:  # noqa: BLE001
+            logger.warning("[Cron] agent session cleanup failed session=%s", sid, exc_info=True)
         release = getattr(self._agent_client, "release_session", None)
         if not callable(release):
             return

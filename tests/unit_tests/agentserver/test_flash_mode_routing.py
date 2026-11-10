@@ -517,6 +517,7 @@ async def test_session_create_prewarm_uses_flash_factory_and_business_mode():
         project_dir=None,
         sub_mode=None,
         request=request,
+        session_id="flash-prewarm-session",
     )
     agent.prepare_session.assert_awaited_once_with(
         session_id="flash-prewarm-session",

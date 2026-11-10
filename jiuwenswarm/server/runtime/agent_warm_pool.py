@@ -565,6 +565,7 @@ class AgentWarmPool:
                         mode=key.agent_mode,
                         project_dir=key.project_dir or None,
                         sub_mode=key.agent_sub_mode,
+                        session_id=session_id,
                     )
                     if agent is None:
                         raise RuntimeError("agent creation returned None")

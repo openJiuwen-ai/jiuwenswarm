@@ -1280,6 +1280,7 @@ class TenantAgentPool:
                     project_dir=project_dir,
                     sub_mode=None,
                     request=request,
+                    session_id=session_id,
                 )
                 if agent is None:
                     return
