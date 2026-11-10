@@ -14,15 +14,21 @@ from jiuwenswarm.server.runtime.session import session_history
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("jiuwen", [False, True])
 async def test_auto_memory_uses_live_session_adapter(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    jiuwen,
 ) -> None:
     child_adapter = object()
     extraction_started = asyncio.Event()
     captured: dict[str, object] = {}
 
     class RootAdapter:
+        @staticmethod
+        def uses_jiuwen_coding_memory():
+            return jiuwen
+
         @staticmethod
         def _get_cached_session_adapter(session_id: str):
             assert session_id == "sess-auto-memory"

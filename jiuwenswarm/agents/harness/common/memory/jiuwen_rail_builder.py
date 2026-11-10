@@ -36,7 +36,7 @@ Config shape (config.yaml)::
           api_key: ""                       # http 模式可选 Bearer
           user_id: "__default__"            # 数据隔离标识
           scope_id: "__default__"
-          session_id: ""                    # 空 = 跨会话共享（AgentMemory 契约）；显式传值按会话隔离
+          session_id: ""                    # Passed through; not the chat session ID
           agent_id: "jiuwenswarm"           # AgentMemory scope 的 agent 轴
           space: ""                         # 只认显式传入
           identity_org: "local"             # http 模式认证身份 org
@@ -51,6 +51,7 @@ import hashlib
 import json
 import logging
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -195,15 +196,44 @@ def _build_security_provider(org: str, user: str) -> Any:
     return lambda: context
 
 
+def _sdk_inline_config(
+    config: dict[str, Any], *, shared_document_root: bool,
+) -> dict[str, Any]:
+    """Prepare SDK overrides without mutating the host's configuration."""
+    inline = deepcopy(_custom_sdk_config_dict(config))
+    if shared_document_root:
+        # Work and Code share one document root, including USER.md.
+        node = inline
+        for key in ("markdown_store", "default", "params"):
+            value = node.get(key)
+            if value is None:
+                value = {}
+            elif key == "default" and isinstance(value, str):
+                value = {"target": value}
+            if not isinstance(value, dict):
+                raise ValueError(f"SDK markdown_store configuration '{key}' must be a mapping")
+            node[key] = value
+            node = value
+        node.setdefault("root", "")
+    return inline
+
+
 def build_jiuwen_memory_rail(
     config: Optional[Dict[str, Any]] = None,
     agent_name: Optional[str] = None,
+    *,
+    scene: str = "agent",
+    project: str = "default",
+    shared_document_root: bool = False,
 ) -> Optional[Any]:
     """Build a JiuwenMemoryRail + AgentMemoryMemoryProvider from config.
 
     ``agent_name``（当前运行 agent 的唯一 name）优先作为 scope 的 agent 轴——
     使记忆按 agent 隔离，而非所有 agent 共享 config 里固定的 ``agent_id``。
     缺省回落 config 的 ``agent_id``，再缺省固定 ``"jiuwenswarm"``。
+    ``shared_document_root=True`` supplies the common SDK document root without
+    overriding agent/session identity. ``scene="code"`` selects the Coding Rail
+    with a host-bound project.
 
     Returns None on any failure (missing packages / provider unavailable /
     explicit config file missing) — callers treat None as "memory disabled",
@@ -211,6 +241,8 @@ def build_jiuwen_memory_rail(
     """
     try:
         from openjiuwen.harness.rails import JiuwenMemoryRail
+        if scene == "code":
+            from openjiuwen.harness.rails import JiuwenMemoryCodingRail
     except Exception as exc:
         logger.warning("[JiuwenRailBuilder] JiuwenMemoryRail import failed: %s", exc)
         return None
@@ -226,11 +258,12 @@ def build_jiuwen_memory_rail(
     mode = get_jiuwen_builtin_mode(config)
     user_id = str(j.get("user_id") or _DEFAULT_USER)
     scope_id = str(j.get("scope_id") or _DEFAULT_SCOPE)
-    # session_id 缺省 ""：AgentMemory scope 语义——留空 = 跨会话共享，显式传值才隔离。
+    # Preserve the configured memory session; do not bind the chat session ID.
     session_id = str(j.get("session_id") if j.get("session_id") is not None else "")
     # agent_id：优先当前运行 agent 的 name（唯一标识，作 scope.agent 轴）；缺省
     # 回落 config agent_id（历史语义 "jiuwenswarm"），再缺省固定 "jiuwenswarm"。
     agent_id = str(agent_name or j.get("agent_id") or "jiuwenswarm")
+    provider_options = {"scene": "code", "project": project} if scene == "code" else {}
 
     try:
         if mode == "sdk":
@@ -242,7 +275,7 @@ def build_jiuwen_memory_rail(
             # 时 provider.is_available() 为 False，rail 静默降级（memory 停用）。
             # 身份由本装配层产出（composition root），不从业务 user_id/scope_id 自述。
             security_provider = _build_security_provider(scope_id, user_id)
-            inline = _custom_sdk_config_dict(j)
+            inline = _sdk_inline_config(j, shared_document_root=shared_document_root)
             if inline:
                 final_dict = _inject_sdk_creds_and_root(inline, config)
                 provider = AgentMemoryMemoryProvider(
@@ -251,6 +284,7 @@ def build_jiuwen_memory_rail(
                     agent_id=agent_id,
                     space=str(j.get("space") or ""),
                     security_provider=security_provider,
+                    **provider_options,
                 )
                 logger.info(
                     "[JiuwenRailBuilder] using inline kernel config dict from config.yaml"
@@ -262,6 +296,7 @@ def build_jiuwen_memory_rail(
                     agent_id=agent_id,
                     space=str(j.get("space") or ""),
                     security_provider=security_provider,
+                    **provider_options,
                 )
                 config_desc = "provider-builtin-agent-default"
         else:
@@ -277,19 +312,24 @@ def build_jiuwen_memory_rail(
                 space=str(j.get("space") or ""),
                 identity_org=str(j.get("identity_org") or "local"),
                 identity_user=str(j.get("identity_user") or "developer"),
+                **provider_options,
             )
         if not provider.is_available():
             logger.warning(
                 "[JiuwenRailBuilder] AgentMemory provider unavailable (no base_url)"
             )
             return None
-        rail = JiuwenMemoryRail(
+        rail_class = JiuwenMemoryCodingRail if scene == "code" else JiuwenMemoryRail
+        rail_options = ({} if scene == "code" else {
+            "session_end_extract": bool(j.get("session_end_extract", False))
+        })
+        rail = rail_class(
             provider,
             user_id=user_id,
             scope_id=scope_id,
             agent_id=agent_id,
             session_id=session_id,
-            session_end_extract=bool(j.get("session_end_extract", False)),
+            **rail_options,
         )
     except Exception as exc:
         logger.warning("[JiuwenRailBuilder] build JiuwenMemoryRail failed: %s", exc)
@@ -308,7 +348,11 @@ def build_jiuwen_memory_rail(
     return rail
 
 
-def jiuwen_builtin_config_fingerprint(config: Optional[Dict[str, Any]] = None) -> str:
+def jiuwen_builtin_config_fingerprint(
+    config: dict[str, Any] | None = None,
+    *,
+    agent_name: str | None = None,
+) -> str:
     """Stable fingerprint of the jiuwen builtin config for rail rebuild checks.
 
     Mirrors _embedding_config_fingerprint's contract: equal configs must
@@ -319,6 +363,7 @@ def jiuwen_builtin_config_fingerprint(config: Optional[Dict[str, Any]] = None) -
     时固定 ``builtin-default`` 标记——provider 内置默认随 adapter 代码更新，
     不随用户配置变化）；http 指纹 = base_url/api_key hash/identity 轴。两模式
     共享的 scope 轴（user/scope/session/agent/space）与 session_end_extract 恒参与。
+    ``agent_name`` follows the builder priority so runtime identity changes rebuild rails.
     """
     j = get_jiuwen_builtin_config(config)
     mode = get_jiuwen_builtin_mode(config)
@@ -328,7 +373,7 @@ def jiuwen_builtin_config_fingerprint(config: Optional[Dict[str, Any]] = None) -
         str(j.get("user_id") or _DEFAULT_USER),
         str(j.get("scope_id") or _DEFAULT_SCOPE),
         str(j.get("session_id") if j.get("session_id") is not None else ""),
-        str(j.get("agent_id") or "jiuwenswarm"),
+        str(agent_name or j.get("agent_id") or "jiuwenswarm"),
         str(j.get("space") or ""),
         str(bool(j.get("session_end_extract", False))),
     ]
