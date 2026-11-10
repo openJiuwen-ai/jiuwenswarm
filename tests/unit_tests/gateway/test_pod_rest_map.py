@@ -150,6 +150,30 @@ def test_agent_templates_list_uses_the_dedicated_url(monkeypatch: pytest.MonkeyP
     assert sent.query["session_id"] == "sess-1"
 
 
+def test_personal_agent_groups_list_has_no_dedicated_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    with pytest.raises(HttpMethodNotHandled, match="还没有 HTTP 处理"):
+        assemble_rest_request(
+            _envelope("agent_groups.list"),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+def test_agent_groups_list_uses_the_dedicated_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    sent = assemble_rest_request(
+        _envelope("agent_groups.list"),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert sent.verb == "GET"
+    assert sent.url == "http://10.0.0.8:8766/api/v1/agent-groups"
+    assert sent.used_rpc_fallback is False
+    assert sent.query is not None
+    assert sent.query["session_id"] == "sess-1"
+
+
 def test_skills_list_uses_the_dedicated_url() -> None:
     sent = assemble_rest_request(
         _envelope("skills.list"),
@@ -204,6 +228,55 @@ def test_project_cron_binding_and_lifecycle_use_dedicated_urls() -> None:
     text = dispatch.read_text(encoding="utf-8")
     assert "ReqMethod.PROJECT_CRON_RESOLVE_BINDING: handle_gateway_adapter" in text
     assert "ReqMethod.PROJECT_LIFECYCLE: handle_gateway_adapter" in text
+
+
+def test_project_lifecycle_events_feed_uses_fixed_path_without_project_id() -> None:
+    """Gateway ensure_lifecycle_watch 轮询只带 events=True，不能走 {project_id} 路径。"""
+    from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
+        RestAssemblyError,
+        declared_http_routes,
+    )
+
+    feed = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="project.lifecycle",
+            params={"events": True},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    inventory = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="project.lifecycle",
+            params={"inventory": True},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert feed.url == "http://10.0.0.8:8766/api/v1/projects/actions/lifecycle"
+    assert feed.json_body == {"events": True}
+    assert inventory.url == "http://10.0.0.8:8766/api/v1/projects/actions/lifecycle"
+    assert inventory.json_body == {"inventory": True}
+
+    with pytest.raises(RestAssemblyError, match="project_id"):
+        assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="project.lifecycle",
+                params={},
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+
+    routes = declared_http_routes()
+    feed_idx = routes.index(("project.lifecycle", "POST", "/projects/actions/lifecycle"))
+    project_idx = routes.index(
+        ("project.lifecycle", "POST", "/projects/{project_id}/lifecycle")
+    )
+    assert feed_idx < project_idx
 
 
 def test_session_pin_uses_the_dedicated_url() -> None:

@@ -9,6 +9,8 @@ import io
 import json
 from pathlib import Path
 
+from jiuwenswarm.common.utils import get_infra_data_dir
+
 
 def _decrypt_snapshot(encrypted: str) -> bytes:
     """Unprotect the installer's DPAPI snapshot in the same Windows account."""
@@ -51,9 +53,8 @@ def restore_legacy_upgrade_config() -> None:
     changes or any unexpected uninstall behavior leave recovery material intact.
     """
     import portalocker
-    from jiuwenswarm.common.utils import get_user_workspace_dir
 
-    runtime = get_user_workspace_dir() / "runtime"
+    runtime = get_infra_data_dir() / "runtime"
     pending = runtime / "upgrade-config" / "pending.json"
     if not pending.is_file():
         return

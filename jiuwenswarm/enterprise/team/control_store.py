@@ -25,7 +25,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from agent_gateway.enterprise.team.quota_policy import OwnerIdentity
+from jiuwenswarm.common.utils import get_infra_data_dir
 
 # ---------------------------------------------------------------------------
 # Status vocab (kept as plain strings so wire payloads need no mapping)
@@ -94,27 +95,6 @@ class TeamControlStoreError(ValueError):
 # ---------------------------------------------------------------------------
 # Records
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class OwnerIdentity:
-    """Routing identity of the user who created the team.
-
-    ``group_id`` / ``bot_id`` are the enterprise routing scope; together with
-    ``user_id`` they are what the gateway derives ``service_id`` / ``agent_id`` /
-    ``workspace_key`` from. Personal edition leaves group/bot empty.
-    """
-
-    user_id: str = ""
-    group_id: str = ""
-    bot_id: str = ""
-
-    def as_dict(self) -> dict[str, str]:
-        return {"user_id": self.user_id, "group_id": self.group_id, "bot_id": self.bot_id}
-
-    def same_scope(self, other: "OwnerIdentity") -> bool:
-        """Phase-1 "same tenant" check: same routing scope (group + bot)."""
-        return self.group_id == other.group_id and self.bot_id == other.bot_id
 
 
 @dataclass(frozen=True)
@@ -428,7 +408,7 @@ class SqliteTeamControlStore:
     """Default ``TeamControlStore`` backed by a single SQLite file."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or get_user_workspace_dir() / "agent" / "teams" / "team_control.db"
+        self._path = path or get_infra_data_dir() / "agent" / "teams" / "team_control.db"
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
 

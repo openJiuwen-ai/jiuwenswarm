@@ -28,15 +28,16 @@ from jiuwenswarm.server.runtime.designer.pipeline.wan_reference_binding import (
 def test_child_walk_away_is_finished_event_not_replayed() -> None:
     chars = [{"id": "char_child", "name": "Child"}, {"id": "char_dad", "name": "Dad"}]
     events = extract_finished_events(
-        "Dad sits by the window. Child walked away from the table.",
+        "",
         characters=chars,
         on_screen=["char_child", "char_dad"],
         clip_index=1,
+        source={"end_state": {"exited": ["char_child"]}},
     )
     kinds = {e["type"] for e in events}
     assert "exit" in kinds
     child_exit = next(e for e in events if e.get("character_id") == "char_child")
-    assert "walk" in child_exit["already_done"].lower() or "left" in child_exit["already_done"].lower()
+    assert "left" in child_exit["already_done"].lower()
     assert not any(e.get("character_id") == "char_dad" and e["type"] == "exit" for e in events)
 
 
@@ -45,6 +46,7 @@ def test_seat_hold_and_exit_stamp_onto_next_clip() -> None:
     src = {
         "setting_id": "set_1",
         "on_screen": ["char_dad", "char_child"],
+        "end_state": {"exited": ["char_child"], "pose": "dad at the window"},
         "blocking": {
             "landmark": "window",
             "positions": [
@@ -666,6 +668,62 @@ def test_compose_weaves_language_and_time_of_day() -> None:
     assert "night" in filled.lower()
     assert "LANGUAGE LOCK" not in filled
     assert "TIME OF DAY LOCK" not in filled
+
+
+def _scored_graph() -> dict:
+    return {
+        "nodes": [
+            {"id": "n_clip_1", "type": "video", "config": {"pipeline": "clip"}},
+            {"id": "n_music", "type": "audio", "config": {"pipeline": "music"}},
+            {"id": "n_compose", "type": "video", "config": {"pipeline": "compose"}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n_clip_1", "target": "n_compose"},
+            {"id": "e2", "source": "n_music", "target": "n_compose"},
+        ],
+    }
+
+
+def test_clip_prompt_leaves_the_score_to_a_music_node_feeding_compose() -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+        compose_practice_prompt,
+    )
+
+    cfg = {
+        "cast_names": ["Alex"],
+        "on_screen": ["Alex"],
+        "clip_action": "Alex pours coffee.",
+        "bgm_lock": {"instruments": "solo piano and strings", "mood": "warm morning"},
+    }
+    # A clip never scores the film, with or without a music node feeding compose.
+    for graph in ({}, _scored_graph()):
+        prompt = compose_practice_prompt(cfg=cfg, graph=graph, action=cfg["clip_action"])
+        assert "solo piano and strings" not in prompt
+
+
+def test_director_rewrites_a_seed_prompt_that_still_scores_the_clip() -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+        compose_practice_prompt,
+        director_prepare_video_prompt,
+        prompt_respects_practice,
+    )
+
+    cfg = {
+        "cast_names": ["Alex"],
+        "on_screen": ["Alex"],
+        "clip_action": "Alex pours coffee.",
+        "bgm_lock": {"instruments": "solo piano and strings"},
+    }
+    # A legacy prompt written before the music node existed still carries a score.
+    seed = compose_practice_prompt(cfg=cfg, graph={}, action=cfg["clip_action"])
+    seed = f"{seed} Audio: solo piano and strings."
+    assert "clip_scores_film_music" in prompt_respects_practice(seed, cfg=cfg, graph=_scored_graph())
+
+    approved, notes = director_prepare_video_prompt(
+        seed, cfg=cfg, graph=_scored_graph(), action=cfg["clip_action"]
+    )
+    assert "solo piano and strings" not in approved
+    assert "clip_scores_film_music" in notes
 
 
 def test_compose_keeps_prior_prompt_continuity() -> None:

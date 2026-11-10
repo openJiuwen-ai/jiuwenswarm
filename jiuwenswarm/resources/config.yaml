@@ -369,6 +369,18 @@ models:
         stream_idle_timeout: 120
         verify_ssl: true
         custom_headers: {}
+        # 该模型是否接受图片输入（原生多模态）。可选键，默认不填。
+        #   true： 直接按「支持」处理。
+        #   false：不向该模型发送原生图片输入，且服务启动时不再为该条目发探测请求。
+        #   不填： 视为「未声明」，交给 react.enable_read_image_multimodal，
+        #          再退回启动探测（image_modality_warmup）得出的结论。
+        # 优先级：supports_vision > react.enable_read_image_multimodal > 探测缓存。
+        # 纯文本模型建议显式填 false。探测会发一张纯红小图并问「这是什么颜色」，
+        # 判定标准是回答里是否出现该颜色词。收不到图的文本模型也可能猜中 red，
+        # 于是被误判成支持图片输入。
+        # 这里写成注释而非实体键：不填即「未声明」，填 null 同理。
+        # 留一行注释是为了让需要的人照抄，而不是让每个条目都多出一个空键。
+        # supports_vision: false
       model_config_obj: {}
         # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
         # defaults / agentos / video / audio / vision / image_gen 均可填）。
@@ -732,7 +744,8 @@ react:
       # Browser Agent 独立轮次预算；未配置时默认 100。
       # max_iterations: 100
     # cua_agent: 桌面自动化子代理，通过截图和真实鼠标键盘输入操作本机应用窗口；
-    # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
+    # 使用支持图片输入的模型。安装日常 wheel 的 Computer Use 依赖时构建本机驱动。
+    # Windows/Linux 上的单步工具还需安装 cua 可选依赖（pip install "workswarm[cua]"）。
     # 运行时会真实移动鼠标、向前台窗口输入，执行期间请勿操作电脑。
     cua_agent:
       enabled: null # null follows the release default (currently off); user changes persist true/false.

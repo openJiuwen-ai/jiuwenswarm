@@ -32,6 +32,11 @@ _PHRASES: dict[str, dict[str, str]] = {
         "visible_props": "Visible props: {props}.",
         "one_clear_image": "One clear image.",
         "one_person": "One person only: {name}, full or three-quarter body on a plain empty studio backdrop.",
+        "one_group": (
+            "One group only: {name}, {count} people sharing one look — same wardrobe, "
+            "same styling and same age range across everyone, full bodies, on a plain "
+            "empty studio backdrop."
+        ),
         "neutral_backdrop": "Solid neutral background, identity and costume only.",
         "wearing": "Wearing {costume}.",
         "the_character": "the character",
@@ -46,6 +51,10 @@ _PHRASES: dict[str, dict[str, str]] = {
         "visible_props": "可见道具：{props}。",
         "one_clear_image": "画面清晰，单张图像。",
         "one_person": "画面中仅一人：{name}，全身或七分身，站在纯净空白的影棚背景前。",
+        "one_group": (
+            "画面中只有一群人：{name}，共{count}人，统一着装风格与造型，年龄段一致，"
+            "全员全身，站在纯净空白的影棚背景前。"
+        ),
         "neutral_backdrop": "纯色中性背景，只呈现人物身份与服装。",
         "wearing": "身穿{costume}。",
         "the_character": "该角色",
@@ -255,7 +264,12 @@ def compose_character_sheet_prompt(
     graph: dict[str, Any] | None = None,
     seed: str = "",
 ) -> str:
-    """Positive one-person studio sheet for the image model."""
+    """Positive studio sheet for the image model.
+
+    A cast entry declared as a group gets a group sheet: one shared look drawn
+    across a small crowd. A "one person only" sheet for a team contradicted every
+    shot that then asked for that team on screen.
+    """
     from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import wearable_phrase
 
     cfg = _cfg(cfg)
@@ -270,8 +284,16 @@ def compose_character_sheet_prompt(
     costume = re.split(r"(?i)\b(?:do not|don't|never|forbid)\b", costume, maxsplit=1)[0]
     costume = wearable_phrase(costume, name=name, lang=lang).strip(" ,;.—-")[:200]
     look = _style_look(cfg)
+    is_group = str(cfg.get("cast_form") or "").strip().lower() == "group"
+    if is_group:
+        count = str(cfg.get("cast_group_size") or "").strip() or (
+            "数" if lang == "zh" else "several"
+        )
+        opening = phrase(_PHRASES, lang, "one_group", name=name, count=count)
+    else:
+        opening = phrase(_PHRASES, lang, "one_person", name=name)
     bits = [
-        phrase(_PHRASES, lang, "one_person", name=name),
+        opening,
         phrase(_PHRASES, lang, "neutral_backdrop"),
     ]
     if costume and not _BAD.search(costume):

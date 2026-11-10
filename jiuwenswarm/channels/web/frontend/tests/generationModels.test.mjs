@@ -4,6 +4,7 @@ import {
   catalogModels,
   credentialsOptional,
   defaultGeneration,
+  GENERATION_SLOT_VENDORS,
   generationApiBase,
   generationVendor,
   isEditableBaseVendor,
@@ -69,4 +70,19 @@ test('a slot counts as configured without key and model only for vLLM-Omni', () 
     true,
   );
   assert.equal(isGenerationSlotConfigured({ ...base, video_gen_api_base: '' }, 'video_gen'), false);
+});
+
+test('music generation offers OpenRouter and vLLM-Omni only; MiniMax stays for video and image', () => {
+  assert.deepEqual(GENERATION_SLOT_VENDORS.music_gen, ['openrouter', 'vllm-omni']);
+  assert.equal(GENERATION_SLOT_VENDORS.video_gen.includes('minimax'), true);
+  assert.equal(GENERATION_SLOT_VENDORS.visual_gen.includes('minimax'), true);
+  assert.deepEqual(catalogModels('music_gen', 'minimax'), []);
+  assert.deepEqual(defaultGeneration('music_gen', 'openrouter'), {
+    protocol: 'google',
+    model: 'google/lyria-3-pro-preview',
+  });
+  assert.equal(
+    catalogModels('music_gen', 'vllm-omni').some((entry) => entry.model === 'MiniMaxAI/MiniMax-Music3'),
+    true,
+  );
 });

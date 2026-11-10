@@ -65,6 +65,12 @@ _CONFIG_SET_ENV_MAP = {
     "visual_gen_provider": "VISUAL_GEN_PROVIDER",
     "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
     "visual_gen_enabled": "VISUAL_GEN_ENABLED",
+    "music_gen_api_base": "MUSIC_GEN_API_BASE",
+    "music_gen_api_key": "MUSIC_GEN_API_KEY",
+    "music_gen_model": "MUSIC_GEN_MODEL_NAME",
+    "music_gen_provider": "MUSIC_GEN_PROVIDER",
+    "music_gen_protocol": "MUSIC_GEN_PROTOCOL",
+    "music_gen_enabled": "MUSIC_GEN_ENABLED",
     "audio_api_base": "AUDIO_API_BASE",
     "audio_api_key": "AUDIO_API_KEY",
     "audio_model": "AUDIO_MODEL_NAME",
@@ -455,6 +461,12 @@ def get_panel() -> dict[str, Any]:
             trajectory_cfg.get("diagnosis_enabled"), False
         )
         experimental_cfg = raw.get("experimental") or {}
+        payload["task_full_duplex_enabled"] = _bool_text(
+            experimental_cfg.get("task_full_duplex_enabled"), False
+        )
+        payload["task_asr_enabled"] = _bool_text(
+            experimental_cfg.get("task_asr_enabled"), False
+        )
         payload["team_organization_ui_enabled"] = _bool_text(
             experimental_cfg.get("team_organization_ui_enabled"), False
         )
@@ -518,6 +530,8 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("task_full_duplex_enabled", "false")
+        payload.setdefault("task_asr_enabled", "false")
         payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("swarmflow_enabled", "false")

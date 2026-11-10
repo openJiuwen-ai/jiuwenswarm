@@ -1,10 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
+import { groupTimeline, groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
 import { parseChatRoute, chatRoutePath } from '../node_modules/.cache/group-chat/multi-session/routing/route.js';
 
 const message = (id, timestamp, content = id) => ({ message_id: id, timestamp, content });
 const execution = (id, revision, status = 'running') => ({ execution_id: id, revision, status, created_at: 10 });
+
+test('early organization cards follow their own prompt across acceptance and history refresh', () => {
+  const card = { ...execution('a-card', 1), execution_kind: 'organization', organization_plan_id: 'request' };
+  const pending = { ...message('optimistic', 9000), pending: true, client_message_id: 'request' };
+  const accepted = { ...message('z-prompt', 11000), client_message_id: 'request' };
+  assert.deepEqual(groupTimeline([pending], [card]).map((item) => item.id), ['optimistic', 'a-card']);
+  const messages = mergeMessages([pending], [accepted, message('later', 12000)]);
+  assert.deepEqual(groupTimeline(messages, [card]).map((item) => item.id), ['z-prompt', 'a-card', 'later']);
+  assert.deepEqual(groupTimeline([accepted], [{ ...card, revision: 2, updated_at: 20 }]).map((item) => item.id),
+    ['z-prompt', 'a-card']);
+  assert.deepEqual(groupTimeline([], [card]).map((item) => item.id), ['a-card']);
+  for (const execution_kind of ['agent', 'team', 'organization']) {
+    const ordinary = { ...card, execution_kind, organization_plan_id: execution_kind === 'organization' ? null : 'request' };
+    assert.deepEqual(groupTimeline([accepted], [ordinary]).map((item) => item.id), ['a-card', 'z-prompt']);
+  }
+  const otherCard = { ...card, execution_id: 'other-card', organization_plan_id: 'other' };
+  assert.deepEqual(groupTimeline([accepted], [otherCard, card]).map((item) => item.id),
+    ['other-card', 'z-prompt', 'a-card']);
+});
 
 test('background refresh retries timeouts without masking initial load or other failures', () => {
   const timeout = Object.assign(new Error('Request timed out'), { code: 'REQUEST_TIMEOUT' });
@@ -289,6 +308,30 @@ await build({
 });
 const { ExecutionCard } = await import(pathToFileURL(resolve(executionBundlePath)).href);
 
+test('organization stages are isolated from ordinary cards and terminal states', () => {
+  const render = (record) => renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
+  for (const stage of ['starting', 'processing', 'executing', 'summarizing']) {
+    for (const tasks of [{}, { child: 'in_progress' }, { child: 'completed' }]) {
+      const record = { ...execution('org', 1), execution_kind: 'organization', tasks, organization_stage: stage };
+      if (Object.keys(tasks).length > 0) {
+        assert.doesNotMatch(render(record), /groupChat.organizationStage|group-chat-organization-status|group-chat-organization-stage/);
+        assert.match(render(record), /group-chat-subtask-status/);
+      } else {
+        assert.match(render(record), new RegExp(`groupChat.organizationStage.${stage}`));
+      }
+      for (const status of ['completed', 'failed', 'cancelled', 'queued']) {
+        assert.doesNotMatch(render({ ...record, status }), /groupChat.organizationStage/);
+      }
+      for (const execution_kind of ['agent', 'team']) {
+        const ordinary = { ...record, execution_kind };
+        assert.equal(render(ordinary), render({ ...ordinary, organization_stage: undefined }));
+      }
+      assert.equal(render({ ...record, organization_stage: 'unknown' }),
+        render({ ...record, organization_stage: undefined }));
+    }
+  }
+});
+
 test('execution cards show compact titles, real child names and state counts without internal instructions', () => {
   const html = renderToStaticMarkup(createElement(ExecutionCard, { execution: {
     ...execution('one', 1), title: '杭州三天两晚行程规划。INTERNAL_INSTRUCTIONS', display_name: 'Travel team',
@@ -445,4 +488,40 @@ test('pending mention bubbles recover from unfinished executions after a refresh
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice'])], [], members, new Set(['client-m1']),
   )), { m1: ['alice:-'] });
+});
+
+test('an organization execution settles every member mentioned in its triggering ask', async () => {
+  const { pendingMentionReplies } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const members = ['alice', 'bob', 'carol'].map((name) => ({ member_name: name, display_name: name }));
+  const ask = (id, at, mentions) => ({
+    message_id: id, client_message_id: `client-${id}`, sender: 'user', content: 'question', timestamp: at, mentions,
+  });
+  const org = (id, owner, createdAt, status) => ({
+    execution_id: id, execution_kind: 'organization', member_name: null, owner_member: owner, created_at: createdAt, status,
+  });
+  const waiting = (pending) => Object.fromEntries([...pending].map(([id, items]) =>
+    [id, items.map((item) => `${item.memberName}:${item.execution?.execution_id ?? '-'}`)]));
+  const sent = new Set(['client-m1', 'client-m2']);
+
+  // Non-owner participants follow the organization card instead of waiting forever as "dispatching".
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice', 'bob'])], [org('o1', 'alice', 2, 'running')], members, sent,
+  )), { m1: ['alice:o1', 'bob:o1'] });
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice', 'bob'])], [org('o1', 'alice', 2, 'completed')], members, sent,
+  )), {});
+  // The organization belongs only to its triggering ask; a member asked separately keeps its own bubble.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice', 'bob']), ask('m2', 1500, ['carol'])],
+    [org('o1', 'alice', 2, 'completed')], members, sent,
+  )), { m2: ['carol:-'] });
+});
+
+test('the group chat model is selectable only before the chat starts', async () => {
+  const { groupModelLocked } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  assert.equal(groupModelLocked([], [], false), false);
+  assert.equal(groupModelLocked([{ message_id: 'm1', sender: 'user', timestamp: 1 }], [], false), true);
+  assert.equal(groupModelLocked([], [{ execution_id: 'e1', status: 'running', created_at: 1 }], false), true);
+  // Older pages not loaded yet still mean the chat has already run.
+  assert.equal(groupModelLocked([], [], true), true);
 });

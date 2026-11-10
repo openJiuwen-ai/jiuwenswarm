@@ -2,11 +2,14 @@
  * AuthorizationPrompt — 授权 / 操作确认吸附条
  *
  * 吸附在输入框正上方（不随消息滚动）。复用后端下发的选项
- * （如 本次允许 / 总是允许 / 拒绝），仅重排布局，文案原样呈现；
- * 语义与选项值原样回传，不改任何后端行为。确认后不在对话中回显。
+ * （如 本次允许 / 总是允许 / 拒绝），按语义重排按钮顺序，文案原样呈现；
+ * 选项值原样回传，不改任何后端行为。确认后不在对话中回显。
+ *
+ * 选项语义匹配与回答装配在 ./promptRouting：选项取值先按后端词表归一化，
+ * 匹配一律先认用户点的那个选项；某道题对不上时禁用按钮，不再拿首个选项顶替。
  *
  * 结构：标题行（后端 header，如「权限审批: write_file」）+ 动作按钮；
- * 下方正文用 markdown 渲染，收起时渲染首行、展开时渲染完整内容。
+ * Reviewer reasons use literal text; other permission bodies retain Markdown.
  * 动作按钮 hover 说明用 portal 挂到 body，避免被容器 overflow 截断。
  */
 
@@ -16,9 +19,14 @@ import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ShieldCheck, ChevronDown } from 'lucide-react';
-import type { AskUserQuestionPayload, Question, QuestionOption, UserAnswer } from '../../types';
+import type { AskUserQuestionPayload, Question, UserAnswer } from '../../types';
 import { formatToolArguments } from '../../utils';
-import { classifyAuthOption, type AuthSemantic } from './promptRouting';
+import {
+  buildAuthorizationAnswers,
+  canApplyAuthorizationAction,
+  resolveAuthorizationActions,
+  type ResolvedAction,
+} from './promptRouting';
 import { AutoReviewerDetails } from '../ChatPanel/AutoReviewerStatus';
 import { permissionQuestionKind } from '../../stores/pendingQuestionQueue';
 import { translatePermissionText } from './permissionTextI18n';
@@ -29,60 +37,9 @@ interface AuthorizationPromptProps {
   onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
 }
 
-/** 动作按钮的显示顺序：跳过(reject) → 永久记住 → 会话内记住 → 授权单次(allow-once)。 */
-const ACTION_ORDER: AuthSemantic[] = ['reject', 'allow-always', 'session-allow', 'allow-once'];
-
 /** 与旧版 InlineQuestionCard 一致的 Tailwind Typography 类，保证正文渲染观感。 */
 const PROSE_CLS =
   'prose prose-sm max-w-none prose-headings:font-semibold prose-headings:text-sm prose-ul:my-1 prose-li:my-0 prose-li:pl-1';
-
-export interface ResolvedAction {
-  semantic: AuthSemantic;
-  option: QuestionOption;
-  label: string;
-  tip: string;
-}
-
-function optionSemantic(option: QuestionOption): AuthSemantic {
-  return classifyAuthOption(option.value || option.label);
-}
-
-export function resolveAuthorizationActions(questions: Question[]): ResolvedAction[] {
-  const primary = questions[0];
-  const resolved = (primary?.options ?? [])
-    .map((option) => ({
-      semantic: optionSemantic(option),
-      option,
-      label: option.label,
-      tip: (option.description || '').trim(),
-    }));
-  const rank = (semantic: AuthSemantic) => {
-    const index = ACTION_ORDER.indexOf(semantic);
-    return index === -1 ? ACTION_ORDER.length : index;
-  };
-  return resolved.sort((left, right) => rank(left.semantic) - rank(right.semantic));
-}
-
-export function buildAuthorizationAnswers(
-  questions: Question[],
-  picked: ResolvedAction,
-  smart = false,
-): UserAnswer[] {
-  return questions.map((question) => {
-    const match =
-      question.options.find((option) => optionSemantic(option) === picked.semantic) ||
-      question.options.find(
-        (option) =>
-          (option.value || option.label) === (picked.option.value || picked.option.label),
-      );
-    const reject = question.options.find((option) => optionSemantic(option) === 'reject');
-    const selected = match || (smart ? reject : question.options[0]);
-    return {
-      question: question.question,
-      selected_options: [selected ? selected.value || selected.label : smart ? 'reject' : picked.label],
-    };
-  });
-}
 
 /** 首个非空行，用于收起态渲染。 */
 function firstLine(text: string): string {
@@ -127,9 +84,15 @@ export function AuthorizationQuestionDetails({
             </div>
           )}
           <AutoReviewerDetails reviewer={question.reviewer_metadata} />
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {translatePermissionText(question.question, i18n.language)}
-          </ReactMarkdown>
+          {question.reviewer_metadata ? (
+            <div className="whitespace-pre-wrap break-words" data-testid="interaction-slot-auth-reason">
+              {translatePermissionText(question.question, i18n.language)}
+            </div>
+          ) : (
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {translatePermissionText(question.question, i18n.language)}
+            </ReactMarkdown>
+          )}
           {question.matched_rule && isEnterprise() && (
             <p
               className="mt-3 text-xs text-text-muted"
@@ -213,33 +176,36 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   const isConfirm = pending.source === 'confirm_interrupt';
   const count = questions.length;
 
-  // 按钮的 label/description 原样使用后端下发的文案；semantic 判定用的是
-  // option.value（如 "allow_once"，与 label 无关），排序与语义分类不受影响。
-  // 展示层再叠一层已知短语的前端翻译（非中文语言下），查不到的原样显示。
-  const actions = useMemo<ResolvedAction[]>(
+  // 按钮的 label/description 原样使用后端下发的文案；semantic 判定用的是选项取值
+  // （客户端已按后端词表归一化），排序与语义分类不受写法影响。展示层再叠一层已知
+  // 短语的前端翻译（非中文语言下），查不到的原样显示。
+  // applicable 为 false 表示这道动作落不到每一张卡上：按钮禁用并给出提示，
+  // 而不是拿该卡的首个选项顶替用户点击。
+  const actions = useMemo(
     () =>
       resolveAuthorizationActions(questions).map((action) => ({
         ...action,
         label: translatePermissionText(action.label, i18n.language),
         tip: translatePermissionText(action.tip, i18n.language),
+        applicable: canApplyAuthorizationAction(questions, action, smart),
       })),
-    [questions, i18n.language],
-  );
-
-  /** 把选中的语义应用到所有 question（多条时统一处理）。 */
-  const buildAnswers = useCallback(
-    (picked: ResolvedAction): UserAnswer[] => buildAuthorizationAnswers(questions, picked, smart),
-    [questions, smart],
+    [questions, smart, i18n.language],
   );
 
   const handlePick = useCallback(
     async (picked: ResolvedAction) => {
       if (submitting) return;
+      // 先装配答案：对不上就不提交，且不能占住 submitting。
+      const answers = buildAuthorizationAnswers(questions, picked, smart);
+      if (!answers) return;
       setSubmitting(true);
-      await onSubmit(pending.request_id, buildAnswers(picked), pending.source);
-      setSubmitting(false);
+      try {
+        await onSubmit(pending.request_id, answers, pending.source);
+      } finally {
+        setSubmitting(false);
+      }
     },
-    [submitting, onSubmit, pending, buildAnswers],
+    [submitting, onSubmit, pending, questions, smart],
   );
 
   if (!primary) return null;
@@ -303,11 +269,16 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
         {/* 动作按钮区不触发展开/收起 */}
         <div className="auth-prompt__actions" onClick={(e) => e.stopPropagation()} data-testid="interaction-slot-auth-actions">
           {actions.map((action) => (
-            <HoverTip text={action.tip} key={action.semantic + action.option.label}>
+            <HoverTip
+              text={action.applicable ? action.tip : t('authPrompt.unavailable')}
+              key={action.semantic + action.option.label}
+            >
               <button
                 type="button"
                 className={`auth-prompt__btn auth-prompt__btn--${action.semantic}`}
-                disabled={submitting}
+                disabled={submitting || !action.applicable}
+                aria-disabled={!action.applicable}
+                title={action.applicable ? undefined : t('authPrompt.unavailable')}
                 onClick={() => handlePick(action)}
                 data-testid="interaction-slot-auth-action-button"
                 data-variant={action.semantic}

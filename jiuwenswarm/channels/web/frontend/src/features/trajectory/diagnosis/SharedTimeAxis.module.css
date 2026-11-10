@@ -2,7 +2,7 @@
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
   align-items: end;
-  padding: 8px 0 10px;
+  padding: 8px 0 48px;
   overflow: auto;
   border-bottom: 1px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-1);
@@ -42,7 +42,7 @@
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  height: 16px;
+  min-height: 28px;
   pointer-events: none;
 }
 
@@ -51,11 +51,34 @@
 .selectionStart,
 .selectionEnd,
 .selectionCombined {
-  color: #000;
   font: var(--dsw-font-xxxs-11);
   font-size: 12px;
   font-weight: 400;
-  line-height: 16px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+  white-space: pre-line;
+}
+
+.boundStart,
+.boundEnd {
+  color: #000;
+}
+
+.selectionStart,
+.selectionEnd,
+.selectionCombined {
+  color: #1877ff;
+}
+
+.boundStart,
+.selectionStart,
+.selectionCombined {
+  text-align: left;
+}
+
+.boundEnd,
+.selectionEnd {
+  text-align: right;
 }
 
 .track {
@@ -76,6 +99,53 @@
   background: #b0b0b0;
   transform: translate(-50%, -50%);
   pointer-events: none;
+}
+
+.turnMark {
+  position: absolute;
+  top: 0;
+  bottom: -30px;
+  z-index: 2;
+  width: 0;
+  pointer-events: none;
+}
+
+.turnMarkLine {
+  position: absolute;
+  top: 0;
+  bottom: 30px;
+  left: 0;
+  width: 1px;
+  background: var(--dsw-alias-border-l2);
+  transform: translateX(-50%);
+  transform-origin: center;
+}
+
+.turnMarkLabel {
+  position: absolute;
+  top: 14px;
+  left: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  max-width: none;
+  padding: 0 3px;
+  border-radius: 2px;
+  color: #000;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #fff) 88%, transparent);
+  font: var(--dsw-font-xxxs-11);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+  white-space: pre-line;
+  text-align: left;
+  transform: translateX(3px);
+  pointer-events: auto;
+}
+
+.turnMark[data-edge='end'] .turnMarkLabel {
+  text-align: right;
+  transform: translateX(calc(-100% - 3px));
 }
 
 .selection {
@@ -114,8 +184,8 @@
 .selectionEnd,
 .selectionCombined {
   position: absolute;
+  /* Align with .bounds label baseline: track (12px) + plot gap (8px). */
   bottom: 20px;
-  white-space: nowrap;
 }
 
 .selectionStart,

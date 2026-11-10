@@ -298,6 +298,8 @@ for lazy_package in (
 hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
     "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
     "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
+    # Full-duplex Python sources load by path, outside the static import graph.
+    "jiuwenswarm.common.asr_client",
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.

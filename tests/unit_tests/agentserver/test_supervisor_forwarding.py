@@ -134,6 +134,32 @@ async def test_blocked_gateway_keeps_reading_heartbeat_and_readiness(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("server_push", [False, True])
+async def test_buffered_replay_drains_without_failing_other_requests(server_push) -> None:
+    supervisor = RuntimeSupervisor(Readiness(), forwarder=EventForwarder())
+    ws, lock = _WebSocket(), asyncio.Lock()
+    supervisor._gateway_ws, supervisor._gateway_lock = ws, lock
+    if not server_push:
+        supervisor._routes["replay"] = (ws, lock)
+    supervisor._routes["other"] = (ws, lock)
+    future = asyncio.get_running_loop().create_future()
+    supervisor._pending["other"] = future
+    async with _running(supervisor) as (conn, _pump):
+        for sequence in range(600):
+            message = _wire("replay", sequence)
+            message["replayed"] = True
+            if server_push:
+                message["payload"]["metadata"] = {E2A_WIRE_SERVER_PUSH_KEY: True}
+            conn.messages.put_nowait(message)
+        conn.messages.put_nowait(_wire("other", 600))
+        conn.messages.put_nowait(_done("other"))
+        result = await asyncio.wait_for(future, 2)
+        assert result["ok"] is True
+        assert [frame["sequence"] for frame in ws.frames] == list(range(601))
+        assert supervisor._restart_count == 0
+
+
+@pytest.mark.asyncio
 async def test_completion_waits_for_ordered_wire_delivery() -> None:
     supervisor = RuntimeSupervisor(Readiness(), forwarder=EventForwarder())
     ws, lock = _WebSocket(blocked=True), asyncio.Lock()
