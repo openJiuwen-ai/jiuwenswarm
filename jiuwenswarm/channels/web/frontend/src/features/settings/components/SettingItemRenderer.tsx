@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Select, Switch } from '../../../components/ui';
-import type { SettingItemDefinition } from '../registry/types';
+import type { SettingItemDefinition, SettingValue } from '../registry/types';
 import { parseConfigBoolean } from '../services/settingsContract';
 import { useSettingsServices } from '../services/SettingsServicesProvider';
 import { formatSettingsSaveError, InlineSaveFeedbackContext } from '../services/settingsSaveFeedback';
@@ -71,7 +71,7 @@ function InlineSettingInput({
           <Button
             size="sm"
             variant="primary"
-            disabled={disabled || saving || !hasChanges}
+            disabled={disabled || saving || !hasChanges || (item.required === true && !draft.trim())}
             onClick={() => void save().catch(() => undefined)}
             data-testid="settings-inline-input-save-btn"
             data-variant={item.id}
@@ -104,6 +104,7 @@ function SimpleSettingItem({
   const source = useSettingsSource();
   const [editingSubItems, setEditingSubItems] = useState<ReadonlySet<string>>(() => new Set());
   const [configuring, setConfiguring] = useState(false);
+  const [pendingSelection, setPendingSelection] = useState<SettingValue | null>(null);
   const reportSubItemEditing = useCallback<EditingChange>((id, editing) => {
     setEditingSubItems((current) => {
       if (editing === current.has(id)) return current;
@@ -114,14 +115,14 @@ function SimpleSettingItem({
     });
   }, []);
   useEffect(() => {
-    if (item.component !== 'switch') return undefined;
-    const editing = editingSubItems.size > 0;
+    if (item.component !== 'switch' && item.component !== 'select') return undefined;
+    const editing = item.component === 'switch' ? editingSubItems.size > 0 : pendingSelection !== null;
     onEditingChange?.(item.id, editing);
     return () => onEditingChange?.(item.id, false);
-  }, [editingSubItems.size, item.component, item.id, onEditingChange]);
+  }, [editingSubItems.size, item.component, item.id, onEditingChange, pendingSelection]);
 
   const saving = source.savingKeys.has(item.key);
-  const controlDisabled = disabled || !isConnected || saving;
+  const controlDisabled = disabled || (source.requiresConnection !== false && !isConnected) || saving;
   const title = t(settingFieldKey(item.key, 'title'));
   const description = t(settingFieldKey(item.key, 'description'));
   let control;
@@ -188,17 +189,25 @@ function SimpleSettingItem({
   }
 
   if (item.component === 'select') {
-    const selectedIndex = item.options.findIndex((option) => Object.is(option.value, source.values[item.key]));
-    const options = item.options.map((option, index) => ({ value: String(index), label: t(option.labelKey) }));
+    const entries = typeof item.options === 'function' ? item.options(source.values) : item.options;
+    const selectedIndex = entries.findIndex((option) => Object.is(option.value, source.values[item.key]));
+    const options = entries.map((option, index) => ({
+      value: String(index), label: option.labelKey ? t(option.labelKey) : option.label ?? '',
+    }));
     control = (
       <Select
         aria-label={title}
         value={String(selectedIndex)}
-        disabled={controlDisabled}
+        disabled={controlDisabled || pendingSelection !== null || entries.length === 0}
         options={options}
         onChange={(index) => {
-          const option = item.options[Number(index)];
-          if (option) void source.save({ [item.key]: option.value }, item.id).catch(() => undefined);
+          const option = entries[Number(index)];
+          if (!option || Object.is(option.value, source.values[item.key])) return;
+          if (item.configure) setPendingSelection(option.value);
+          else {
+            const updates = item.buildUpdates?.(option.value, source.values) ?? { [item.key]: option.value };
+            void source.save(updates, item.id).catch(() => undefined);
+          }
         }}
         data-testid="settings-select"
         data-variant={item.id}
@@ -208,10 +217,23 @@ function SimpleSettingItem({
     control = <InlineSettingInput item={item} disabled={disabled || !isConnected} onEditingChange={onEditingChange} />;
   }
 
+  const Configuration = item.component === 'select' ? item.configure : undefined;
   return (
-    <SettingRow title={title} description={description}>
-      {control}
-    </SettingRow>
+    <>
+      <SettingRow title={title} description={description}>
+        {control}
+      </SettingRow>
+      {Configuration && pendingSelection !== null ? (
+        <Configuration
+          value={pendingSelection}
+          onSave={async (updates) => {
+            await source.save(updates, item.id, { optimistic: false });
+            setPendingSelection(null);
+          }}
+          onClose={() => setPendingSelection(null)}
+        />
+      ) : null}
+    </>
   );
 }
 

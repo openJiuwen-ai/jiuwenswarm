@@ -6,6 +6,7 @@ import {
   setMultiModelCollaborationEnabled,
 } from '../../multiModelCollaboration/featureConfig';
 import { setTeamScheduledDispatchEnabled } from '../../teamDispatch/featureConfig';
+import { setTeamMeetingEnabled } from '../../teamMeeting/featureFlag';
 import { setComfyuiWorkflowEnabled } from '../../designer/comfyuiFeatureConfig';
 import { setTeamOrganizationUiEnabled } from '../../teamOrganization/featureConfig';
 import { buildConfigSavePayload, parseConfigBoolean, SETTINGS_CONFIG_CHANGED_EVENT } from './settingsContract';
@@ -46,6 +47,7 @@ export function useSettingsConfig() {
         setTeamOrganizationUiEnabled(visible.team_organization_ui_enabled);
         setComfyuiWorkflowEnabled(visible.comfyui_workflow_enabled);
         setTeamScheduledDispatchEnabled(visible.team_scheduled_dispatch_enabled);
+        setTeamMeetingEnabled(visible.team_meeting_enabled);
       }
     } catch (loadError) {
       if (id === requestId.current) setError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -80,6 +82,9 @@ export function useSettingsConfig() {
       }
       if ('team_scheduled_dispatch_enabled' in payload.config) {
         setTeamScheduledDispatchEnabled(payload.config.team_scheduled_dispatch_enabled);
+      }
+      if ('team_meeting_enabled' in payload.config) {
+        setTeamMeetingEnabled(payload.config.team_meeting_enabled);
       }
       if ('multi_model_collaboration_enabled' in payload.config) {
         setMultiModelCollaborationEnabled(payload.config.multi_model_collaboration_enabled);

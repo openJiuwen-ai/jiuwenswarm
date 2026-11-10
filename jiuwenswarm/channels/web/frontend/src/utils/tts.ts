@@ -3,6 +3,8 @@
  */
 
 import { webRequest } from '../services/webClient';
+import { onTtsStop, requestTtsStop } from './ttsControl';
+export { onTtsStop } from './ttsControl';
 
 interface TtsResponse {
   success: boolean;
@@ -11,7 +13,6 @@ interface TtsResponse {
   error?: string;
 }
 
-const TTS_STOP_EVENT = 'jiuwen-tts-stop';
 const CODE_BLOCK_RE = /```[\s\S]*?```/g;
 const INLINE_CODE_RE = /`[^`]+`/g;
 const MEDIA_BRACE_RE = /MEDIA:\{[^}]*\}/gi;
@@ -72,19 +73,13 @@ export function stopAllTts(): void {
     window.speechSynthesis.cancel();
   }
 
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new Event(TTS_STOP_EVENT));
-  }
+  requestTtsStop();
 }
 
-export function onTtsStop(handler: () => void): () => void {
-  if (typeof window === 'undefined') {
-    return () => {};
-  }
-
-  window.addEventListener(TTS_STOP_EVENT, handler);
-  return () => window.removeEventListener(TTS_STOP_EVENT, handler);
-}
+onTtsStop(() => {
+  stopGlobalAudio();
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+});
 
 export async function fetchTtsAudio(
   text: string,
@@ -119,8 +114,8 @@ export async function playAudioBase64(
     return false;
   }
 
-  // 先停止正在播放的音频
-  stopGlobalAudio();
+  // Stop the previous audio owner before explicit playback.
+  stopAllTts();
 
   try {
     const audio = new Audio(`data:${mimeType};base64,${audioBase64}`);

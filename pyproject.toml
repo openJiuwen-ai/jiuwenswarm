@@ -77,6 +77,7 @@ dependencies = [
     "gitcode-api>=1.2.20,<2",
     "faiss-cpu>=1.7.0,<2",
     "numpy>=1.24.0,<3",
+    "onnxruntime>=1.19,<2",
     "tree-sitter>=0.25.0,<0.26.0",
     "tree-sitter-bash>=0.25.0,<0.26.0",
     "playwright>=1.40,<2",

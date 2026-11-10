@@ -3553,6 +3553,8 @@ function AppContent({
       useChatStore.getState().setProcessing(newSid, false);
       sessionIdRef.current = newSid;
       setSessionId(newSid);
+      // Voice startup checks the active chat as soon as this callback resolves.
+      useChatStore.getState().setActiveSessionId(newSid);
       navigate({ kind: 'chat-session', sessionId: newSid }, { replace: true });
       newConversationPreviousSessionRef.current = null;
       return newSid;
@@ -3584,11 +3586,17 @@ function AppContent({
   ) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
+    if (options && 'groupChat' in options && options.groupChat) {
+      if (options.groupChat && options.groupChat.sessionId !== currentSessionId) return;
+      const sent = await sendMessage(content, currentSessionId, mediaItems, options);
+      return sent === true ? currentSessionId : undefined;
+    }
     if (options && 'queuedTaskId' in options) {
       await sendMessage(content, currentSessionId, mediaItems, options);
       return;
     }
-    const provenance = options && !('queuedTaskId' in options) ? options : undefined;
+    const provenance = options && 'input_origin' in options ? options : undefined;
+    const sendOptions = options && !('input_origin' in options) ? options : undefined;
     const currentState = useSessionStore.getState();
     const currentRuntime = currentState.getRuntime(currentSessionId);
     const currentMetadata = currentState.currentSession?.session_id === currentSessionId
@@ -3820,7 +3828,7 @@ function AppContent({
           queueOrAddGoalObjectiveMessage(newSid, messageContent);
           setGoalObjective(newSid, messageContent);
         } else {
-          chatSent = await sendMessage(messageContent, newSid, mediaItems, undefined, provenance);
+          chatSent = await sendMessage(messageContent, newSid, mediaItems, sendOptions, provenance);
           if (chatSent !== true) {
             restoreUnsentInput(newSid, messageContent);
           }
@@ -3843,7 +3851,7 @@ function AppContent({
       return;
     }
     disposeInFlightHistoryHandles(currentSessionId);
-    const sent = await sendMessage(content, currentSessionId, mediaItems, undefined, provenance);
+    const sent = await sendMessage(content, currentSessionId, mediaItems, sendOptions, provenance);
     if (sent === true) {
       const sessionState = useSessionStore.getState();
       const session =

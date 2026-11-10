@@ -114,7 +114,7 @@ export type TeamAreaProps = BaseTeamAreaProps &
   );
 
 export type TabType = 'planning' | 'team' | 'organization' | 'artifacts' | 'review' | 'browser';
-export type TeamDetailTab = 'members' | 'group';
+export type TeamDetailTab = 'members' | 'group' | `app:${string}`;
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'error';
 export type TaskColumnKey = 'waiting' | 'running' | 'completed' | 'cancelled';
 

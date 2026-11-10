@@ -5,7 +5,7 @@ export type SettingsModuleId =
   'general' | 'models' | 'agent' | 'browser' | 'channels' | 'personalContext' | 'archivedTasks' | 'security' | 'experimental' | (string & {});
 export type SettingsAccessLevel = 'hidden' | 'readOnly' | 'editable';
 export type SettingsCompositionMode = 'base' | 'extended';
-export type SettingsSource = 'config' | 'browser' | 'locale';
+export type SettingsSource = 'config' | 'browser' | 'locale' | 'local';
 export type SettingValue = string | number | boolean;
 export type SettingsAccessNode =
   | { kind: 'module'; moduleId: string }
@@ -34,7 +34,11 @@ type SettingItemBase = {
 };
 export type SettingSelectOption = {
   value: SettingValue;
-  labelKey: I18nKey;
+} & ({ labelKey: I18nKey; label?: never } | { label: string; labelKey?: never });
+export type SettingSelectConfigurationProps = {
+  value: SettingValue;
+  onSave: (updates: Record<string, SettingValue>) => Promise<void>;
+  onClose: () => void;
 };
 export type SettingSubItems = {
   show: 'always' | 'when-parent-checked';
@@ -59,12 +63,15 @@ export type SettingItemDefinition =
   | (SettingItemBase & {
       component: 'select';
       key: string;
-      options: readonly SettingSelectOption[];
+      options: readonly SettingSelectOption[] | ((values: Readonly<Record<string, unknown>>) => readonly SettingSelectOption[]);
+      buildUpdates?: (value: SettingValue, values: Readonly<Record<string, unknown>>) => Record<string, SettingValue>;
+      configure?: ComponentType<SettingSelectConfigurationProps>;
     })
   | (SettingItemBase & {
       component: 'input';
       key: string;
       inputType?: 'text' | 'password';
+      required?: boolean;
     })
   | (SettingItemBase & {
       component: 'custom';
@@ -77,6 +84,8 @@ export interface SettingsSectionDefinition {
   titleKey?: I18nKey;
   descriptionKey?: I18nKey;
   separatedRows?: boolean;
+  /** Keep related editors and asynchronous actions from changing each other's configuration. */
+  exclusiveEditing?: boolean;
   items: readonly SettingItemDefinition[];
 }
 export interface SettingsModuleDefinition {

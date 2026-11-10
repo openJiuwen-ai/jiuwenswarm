@@ -100,6 +100,7 @@ def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
 # Rails common to both roles, in mount order. Each entry is a ``swarm.*``
 # provider name re-exported from the registry (no hard-coded strings).
 _COMMON_RAIL_NAMES: tuple[str, ...] = (
+    registry.MEETING_PARTICIPANT,
     registry.USER_HOOKS,
     registry.RUNTIME_PROMPT,
     registry.TEAM_SKILL_STORAGE_POLICY,
@@ -181,6 +182,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
 
 # Rails shared with the team profile, appended to the code profile.
 _CODE_SHARED_RAIL_NAMES: tuple[str, ...] = (
+    registry.MEETING_PARTICIPANT,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.PLUGIN_RAILS,
 )

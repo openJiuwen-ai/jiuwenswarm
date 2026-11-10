@@ -1,5 +1,6 @@
 import type { SettingValue, SettingsSource } from '../registry/types';
 import { SETTINGS_CONFIG_FIELD_BY_KEY } from './settingsContract';
+import { LOCAL_SETTING_COMPONENTS } from './localSettings';
 
 type SimpleSettingComponent = 'switch' | 'select' | 'input';
 
@@ -12,10 +13,11 @@ const BROWSER_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([
 const LOCALE_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([['preferred_language', 'select']]);
 
 export function isSettingsSource(value: unknown): value is SettingsSource {
-  return value === 'config' || value === 'browser' || value === 'locale';
+  return value === 'config' || value === 'browser' || value === 'locale' || value === 'local';
 }
 
 export function isSettingsSourceKey(source: SettingsSource, key: string): boolean {
+  if (source === 'local') return LOCAL_SETTING_COMPONENTS.has(key);
   if (source === 'config') return SETTINGS_CONFIG_FIELD_BY_KEY.has(key);
   if (source === 'browser') return BROWSER_SETTING_COMPONENTS.has(key);
   if (source === 'locale') return LOCALE_SETTING_COMPONENTS.has(key);
@@ -27,6 +29,7 @@ export function isSettingsSourceComponent(
   key: string,
   component: SimpleSettingComponent,
 ): boolean {
+  if (source === 'local') return LOCAL_SETTING_COMPONENTS.get(key) === component;
   if (source === 'browser') return BROWSER_SETTING_COMPONENTS.get(key) === component;
   if (source === 'locale') return LOCALE_SETTING_COMPONENTS.get(key) === component;
   const field = SETTINGS_CONFIG_FIELD_BY_KEY.get(key);

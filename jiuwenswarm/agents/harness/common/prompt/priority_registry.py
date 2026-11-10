@@ -60,6 +60,7 @@ class SystemPromptPriority(IntEnum):
     TODO = 92
     COMPRESSION_RECALL = 93
     ETERNAL_CONVERSATION = 94
+    MEETING_PUBLICATION = 95
     VERIFICATION_CONTRACT = 96
     VERIFICATION_REMINDER = 97
     EVOLUTION_PROTOCOL = 98
@@ -111,6 +112,7 @@ _SECTION_PRIORITIES = MappingProxyType({
     "todo": SystemPromptPriority.TODO,
     "compression_recall": SystemPromptPriority.COMPRESSION_RECALL,
     "eternal_conversation": SystemPromptPriority.ETERNAL_CONVERSATION,
+    "meeting_publication": SystemPromptPriority.MEETING_PUBLICATION,
     "evolution_protocol": SystemPromptPriority.EVOLUTION_PROTOCOL,
     "evolution_team_protocol": SystemPromptPriority.EVOLUTION_TEAM_PROTOCOL,
     "skill_creation_guidance": SystemPromptPriority.SKILL_CREATION_GUIDANCE,

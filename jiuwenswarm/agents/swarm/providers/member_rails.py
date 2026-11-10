@@ -15,6 +15,7 @@ by the build context instead of imperatively threaded dataclasses.
 from __future__ import annotations
 
 import logging
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -31,6 +32,8 @@ from openjiuwen.agent_teams.rails.team_context import (
     get_permissions_override,
     get_team_backend,
 )
+from openjiuwen.agent_teams.tools.locales import make_translator
+from openjiuwen.agent_teams.tools.tool_member import ListMembersTool
 from openjiuwen.harness.rails import ModelAnomalyDetectionRail
 
 from openjiuwen.harness.rails.personal_context import PersonalContextRail
@@ -66,6 +69,9 @@ from jiuwenswarm.common.cron_session import is_cron_execution_session
 from jiuwenswarm.common.utils import get_domain_data_dir
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.extensions.meeting.meeting_manager import get_active_publication
+from jiuwenswarm.extensions.meeting.messages import create_meeting_message_tool
+from jiuwenswarm.extensions.meeting.participants import MeetingParticipantRail
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +119,33 @@ MODEL_ANOMALY_DETECTION = "swarm.model_anomaly_detection"
 PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
+MEETING_PARTICIPANT = "swarm.meeting_participant"
 HEARTBEAT = "swarm.heartbeat"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=MEETING_PARTICIPANT,
+    description="Native Team meeting guidance and controls, gated by the active host consumer.",
+)
+def build_meeting_participant(params: dict[str, Any], context: SwarmBuildContext) -> Any:
+    del params
+    backend = get_team_backend(context)
+    if (
+        getattr(context, "role", "") not in {"leader", "teammate"}
+        or backend is None
+        or not context.session_id or not context.member_name
+    ):
+        return None
+    return MeetingParticipantRail(
+        context.session_id, backend.team_name, context.member_name,
+        language=context.language or "en",
+        roster_tool=ListMembersTool(backend, make_translator(context.language or "en")),
+        create_send_tool=partial(create_meeting_message_tool, backend, language=context.language or "en"),
+        resolve_session=get_active_publication,
+    )
+
+
 SESSION_MESSAGING_ROUTE = "swarm.session_messaging_route"
 
 

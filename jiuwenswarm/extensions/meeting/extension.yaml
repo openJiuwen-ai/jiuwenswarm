@@ -1,0 +1,11 @@
+id: meeting
+name: Team meetings
+version: 1.0.0
+description: Voice meetings between one person and a Team of agents
+author: JiuwenSwarm
+min_jiuwenswarm_version: "0.2.5"
+package_type: application
+dependencies: {}
+permissions:
+  - microphone
+  - outbound_network

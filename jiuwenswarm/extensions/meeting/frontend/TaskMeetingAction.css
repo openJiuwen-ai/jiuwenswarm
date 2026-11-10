@@ -1,0 +1,161 @@
+.task-meeting-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+.chat-input-btn.task-meeting-action.is-active {
+  color: var(--color-feedback-success);
+  background: var(--color-feedback-success-subtle);
+}
+.chat-input-btn.task-meeting-action {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+.chat-input-btn.task-meeting-action:not(.is-idle) {
+  width: auto;
+  max-width: 160px;
+  gap: 6px;
+  padding: 0 8px;
+}
+.task-meeting-action__label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-meeting-action > svg {
+  flex-shrink: 0;
+}
+.task-meeting-action__chevron {
+  transition: transform 150ms ease;
+}
+.task-meeting-action[aria-expanded='true'] .task-meeting-action__chevron {
+  transform: rotate(180deg);
+}
+.task-meeting-layer.ui-dropdown-menu {
+  width: 288px;
+  min-width: 0;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 0;
+  border-radius: 12px;
+  color: var(--color-text-primary);
+}
+.task-meeting-layer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px 0;
+}
+.task-meeting-layer__heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+.task-meeting-layer__heading > svg {
+  flex-shrink: 0;
+  color: var(--color-text-link);
+}
+.task-meeting-layer__minimize.ui-dropdown-menu__item {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+  color: var(--color-text-secondary);
+}
+.task-meeting-layer__body {
+  padding: 8px 14px 14px;
+}
+.task-meeting-layer__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.task-meeting-layer__dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+.task-meeting-layer__status[data-variant='active'] {
+  color: var(--color-feedback-success);
+}
+.task-meeting-layer__status[data-variant='starting'],
+.task-meeting-layer__status[data-variant='closing'],
+.task-meeting-layer__status[data-variant='cleanup_failed'] {
+  color: var(--color-feedback-warning);
+}
+.task-meeting-layer__message,
+.task-meeting-layer__error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--color-text-secondary);
+}
+.task-meeting-layer__error {
+  color: var(--color-feedback-danger);
+}
+.task-meeting-layer__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border-top: 1px solid var(--color-border-default);
+}
+.task-meeting-layer__control.ui-dropdown-menu__item {
+  min-height: 40px;
+  height: auto;
+  gap: 10px;
+  padding: 10px;
+  font-size: 13px;
+  white-space: normal;
+}
+.chat-input-btn.task-meeting-action.is-starting,
+.chat-input-btn.task-meeting-action.is-closing,
+.chat-input-btn.task-meeting-action.is-cleanup_failed {
+  color: var(--color-feedback-warning);
+  background: var(--color-feedback-warning-subtle);
+}
+.chat-input-btn.task-meeting-action.is-failed {
+  color: var(--color-feedback-danger);
+  background: var(--color-feedback-danger-subtle);
+}
+.chat-input-btn.task-meeting-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.chat-input-btn.task-meeting-action.is-closing:disabled {
+  cursor: wait;
+  opacity: 1;
+}
+.task-meeting-spinner {
+  animation: task-meeting-spin 1s linear infinite;
+}
+@keyframes task-meeting-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-meeting-action__chevron {
+    transition: none;
+  }
+  .task-meeting-spinner {
+    animation: none;
+  }
+}

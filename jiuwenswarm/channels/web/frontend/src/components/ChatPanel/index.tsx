@@ -6,6 +6,7 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { VoiceStreamingRuntime } from '../../features/voice/VoiceStreamingRuntime';
 import {
   Activity,
   CheckCircle2,
@@ -2305,6 +2306,10 @@ export const ChatPanel = React.memo(function ChatPanel({
       onDragOver={handleDesktopFileDragOver}
       onDrop={handleDesktopFileDrop}
     >
+      <VoiceStreamingRuntime
+        sessionId={activeSessionId}
+        send={async (text, options) => Boolean(await onSendMessage(text, [], options))}
+      />
       {turnChangeNotice ? (
         <div
           className="code-turn-change-toast"

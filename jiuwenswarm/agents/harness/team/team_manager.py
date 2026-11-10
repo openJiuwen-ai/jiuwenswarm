@@ -45,6 +45,7 @@ from agent_gateway.common.model_selection import ModelSelection as SwarmModelSel
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_domain_data_dir
+from jiuwenswarm.extensions.meeting.meeting_manager import get_server_meeting_manager, stop_meeting_runtime
 
 configure_agent_teams_home()
 
@@ -3182,6 +3183,7 @@ class TeamManager:
             return False
 
         self._runner_team_agents[session_id] = team_agent
+        await get_server_meeting_manager(self).team_runtime_ready(session_id)
 
         if not self._is_distributed_mode(get_config()):
             return False
@@ -3346,6 +3348,7 @@ class TeamManager:
         finalize_workflows: bool = True,
         workflow_disposition: Literal["stop", "pause"] = "stop",
     ) -> None:
+        await stop_meeting_runtime(session_id)
         await self._cancel_team_evolution_watcher(session_id)
 
         stream_task = self._stream_tasks.pop(session_id, None)
@@ -3430,6 +3433,7 @@ class TeamManager:
         Returns:
             True if stop was successful, False otherwise
         """
+        await stop_meeting_runtime(session_id)
         try:
             result = await Runner.stop_agent_team(
                 team_name=team_name,

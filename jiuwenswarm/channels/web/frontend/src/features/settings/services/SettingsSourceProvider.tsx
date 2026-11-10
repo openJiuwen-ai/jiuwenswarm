@@ -4,10 +4,12 @@ import { Loading } from '../../../components/ui';
 import type { SettingValue, SettingsSource } from '../registry/types';
 import { useSettingsServices } from './SettingsServicesProvider';
 import { serializeConfigSettingValue } from './settingsSourceContract';
+import { readLocalSettings, saveLocalSettings } from './localSettings';
 import { useSettingsConfig } from './useSettingsConfig';
 import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../desktopBrowserDisplay';
 
 export type SettingsSourceController = {
+  requiresConnection?: boolean;
   values: Readonly<Record<string, unknown>>;
   savingKeys: ReadonlySet<string>;
   save: (
@@ -275,9 +277,26 @@ function LocaleSourceProvider({ children }: { children: ReactNode }) {
   return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
 }
 
+function LocalSourceProvider({ children }: { children: ReactNode }) {
+  const [values, setValues] = useState(readLocalSettings);
+  const save = useCallback(async (updates: Record<string, SettingValue>) => {
+    saveLocalSettings(updates);
+    setValues(readLocalSettings());
+  }, []);
+  const patchLocal = useCallback((updates: Record<string, unknown>) => {
+    setValues((current) => ({ ...current, ...updates } as Record<string, SettingValue>));
+  }, []);
+  const value = useMemo<SettingsSourceController>(
+    () => ({ values, savingKeys: new Set<string>(), save, patchLocal, requiresConnection: false }),
+    [values, save, patchLocal],
+  );
+  return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
+}
+
 export function SettingsSourceProvider({ source, children }: { source?: SettingsSource; children: ReactNode }) {
   if (source === 'config') return <ConfigSourceProvider>{children}</ConfigSourceProvider>;
   if (source === 'browser') return <BrowserSourceProvider>{children}</BrowserSourceProvider>;
   if (source === 'locale') return <LocaleSourceProvider>{children}</LocaleSourceProvider>;
+  if (source === 'local') return <LocalSourceProvider>{children}</LocalSourceProvider>;
   return children;
 }

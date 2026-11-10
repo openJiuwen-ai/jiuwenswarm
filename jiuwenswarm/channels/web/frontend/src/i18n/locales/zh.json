@@ -1,4 +1,87 @@
 {
+  "meeting": {
+    "controls": {
+      "title": "会议控制",
+      "minimize": "收起会议控制"
+    },
+    "panel": {
+      "title": "会议",
+      "addressedAgents": "会议当前提及的智能体",
+      "noAddressedAgents": "当前未提及智能体",
+      "speechRoute": "您的语音发送给",
+      "microphone": "麦克风",
+      "pauseMicrophone": "暂停麦克风",
+      "microphoneStates": {
+        "ready": "已暂停",
+        "recording": "正在聆听",
+        "transcribing": "正在转写…"
+      },
+      "playback": "智能体发言",
+      "noSpeaker": "暂无智能体发言",
+      "transcript": "最近识别的语音",
+      "waitingForSpeech": "正在等待您的语音…",
+      "empty": "创建团队后可使用会议控制，新团队遵循实验性设置中的全局会议默认值。",
+      "states": {
+        "failed": "会议启用失败",
+        "idle": "无进行中的会议",
+        "starting": "正在启动",
+        "active": "进行中",
+        "closing": "正在停用会议…",
+        "cleanup_failed": "需要重试清理"
+      }
+    },
+    "routing": {
+      "title": "会议输入路由",
+      "description": "Leader：会议主持人；None：不指定接收者。下次会议生效。",
+      "leader": "Leader",
+      "none": "None"
+    },
+    "playback": {
+      "loading": "正在准备 {{speaker}}（{{voice}}）…",
+      "playing": "{{speaker}} 正在发言（{{voice}}）",
+      "paused": "语音已暂停。请结束会议后重新开始。",
+      "failed": "语音播放失败。请阅读文字记录后结束会议。"
+    },
+    "task": {
+      "teamRequired": "创建团队后即可启用会议。",
+      "enable": "启用会议",
+      "enabled": "会议已启用",
+      "enabling": "正在启用会议…",
+      "disabling": "正在停用会议…",
+      "retryEnable": "重试启用会议",
+      "closing": "正在停用会议…",
+      "retryCleanup": "重试停用会议",
+      "stop": "停用会议"
+    },
+    "title": "团队会议",
+    "stopPlayback": "停止语音",
+    "leader": "主持人",
+    "record": {
+      "ready": "恢复麦克风",
+      "recording": "暂停麦克风（发送当前语句）",
+      "transcribing": "正在转写…"
+    },
+    "errors": {
+      "playbackUnavailable": "无法准备会议语音。请检查 Qwen 配置后重试。",
+      "cleanupFailed": "尚未确认会议清理完成，请重试停用会议。",
+      "inputStreamFailed": "麦克风推流因连接异常已停止，请重新开始会议。",
+      "unsupported": "语音录制需要支持的浏览器和安全连接。",
+      "microphoneFailed": "无法访问麦克风，请检查浏览器权限后重试。",
+      "meetingStartFailed": "无法启用团队会议，请重试。",
+      "meetingBusy": "此团队会议已在另一个标签页中打开。",
+      "microphoneEnded": "麦克风已断开。",
+      "disconnected": "连接已断开，请在重连后重新开始会议。",
+      "recordingTooLarge": "录音过大，请录制更短的消息。",
+      "recordingFailed": "无法录制音频，请重试。",
+      "transcriptionFailed": "无法转写录音，请重试。",
+      "emptyTranscript": "未检测到清晰语音，请重新录制。",
+      "deliveryFailed": "消息投递失败，请重试。",
+      "playbackFailed": "无法播放智能体回复，完整文字仍然可用。",
+      "playbackSkipped": "语音播放失败。已跳过本段语音并继续处理队列，完整文字仍然可用。",
+      "playbackOverloaded": "待播放语音过多，请在会议记录中阅读完整回复。",
+      "inputBarrierFailed": "消息已接收，但会议播放无法恢复。请结束会议后重新开启。"
+    }
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity 未返回用户标识。",
     "noContext": "当前账号没有可用的 Agent，请先在管理面完成授权。",
@@ -871,7 +954,8 @@
       "multiModelCollaboration": "多模型协同",
       "toolOptimize": "工具检索优化",
       "designMode": "设计模式",
-      "computerControl": "电脑操控"
+      "computerControl": "电脑操控",
+      "tts": "语音合成"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -1253,6 +1337,52 @@
         "title": "API Key",
         "description": "JEV 服务的密钥。",
         "placeholder": "输入 API Key"
+      },
+      "tts_provider": {
+        "title": "语音合成服务",
+        "description": "各服务使用同一组地址、密钥、模型和音色设置。切换时会替换这些值，之后请重新开始会议。"
+      },
+      "tts_api_base": {
+        "title": "语音合成 API 地址",
+        "description": "CosyVoice 填写 HTTP(S) 基础地址或 /audio/speech 地址，Qwen 填写实时 WebSocket 地址。",
+        "placeholder": "https://api.siliconflow.cn/v1"
+      },
+      "tts_api_key": {
+        "title": "语音合成 API 密钥",
+        "description": "已保存的密钥不会显示，输入新密钥可替换。与语音识别密钥独立配置。",
+        "placeholder": "输入 API 密钥"
+      },
+      "tts_model": {
+        "title": "语音合成模型",
+        "description": "用于朗读会议发言摘要的模型。",
+        "placeholder": "FunAudioLLM/CosyVoice2-0.5B"
+      },
+      "tts_voice": {
+        "title": "默认语音合成音色",
+        "description": "Leader 的默认音色，其他成员会分配同一模型的稳定音色。更改后请重新开始会议。",
+        "placeholder": "Anna"
+      },
+      "team_meeting_enabled": {
+        "title": "团队会议",
+        "description": "在团队对话中启用语音回复，语音流式输入使用独立的聊天控件。"
+      },
+      "team_meeting_default_enabled": {
+        "title": "为新团队默认启用会议",
+        "description": "新团队创建成功后自动启用会议，现有团队保持当前会议状态。"
+      },
+      "meeting_vad_start_threshold": {
+        "title": "会议语音起始置信度",
+        "description": "范围 0–1，默认 0.5。越低越灵敏，重启会议生效。",
+        "placeholder": "0.5"
+      },
+      "meeting_vad_start_frames": {
+        "title": "会议起始确认帧数",
+        "description": "范围 1–10，默认 5。帧数越少响应越快，重启会议生效。",
+        "placeholder": "5"
+      },
+      "voice_input_routing": {
+        "title": "语音输入路由",
+        "description": "为群聊语音输入选择 Leader 或不指定接收者，下次语音流生效。普通团队输入沿用正常聊天路由。"
       }
     },
     "validation": {
@@ -1268,6 +1398,18 @@
         "apiBaseInvalid": "请输入有效的 HTTP 或 HTTPS 地址，且不包含登录凭据。",
         "intervalInvalid": "请输入大于 0 的整数。"
       }
+    },
+    "tts": {
+      "testTitle": "测试语音合成",
+      "testDescription": "向已保存的语音合成服务、模型和音色发送“this is working”，并播放返回的音频。",
+      "testButton": "测试 TTS",
+      "testing": "测试中…",
+      "testSuccess": "语音合成服务已响应，音频已开始播放。",
+      "testFailed": "语音合成测试失败：未返回音频。",
+      "playbackFailed": "语音合成服务已响应，但音频播放失败。请检查浏览器音频权限后重试。",
+      "switchTitle": "配置所选语音合成服务",
+      "cosyvoice": "CosyVoice2",
+      "qwen": "Qwen Omni"
     }
   },
   "trajectory": {
@@ -6809,6 +6951,34 @@
       "in_progress": "执行中",
       "blocked": "等待中",
       "stopped": "已停止"
+    }
+  },
+  "voiceStreaming": {
+    "routing": {
+      "title": "语音输入路由",
+      "description": "为群聊语音输入选择 Leader 或不指定接收者，下次语音流生效。普通团队输入沿用正常聊天路由。",
+      "leader": "Leader",
+      "none": "None"
+    },
+    "start": "开始语音流式输入",
+    "stop": "停止语音流式输入",
+    "pause": "暂停麦克风并发送当前语句",
+    "resume": "恢复麦克风",
+    "states": {
+      "starting": "正在启动语音输入…",
+      "listening": "正在聆听语音输入",
+      "paused": "麦克风已暂停"
+    },
+    "errors": {
+      "unsupported": "语音流式输入需要支持的浏览器和安全连接。",
+      "microphoneFailed": "无法访问麦克风，请检查浏览器权限。",
+      "microphoneEnded": "麦克风已断开。",
+      "disconnected": "连接已断开，语音输入已停止。",
+      "inputStreamFailed": "连接无法继续处理语音流，请重新开始。",
+      "recordingFailed": "无法采集麦克风音频。",
+      "transcriptionFailed": "无法转写当前语句。",
+      "deliveryFailed": "无法提交语音转写内容，请查看聊天中的错误信息。",
+      "deliveryBacklog": "等待发送的语音转写过多，请重新开始语音输入。"
     }
   }
 }

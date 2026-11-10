@@ -126,6 +126,7 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
+import { isTaskInputBlocked, useTaskInputBlocked } from '../../applicationPlugins/taskInputReadiness';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { getInputProjectOptions, isDefaultInputProject } from './projectSelection';
 import {
@@ -230,6 +231,7 @@ import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
 import { RecordingWaveform } from '../../features/taskAsr/RecordingWaveform';
 import { useTaskAsrEnabled } from '../../features/taskAsr/featureFlag';
 import { ApplicationPluginTaskInputActions } from '../../applicationPlugins/ApplicationPluginOutlet';
+import { VoiceStreamingButton } from '../../features/voice/VoiceStreamingButton';
 
 /** 输入栏下拉所需的最小技能数据结构（与 SkillPanel 中的 SkillItem 保持一致） */
 type InputAreaSkillItem = {
@@ -982,7 +984,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // prompt is a one-shot compose: no abort, and no second prompt while it runs.
   const isDesignLanding = workMode === 'design' && activeSessionId === NEW_CONVERSATION_ID;
   const designLandingSubmitting = isDesignLanding && isProcessing;
+  const applicationInputBlocked = useTaskInputBlocked(activeSessionId);
   const composerDisabled =
+    applicationInputBlocked ||
     agentGroupUnavailable ||
     organizationTeamUnavailable ||
     isCompactRunning ||
@@ -1756,6 +1760,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   ].join('\n');
   // "+" 触发按钮本身不跟图片/目标的可用性挂钩：菜单以后可能挂其他跟图片/目标无关的功能，
   // 触发按钮只要不在录音就该能点开；具体某一项能不能选，交给菜单里每一项各自的禁用态处理。
+  const [applicationMicrophoneActive, setApplicationMicrophoneActive] = useState(false);
+  const [voiceStreamingActive, setVoiceStreamingActive] = useState(false);
   const attachTriggerDisabled = isListening || isTranscribing || composerDisabled;
   const readyAttachments = useMemo(
     () =>
@@ -2859,7 +2865,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   const handleSubmit = useCallback(() => {
-    if (composerDisabled || isListening || isTranscribing || modelGroupSendBlocked) return;
+    if (
+      composerDisabled ||
+      isTaskInputBlocked(activeSessionId) ||
+      isListening ||
+      isTranscribing ||
+      modelGroupSendBlocked
+    ) return;
     if (
       enterprise &&
       isTeamMode &&
@@ -5620,11 +5632,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 {taskAsrEnabled && <button
                   type="button"
                   onClick={toggleRecording}
-                  disabled={composerDisabled || isTranscribing || !taskAsrSupported}
+                  disabled={composerDisabled || isTranscribing || !taskAsrSupported || applicationMicrophoneActive || voiceStreamingActive}
                   className={cx(
                     'chat-input-btn chat-input-btn--microphone',
                     isListening && 'chat-input-btn--recording',
-                    (composerDisabled || isTranscribing || !taskAsrSupported) && 'chat-input-btn--disabled',
+                    (composerDisabled || isTranscribing || !taskAsrSupported || applicationMicrophoneActive || voiceStreamingActive) && 'chat-input-btn--disabled',
                   )}
                   aria-label={isTranscribing ? t('chat.transcribing') : isListening ? t('chat.stopRecording') : t('chat.startRecording')}
                   aria-pressed={isListening}
@@ -5654,7 +5666,16 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 </button>}
                 {micTooltipNode}
 
+                <VoiceStreamingButton
+                  sessionId={activeSessionId}
+                  ensureSession={onEnsureSession}
+                  busy={isListening || isTranscribing || applicationMicrophoneActive}
+                  disabled={composerDisabled || isLoadingHistory || isDesignLanding}
+                  onActiveChange={setVoiceStreamingActive}
+                />
                 <ApplicationPluginTaskInputActions
+                  microphoneBusy={isListening || isTranscribing || voiceStreamingActive}
+                  onMicrophoneActiveChange={setApplicationMicrophoneActive}
                   eligible={fullDuplexActionEligible && (!isTeamMode || isDesignLanding)}
                   hasTextDraft={hasTextDraft}
                   sessionId={activeSessionId}

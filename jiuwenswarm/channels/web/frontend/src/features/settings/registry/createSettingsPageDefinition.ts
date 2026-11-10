@@ -47,12 +47,12 @@ function validateItem(module: SettingsModuleDefinition, sectionId: string, item:
   if (!isSettingsSourceComponent(source, item.key, item.component)) {
     throw new Error(`Component ${item.component} is not compatible with ${source} setting ${item.key}`);
   }
-  if (item.component === 'select') {
+  if (item.component === 'select' && typeof item.options !== 'function') {
     if (item.options.length === 0) throw new Error(`Select item ${module.id}/${sectionId}/${item.id} has no options`);
     const values = item.options.map((option) => `${typeof option.value}:${String(option.value)}`);
     assertUnique(`option in select item ${module.id}/${sectionId}/${item.id}`, values);
     for (const option of item.options) {
-      if (!option.labelKey.trim())
+      if (!(option.labelKey ?? option.label)?.trim())
         throw new Error(`Select item ${module.id}/${sectionId}/${item.id} has an empty option labelKey`);
       if (
         (typeof option.value !== 'string' && typeof option.value !== 'number' && typeof option.value !== 'boolean') ||
@@ -123,7 +123,9 @@ export function validateSettingsI18n(definition: SettingsPageDefinition, hasKey:
       if (item.component === 'custom') continue;
       keys.push(settingItemI18nKey(item, 'title'), settingItemI18nKey(item, 'description'));
       if (item.component === 'input') keys.push(settingItemI18nKey(item, 'placeholder'));
-      if (item.component === 'select') keys.push(...item.options.map((option) => option.labelKey));
+      if (item.component === 'select' && typeof item.options !== 'function') {
+        keys.push(...item.options.flatMap((option) => option.labelKey ? [option.labelKey] : []));
+      }
     }
   }
   for (const key of keys) {

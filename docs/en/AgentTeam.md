@@ -308,6 +308,15 @@ A few things to know:
 - An expert that runs on an external CLI (Claude Code / Codex) needs that CLI enabled for teams, just like other external CLI members.
 - A spawned expert keeps the version it was spawned with: upgrading or uninstalling the package later does not change members already in the team.
 
+### 2.8 Voice meetings
+
+1. In the web app, open **Settings → Experimental** and turn on **Team meetings**. Turn on **Enable meetings for new Teams** to start a meeting automatically when a Team is created.
+2. In **Speech synthesis**, configure the provider, endpoint, key, model, and default voice. Use **Test TTS** to check playback.
+3. Create a Team or open an existing Team conversation. Select **Enable meeting** in the composer, then open **Meeting controls** to see who is speaking. Use the microphone control to talk or continue typing in the composer.
+4. Select **Disable meeting** when you finish. The conversation keeps the text messages that were published during the meeting.
+
+Agent speech plays one speaker at a time. The Leader and members addressed in the current exchange get priority for the next turn. **Meeting input routing** controls whether your speech goes to the Leader or has no designated recipient.
+
 ---
 
 ## Case study

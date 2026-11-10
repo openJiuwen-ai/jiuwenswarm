@@ -164,6 +164,8 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('progressive_tool_optimize', 'experimental', 'boolean', 'progressive_tool_optimize'),
   yamlField('trajectory_ui_diagnosis_enabled', 'experimental', 'boolean', 'trajectory_ui.diagnosis_enabled'),
   yamlField('team_organization_ui_enabled', 'experimental', 'boolean', 'experimental.team_organization_ui_enabled'),
+  yamlField('team_meeting_enabled', 'experimental', 'boolean', 'experimental.team_meeting_enabled'),
+  yamlField('team_meeting_default_enabled', 'experimental', 'boolean', 'experimental.team_meeting_default_enabled'),
   yamlField('comfyui_workflow_enabled', 'experimental', 'boolean', 'experimental.comfyui_workflow_enabled'),
   yamlField('team_scheduled_dispatch_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.dispatch_mode'),
   yamlField(
@@ -190,6 +192,13 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('asr_api_base', 'experimental', 'text', 'ASR_API_BASE'),
   envField('asr_api_key', 'experimental', 'text', 'ASR_API_KEY'),
   envField('asr_model', 'experimental', 'text', 'ASR_MODEL_NAME'),
+  envField('tts_api_base', 'experimental', 'text', 'TTS_API_BASE'),
+  envField('tts_api_key', 'experimental', 'text', 'TTS_API_KEY'),
+  envField('tts_model', 'experimental', 'text', 'TTS_MODEL_NAME'),
+  envField('tts_voice', 'experimental', 'text', 'TTS_VOICE'),
+  envField('tts_provider', 'experimental', 'text', 'TTS_PROVIDER'),
+  envField('meeting_vad_start_threshold', 'experimental', 'text', 'MEETING_VAD_START_THRESHOLD'),
+  envField('meeting_vad_start_frames', 'experimental', 'text', 'MEETING_VAD_START_FRAMES'),
   yamlField(
     'kv_cache_affinity_enabled',
     'experimental',
@@ -280,6 +289,7 @@ export const OPENAI_ACCOUNT_RPC = {
 } as const;
 
 export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
+  'tts.test',
   'config.get',
   'config.save_all',
   'config.validate_model',

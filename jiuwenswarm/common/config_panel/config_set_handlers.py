@@ -36,6 +36,10 @@ from typing import Any
 from openjiuwen.core.foundation.llm import ProviderType
 
 from jiuwenswarm.common.permission_mode import is_auto_permission_mode
+from jiuwenswarm.common.meeting_speech_detection import (
+    SPEECH_START_ENV, speech_start_settings, validate_speech_start_setting,
+)
+from jiuwenswarm.common.voice.config import tts_panel_defaults, validate_tts_update
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
@@ -77,6 +81,7 @@ from jiuwenswarm.common.config import (
     update_swarmflow_enabled_in_config,
     update_symphony_in_config,
     update_task_full_duplex_in_config,
+    update_team_meeting_in_config,
     update_team_organization_ui_in_config,
     update_comfyui_workflow_enabled_in_config,
     update_task_asr_in_config,
@@ -199,9 +204,13 @@ MULTIMODAL_RELOAD_ENV_KEYS = {
     "MUSIC_GEN_PROTOCOL",
 }
 ASR_ENV_KEYS = {
+    *SPEECH_START_ENV.values(),
     "ASR_API_BASE",
     "ASR_API_KEY",
     "ASR_MODEL_NAME",
+}
+TTS_ENV_KEYS = {
+    "TTS_API_BASE", "TTS_API_KEY", "TTS_MODEL_NAME", "TTS_VOICE", "TTS_PROVIDER",
 }
 
 
@@ -226,7 +235,7 @@ class ConfigChangeSet:
             scopes.add("model")
         if MULTIMODAL_RELOAD_ENV_KEYS & set(self.env_updates):
             scopes.add("multimodal")
-        if ASR_ENV_KEYS & set(self.env_updates):
+        if (ASR_ENV_KEYS | TTS_ENV_KEYS) & set(self.env_updates):
             scopes.add("web_ui")
         if SEARCH_RELOAD_ENV_KEYS & set(self.env_updates):
             scopes.add("search")
@@ -376,6 +385,12 @@ CONFIG_SET_ENV_MAP = {
     "asr_api_base": "ASR_API_BASE",
     "asr_api_key": "ASR_API_KEY",
     "asr_model": "ASR_MODEL_NAME",
+    **SPEECH_START_ENV,
+    "tts_api_base": "TTS_API_BASE",
+    "tts_api_key": "TTS_API_KEY",
+    "tts_model": "TTS_MODEL_NAME",
+    "tts_voice": "TTS_VOICE",
+    "tts_provider": "TTS_PROVIDER",
     # agents
     "skills": "SKILLS",
     "max_iterations": "MAX_ITERATIONS",
@@ -407,6 +422,8 @@ CONFIG_YAML_KEYS = frozenset({
     "cua_agent_enabled",
     "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
+    "team_meeting_enabled",
+    "team_meeting_default_enabled",
     "team_organization_ui_enabled",
     "comfyui_workflow_enabled",
     "task_asr_enabled",
@@ -450,6 +467,8 @@ RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
 })
 WEB_UI_YAML_KEYS = frozenset({
     "task_full_duplex_enabled",
+    "team_meeting_enabled",
+    "team_meeting_default_enabled",
     "team_organization_ui_enabled",
     "comfyui_workflow_enabled",
     "setup_guide_enabled",
@@ -1494,6 +1513,17 @@ def apply_config_payload(
             build_moa_config_from_frontend(moa_params, get_config_raw(), resolve_value=resolve_env_vars)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
+    params = dict(params)
+    for key in SPEECH_START_ENV.keys() & params.keys():
+        try:
+            params[key] = validate_speech_start_setting(key, params[key])
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
+    if any(key.startswith("tts_") for key in params):
+        try:
+            validate_tts_update(params)
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
     # Collaboration writes only its switches and interval; Jev credentials use the shared env fields.
     params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
     env_updates: dict[str, str] = {}
@@ -1533,7 +1563,7 @@ def apply_config_payload(
                     f"{param_key} must be a positive integer or a value such as 256K or 1M"
                 )
             val = str(parsed_context_window)
-        if param_key.endswith("_provider") and val and val not in available_model_providers:
+        if param_key.endswith("_provider") and param_key != "tts_provider" and val and val not in available_model_providers:
             raise ConfigPanelBadRequest(f"Model provider must in: {available_model_providers} ")
         if val is None:
             env_updates[env_key] = ""
@@ -1692,6 +1722,8 @@ def apply_config_payload(
                 update_progressive_tool_optimize_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":
                 update_task_full_duplex_in_config(parsed)
+            elif param_key in {"team_meeting_enabled", "team_meeting_default_enabled"}:
+                update_team_meeting_in_config(parsed, default_for_new_teams=param_key == "team_meeting_default_enabled")
             elif param_key == "team_organization_ui_enabled":
                 update_team_organization_ui_in_config(parsed)
             elif param_key == "comfyui_workflow_enabled":
@@ -1869,6 +1901,10 @@ async def config_get_handler(
         param_key: os.getenv(env_key) or ""
         for param_key, env_key in CONFIG_SET_ENV_MAP.items()
     }
+    payload.update(tts_panel_defaults())
+    speech_start = speech_start_settings()
+    payload["meeting_vad_start_threshold"] = str(speech_start["startThreshold"])
+    payload["meeting_vad_start_frames"] = str(speech_start["startFrames"])
     payload["app_version"] = get_runtime_version()
     runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     payload["runtime_platform"] = runtime_platform
@@ -1932,6 +1968,8 @@ async def config_get_handler(
         payload["task_full_duplex_enabled"] = (
             "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
         )
+        for key in ("team_meeting_enabled", "team_meeting_default_enabled"):
+            payload[key] = "true" if experimental_cfg.get(key, False) else "false"
         payload["task_asr_enabled"] = (
             "true" if experimental_cfg.get("task_asr_enabled", False) else "false"
         )
@@ -1986,6 +2024,8 @@ async def config_get_handler(
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
+        payload.setdefault("team_meeting_enabled", "false")
+        payload.setdefault("team_meeting_default_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")

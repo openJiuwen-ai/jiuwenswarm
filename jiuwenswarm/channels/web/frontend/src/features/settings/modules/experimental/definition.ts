@@ -12,6 +12,7 @@ import {
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
 import { MusicGenSettings } from '../agent/AgentSettings';
+import { TtsProviderConfiguration, TtsSynthesisCheck, ttsModelOptions, ttsModelUpdates, ttsProviderOptions, ttsVoiceOptions } from './TtsSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
   id: 'experimental',
@@ -20,9 +21,38 @@ export const experimentalModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
+      id: 'team-meeting',
+      titleKey: 'meeting.title',
+      items: [
+        { id: 'team-meeting-enabled', component: 'switch', key: 'team_meeting_enabled' },
+        { id: 'team-meeting-default-enabled', component: 'switch', key: 'team_meeting_default_enabled' },
+      ],
+    },
+    {
+      id: 'tts',
+      titleKey: 'settingsPanel.experimental.tts',
+      exclusiveEditing: true,
+      items: [
+        { id: 'tts-provider', component: 'select', key: 'tts_provider', options: ttsProviderOptions, configure: TtsProviderConfiguration },
+        { id: 'tts-api-base', component: 'input', key: 'tts_api_base', required: true },
+        { id: 'tts-api-key', component: 'input', key: 'tts_api_key', inputType: 'password', required: true },
+        { id: 'tts-model', component: 'select', key: 'tts_model', options: ttsModelOptions, buildUpdates: ttsModelUpdates },
+        { id: 'tts-voice', component: 'select', key: 'tts_voice', options: ttsVoiceOptions },
+        { id: 'tts-test', component: 'custom', render: TtsSynthesisCheck },
+      ],
+    },
+    {
       id: 'asr',
       titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
+      items: [
+        { id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting },
+        { id: 'voice-input-routing', component: 'select', source: 'local', key: 'voice_input_routing', options: [
+          { value: 'leader', labelKey: 'voiceStreaming.routing.leader' },
+          { value: 'none', labelKey: 'voiceStreaming.routing.none' },
+        ] },
+        { id: 'meeting-vad-start-threshold', component: 'input', key: 'meeting_vad_start_threshold' },
+        { id: 'meeting-vad-start-frames', component: 'input', key: 'meeting_vad_start_frames' },
+      ],
     },
     {
       id: 'task-full-duplex',

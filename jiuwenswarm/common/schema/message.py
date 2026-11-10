@@ -27,6 +27,21 @@ from agent_gateway.common.protocol_methods import _ensure_protocol_member, _ensu
 from jiuwenswarm.enterprise.edition import is_enterprise
 
 
+for _meeting_method, _meeting_value in (
+    ("MEETING_START", "meeting.start"),
+    ("MEETING_STATUS", "meeting.status"),
+    ("MEETING_END", "meeting.end"),
+    ("MEETING_RELEASE", "meeting.release"),
+    ("MEETING_PLAYBACK_READY", "meeting.playback.ready"),
+    ("MEETING_SPEECH_GET", "meeting.speech.get"),
+    ("MEETING_PLAYBACK_RESULT", "meeting.playback.result"),
+    ("MEETING_PLAYBACK_STOPPED", "meeting.playback.stopped"),
+    ("MEETING_INPUT_PREPARE", "meeting.input.prepare"),
+    ("MEETING_INPUT_ADMITTED", "meeting.input.admitted"),
+):
+    _ensure_req_method(_meeting_method, _meeting_value)
+
+
 # Published release methods required by JiuwenMate and its existing callers.
 _ensure_req_method("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound")
 _ensure_req_method("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound")
