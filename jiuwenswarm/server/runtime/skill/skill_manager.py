@@ -4147,15 +4147,22 @@ class SkillManager:
 
         existing = self._find_skill_dir_by_installed_asset_id(asset_id)
         if existing is not None and not is_skillpack(existing) and not skillpack_productization_enabled():
-            return {
-                "success": True,
-                "skill": {
-                    "name": existing.name,
-                    "source": "teamskillshub",
-                    "asset_id": asset_id,
-                    "path": str(existing),
-                },
-            }
+            try:
+                installed_version = get_current_version(existing) or ""
+            except SkillArchiveError:
+                installed_version = ""
+            # 幂等短路仅限显式指定版本且与已装一致；未指定版本（取远端
+            # 最新）或版本不同都必须继续下载比对，市场更新不能静默假成功。
+            if version_str and installed_version == version_str:
+                return {
+                    "success": True,
+                    "skill": {
+                        "name": existing.name,
+                        "source": "teamskillshub",
+                        "asset_id": asset_id,
+                        "path": str(existing),
+                    },
+                }
 
         try:
             base_url = self._get_team_skills_hub_base_url(
@@ -4255,15 +4262,32 @@ class SkillManager:
                         # 即使 force=true 也不得覆盖同名本地 Skill
                         installed_same = get_installed_asset_id(dest) == asset_id
                         if installed_same:
-                            return {
-                                "success": True,
-                                "skill": {
-                                    "name": skill_name,
-                                    "source": "teamskillshub",
-                                    "asset_id": asset_id,
-                                    "path": str(dest),
-                                },
-                            }
+                            try:
+                                installed_version = get_current_version(dest) or ""
+                            except SkillArchiveError:
+                                installed_version = ""
+                            if installed_version == product_version:
+                                return {
+                                    "success": True,
+                                    "skill": {
+                                        "name": skill_name,
+                                        "source": "teamskillshub",
+                                        "asset_id": asset_id,
+                                        "path": str(dest),
+                                    },
+                                }
+                            # 同一资产的新版本：不覆盖落盘，明确告知版本差
+                            # 并引导先卸载，替代原先"下载完也不装还报成功"。
+                            version_note = (
+                                f"本地版本 v{installed_version}"
+                                if installed_version
+                                else "本地版本未知"
+                            )
+                            raise SkillRpcError(
+                                ERROR_SKILL_NAME_CONFLICT,
+                                f"本地已安装同名 Skill: {skill_name}（{version_note}，"
+                                f"市场版本 v{product_version}），请先卸载后重新安装以升级",
+                            )
                         raise SkillRpcError(
                             ERROR_SKILL_NAME_CONFLICT,
                             f"本地已存在同名 Skill: {skill_name}",

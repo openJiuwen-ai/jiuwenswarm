@@ -35,12 +35,12 @@ class TeamSkillsHubHarnessSkillManager(SkillManager):
         self._safe_extract_zip_to_dir(zip_path, out_dir)
 
 
-def _build_skill_zip_bytes(*, skill_name: str) -> bytes:
+def _build_skill_zip_bytes(*, skill_name: str, version: str = "1.0.0") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            ("---\n" f"name: {skill_name}\n" "description: test skill\n" "version: 1.0.0\n" "---\n" "body\n"),
+            ("---\n" f"name: {skill_name}\n" "description: test skill\n" f"version: {version}\n" "---\n" "body\n"),
         )
     return buf.getvalue()
 
@@ -402,7 +402,7 @@ async def test_handle_skills_team_skills_hub_install_flat_zip_does_not_copy_stag
 
 @pytest.mark.asyncio
 async def test_handle_skills_team_skills_hub_install_idempotent_same_asset(tmp_path):
-    """相同 installed_asset_id 再次安装应直接成功，不请求远端."""
+    """显式指定且与已装一致的版本再次安装应直接成功，不请求远端."""
     from jiuwenswarm.server.runtime.skill.archive_store import write_skillhub_first_install_index
 
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
@@ -429,9 +429,119 @@ async def test_handle_skills_team_skills_hub_install_idempotent_same_asset(tmp_p
     manager.set_mock_get_data(_should_not_call)
     manager.set_mock_download(_should_not_call)
 
+    payload = await manager.handle_skills_team_skills_hub_install(
+        {"asset_id": "demo-skill", "version": "1.0.0"}
+    )
+    assert payload["success"] is True
+    assert payload["skill"]["path"] == str(dest)
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_install_same_version_latest_is_idempotent(
+    tmp_path,
+):
+    """不指定版本时取远端最新比对：远端版本与已装一致 → 幂等成功且不动本地。"""
+    from jiuwenswarm.server.runtime.skill.archive_store import read_versions_index
+
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    dest = tmp_path / "skills" / "demo-skill"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: test\n---\nbody\n",
+        encoding="utf-8",
+    )
+    content = dest / ".archive" / "versions" / "content" / "ver-abc"
+    content.mkdir(parents=True)
+    shutil.copy2(dest / "SKILL.md", content / "SKILL.md")
+    from jiuwenswarm.server.runtime.skill.archive_store import write_skillhub_first_install_index
+
+    write_skillhub_first_install_index(
+        dest,
+        version="1.0.0",
+        asset_id="demo-skill",
+        storage_id="ver-abc",
+        checksum_sha256="abc",
+    )
+    download_calls: list[str] = []
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        assert path == "/api/v1/artifacts/demo-skill"
+        return {
+            "download_url": _TEAM_SKILLS_HUB_ZIP_URL,
+            "checksum_sha256": "",
+            "version": "1.0.0",
+        }
+
+    async def _fake_download(url, **kwargs):  # noqa: ANN001
+        download_calls.append(url)
+        return _build_skill_zip_bytes(skill_name="demo-skill")
+
+    manager.set_mock_get_data(_fake_get_data)
+    manager.set_mock_download(_fake_download)
+
     payload = await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
     assert payload["success"] is True
     assert payload["skill"]["path"] == str(dest)
+    assert download_calls, "需要下载远端制品才能比对最新版本"
+    index = read_versions_index(dest)
+    assert index["current_version"] == "1.0.0"
+    assert len(index["versions"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_install_newer_version_reports_conflict(
+    tmp_path,
+):
+    """市场发布新版本时不能再静默假成功：明确报冲突并带出版本差，本地保持不变。"""
+    from jiuwenswarm.server.runtime.skill.archive_store import (
+        get_current_version,
+        write_skillhub_first_install_index,
+    )
+
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    dest = tmp_path / "skills" / "demo-skill"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: test\n---\nbody\n",
+        encoding="utf-8",
+    )
+    content = dest / ".archive" / "versions" / "content" / "ver-abc"
+    content.mkdir(parents=True)
+    shutil.copy2(dest / "SKILL.md", content / "SKILL.md")
+    write_skillhub_first_install_index(
+        dest,
+        version="1.0.0",
+        asset_id="demo-skill",
+        storage_id="ver-abc",
+        checksum_sha256="abc",
+    )
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        return {
+            "download_url": _TEAM_SKILLS_HUB_ZIP_URL,
+            "checksum_sha256": "",
+            "version": "2.0.0",
+        }
+
+    async def _fake_download(url, **kwargs):  # noqa: ANN001
+        return _build_skill_zip_bytes(skill_name="demo-skill", version="2.0.0")
+
+    manager.set_mock_get_data(_fake_get_data)
+    manager.set_mock_download(_fake_download)
+
+    with pytest.raises(SkillRpcError) as exc_info:
+        await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
+    assert exc_info.value.code == "SKILL_NAME_CONFLICT"
+    assert "1.0.0" in exc_info.value.message and "2.0.0" in exc_info.value.message
+    # 本地目录与版本索引保持原样
+    assert get_current_version(dest) == "1.0.0"
+    index = json.loads(
+        (dest / ".archive" / "versions" / "index.json").read_text(encoding="utf-8")
+    )
+    assert len(index["versions"]) == 1
+    assert (dest / "SKILL.md").read_text(encoding="utf-8").startswith(
+        "---\nname: demo-skill"
+    )
 
 
 @pytest.mark.asyncio
