@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from subprocess import Popen
 
 import pytest
 
@@ -15,10 +16,7 @@ from openjiuwen.core.sys_operation.shell_process_registry import (
     register_shell_process,
     SHELL_PROCESS_REGISTRY,
 )
-from jiuwenswarm.agents.harness.common.tools.command_tools import (
-    CommandCancelled,
-    _run_command_sync,
-)
+from jiuwenswarm.agents.harness.common.tools import command_tools
 
 
 @pytest.mark.asyncio
@@ -37,20 +35,29 @@ async def test_kill_asyncio_shell_process() -> None:
     assert proc.returncode is not None
 
 
-def test_kill_sync_command_process() -> None:
-    def _run() -> None:
-        try:
-            _run_command_sync("sleep 30", 60, Path("."), "bash", session_id="sess_sync")
-        except CommandCancelled:
-            return
+def test_kill_sync_command_process(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    registered = threading.Event()
+    kill_finished = threading.Event()
 
-    thread = threading.Thread(target=_run)
-    thread.start()
-    time.sleep(0.2)
-    killed = kill_shell_processes_for_session("sess_sync")
-    assert killed == 1
-    thread.join(timeout=5)
-    assert not thread.is_alive()
+    def _register(session_id: str, proc: Popen[str]) -> None:
+        register_shell_process(session_id, proc)
+        registered.set()
+        # Keep the command's cancellation loop from terminating the process first.
+        kill_finished.wait()
+
+    monkeypatch.setattr(command_tools, "register_shell_process", _register)
+    monkeypatch.setenv("JW_START_NEW_SESSION", "true")
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        command = executor.submit(
+            command_tools._run_command_sync, "sleep 30", 5, tmp_path, "bash", session_id="sess_sync"
+        )
+        try:
+            assert registered.wait(timeout=5), "The command process was not registered"
+            assert kill_shell_processes_for_session("sess_sync") == 1
+        finally:
+            kill_finished.set()
+        with pytest.raises(command_tools.CommandCancelled):
+            command.result(timeout=5)
 
 
 @pytest.mark.asyncio
