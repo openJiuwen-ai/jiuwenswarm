@@ -67,6 +67,45 @@ def _early_error(component_name: str, message: str) -> None:
     _early_logger.error("[%s] %s", component_name, message)
 
 
+def _install_dotenv_decode_guard() -> None:
+    # pymilvus/settings.py、image_tools.py 导入时无参 load_dotenv()，find_dotenv 会命中
+    # OfficeAce 安装根的 .env；该文件被外部改成非 UTF-8 时 UnicodeDecodeError 未捕获，
+    # sidecar 启动即退出并无限重启。这类隐式/第三方读取降级为跳过；启动阶段加载受管
+    # .env 的入口（load_dotenv_runtime、CLI 入口、instance_manager bootstrap）先调
+    # ensure_utf8_dotenv 严格校验，失败照旧抛出（S_07 N5/N6）。运行期补载点（memory
+    # config、skill_sleep）与本就吞异常的 acp/cli 保持尽力而为。
+    # 挂在 DotEnv.dict 而非包装 load_dotenv：包装函数的栈帧会改变 find_dotenv 按调用方
+    # 帧定位 .env 的结果。Reader 一次性 read() 全文，解码失败时尚未写入任何环境变量。
+    try:
+        import dotenv.main as dotenv_main
+    except ImportError:
+        return
+    original = dotenv_main.DotEnv.dict
+    if getattr(original, "jiuwenswarm_decode_guard", False):
+        return
+
+    def guarded_dict(self):
+        try:
+            return original(self)
+        except UnicodeDecodeError as exc:
+            _early_error(
+                "dotenv",
+                f"skip non-UTF-8 env file {self.dotenv_path}: {exc}; re-save it as UTF-8",
+            )
+            return {}
+
+    guarded_dict.jiuwenswarm_decode_guard = True
+    dotenv_main.DotEnv.dict = guarded_dict
+
+
+_install_dotenv_decode_guard()
+
+
+def ensure_utf8_dotenv(dotenv_path: str | Path | None) -> None:
+    if dotenv_path is not None and Path(dotenv_path).is_file():
+        Path(dotenv_path).read_bytes().decode("utf-8")
+
+
 # Port / bind keys injected for the current launch session (desktop or
 # jiuwenswarm-start). When a session flag is set, load_dotenv(override=True)
 # must not clobber them with stale values from ~/.jiuwenswarm/config/.env
@@ -113,6 +152,8 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
         return False
 
     from dotenv import load_dotenv
+
+    ensure_utf8_dotenv(dotenv_path)
 
     # relay-claw spawn env 注入 EXTENSION_DIRS；.env 的空值会经 override=True 覆盖。
     saved_extension_dirs = os.environ.get("EXTENSION_DIRS")
@@ -321,6 +362,7 @@ __all__ = [
     "DESKTOP_PRESERVED_ENV_KEYS",
     "parse_dotenv_early",
     "load_dotenv_runtime",
+    "ensure_utf8_dotenv",
     "get_parsed_dotenv",
     "set_component_name",
     "load_instance_bootstrap_by_name",
