@@ -341,6 +341,7 @@ class RuntimeSupervisor:
                     return False
                 # Publish recovery only after retirement succeeded. Refused
                 # ownership or an unobserved exit must leave FAILED sticky.
+                self._worker_reached_ready = False
                 self._fatal = False
                 self._fatal_reason = ""
                 self._restart_count = 0
@@ -691,6 +692,11 @@ class RuntimeSupervisor:
                             )
                             existing = conn
                         else:
+                            # EOF may precede process exit. Charge a lost ready
+                            # resident before replacing it, never for reattachment.
+                            self._record_post_ready_exit("resident worker replacement after disconnect")
+                            if self._fatal:
+                                raise RuntimeError(self._fatal_reason)
                             process = WorkerProcess(
                                 self._socket_path, host=self._host, port=self._port,
                                 stub=self._stub, stub_ready_delay=self._stub_ready_delay,
@@ -734,6 +740,7 @@ class RuntimeSupervisor:
                             if existing is None or attempt:
                                 raise RuntimeError("new Worker build identity did not match its parent")
                             logger.warning("[Supervisor] replacing resident Worker from a different code build")
+                            self._worker_reached_ready = False
                             try:
                                 await retire_worker(conn, hello, self._socket_path,
                                     deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT, allow_legacy=True)
@@ -817,7 +824,10 @@ class RuntimeSupervisor:
                 await listener.close()
 
     async def _bring_up(self) -> None:
-        self._worker_reached_ready = False
+        # Resident readiness belongs to the process, not its IPC connection.
+        # Keep it until exit is confirmed or a replacement is needed.
+        if self._ipc_mode == FRONT_LOOPBACK:
+            self._worker_reached_ready = False
         await self._cancel_side_tasks()
         if self._ipc_mode == FRONT_LOOPBACK:
             launch_identity = await self._connect_attached()
