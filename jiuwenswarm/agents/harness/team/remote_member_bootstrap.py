@@ -2530,6 +2530,15 @@ def _rebuild_member_sandbox_gate(
             update={"sys_operation": teammate_sysop}
         )
 
+    # KD7 parity with the leader side (assembly logs failed entries at
+    # warning): partial degradation on the teammate node must be as visible.
+    if failed_entries:
+        logger.warning(
+            "[RemoteMemberBootstrap] team members stay LOCAL: entry card "
+            "build failed for %s (team=%s)",
+            failed_entries,
+            getattr(spec, "team_name", ""),
+        )
     logger.info(
         "[RemoteMemberBootstrap] rebuilt team entry sandbox specs from local "
         "config (entries=%d, failed=%s, team=%s)",

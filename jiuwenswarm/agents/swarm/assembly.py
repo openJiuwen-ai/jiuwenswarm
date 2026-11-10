@@ -595,18 +595,33 @@ def _entry_slug(value: str) -> str:
 
     jiuwenbox validates custom sandbox ids against ``^[0-9a-z_-]+$``
     (models/sandbox.py), so the slug is lowercased and every stray character
-    (notably ``#`` from binder directory names) degrades to ``-``. Names longer
-    than 80 chars keep a 12-hex digest suffix so two distinct oversized keys
-    cannot collapse onto the same truncated slug (key/id bijection, KD2).
+    (notably ``#`` from binder directory names) degrades to ``-``.
+
+    Anti-collision (key/id bijection, KD2) — two distinct raw names must never
+    map to the same slug. Lossy folds keep a 12-hex digest suffix derived
+    from the raw name:
+      - oversize: names longer than 80 chars use ``slug[:67]-<digest12>``
+        so truncation cannot merge two names;
+      - degenerate fold: names whose characters all fold away (pure CJK,
+        pure punctuation, ...) would ALL fall back to the same constant and
+        share one isolation key — Chinese member names are common in this
+        user base — so they get ``entry-<digest12>`` instead;
+      - partial fold: a name that keeps some characters but lost others
+        (e.g. ``a#1`` vs ``a-1`` fold identically) also keeps the digest.
+      A lossless fold (safe charset, case-folded only) needs no digest.
     """
     raw = str(value or "")
     slug = re.sub(r"[^0-9a-zA-Z_-]", "-", raw).lower().strip("-_")
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12] if raw else ""
     if not slug:
-        return "entry"
+        # Everything folded away (e.g. a pure-CJK name): distinct raw names
+        # stay distinct via the digest; the constant prefix keeps ids readable.
+        return f"entry-{digest}" if digest else "entry"
+    if len(slug) <= 80 and slug == raw.lower():
+        return slug  # lossless fold: no information lost, no digest needed
     if len(slug) <= 80:
-        return slug
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
-    return f"{slug[:67]}-{digest}"
+        return f"{slug[:67]}-{digest}"  # partial fold: digest guards merges
+    return f"{slug[:67]}-{digest}"  # oversize truncation: digest guards merges
 
 
 def _entry_sandbox_slug(team_name: str, entry_name: str) -> str:

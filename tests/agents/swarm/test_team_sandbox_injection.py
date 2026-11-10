@@ -317,3 +317,31 @@ def test_injection_threads_project_dir_into_policy(monkeypatch: pytest.MonkeyPat
     launcher = spec.agents["leader"].sys_operation.gateway_config.launcher_config
     binds = launcher.extra_params["policy"]["filesystem_policy"]["bind_mounts"]
     assert str(project) in {b["host_path"] for b in binds}
+
+
+def test_entry_slug_cjk_names_do_not_collapse() -> None:
+    """SF-1: pure-CJK names must not all fold to the same "entry" fallback.
+
+    Chinese member/team names are common in this repo's user base; if every
+    纯中文 name collapsed to "entry", multiple members in one team would map
+    to the same isolation key and share one container — KD2 bijection would
+    fail systemically. Distinct raw names must yield distinct slugs (digest
+    suffix on fold, mirroring the oversized-name protection).
+    """
+    from jiuwenswarm.agents.swarm.assembly import _entry_slug
+
+    a = _entry_slug("张三")
+    b = _entry_slug("李四")
+    assert a != b, f"CJK names collapsed to the same slug: {a!r}"
+    # folded names keep a stable, jiuwenbox-safe charset
+    assert re.fullmatch(r"[0-9a-z_-]+", a)
+    # stability: same name maps to the same slug across enrich runs
+    assert _entry_slug("张三") == a
+
+
+def test_entry_sandbox_slug_cjk_team_and_member() -> None:
+    """Full id composition stays distinct for CJK teams/members too."""
+    id_a = _entry_sandbox_slug("我的团队", "王五")
+    id_b = _entry_sandbox_slug("我的团队", "赵六")
+    assert id_a != id_b
+    assert re.fullmatch(r"[0-9a-z_-]+", id_a)
