@@ -373,6 +373,25 @@ async def test_unified_todo_valid_batch_keeps_existing_payload_and_session() -> 
 
 
 @pytest.mark.asyncio
+async def test_unified_todo_does_not_call_unknown_commit_a_validation_rejection():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from openjiuwen.core.common.exception.codes import StatusCode
+    from openjiuwen.core.common.exception.errors import BaseError, build_error
+
+    error = build_error(StatusCode.TOOL_TODOS_VALIDATION_INVALID,
+                        reason="More than one task is marked as 'in_progress'")
+    error.tool_commit_state = "unknown"
+    listing = AsyncMock()
+    tool = UnifiedTodoTool({"modify": SimpleNamespace(invoke=AsyncMock(side_effect=error)),
+                            "list": SimpleNamespace(invoke=listing)}, language="en")
+    with pytest.raises(BaseError) as caught:
+        await tool.invoke({"action": "modify", "modify_action": "update", "todos": [{"id": "A"}]})
+    assert caught.value is error
+    listing.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_unified_todo_unsupported_action_returns_error() -> None:
     tool = UnifiedTodoTool({}, language="cn")
 

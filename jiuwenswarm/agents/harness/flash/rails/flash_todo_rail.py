@@ -34,7 +34,11 @@ from jiuwenswarm.agents.harness.flash.tools.flash_todo import (
     _UNIFIED_TODO_NAME,
     UnifiedTodoTool,
 )
-from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+from jiuwenswarm.common.todo_snapshot import (
+    format_todos_for_frontend,
+    project_todo_snapshot,
+    versioned_todo_output,
+)
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
     RefusalScrubGate,
@@ -371,12 +375,17 @@ class FlashTodoRail(DeepAgentRail):
         if session is None or not self._open_todos:
             return
         open_todos = list(self._open_todos)
-        if not await self._persist_cancel_open_todos(session, open_todos):
+        result = await self._persist_cancel_open_todos(session, open_todos)
+        if result is None:
             return
         self._open_todos = []
-        rows = await self._refusal_todo_rows(session)
+        rows = await self._refusal_todo_rows(session, result)
         if rows is not None:
-            await self._write_control(session, "todo.updated", {"todos": rows})
+            payload = {"todos": rows}
+            meta = getattr(rows, "todo_meta", None)
+            if meta is not None:
+                payload["todo_meta"] = meta
+            await self._write_control(session, "todo.updated", payload)
         for todo_id, meta in open_todos:
             await self._write_control(session, "task.complete", {
                 "task_id": f"todo:{todo_id}",
@@ -386,28 +395,39 @@ class FlashTodoRail(DeepAgentRail):
                 "source": "todo",
             })
 
-    async def _persist_cancel_open_todos(self, session: Any, open_todos: list) -> bool:
+    async def _persist_cancel_open_todos(self, session: Any, open_todos: list):
         modify = self.engines.get("modify")
         ids = [todo_id for todo_id, _ in open_todos]
         if modify is None or not ids:
             logger.warning("[FlashTodoRail] refusal cancel skipped: no modify engine")
-            return False
+            return None
         try:
             result = await modify.invoke({"action": "cancel", "ids": ids}, session=session)
         except Exception as exc:
             logger.warning("[FlashTodoRail] refusal cancel failed: %s", exc)
-            return False
+            return None
         message = str(result.get("message") or "") if isinstance(result, dict) else ""
         if not message.startswith("Successfully cancelled"):
             logger.warning("[FlashTodoRail] refusal cancel rejected: %s", message)
-            return False
-        return True
+            return None
+        return result
 
-    async def _refusal_todo_rows(self, session: Any) -> list[dict[str, Any]] | None:
+    async def _refusal_todo_rows(self, session: Any, result=None) -> list[dict[str, Any]] | None:
         """Snapshot after cancel. Cancelled rows stay out, matching history replay."""
+        snapshot = snapshot_from_result(result)
+        if snapshot is not None:
+            # 取消回执的内容和版本一起发送，不能拼接另一并发提交的读取结果。
+            if versioned_todo_output():
+                return project_todo_snapshot(snapshot)
+            return format_todos_for_frontend(snapshot.todos)
         items = await self._load_todo_items(session)
         if items is None:
             return None
+        if versioned_todo_output():
+            snapshot = getattr(items, "snapshot", None)
+            if snapshot is None or not snapshot.exists or not snapshot.read_authoritative:
+                return None
+            return project_todo_snapshot(snapshot)
         return format_todos_for_frontend(items)
 
     async def _load_todo_items(self, session: Any) -> list[Any] | None:

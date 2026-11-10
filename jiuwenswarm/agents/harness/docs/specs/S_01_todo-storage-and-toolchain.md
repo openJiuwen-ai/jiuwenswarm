@@ -8,7 +8,7 @@
 | 编号 / slug | S_01 / todo-storage-and-toolchain |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/tools/todo_resume.py`、`todo_compat.py`、`todo_toolkits.py`；装配点 `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`install_todo_modify_compat_patch` 模块级调用） |
 | 关联模块（agent-core 仓，跨仓契约） | `openjiuwen/harness/tools/todo.py`（主链四工具）、`openjiuwen/harness/schema/task.py`（`TodoItem` / `TodoStatus`）、`openjiuwen/harness/workspace/workspace.py`（workspace 布局中的 `todo` 目录） |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -75,6 +75,8 @@
 | `insert_before` | `todo_data: {target_id, items}` | 目标状态须 `pending` |
 
 错误码沿用 TOOL_TODOS_VALIDATION_INVALID（参数/状态）、TOOL_TODOS_LOAD_FAILED、TOOL_TODOS_SAVE_FAILED、TOOL_TODOS_INVOKE_FAILED 与 TOOL_STREAM_NOT_SUPPORTED。已有 BaseError 原样透传，不重复包装 182504；details 补充字段/条目或迁移原因。Core update 的部分成功与 Compatible 的整批拒绝分别保留；纯输入形状先校验，计划及状态冲突在事务中判断。
+
+发布请求发出后无法确认结果时，模型可见错误文本必须说明文件可能已修改，应先读取当前 Todo 再判断，不可盲目重放。沿用原错误码和取消控制流；内部 commit_state=unknown、applied_count=None 不进入工具结果 JSON。已确认冲突继续按 N7 有界重算，不与未知结果混淆。
 
 创建策略按原设计归宿主：普通 Core/Code 保留 require_explicit_plan_action=False，Flash 显式开启活动计划保护；同 invoke 创建限制不变，明确 new/rebuild 不归零 revision、不绕过已登记文件丢失保护。
 

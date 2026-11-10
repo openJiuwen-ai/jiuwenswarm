@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / session-metadata |
 | 关联模块 | `jiuwenswarm/server/runtime/session/session_metadata.py`（2,041 行） |
-| 最近一次修订日期 | 2026-10-30 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -68,7 +68,7 @@ round_id 等运行侧字段；remote 模式下 `channels/web/history_store/db_ac
   长期错位），丢弃后下次读退化为一次磁盘读。`_METADATA_CACHE_MAX = 8192`
   （:51），超帽 FIFO 逐最旧（`_evict_metadata_cache_locked` :54-57，调用方
   必须已持 `_CACHE_LOCK`）。
-- **N3 三锁分工**：`_FILE_LOCK`（:42）串行化所有进程内文件写（tmp+replace
+- **N3 三锁分工**：`_FILE_LOCK`（:42）串行化通用队列的进程内文件写（tmp+replace
   临界区）；`_CACHE_LOCK`（:47）保护缓存 dict 并发读写；`_SESSION_PIN_LOCK`
   （:1540）序列化 pin 的「设置→收集→重编号→写回」四步（见 N9）。三锁
   互不嵌套获取，无顺序死锁面。
@@ -149,9 +149,10 @@ round_id 等运行侧字段；remote 模式下 `channels/web/history_store/db_ac
   `_TODO_INITIALIZED_KEY`（`todo_initialized`，:43）标记「首个 Todo 对象
   是否已确认初始化」：`init_session_metadata` 传 `new_todo_object=True`
   （:1061）时写 `False`（:1101-1102）；`check_todo_initialization`（:865）
-  在 `_FILE_LOCK` + portalocker 内读-改-写消费标记（`committing=True` 置
-  `True` :898，tmp+fsync+replace :899-907），文件丢失且标记已消费则拒绝
-  重建（:894-895），结束后失效缓存条目。**写路径保护**：
+  仅在该会话的 portalocker 文件锁内读-改-写消费标记（`committing=True` 置
+  `True`，tmp+fsync+replace），文件丢失且标记已消费则拒绝重建，结束后失效缓存条目。
+  文件锁同时保护同会话跨线程和跨进程竞争；等待单会话锁时不占用 `_FILE_LOCK`，
+  避免阻塞其他会话的 Todo 提交检查。**写路径保护**：
   `_write_metadata_sync` merge 时异步更新**不得重置已消费标记**——磁盘
   现值有则保留、无则从待写数据剔除（:841-845），盘读失败的降级分支同样
   剔除（:846-849）。**读路径不外泄**：`get_session_metadata`（:1534）与

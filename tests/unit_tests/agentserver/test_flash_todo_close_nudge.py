@@ -247,6 +247,37 @@ async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["legacy", "versioned"])
+async def test_refusal_publishes_committed_snapshot_without_rereading(mode):
+    from unittest.mock import AsyncMock
+    from openjiuwen.harness.tools.todo_store import TodoResult, decode_snapshot
+    from jiuwenswarm.common.todo_snapshot import TODO_SNAPSHOT_MODE
+
+    rail, engine = _rail({"collect": TodoStatus.IN_PROGRESS, "script": TodoStatus.PENDING})
+    snapshot = decode_snapshot({"plan_id": "P", "revision": 5, "todos": [
+        {"id": "collect", "content": "collect", "status": "cancelled"},
+        {"id": "script", "content": "script", "status": "pending"},
+    ]})
+    rail.engines["modify"] = SimpleNamespace(invoke=AsyncMock(return_value=TodoResult(
+        {"message": "Successfully cancelled 1 task(s)"}, snapshot,
+    )))
+    rail._open_todos = [("collect", {"content": "collect"})]
+    engine.error = AssertionError("Must use the cancellation receipt, not a later read")
+    session = _FakeSession()
+    token = TODO_SNAPSHOT_MODE.set(mode)
+    try:
+        await rail._close_open_task_segment(session)
+    finally:
+        TODO_SNAPSHOT_MODE.reset(token)
+    payload = next(payload for event, payload in zip(session.events, session.payloads) if event == "todo.updated")
+    assert [row["id"] for row in payload["todos"]] == ["script"]
+    if mode == "versioned":
+        assert payload["todo_meta"] == {"plan_id": "P", "revision": 5}
+    else:
+        assert "todo_meta" not in payload
+
+
+@pytest.mark.asyncio
 async def test_refusal_does_not_announce_cancel_when_persist_fails() -> None:
     rail, engine = _rail({"collect": TodoStatus.IN_PROGRESS})
     rail.engines["modify"] = _FakeModify(engine, fail=True)

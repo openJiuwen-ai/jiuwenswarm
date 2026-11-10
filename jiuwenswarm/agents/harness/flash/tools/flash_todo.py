@@ -261,6 +261,8 @@ class UnifiedTodoTool(Tool):
             try:
                 return await self._engines["modify"].invoke(inner, **kwargs)
             except BaseError as exc:
+                if getattr(exc, "tool_commit_state", None) == "unknown":
+                    raise
                 if "More than one task is marked as 'in_progress'" not in str(exc):
                     raise
                 hint = ""
