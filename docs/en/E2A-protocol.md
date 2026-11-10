@@ -498,7 +498,7 @@ enum registration is required.
 
 ## History payload references and chunk retrieval
 
-Large tool results retain a short preview and may include `payload_refs`. A `chat.llm_call_start` event may also reference the complete model input (messages and tools). Each reference contains `sha256`, `bytes`, `media_type`, and a host path. Clients retrieve content by session and digest rather than opening the host path.
+Large tool results retain a short preview and may include `payload_refs`. For the main agent, `chat.llm_call_start` carries a pre-call preview; `chat.llm_call_end.payload_refs.prompt` references the complete model input (messages and tools) after Core finalizes prompt injection and context processing. Subagents captured by model-input callbacks may still reference their complete input in `chat.llm_call_start`. Each reference contains `sha256`, `bytes`, `media_type`, and a host path. Clients retrieve content by session and digest rather than opening the host path.
 
 `text/plain` identifies an original string; `application/json` identifies the complete structured value. `raw_output_truncated=true` means the inline preview was reduced; a corresponding `payload_refs` entry provides the complete artifact. If artifact storage fails, model/tool events still carry bounded previews without unavailable references, and the failure is logged. Existing small results and inline history keep their semantics.
 
