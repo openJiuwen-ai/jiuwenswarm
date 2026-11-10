@@ -780,17 +780,28 @@ def install_subagent_llm_history_forwarder() -> None:
             from jiuwenswarm.server.runtime.session.history_artifacts import put_prompt
             from jiuwenswarm.server.runtime.session.history_io import run_history_io
 
-            prompt_ref = await run_history_io(
-                put_prompt, parent_id, kwargs.get("messages") or [], kwargs.get("tools") or [],
-            )
+            prompt_ref: dict[str, Any] | None = None
+            try:
+                prompt_ref = await run_history_io(
+                    put_prompt, parent_id, kwargs.get("messages") or [], kwargs.get("tools") or [],
+                )
+            except OSError as exc:
+                server_logger.warning(
+                    "[AgentObservability] subagent prompt artifact unavailable; "
+                    "forwarding preview: session=%s subagent=%s err=%s",
+                    parent_id, sub_type, exc,
+                )
             prompt = _subagent_prompt_preview(kwargs.get("messages"))
             if prompt:
                 _LAST_PROMPT_BY_SESSION[sid] = prompt
             _LAST_CALL_START_BY_SESSION[sid] = time.time()
+            extra: dict[str, Any] = {"prompt": prompt or ""}
+            if prompt_ref is not None:
+                extra["payload_refs"] = {"prompt": prompt_ref}
             _append_subagent_llm_record(
                 parent_id=parent_id, subagent_type=sub_type, ctx=ctx,
                 event_type="chat.llm_call_start",
-                extra={"prompt": prompt or "", "payload_refs": {"prompt": prompt_ref}},
+                extra=extra,
             )
         except Exception as exc:
             server_logger.warning("[AgentObservability] subagent llm_start forward failed: %s", exc)
