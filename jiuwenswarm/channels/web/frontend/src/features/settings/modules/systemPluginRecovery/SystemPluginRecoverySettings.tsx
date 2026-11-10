@@ -23,6 +23,7 @@ type RecoveryMessage = {
   restoreLabel?: unknown;
   title?: unknown;
   description?: unknown;
+  restoring?: unknown;
   centerY?: unknown;
 };
 
@@ -72,6 +73,7 @@ export function SystemPluginRecoverySettings() {
   const [pageTitle, setPageTitle] = useState('');
   const [pageDescription, setPageDescription] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [restoring, setRestoring] = useState(false);
 
   useEffect(() => {
     if (!url) return undefined;
@@ -89,6 +91,7 @@ export function SystemPluginRecoverySettings() {
         if (typeof message.restoreLabel === 'string') setRestoreLabel(message.restoreLabel);
         if (typeof message.title === 'string') setPageTitle(message.title);
         if (typeof message.description === 'string') setPageDescription(message.description);
+        setRestoring(message.restoring === true);
         return;
       }
       if (message?.type === RECOVERY_DIALOG_OPENED_MESSAGE) {
@@ -125,6 +128,7 @@ export function SystemPluginRecoverySettings() {
           setPageTitle('');
           setPageDescription('');
           setDialogOpen(false);
+          setRestoring(false);
           setUrl(pageUrl);
           setLoading(false);
         }
@@ -170,7 +174,7 @@ export function SystemPluginRecoverySettings() {
   }, [dialogOpen, url]);
 
   const openRestoreConfirm = () => {
-    if (!selectedRecordId || !url) return;
+    if (!selectedRecordId || !url || dialogOpen || restoring) return;
     const frameWindow = frameRef.current?.contentWindow;
     if (!frameWindow) return;
     frameWindow.postMessage(
@@ -197,7 +201,7 @@ export function SystemPluginRecoverySettings() {
                 type="button"
                 className="system-plugin-recovery__restore"
                 data-testid="settings-system-plugin-recovery-restore"
-                disabled={!selectedRecordId || !restoreLabel}
+                disabled={!selectedRecordId || !restoreLabel || dialogOpen || restoring}
                 onClick={openRestoreConfirm}
               >
                 {restoreLabel}

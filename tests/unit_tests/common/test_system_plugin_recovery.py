@@ -42,6 +42,11 @@ def test_recovery_page_keeps_its_confirmation_dialog() -> None:
     assert "status.textContent = texts.restored;" not in page
     assert '"restoring":' not in page
     assert '"restored":' not in page
+    assert "let restoring = false;" in page
+    assert "restoring: restoring," in page
+    assert "if (restoring || confirmDialog.open) return;" in page
+    assert "restoring = true;" in page
+    assert "restoring = false;" in page
 
 
 def test_recovery_page_renders_collapsible_details() -> None:
