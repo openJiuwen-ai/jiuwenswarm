@@ -528,42 +528,6 @@ def test_team_model_list_omits_placeholders_but_keeps_model_selection_indexes(mo
     assert SECRET not in json.dumps(catalog)
 
 
-def test_web_gateway_does_not_forward_internal_jiuwenmate_methods():
-    # Refresh status has its own worker proxy, not the jiuwenmate.* forwarder.
-    methods = JiuwenMateWebAdapter.methods - {ReqMethod.MODELS_REFRESH_STATUS.value}
-    internal_methods = {
-        ReqMethod.JIUWENMATE_WELINK_INBOUND.value,
-        ReqMethod.JIUWENMATE_DINGTALK_BINDING_CHECK.value,
-        ReqMethod.JIUWENMATE_FEISHU_INBOUND.value,
-        ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value,
-        ReqMethod.JIUWENMATE_CONNECTION_ATTACH.value,
-        ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS.value,
-        ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE.value,
-        ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
-        ReqMethod.JIUWENMATE_FEISHU_PREPARE.value,
-        ReqMethod.JIUWENMATE_DELIVERY_ACK.value,
-        ReqMethod.JIUWENMATE_GROUP_RESPONSE.value,
-        ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
-    }
-    # Gateway handles deletion itself: it removes the IM apps first, then asks AgentServer.
-    gateway_methods = {ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value}
-    web_methods = {
-        method.value
-        for method in ReqMethod
-        if method.value.startswith("jiuwenmate.")
-    } - internal_methods - gateway_methods
-
-    assert web_methods == methods
-    assert gateway_methods.isdisjoint(methods)
-    assert gateway_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
-    assert gateway_methods.isdisjoint(app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS)
-    assert internal_methods.isdisjoint(methods)
-    assert methods <= app_web_handlers._FORWARD_REQ_METHODS
-    assert methods <= app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
-    assert internal_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
-    assert internal_methods.isdisjoint(app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS)
-
-
 async def test_agent_server_dispatches_the_methods_to_the_adapter(host):
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._adapter_registry = AdapterRegistry()

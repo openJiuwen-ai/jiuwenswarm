@@ -151,11 +151,13 @@ def _dingtalk_disconnect_bindings() -> set[tuple[str, str]]:
     from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
 
     apps = dingtalk_apps((get_config().get("channels") or {}).get("dingtalk"))
-    return {
-        (app["client_id"], app["persistent_agent_id"]) for app in apps
-        if app["client_id"] and app["persistent_agent_id"]
-        and sum(item["client_id"] == app["client_id"] for item in apps) == 1
-    }
+    bindings = set()
+    for app in apps:
+        if not app["client_id"] or not app["persistent_agent_id"]:
+            continue
+        if sum(item["client_id"] == app["client_id"] for item in apps) == 1:
+            bindings.add((app["client_id"], app["persistent_agent_id"]))
+    return bindings
 
 
 def _colleague_wire(view, service: PersistentAgentService, bound: Mapping[str, set[tuple[str, str]]]) -> dict[str, Any]:
@@ -641,18 +643,24 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             service = await asyncio.to_thread(self._colleagues)
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value:
                 connection = await asyncio.to_thread(service.connection_of, WEB_NAMESPACE, config_id)
-                if connection is not None and connection.channel == "dingtalk" and connection.connection_key == connection_key:
+                if (
+                    connection is not None
+                    and connection.channel == "dingtalk"
+                    and connection.connection_key == connection_key
+                ):
                     config_id = connection.config_id
             await asyncio.to_thread(service.get_config, WEB_NAMESPACE, config_id)
             bindings = (_dingtalk_disconnect_bindings() if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value
                         else _bound_apps().get("dingtalk", set()))
             agent_id = config_id if (connection_key, config_id) in bindings else None
             if agent_id is None:
-                agent_id = next((
-                    item.agent_id for item in await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
-                    if item.channel == "dingtalk" and item.connection_key == connection_key
-                    and (connection_key, item.agent_id) in bindings
-                ), None)
+                connections = await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
+                for item in connections:
+                    if item.channel != "dingtalk" or item.connection_key != connection_key:
+                        continue
+                    if (connection_key, item.agent_id) in bindings:
+                        agent_id = item.agent_id
+                        break
             if agent_id is None:
                 raise PersistentAgentError("DingTalk connection is not bound to this employee", code="NOT_FOUND")
             from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope
@@ -661,7 +669,10 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS.value:
                 status = await runtime.dingtalk_auth_status(scope)
                 if status.get('status') == 'connected' and self._dingtalk_group_status is not None:
-                    status = {**status, 'group_monitor': self._dingtalk_group_status(WEB_NAMESPACE, agent_id, connection_key)}
+                    status = {
+                        **status,
+                        'group_monitor': self._dingtalk_group_status(WEB_NAMESPACE, agent_id, connection_key),
+                    }
                 return {"dingtalk_auth": status}
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN.value:
                 from filelock import Timeout
@@ -679,7 +690,10 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 if status.get("operation_id") not in (None, operation_id):
                     raise PersistentAgentError("DingTalk authorization operation changed", code="CONFLICT")
                 if status.get('status') == 'connected' and self._dingtalk_group_status is not None:
-                    status = {**status, 'group_monitor': self._dingtalk_group_status(WEB_NAMESPACE, agent_id, connection_key)}
+                    status = {
+                        **status,
+                        'group_monitor': self._dingtalk_group_status(WEB_NAMESPACE, agent_id, connection_key),
+                    }
                 return {"dingtalk_auth": status}
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_CANCEL.value:
                 return {"dingtalk_auth": await runtime.dingtalk_auth_cancel(scope, _text_param(params, "operation_id"))}
@@ -862,7 +876,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT.value:
             view = service.ensure_default_colleague(WEB_NAMESPACE)
             if view is not None:
-                conversations = self._conversations or WebConversationStore(service._repository.db_path)
+                conversations = self._conversations or WebConversationStore(service.db_path)
                 conversations.ensure_initial(WEB_NAMESPACE, view.agent_id, created_at=view.created_at)
             return {"colleague": None if view is None else _colleague_wire(view, service, bound)}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_LIST.value:
@@ -883,7 +897,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 source_template_id=source_template_id or None,
                 unique_source=params.get("unique_source") is True,
             )
-            conversations = self._conversations or WebConversationStore(service._repository.db_path)
+            conversations = self._conversations or WebConversationStore(service.db_path)
             # List the new employee immediately without submitting a Request or starting the runtime.
             conversations.ensure_initial(WEB_NAMESPACE, created.agent_id, created_at=created.created_at)
             return {"colleague": _colleague_wire(created, service, bound)}

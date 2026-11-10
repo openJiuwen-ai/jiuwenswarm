@@ -237,14 +237,17 @@ class DingTalkGroupPoller:
         identity = (namespace_id, agent_id, app_id)
         if self._closed:
             return {'status': 'unavailable', 'group_count': 0}
-        if not self._manager._service.get_colleague(namespace_id, agent_id).enabled:
+        if not self._manager.service.get_colleague(namespace_id, agent_id).enabled:
             return {'status': 'disabled', 'group_count': 0}
-        if self._manager._service.read_settings(namespace_id, agent_id).group_reply_mode != 'adaptive':
+        if self._manager.service.read_settings(namespace_id, agent_id).group_reply_mode != 'adaptive':
             return {'status': 'mentions_only', 'group_count': 0}
         group_ids = {access.group_id for access in self._eligible_accesses(binding)}
         count = len(group_ids)
         scans = [key for key in self._discovery if key[:1] == (namespace_id,) and key[2:] == (agent_id, app_id)]
-        if any((*identity, group) in self._read_failed for group in group_ids) or any(key in self._discovery_failed for key in scans):
+        if (
+            any((*identity, group) in self._read_failed for group in group_ids)
+            or any(key in self._discovery_failed for key in scans)
+        ):
             state = 'error'
         elif count and all((*identity, group) in self._listening for group in group_ids):
             state = 'listening'
@@ -275,7 +278,9 @@ class DingTalkGroupPoller:
         if due > now:
             return
         try:
-            page = await discover(DingTalkCliScope(binding.namespace_id, binding.agent_id, app_id=binding.app_id), cursor=cursor)
+            page = await discover(
+                DingTalkCliScope(binding.namespace_id, binding.agent_id, app_id=binding.app_id), cursor=cursor,
+            )
             if page.get('readerKey') != reader:
                 raise ValueError('Group discovery reader changed')
             from jiuwenswarm.common.im_binding_lock import im_binding_lock
@@ -292,10 +297,12 @@ class DingTalkGroupPoller:
                 confirmed_at = _utc(self._clock())
                 for item in page['groups']:
                     group = await asyncio.to_thread(
-                        self._manager.group_chats.resolve, binding.namespace_id, 'dingtalk', item['conversation_id'], now=confirmed_at,
+                        self._manager.group_chats.resolve,
+                        binding.namespace_id, 'dingtalk', item['conversation_id'], now=confirmed_at,
                     )
                     active_apps = await asyncio.to_thread(
-                        self._manager.group_chats.active_apps, binding.namespace_id, binding.agent_id, group.group_chat_id,
+                        self._manager.group_chats.active_apps,
+                        binding.namespace_id, binding.agent_id, group.group_chat_id,
                     )
                     if binding.app_id not in active_apps:
                         visible_from = max(self._authorization_started[key], confirmed_at - _INITIAL_CATCHUP)
@@ -305,7 +312,8 @@ class DingTalkGroupPoller:
                             visible_from=visible_from, source_ref='dingtalk:discovery:' + reader,
                         )
                         active_apps = await asyncio.to_thread(
-                            self._manager.group_chats.active_apps, binding.namespace_id, binding.agent_id, group.group_chat_id,
+                            self._manager.group_chats.active_apps,
+                            binding.namespace_id, binding.agent_id, group.group_chat_id,
                         )
                     if binding.app_id not in active_apps:
                         # A confirmed rejoin must not replay messages from its departed interval.
@@ -315,7 +323,9 @@ class DingTalkGroupPoller:
                             source_ref='dingtalk:discovery:' + reader,
                         )
                     if item['name']:
-                        await asyncio.to_thread(self._manager.group_chats.set_name, binding.namespace_id, group.group_chat_id, item['name'])
+                        await asyncio.to_thread(
+                            self._manager.group_chats.set_name, binding.namespace_id, group.group_chat_id, item['name'],
+                        )
             delay = self._interval if page['hasMore'] else 60
             self._discovery[key] = (_utc(self._clock()) + timedelta(seconds=delay), page['nextCursor'])
             if page['failed']:
@@ -365,9 +375,9 @@ class DingTalkGroupPoller:
                 authorization_key = (binding.namespace_id, reader, binding.agent_id, binding.app_id)
                 authorized.add(authorization_key)
                 self._authorization_started.setdefault(authorization_key, _utc(self._clock()))
-                stale = {key for key in self._discovery
-                         if key[0] == binding.namespace_id and key[2:] == (binding.agent_id, binding.app_id)
-                         and key[1] != reader}
+                stale = {
+                    key for key in self._discovery if (key[0], *key[2:]) == recipient and key[1] != reader
+                }
                 if stale:
                     self._discovery = {key: value for key, value in self._discovery.items() if key not in stale}
                     self._discovery_failed.difference_update(stale)
@@ -394,7 +404,9 @@ class DingTalkGroupPoller:
                     observed.add(recipient_key)
                     if key not in self._progress:
                         self._progress[key] = await asyncio.to_thread(self._load_progress, key, now)
-                    catchup_start = max(self._authorization_started[authorization_key], _utc(self._clock()) - _INITIAL_CATCHUP)
+                    catchup_start = max(
+                        self._authorization_started[authorization_key], _utc(self._clock()) - _INITIAL_CATCHUP,
+                    )
                     discovered = getattr(access, 'source_ref', '').startswith('dingtalk:discovery:')
                     readable_from = max(catchup_start, access.visible_from) if discovered else max(
                         now, getattr(access, 'visible_from', now),
@@ -417,7 +429,9 @@ class DingTalkGroupPoller:
         # Reset only confirmed lost access; transient failures retain their original floor.
         self._floors = {key: value for key, value in self._floors.items() if key in observed}
         self._recipient_progress = {key: value for key, value in self._recipient_progress.items() if key in observed}
-        self._authorization_started = {key: value for key, value in self._authorization_started.items() if key in authorized}
+        self._authorization_started = {
+            key: value for key, value in self._authorization_started.items() if key in authorized
+        }
         return groups
 
     async def _still_authorized(self, group: _Group, recipient: _Recipient) -> bool:
@@ -653,8 +667,10 @@ class DingTalkGroupPoller:
                 try:
                     await self._read(groups[key], _utc(self._clock()), budget)
                 except Exception as exc:
-                    self._read_failed.update((item.binding.namespace_id, item.binding.agent_id, item.binding.app_id, key[2])
-                                             for item in groups[key].recipients)
+                    self._read_failed.update(
+                        (item.binding.namespace_id, item.binding.agent_id, item.binding.app_id, key[2])
+                        for item in groups[key].recipients
+                    )
                     self._defer(retry_key, _utc(self._clock()))
                     safe_codes = {'DINGTALK_CLI_AUTH_BUSY', 'DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE',
                                   'DINGTALK_CLI_GROUP_HISTORY_INVALID', 'DINGTALK_CLI_USER_AUTH_REQUIRED'}
