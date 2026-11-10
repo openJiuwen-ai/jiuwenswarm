@@ -313,6 +313,31 @@ async def test_full_waiter_does_not_block_delivery_to_other_waiters() -> None:
     await asyncio.wait_for(broadcast, timeout=1.0)
 
 
+def test_has_interactive_waiter_ignores_attach_only_and_exclusive() -> None:
+    """Attach-only observers and exclusive automation must not count as
+    interactive consumers. When the owning stream is torn down (interrupt,
+    cancel, pause) only the attach subscription survives; counting it left
+    the next round without a waiter of its own and all broadcasts died in
+    the dead attach queue."""
+    manager = TeamManager()
+
+    manager.add_waiter("sess-attach", "attach-1", asyncio.Queue(), attach_only=True)
+    assert manager.has_interactive_waiter("sess-attach") is False
+
+    manager.add_waiter("sess-attach", "user-1", asyncio.Queue())
+    assert manager.has_interactive_waiter("sess-attach") is True
+
+    manager.add_waiter("sess-exclusive", "hb-1", asyncio.Queue(), exclusive=True)
+    assert manager.has_interactive_waiter("sess-exclusive") is False
+
+    manager.add_waiter("sess-mixed", "hb-1", asyncio.Queue(), exclusive=True)
+    manager.add_waiter("sess-mixed", "attach-1", asyncio.Queue(), attach_only=True)
+    assert manager.has_interactive_waiter("sess-mixed") is False
+
+    manager.add_waiter("sess-mixed", "user-1", asyncio.Queue())
+    assert manager.has_interactive_waiter("sess-mixed") is True
+
+
 @pytest.mark.asyncio
 async def test_update_evolution_config_applies_fixed_member_trigger_policy() -> None:
     manager = TeamManager()
