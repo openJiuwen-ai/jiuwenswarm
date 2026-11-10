@@ -2228,6 +2228,7 @@ dependencies = [
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openjiuwen" },
     { name = "openjiuwen-deepsearch" },
+    { name = "openjiuwen-protocol" },
     { name = "openjiuwen-runtime-foundation", extra = ["link-mtls"] },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -2420,6 +2421,7 @@ requires-dist = [
     { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
     { name = "openjiuwen-deepsearch", git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev-stable" },
+    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=9ec0370818bbb89a1dd446781e56fb063c54cd53" },
     { name = "openjiuwen-runtime-foundation", extras = ["link-mtls"], git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&rev=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
@@ -3648,6 +3650,11 @@ dependencies = [
     { name = "tenacity" },
     { name = "tldextract" },
 ]
+
+[[package]]
+name = "openjiuwen-protocol"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=9ec0370818bbb89a1dd446781e56fb063c54cd53#9ec0370818bbb89a1dd446781e56fb063c54cd53" }
 
 [[package]]
 name = "openjiuwen-runtime-foundation"
