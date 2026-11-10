@@ -807,3 +807,37 @@ def event_snapshots() -> list[dict]:
             )
         )
     return result
+
+
+def events_feed() -> dict:
+    """Gateway 后台轮询：全量 lifecycle 事件（不需要 project_id）。"""
+    return {"events": event_snapshots()}
+
+
+def inventory_feed() -> dict:
+    """Gateway/运维：项目名单 + 未完成的 lifecycle 残片。"""
+    from jiuwenswarm.server.runtime.session.project_store import list_projects
+
+    payload = {
+        "projects": [
+            dict(
+                project_id=p.project_id,
+                operation=state("project", p.project_id).get("operation"),
+            )
+            for p in list_projects(include_hidden=True, cache_bust=True)
+        ]
+    }
+    known = {item["project_id"] for item in payload["projects"]}
+    directory = get_agent_root_dir() / "lifecycle" / "resources"
+    for path in directory.glob("project_*.json") if directory.exists() else ():
+        operation = read_json(path).get("operation") or {}
+        project_id = operation.get("resource_id")
+        if (
+            project_id
+            and project_id not in known
+            and operation.get("status") != "completed"
+        ):
+            payload["projects"].append(
+                dict(project_id=project_id, operation=operation)
+            )
+    return payload

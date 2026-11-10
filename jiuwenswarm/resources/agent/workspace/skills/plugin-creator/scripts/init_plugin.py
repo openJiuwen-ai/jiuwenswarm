@@ -88,15 +88,14 @@ README_TEMPLATE = """# %(title)s
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
 
 
-def get_jiuwenswarm_data_dir() -> Path:
-    raw = os.environ.get("JIUWENSWARM_DATA_DIR", "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    return Path.home() / ".jiuwenswarm"
-
-
 def get_agent_workspace_dir() -> Path:
-    return get_jiuwenswarm_data_dir() / "agent" / "workspace"
+    """agent 工作区（domain 区）：JIUWENSWARM_DATA_DIR env > ~/.jiuwenswarm。
+
+    分区契约：业务数据落 domain/，运行时产物落 infra/（数据根不直接暴露）。
+    """
+    raw = os.environ.get("JIUWENSWARM_DATA_DIR", "").strip()
+    base = Path(raw).expanduser() if raw else Path.home() / ".jiuwenswarm"
+    return base / "domain" / "agent" / "workspace"
 
 
 def get_plugin_packages_local_dir() -> Path:
@@ -187,7 +186,7 @@ def main() -> int:
         write_stdout("\n<plugin-name> = kebab-case package id\n")
         write_stdout("Default output (under JIUWENSWARM_DATA_DIR or ~/.jiuwenswarm):\n")
         write_stdout(
-            "  <data-dir>/agent/workspace/plugins/plugin_packages/local/<plugin-name>/\n"
+            "  <data-dir>/domain/agent/workspace/plugins/plugin_packages/local/<plugin-name>/\n"
         )
         write_stdout("\nExample:\n")
         write_stdout("  python3 init_plugin.py my-plugin\n")

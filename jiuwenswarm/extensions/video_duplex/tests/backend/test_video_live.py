@@ -267,7 +267,13 @@ async def test_video_runtime_remains_available_when_plugin_page_is_disabled(monk
 async def test_full_duplex_conversation_events_append_visible_session_history(monkeypatch) -> None:
     channel = _video_channel()
     records = []
-    monkeypatch.setattr(video_live, "append_history_record", lambda **record: records.append(record))
+
+    async def capture(_client, method, params, session_id, _owner, **_kwargs):
+        assert method.value == "video.conversation.append"
+        records.append({"session_id": session_id, **params})
+        return {}
+
+    monkeypatch.setattr(video_live, "task_agent_query", capture)
 
     await channel.handlers["video.conversation.append"](
         object(),
@@ -288,14 +294,12 @@ async def test_full_duplex_conversation_events_append_visible_session_history(mo
     }
     assert records == [{
         "session_id": "visible-session",
-        "request_id": "video-duplex-event-1",
-        "channel_id": "video_duplex",
+        "event_id": "event-1",
         "role": "assistant",
         "content": "这是全双工回答。",
         "timestamp": 1_700_000_000.25,
         "event_type": "chat.final",
         "extra": None,
-        "mode": "agent",
     }]
 
 
@@ -304,8 +308,8 @@ async def test_full_duplex_history_rejects_new_session_placeholder(monkeypatch) 
     channel = _video_channel()
     monkeypatch.setattr(
         video_live,
-        "append_history_record",
-        lambda **_record: pytest.fail("placeholder session must not be persisted"),
+        "task_agent_query",
+        lambda *_args, **_kwargs: pytest.fail("placeholder session must not be persisted"),
     )
 
     await channel.handlers["video.conversation.append"](
@@ -328,7 +332,13 @@ async def test_full_duplex_history_rejects_new_session_placeholder(monkeypatch) 
 async def test_full_duplex_tool_answer_persists_its_presentation(monkeypatch) -> None:
     channel = _video_channel()
     records = []
-    monkeypatch.setattr(video_live, "append_history_record", lambda **record: records.append(record))
+
+    async def capture(_client, method, params, session_id, _owner, **_kwargs):
+        assert method.value == "video.conversation.append"
+        records.append({"session_id": session_id, **params})
+        return {}
+
+    monkeypatch.setattr(video_live, "task_agent_query", capture)
     for presentation in ("tool_result", "unknown", None):
         await channel.handlers["video.conversation.append"](
             object(), "history-request",
@@ -1515,7 +1525,11 @@ async def test_joyai_voice_only_support_still_rejects_empty_polling_and_invalid_
 def test_joyai_raw_content_log_keeps_model_output_and_skips_silence(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setattr(video_live.Path, "home", lambda: tmp_path)
+    from jiuwenswarm.common import utils as common_utils
+
+    # 隔离 utils 的路径缓存（get_infra_data_dir 经缓存解析，不走 Path.home）
+    monkeypatch.setattr(common_utils, "_workspace_base_dir", tmp_path / ".jiuwenswarm")
+    monkeypatch.setattr(common_utils, "_user_home", tmp_path)
 
     video_live._append_joyai_log({
         "request_id": "request-response",
@@ -1539,7 +1553,7 @@ def test_joyai_raw_content_log_keeps_model_output_and_skips_silence(
         "model_raw_content": "</silence>",
     })
 
-    log_path = tmp_path / ".jiuwenswarm" / "logs" / "joyai-raw-content.jsonl"
+    log_path = tmp_path / ".jiuwenswarm" / "infra" / "logs" / "video" / "joyai-raw-content.jsonl"
     records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert records == [
         {
@@ -1554,7 +1568,7 @@ def test_joyai_raw_content_log_keeps_model_output_and_skips_silence(
             "adapter_content": "</response> 我来搜索。",
         }
     ]
-    main_log = tmp_path / ".jiuwenswarm" / "logs" / "joyai-video.jsonl"
+    main_log = tmp_path / ".jiuwenswarm" / "infra" / "logs" / "video" / "joyai-video.jsonl"
     main_records = [
         json.loads(line) for line in main_log.read_text(encoding="utf-8").splitlines()
     ]
@@ -1918,8 +1932,7 @@ async def test_joyai_queue_manager_reorders_real_queue_without_new_task(monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error_source", ["management", "model"])
-async def test_joyai_queue_manager_failure_withholds_original_success_claim(monkeypatch, error_source):
+async def test_joyai_queue_manager_failure_withholds_original_success_claim(monkeypatch):
     from unittest.mock import AsyncMock
 
     channel = _video_channel()
@@ -1927,20 +1940,16 @@ async def test_joyai_queue_manager_failure_withholds_original_success_claim(monk
         "delegation", response="已全部调整成功。",
         delegation=json.dumps({"name": "jiuwen_queue_manage", "arguments": {"instruction": "调整顺序"}}),
     )))
-    managed = AsyncMock(return_value={
-        "state": "incomplete", "receipts": [{"receipt": {"state": "cancelling"}}],
-        "error_source": error_source, "error": "service unavailable",
-    })
+    managed = AsyncMock(return_value={"state": "incomplete", "receipts": [{"receipt": {"state": "cancelling"}}]})
     monkeypatch.setattr(channel.manager, "manage_queue_call", managed)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     await channel.handlers["video.joyai.frame"](None, "failed-manager", {
         "instruction": "调整顺序", "request_kind": "user", "reply_language": "en",
     }, "scope")
     payload = channel.responses[-1][1]["payload"]
-    expected = (
+    assert payload["response"] == (
         "Queue management did not finish. Check the task list and scheduled jobs for any changes already applied."
     )
-    assert payload["response"] == expected + (" service unavailable" if error_source == "model" else "")
     assert payload["queue_management"]["receipts"]
     assert managed.call_args.kwargs == {"allow_answers": False, "reply_language": "en"}
 
@@ -3890,7 +3899,6 @@ def _scoped_channel(monkeypatch, card_live=True):
 
     monkeypatch.setattr(task_adapter, "task_agent_query", query)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    channel.dispatched = []
 
     async def dispatch(ws, method, params):
         channel.dispatched.append((method, params))

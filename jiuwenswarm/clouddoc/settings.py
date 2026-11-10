@@ -20,21 +20,30 @@ from typing import Any, Callable
 
 _config_provider: Callable[[], dict[str, Any]] | None = None
 _workspace_provider: Callable[[], Path] | None = None
+_infra_config_provider: Callable[[], Path] | None = None
+_agent_home_provider: Callable[[], Path] | None = None
 
 
 def set_deployment(
     *,
     config: Callable[[], dict[str, Any]] | None = None,
     workspace: Callable[[], Path] | None = None,
+    infra_config: Callable[[], Path] | None = None,
+    agent_home: Callable[[], Path] | None = None,
 ) -> None:
     """Install the deployment's providers. Call once at wiring time; the lazy
     defaults below cover any caller that never does.
     """
     global _config_provider, _workspace_provider
+    global _infra_config_provider, _agent_home_provider
     if config is not None:
         _config_provider = config
     if workspace is not None:
         _workspace_provider = workspace
+    if infra_config is not None:
+        _infra_config_provider = infra_config
+    if agent_home is not None:
+        _agent_home_provider = agent_home
 
 
 def deployment_config() -> dict[str, Any]:
@@ -51,3 +60,21 @@ def workspace_dir() -> Path:
     from jiuwenswarm.common.utils import get_user_workspace_dir
 
     return get_user_workspace_dir()
+
+
+def infra_config_dir() -> Path:
+    """infra/config 分区（系统区）：clouddoc 状态文件落点。"""
+    if _infra_config_provider is not None:
+        return _infra_config_provider()
+    from jiuwenswarm.common.utils import get_config_dir
+
+    return get_config_dir()
+
+
+def agent_home_dir() -> Path:
+    """domain/agent 家目录（业务区）：旧版 clouddoc_state.json 位置。"""
+    if _agent_home_provider is not None:
+        return _agent_home_provider()
+    from jiuwenswarm.common.utils import get_agent_home_dir
+
+    return get_agent_home_dir()

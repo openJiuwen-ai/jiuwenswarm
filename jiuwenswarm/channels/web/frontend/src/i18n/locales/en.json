@@ -74,6 +74,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
+    "teams": "Teams",
     "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -114,8 +115,7 @@
       "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
       "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
       "notSelected": "No model",
-      "openModelSettings": "Open Settings",
-      "chatAnthropicUnsupported": "Design does not support a chat model on the Anthropic protocol. In Settings, configure a model that uses the OpenAI protocol and try again."
+      "openModelSettings": "Open Settings"
     },
     "activity": {
       "thinking": "Thinking",
@@ -184,6 +184,7 @@
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
       "duration": "Video duration",
+      "audioDuration": "Audio duration",
       "count": "Count",
       "browseFiles": "Browse files",
       "dropHint": "Or drag into this area",
@@ -200,8 +201,15 @@
     "mediaSettings": {
       "videoTitle": "Video settings",
       "imageTitle": "Image settings",
+      "audioTitle": "Audio settings",
       "durationValue": "{{seconds}}s",
       "durationUnit": "s",
+      "minuteUnit": "min",
+      "secondUnit": "sec",
+      "audioDurationDefault": "Film default duration",
+      "audioDurationMinutes": "{{count}} min",
+      "audioDurationSeconds": "{{count}} sec",
+      "audioDurationBoth": "{{minutes}} min {{seconds}} sec",
       "loading": "Loading generation settings…",
       "loadError": "Could not load generation settings: {{message}}",
       "saveError": "Settings not saved: {{message}}"
@@ -281,7 +289,9 @@
       "deleteConfirmCancel": "Cancel",
       "deleteConfirmOk": "Confirm",
       "resize": "Resize",
-      "resizeHint": "Drag the bottom-right corner to resize this node"
+      "resizeHint": "Drag the bottom-right corner to resize this node",
+      "playAudio": "Play audio",
+      "pauseAudio": "Pause audio"
     },
     "edge": {
       "delete": "Delete connection"
@@ -375,7 +385,6 @@
       "security": "The current security policy blocks screen sharing",
       "unknown": "Screen capture or frame initialization failed; check the native error and diagnostic ID in the logs"
     },
-    "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings.",
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
     "status": {
@@ -805,6 +814,7 @@
       "videoConfigTitle": "Configure video understanding model",
       "videoGenConfigTitle": "Configure video generation model",
       "visualGenConfigTitle": "Configure visual generation model",
+      "musicGenConfigTitle": "Configure audio generation model",
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
@@ -843,7 +853,6 @@
       "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
     "experimental": {
-      "computerControl": "Computer control",
       "taskAsr": "Speech transcription",
       "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-party agents",
@@ -881,9 +890,10 @@
       "videoSectionTitle": "Video model",
       "saveSettings": "Save settings",
       "loadError": "Unable to load full-duplex model settings",
+      "extensionUnavailable": "The full-duplex extension is unavailable. Check the extension search directories in the instance configuration.",
+      "httpRouteUnavailable": "The current HTTP connection does not support reading full-duplex settings.",
       "saveError": "Unable to save full-duplex model settings",
       "notConfigured": "Full-duplex model is not configured",
-      "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again.",
       "dialogTitle": "Configure full-duplex model",
       "providerLabel": "Model channel",
       "joyaiModelLabel": "JoyAI model",
@@ -1149,6 +1159,10 @@
         "title": "ComfyUI workflow integration",
         "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
       },
+      "music_gen_enabled": {
+        "title": "Audio generation",
+        "description": "Generate background music (BGM) for the design canvas: planning adds a BGM node and compose mixes it in; disabling it keeps the saved model configuration."
+      },
       "progressive_tool_optimize": {
         "title": "Enable tool retrieval optimization",
         "description": "When enabled, the model discovers tools on demand via the tool_search catalogue."
@@ -1239,10 +1253,6 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
-      },
-      "cua_agent_enabled": {
-        "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
       }
     },
     "validation": {
@@ -1317,6 +1327,7 @@
           "vote": "Review vote",
           "revision": "Rework requested",
           "verified": "Review passed",
+          "completed": "Task completed",
           "cancelled": "Task cancelled",
           "escalated": "Review escalated",
           "anomaly": "Dispatch anomaly",
@@ -1337,16 +1348,16 @@
         "cancel": "Cancel",
         "start": "Start",
         "starting": "Starting…",
-        "summary": "{{count}} Agent(s) selected · {{spans}} OTel span(s)",
-        "emptyNodes": "The selection has no complete OTel span to diagnose. Spans that are not fully covered (start and end) were left out.",
+        "summary": "{{count}} Agent(s) selected · {{spans}} node(s)",
+        "emptyNodes": "The selection has no complete trajectory record to diagnose. Records that are not fully covered (start and end) were left out.",
         "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
-        "nodeLimit": "The selection contains {{count}} OTel spans, over the limit of {{limit}}. Narrow the range.",
+        "nodeLimit": "The selection contains {{count}} trajectory records, over the limit of {{limit}}. Narrow the range.",
         "running": "A diagnosis is already in progress",
         "noData": "There is no trajectory to diagnose yet",
         "replay": "Read-only replay cannot be diagnosed; exit replay first"
       },
-      "summary": "{{agents}} Agents · {{spans}} OTel spans",
-      "teamSummary": "{{members}} members · {{completed}}/{{tasks}} tasks completed · {{reviews}} reviews · {{spans}} spans",
+      "summary": "{{agents}} Agents · {{spans}} OTel spans · {{nodes}} node(s)",
+      "teamSummary": "{{members}} members · {{completed}}/{{tasks}} tasks completed · {{reviews}} reviews · {{spans}} OTel spans · {{nodes}} node(s)",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
@@ -1381,6 +1392,7 @@
       "includeAgent": "Selected: {{name}}",
       "includeAgentHint": "Uncheck to clear {{name}}'s current selection",
       "timeAxis": "Time axis",
+      "turnMarker": "Turn {{turn}}",
       "records": "Diagnosis records",
       "noRecords": "No diagnosis yet",
       "delete": "Delete",
@@ -1485,7 +1497,7 @@
       "dimension": "Dimension",
       "requestCount": "{{count}} model requests",
       "objectSteps": "Scope",
-      "objectStepsCount": "{{count}} OTel spans",
+      "objectStepsCount": "{{count}} node(s)",
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
       "objectSummary": "Trajectory summary",
@@ -1547,8 +1559,47 @@
       "showTasks": "Show tasks"
     }
   },
+  "teams": {
+    "title": "Team Management",
+    "subtitle": "View existing teams, or stop and delete them",
+    "teamList": "Existing teams",
+    "count": "{{count}} team(s)",
+    "quota": "{{used}} used / {{limit}} limit (default {{default}})",
+    "orgQuota": "Org {{used}} used / {{limit}} limit",
+    "quotaUnavailable": "Quota status unavailable",
+    "createUserFull": "Create failed. A user can have at most {{limit}} teams",
+    "createOrgFull": "Create failed. An organization can have at most {{limit}} teams",
+    "sessionCount": "{{count}} session(s)",
+    "listLabel": "Session for this team: {{title}}",
+    "untitledSession": "Untitled session",
+    "createdAt": "Created {{time}}",
+    "createdAtWithId": "Created {{time}} · …{{suffix}}",
+    "sessionSuffix": "…{{suffix}}",
+    "empty": "No teams",
+    "deleteTeam": "Delete team",
+    "deleting": "Deleting...",
+    "deleteConfirm": "Delete team {{team}}?\nThis will delete the team runtime, linked sessions, and directory.",
+    "stopTeam": "Stop",
+    "stopping": "Stopping...",
+    "humanMembers": "{{count}} human member(s)",
+    "status": {
+      "creating": "Creating",
+      "running": "Running",
+      "paused": "Paused",
+      "stopping": "Stopping",
+      "stopped": "Stopped",
+      "deleted": "Deleted"
+    },
+    "errors": {
+      "loadTeams": "Failed to load teams",
+      "deleteTeam": "Failed to delete team: {{team}}",
+      "stopTeam": "Failed to stop team"
+    }
+  },
   "team": {
     "members": "Team Members",
+    "quotaUsage": "Teams {{used}}/{{limit}}",
+    "orgQuotaUsage": "Org {{used}}/{{limit}}",
     "membersTab": "Team",
     "statusTab": "Status",
     "filesTab": "Files",
@@ -5060,6 +5111,7 @@
     "title": "Authorization",
     "matchedRule": "Matched rule",
     "titleConfirm": "Confirm action",
+    "unavailable": "This option can't be applied to this request",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
     "skip": "Skip",
@@ -5868,7 +5920,9 @@
       "groupAudience": "The shared content may be visible to all members of the destination group.",
       "audience": "The shared content may be visible to everyone in the destination conversation.",
       "exactMessages": "Review exact messages ({{count}})",
+      "collapseExactMessages": "Hide exact messages ({{count}})",
       "exactArtifacts": "Review exact files and documents ({{count}})",
+      "collapseExactArtifacts": "Hide exact files and documents ({{count}})",
       "fileSize": "File size: {{size}} bytes",
       "created": "Created: {{time}}",
       "createdAt": "Created",
@@ -6105,6 +6159,7 @@
       "welinkCredentialDone": "Done",
       "welinkShowAssistantQr": "Show assistant code",
       "welinkRetry": "Retry",
+      "welinkScanReminder": "This page will advance automatically once binding succeeds. Please keep it open and do not select Cancel.",
       "welinkAssistantWaiting": "Scan the assistant code and confirm",
       "welinkAssistantScan": "Create by scanning",
       "welinkAssistantExisting": "Enter an existing AK/SK",
@@ -6641,6 +6696,12 @@
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
     "generatingTasks": "Generating tasks",
+    "organizationStage": {
+      "starting": "Starting expert teams",
+      "processing": "Processing",
+      "executing": "Experts working",
+      "summarizing": "Summarizing"
+    },
     "counts": {
       "total": "Total",
       "running": "In progress",
@@ -6656,6 +6717,7 @@
     "viewResult": "View task result",
     "sendFailed": "Unable to process this message. Please retry.",
     "sending": "Sending…",
+    "modelLocked": "The model cannot be changed after the group chat starts",
     "processing": "Processing…",
     "mentionPhase": {
       "dispatching": "Received, processing…",
