@@ -173,7 +173,7 @@ export function pendingMentionReplies(
   const pending = new Map<string, PendingMentionReply[]>();
   for (const { message, mentioned } of asks) {
     const sentHere = sentIds.has(message.client_message_id);
-    const waiting = mentioned.flatMap((memberName) => {
+    const waiting = mentioned.flatMap<PendingMentionReply>((memberName) => {
       if (messages.some((item) => item.timestamp > message.timestamp && item.sender === memberName)) return [];
       // executions 已按 created_at 升序（mergeExecutions），pop 取该成员消息之后最新一次执行。
       const execution = executions.filter((item) =>
