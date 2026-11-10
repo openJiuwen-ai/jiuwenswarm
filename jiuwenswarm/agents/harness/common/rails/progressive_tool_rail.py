@@ -972,13 +972,14 @@ class ProgressiveToolRail(DeepAgentRail):
         # 成员（缺席即真异常）；未注入（None）保持全量校验。读不了 plan 态时
         # 不校验，宁漏不误。
         if self._plan_mode_active_for_check(agent, ctx):
+            eager_names = self.eager_tools
             allowed = self.plan_check_allowed_tools
+            if allowed is not None:
+                # 先按装配方 plan 白名单收敛候选（G.EXP.04：推导式保持
+                # 两子句内，多条件拆两步）。
+                eager_names = [name for name in eager_names if name in allowed]
             missing_eager = sorted(
-                name
-                for name in self.eager_tools
-                if name
-                and name not in input_tool_names
-                and (allowed is None or name in allowed)
+                name for name in eager_names if name and name not in input_tool_names
             )
             if missing_eager:
                 logger.warning(

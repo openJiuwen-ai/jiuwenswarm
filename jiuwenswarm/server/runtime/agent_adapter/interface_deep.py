@@ -8068,7 +8068,8 @@ class JiuWenSwarmDeepAdapter:
             return _PLAN_MODE_EAGER_TOOLS
         return _WORK_PLAN_EAGER_TOOLS
 
-    def _plan_check_allowed_tools(self) -> frozenset[str] | None:
+    @staticmethod
+    def _plan_check_allowed_tools() -> frozenset[str] | None:
         """②号防线 plan 态校验的设计可见集（None=全量校验）。
 
         work 装配 plan 态走 WORK_PLAN_ALLOWED_TOOLS 白名单过滤，白名单外的
