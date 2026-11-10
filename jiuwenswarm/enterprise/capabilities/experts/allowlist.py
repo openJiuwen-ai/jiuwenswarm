@@ -3,10 +3,6 @@
 """企业版按本次请求的允许名单决定专家包能不能看、能装、能用。
 
 个人版先看产品形态并放行，不读名单，不组装租户平面。
-
-名单的键名、内部 HTTP 头、规范化与编解码规则、隐藏包清单是 gateway / server
-双端契约，唯一实现在 ``openjiuwen_protocol.package_allowlist``；本模块只保留
-依赖进程内运行时（ContextVar、Hub/市场包查找）的准入判断。
 """
 
 from __future__ import annotations
@@ -17,11 +13,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from openjiuwen_protocol.match_expressions import matches, validate_match_expr
-from openjiuwen_protocol.package_allowlist import (
+from jiuwenswarm.common.schema.expert_packages import (
     HIDDEN_HUB_ASSET_IDS,
-    PACKAGE_ALLOWLIST_METADATA_KEY as METADATA_KEY,
-    PACKAGE_KIND_DIRS,
+    METADATA_KEY,
     canonical_kind,
     ensure_packages_fit,
     normalize_packages,
@@ -29,14 +23,15 @@ from openjiuwen_protocol.package_allowlist import (
 
 logger = logging.getLogger(__name__)
 
-# (user_id, group_id)。未绑定表示这次调用没有请求身份。
-_SUBJECT: ContextVar[tuple[str, str] | None] = ContextVar(
-    "package_allowlist_subject", default=None
-)
 # 本次请求的 packages。None 表示还没有绑定。
 _ALLOWLIST: ContextVar[list[dict[str, Any]] | None] = ContextVar(
-    "package_allowlist_packages", default=None
+    "expert_packages", default=None
 )
+
+_KIND_DIRS = {
+    "agent_template": "agent_templates",
+    "agent_group": "agent_groups",
+}
 
 
 def hidden_from_enterprise(package_id: str) -> bool:
@@ -49,44 +44,30 @@ def hidden_from_enterprise(package_id: str) -> bool:
 
 
 def _packages_from_metadata(metadata: Mapping[str, Any] | None) -> list[dict[str, Any]]:
-    """结构非法、超体积或任一 match_expr 不能求值时，整份按空名单。"""
+    """结构非法或超体积时，整份按空名单。"""
     if not isinstance(metadata, Mapping) or METADATA_KEY not in metadata:
         return []
     try:
         packages = normalize_packages(metadata.get(METADATA_KEY))
         ensure_packages_fit(packages)
-        _require_valid_match_exprs(packages)
     except ValueError:
-        logger.warning("[package_allowlist] request packages rejected, treating as empty")
+        logger.warning("[expert_packages] request packages rejected, treating as empty")
         return []
     return packages
 
 
-def _require_valid_match_exprs(packages: list[dict[str, Any]]) -> None:
-    for item in packages:
-        match_expr = item.get("match_expr")
-        if match_expr is not None:
-            validate_match_expr(match_expr)
-
-
 @contextmanager
 def bind_request_subject(metadata: Mapping[str, Any] | None) -> Iterator[None]:
-    """把本次请求的用户和名单绑定到允许名单判断。不写入业务 params。"""
+    """把本次请求的名单绑定到允许判断。不写入业务 params。"""
     from jiuwenswarm.enterprise.edition import is_enterprise
 
     if not is_enterprise():
-        subject_token = _SUBJECT.set(("", ""))
         allowlist_token = _ALLOWLIST.set([])
         try:
             yield
         finally:
             _ALLOWLIST.reset(allowlist_token)
-            _SUBJECT.reset(subject_token)
         return
-    from jiuwenswarm.common.request_identity import web_routing_identity
-
-    identity = web_routing_identity(metadata if isinstance(metadata, Mapping) else None)
-    subject_token = _SUBJECT.set((identity.get("user_id", ""), identity.get("group_id", "")))
     allowlist_token = _ALLOWLIST.set(
         _packages_from_metadata(metadata if isinstance(metadata, Mapping) else None)
     )
@@ -94,14 +75,6 @@ def bind_request_subject(metadata: Mapping[str, Any] | None) -> Iterator[None]:
         yield
     finally:
         _ALLOWLIST.reset(allowlist_token)
-        _SUBJECT.reset(subject_token)
-
-
-def _current_identity() -> dict[str, str]:
-    subject = _SUBJECT.get()
-    if not subject:
-        return {"user_id": "", "group_id": ""}
-    return {"user_id": subject[0], "group_id": subject[1]}
 
 
 def _request_packages() -> list[dict[str, Any]]:
@@ -111,20 +84,8 @@ def _request_packages() -> list[dict[str, Any]]:
     return bound
 
 
-def _scope_allows(match_expr: Any, identity: dict[str, str]) -> bool:
-    """空范围对任何身份放行。限定范围在没有身份或求值失败时拒绝。"""
-    if match_expr is None or match_expr == "" or match_expr == []:
-        return True
-
-    try:
-        return matches(match_expr, identity)
-    except ValueError:
-        logger.warning("[package_allowlist] match_expr rejected")
-        return False
-
-
 def allows(kind: str, package_id: str) -> bool:
-    """个人版放行。企业版放行用户自己的包，以及范围命中的受控包。"""
+    """个人版放行。企业版放行用户自己的包，以及名单里的受控包。"""
     from jiuwenswarm.enterprise.edition import is_enterprise
 
     if not is_enterprise():
@@ -136,13 +97,10 @@ def allows(kind: str, package_id: str) -> bool:
     if _is_user_owned(canonical, wanted):
         return True
     candidates = _candidate_ids(canonical, wanted)
-    identity = _current_identity()
     for item in _request_packages():
         item_kind = canonical_kind(str(item.get("kind") or ""))
         package_id_value = str(item.get("id") or "").strip()
-        if item_kind != canonical or package_id_value not in candidates:
-            continue
-        if _scope_allows(item.get("match_expr"), identity):
+        if item_kind == canonical and package_id_value in candidates:
             return True
     return False
 
@@ -164,7 +122,7 @@ def filter_cards(kind: str, cards: list[dict]) -> list[dict]:
 
 
 def _kind_dir(kind: str) -> str:
-    return PACKAGE_KIND_DIRS[kind]
+    return _KIND_DIRS[kind]
 
 
 def _hub_record(kind: str, package_id: str):

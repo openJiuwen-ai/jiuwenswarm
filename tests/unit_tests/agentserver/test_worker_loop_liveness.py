@@ -10,6 +10,7 @@ stalled loop from a dead pipe before it replaces the Worker.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 import time
@@ -440,3 +441,78 @@ async def test_business_frame_proves_the_worker_loop_ran() -> None:
             }
         )
         await _until(lambda: supervisor._worker_last_beat > stalled + 5.0)
+
+
+def test_stall_context_filters_frame_lines_and_bounds_locations():
+    value = {
+        "request_id": "r" * 200,
+        "params": {"api_key": "excluded"},
+        "stack": [
+            None,
+            {"line": True},
+            {"line": "1"},
+            {"line": -1},
+            {"line": 10_000_001},
+            {"file": "f" * 300, "function": "g" * 200, "line": 0},
+            {"file": "end.py", "function": "last", "line": 10_000_000},
+        ],
+    }
+    result = module._bounded_stall_context(value)
+    assert result == {
+        "request_id": "r" * 128,
+        "stack": [
+            {"file": "f" * 256, "function": "g" * 128, "line": 0},
+            {"file": "end.py", "function": "last", "line": 10_000_000},
+        ],
+    }
+    value["stack"] = [{"line": i} for i in range(17)]
+    assert len(module._bounded_stall_context(value)["stack"]) == 16
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age,restarted", [(35.0, False), (181.0, True)])
+async def test_business_stall_logs_running_business_and_retains_thresholds(age, restarted, caplog):
+    supervisor = RuntimeSupervisor(Readiness())
+    async with _running(supervisor) as (conn, _pump):
+        message = _pong(age)
+        message["loop_stall"] = {"operation": "request", "request_id": "blocked-request",
+            "session_id": "blocked-session", "method": "designer.run.execute",
+            "stack": [{"file": "compose.py", "line": 74, "function": "_run_ffmpeg"}],
+            "params": {"api_key": "must-never-be-logged"}}
+        await conn.messages.put(message)
+        await _until(lambda: bool(supervisor._worker_stall_context))
+        assert await supervisor._classify_worker_stall(time.monotonic()) is restarted
+        assert conn.closed is restarted
+        records = [record.getMessage() for record in caplog.records if "business=" in record.getMessage()]
+        context = json.loads(records[-1].split("business=", 1)[1])
+        assert context["request_id"] == "blocked-request"
+        assert context["session_id"] == "blocked-session"
+        assert "_run_ffmpeg" in caplog.text
+        assert "must-never-be-logged" not in caplog.text
+        assert module._WORKER_STALL_WARN == 30 and module._WORKER_STALL_RESTART == 180
+        supervisor._note_worker_beat({"kind": KIND_WIRE})
+        assert supervisor._worker_stall_context == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["ipc", "gateway", "serialization"])
+async def test_diagnostic_failure_does_not_stop_stall_recovery(source, monkeypatch, caplog):
+    supervisor = RuntimeSupervisor(Readiness())
+    monkeypatch.setattr(module, "_WATCHDOG_INTERVAL", 0.01)
+    async with _running(supervisor) as (conn, _pump):
+        def broken_stats():
+            if source == "serialization":
+                return {"unserializable": object()}
+            raise ValueError("do-not-log-diagnostic-payload")
+
+        if source == "gateway":
+            supervisor._forwarder = SimpleNamespace(diagnostics=broken_stats)
+        else:
+            monkeypatch.setattr(conn, "diagnostics", broken_stats, raising=False)
+        supervisor._worker_last_beat = time.monotonic() - 181
+        await asyncio.wait_for(supervisor._watchdog(1), 1)
+        assert conn.closed
+        assert supervisor._unhealthy_reason == "worker business loop stalled"
+        assert "business loop stalled" in caplog.text
+        assert "do-not-log-diagnostic-payload" not in caplog.text
+        assert "diagnostics_error" in caplog.text or "runtime diagnostics unavailable" in caplog.text

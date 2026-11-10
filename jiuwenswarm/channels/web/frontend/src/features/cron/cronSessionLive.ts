@@ -25,6 +25,9 @@ import { useChatStore } from '../../stores/chatStore';
 import { useCronStore } from '../../stores/cronStore';
 import { normalizeFinalContent } from '../../utils/finalContent';
 import { getGatewayHttpBase, getWebTransport } from '../../utils/env';
+import { isCronExecutionSession } from './cronProcessingGuard';
+
+export { isCronExecutionSession, shouldKeepLocalCronProcessing } from './cronProcessingGuard';
 
 /** 执行过程里要画到会话页上的帧。和网关放进直播的那一组一致。 */
 const CRON_LIVE_EVENTS = new Set([
@@ -58,10 +61,6 @@ function rememberLiveSeq(sessionId: string, sequence: number): boolean {
     if (typeof first === 'number') bucket.delete(first);
   }
   return true;
-}
-
-function isCronExecutionSession(sessionId: string): boolean {
-  return sessionId.startsWith('cron_') || sessionId.startsWith('__cron__');
 }
 
 /** 历史（或已完成的回复）已覆盖回放时，这些帧仍然要画：提问卡片、错误、执行状态更新。 */

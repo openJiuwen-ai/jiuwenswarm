@@ -334,6 +334,38 @@ def _sync_style_authority(text: str, ctx: NodeExecutionContext) -> None:
     synchronize_graph_style_from_brief(ctx.graph, text)
 
 
+def _audio_plan_instruction(plan: dict[str, Any]) -> str:
+    """Tell the brief author the three audio dimensions, and what is unsupported.
+
+    Every line follows the plan instead of assuming speech and diegetic sound: a
+    silent or mime request sets ``speech.include``/``sfx.include`` to false, and
+    telling the author to promise dialogue would contradict that request.
+    """
+    music = plan.get("music") if isinstance(plan.get("music"), dict) else {}
+    speech = plan.get("speech") if isinstance(plan.get("speech"), dict) else {}
+    sfx = plan.get("sfx") if isinstance(plan.get("sfx"), dict) else {}
+    lines = ["Audio plan (authoritative: do not promise anything else):"]
+    speech_off = speech.get("include") is False or str(speech.get("kind") or "") == "none"
+    if speech_off:
+        lines.append("- Speech: none - no dialogue, no narration, no voice-over.")
+    else:
+        lines.append("- Speech: narration / dialogue in the locked language.")
+    if sfx.get("include") is False:
+        lines.append("- Diegetic sound: none - no room tone, no effects, no ambience.")
+    else:
+        lines.append("- Diegetic sound: room tone and action sound only.")
+    if music.get("requested") and music.get("supported"):
+        lines.append("- Music: one film-level score, mixed after the clips are joined.")
+    elif music.get("requested"):
+        lines.append(
+            "- Music: NOT SUPPORTED in this build; say so explicitly in the brief's "
+            "Audio section, the film carries no score."
+        )
+    else:
+        lines.append("- Music: none.")
+    return "\n".join(lines) + "\n"
+
+
 class BriefNodeHandler:
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         cfg = node_config(node)
@@ -355,11 +387,15 @@ class BriefNodeHandler:
             )
         source = graph_prompt(ctx.graph, node)
         skill = str(cfg.get("skill_excerpt") or "")
-        audio = (ctx.graph.get("metadata") or {}).get("audio_intent") or {}
+        meta_now = ctx.graph.get("metadata") if isinstance(ctx.graph.get("metadata"), dict) else {}
+        audio_plan = meta_now.get("audio_plan") if isinstance(meta_now.get("audio_plan"), dict) else {}
+        audio = meta_now.get("audio_intent") or {}
         instruction = _BRIEF_INSTRUCTION
         if skill:
             instruction = skill[:2500] + "\n\n" + instruction
-        if audio:
+        if audio_plan:
+            instruction += "\n" + _audio_plan_instruction(audio_plan)
+        elif audio:
             instruction += f"\nAudio policy: {audio}\n"
         text = await complete_designer_node_text(
             instruction + source,
@@ -367,6 +403,11 @@ class BriefNodeHandler:
         )
         if not str(text or "").strip():
             raise RuntimeError("Chat model did not return a usable brief.")
+        from jiuwenswarm.server.runtime.designer.media_model_playbook import (
+            ensure_audio_statement,
+        )
+
+        text = ensure_audio_statement(text, audio_plan)
         _sync_style_authority(text, ctx)
         text = _stamp_bible_on_text(text, ctx)
         path = write_workspace_text(f"designer_brief_{ctx.run_id}_{ctx.node_id}", text)

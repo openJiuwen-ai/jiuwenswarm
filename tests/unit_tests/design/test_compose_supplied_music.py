@@ -232,6 +232,32 @@ def test_overlay_leaves_the_film_audio_unfiltered(
     assert "highpass" not in overlay[overlay.index("-filter_complex") + 1]
 
 
+def test_edit_cue_sheet_pairs_each_emotion_with_its_own_clip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clip1, clip2 = _clips(tmp_path)
+    upload = tmp_path / "user_video.mp4"
+    upload.write_bytes(b"m" * 600)
+    graph = _graph()
+    graph["metadata"] = {
+        "script_analysis": {
+            "clips": [{"clip_index": 1, "emotion": "calm"}, {"clip_index": 2, "emotion": "climax"}]
+        }
+    }
+    lengths = {clip1: 4.0, clip2: 6.0, upload.resolve(): 3.0}
+    seen: list[tuple[list[float], list[str]]] = []
+    monkeypatch.setattr(compose_mod, "_media_duration_seconds", lambda _ffmpeg, path: lengths[path])
+    monkeypatch.setattr(
+        compose_mod,
+        "build_cue_sheet",
+        lambda durations, emotions, **_kw: seen.append((list(durations), list(emotions))),
+    )
+
+    compose_mod._edit_cue_sheet("ffmpeg", _ctx(graph, clip1, clip2), [clip2, clip1, upload.resolve()])
+
+    assert seen == [([6.0, 4.0, 3.0], ["climax", "calm", ""])]
+
+
 @pytest.mark.asyncio
 async def test_failed_score_falls_back_to_the_clips_own_audio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ffmpeg_calls: list[list[str]]
@@ -249,7 +275,13 @@ async def test_failed_score_falls_back_to_the_clips_own_audio(
     monkeypatch.setattr(compose_mod, "concatenate_clip_videos", fake_concat)
     monkeypatch.setattr(compose_mod.handler_io, "canvas_output_dir", lambda graph: tmp_path)
 
-    def fake_mix(video: Path, dest: Path, ctx: object = None, brief: str = "") -> Path:
+    def fake_mix(
+        video: Path,
+        dest: Path,
+        ctx: object = None,
+        brief: str = "",
+        clip_paths: list[Path] | None = None,
+    ) -> Path:
         if len(joined) == 1:
             return video
         Path(dest).write_bytes(b"scored " + Path(video).read_bytes())

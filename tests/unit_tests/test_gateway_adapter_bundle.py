@@ -150,12 +150,12 @@ def test_launcher_isolates_before_windows_entry_imports(tmp_path, monkeypatch, c
         "from agent_gateway.common.paths import get_config_dir\n"
         "root = Path(os.environ['JIUWENSWARM_DATA_DIR'])\n"
         "assert get_user_workspace_dir() == root\n"
-        "assert get_config_dir() == root / 'config'\n"
+        "assert get_config_dir() == root / 'infra/config'\n"
         "assert Path.cwd() == root\n"
-        "assert not (root / 'config/logging.yaml').exists()\n"
-        "(root / 'config/.env').write_text('MIGRATED=1')\n"
-        "(root / 'logs').mkdir(exist_ok=True)\n"
-        "(root / 'logs/probe.log').write_text('isolated failure evidence')\n"
+        "assert not (root / 'infra/config/logging.yaml').exists()\n"
+        "(root / 'infra/config/.env').write_text('MIGRATED=1')\n"
+        "(root / 'infra/logs/agent').mkdir(parents=True, exist_ok=True)\n"
+        "(root / 'infra/logs/agent/probe.log').write_text('isolated failure evidence')\n"
         f"Path({str(report)!r}).write_text(str(root))\n"
         f"raise SystemExit({exit_code})\n",
         encoding="utf-8",

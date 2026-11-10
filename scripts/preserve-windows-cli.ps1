@@ -13,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 $env:PSModulePath=Join-Path $PSHOME 'Modules'
 $utf8 = New-Object Text.UTF8Encoding($false)
 $safeRoot=$false
+$script:pathWarning=''
 $script:progressValue=0
 $script:progressWritten=[DateTime]::MinValue
 
@@ -166,12 +167,14 @@ function Copy-Tree([string]$Source, [string]$Target) {
     }
 }
 function Assert-PrefixIdle([string]$Source, [switch]$ExecutableOnly) {
+    # Match a path argument or descendant, not a sibling such as node-runtime-backup.
+    $reference='(?i)(?:^|[\s"''=])'+[regex]::Escape($Source)+'(?=$|[\\\s"''])'
     foreach ($process in @(Get-CimInstance -ClassName Win32_Process)) {
         if ($process.ProcessId -eq $PID) { continue }
         $executable=[string]$process.ExecutablePath
         $command=([string]$process.CommandLine).Replace('/','\')
         if (($executable -and (Inside $executable $Source)) -or
-            (-not $ExecutableOnly -and $command.IndexOf($Source,[StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+            (-not $ExecutableOnly -and $command -match $reference)) {
             throw "Close the CLI process using $Source before upgrading (PID $($process.ProcessId))."
         }
     }
@@ -292,8 +295,9 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
 }
 function Add-UserPaths($Mappings, $Additional) {
     if (-not @($Mappings).Count -and -not @($Additional).Count) { return }
-    $key=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    $key=$null
     try {
+        $key=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         $raw=[string]$key.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
         $kind=[Microsoft.Win32.RegistryValueKind]::ExpandString
         if ($key.GetValueNames() -contains 'Path') { $kind=$key.GetValueKind('Path') }
@@ -356,7 +360,11 @@ function Add-UserPaths($Mappings, $Additional) {
             Write-Json $journal @{raw=$raw; kind=[string]$kind; updated=$updated}
             $key.SetValue('Path',$updated,$kind)
         }
-    } finally { $key.Dispose() }
+    } catch [UnauthorizedAccessException], [Security.SecurityException] {
+        # Copies have already been verified. The EXE entry point discovers them
+        # and configures its own PATH; SDK activation uses the stable user store.
+        $script:pathWarning='User PATH access was denied. CLI tools remain available inside WorkSwarm through its process environment.'
+    } finally { if ($key) { $key.Dispose() } }
 }
 try {
     $InstallDir=Full-Path $InstallDir
@@ -442,7 +450,7 @@ try {
                 if ($bundle.digest) { Register-Bundle $bundle.source $bundle.digest }
             }
             Add-UserPaths @() $paths
-            Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=@(); sdk_mappings=@(); npm_root=$npmRoot}
+            Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=@(); sdk_mappings=@(); npm_root=$npmRoot; path_warning=$script:pathWarning}
             Report-Progress 100 'CLI environment ready.' '' -Force
             exit 0
         }
@@ -506,7 +514,7 @@ try {
         }
         if ($sdkMappings.Count) { Assert-PrefixIdle $InstallDir -ExecutableOnly }
         Add-UserPaths $mappings $paths
-        Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; sdk_mappings=$sdkMappings; unchanged_bundles=$bundledChecks; npm_root=$npmRoot}
+        Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; sdk_mappings=$sdkMappings; unchanged_bundles=$bundledChecks; npm_root=$npmRoot; path_warning=$script:pathWarning}
         Report-Progress 100 'CLI environment ready.' '' -Force
     } finally { $lock.Dispose() }
 } catch {

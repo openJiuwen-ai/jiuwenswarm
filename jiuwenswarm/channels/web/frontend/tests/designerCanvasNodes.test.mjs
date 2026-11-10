@@ -316,6 +316,17 @@ test('resolvedNodeCanvasSize ignores a zero stored size', () => {
   assert.equal(size.height, 160);
 });
 
+test('resolvedNodeCanvasSize keeps audio cards at the default size so the player fits', () => {
+  const size = resolvedNodeCanvasSize({
+    id: 'n_music',
+    type: 'audio',
+    label: 'BGM',
+    config: { role: 'music', pipeline: 'music' },
+    layout: { x: 340, y: 420, width: 260, height: 120 },
+  });
+  assert.deepEqual(size, { width: 280, height: 160 });
+});
+
 test('resolvedNodeCanvasSize uses the canvas ratio on default landscape cards', () => {
   const size = resolvedNodeCanvasSize(
     {

@@ -178,10 +178,7 @@ async def test_personal_json_disconnect_is_a_controlled_error():
     assert caught.value.detail == 'client_disconnected'
 
 
-@pytest.mark.skip(
-    reason="Pinned agent-gateway cff3b1b9 has an upload deadline cancellation race; "
-    "remove after upgrading to an official fix (openJiuwen-ai/agent-gateway#29).",
-)
+@pytest.mark.timeout(1)
 @pytest.mark.asyncio
 async def test_personal_upload_has_a_total_deadline(monkeypatch):
     monkeypatch.setattr(api, '_UPLOAD_TIMEOUT_SECONDS', 0.02)

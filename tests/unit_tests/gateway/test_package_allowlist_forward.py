@@ -1,17 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""专家包允许名单随出站请求下发：头来自库行，损坏头按空名单。"""
+"""专家包随出站请求下发：名单来自当前 bot 的 Agent 模板槽，损坏头按空名单。"""
 
 from __future__ import annotations
 
 import pytest
 from starlette.requests import Request
-from agent_gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
-    PackageAllowlistService,
-    read_package_allowlist_packages,
-)
-from agent_gateway.routing.agent_client import _stamp_package_allowlist
-from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.models import E2AEnvelope
@@ -22,23 +16,23 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import 
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     identity_headers,
 )
+from agent_gateway.enterprise.capabilities.experts.bound_packages import (
+    packages_for_bot,
+    packages_from_template_rows,
+)
+from agent_gateway.routing.agent_client import _stamp_expert_packages
 from jiuwenswarm.server.agent_http_routes import _rebuild_identity_from_headers
-from jiuwenswarm.common.schema.package_allowlist import (
+from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
+from jiuwenswarm.common.schema.expert_packages import (
     HEADER_NAME,
-    decode_package_allowlist_header,
-    encode_package_allowlist_header,
+    METADATA_KEY,
+    decode_expert_packages_header,
+    encode_expert_packages_header,
 )
 
 _KEEP = [{"kind": "agent_template", "id": "keep"}]
 _EVIL = [{"kind": "agent_template", "id": "evil"}]
-_REPO = (
-    "agent_gateway.enterprise.config.manager_config.core.application_config."
-    "package_allowlist.require_enterprise_repository"
-)
-_READ = (
-    "agent_gateway.enterprise.config.manager_config.core.application_config."
-    "package_allowlist.read_package_allowlist_packages"
-)
+_PACKAGES = "agent_gateway.enterprise.capabilities.experts.bound_packages.packages_for_bot"
 
 
 def _envelope() -> E2AEnvelope:
@@ -50,7 +44,7 @@ def _envelope() -> E2AEnvelope:
         params={"session_id": "sess-1"},
         user_id="alice",
         channel_context={
-            "package_allowlist": _EVIL,
+            METADATA_KEY: _EVIL,
             "routing": {"group_id": "finance", "bot_id": "bot-1"},
         },
     )
@@ -78,19 +72,6 @@ def _http_request(headers: dict[str, str]) -> Request:
     )
 
 
-class _Repo:
-    def __init__(self, row):
-        self.row = row
-        self.created = False
-
-    async def get(self):
-        return self.row
-
-    async def create(self, _row):
-        self.created = True
-        return _row
-
-
 def test_personal_identity_headers_omit_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     with bind_outbound_allowlist(_KEEP):
@@ -104,25 +85,26 @@ def test_enterprise_header_uses_bound_row_not_client_field(
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     with bind_outbound_allowlist(_KEEP):
         headers = identity_headers(_envelope(), accept="application/json")
-    assert decode_package_allowlist_header(headers[HEADER_NAME]) == _KEEP
+    assert decode_expert_packages_header(headers[HEADER_NAME]) == _KEEP
 
 
 def test_enterprise_unbound_header_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     headers = identity_headers(_envelope(), accept="application/json")
-    assert decode_package_allowlist_header(headers[HEADER_NAME]) == []
+    assert decode_expert_packages_header(headers[HEADER_NAME]) == []
 
 
 @pytest.mark.asyncio
 async def test_http_assemble_reads_db_row(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
 
-    async def _read() -> list[dict]:
+    async def _read(bot_id: str) -> list[dict]:
+        assert bot_id == "bot-1"
         return list(_KEEP)
 
-    monkeypatch.setattr(_READ, _read)
+    monkeypatch.setattr(_PACKAGES, _read)
     assembled = await _assemble_with_allowlist(_envelope(), "http://10.0.0.8:8766")
-    assert decode_package_allowlist_header(assembled.headers[HEADER_NAME]) == _KEEP
+    assert decode_expert_packages_header(assembled.headers[HEADER_NAME]) == _KEEP
 
 
 @pytest.mark.asyncio
@@ -134,7 +116,7 @@ async def test_personal_http_assemble_does_not_read(
     async def _read() -> list[dict]:
         raise AssertionError("personal edition read the allowlist")
 
-    monkeypatch.setattr(_READ, _read)
+    monkeypatch.setattr(_PACKAGES, _read)
     assembled = await _assemble_with_allowlist(_envelope(), "http://10.0.0.8:8766")
     assert HEADER_NAME not in assembled.headers
 
@@ -145,16 +127,17 @@ async def test_websocket_stamp_overwrites_client_allowlist(
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
 
-    async def _read() -> list[dict]:
+    async def _read(_bot_id: str) -> list[dict]:
+        assert _bot_id == "bot-1"
         return list(_KEEP)
 
-    monkeypatch.setattr(_READ, _read)
+    monkeypatch.setattr(_PACKAGES, _read)
     envelope = _envelope()
-    await _stamp_package_allowlist(envelope)
-    assert envelope.channel_context["package_allowlist"] == _KEEP
+    await _stamp_expert_packages(envelope)
+    assert envelope.channel_context[METADATA_KEY] == _KEEP
     assert envelope.channel_context["routing"]["group_id"] == "finance"
     request = e2a_to_agent_request(envelope)
-    assert request.metadata["package_allowlist"] == _KEEP
+    assert request.metadata[METADATA_KEY] == _KEEP
 
 
 @pytest.mark.asyncio
@@ -166,10 +149,10 @@ async def test_personal_websocket_stamp_skips_read(
     async def _read() -> list[dict]:
         raise AssertionError("personal edition read the allowlist")
 
-    monkeypatch.setattr(_READ, _read)
+    monkeypatch.setattr(_PACKAGES, _read)
     envelope = _envelope()
-    await _stamp_package_allowlist(envelope)
-    assert envelope.channel_context["package_allowlist"] == _EVIL
+    await _stamp_expert_packages(envelope)
+    assert envelope.channel_context[METADATA_KEY] == _EVIL
 
 
 def test_corrupt_allowlist_header_becomes_empty_metadata(
@@ -179,7 +162,7 @@ def test_corrupt_allowlist_header_becomes_empty_metadata(
     _user_id, metadata = _rebuild_identity_from_headers(
         _http_request({HEADER_NAME: "%%%", "X-User-Id": "alice"})
     )
-    assert metadata["package_allowlist"] == []
+    assert metadata[METADATA_KEY] == []
 
 
 def test_missing_allowlist_header_becomes_empty_metadata(
@@ -189,56 +172,108 @@ def test_missing_allowlist_header_becomes_empty_metadata(
     _user_id, metadata = _rebuild_identity_from_headers(
         _http_request({"X-User-Id": "alice"})
     )
-    assert metadata["package_allowlist"] == []
+    assert metadata[METADATA_KEY] == []
 
 
 def test_allowlist_header_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    encoded = encode_package_allowlist_header(_KEEP)
+    encoded = encode_expert_packages_header(_KEEP)
     _user_id, metadata = _rebuild_identity_from_headers(
         _http_request({HEADER_NAME: encoded, "X-User-Id": "alice"})
     )
-    assert metadata["package_allowlist"] == _KEEP
+    assert metadata[METADATA_KEY] == _KEEP
+
+
+def test_template_rows_become_packages_without_match_expr() -> None:
+    packages = packages_from_template_rows(
+        ["tpl-keep", "tpl-keep", "tpl-gone", "tpl-off"],
+        [
+            {
+                "template_id": "tpl-keep",
+                "enabled": True,
+                "packages": [
+                    {"kind": "agent_template", "asset_id": "keep", "version": "1"},
+                    {"kind": "agent_group", "asset_id": "team-1", "version": ""},
+                    {"kind": "agent_template", "asset_id": "keep", "version": "2"},
+                    {"kind": "other", "asset_id": "skip-me"},
+                ],
+            },
+            {
+                "template_id": "tpl-off",
+                "enabled": False,
+                "packages": [{"kind": "agent_template", "asset_id": "off"}],
+            },
+        ],
+    )
+    assert packages == [
+        {"kind": "agent_template", "id": "keep"},
+        {"kind": "agent_group", "id": "team-1"},
+    ]
+    assert "match_expr" not in packages[0]
 
 
 @pytest.mark.asyncio
-async def test_read_returns_stored_row(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_packages_for_bot_reads_template_slots(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(_REPO, lambda _name: _Repo({"packages": _KEEP}))
-    assert await read_package_allowlist_packages() == _KEEP
+
+    async def _list(table: str, *, filters=None, order_by: str = ""):
+        del order_by
+        if table == "instance_agent_resource" and filters["resource_id"] == "bot-1":
+            return [{"ref_template_id": "tpl-1", "enabled": True}]
+        if table == "agent_template" and filters["template_id"] == "tpl-1":
+            return [{
+                "template_ref": {
+                    "expert_package": ["tpl-keep"],
+                },
+            }]
+        if table == "expert_package_template":
+            return [
+                {
+                    "template_id": "tpl-keep",
+                    "enabled": True,
+                    "packages": [
+                        {"kind": "agent_template", "asset_id": "keep"},
+                        {"kind": "agent_group", "asset_id": "team-1"},
+                    ],
+                },
+            ]
+        return []
+
+    monkeypatch.setattr(
+        "agent_gateway.enterprise.config.effective.db_queries.list_records",
+        _list,
+    )
+    assert await packages_for_bot("bot-1") == [
+        {"kind": "agent_template", "id": "keep"},
+        {"kind": "agent_group", "id": "team-1"},
+    ]
 
 
 @pytest.mark.asyncio
-async def test_read_failure_sends_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_packages_for_missing_bot_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
 
-    def _missing(_name: str):
-        raise RuntimeError("not wired")
+    async def _list(table: str, *, filters=None, order_by: str = ""):
+        del table, filters, order_by
+        return []
 
-    monkeypatch.setattr(_REPO, _missing)
-    assert await read_package_allowlist_packages() == []
+    monkeypatch.setattr(
+        "agent_gateway.enterprise.config.effective.db_queries.list_records",
+        _list,
+    )
+    assert await packages_for_bot("missing") == []
+    assert await packages_for_bot("") == []
 
 
 @pytest.mark.asyncio
-async def test_personal_read_skips_repository(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_personal_packages_for_bot_skips_repository(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
 
-    def _missing(_name: str):
-        raise AssertionError("personal edition read the repository")
+    def _missing(*_args, **_kwargs):
+        raise AssertionError("personal edition read the gateway database")
 
-    monkeypatch.setattr(_REPO, _missing)
-    assert await read_package_allowlist_packages() == []
-
-
-@pytest.mark.asyncio
-async def test_upsert_rejects_oversized_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    repo = _Repo(None)
-    monkeypatch.setattr(_REPO, lambda _name: repo)
-    huge = [
-        {"kind": "agent_template", "id": f"{index:04d}{'x' * 124}"}
-        for index in range(200)
-    ]
-    with pytest.raises(ValueError, match="16384"):
-        await PackageAllowlistService().upsert({"packages": huge})
-    assert repo.created is False
+    monkeypatch.setattr(
+        "agent_gateway.enterprise.config.effective.db_queries.list_records",
+        _missing,
+    )
+    assert await packages_for_bot("bot-1") == []

@@ -140,6 +140,8 @@ export interface GroupExecution {
   owner_member?: string | null;
   display_name: string;
   execution_kind: 'agent' | 'team' | 'organization';
+  organization_stage?: 'starting' | 'processing' | 'executing' | 'summarizing' | null;
+  organization_plan_id?: string | null;
   title: string;
   task: string;
   status: string;

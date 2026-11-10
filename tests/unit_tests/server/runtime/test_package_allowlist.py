@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from jiuwenswarm.common.schema.expert_packages import METADATA_KEY
 from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
     allows,
     bind_request_subject,
@@ -30,7 +31,7 @@ def _bind_workspace(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
         _agent_workspace,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir",
+        "jiuwenswarm.common.utils.get_domain_data_dir",
         _user_workspace,
     )
     monkeypatch.setattr(
@@ -38,7 +39,7 @@ def _bind_workspace(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
         _agent_workspace,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.extension_package_manager.get_user_workspace_dir",
+        "jiuwenswarm.server.runtime.extension_package_manager.get_domain_data_dir",
         _user_workspace,
     )
 
@@ -49,7 +50,7 @@ def _mkdir(path: Path) -> None:
 
 def _bind_allowlist(packages: list[dict], **identity):
     metadata = dict(identity)
-    metadata["package_allowlist"] = packages
+    metadata[METADATA_KEY] = packages
     return bind_request_subject(metadata)
 
 
@@ -64,7 +65,7 @@ def test_personal_bind_does_not_read_metadata(monkeypatch: pytest.MonkeyPatch) -
         _deny,
     )
     with _bind_allowlist(
-        [{"kind": "agent_template", "id": "kept", "match_expr": "user_id =="}],
+        [{"kind": "agent_template", "id": "kept"}],
         user_id="alice",
     ):
         assert allows("agent_template", "kept") is True
@@ -85,25 +86,12 @@ def test_personal_allows_without_reading_allowlist(monkeypatch: pytest.MonkeyPat
     assert hidden_from_enterprise("794db1bfe8884d6897d62d3584894a59") is False
 
 
-def test_invalid_match_expr_empties_the_whole_request_list(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    packages = [
-        {"kind": "agent_template", "id": "kept", "match_expr": "user_id =="},
-        {"kind": "agent_template", "id": "also-kept"},
-    ]
-    with _bind_allowlist(packages, user_id="alice"):
-        assert allows("agent_template", "kept") is False
-        assert allows("agent_template", "also-kept") is False
-    assert hidden_from_enterprise("794db1bfe8884d6897d62d3584894a59") is True
-
-
 def test_enterprise_empty_allowlist_denies_controlled_and_allows_user_local(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    assert hidden_from_enterprise("794db1bfe8884d6897d62d3584894a59") is True
     _bind_workspace(monkeypatch, tmp_path)
     _mkdir(tmp_path / "plugins" / "agent_templates" / "local" / "mine")
     _mkdir(tmp_path / "plugins" / "agent_templates" / "built_in" / "builtin-expert")
@@ -133,32 +121,6 @@ def test_enterprise_allowlist_then_revoke(
         assert allows("agent_template", "builtin-expert") is True
     with _bind_allowlist([]):
         assert allows("agent_template", "builtin-expert") is False
-
-
-def test_scope_limits_controlled_package_to_matching_user(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    _bind_workspace(monkeypatch, tmp_path)
-    scoped = [
-        {
-            "kind": "agent_template",
-            "id": "builtin-expert",
-            "match_expr": "user_id == 'alice'",
-        }
-    ]
-    with _bind_allowlist(scoped, user_id="alice"):
-        assert allows("agent_template", "builtin-expert") is True
-    with _bind_allowlist(scoped, user_id="bob"):
-        assert allows("agent_template", "builtin-expert") is False
-    assert allows("agent_template", "builtin-expert") is False
-
-    open_grant = [{"kind": "agent_template", "id": "builtin-expert"}]
-    with _bind_allowlist(open_grant, user_id="bob"):
-        assert allows("agent_template", "builtin-expert") is True
-    with _bind_allowlist(open_grant, user_id="alice", routing={"group_id": "finance"}):
-        assert allows("agent_template", "builtin-expert") is True
 
 
 def test_allowed_install_still_checks_connectors(

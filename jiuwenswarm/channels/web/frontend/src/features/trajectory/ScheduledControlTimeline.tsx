@@ -114,7 +114,7 @@ function eventText(event: ScheduledControlEvent, t: TFunction): string {
 
 function markerClass(event: ScheduledControlEvent): string {
   if (event.kind === 'revision') return css.markerRevision;
-  if (event.kind === 'verified') return css.markerVerified;
+  if (event.kind === 'verified' || event.kind === 'completed') return css.markerVerified;
   if (event.kind !== 'vote') return css.markerEvent;
   if (event.decision?.kind === 'pass') return css.markerPass;
   if (event.decision?.kind === 'fail') return css.markerFail;

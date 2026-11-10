@@ -58,6 +58,8 @@ _locks: dict[str, asyncio.Lock] = {}
 _plan_events: dict[tuple[str, str], asyncio.Event] = {}
 _member_runs: dict[tuple[str, str, str], asyncio.Task] = {}
 _accepted_plans: set[tuple[str, str, str]] = set()
+_open_organization_turns: set[tuple[str, str, str]] = set()
+_organization_run_attempts: set[tuple[str, str, str]] = set()
 _queued_plans: dict[tuple[str, str, str], asyncio.Task] = {}
 _proxy_backends: dict[tuple[str, str], Any] = {}
 _proxy_tools: dict[tuple[str, str], Any] = {}
@@ -126,6 +128,12 @@ _OWNER_PROMPT_SUFFIX = (
     "org_claim_task. Create every child "
     "before any of them finishes, and do not start this Owner team's own "
     "writing until the other children exist. Then review their submissions. "
+    "When describing the final deliverable in organization children or a summary task, preserve the "
+    "user's original length requirements. Keep approximate length approximate: 'about 500 words' or "
+    "'约500字' does not authorize percentage tolerances, strict ranges, per-section quotas, or a "
+    "required count report. Do not add these as acceptance criteria. Preserve explicit user limits "
+    "such as '不超过500字' and user-specified per-section counts. Carry the original requirements "
+    "into org_create_summary_execution without tightening them. "
     "When you selected SUMMARY_TEAM, call "
     "org_create_summary_execution after every source task is accepted and wait "
     "until its Summary Task completes the root. When you selected HIERARCHICAL, "
@@ -824,6 +832,18 @@ def organization_plan_accepted(session_id: str, plan_id: str, member_name: str) 
     return _acceptance_key(session_id, plan_id, member_name) in _accepted_plans
 
 
+def note_organization_turn_started(session_id: str, member_name: str, plan_id: str) -> None:
+    """Remember that this proxy is inside the turn for one organization plan."""
+    if session_id and member_name and plan_id:
+        _open_organization_turns.add(_acceptance_key(session_id, plan_id, member_name))
+
+
+def note_organization_run_attempt(session_id: str, member_name: str, plan_id: str) -> None:
+    """Remember that this turn called run_team, even if acceptance did not stick."""
+    if session_id and member_name and plan_id:
+        _organization_run_attempts.add(_acceptance_key(session_id, plan_id, member_name))
+
+
 def claim_organization_plan(session_id: str, plan_id: str, member_name: str) -> bool:
     """Record that this proxy's run_team is taking this plan. False if it already did."""
     key = _acceptance_key(session_id, plan_id, member_name)
@@ -856,6 +876,118 @@ def _close_queued_organization_plan(
     _fail_open_organization_plan(session_id, plan_id, error)
     _plan_event(session_id, plan_id).set()
     release_deferred_direct(session_id, plan_id)
+
+
+def _plan_has_acceptance(session_id: str, plan_id: str) -> bool:
+    target = (session_id, str(plan_id))
+    return any(key[:2] == target for key in _accepted_plans)
+
+
+def _plan_has_open_turn(session_id: str, plan_id: str) -> bool:
+    target = (session_id, str(plan_id))
+    return any(key[:2] == target for key in _open_organization_turns)
+
+
+def _member_still_bound(session_id: str, plan_id: str) -> bool:
+    target = str(plan_id)
+    return any(
+        queued_session == session_id and target in queue
+        for (queued_session, _member), queue in _member_turns.items()
+    )
+
+
+def _plan_must_keep_binding(session_id: str, plan_id: str) -> bool:
+    """A waiting or already started plan keeps its member binding after this turn."""
+    plan = _plan_record(session_id, plan_id)
+    if plan is None or str(plan.get("status") or "") not in {"pending", "running"}:
+        return False
+    if _plan_has_acceptance(session_id, plan_id):
+        return True
+    if (
+        _owner_run_active(session_id, plan_id)
+        or _queue_run_active(session_id, plan_id)
+        or _organization_attempt_started(session_id, plan_id)
+    ):
+        return True
+    return bool(_blocking_earlier_plans(session_id, plan))
+
+
+def _plan_has_run_attempt(session_id: str, plan_id: str) -> bool:
+    target = (session_id, str(plan_id))
+    return any(key[:2] == target for key in _organization_run_attempts)
+
+
+def _unstarted_plan_can_close(session_id: str, plan_id: str) -> bool:
+    """A pending plan can close only when nobody is running, queued, or retrying it."""
+    plan = _plan_record(session_id, plan_id)
+    if plan is None or str(plan.get("status") or "") != "pending":
+        return False
+    if (
+        _plan_has_acceptance(session_id, plan_id)
+        or _plan_has_open_turn(session_id, plan_id)
+        or _plan_has_run_attempt(session_id, plan_id)
+    ):
+        return False
+    if (
+        _owner_run_active(session_id, plan_id)
+        or _queue_run_active(session_id, plan_id)
+        or _organization_attempt_started(session_id, plan_id)
+    ):
+        return False
+    return not _blocking_earlier_plans(session_id, plan)
+
+
+async def _close_unstarted_organization_plan(session_id: str, plan_id: str) -> None:
+    """Fail a pending plan that no proxy started, and close its early card."""
+    if _member_still_bound(session_id, plan_id) or not _unstarted_plan_can_close(session_id, plan_id):
+        return
+    _fail_open_organization_plan(
+        session_id, plan_id, "organization round ended without an accepted run_team"
+    )
+    target = (session_id, str(plan_id))
+    for key in [item for item in _organization_run_attempts if item[:2] == target]:
+        _organization_run_attempts.discard(key)
+    plan = _plan_record(session_id, plan_id) or {}
+    await publish_organization_card(
+        session_id=session_id,
+        plan=plan,
+        organization_id=organization_id_for_plan(plan, session_id),
+        team_id=instance_team_id(session_id, str(plan.get("owner_member") or "")),
+        status="failed",
+        create=False,
+    )
+
+
+async def finish_organization_member_turn(session_id: str, member_name: str) -> None:
+    """End this proxy's organization turn. Close the plan when every proxy has ended."""
+    member = str(member_name or "")
+    finished = [
+        plan_id
+        for sid, plan_id, name in _open_organization_turns
+        if sid == session_id and name == member
+    ]
+    for plan_id in finished:
+        key = _acceptance_key(session_id, plan_id, member)
+        _open_organization_turns.discard(key)
+        # Retries belong to the live turn. Historical attempts must not keep
+        # an unaccepted plan alive after that turn has actually ended.
+        _organization_run_attempts.discard(key)
+        if (
+            not organization_plan_accepted(session_id, plan_id, member)
+            and not _plan_must_keep_binding(session_id, plan_id)
+        ):
+            release_member_turn(session_id, member, plan_id)
+        await _close_unstarted_organization_plan(session_id, plan_id)
+
+
+async def fail_unstarted_organization_round(session_id: str, plan_id: str) -> None:
+    """Close a plan whose recording round failed before any proxy turn started."""
+    if _plan_has_open_turn(session_id, plan_id) or not _unstarted_plan_can_close(session_id, plan_id):
+        return
+    plan = _plan_record(session_id, plan_id) or {}
+    for name in plan.get("members") or []:
+        release_member_turn(session_id, str(name), str(plan_id))
+    await _close_unstarted_organization_plan(session_id, plan_id)
 
 
 def _fail_open_organization_plan(session_id: str, plan_id: str, error: str) -> None:
@@ -912,6 +1044,16 @@ def remember_proxy_tool(session_id: str, tool: Any) -> None:
     member_name = str(getattr(backend, "member_name", "") or "")
     if session_id and member_name and tool is not None:
         _proxy_tools[(session_id, member_name)] = tool
+
+
+def route_bound_organization_plan(
+    session_id: str, member_name: str, plan: dict,
+) -> tuple[str, dict]:
+    """Queue a bound request behind shared members without changing its identity."""
+    plan_id = str(plan["plan_id"])
+    blocked = bool(_blocking_earlier_plans(session_id, plan))
+    claim_organization_plan(session_id, plan_id, member_name)
+    return ("queue" if blocked else "join", plan)
 
 
 def route_live_organization_plan(
@@ -2476,13 +2618,14 @@ async def _plan_child_tasks(task_pool: Any, plan: dict) -> tuple[list[Any], Any]
 
 
 async def _organization_rows(
-    session_id: str, plan: dict, task_pool: Any, *, fail_unfinished: bool
+    session_id: str, plan: dict, task_pool: Any, *, fail_unfinished: bool,
+    snapshot: tuple[list[Any], Any] | None = None,
 ) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     """One card row per organization child. The title is that subtask."""
     labels = _team_labels(session_id)
     tasks: dict[str, str] = {}
     details: dict[str, dict[str, str]] = {}
-    children, root = await _plan_child_tasks(task_pool, plan)
+    children, root = snapshot if snapshot is not None else await _plan_child_tasks(task_pool, plan)
     for task in children:
         task_id = str(task.task_id)
         status = await _expert_row_status(task_pool, task)
@@ -2508,6 +2651,13 @@ async def _organization_rows(
         for task in children
         if not _is_summary_task(task)
     ]
+    # The runtime may pre-create a Summary Task while sources are still pending.
+    # Keep it off the card (including progress totals) until every chapter is accepted.
+    if not source_done or not all(source_done):
+        for task in children:
+            if _is_summary_task(task):
+                tasks.pop(str(task.task_id), None)
+                details.pop(str(task.task_id), None)
     # The root is in progress as soon as the Owner starts it. That is not the
     # summary. Show this row only after every chapter is accepted. A child sent
     # back for revision stays failed on its own row; its accepted repair closes
@@ -2559,6 +2709,20 @@ async def _expert_row_status(task_pool: Any, task: Any) -> str:
     return "pending"
 
 
+async def publish_pending_organization_card(session_id: str, plan: dict) -> None:
+    """Show the accepted multi-team request before any proxy calls run_team."""
+    if plan.get("status") != "pending":
+        return
+    await publish_organization_card(
+        session_id=session_id,
+        plan=plan,
+        organization_id=organization_id_for_plan(plan, session_id),
+        team_id=instance_team_id(session_id, str(plan["owner_member"])),
+        status="queued" if _blocking_earlier_plans(session_id, plan) else "running",
+        only_if_missing=True,
+    )
+
+
 async def publish_organization_card(
     *,
     session_id: str,
@@ -2570,6 +2734,7 @@ async def publish_organization_card(
     message_id: str | None = None,
     fail_unfinished: bool = False,
     create: bool = True,
+    only_if_missing: bool = False,
 ) -> None:
     """Upsert the one organization card. A write failure does not stop the run."""
     plan_id = str(plan.get("plan_id") or "")
@@ -2580,9 +2745,25 @@ async def publish_organization_card(
         store = GroupExecutions(session_id)
         if not create and store.read().get(execution_id) is None:
             return
+        snapshot = await _plan_child_tasks(task_pool, plan)
         tasks, details = await _organization_rows(
-            session_id, plan, task_pool, fail_unfinished=fail_unfinished
+            session_id, plan, task_pool, fail_unfinished=fail_unfinished, snapshot=snapshot
         )
+        children, root = snapshot
+        stage = None
+        if status == "running":
+            if task_pool is None:
+                stage = "starting"
+            elif any(
+                _is_summary_task(task) and str(task.task_id) in tasks for task in children
+            ) or (
+                root is not None and str(root.task_id) in tasks
+            ):
+                stage = "summarizing"
+            elif any(value != "pending" for value in tasks.values()):
+                stage = "executing"
+            else:
+                stage = "processing"
         if status == "completed":
             phase = "completed"
         elif status == "failed":
@@ -2603,6 +2784,9 @@ async def publish_organization_card(
             status=status,
             phase=phase,
             message_id=message_id,
+            organization_stage=stage,
+            organization_plan_id=plan_id,
+            only_if_missing=only_if_missing,
         )
     except Exception:
         logger.exception(

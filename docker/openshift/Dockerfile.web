@@ -1,9 +1,10 @@
-ARG NODE_IMAGE=node:22-alpine
-# nginx 非 root 变体:关键目录属主 101:0(g+w),pid/temp 路径位于 /tmp
-ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine
+ARG NODE_IMAGE=registry.access.redhat.com/ubi9/nodejs-22:1
+ARG NGINX_IMAGE=registry.access.redhat.com/ubi9/nginx-126:1
 
 # ---------- 阶段1:前端构建 ----------
 FROM ${NODE_IMAGE} AS web-builder
+
+USER root
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
@@ -24,24 +25,26 @@ RUN VITE_BASE_PATH="${VITE_BASE_PATH}" VITE_API_PREFIX="${VITE_API_PREFIX}" npm 
 # ---------- 阶段2:nginx 运行 ----------
 FROM ${NGINX_IMAGE}
 
-# 基础镜像以 USER 101 收尾,构建期切 root 执行 apk/chown
 USER root
 
-# [安全加固] 强制升级 Nginx 运行镜像中的底层依赖，规避高危漏洞
-# [网络修复] 官方 dl-cdn.alpinelinux.org 在 CI 环境拉取 APKINDEX 会返回 BAD archive，切换为华为云镜像源
-RUN sed -i 's|https://dl-cdn.alpinelinux.org|https://repo.huaweicloud.com|g' /etc/apk/repositories \
-    && apk update && apk upgrade --no-cache
-
-COPY docker/web.nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/openshift/web.nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY docker/web-optional-upstreams.sh /docker-entrypoint.d/40-optional-upstreams.sh
-RUN chmod +x /docker-entrypoint.d/40-optional-upstreams.sh \
-    && mkdir -p /etc/nginx/optional-upstreams \
-    && chown -R 101:0 /etc/nginx/optional-upstreams /docker-entrypoint.d \
-    && chmod -R g+rwX /etc/nginx/optional-upstreams /docker-entrypoint.d
+COPY docker/openshift/web-nginx-start.sh /app/jiuwenswarm/docker/openshift/web-nginx-start.sh
+RUN chmod +x /docker-entrypoint.d/40-optional-upstreams.sh /app/jiuwenswarm/docker/openshift/web-nginx-start.sh \
+    && mkdir -p /opt/app-root/etc/nginx/optional-upstreams \
+    && ln -sfn /opt/app-root/etc/nginx/optional-upstreams /etc/nginx/optional-upstreams \
+    && chown -R 1001:0 /opt/app-root/etc/nginx/optional-upstreams \
+    && chmod -R g+rwX /opt/app-root/etc/nginx/optional-upstreams
+
+# worker 进程用户:s2i 启动链路启用 nss_wrapper,用户查询走 passwd.template 生成的
+# /opt/app-root/etc/passwd,master 以 root 运行时按编译默认用户 nginx 启动 worker,
+# 须保证该条目在 /etc/passwd 与 passwd.template 中同时存在
+RUN getent passwd nginx >/dev/null || useradd -M -s /sbin/nologin nginx \
+    && getent passwd nginx >> /opt/app-root/etc/passwd.template
+
 COPY --from=web-builder /build/jiuwenswarm/channels/web/frontend/dist \
      /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist
 
-# 镜像 User 配置保持 root:OCP 由 SCC 强制随机 UID,该配置不生效;
-# 保留 root 使基于本镜像的补丁二次构建可直接 RUN apk,无需 USER 指令;
-# 非 root 加固由目录属主 101:0(g+w)与 /tmp 路径承载,不依赖 User 配置
+CMD ["/app/jiuwenswarm/docker/openshift/web-nginx-start.sh"]
+
 EXPOSE 5173
