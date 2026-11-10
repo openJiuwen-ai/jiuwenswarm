@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.agents.swarm.config_specs import _team_skill_use_rail_spec
 from jiuwenswarm.common.local_env_config import ENV_CONFIG_DICT
@@ -46,7 +48,7 @@ def test_configure_agent_teams_home_pins_primary_library_dir(tmp_path: Path) -> 
     global_skills.assert_called_once_with(skills)
 
 
-def test_configure_agent_teams_home_soft_skips_missing_global_skills(
+def test_configure_agent_teams_home_requires_global_skills_pin(
     tmp_path: Path,
 ) -> None:
     skills = tmp_path / "skills"
@@ -66,7 +68,7 @@ def test_configure_agent_teams_home_soft_skips_missing_global_skills(
     ), patch(
         "openjiuwen.agent_teams.paths",
         fake_paths,
-    ):
+    ), pytest.raises(ImportError, match="configure_global_skills_dir"):
         configure_agent_teams_home()
 
     home.assert_called_once_with(workspace)

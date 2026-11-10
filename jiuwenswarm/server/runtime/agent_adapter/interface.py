@@ -1292,8 +1292,13 @@ class JiuWenSwarm:
             # roots (Ace SHARED tips), not only the writable primary pin that
             # configure_skill_library installs into agent-core.
             migrate_team_skill_views()
-        except Exception as exc:
-            logger.warning("[JiuWenSwarm] skill library preparation failed: %s", exc)
+        except Exception:
+            # Soft-link views are no longer consulted. Swallowing migrate
+            # failures would leave members without skills-visibility.json on
+            # TeamSkillUse's unrestricted (empty-allow inherit) path — a silent
+            # privilege widen. Fail loud so operators fix the library/view set.
+            logger.exception("[JiuWenSwarm] skill library preparation failed")
+            raise
         self._session_manager = SessionManager()
         self._permission_response_ledger = PermissionResponseLedger()
         # SkillDev 模式：懒初始化，首次 skilldev.* 请求时构造

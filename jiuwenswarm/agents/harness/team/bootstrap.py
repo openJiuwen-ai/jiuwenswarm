@@ -21,9 +21,10 @@ def configure_agent_teams_home() -> None:
     :func:`~jiuwenswarm.common.utils.resolve_team_skill_library_dirs` list,
     declared on ``core.team.skill_use`` — same as DeepAdapter.
 
-    Soft-degrades when the installed agent-core lacks ``configure_global_skills_dir``
-    (older ``dev-stable`` pins): home is still configured; only the global skills
-    override is skipped with a warning.
+    Requires ``configure_global_skills_dir`` (same hard boundary as swarm
+    assembly / TeamSkillUse). Older agent-core pins that lack the API must
+    upgrade; soft-skipping would leave identity rails on the default home tree
+    while the rest of the stack already assumes the platform primary library.
     """
     import openjiuwen.agent_teams.paths as paths_mod
 
@@ -38,9 +39,8 @@ def configure_agent_teams_home() -> None:
 
     configure_skills = getattr(paths_mod, "configure_global_skills_dir", None)
     if configure_skills is None:
-        logger.warning(
-            "[TeamBootstrap] configure_global_skills_dir missing in agent-core; "
-            "skipping global skills dir pin (upgrade openjiuwen for TeamSkillUse)"
+        raise ImportError(
+            "openjiuwen.agent_teams.paths.configure_global_skills_dir is required "
+            "for TeamSkillUse (upgrade openjiuwen to a pin that exports it)"
         )
-        return
     configure_skills(primary_team_skill_library_dir())

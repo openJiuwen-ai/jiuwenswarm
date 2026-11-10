@@ -44,7 +44,7 @@ from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     merge_evolution_disabled_skills,
 )
-from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.common.utils import primary_team_skill_library_dir
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,11 @@ EVOLUTION_INTERRUPT = "swarm.evolution_interrupt"
 def _skill_library_dir(ctx: SwarmBuildContext) -> str:
     """Return the one physical Skill library evolution writes into.
 
+    Prefers the build-context pin; falls back to
+    :func:`primary_team_skill_library_dir` (same writable tip as slash/Hub /
+    ``configure_global_skills_dir``) so Ace SHARED tips do not silently write
+    into the agent workspace tree.
+
     Args:
         ctx: The per-member build context.
 
@@ -68,7 +73,7 @@ def _skill_library_dir(ctx: SwarmBuildContext) -> str:
         The absolute Skill library path.
     """
     raw = str(ctx.global_skills_dir or "").strip()
-    return raw or str(get_agent_skills_dir())
+    return raw or str(primary_team_skill_library_dir())
 
 
 def _build_team_workspace_info(
