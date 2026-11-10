@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import tarfile
+import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import fields, is_dataclass
 from pathlib import Path
@@ -32,10 +33,14 @@ from zipfile import BadZipFile, ZipFile
 
 from openjiuwen.core.extension import ExtensionFailure
 from openjiuwen.core.extension.package_manager import PackageManager
+from openjiuwen.core.extension.versions import parse_version
 
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.gateway.extensions_v2.config import resolve_examples_dir
-from jiuwenswarm.gateway.extensions_v2.manifest import DOMAIN_AGENT_SERVER, DOMAIN_GATEWAY
+from jiuwenswarm.gateway.extensions_v2.manifest import (
+    DOMAIN_AGENT_SERVER,
+    DOMAIN_GATEWAY,
+)
 from jiuwenswarm.gateway.extensions_v2.management.catalog import (
     PackageNotFound,
     list_installed,
@@ -45,6 +50,15 @@ from jiuwenswarm.gateway.extensions_v2.management.catalog import (
 )
 from jiuwenswarm.gateway.extensions_v2.management.notifications import notify_installed
 from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
+from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
+    ExtensionInstallRecord,
+    ExtensionInstallState,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_extensions import (
+    download_system_plugin_archive,
+    query_system_plugin,
+    system_plugin_domain,
+)
 
 MANAGEMENT_METHODS = frozenset(
     {
@@ -189,7 +203,7 @@ async def _handle_locally(
             )
             remote = payload.get("packages") if ok else None
             if isinstance(remote, list):
-                packages = _merge_packages(packages, remote)
+                packages = _merge_packages(packages, remote, state)
         await _respond(channel, ws, req_id, ok=True, payload={"packages": packages})
         return True
 
@@ -198,15 +212,43 @@ async def _handle_locally(
         if not isinstance(package_id, str) or not package_id:
             return False
         examples_dir = resolve_examples_dir()
+        store = ExtensionInstallState.for_install_dir(manager.install_dir)
+        record = store.get(package_id)
+        requested = params.get("version")
+        requested = requested.strip() if isinstance(requested, str) else ""
+        if (
+            record is not None
+            and record.origin == "hub"
+            and record.asset_id
+            and requested
+            and requested != record.version
+        ):
+            # Another Hub version is not installed locally; AgentServer serves it.
+            return False
         try:
             detail = package_detail(package_id, examples_dir, manager.query())
         except PackageNotFound:
             return False
+        if record is not None and record.origin == "hub" and record.asset_id:
+            try:
+                hub = await query_system_plugin(record.asset_id)
+                detail["versions"] = _merge_versions(
+                    detail.get("versions") or [],
+                    list(hub.versions) or [detail.get("installedVersion") or detail["version"]],
+                )
+                detail["preview"] = detail.get("preview") or hub.preview_url or None
+            except Exception:  # noqa: BLE001 - installed details must survive Hub outages
+                logger.warning("[GatewayExtensions] Hub detail unavailable for %s", record.asset_id, exc_info=True)
         await _respond(channel, ws, req_id, ok=True, payload={"package": detail})
         return True
 
     if method is ReqMethod.EXTENSIONS_V2_INSTALL:
         examples_dir = resolve_examples_dir()
+        store = ExtensionInstallState.for_install_dir(manager.install_dir)
+        version = params.get("version")
+        version = version.strip() if isinstance(version, str) else ""
+        hub_tmp = None
+        hub_asset_id = ""
         if "package_ids" in params:
             ids = params.get("package_ids")
             if not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids):
@@ -220,17 +262,50 @@ async def _handle_locally(
                 )
                 return True
             try:
-                paths = [
-                    resolve_install_source(
-                        package_id,
-                        examples_dir=examples_dir,
-                        install_dir=manager.install_dir,
+                paths = []
+                installed_asset_id = ""
+                for package_id in ids:
+                    installed_record = store.get(package_id)
+                    if (
+                        installed_record is not None
+                        and installed_record.origin == "hub"
+                        and installed_record.asset_id
+                    ):
+                        installed_asset_id = installed_record.asset_id
+                        raise PackageNotFound(package_id)
+                    paths.append(
+                        resolve_install_source(
+                            package_id,
+                            examples_dir=examples_dir,
+                            install_dir=manager.install_dir,
+                        )
                     )
-                    for package_id in ids
-                ]
             except PackageNotFound as exc:
-                await _respond(channel, ws, req_id, ok=False, error=f"package {exc} not found", code="PACKAGE_NOT_FOUND")
-                return True
+                if len(ids) != 1:
+                    await _respond(
+                        channel, ws, req_id, ok=False, error=f"package {exc} not found", code="PACKAGE_NOT_FOUND"
+                    )
+                    return True
+                try:
+                    detail = await query_system_plugin(installed_asset_id or ids[0], version)
+                except Exception:  # noqa: BLE001 - a missing Hub asset falls back to AgentServer routing
+                    return False
+                if system_plugin_domain(detail) != DOMAIN_GATEWAY:
+                    return False
+                hub_asset_id = detail.asset_id
+                package_id = detail.package_name or ids[0]
+                stored_root = manager.install_dir / package_id / detail.version
+                if stored_root.is_dir():
+                    paths = [stored_root]
+                else:
+                    hub_tmp = tempfile.TemporaryDirectory(prefix="ojw_gateway_plugin_")
+                    archive = Path(hub_tmp.name) / f"{package_id}-{detail.version}.zip"
+                    try:
+                        await download_system_plugin_archive(detail, archive)
+                    except Exception:  # noqa: BLE001 - download failure is reported by the proxy path
+                        hub_tmp.cleanup()
+                        return False
+                    paths = [archive]
             except ValueError:
                 await _respond(
                     channel, ws, req_id, ok=False, error="package_ids contains an invalid id", code=INVALID_PARAMS_CODE
@@ -256,8 +331,12 @@ async def _handle_locally(
                 )
                 return True
         if not any(owners):
+            if hub_tmp is not None:
+                hub_tmp.cleanup()
             return False
         if not all(owners):
+            if hub_tmp is not None:
+                hub_tmp.cleanup()
             await _respond(
                 channel,
                 ws,
@@ -267,7 +346,52 @@ async def _handle_locally(
                 code=INVALID_PARAMS_CODE,
             )
             return True
-        reports = await manager.install(paths)
+        try:
+            if "package_ids" in params:
+                reports = []
+                for path in paths:
+                    package_id = _manifest_package_id(path)
+                    manifest_version = _manifest_version(path)
+                    target_version = version or manifest_version
+                    if not package_id or not target_version:
+                        await _respond(
+                            channel,
+                            ws,
+                            req_id,
+                            ok=False,
+                            error="install source is not a valid package",
+                            code=INVALID_PARAMS_CODE,
+                        )
+                        return True
+                    stored_root = manager.install_dir / package_id / target_version
+                    if not stored_root.is_dir() and manifest_version != target_version:
+                        await _respond(
+                            channel,
+                            ws,
+                            req_id,
+                            ok=False,
+                            error=f"package {package_id} version {target_version} not found",
+                            code="PACKAGE_NOT_FOUND",
+                        )
+                        return True
+                    reports.append(
+                        await manager.enable_version(
+                            package_id,
+                            target_version,
+                            source=None if stored_root.is_dir() else path,
+                        )
+                    )
+            else:
+                reports = await manager.install(paths)
+        finally:
+            if hub_tmp is not None:
+                hub_tmp.cleanup()
+        origin = (
+            _install_origin(paths, examples_dir, store, hub_asset_id)
+            if "package_ids" in params
+            else "user"
+        )
+        _record_installed(reports, manager, store, origin=origin, asset_id=hub_asset_id)
         ui_notified = await notify_installed(runtime, [report.package_id for report in reports if report.status == "SUCCESS"])
         await _respond(
             channel,
@@ -300,11 +424,27 @@ async def _handle_locally(
             )
             return True
         report = await manager.set_enabled(package_id, params["enable"])
+        if report.status == "SUCCESS":
+            store = ExtensionInstallState.for_install_dir(manager.install_dir)
+            if params["enable"]:
+                version = _active_version(manager, package_id)
+                if version:
+                    store.mark(package_id, version=version, active=True, enabled=True)
+            else:
+                store.mark(package_id, active=False, enabled=False)
         await _respond(channel, ws, req_id, ok=True, payload={"reports": [_encode(report)]})
         return True
-    operation = manager.uninstall if method is ReqMethod.EXTENSIONS_V2_UNINSTALL else manager.reload
+    version = params.get("version")
+    version = version.strip() if isinstance(version, str) else ""
     try:
-        report = await operation(package_id)
+        if method is ReqMethod.EXTENSIONS_V2_UNINSTALL:
+            report = (
+                await manager.uninstall(package_id, version)
+                if version
+                else await manager.uninstall(package_id)
+            )
+        else:
+            report = await manager.reload(package_id)
     except Exception as exc:  # noqa: BLE001 - answer the frame instead of dropping it
         logger.exception("[GatewayExtensions] %s failed for %s", method.value, package_id)
         await _respond(
@@ -317,10 +457,23 @@ async def _handle_locally(
         )
         return True
     payload = {"reports": [_encode(report)]}
+    if report.status == "SUCCESS":
+        store = ExtensionInstallState.for_install_dir(manager.install_dir)
+        if method is ReqMethod.EXTENSIONS_V2_UNINSTALL:
+            store.remove(package_id, version)
+        else:
+            version = _active_version(manager, package_id)
+            if version:
+                store.mark(package_id, version=version, active=True, enabled=True)
     if method is ReqMethod.EXTENSIONS_V2_RELOAD and report.status == "SUCCESS":
         payload["ui_notified"] = await notify_installed(runtime, [report.package_id])
     await _respond(channel, ws, req_id, ok=True, payload=payload)
     return True
+
+
+def _active_version(manager: Any, package_id: str) -> str:
+    active = manager.query(package_id).get("active") or []
+    return str(active[0].get("version") or "") if active else ""
 
 
 async def _import_local(
@@ -370,6 +523,12 @@ async def _import_local(
             message = getattr(getattr(failed, "error", None), "message", None) or "package install failed"
             await _respond(channel, ws, req_id, ok=False, error=str(message), code="INSTALL_FAILED")
             return
+        _record_installed(
+            reports,
+            runtime.packages,
+            ExtensionInstallState.for_install_dir(runtime.packages.install_dir),
+            origin="user",
+        )
         ui_notified = await notify_installed(runtime, [report.package_id for report in reports])
         await _respond(
             channel,
@@ -465,6 +624,90 @@ def _read_manifest(path: Path) -> Mapping[str, Any] | None:
     return document if isinstance(document, Mapping) else None
 
 
+def _manifest_version(source: Path) -> str:
+    document = _read_manifest(source)
+    package = document.get("package") if document is not None else None
+    version = package.get("version") if isinstance(package, Mapping) else None
+    return version.strip() if isinstance(version, str) else ""
+
+
+def _manifest_package_id(source: Path) -> str:
+    document = _read_manifest(source)
+    package = document.get("package") if document is not None else None
+    package_id = package.get("id") if isinstance(package, Mapping) else None
+    return package_id.strip() if isinstance(package_id, str) else ""
+
+
+def _installed_version(state: Mapping[str, Any], package_id: str) -> str:
+    for record in state.get("active") or []:
+        if isinstance(record, Mapping) and record.get("package_id") == package_id:
+            return str(record.get("version") or "")
+    versions = [
+        str(item.get("version") or "")
+        for item in state.get("installed_packages") or []
+        if isinstance(item, Mapping) and item.get("package_id") == package_id
+    ]
+    return max(versions, key=_version_key, default="")
+
+
+def _version_key(version: str) -> tuple[int, int, int]:
+    try:
+        parsed = parse_version(version)
+    except (TypeError, ValueError):
+        return (0, 0, 0)
+    return (parsed.major, parsed.minor, parsed.patch)
+
+
+def _merge_versions(*groups: list[str]) -> list[str]:
+    return sorted({version for group in groups for version in group if version}, key=_version_key)
+
+
+def _record_installed(
+    reports: list[Any],
+    manager: Any,
+    store: ExtensionInstallState,
+    *,
+    origin: str,
+    asset_id: str = "",
+) -> None:
+    state = manager.query()
+    active_versions = {
+        str(item.get("package_id")): str(item.get("version") or "")
+        for item in state.get("active") or []
+        if isinstance(item, Mapping) and item.get("package_id")
+    }
+    installed = [
+        item for item in state.get("installed_packages") or [] if isinstance(item, Mapping)
+    ]
+    for report in reports:
+        if report.status != "SUCCESS":
+            continue
+        version = active_versions.get(report.package_id) or _installed_version(state, report.package_id)
+        facts = next(
+            (
+                item for item in installed
+                if item.get("package_id") == report.package_id and item.get("version") == version
+            ),
+            {},
+        )
+        if not version:
+            continue
+        record = ExtensionInstallRecord(
+            package_id=report.package_id,
+            version=version,
+            origin=origin,
+            asset_id=asset_id,
+            install_path=str(facts.get("install_path") or ""),
+            active=active_versions.get(report.package_id) == version,
+            enabled=active_versions.get(report.package_id) == version,
+        )
+        if record.active:
+            store.activate(record)
+        else:
+            store.mark(report.package_id, active=False, enabled=False)
+            store.upsert(record)
+
+
 def _install_paths(params: Mapping[str, Any]) -> tuple[list[Path], str | None]:
     raw = params.get("paths")
     if not isinstance(raw, list) or not raw:
@@ -480,14 +723,63 @@ def _install_paths(params: Mapping[str, Any]) -> tuple[list[Path], str | None]:
     return paths, None
 
 
-def _merge_packages(local: list[dict[str, Any]], remote: list[Any]) -> list[dict[str, Any]]:
+def _merge_packages(
+    local: list[dict[str, Any]],
+    remote: list[Any],
+    state: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Merge Gateway cards into the AgentServer catalog, Gateway first."""
 
-    merged = {str(item.get("id")): item for item in local if isinstance(item, Mapping)}
-    for item in remote:
-        if isinstance(item, Mapping):
-            merged.setdefault(str(item.get("id")), dict(item))
+    installed = {
+        str(item.get("package_id"))
+        for item in (state or {}).get("installed_packages") or []
+        if isinstance(item, Mapping) and item.get("package_id")
+    }
+    active = {
+        str(item.get("package_id"))
+        for item in (state or {}).get("active") or []
+        if isinstance(item, Mapping) and item.get("package_id")
+    }
+    merged: dict[str, dict[str, Any]] = {}
+    identities: set[str] = set()
+    for item in [*local, *(entry for entry in remote if isinstance(entry, Mapping))]:
+        identity = str(item.get("packageId") or item.get("packageName") or item.get("id") or "")
+        if not identity or identity in identities:
+            continue
+        identities.add(identity)
+        card = dict(item)
+        package_id = str(card.get("packageId") or "")
+        if package_id in installed:
+            card["installed"] = True
+        if package_id in active:
+            card["active"] = True
+            card["enabled"] = True
+        merged[str(card.get("id") or identity)] = card
     return list(merged.values())
+
+
+def _install_origin(
+    paths: list[Path],
+    examples_dir: Path,
+    store: ExtensionInstallState,
+    hub_asset_id: str,
+) -> str:
+    """Keep the recorded source when a version switch reuses a stored package."""
+
+    if hub_asset_id:
+        return "hub"
+    for path in paths:
+        record = store.get(_manifest_package_id(path))
+        if record is not None:
+            return record.origin
+    examples = examples_dir.resolve()
+    for path in paths:
+        try:
+            if not path.resolve().is_relative_to(examples):
+                return "user"
+        except OSError:
+            return "user"
+    return "preset"
 
 
 def _request_timeout() -> float:

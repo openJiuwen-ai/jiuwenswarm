@@ -291,6 +291,115 @@ class GatewayPackageManager:
                 return await self._legacy_reload(package_id)
             return await self._reload_reported(package_id)
 
+    async def enable_version(
+        self, package_id: str, version: str, *, source: Path | None = None,
+    ) -> ActivationReport:
+        """Load one stored version and keep every other version on disk, unloaded.
+
+        ``source`` installs a package copy that is not in the store yet; a stored
+        version is re-activated in place. The target is persisted as enabled and
+        the previously active version as disabled.
+        """
+
+        async with self._lock:
+            report = await self._enable_version_locked(package_id, version, source=source)
+        _record_recovery_change(
+            self.install_dir, self._recovery_data_dir, "enable", (report,),
+        )
+        return report
+
+    async def _enable_version_locked(
+        self, package_id: str, version: str, *, source: Path | None = None,
+    ) -> ActivationReport:
+        """``enable_version`` body; callers already hold ``self._lock``."""
+
+        active = self._runtime.active_record(package_id)
+        if active is not None and active.version == version and source is None:
+            return _success(package_id, "enable", active=active)
+        previous = active.version if active is not None else ""
+        if previous:
+            report = await self._disable_version(package_id, previous)
+            if report.status != "SUCCESS":
+                return report
+        root = self._find_root(package_id, version)
+        if source is not None:
+            if self._report is None:
+                report = await self._legacy_install_path(Path(source), allow_existing=True)
+            else:
+                reports = await self._install_batch([Path(source)])
+                report = reports[0] if reports else _failure(
+                    package_id,
+                    "install",
+                    operation_error(
+                        StatusCode.EXTENSION_LOAD_FAILED,
+                        package_id=package_id,
+                        reason="package did not start",
+                    ),
+                )
+        elif root is not None:
+            if self._report is None:
+                report = await self._legacy_install_path(root, allow_existing=True)
+            else:
+                report = await self._set_enabled_reported(
+                    root,
+                    load_manifest(root, require_domain=True),
+                    True,
+                )
+        else:
+            report = _failure(
+                package_id,
+                "install",
+                operation_error(
+                    StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED,
+                    package_id=package_id,
+                    reason=f"install store has no {package_id} {version}",
+                ),
+            )
+        if report.status != "SUCCESS":
+            if previous:
+                await self._restore_version(package_id, previous)
+            return report
+        if self._report is not None and self._runtime.active_record(package_id) is None:
+            stored = self._find_root(package_id, version)
+            if stored is not None:
+                report = await self._set_enabled_reported(
+                    stored,
+                    load_manifest(stored, require_domain=True),
+                    True,
+                )
+                if report.status != "SUCCESS":
+                    if previous:
+                        await self._restore_version(package_id, previous)
+                    return report
+        return report
+
+    async def _disable_version(self, package_id: str, version: str) -> ActivationReport:
+        """Release the handlers of one stored version without deleting its copy."""
+
+        root = self._find_root(package_id, version)
+        if root is None:
+            self._runtime.unpublish(package_id)
+            return _success(package_id, "disable", active=None)
+        manifest = load_manifest(root, require_domain=True)
+        if self._report is not None:
+            return await _run_to_end(self._set_enabled_reported(root, manifest, False))
+        return await self._disable(root, manifest)
+
+    async def _restore_version(self, package_id: str, version: str) -> None:
+        """Best-effort return to the version that was active before a failed switch."""
+
+        try:
+            root = self._find_root(package_id, version)
+            if root is None:
+                return
+            manifest = load_manifest(root, require_domain=True)
+            if self._report is None:
+                await self._legacy_install_path(root, allow_existing=True)
+            else:
+                await self._set_enabled_reported(root, manifest, True)
+        except Exception:  # noqa: BLE001 - keep the original switch failure
+            logger.warning("[GatewayExtensions] failed to restore %s@%s", package_id, version, exc_info=True)
+
     async def set_enabled(self, package_id: str, enabled: bool) -> ActivationReport:
         """Keep an installed Gateway package while changing its loading state."""
 
@@ -330,15 +439,17 @@ class GatewayPackageManager:
             )
         return report
 
-    async def uninstall(self, package_id: str) -> ActivationReport:
-        """Release the handlers and delete every installed copy of one package.
+    async def uninstall(self, package_id: str, version: str = "") -> ActivationReport:
+        """Release the handlers and delete one version or every installed copy.
 
         Refused with ``EXTENSION_PACKAGE_BUSY`` while a handler or data call of
         the package is in flight, so data is never deleted under a running call.
         """
 
         async with self._lock:
-            if self._report is None:
+            if version:
+                report = await self._uninstall_version(package_id, version)
+            elif self._report is None:
                 report = await self._legacy_uninstall(package_id)
             else:
                 report = await self._uninstall_reported(package_id)
@@ -350,6 +461,111 @@ class GatewayPackageManager:
                 (report,),
             )
         return report
+
+    async def _uninstall_version(self, package_id: str, version: str) -> ActivationReport:
+        """Delete one version copy; every other stored version keeps its files."""
+
+        root = self._find_root(package_id, version)
+        if root is None:
+            return _failure(
+                package_id,
+                "uninstall",
+                operation_error(
+                    StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED,
+                    package_id=package_id,
+                    reason=f"install store has no {package_id} {version}",
+                ),
+            )
+        active = self._runtime.active_record(package_id)
+        is_active = active is not None and active.version == version
+        if self._report is None:
+            return await self._legacy_uninstall_version(package_id, version, is_active)
+        return await self._reported_uninstall_version(
+            package_id, version, load_manifest(root, require_domain=False), is_active,
+        )
+
+    async def _legacy_uninstall_version(
+        self, package_id: str, version: str, is_active: bool,
+    ) -> ActivationReport:
+        try:
+            if is_active:
+                self._runtime.require_idle(package_id)
+                await self._close_splashes(package_id)
+                self._runtime.stop_package(package_id)
+            await asyncio.to_thread(self._remove_with_retry, package_id, version, missing_ok=True)
+        except ExtensionFailure as exc:
+            return _failure(package_id, "uninstall", exc.as_error())
+        if is_active and self._on_released is not None:
+            try:
+                self._on_released(package_id)
+            except Exception:  # noqa: BLE001 - view cleanup must not fail management
+                logger.exception("[GatewayExtensions] release cleanup failed for %s", package_id)
+        return _success(
+            package_id, "uninstall", active=self._runtime.active_record(package_id),
+        )
+
+    async def _reported_uninstall_version(
+        self,
+        package_id: str,
+        version: str,
+        manifest: Manifest,
+        is_active: bool,
+    ) -> ActivationReport:
+        service = self._report
+        assert service is not None
+        if is_active and self._runtime.inflight_count(package_id) > 0:
+            return _failure(
+                package_id,
+                "uninstall",
+                operation_error(
+                    StatusCode.EXTENSION_PACKAGE_BUSY,
+                    package_id=package_id,
+                    reason="package handlers are still running",
+                ),
+            )
+        token: PackageOperationToken | None = None
+        report: ActivationReport | None = None
+        try:
+            token = await service.begin_operation(manifest, "uninstall")
+            await service.validate_operation(token, manifest, "uninstall")
+            if is_active:
+                await self._close_splashes(package_id)
+                self._runtime.stop_package(package_id)
+            with service.operation_scope(token):
+                await run_file_operation(
+                    lambda: self._remove_with_retry(package_id, version, missing_ok=True)
+                )
+            if is_active and self._on_released is not None:
+                try:
+                    self._on_released(package_id)
+                except Exception:  # noqa: BLE001 - view cleanup must not fail management
+                    logger.exception("[GatewayExtensions] release cleanup failed for %s", package_id)
+            report = _success(
+                package_id, "uninstall", active=self._runtime.active_record(package_id),
+            )
+        except ExtensionFailure as exc:
+            report = _failure(package_id, "uninstall", exc.as_error())
+        except Exception as exc:  # noqa: BLE001 - a local failure is a report, not a crash
+            logger.exception("[GatewayExtensions] cannot uninstall %s/%s", package_id, version)
+            report = _failure(
+                package_id,
+                "uninstall",
+                operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
+            )
+        finally:
+            if token is not None:
+                await _finish_operation(
+                    service,
+                    token,
+                    report=report,
+                    active=self._runtime.active_record(package_id),
+                    cleanup_pending=False,
+                )
+        return report or _failure(
+            package_id,
+            "uninstall",
+            operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason="package was not removed"),
+        )
 
     # ── shared-report install ─────────────────────────────────────────────
 
@@ -385,23 +601,63 @@ class GatewayPackageManager:
             if not parsed:
                 return reports
 
+            switches: list[tuple[Manifest, Path]] = []
+            candidates: list[tuple[Manifest, Path]] = []
+            counts: dict[str, int] = {}
+            for manifest, _ in parsed:
+                counts[manifest.package_id] = counts.get(manifest.package_id, 0) + 1
+            for manifest, root in parsed:
+                if counts[manifest.package_id] > 1:
+                    candidates.append((manifest, root))
+                    continue
+                active = self._runtime.active_record(manifest.package_id)
+                if active is not None and active.version == manifest.version:
+                    error = operation_error(
+                        StatusCode.EXTENSION_PACKAGE_EXISTS,
+                        package_id=manifest.package_id,
+                        display_name=manifest.display_name or manifest.package_id,
+                    )
+                    await self._reject(manifest, error)
+                    reports.append(_failure(manifest.package_id, "install", error))
+                    continue
+                if (self.install_dir / manifest.package_id / manifest.version).is_dir():
+                    # Keep the stored copy; Core refuses to overwrite it.
+                    candidates.append((manifest, root))
+                    continue
+                if active is not None and active.version != manifest.version and manifest.enable:
+                    switches.append((manifest, root))
+                else:
+                    candidates.append((manifest, root))
+
+            for manifest, root in switches:
+                reports.append(
+                    await self._enable_version_locked(
+                        manifest.package_id,
+                        manifest.version,
+                        source=root,
+                    )
+                )
+
+            if not candidates:
+                return reports
+
             states = tuple((await self._report.read_packages()).values())
             resolved = resolve_install_set(
-                [manifest for manifest, _ in parsed],
+                [manifest for manifest, _ in candidates],
                 self._runtime.active_package_records(),
                 _host_version(),
                 external_packages=states,
             )
             if resolved.fatal is not None:
-                for manifest, _ in parsed:
+                for manifest, _ in candidates:
                     await self._reject(manifest, resolved.fatal)
                     reports.append(_failure(manifest.package_id, "install", resolved.fatal))
                 return reports
 
-            sources = {manifest.package_id: root for manifest, root in parsed}
+            sources = {manifest.package_id: root for manifest, root in candidates}
             failed: set[str] = set()
             for rejection in resolved.rejected:
-                manifest = next(item for item, _ in parsed if item.package_id == rejection.package_id)
+                manifest = next(item for item, _ in candidates if item.package_id == rejection.package_id)
                 await self._reject(manifest, rejection.error)
                 failed.add(rejection.package_id)
                 reports.append(_failure(rejection.package_id, "install", rejection.error))
@@ -817,7 +1073,9 @@ class GatewayPackageManager:
 
     # ── legacy behaviour when no shared report is configured ──────────────
 
-    async def _legacy_install_path(self, path: Path) -> ActivationReport:
+    async def _legacy_install_path(
+        self, path: Path, *, allow_existing: bool = False,
+    ) -> ActivationReport:
         package_id = ""
         try:
             with self._inspection.open_source(path) as opened:
@@ -829,6 +1087,21 @@ class GatewayPackageManager:
                         operation_error(
                             StatusCode.EXTENSION_DOMAIN_MISMATCH,
                             reason=f"package belongs to {_domain_of(opened.manifest)!r}",
+                        ),
+                    )
+                active = self._runtime.active_record(opened.manifest.package_id)
+                if (
+                    not allow_existing
+                    and active is not None
+                    and active.version == opened.manifest.version
+                ):
+                    return _failure(
+                        package_id,
+                        "install",
+                        operation_error(
+                            StatusCode.EXTENSION_PACKAGE_EXISTS,
+                            package_id=package_id,
+                            display_name=opened.manifest.display_name or package_id,
                         ),
                     )
                 root = self._store.copy_into_store(opened.root, opened.manifest)
