@@ -30,6 +30,48 @@ def trusted_session_user(session_id: str) -> str:
     return str(metadata.get("user_id") or "") if isinstance(metadata, dict) else ""
 
 
+def _local_web_workspace(session_id: str) -> str:
+    """Resolve an anonymous desktop session only inside its personal Host root."""
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+    from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_sessions_dir, get_user_workspace_dir
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from jiuwenswarm.server.runtime.session import lifecycle
+
+    if is_enterprise() or is_agentos_runtime():
+        return ""
+    try:
+        lifecycle.validate_id(session_id)
+        root = (get_user_workspace_dir() / "agent").resolve()
+        if get_agent_root_dir().resolve() != root or get_agent_sessions_dir().resolve() != root / "sessions":
+            return ""
+        session_dir = lifecycle.resolve_session(session_id)
+        if session_dir.resolve().parent not in {root / "sessions", root / "sessions_archived"}:
+            return ""
+        metadata_file = session_dir / "metadata.json"
+        if metadata_file.is_symlink() or metadata_file.resolve().parent != session_dir.resolve():
+            return ""
+        metadata = lifecycle.raw_metadata(session_id)
+    except (OSError, ValueError, lifecycle.LifecycleError):
+        return ""
+    if (
+        metadata.get("session_id") != session_id
+        or metadata.get("channel_id") != "web"
+        or metadata.get("user_id") != ""
+    ):
+        return ""
+    return hashlib.sha256(f"personal-web-v1:{root}".encode()).hexdigest()
+
+
+def _is_personal_flow(flow_root: Path | None) -> bool:
+    """Legacy anonymous traces have no origin binding outside managed storage."""
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    if flow_root is None:
+        return False
+    expected = (get_user_workspace_dir() / "agent").resolve() / "workspace" / "symphony" / "flow"
+    return flow_root.resolve() == expected
+
+
 def member_snapshot(skills_root: Path, members: list[str], disabled: list[str]) -> dict[str, str]:
     """Hash ordinary, enabled member content without following any symlink."""
     snapshots: dict[str, str] = {}
@@ -93,20 +135,32 @@ class CandidateEvidenceScope:
     user_id: str
     scope: str
     source_refs: tuple[str, ...] | None = None
+    local_workspace: str = ""
 
     @classmethod
     def resolve(
         cls, session_id: str, user_id: str, scope: str, source_refs: list[str] | None,
+        *, flow_root: Path | None = None,
     ) -> CandidateEvidenceScope:
         if not session_id or scope not in {"current_user", "current_session"}:
             raise ValueError("invalid_scope")
+        local_workspace = (
+            _local_web_workspace(session_id)
+            if not user_id and scope == "current_user" and _is_personal_flow(flow_root)
+            else ""
+        )
         return cls(
-            session_id, user_id, scope if user_id else "current_session",
+            session_id, user_id, scope if user_id or local_workspace else "current_session",
             tuple(sorted(set(source_refs))) if source_refs is not None else None,
+            local_workspace,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        # Keep pre-existing authenticated/session scope and approval keys stable.
+        if not self.local_workspace:
+            payload.pop("local_workspace")
+        return payload
 
     @property
     def key(self) -> str:
@@ -115,7 +169,24 @@ class CandidateEvidenceScope:
         encoded = json.dumps(self.to_dict(), sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(encoded.encode()).hexdigest()
 
-    def allows(self, trace_id: str, record: dict[str, Any]) -> bool:
+    def allows(
+        self, trace_id: str, record: dict[str, Any], *, workspaces: dict[str, str] | None = None,
+    ) -> bool:
+        if self.source_refs is not None and trace_id not in self.source_refs:
+            return False
+        if self.local_workspace:
+            session_id = record.get("session_id")
+            if record.get("user_id") != "" or not isinstance(session_id, str):
+                return False
+            # Callers may deduplicate one synchronous scan, never an approval
+            # or a later operation. Cache failures as well as valid owners.
+            if workspaces is None:
+                workspace = _local_web_workspace(session_id)
+            else:
+                if session_id not in workspaces:
+                    workspaces[session_id] = _local_web_workspace(session_id)
+                workspace = workspaces[session_id]
+            return workspace == self.local_workspace
         same_session = record.get("session_id") == self.session_id
         same_user = bool(self.user_id) and record.get("user_id") == self.user_id
         allowed = (
@@ -123,7 +194,7 @@ class CandidateEvidenceScope:
             if self.scope == "current_user" and self.user_id
             else same_session and (same_user or not record.get("user_id"))
         )
-        return allowed and (self.source_refs is None or trace_id in self.source_refs)
+        return allowed
 
 
 class ScopedCandidateStore(FlowStore):
@@ -144,12 +215,15 @@ class ScopedCandidateStore(FlowStore):
 
     def read_evidence(self) -> list[RecipeEvidence]:
         ownership = CandidateScopeStore(self.source.root).trace_ownership()
+        workspaces: dict[str, str] = {}
         snapshots: dict[tuple[str, ...], dict[str, str] | None] = {}
         disabled = self.disabled_for()
         result = []
         for evidence in self.source.read_evidence():
             record = ownership.get(evidence.trace_id, {})
-            if not isinstance(record, dict) or not self.scope.allows(evidence.trace_id, record):
+            if not isinstance(record, dict) or not self.scope.allows(
+                evidence.trace_id, record, workspaces=workspaces,
+            ):
                 continue
             members = tuple(sorted(evidence.graph.get("nodes", {})))
             if members not in snapshots:
@@ -220,10 +294,11 @@ class CandidateScopeStore:
         records = self._read().get("traces", {})
         if not traces or not session_id:
             return []
-        identity = CandidateEvidenceScope.resolve(session_id, user_id, scope, source_refs)
+        identity = CandidateEvidenceScope.resolve(session_id, user_id, scope, source_refs, flow_root=self.root)
+        workspaces: dict[str, str] = {}
         for trace_id in traces:
             record = records.get(trace_id, {})
-            if not identity.allows(trace_id, record) or record.get("members") != snapshot:
+            if not identity.allows(trace_id, record, workspaces=workspaces) or record.get("members") != snapshot:
                 return []
         return list(traces)
 
