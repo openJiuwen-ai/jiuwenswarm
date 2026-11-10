@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+import asyncio
 import logging
 import os
 import time
@@ -21,6 +22,7 @@ from jiuwenswarm.server.runtime.session import llm_audit
 logger = logging.getLogger(__name__)
 _SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("swarm_llm_audit_scope", default=None)
 _INSTALLED: weakref.WeakSet = weakref.WeakSet()
+_CLEANUPS: set[asyncio.Task] = set()
 
 
 def bind_audit_scope(*, session_id: str, request_id: str, member_name: str = "", role: str = "",
@@ -78,6 +80,42 @@ async def _write(state: dict[str, Any]) -> None:
     await run_history_io(llm_audit.write_call, state["target"]["session_id"], dict(state["record"]))
 
 
+def _release(scope: dict[str, Any], identity: str, state: dict[str, Any]) -> None:
+    scope["calls"].pop(identity, None)
+    owner = state.pop("owner_task", lambda: None)()
+    callback = state.pop("owner_done", None)
+    if owner is not None and callback is not None:
+        owner.remove_done_callback(callback)
+
+
+async def _finish_orphan(scope: dict[str, Any], identity: str, state: dict[str, Any]) -> None:
+    try:
+        if state["record"]["status"] == "running":
+            await _finish(state, error="Model call interrupted")
+        else:
+            # Cancellation may occur after native completion but during audit I/O.
+            await _write(state)
+    except Exception:
+        logger.warning("LLM audit task cleanup failed: call=%s", identity, exc_info=True)
+    finally:
+        _release(scope, identity, state)
+
+
+def _watch_owner(scope: dict[str, Any], identity: str, state: dict[str, Any]) -> None:
+    owner = asyncio.current_task()
+    if owner is None:
+        return
+
+    def finished(_task: asyncio.Task) -> None:
+        if scope["calls"].get(identity) is state:
+            cleanup = asyncio.create_task(_finish_orphan(scope, identity, state))
+            _CLEANUPS.add(cleanup)
+            cleanup.add_done_callback(_CLEANUPS.discard)
+
+    state.update(owner_task=weakref.ref(owner), owner_done=finished)
+    owner.add_done_callback(finished)
+
+
 async def _on_input(*args: Any, session: Any = None, **kwargs: Any) -> None:
     target, identity = _target(), get_current_llm_call_id()
     if target is None or not identity:
@@ -94,6 +132,9 @@ async def _on_input(*args: Any, session: Any = None, **kwargs: Any) -> None:
               "worker_pid": os.getpid(), "worker_created": psutil.Process().create_time()}
     state = {"target": target, "record": record, "session": session}
     scope["calls"][identity] = state
+    # Core may cancel the scheduler task without invoking after_invoke or an
+    # LLM error callback. The actual provider-call task owns this final fence.
+    _watch_owner(scope, identity, state)
     preview = _preview(kwargs.get("messages"))
     try:
         await _emit(state, "llm_call_start", prompt=preview, model_name=record["model_name"],
@@ -153,7 +194,7 @@ async def _on_output(*args: Any, **kwargs: Any) -> None:
     state = scope["calls"][identity]
     response = kwargs.get("response") or kwargs.get("result")
     await _finish(state, response=response)
-    scope["calls"].pop(identity, None)
+    _release(scope, identity, state)
 
 
 async def _on_error(*args: Any, **kwargs: Any) -> None:
@@ -173,7 +214,7 @@ async def finish_pending_calls(error: str = "Model call interrupted") -> None:
     for identity, state in list(scope["calls"].items()):
         if state["record"].get("status") == "running":
             await _finish(state, error=error)
-        scope["calls"].pop(identity, None)
+        _release(scope, identity, state)
 
 
 def install_llm_audit_observer() -> None:

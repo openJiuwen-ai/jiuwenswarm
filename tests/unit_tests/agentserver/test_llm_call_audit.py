@@ -247,6 +247,31 @@ async def test_provider_recovery_overwrites_failed_status(audit_home):
 
 
 @pytest.mark.asyncio
+async def test_scheduler_cancellation_without_rail_cleanup_is_finalized(audit_home):
+    started = asyncio.Event()
+
+    async def model_task():
+        observer.bind_audit_scope(session_id=audit_home.sid, request_id="native-cancel")
+        with LlmCallScope("scheduler-cancel"):
+            await audit_home.framework.trigger(LLMCallEvents.LLM_STREAM_INPUT, session=StreamSession(),
+                messages=[{"role": "user", "content": "SCHEDULER ORIGINAL"}], tools=[])
+            started.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(model_task())
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    async with asyncio.timeout(5):
+        while audit.get_call(audit_home.sid, "scheduler-cancel")["status"] == "running":
+            await asyncio.sleep(.01)
+    assert read_original(audit_home, "scheduler-cancel", "messages", 0)["content"] == "SCHEDULER ORIGINAL"
+    await asyncio.gather(*observer._CLEANUPS)
+    assert not observer._CLEANUPS
+
+
+@pytest.mark.asyncio
 async def test_owner_reuse_projects_interrupted_and_manifest_corruption_fails(audit_home):
     await invoke(audit_home, [{"role": "user", "content": "OWNER ORIGINAL"}])
     record = audit.get_call(audit_home.sid, "call-one")
