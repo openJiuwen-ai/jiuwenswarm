@@ -679,7 +679,7 @@ def _parse_typed_chunk(
             if isinstance(payload, dict)
             else str(payload)
         )
-        return {"event_type": "chat.error", "error": error_msg}
+        return build_chat_error_event(payload, error_msg)
 
     if chunk_type == "retry_notification":
         if isinstance(payload, dict):

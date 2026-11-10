@@ -62,9 +62,13 @@ class LastIterationFinalizeRail(DeepAgentRail):
             if not tool_calls:
                 return
 
-        # ``max_iterations_reached`` 是给下游 (relay-claw) 分类用的固定标记。
-        # 它必须出现在 output 文本里：finish_reason 在流式层会被丢弃，
-        # 只有 output 能一路带到下游；relay-claw 靠匹配该标记归类 max_iterations。
+        # 临时手段：``max_iterations_reached`` 前缀是给下游 relay-claw 分类用的
+        # 文本标记。本 PR 已把 finish_reason 透传为 chat.error.code，但 relay-claw
+        # classifyError 目前没有 errorCode == "max_iterations" 的归类分支、仍只靠
+        # 正则 /max iterations reached|max_iterations_reached/i 命中文本，所以前缀
+        # 暂保留；它会泄漏到 Web/TUI 等非 relay-claw 通道的用户可见文案，属已知代价。
+        # 移除条件：待 relay-claw classifyError 增加该 code 分支后，删除此前缀、
+        # 恢复纯中文/英文用户文案。
         if self._language == "en":
             output = (
                 "max_iterations_reached: The maximum number of reasoning "
