@@ -3537,6 +3537,7 @@
       "installing": "安装中...",
       "uninstall": "卸载",
       "uninstalling": "卸载中...",
+      "update": "更新",
       "importLocal": "导入本地技能",
       "sourceManager": "源管理",
       "create": "创建",

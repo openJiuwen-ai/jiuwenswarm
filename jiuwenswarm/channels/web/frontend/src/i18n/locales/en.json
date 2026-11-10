@@ -3540,6 +3540,7 @@
       "installing": "Installing...",
       "uninstall": "Uninstall",
       "uninstalling": "Uninstalling...",
+      "update": "Update",
       "importLocal": "Import Local Skill",
       "sourceManager": "Source Manager",
       "create": "Create",
