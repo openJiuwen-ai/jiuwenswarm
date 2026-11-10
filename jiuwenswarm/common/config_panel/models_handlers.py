@@ -51,6 +51,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
 from jiuwenswarm.common.model_errors import ModelSelectionError
+from jiuwenswarm.common.opencode_go import SCOPE_PROBE, inject_session_header
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     validate_reasoning_level_for_model,
@@ -276,6 +277,26 @@ def resolve_validate_endpoint_profile(
     return str(persisted_mcc.get("endpoint_profile") or "") or None
 
 
+def _redact_probe_error(message: str, api_key: str) -> str:
+    """Remove the probe API key from a user-visible error message.
+
+    FR-003 forbids credentials in error messages; some SDKs echo the request
+    key inside transport errors, so the key is replaced before responding.
+
+    Args:
+        message: Raw exception text.
+        api_key: The probe credential to redact.
+
+    Returns:
+        The trimmed message with every key occurrence replaced by ``***``.
+    """
+    text = str(message or "").strip()
+    key = str(api_key or "").strip()
+    if not text or not key:
+        return text
+    return text.replace(key, "***")
+
+
 def build_probe_model_client_config(
     model_provider: str,
     api_key: str,
@@ -283,6 +304,7 @@ def build_probe_model_client_config(
     *,
     endpoint_profile: str = "",
     verify_ssl: bool | None = None,
+    vendor_key: str = "",
     persisted_mcc: dict[str, Any] | None = None,
 ) -> ModelClientConfig:
     """构造探测用 ``ModelClientConfig``：持久化条目为基线，表单草稿值覆盖。
@@ -303,6 +325,13 @@ def build_probe_model_client_config(
     def _assemble(persisted: dict[str, Any] | None) -> ModelClientConfig:
         probe_fields: dict[str, Any] = dict(persisted or {})
         probe_fields.pop("model_name", None)
+        effective_vendor = str(
+            vendor_key or probe_fields.get("vendor_key") or ""
+        ).strip()
+        if effective_vendor:
+            probe_fields["vendor_key"] = effective_vendor
+        else:
+            probe_fields.pop("vendor_key", None)
         probe_fields.update(
             {
                 "client_id": "config-validate",
@@ -321,6 +350,9 @@ def build_probe_model_client_config(
             probe_fields["verify_ssl"] = verify_ssl
         elif "verify_ssl" not in probe_fields:
             probe_fields["verify_ssl"] = False
+        # OpenCode Go needs a stable, dialog-independent session header; the
+        # probe always uses the fixed probe scope and never a conversation id.
+        inject_session_header(probe_fields, SCOPE_PROBE)
         return ModelClientConfig(**probe_fields)
 
     try:
@@ -752,6 +784,7 @@ async def config_validate_model_handler(
         api_base,
         endpoint_profile=endpoint_profile,
         verify_ssl=verify_ssl,
+        vendor_key=str(params.get("vendor_key") or persisted_mcc.get("vendor_key") or ""),
         persisted_mcc=persisted_mcc,
     )
     # Anthropic-compatible endpoints that send thinking.budget_tokens
@@ -789,7 +822,7 @@ async def config_validate_model_handler(
         logger.warning("[config.validate_model] LLM probe failed: %s", exc)
         await channel.send_response(
             ws, req_id, ok=False,
-            error=str(exc).strip() or "LLM request failed",
+            error=_redact_probe_error(str(exc), api_key) or "LLM request failed",
             code="LLM_ERROR",
         )
         return

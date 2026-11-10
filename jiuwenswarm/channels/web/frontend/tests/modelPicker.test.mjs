@@ -69,6 +69,8 @@ const [
     findModelGroupReferencesForModel,
     formatModelSelectionReferenceScopes,
     extractModelSelectionReferences,
+    isFreeModelEntry,
+    getGroupCandidateModels,
   },
   { setMultiModelCollaborationEnabled, isMultiModelCollaborationEnabled },
   { ModelGroupDialog },
@@ -1225,4 +1227,25 @@ test('design selectors hide model groups and persist an ordinary model fallback'
     assert.equal(byId('chat-panel-model-selector-group-option'), null);
     assert.equal(byId('chat-panel-model-selector-moa-option'), null);
   });
+});
+
+test('OpenCode Go endpoints stay out of the free Zen classifier and remain group candidates', () => {
+  const goBase = 'https://opencode.ai/zen/go/v1';
+  const goInference = 'https://opencode.ai/inference/go/openai/v1';
+
+  assert.equal(isFreeModelEntry({ model_name: 'go', api_base: goBase }), false);
+  assert.equal(isFreeModelEntry({ model_name: 'go-trailing', api_base: `${goBase}/` }), false);
+  assert.equal(isFreeModelEntry({ model_name: 'go-inference', api_base: goInference }), false);
+  assert.equal(isFreeModelEntry({ model_name: 'zen', api_base: 'https://opencode.ai/zen/v1/' }), true);
+  assert.equal(
+    isFreeModelEntry({ model_name: 'explicit', api_base: goBase, is_free: true }),
+    true,
+  );
+
+  const candidates = getGroupCandidateModels([
+    { model_id: 'mdl_go', model_name: 'go', api_base: goBase, is_free: false },
+    { model_id: 'mdl_zen', model_name: 'zen', api_base: 'https://opencode.ai/zen/v1', is_free: true },
+  ]).map((model) => model.model_id);
+
+  assert.deepEqual(candidates, ['mdl_go']);
 });

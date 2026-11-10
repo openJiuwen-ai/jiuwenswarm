@@ -1,7 +1,7 @@
 ---
 title: 实施与决策 F索引
-author: xinyang_bali
-author_email: 835397263@qq.com
+author: wang_njust_608
+author_email: wang_njust_608@noreply.gitcode.com
 generated: true
 ---
 
@@ -16,13 +16,20 @@ generated: true
 | 模块 |
 |---|
 | [gateway/channel_manager/web](#module-1) |
-| [jiuwenswarm/agents/harness](#module-2) |
-| [jiuwenswarm/agents/harness/common/rails](#module-3) |
-| [jiuwenswarm/agents/harness/common/tools](#module-4) |
-| [jiuwenswarm/channels/web/frontend](#module-5) |
-| [jiuwenswarm/extensions/sdk](#module-6) |
-| [jiuwenswarm/resources/plugins/ttse](#module-7) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-8) |
+| [jiuwenswarm](#module-2) |
+| [jiuwenswarm/agents/harness](#module-3) |
+| [jiuwenswarm/agents/harness/common/rails](#module-4) |
+| [jiuwenswarm/agents/harness/common/tools](#module-5) |
+| [jiuwenswarm/agents/harness/team/rails](#module-6) |
+| [jiuwenswarm/agents/swarm](#module-7) |
+| [jiuwenswarm/channels/tui/frontend](#module-8) |
+| [jiuwenswarm/channels/web/frontend](#module-9) |
+| [jiuwenswarm/common](#module-10) |
+| [jiuwenswarm/common/config_panel](#module-11) |
+| [jiuwenswarm/extensions/sdk](#module-12) |
+| [jiuwenswarm/resources/plugins/ttse](#module-13) |
+| [jiuwenswarm/server/runtime](#module-14) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-15) |
 
 <a id="module-1"></a>
 
@@ -34,13 +41,21 @@ generated: true
 
 <a id="module-2"></a>
 
+## jiuwenswarm
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261030_2018_teammate-swarmflow-adaptation](F_20261030_2018_teammate-swarmflow-adaptation.md) | F | 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配） | @xiajing | jiuwenswarm | jiuwenswarm/agents/harness/team/handlers/workflow_state.py, jiuwenswarm/server/runtime/agent_adapter/team_helpers.py | 无独立 D：本仓侧为 teammate 接入 swarmflow 的适配与硬化，无独立设计文档。 |
+
+<a id="module-3"></a>
+
 ## jiuwenswarm/agents/harness
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-3"></a>
+<a id="module-4"></a>
 
 ## jiuwenswarm/agents/harness/common/rails
 
@@ -48,7 +63,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 
-<a id="module-4"></a>
+<a id="module-5"></a>
 
 ## jiuwenswarm/agents/harness/common/tools
 
@@ -56,15 +71,56 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 
-<a id="module-5"></a>
+<a id="module-6"></a>
+
+## jiuwenswarm/agents/harness/team/rails
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+
+<a id="module-7"></a>
+
+## jiuwenswarm/agents/swarm
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+
+<a id="module-8"></a>
+
+## jiuwenswarm/channels/tui/frontend
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+
+<a id="module-9"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 
-<a id="module-6"></a>
+<a id="module-10"></a>
+
+## jiuwenswarm/common
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+
+<a id="module-11"></a>
+
+## jiuwenswarm/common/config_panel
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+
+<a id="module-12"></a>
 
 ## jiuwenswarm/extensions/sdk
 
@@ -72,7 +128,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-7"></a>
+<a id="module-13"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
@@ -80,7 +136,15 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-8"></a>
+<a id="module-14"></a>
+
+## jiuwenswarm/server/runtime
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+
+<a id="module-15"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -89,3 +153,4 @@ generated: true
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |

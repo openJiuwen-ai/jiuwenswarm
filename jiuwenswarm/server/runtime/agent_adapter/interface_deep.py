@@ -550,6 +550,12 @@ from jiuwenswarm.common.model_config_validation import (
     is_placeholder_model_entry,
     model_client_config_view,
 )
+from jiuwenswarm.common.opencode_go import (
+    SCOPE_AUX,
+    inject_session_header,
+    inject_session_into_selection,
+    resolve_scope,
+)
 from jiuwenswarm.common.kv_cache_affinity_config import (
     build_kv_cache_affinity_config,
     model_provider,
@@ -1328,6 +1334,9 @@ def build_model_from_entry(mcc: dict, mco: dict) -> Model:
         )
         if _inferred_profile:
             mcc_fields["endpoint_profile"] = _inferred_profile
+    # Shared model builders outside the session recipe path (scheduler, aux
+    # clients, warmup) have no conversation identity: use the fixed aux scope.
+    mcc_fields = inject_session_header(mcc_fields, SCOPE_AUX)
 
     # ``context_window``（模型支持的上下文总长度）可配在任意模型条目的 mco 里
     # （defaults / agentos / video / audio / vision / image_gen 均可），经
@@ -8359,6 +8368,18 @@ class JiuWenSwarmDeepAdapter:
         if prompt_fingerprint is not None:
             self._last_reload_system_prompt_fingerprint = prompt_fingerprint
 
+    def _opencode_go_scope(self) -> str:
+        """Resolve the OpenCode Go session scope for this adapter instance.
+
+        The parent session is the stable identity; scheduled-task runs without
+        one use the runtime tool session id, and an unbound adapter falls back
+        to the shared unscoped value.
+        """
+        session_id = str(getattr(self, "_parent_session_id", "") or "").strip()
+        if not session_id:
+            session_id = str(get_runtime_tool_session_id() or "").strip()
+        return resolve_scope(session_id or None)
+
     def _register_model_cache_entry(
         self,
         entry: dict[str, Any],
@@ -8378,7 +8399,13 @@ class JiuWenSwarmDeepAdapter:
         idx = name_counter.get(model_name, 0)
         name_counter[model_name] = idx + 1
         cache_key = f"{model_name}#{idx}"
-        self._model_recipes[cache_key] = copy.deepcopy(entry)
+        recipe = copy.deepcopy(entry)
+        recipe_mcc = recipe.get("model_client_config")
+        if isinstance(recipe_mcc, dict):
+            recipe["model_client_config"] = inject_session_header(
+                recipe_mcc, self._opencode_go_scope()
+            )
+        self._model_recipes[cache_key] = recipe
         if model_name not in self._model_name_to_keys:
             self._model_name_to_keys[model_name] = []
         self._model_name_to_keys[model_name].append(cache_key)
@@ -8478,6 +8505,7 @@ class JiuWenSwarmDeepAdapter:
         model_name = mcc.get("model_name") or react_config.get("model_name") or "gpt-4"
         if "model_name" not in mcc:
             mcc["model_name"] = model_name
+        mcc = inject_session_header(mcc, self._opencode_go_scope())
 
         mco = (
             default_model_config.get("model_config_obj")
@@ -8670,7 +8698,9 @@ class JiuWenSwarmDeepAdapter:
                 resolved = ModelSelectionResolver().resolve(
                     ModelSelection(type="model_group", id=group_id)
                 )
-                cached = build_model_from_selection(resolved)
+                cached = build_model_from_selection(
+                    inject_session_into_selection(resolved, self._opencode_go_scope())
+                )
                 self._model_group_cache[group_id] = cached
                 self._model_cache[f"model_group:{group_id}"] = cached
             return cached
@@ -8984,7 +9014,9 @@ class JiuWenSwarmDeepAdapter:
         cached = cache.get(requested)
         if cached is not None and cached[0] == fingerprint:
             return cached[1]
-        model = build_model_from_selection(resolved)
+        model = build_model_from_selection(
+            inject_session_into_selection(resolved, self._opencode_go_scope())
+        )
         # Bound to the current selection; do not retain obsolete credentials.
         self._stable_selection_cache = {requested: (fingerprint, model)}
         return model
@@ -9012,6 +9044,7 @@ class JiuWenSwarmDeepAdapter:
         snapshot = self._instance_overrides.get("moa_config_snapshot") or config_base
         self._moa_runtime = await build_moa_runtime(
             snapshot, selection, can_access=self._instance_overrides.get("moa_can_access"),
+            scope=self._opencode_go_scope(),
         )
         self._moa_fingerprint = self._moa_runtime.fingerprint
         self._model = self._moa_runtime.aggregator

@@ -728,6 +728,7 @@
         "maas": "Maas Pangu",
         "minimax": "MiniMax",
         "mimo": "Xiaomi MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "Volcengine",

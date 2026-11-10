@@ -62,12 +62,14 @@ from jiuwenswarm.common.context_window import (
     parse_positive_int,
 )
 from jiuwenswarm.common.model_config_validation import probe_model_connection
+from jiuwenswarm.common.opencode_go import is_opencode_go_client_config
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     resolve_endpoint_profile_override,
     validate_reasoning_level_for_model,
 )
 from jiuwenswarm.common.config_panel.models_handlers import (
+    _redact_probe_error,
     build_probe_model_client_config,
     resolve_persisted_mcc_for_validate,
 )
@@ -80,6 +82,20 @@ logger = logging.getLogger(__name__)
 
 class ModelOpError(Exception):
     """模型操作校验失败：在 update_config 事务内抛出，事务外转成 RPC 错误响应。"""
+
+
+def _vendor_provider_error(client_cfg: dict) -> str | None:
+    """OpenCode Go is an OpenAI-compatible dialect and must say so."""
+    if not is_opencode_go_client_config(
+        {"vendor_key": client_cfg.get("vendor_key", "")}
+    ):
+        return None
+    provider = normalize_provider_value(
+        resolve_env_vars(str(client_cfg.get("client_provider") or ""))
+    )
+    if provider != "OpenAI":
+        return "OpenCode Go models require model_provider OpenAI"
+    return None
 
 
 def _resolve_agent_client(agent_client: Any) -> Any:
@@ -980,6 +996,7 @@ async def config_validate_model_handler(
         api_base,
         endpoint_profile=endpoint_profile,
         verify_ssl=verify_ssl,
+        vendor_key=str(params.get("vendor_key") or persisted_mcc.get("vendor_key") or ""),
         persisted_mcc=persisted_mcc,
     )
     llm = Model(
@@ -999,7 +1016,7 @@ async def config_validate_model_handler(
             ws,
             req_id,
             ok=False,
-            error=str(exc).strip() or "LLM request failed",
+            error=_redact_probe_error(str(exc), api_key) or "LLM request failed",
             code="LLM_ERROR",
         )
         return
@@ -1149,6 +1166,7 @@ async def command_model_handler(
             "verify_ssl": "verify_ssl",
             "ssl_cert": "ssl_cert",
             "alias": "alias",
+            "vendor_key": "vendor_key",
         }
         # target 可能是 "model=gpt-5" 形式（前端把第一个 key=value 当作 name 参数解析）
         if "=" in target:
@@ -1172,6 +1190,13 @@ async def command_model_handler(
                 else:
                     model_config_obj.pop("reasoning_level", None)
                 continue
+            if mapped_k == "vendor_key":
+                _vendor = str(v).strip()
+                if _vendor:
+                    client_cfg["vendor_key"] = _vendor
+                else:
+                    client_cfg.pop("vendor_key", None)
+                continue
             client_cfg[mapped_k] = v
         if "verify_ssl" not in client_cfg:
             client_cfg["verify_ssl"] = False
@@ -1181,6 +1206,11 @@ async def command_model_handler(
         if not client_cfg.get("model_name"):
             client_cfg["model_name"] = target
         effective_name = client_cfg["model_name"]
+
+        _vendor_error = _vendor_provider_error(client_cfg)
+        if _vendor_error:
+            await channel.send_response(ws, req_id, ok=False, error=_vendor_error)
+            return
 
         # 与 web 端 models.replace_all 一致：按 core 能力表校验具体模型
         # 支持的思考档位，并落库规范化后的值。
@@ -1337,6 +1367,7 @@ async def command_model_handler(
                     "api_key": "api_key", "key": "api_key", "api_base": "api_base",
                     "url": "api_base", "base_url": "api_base", "timeout": "timeout",
                     "verify_ssl": "verify_ssl", "ssl_cert": "ssl_cert", "alias": "alias",
+                    "vendor_key": "vendor_key",
                 }
                 _model_cfg_obj = _entry.get("model_config_obj")
                 if not isinstance(_model_cfg_obj, dict):
@@ -1357,8 +1388,17 @@ async def command_model_handler(
                             _model_cfg_obj.pop("reasoning_level", None)
                     elif mapped_k == "model_config_obj":
                         continue
+                    elif mapped_k == "vendor_key":
+                        _vendor = str(v).strip()
+                        if _vendor:
+                            _client_cfg["vendor_key"] = _vendor
+                        else:
+                            _client_cfg.pop("vendor_key", None)
                     else:
                         _client_cfg[mapped_k] = v
+                _vendor_error = _vendor_provider_error(_client_cfg)
+                if _vendor_error:
+                    raise ModelOpError(_vendor_error)
                 # 与 web 端 models.replace_all 一致：按 core 能力表校验具体模型
                 # 支持的思考档位，并落库规范化后的值。
                 try:
@@ -1573,6 +1613,7 @@ async def command_model_handler(
                 "alias": _resolved_alias,
                 "model_name": _model_name,
                 "model_provider": resolve_env_vars(str(mcc.get("client_provider", ""))),
+                "vendor_key": resolve_env_vars(str(mcc.get("vendor_key", ""))),
                 "api_base": resolve_env_vars(str(mcc.get("api_base", ""))),
                 "reasoning_level": resolve_env_vars(str(mco.get("reasoning_level", ""))),
                 # 同名模型冲突时用于区分：仅展示末4位，避免泄露过多 key 信息

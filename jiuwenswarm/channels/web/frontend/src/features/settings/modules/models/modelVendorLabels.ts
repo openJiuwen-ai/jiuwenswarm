@@ -9,6 +9,7 @@ const VENDOR_TRANSLATION_KEYS: Record<string, string> = {
   maas: 'maas',
   minimax: 'minimax',
   mimo: 'mimo',
+  'opencode-go': 'opencode-go',
   openrouter: 'openrouter',
   'vllm-omni': 'vllm-omni',
   volcengine: 'volcengine',

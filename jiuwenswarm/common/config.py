@@ -2138,6 +2138,8 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
             "client_provider": os.getenv("MODEL_PROVIDER", ""),
             # endpoint_profile：仅 OpenAI 协议生效的端点方言；Anthropic 时忽略。
             "endpoint_profile": os.getenv("ENDPOINT_PROFILE", "") or "",
+            # vendor_key：供应商方言标识（如 opencode-go），仅少数网关需要。
+            "vendor_key": os.getenv("VENDOR_KEY", "") or "",
             "custom_headers": _parse_custom_headers(os.getenv("CUSTOM_HEADERS", None)),
             "timeout": 1800,
             "verify_ssl": False,

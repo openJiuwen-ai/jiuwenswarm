@@ -40,7 +40,8 @@ def effective_moa_enabled(config: dict[str, Any], selection: ModelSelection | di
 
 
 def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dict,
-                         *, can_access: Callable[[str, str], bool] | None = None):
+                         *, can_access: Callable[[str, str], bool] | None = None,
+                         scope: str | None = None):
     """Compile the selected group; its first enabled route owns aggregation and verification."""
     selected = ModelSelection.model_validate(selection)
     if selected.type != "model_group":
@@ -77,6 +78,10 @@ def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dic
         ModelSelection(type="model_group", id=selected.id),
         ModelExecutionContext(can_access=can_access),
     )
+    if scope:
+        from jiuwenswarm.common.opencode_go import inject_session_into_selection
+
+        resolved = inject_session_into_selection(resolved, scope)
     if len({route.route_id for route in resolved.routes}) != len(resolved.routes):
         raise ValueError("Model group members must have unique route IDs")
     from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
@@ -164,7 +169,8 @@ class MoARuntime:
 
 
 async def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | dict,
-                            *, can_access: Callable[[str, str], bool] | None = None) -> MoARuntime:
+                            *, can_access: Callable[[str, str], bool] | None = None,
+                            scope: str | None = None) -> MoARuntime:
     from openjiuwen.core.foundation.llm.routing import get_model_group_models
     from openjiuwen.harness.moa import JevConfig, MoAConfig, VerifierConfig
 
@@ -175,7 +181,9 @@ async def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | 
         ReferenceProgressModel,
     )
 
-    candidate, group, fingerprint = resolve_moa_settings(config, selection, can_access=can_access)
+    candidate, group, fingerprint = resolve_moa_settings(
+        config, selection, can_access=can_access, scope=scope,
+    )
     members = get_model_group_models(group)
     aggregator = members[0]
     if len(members) == 1:

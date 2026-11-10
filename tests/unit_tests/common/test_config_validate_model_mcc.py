@@ -9,9 +9,16 @@
 import pytest
 
 from jiuwenswarm.common.config_panel.models_handlers import (
+    _redact_probe_error,
     build_probe_model_client_config,
     resolve_persisted_mcc_for_validate,
     resolve_validate_endpoint_profile,
+)
+from jiuwenswarm.common.model_config_validation import probe_model_connection
+from jiuwenswarm.common.opencode_go import (
+    OPENCODE_GO_SESSION_HEADER,
+    SCOPE_PROBE,
+    derive_session_id,
 )
 
 
@@ -358,3 +365,135 @@ class TestBuildProbeModelClientConfig:
         )
         assert cfg.base_url == "https://alt.test/v1"
         assert cfg.api_base == "https://x.test/v1"
+
+
+class TestOpencodeGoProbe:
+    """OpenCode Go probe: draft vendor identity and the fixed probe session header."""
+
+    def test_draft_vendor_key_enters_probe_with_probe_scope(self):
+        cfg = build_probe_model_client_config(
+            "OpenAI",
+            "sk-test-not-a-real-key",
+            "https://opencode.ai/zen/go/v1",
+            vendor_key="opencode-go",
+        )
+        assert cfg.vendor_key == "opencode-go"
+        assert cfg.custom_headers == {
+            OPENCODE_GO_SESSION_HEADER: derive_session_id(SCOPE_PROBE)
+        }
+
+    def test_persisted_vendor_key_is_the_fallback(self):
+        cfg = build_probe_model_client_config(
+            "OpenAI",
+            "sk-test-not-a-real-key",
+            "https://opencode.ai/zen/go/v1",
+            persisted_mcc={"vendor_key": "opencode-go"},
+        )
+        assert cfg.vendor_key == "opencode-go"
+        assert (
+            cfg.custom_headers[OPENCODE_GO_SESSION_HEADER]
+            == derive_session_id(SCOPE_PROBE)
+        )
+
+    def test_user_header_wins_and_persisted_headers_are_kept(self):
+        cfg = build_probe_model_client_config(
+            "OpenAI",
+            "sk-test-not-a-real-key",
+            "https://opencode.ai/zen/go/v1",
+            vendor_key="opencode-go",
+            persisted_mcc={
+                "vendor_key": "opencode-go",
+                "custom_headers": {
+                    "X-Trace": "trace-1",
+                    "X-OpenCode-Session": "user-value",
+                },
+            },
+        )
+        assert cfg.custom_headers == {
+            "X-Trace": "trace-1",
+            "X-OpenCode-Session": "user-value",
+        }
+
+    def test_other_vendors_keep_their_existing_headers(self):
+        cfg = build_probe_model_client_config(
+            "OpenAI",
+            "sk-test-not-a-real-key",
+            "https://api.deepseek.com/v1",
+            persisted_mcc={"vendor_key": "deepseek", "custom_headers": {"X-Trace": "1"}},
+        )
+        assert cfg.custom_headers == {"X-Trace": "1"}
+
+    def test_probe_budget_and_client_id_stay_fixed(self):
+        cfg = build_probe_model_client_config(
+            "OpenAI",
+            "sk-test-not-a-real-key",
+            "https://opencode.ai/zen/go/v1",
+            vendor_key="opencode-go",
+            persisted_mcc={"vendor_key": "opencode-go", "timeout": 1800, "max_retries": 5},
+        )
+        assert cfg.timeout == 25.0
+        assert cfg.max_retries == 0
+        assert cfg.client_id == "config-validate"
+
+
+class TestProbeFailurePaths:
+    """Failure paths must stay actionable and never echo the API key (FR-003/FR-009)."""
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            RuntimeError("401 Unauthorized: invalid api key"),
+            RuntimeError("429 Too Many Requests: rate limit exceeded"),
+            TimeoutError("request timed out"),
+            ConnectionError("network unreachable"),
+        ],
+    )
+    async def test_failures_are_raised_and_redacted(self, exc):
+        api_key = "sk-test-secret-value"
+
+        class _FailingModel:
+            def invoke(self, **_kwargs):
+                raise type(exc)(f"{exc} key={api_key}")
+
+        with pytest.raises(Exception) as caught:
+            await probe_model_connection(
+                _FailingModel(),
+                token_limits=(3, 16),
+                timeout_seconds=1.0,
+            )
+
+        message = _redact_probe_error(str(caught.value), api_key)
+        assert message
+        assert api_key not in message
+        assert "***" in message
+
+    async def test_retry_with_fixed_key_succeeds(self):
+        api_key = "sk-test-fixed-value"
+
+        class _RetryingModel:
+            def __init__(self):
+                self.calls = 0
+
+            def invoke(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("401 Unauthorized")
+
+                async def _ok():
+                    return {"content": "Hi"}
+
+                return _ok()
+
+        result = await probe_model_connection(
+            _RetryingModel(),
+            token_limits=(3, 16),
+            timeout_seconds=1.0,
+        )
+        assert result.content == "Hi"
+
+    def test_redaction_is_a_noop_for_unrelated_messages(self):
+        assert _redact_probe_error("429 Too Many Requests", "sk-test") == (
+            "429 Too Many Requests"
+        )
+        assert _redact_probe_error("", "sk-test") == ""
+        assert _redact_probe_error("boom", "") == "boom"

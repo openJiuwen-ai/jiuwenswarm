@@ -86,6 +86,22 @@ model: Qwen/Qwen2.5-72B-Instruct
 model_provider: SiliconFlow
 ```
 
+**OpenCode Go** (the vendor dialect is identified by `vendor_key`)
+
+```
+api_base: https://opencode.ai/zen/go/v1
+api_key: sk-your-opencode-go-api-key
+model: <model ID, fill in manually>
+model_provider: OpenAI
+vendor_key: opencode-go
+```
+
+> 💡 **OpenCode Go notes**:
+> - `model_provider` must be `OpenAI`, and `vendor_key` must be `opencode-go`;
+> - `api_base` has no default and must be `https://opencode.ai/zen/go/v1`; fill in a model name your account can actually use;
+> - The session-identifying request header (`x-opencode-session`) is derived and injected per session/member automatically, so no manual `custom_headers` is needed;
+> - The TUI shows the provider as `OpenCode Go`, but saving still writes `client_provider: OpenAI` + `vendor_key: opencode-go`.
+
 > 💡 **Tip**: Most model providers offer OpenAI-compatible APIs. You can adjust `api_base` and `model` parameters based on your actual provider.
 
 ### 2.3 Multi-Model Management and Aliases

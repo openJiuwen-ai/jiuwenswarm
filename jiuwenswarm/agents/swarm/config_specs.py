@@ -863,6 +863,9 @@ def build_member_capability_specs(
         rails, tools = _build_team_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
+    # OpenCode Go models need a member-scoped session header; the rail is a
+    # no-op for every other vendor, so mounting it needs no config gate.
+    rails.append(RailSpec(type=registry.OPENCODE_SESSION))
     if availability is not None:
         rails.append(availability)
     if (config.get("experimental") or {}).get("team_organization_ui_enabled", False):

@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import asyncio
+import copy
 
 import pytest
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
@@ -18,6 +19,11 @@ from agent_gateway.heartbeat import HeartbeatServiceUnavailableError
 
 from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
 from jiuwenswarm.common.config_panel import tui_models_handlers as _server_tui_models_handlers
+from jiuwenswarm.common.opencode_go import (
+    OPENCODE_GO_SESSION_HEADER,
+    SCOPE_PROBE,
+    derive_session_id,
+)
 
 
 class FakeGatewayServer:
@@ -882,6 +888,51 @@ async def test_config_validate_model_handler_uses_local_probe(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_validate_model_forwards_opencode_go_vendor(monkeypatch):
+    """TUI 探测与 Web 同口径：草稿 vendor_key 进入探测并携带 probe 会话头。"""
+    server = FakeGatewayServer()
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=make_config_routing_client(),
+            message_handler=None,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+    captured = {}
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        async def invoke(self, *args, **kwargs):
+            return {"content": "hello"}
+
+    monkeypatch.setattr("jiuwenswarm.common.config_panel.tui_models_handlers.Model", FakeModel)
+
+    await server.local_handlers["/tui"]["config.validate_model"](
+        object(),
+        "req-validate-opencode",
+        {
+            "model_provider": "OpenAI",
+            "model": "deepseek-v4.1-flash",
+            "api_base": "https://opencode.ai/zen/go/v1",
+            "api_key": "sk-test-not-a-real-key",
+            "vendor_key": "opencode-go",
+        },
+        "sess-1",
+    )
+
+    mcc = captured["model_client_config"]
+    assert mcc.vendor_key == "opencode-go"
+    assert mcc.custom_headers[OPENCODE_GO_SESSION_HEADER] == derive_session_id(
+        SCOPE_PROBE
+    )
+    assert server.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("first_failure", ["exception", "empty"])
 async def test_config_validate_model_retries_failed_probe_with_more_tokens(
     monkeypatch, first_failure
@@ -1233,6 +1284,202 @@ async def test_command_model_lists_agentos_models_without_defaults(monkeypatch):
             "is_agentos": True,
         }
     ]
+
+
+_OPENCODE_GO_MCC = {
+    "api_key": "sk-test-not-a-real-key",
+    "api_base": "https://opencode.ai/zen/go/v1",
+    "model_name": "oc-model",
+    "client_provider": "OpenAI",
+    "vendor_key": "opencode-go",
+}
+
+
+def _command_model_store(monkeypatch, defaults):
+    """Local AgentServer-side handler with a transactional in-memory config store."""
+    server = FakeGatewayServer()
+    store = {"data": {"models": {"defaults": [dict(d) for d in defaults]}}}
+
+    def fake_update_config(mutator, **kwargs):
+        # 与事务语义一致：只有 mutator 正常返回才落库，异常时丢弃候选数据。
+        candidate = copy.deepcopy(store["data"])
+        store["data"] = mutator(candidate)
+        return store["data"]
+
+    monkeypatch.setattr(_server_tui_models_handlers, "update_config", fake_update_config)
+    monkeypatch.setattr(_server_tui_models_handlers, "get_config", lambda: store["data"])
+    monkeypatch.setattr(_server_tui_models_handlers, "get_model_names", lambda: [])
+    return server, store
+
+
+async def _call_command_model(server, req_id, params):
+    await _server_tui_models_handlers.command_model_handler(
+        server,
+        object(),
+        req_id,
+        params,
+        "tui_session_1",
+        agent_client=_offline_local_client(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_command_model_list_emits_opencode_go_vendor_key(monkeypatch):
+    server = FakeGatewayServer()
+    defaults = [
+        {
+            "alias": "opencode-go",
+            "model_client_config": dict(_OPENCODE_GO_MCC),
+            "model_config_obj": {},
+        }
+    ]
+    monkeypatch.setattr(
+        _server_tui_models_handlers, "get_model_names", lambda: ["opencode-go"]
+    )
+    monkeypatch.setattr(
+        _server_tui_models_handlers,
+        "get_config_raw",
+        lambda: {"models": {"defaults": defaults}},
+    )
+
+    await _call_command_model(server, "req-model-list", {})
+
+    meta = server.responses[-1]["payload"]["models"][0]
+    assert meta["vendor_key"] == "opencode-go"
+    assert meta["model_provider"] == "OpenAI"
+
+
+@pytest.mark.asyncio
+async def test_command_model_add_persists_opencode_go_vendor_key(monkeypatch):
+    server, store = _command_model_store(monkeypatch, [])
+
+    await _call_command_model(
+        server,
+        "req-add-opencode",
+        {
+            "action": "add_model",
+            "target": "oc",
+            "config": {
+                "provider": "OpenAI",
+                "vendor_key": "opencode-go",
+                "api_base": "https://opencode.ai/zen/go/v1",
+                "api_key": "sk-test-not-a-real-key",
+                "model_name": "oc-model",
+            },
+        },
+    )
+
+    assert server.responses[-1]["ok"] is True
+    persisted = store["data"]["models"]["defaults"][-1]["model_client_config"]
+    assert persisted["vendor_key"] == "opencode-go"
+    assert persisted["client_provider"] == "OpenAI"
+
+
+@pytest.mark.asyncio
+async def test_command_model_add_accepts_lowercase_openai_for_opencode_go(monkeypatch):
+    server, store = _command_model_store(monkeypatch, [])
+
+    await _call_command_model(
+        server,
+        "req-add-opencode-lower",
+        {
+            "action": "add_model",
+            "target": "oc",
+            "config": {
+                "provider": "openai",
+                "vendor_key": "opencode-go",
+                "api_base": "https://opencode.ai/zen/go/v1",
+                "api_key": "sk-test-not-a-real-key",
+                "model_name": "oc-model",
+            },
+        },
+    )
+
+    assert server.responses[-1]["ok"] is True
+    persisted = store["data"]["models"]["defaults"][-1]["model_client_config"]
+    assert persisted["client_provider"] == "openai"
+    assert persisted["vendor_key"] == "opencode-go"
+
+
+@pytest.mark.asyncio
+async def test_command_model_add_rejects_opencode_go_with_other_provider(monkeypatch):
+    server, store = _command_model_store(monkeypatch, [])
+
+    await _call_command_model(
+        server,
+        "req-add-opencode-bad",
+        {
+            "action": "add_model",
+            "target": "oc",
+            "config": {
+                "provider": "DeepSeek",
+                "vendor_key": "opencode-go",
+                "api_base": "https://opencode.ai/zen/go/v1",
+                "api_key": "sk-test-not-a-real-key",
+                "model_name": "oc-model",
+            },
+        },
+    )
+
+    assert server.responses[-1]["ok"] is False
+    assert "OpenAI" in server.responses[-1]["error"]
+    assert store["data"]["models"]["defaults"] == []
+
+
+@pytest.mark.asyncio
+async def test_command_model_update_rejects_opencode_go_with_other_provider(monkeypatch):
+    defaults = [
+        {
+            "alias": "oc",
+            "model_client_config": dict(_OPENCODE_GO_MCC),
+            "model_config_obj": {},
+        }
+    ]
+    server, store = _command_model_store(monkeypatch, defaults)
+
+    await _call_command_model(
+        server,
+        "req-update-opencode-bad",
+        {
+            "action": "update_model",
+            "index": 0,
+            "config": {"provider": "DeepSeek"},
+        },
+    )
+
+    assert server.responses[-1]["ok"] is False
+    assert "OpenAI" in server.responses[-1]["error"]
+    persisted = store["data"]["models"]["defaults"][0]["model_client_config"]
+    assert persisted["client_provider"] == "OpenAI"
+    assert persisted["vendor_key"] == "opencode-go"
+
+
+@pytest.mark.asyncio
+async def test_command_model_update_clears_vendor_key_when_switching_provider(monkeypatch):
+    defaults = [
+        {
+            "alias": "oc",
+            "model_client_config": dict(_OPENCODE_GO_MCC),
+            "model_config_obj": {},
+        }
+    ]
+    server, store = _command_model_store(monkeypatch, defaults)
+
+    await _call_command_model(
+        server,
+        "req-update-provider",
+        {
+            "action": "update_model",
+            "index": 0,
+            "config": {"provider": "DeepSeek", "vendor_key": ""},
+        },
+    )
+
+    assert server.responses[-1]["ok"] is True
+    persisted = store["data"]["models"]["defaults"][0]["model_client_config"]
+    assert persisted["client_provider"] == "DeepSeek"
+    assert "vendor_key" not in persisted
+
 
 @pytest.mark.asyncio
 async def test_session_list_returns_agent_timeout_before_tui_request_timeout(monkeypatch):

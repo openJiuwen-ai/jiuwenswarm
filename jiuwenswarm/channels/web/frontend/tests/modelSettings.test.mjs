@@ -110,6 +110,76 @@ test('preset protocol mapping uses only the exact server fields', () => {
   assert.equal('endpoint_profile' in anthropic, false);
 });
 
+test('empty api_base preset keeps the address editable and never overwrites a typed value', () => {
+  const catalogWithEmptyAddress = parseVendorCatalog({
+    reasoning,
+    token_plan: [preset()],
+    coding_plan: [preset({ plan: 'coding_plan', api_base: 'https://coding.example/v1' })],
+    custom_api: [preset({
+      vendor_key: 'opencode-go',
+      display_name: 'OpenCode Go',
+      plan: 'custom_api',
+      api_base: '',
+      endpoint_profile: null,
+      default_model: '',
+      model_options: [],
+      icon_key: 'opencode-go',
+      models_endpoint: null,
+      supports_anthropic: false,
+      anthropic_base: null,
+      anthropic_client_provider: null,
+    })],
+  });
+
+  const draft = applyVendorSelection(
+    createModelDraft(undefined, catalogWithEmptyAddress),
+    vendorSelectionKey('custom_api', 'opencode-go'),
+    catalogWithEmptyAddress,
+  );
+  assert.equal(draft.api_base, '');
+
+  const typed = {
+    ...draft,
+    alias: 'opencode-go',
+    api_key: 'sk-test-not-a-real-key',
+    model_name: 'deepseek-v4.1-flash',
+    api_base: 'https://opencode.ai/zen/go/v1',
+  };
+  const entry = modelDraftToEntry(typed, undefined, catalogWithEmptyAddress, true);
+  assert.equal(entry.api_base, 'https://opencode.ai/zen/go/v1');
+  assert.equal(entry.model_name, 'deepseek-v4.1-flash');
+  assert.equal(entry.vendor_key, 'opencode-go');
+  assert.equal(entry.plan, 'custom_api');
+  assert.equal('endpoint_profile' in entry, false);
+
+  const missing = validateModelDraft(
+    { ...typed, api_base: '', api_key: '' },
+    [],
+    undefined,
+    catalogWithEmptyAddress,
+    t,
+  );
+  assert.ok(missing.api_base);
+  assert.ok(missing.api_key);
+
+  const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
+  assert.match(dialog, /custom \|\| !preset\?\.api_base/);
+});
+
+test('opencode-go vendor label resolves in both locales and falls back to a custom icon', () => {
+  const labels = source('src/features/settings/modules/models/modelVendorLabels.ts');
+  assert.match(labels, /'opencode-go': 'opencode-go'/);
+
+  const zh = JSON.parse(source('src/i18n/locales/zh.json'));
+  const en = JSON.parse(source('src/i18n/locales/en.json'));
+  assert.equal(zh.settingsPanel.models.vendors['opencode-go'], 'OpenCode Go');
+  assert.equal(en.settingsPanel.models.vendors['opencode-go'], 'OpenCode Go');
+
+  const providers = source('src/assets/providers/index.ts');
+  assert.match(providers, /getVendorLogoUrl\(vendorKey: string\): string \| undefined/);
+  assert.match(providers, /getVendorLogoUrl\(vendorKey\) \?\? customModelIcon/);
+});
+
 test('model context windows stay editable and expose common presets', () => {
   const freshDraft = createModelDraft(undefined, catalog);
   assert.equal(freshDraft.context_window_tokens, '256K');

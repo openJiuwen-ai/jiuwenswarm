@@ -728,6 +728,7 @@
         "maas": "Maas 盘古",
         "minimax": "MiniMax",
         "mimo": "小米 MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "火山引擎",

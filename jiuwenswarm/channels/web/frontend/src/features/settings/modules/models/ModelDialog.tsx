@@ -409,7 +409,7 @@ export function ModelDialog({
       options: protocolOptions,
       onChange: (value) => updateProtocol(value as ModelProtocol),
     });
-    if (custom) {
+    if (custom || !preset?.api_base) {
       formItems.push({
         name: 'api_base',
         label: t('settingsPanel.fields.api_base.title'),

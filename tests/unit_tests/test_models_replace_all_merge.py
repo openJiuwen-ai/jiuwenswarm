@@ -684,3 +684,103 @@ def test_switching_to_anthropic_drops_persisted_endpoint_profile():
     out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
 
     assert "endpoint_profile" not in out[0]["model_client_config"]
+
+
+def test_opencode_go_edit_preserves_vendor_identity_and_user_headers():
+    """Editing an OpenCode Go entry keeps vendor_key/plan and unsubmitted headers."""
+    raw = _raw_entry_with_placeholder()
+    raw["model_client_config"].update({
+        "api_base": "https://opencode.ai/zen/go/v1",
+        "vendor_key": "opencode-go",
+        "plan": "custom_api",
+        "custom_headers": {"x-opencode-session": "legacy-value"},
+    })
+    resolved = _resolved_entry_for(
+        raw,
+        api_key_plain="sk-real-secret",
+        api_base="https://opencode.ai/zen/go/v1",
+    )
+
+    parsed = [_parsed_item(
+        model_name="deepseek-v4.1-flash",
+        api_base="https://opencode.ai/zen/go/v1",
+        vendor_key="opencode-go",
+        plan="custom_api",
+        api_key_provided=False,
+    )]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    mcc = out[0]["model_client_config"]
+    assert mcc["vendor_key"] == "opencode-go"
+    assert mcc["plan"] == "custom_api"
+    assert mcc["custom_headers"] == {"x-opencode-session": "legacy-value"}
+    assert "endpoint_profile" not in mcc
+
+
+def test_opencode_go_new_entry_persists_vendor_key_and_plan():
+    """A newly added OpenCode Go entry stores vendor_key and plan verbatim."""
+    parsed = [_parsed_item(
+        model_name="deepseek-v4.1-flash",
+        api_base="https://opencode.ai/zen/go/v1",
+        vendor_key="opencode-go",
+        plan="custom_api",
+        origin_index=None,
+    )]
+
+    out = _merge_models_for_replace_all(parsed, [], [], crypto=_StubCrypto())
+
+    mcc = out[0]["model_client_config"]
+    assert mcc["vendor_key"] == "opencode-go"
+    assert mcc["plan"] == "custom_api"
+    assert mcc["client_provider"] == "OpenAI"
+
+
+def test_legacy_entry_without_vendor_key_is_not_migrated():
+    """Legacy entries stay without vendor_key/plan; no inference happens."""
+    raw = _raw_entry_with_placeholder()
+    resolved = _resolved_entry_for(
+        raw,
+        api_key_plain="sk-real-secret",
+        api_base="https://api.example.com",
+    )
+
+    parsed = [_parsed_item(api_key_provided=False)]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    mcc = out[0]["model_client_config"]
+    assert "vendor_key" not in mcc
+    assert "plan" not in mcc
+
+
+def test_build_models_defaults_accepts_opencode_go_without_endpoint_profile(monkeypatch):
+    """The frontend save path accepts vendor_key=opencode-go + plan=custom_api."""
+    from jiuwenswarm.common.config_panel import models_handlers
+
+    monkeypatch.setattr(models_handlers, "get_config_raw", lambda: {})
+    monkeypatch.setattr(models_handlers, "get_default_models", lambda: [])
+    monkeypatch.setattr(models_handlers, "_get_crypto_provider", lambda: _StubCrypto())
+
+    out = models_handlers.build_models_defaults_from_frontend([{
+        "model_name": "deepseek-v4.1-flash",
+        "api_base": "https://opencode.ai/zen/go/v1",
+        "api_key": "sk-test-not-a-real-key",
+        "model_provider": "OpenAI",
+        "vendor_key": "opencode-go",
+        "plan": "custom_api",
+        "temperature": 0.7,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "opencode-go",
+        "origin_index": None,
+    }])
+
+    assert len(out) == 1
+    mcc = out[0]["model_client_config"]
+    assert mcc["vendor_key"] == "opencode-go"
+    assert mcc["plan"] == "custom_api"
+    assert mcc["client_provider"] == "OpenAI"
+    assert mcc["api_base"] == "https://opencode.ai/zen/go/v1"
+    assert "endpoint_profile" not in mcc

@@ -11,14 +11,14 @@ export function hasStableModelId(model: ModelEntry): model is ModelEntry & { mod
 }
 
 /** Zen free models (and any list row tagged is_free) cannot join a model group. */
+const ZEN_API_BASE = 'https://opencode.ai/zen/v1';
+
 export function isFreeModelEntry(model: ModelEntry): boolean {
   if (model.is_free === true) return true;
   const apiBase = (model.api_base || '').trim().toLowerCase().replace(/\/+$/, '');
   // Persisted Zen free entries keep the public gateway base even after gaining a model_id.
-  if (apiBase === 'https://opencode.ai/zen/v1' || apiBase.includes('opencode.ai/zen')) {
-    return true;
-  }
-  return false;
+  // The paid OpenCode Go endpoint (`/zen/go/...`) must stay a group candidate.
+  return apiBase === ZEN_API_BASE;
 }
 
 /** Models that can be referenced by a group route (including agentos; excluding free models). */

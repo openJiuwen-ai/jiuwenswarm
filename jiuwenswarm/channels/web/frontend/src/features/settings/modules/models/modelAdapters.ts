@@ -314,11 +314,11 @@ export function modelDraftToEntry(
     next.plan = preset.plan;
     if (draft.protocol === 'anthropic') {
       next.model_provider = preset.anthropic_client_provider ?? '';
-      next.api_base = preset.anthropic_base ?? '';
+      next.api_base = preset.anthropic_base || next.api_base;
       delete next.endpoint_profile;
     } else {
       next.model_provider = preset.client_provider;
-      next.api_base = preset.api_base;
+      next.api_base = preset.api_base || next.api_base;
       if (preset.endpoint_profile) next.endpoint_profile = preset.endpoint_profile;
       else delete next.endpoint_profile;
     }
