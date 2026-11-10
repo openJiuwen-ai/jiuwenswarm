@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 import json
+import logging
+import math
 import re
 import time
 import uuid
@@ -17,6 +19,43 @@ from jiuwenswarm.server.runtime import group_service
 from jiuwenswarm.server.runtime.session import lifecycle
 
 PENDING_SECONDS = 900
+logger = logging.getLogger(__name__)
+
+
+def owner_process_fields() -> dict:
+    """Persist psutil's PID-reuse-safe identity, independent of wall-clock updates."""
+    process = psutil.Process()
+    created = process.create_time()
+    # Process hashing uses the same stable identity as Process equality. Store
+    # it as text so JSON consumers cannot round a 64-bit integer.
+    return {"owner_process": [process.pid, created], "owner_process_identity": str(hash(process))}
+
+
+def _owner_process_alive(item: dict) -> bool | None:
+    """Return None for an unobservable process, not evidence that it exited."""
+    pid, created = item["owner_process"]
+    try:
+        process = psutil.Process(pid)
+        observed = process.create_time()
+        if process.status() == psutil.STATUS_ZOMBIE:
+            return False
+        identity = item.get("owner_process_identity")
+        if identity is not None:
+            alive = str(hash(process)) == identity
+        else:
+            # Compatibility with records written before stable identities.
+            alive = math.isclose(observed, created, rel_tol=0, abs_tol=0.01)
+        if not alive:
+            logger.warning("Organization owner identity changed plan=%s pid=%s expected=%s observed=%s "
+                           "created=%s observed_created=%s", item.get("plan_id"), pid,
+                           identity, str(hash(process)), created, observed)
+        return alive
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, OSError) as exc:
+        logger.warning("Cannot inspect organization owner plan=%s pid=%s: %s",
+                       item.get("plan_id"), pid, exc)
+        return None
 
 
 def _path(session_id: str):
@@ -34,12 +73,7 @@ def candidate(session_id: str, message_id: str | None) -> dict | None:
 
 def _effective(item: dict | None) -> dict | None:
     if item and item["status"] in {"pending", "chat", "clarification"} and item.get("owner_process"):
-        try:
-            process = psutil.Process(item["owner_process"][0])
-            alive = process.create_time() == item["owner_process"][1]
-        except psutil.Error:
-            alive = False
-        if not alive:
+        if _owner_process_alive(item) is False:
             return {**item, "status": "failed", "error": "owner_process_ended"}
     if item and item["status"] in {"pending", "chat"} and time.time() > item["updated_at"] + PENDING_SECONDS:
         return {**item, "status": "failed", "error": "owner_decision_timeout"}
