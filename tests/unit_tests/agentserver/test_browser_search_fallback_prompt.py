@@ -2,16 +2,19 @@
 
 """Search availability must only affect browser prompt guidance."""
 
+import runpy
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from openjiuwen.harness import tools as sdk_tools
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import SystemPromptBuilder
 from openjiuwen.harness.schema.config import SubAgentConfig
 
 from jiuwenswarm.agents.harness.common.prompt.browser_task_prompt import build_browser_task_prompt
+from jiuwenswarm.agents.harness.common.rails import browser_task_prompt_rail
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import BrowserTaskPromptRail
 
 
@@ -30,6 +33,7 @@ def _make_rail(
     *,
     runtime: bool = False,
     browser: bool = True,
+    rail_type: type[BrowserTaskPromptRail] = BrowserTaskPromptRail,
 ) -> tuple[BrowserTaskPromptRail, AgentCallbackContext]:
     names = ["research_agent"]
     if browser:
@@ -45,7 +49,7 @@ def _make_rail(
         system_prompt_builder=SystemPromptBuilder(language=language),
         ability_manager=Mock(),
     )
-    rail = BrowserTaskPromptRail(enable_subagent_runtime=runtime)
+    rail = rail_type(enable_subagent_runtime=runtime)
     rail.init(agent)
     ctx = AgentCallbackContext(agent=agent, inputs=None, session=Mock(), extra={})
     return rail, ctx
@@ -174,3 +178,52 @@ def test_unknown_prompt_language_preserves_chinese_default() -> None:
     assert build_browser_task_prompt("unknown", search_fallback_enabled=True) == (
         build_browser_task_prompt("cn", search_fallback_enabled=True)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing_helpers",
+    [
+        ("is_free_search_enabled",),
+        ("is_paid_search_enabled",),
+        ("is_free_search_enabled", "is_paid_search_enabled"),
+    ],
+)
+@pytest.mark.parametrize("name", _PAID_KEYS + _FREE_FLAGS)
+async def test_missing_sdk_search_helpers_preserve_prompt_refresh(monkeypatch, missing_helpers, name) -> None:
+    for helper in missing_helpers:
+        monkeypatch.delattr(sdk_tools, helper)
+    namespace = runpy.run_path(browser_task_prompt_rail.__file__)
+    rail, ctx = _make_rail(rail_type=namespace["BrowserTaskPromptRail"])
+    heading = "Browser Search When No Search Engine Is Configured"
+
+    monkeypatch.setenv("FREE_SEARCH_360_ENABLED", "true")
+    for key in _PAID_KEYS:
+        monkeypatch.setenv(key, "  ")
+    for flag in _FREE_FLAGS:
+        monkeypatch.setenv(flag, "false")
+    await rail.before_model_call(ctx)
+    assert heading in rail.system_prompt_builder.get_section("task_tool").content["en"]
+
+    monkeypatch.setenv(name, " Enabled " if name in _FREE_FLAGS else " test-key ")
+    await rail.before_model_call(ctx)
+    prompt = rail.system_prompt_builder.get_section("task_tool").content["en"]
+    assert heading not in prompt
+    assert "test-key" not in prompt
+
+    monkeypatch.setenv(name, "  ")
+    await rail.before_model_call(ctx)
+    assert heading in rail.system_prompt_builder.get_section("task_tool").content["en"]
+
+
+def test_available_sdk_search_helpers_remain_authoritative(monkeypatch) -> None:
+    free = Mock(return_value=True)
+    paid = Mock(return_value=True)
+    monkeypatch.setattr(sdk_tools, "is_free_search_enabled", free)
+    monkeypatch.setattr(sdk_tools, "is_paid_search_enabled", paid)
+    namespace = runpy.run_path(browser_task_prompt_rail.__file__)
+
+    assert namespace["is_free_search_enabled"]() is True
+    assert namespace["is_paid_search_enabled"]() is True
+    free.assert_called_once_with()
+    paid.assert_called_once_with()

@@ -54,7 +54,8 @@ def validate_release_dependencies(project_root: Path) -> None:
                 continue
             if not requirement.url and location != "project.dependencies":
                 continue
-            repository, _, revision = (requirement.url or "").removeprefix("git+").rpartition("@")
+            direct_reference = urlsplit((requirement.url or "").removeprefix("git+"))
+            repository, _, revision = direct_reference._replace(query="", fragment="").geturl().rpartition("@")
             pins.setdefault(name, set()).add(_official_pin(name, repository, revision, location))
 
     for source_name, sdk_source in uv.get("sources", {}).items():

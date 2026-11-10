@@ -7242,6 +7242,7 @@ desktop = [
     { name = "pywebview" },
 ]
 dev = [
+    { name = "packaging" },
     { name = "pyinstaller" },
     { name = "pywebview" },
 ]
@@ -7294,6 +7295,7 @@ test = [
     { name = "asyncssh" },
     { name = "coverage" },
     { name = "cryptography" },
+    { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -7301,6 +7303,7 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-timeout" },
     { name = "pyyaml" },
+    { name = "setuptools" },
 ]
 tui = [
     { name = "workswarm-tui" },
@@ -7315,6 +7318,7 @@ dev = [
     { name = "cryptography" },
     { name = "httpx", extra = ["socks"] },
     { name = "mypy" },
+    { name = "packaging" },
     { name = "pylint" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -7324,6 +7328,7 @@ dev = [
     { name = "pytest-timeout" },
     { name = "pyyaml" },
     { name = "ruff" },
+    { name = "setuptools" },
 ]
 lint = [
     { name = "codespell" },
@@ -7337,6 +7342,7 @@ test = [
     { name = "asyncssh" },
     { name = "coverage" },
     { name = "cryptography" },
+    { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -7344,6 +7350,7 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-timeout" },
     { name = "pyyaml" },
+    { name = "setuptools" },
 ]
 
 [package.metadata]
@@ -7422,6 +7429,8 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-sdk", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
+    { name = "packaging", marker = "extra == 'dev'", specifier = ">=23.0" },
+    { name = "packaging", marker = "extra == 'test'", specifier = ">=23.0" },
     { name = "pgvector", specifier = ">=0.4.2,<0.5" },
     { name = "pgvector", marker = "extra == 'harmony'", specifier = ">=0.4.2" },
     { name = "pillow", specifier = ">=12.2.0,<13" },
@@ -7454,6 +7463,7 @@ requires-dist = [
     { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.0,<0.20" },
     { name = "ruamel-yaml", marker = "extra == 'harmony'", specifier = ">=0.18.0" },
+    { name = "setuptools", marker = "extra == 'test'", specifier = ">=70.1.0" },
     { name = "skillnet-ai", specifier = "==0.0.16" },
     { name = "skillnet-ai", marker = "extra == 'harmony'", specifier = "==0.0.16" },
     { name = "slack-bolt", specifier = ">=1.30.0,<2" },
@@ -7482,6 +7492,7 @@ dev = [
     { name = "cryptography", specifier = ">=44.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
     { name = "mypy", specifier = ">=1.12.0" },
+    { name = "packaging", specifier = ">=23.0" },
     { name = "pylint", specifier = ">=3.0.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
@@ -7491,6 +7502,7 @@ dev = [
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.11.2" },
+    { name = "setuptools", specifier = ">=70.1.0" },
 ]
 lint = [
     { name = "codespell", specifier = ">=2.2.4" },
@@ -7504,6 +7516,7 @@ test = [
     { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
     { name = "coverage", specifier = ">=7.7.1" },
     { name = "cryptography", specifier = ">=44.0.0" },
+    { name = "packaging", specifier = ">=23.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
@@ -7511,6 +7524,7 @@ test = [
     { name = "pytest-mock", specifier = ">=3.14.0" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "setuptools", specifier = ">=70.1.0" },
 ]
 
 [[package]]

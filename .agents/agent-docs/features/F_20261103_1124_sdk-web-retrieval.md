@@ -12,6 +12,8 @@ modules:
   - jiuwenswarm/agents/harness/common/tools
   - jiuwenswarm/agents/harness/common/recommendation
   - jiuwenswarm/channels/web/frontend
+  - jiuwenswarm/agents/harness/common/rails
+  - scripts
 files:
   - jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py
   - jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
@@ -40,6 +42,13 @@ files:
   - tests/unit_tests/gateway/test_app_web_handlers.py
   - docs/en/Configuration.md
   - docs/zh/配置信息.md
+  - jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py
+  - scripts/release_dependencies.py
+  - scripts/build.sh
+  - scripts/build.ps1
+  - tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py
+  - tests/unit_tests/test_release_dependencies.py
+  - pyproject.toml
   - uv.lock
 designs: []
 design_note: 用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。
@@ -333,6 +342,42 @@ Python 文件 **565 passed**，前端 `npm run test:settings-panel` **66 passed*
 使用现有激活 venv、两份干净 PR 源码 PYTHONPATH 和隔离数据目录；原本 develop 工作区及本地 editable
 配置保持不变。此候选未重新执行外部搜索/模型 E2E，不把上一节线上结果当作此候选的成功率。
 仍未运行全仓测试、格式化、静态检查、生产前端构建或桌面打包。
+
+## GitCode 检视修复（2026-11-10）
+
+本轮针对 !9841 的三条意见，以 `78240cade7bf4b2f069a2a4c5fc0925eab18f009` 为基线。
+用户授权检视并修复必要问题，没有授权本轮提交或推送；不修改主工作区、真实配置或现有服务。
+随后用户明确授权仅将这三项修复提交并推送到 !9841，关联 GitCode #5651；提交邮箱仅本次使用
+`dingyangkai@huawei.com`，不修改仓库默认身份。其他模块的自动索引更新不纳入本次提交。
+
+- 可用性 helper：当前固定 SDK 已导出两个函数，但删除任一导出的回归能复现模块导入失败。
+  两个导入分别提供现有环境变量回退，保留可用的 SDK 实现和逐轮热更新；不接入第二套搜索实现，
+  也不把其他 SDK 接口不兼容隐藏为正常搜索。覆盖单独/同时缺失、6 个配置源、空白 key、旧 360 标志。
+- 非隔离构建：`--no-isolation` 不自动安装后端依赖，但仍检查依赖，不是完全忽略 build-system。
+  两个构建脚本显式安装已声明的 setuptools/packaging，使用同一个 Python，安装失败即停止。
+  test extra/group 与冻结打包 dev extra 补直接依赖；不增加旧 wheel 后端兼容分支。
+- 官方 pin：6 种主依赖、extra、override 中带 fragment/query 的合法官方固定版本在修复前被误拒。
+  现在用现有 `urlsplit` 剥离这两个 URL 部分再检查仓库和完整 SHA；fork、浮动分支、短 SHA 仍拒绝。
+  锁文件只增加 workswarm 的直接依赖边及声明，332 个包的版本、来源、原有 marker 和 SDK pin 均未变化。
+
+测试使用现有 Swarm venv 的 Python 3.11.5，PYTHONPATH 依次为当前 checkout、
+`.tmp/search-pr-10729-upstream-20261110`、`.tmp/search-pr-10570-upstream-20261110` 和
+`.tmp/search-pr-10570-compatible-20261106`，以匹配本 PR 固定的官方依赖，不使用 editable Core。
+pytest 选项为 `-q -o addopts= -o log_cli=false -o asyncio_mode=auto -p no:cacheprovider --tb=short`。
+
+- 发布门禁、build config、浏览器搜索提示三个文件：**107 passed**，正常退出。
+  构建 bootstrap 测试使用 stub Python，分别验证 Bash/PowerShell 安装成功和失败的真实控制流，
+  不执行 pip/npm 安装；既有测试另覆盖实际 setuptools wheel/sdist/editable 构建钩子。
+  初次沙箱运行的 6 个失败均为 Windows 临时元数据重命名或 Git Bash 启动权限错误，普通用户权限重跑后通过。
+- 加入来源包装、必需 Rail 装配、权限冷启动、免费搜索设置四个文件后：**247 项断言通过**，
+  JUnit 无 failure/error；但退出时 `tests/conftest.py:35` 清理临时日志被 Windows 文件锁阻止，命令退出码 1。
+  不把退出清理问题当产品回归，也不将该命令描述为完整通过；没有为本轮修复修改公共测试清理逻辑。
+- `uv lock --check --offline` 和对当前仓库运行 `validate_release_dependencies` 均通过；
+  用 TOML 结构对比确认除 workswarm 依赖声明外其他包记录及顶层元数据完全一致。
+  JUnit 在本地 `.tmp/search-pr-review-fixes-{unrestricted,expanded}-20261110.xml`，不提交测试产物。
+
+未运行格式化、静态检查、全仓测试、完整桌面打包或真实搜索/模型任务；未安装主环境依赖或重启服务。
+当前契约同步到 `S_02_web-retrieval`，不新建管理器、设计文档或重复检索策略。
 
 ## 残余限制
 

@@ -13,6 +13,7 @@ modules:
   - jiuwenswarm/agents/harness/common/prompt
   - jiuwenswarm/agents/harness/common/rails
   - jiuwenswarm/agents/harness/common/recommendation
+  - scripts
 files:
   - jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py
   - jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
@@ -29,6 +30,10 @@ files:
   - jiuwenswarm/agents/harness/common/recommendation/topic_search.py
   - jiuwenswarm/agents/harness/common/recommendation/topic_model.py
   - jiuwenswarm/agents/harness/common/recommendation/topic_starter.py
+  - scripts/release_dependencies.py
+  - scripts/build.sh
+  - scripts/build.ps1
+  - pyproject.toml
 ---
 
 # SDK Web 检索接入
@@ -54,7 +59,12 @@ files:
   其余 Rail 仍照常装配。该降级不表示检索预算已生效，应安装匹配 SDK 后重启。
 - Core/Gateway 候选仅用于 editable 开发验证。wheel、sdist 与 PyInstaller 入口校验主依赖、extras、
   uv overrides、uv sources 及已有锁文件，拒绝非官方仓库、浮动修订或同一依赖的不一致固定版本。
+  直链依赖先按 URL 结构剥离 query/fragment，再校验官方仓库和完整 SHA；合法的 `#subdirectory=...`
+  不属于修订号。该规范化不放宽仓库、SHA 或锁文件一致性要求。
   转 Ready 仅代表进入检视，不解除发布阻断；需先合入对应官方仓、分别统一切换官方完整 SHA、更新锁文件并复测。
+- `scripts/build.sh` / `build.ps1` 的非隔离 wheel 构建先用同一个 Python 安装 `build`、`wheel`、
+  `setuptools>=70.1.0` 和 `packaging>=23.0`，安装失败即停止。test extra 与 test group 显式包含
+  build-system 依赖；冻结打包的 dev extra 显式包含 `packaging`，不依赖间接安装碰巧满足。
 - 两个默认 rail builder 都包含一份 `WebResearchBudgetRail`；Code 动态配置对该 Rail 去重。
   新 invocation、新并发会话有独立预算；同一 invocation 的模型轮次和并行工具共享。
 - 免费来源仅支持 DDG（含 reader 入口）与 Bing；环境模板提供独立开关和检索预算。
@@ -69,6 +79,10 @@ files:
 
 - Work/默认 Code 的 `BrowserTaskPromptRail` 在每次模型调用前使用 SDK 的
   `is_paid_search_enabled()` / `is_free_search_enabled()` 读取当前配置。
+  某个导出缺失时仅替代该可用性判断：免费来源读取 `FREE_SEARCH_DDG_ENABLED` / `FREE_SEARCH_BING_ENABLED`，
+  付费来源读取 `BOCHA_API_KEY` / `PERPLEXITY_API_KEY` / `SERPER_API_KEY` / `JINA_API_KEY`。
+  判断仍逐轮读取环境，不恢复已移除的 360 来源；已有 SDK 导出保持优先。
+  这不替代搜索结果钩子或预算能力，也不承诺旧 SDK 的实际搜索工具可用。
   仅在没有付费搜索 key、DDG/Bing 都关闭且实际挂载 `browser_agent` 时，追加中英文浏览器检索提示；
   配置改变后下一次模型调用移除或重新追加，不缓存初始状态，不影响工具注册与付费/免费优先规则。
 - 用户未指定引擎或方式、需要发现网络来源时，提示主 Agent 使用同步

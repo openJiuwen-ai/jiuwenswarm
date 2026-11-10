@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import os
+
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.subagent import SubagentRail
-from openjiuwen.harness.tools import is_free_search_enabled, is_paid_search_enabled
 
 from jiuwenswarm.agents.harness.common.cua_defaults import cua_model_rejects_images
 from jiuwenswarm.agents.harness.common.prompt.browser_task_prompt import (
@@ -17,6 +18,29 @@ from jiuwenswarm.agents.harness.common.prompt.cua_task_prompt import (
     build_cua_unavailable_prompt,
 )
 from jiuwenswarm.common.cua_config import is_cua_backend_available
+
+
+try:
+    from openjiuwen.harness.tools import is_free_search_enabled
+except ImportError:  # Older SDKs may not export the availability helper.
+
+    def is_free_search_enabled() -> bool:
+        for name in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED"):
+            value = os.environ.get(name, "").strip().lower()
+            if value in {"1", "true", "yes", "on", "enabled"}:
+                return True
+        return False
+
+
+try:
+    from openjiuwen.harness.tools import is_paid_search_enabled
+except ImportError:
+
+    def is_paid_search_enabled() -> bool:
+        for name in ("BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY"):
+            if os.environ.get(name, "").strip():
+                return True
+        return False
 
 
 class BrowserTaskPromptRail(SubagentRail):

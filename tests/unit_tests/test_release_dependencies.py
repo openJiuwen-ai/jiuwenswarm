@@ -95,6 +95,53 @@ def test_release_rejects_mutable_or_inconsistent_sdk_revisions(tmp_path, revisio
         validate_release_dependencies(tmp_path)
 
 
+@pytest.mark.parametrize("location", ["dependencies", "harmony", "override"])
+@pytest.mark.parametrize("suffix", ["#subdirectory=packages/core", "?download=1#subdirectory=packages/core"])
+def test_release_accepts_official_pins_with_url_components(tmp_path, location, suffix):
+    _project(tmp_path)
+    config = tmp_path / "pyproject.toml"
+    requirement = f"openjiuwen @ git+{OFFICIAL}@{REVISION}{suffix}"
+    content = config.read_text(encoding="utf-8")
+    if location == "dependencies":
+        content = content.replace(f"openjiuwen @ git+{OFFICIAL}@{REVISION}", requirement)
+    elif location == "harmony":
+        content += f'\n[project.optional-dependencies]\nharmony = [{json.dumps(requirement)}]\n'
+    else:
+        requirement = requirement.replace("openjiuwen @", "openjiuwen[claude] @")
+        content += f'\n[tool.uv]\noverride-dependencies = [{json.dumps(requirement)}]\n'
+    content += (
+        f'\n[tool.uv.sources]\nopenjiuwen = {{ git = "{OFFICIAL}", '
+        f'rev = "{REVISION}", subdirectory = "packages/core" }}\n'
+    )
+    config.write_text(content, encoding="utf-8")
+    (tmp_path / "uv.lock").write_text(
+        '[[package]]\nname = "openjiuwen"\n'
+        f'source = {{ git = "{OFFICIAL}?rev={REVISION}&subdirectory=packages/core#{REVISION}" }}\n',
+        encoding="utf-8",
+    )
+
+    validate_release_dependencies(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("repository", "revision"),
+    [(CANDIDATE, REVISION), (OFFICIAL, "develop"), (OFFICIAL, "a" * 7)],
+)
+def test_url_fragments_cannot_bypass_the_official_sha_gate(tmp_path, repository, revision):
+    _project(tmp_path)
+    config = tmp_path / "pyproject.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            f"{OFFICIAL}@{REVISION}",
+            f"{repository}@{revision}#subdirectory=packages/core",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Release blocked"):
+        validate_release_dependencies(tmp_path)
+
+
 @pytest.mark.parametrize("name", ["agent-gateway", "agent_gateway"])
 def test_release_rejects_candidate_gateway_even_with_an_official_sdk(tmp_path, name):
     _project(tmp_path)
@@ -200,3 +247,85 @@ def test_skip_build_cannot_bypass_the_wheel_release_gate(tmp_path):
     assert result.returncode != 0
     assert "Release blocked" in result.stdout + result.stderr
     assert not list(tmp_path.rglob("*.whl"))
+
+
+def test_build_helpers_have_explicit_development_and_test_dependencies():
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    build_requirements = set(config["build-system"]["requires"])
+    assert build_requirements <= set(config["project"]["optional-dependencies"]["test"])
+    assert build_requirements <= set(config["dependency-groups"]["test"])
+    assert "packaging>=23.0" in config["project"]["optional-dependencies"]["dev"]
+
+
+def _build_commands(script_name: str) -> str:
+    lines = (ROOT / "scripts" / script_name).read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next(index for index, line in enumerate(lines) if "pip install" in line)
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith(("# ", "} finally")):
+            end = index
+            break
+    return "".join(lines[start:end])
+
+
+def _assert_build_bootstrap(result, exit_code: int) -> None:
+    calls = []
+    for line in result.stdout.splitlines():
+        if line.startswith("CALL:"):
+            calls.append(line.removeprefix("CALL:").split())
+    assert calls, result.stdout + result.stderr
+    install = calls[0]
+    assert install[:3] == ["-m", "pip", "install"]
+    assert {"build", "wheel", "setuptools>=70.1.0", "packaging>=23.0"} <= set(install)
+    if exit_code:
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert len(calls) == 1
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert calls[1] == ["-m", "build", "--wheel", "--no-isolation"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="executes the PowerShell build bootstrap")
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_powershell_build_installs_backend_requirements_before_building(tmp_path, exit_code):
+    script = tmp_path / "bootstrap.ps1"
+    script.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        "function python {\n"
+        "Write-Output ('CALL:' + ($args -join ' '))\n"
+        f"$global:LASTEXITCODE = if ($args[1] -eq 'pip') {{ {exit_code} }} else {{ 0 }}\n"
+        "}\ntry {\n" + _build_commands("build.ps1") +
+        "\n} catch { Write-Output $_; exit 1 }\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [shutil.which("pwsh") or "powershell", "-NoProfile", "-File", str(script)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False, timeout=30,
+    )
+    _assert_build_bootstrap(result, exit_code)
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_bash_build_installs_backend_requirements_before_building(exit_code):
+    bash = shutil.which("bash")
+    if sys.platform == "win32":
+        git = shutil.which("git")
+        candidate = Path(git).resolve().parents[1] / "bin" / "bash.exe" if git else None
+        bash = str(candidate) if candidate and candidate.is_file() else None
+    if not bash:
+        pytest.skip("Bash is not installed")
+    script = (
+        "set -e\n"
+        "python() {\n"
+        "  printf 'CALL:%s\\n' \"$*\"\n"
+        f'  if [ "$1 $2" = "-m pip" ]; then return {exit_code}; fi\n'
+        "  return 0\n"
+        "}\n"
+        "pip() { printf 'BARE_PIP\\n'; return 0; }\n"
+        + _build_commands("build.sh")
+    )
+    result = subprocess.run(
+        [bash, "-c", script], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False, timeout=30,
+    )
+    _assert_build_bootstrap(result, exit_code)
