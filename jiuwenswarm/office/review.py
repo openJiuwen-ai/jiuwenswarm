@@ -3,12 +3,12 @@
 """The independent review of one rendered slide behind ``verify_slide_visual``.
 
 The author's reasoning does not grade its own pixels. The render and the
-measured geometry go to the reviewer in two fresh messages, the checklist
-(``powerpoint/review.md``) and the evidence, with nothing of the conversation.
-The reviewer is the conversation's own model when it takes images, else the
-configured vision model (``models.vision``). The first line of its answer
-decides the verdict: the no-issues sentinel is ``done``, anything else (or a
-``NOT VISIBLE`` claim) is ``needs_work``.
+measured geometry go to the reviewer in two fresh messages, the checklist (the
+``review.md`` of the app's package) and the evidence, with nothing of the
+conversation. The reviewer is the conversation's own model when it takes
+images, else the configured vision model (``models.vision``). The first line
+of its answer decides the verdict: the no-issues sentinel is ``done``,
+anything else (or a ``NOT VISIBLE`` claim) is ``needs_work``.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
@@ -25,9 +26,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     multimodal_model_enabled,
 )
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.office.contract import POWERPOINT_PACKAGE
 
-REVIEW_RENDER_WIDTH = 960
 # One review gets 60 seconds, then its request is cancelled.
 REVIEW_TIMEOUT_SECONDS = 60.0
 REVIEW_MAX_TOKENS = 2000
@@ -37,9 +36,6 @@ NO_ISSUES_SENTINEL = "No significant issues found."
 # only at the end of a line, so a defect that says "confirmed" stays a defect.
 _NOT_VISIBLE = re.compile(r"\bNOT VISIBLE\b")
 _CLAIM_CHECK = re.compile(r"\b(?:CONFIRMED|CANNOT DETERMINE)\b\.?\s*$")
-
-#: What the reviewer checks a slide against; its no-issues line is ``NO_ISSUES_SENTINEL``.
-REVIEW_CHECKLIST = (POWERPOINT_PACKAGE / "review.md").read_text("utf-8").strip()
 
 EXPECTED_CHANGES_ADDENDUM = (
     "\nADDITIONALLY, the editor claims these changes were applied:\n"
@@ -52,16 +48,10 @@ EXPECTED_CHANGES_ADDENDUM = (
 _REPAIR_POLICY = ("<repair-policy>Only hard_defects are executable repair instructions. "
                   "Advisories and expected_change_checks must not trigger a mutation.</repair-policy>")
 
-#: Geometry findings the summary passes on, with what the reviewer should make of each.
-_GEOMETRY_NOTES = (
-    ("sibling_warnings", "Measured sibling inconsistency"),
-    ("occlusion_warnings", "Measured occlusion candidate (confirm from pixels; object bounds are not glyph bounds)"),
-    ("centring_warnings",
-     "Measured centring candidate (confirm from pixels; a raw alignment code alone is insufficient)"),
-    ("chart_warnings", "Chart geometry blind spot"),
-    ("group_warnings", "Group geometry blind spot"),
-    ("table_warnings", "Table geometry blind spot"),
-)
+
+def review_checklist(package_dir: Path) -> str:
+    """What the reviewer checks a slide against: the package's ``review.md``, whose no-issues line is the sentinel."""
+    return (package_dir / "review.md").read_text("utf-8").strip()
 
 
 class ReviewFailed(Exception):
@@ -82,9 +72,9 @@ def vision_client_config() -> dict[str, Any] | None:
     return dict(block) if isinstance(block, dict) else None
 
 
-async def review_slide(session_model: Model | None, render: str, geometry: str,
+async def review_slide(checklist: str, session_model: Model | None, render: str, geometry: str,
                        expected_changes: str | None) -> str:
-    """The review of a render and its geometry summary; raises ``ReviewFailed``.
+    """The review of a render and its geometry summary against ``checklist``; raises ``ReviewFailed``.
 
     ``session_model`` is the conversation's model when it takes images; without one, ``models.vision`` reviews.
     """
@@ -97,7 +87,7 @@ async def review_slide(session_model: Model | None, render: str, geometry: str,
             raise ReviewFailed("the vision model (models.vision) is not configured and enabled")
         model_name = client.pop("model_name", "")
         reviewer = f"the vision model ({model_name})"
-    system = REVIEW_CHECKLIST
+    system = checklist
     if expected_changes and expected_changes.strip():
         system += EXPECTED_CHANGES_ADDENDUM.format(expected_changes=expected_changes.strip())
     messages = [
@@ -156,13 +146,10 @@ def verifier_error(slide_id: str, reason: str) -> str:
     return f'<verifier-result slide_id="{slide_id}">No verdict: {reason}</verifier-result>'
 
 
-def geometry_summary(geometry: Any) -> str:
+def geometry_summary(geometry: dict[str, Any]) -> str:
     """The task pane's measurements of the slide, as the reviewer reads them."""
-    if not isinstance(geometry, dict):
-        return "Measured geometry: unavailable (the layout check returned nothing for this slide)."
     overlaps = geometry.get("overlaps") or []
     overflows = geometry.get("overflows") or []
-    coverage = geometry.get("coverage") or {}
     if not overlaps and not overflows:
         collisions = "no bounding-box overlaps or overflows detected."
     else:
@@ -172,19 +159,10 @@ def geometry_summary(geometry: Any) -> str:
     lines = [
         f"Measured geometry (from the presentation's object model): {collisions}",
         f"- Shapes: {len(geometry.get('shapes') or [])}",
-        f"- Coverage ratio: {coverage.get('coverage_ratio', 'n/a')} "
-        f"(top_start {coverage.get('top_start', 'n/a')} pt, bottom_gap {coverage.get('bottom_gap', 'n/a')} pt)",
     ]
     contrast = geometry.get("contrast_warnings") or []
     if contrast:
         lines.append(f"- Contrast warnings: {len(contrast)}")
-    for key, label in _GEOMETRY_NOTES:
-        lines.extend(f"- {label}: {warning['message']}" for warning in geometry.get(key) or ()
-                     if isinstance(warning, dict) and warning.get("message"))
-    small_text = [warning for warning in geometry.get("small_text_warnings") or () if isinstance(warning, dict)]
-    if small_text:
-        sizes = ", ".join(f"{warning.get('shape')} ({warning.get('font_size')} pt)" for warning in small_text)
-        lines.append(f"- Measured text below 14 pt: {sizes}")
     return "\n".join(lines)
 
 

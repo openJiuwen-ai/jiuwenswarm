@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""``publish_powerpoint_asset`` and the links the task pane downloads published files from."""
+"""``publish_office_asset`` and the links the task pane downloads published files from."""
 
 from __future__ import annotations
 
@@ -17,8 +17,9 @@ import pytest
 
 from jiuwenswarm.common.file_download_token import validate_file_download_token
 from jiuwenswarm.office import runtime
-from jiuwenswarm.office.assets import MAX_ASSET_BYTES, OfficeAssetStore, PublishPowerPointAssetTool, referenced_handles
-from jiuwenswarm.office.contract import POWERPOINT_PACKAGE, load_contract
+from jiuwenswarm.office.assets import MAX_ASSET_BYTES, OfficeAssetStore, PublishOfficeAssetTool, referenced_handles
+from jiuwenswarm.office.contract import load_contract
+from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE
 
 PNG = b"\x89PNG\r\n\x1a\nimage-bytes"
 
@@ -50,7 +51,7 @@ def project(tmp_path, monkeypatch, sessions):
 
 
 async def _publish(path, session_id: str = "deck-a", store: OfficeAssetStore | None = None) -> dict:
-    tool = PublishPowerPointAssetTool(store)
+    tool = PublishOfficeAssetTool(store)
     return json.loads(await tool.invoke({"absolute_path": str(path)}, session=_session(session_id)))
 
 
