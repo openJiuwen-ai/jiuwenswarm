@@ -19,10 +19,8 @@ flowchart TB
   subgraph assemble [3. 成员装配 同轨]
     Spec["折叠为唯一 core.team.skill_use"]
     Rail["TeamSkillUseRail 扫同一物理库"]
-    Vis["空 allow = 全可见"]
-    Soft["soft-link 路1 并存"]
+    Vis["skills-visibility.json / 空 allow = 全可见"]
     Spec --> Rail --> Vis
-    Spec -.-> Soft
   end
 
   subgraph open [4. 开班与使用 v2]

@@ -42,7 +42,7 @@ def test_assert_forbidden_when_team_bound(tmp_path: Path, monkeypatch: pytest.Mo
     root = tmp_path / "skills"
     _write_skill(root / "sop", kind="swarm-skill", name="sop")
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "jiuwenswarm.common.utils.primary_team_skill_library_dir",
         lambda: root,
     )
     with pytest.raises(SwarmSkillSessionError) as exc:
@@ -60,7 +60,7 @@ def test_assert_allows_same_swarm_on_session_generated(
     root = tmp_path / "skills"
     _write_skill(root / "sop", kind="swarm-skill", name="sop")
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "jiuwenswarm.common.utils.primary_team_skill_library_dir",
         lambda: root,
     )
     swarm, ordinary = assert_chat_swarm_skill_policy(
@@ -82,7 +82,7 @@ def test_assert_forbids_swarm_after_plain_auto_bind(
     root = tmp_path / "skills"
     _write_skill(root / "sop", kind="swarm-skill", name="sop")
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "jiuwenswarm.common.utils.primary_team_skill_library_dir",
         lambda: root,
     )
     with pytest.raises(SwarmSkillSessionError) as exc:
@@ -101,7 +101,7 @@ def test_assert_allows_ordinary_when_team_bound(
     root = tmp_path / "skills"
     _write_skill(root / "xlsx-craft", kind=None, name="xlsx-craft")
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "jiuwenswarm.common.utils.primary_team_skill_library_dir",
         lambda: root,
     )
     swarm, ordinary = assert_chat_swarm_skill_policy(
@@ -118,7 +118,7 @@ def test_assert_rejects_multiple_swarm(tmp_path: Path, monkeypatch: pytest.Monke
     _write_skill(root / "a", kind="team-skill", name="a")
     _write_skill(root / "b", kind="swarm-skill", name="b")
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "jiuwenswarm.common.utils.primary_team_skill_library_dir",
         lambda: root,
     )
     with pytest.raises(SwarmSkillSessionError) as exc:
@@ -136,7 +136,7 @@ def test_unknown_kind_treated_as_ordinary_when_bound(
     root = tmp_path / "skills"
     _write_skill(root / "mystery", kind=None, name="mystery")
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "jiuwenswarm.common.utils.primary_team_skill_library_dir",
         lambda: root,
     )
     swarm, ordinary = assert_chat_swarm_skill_policy(

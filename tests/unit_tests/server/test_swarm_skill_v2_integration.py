@@ -52,7 +52,7 @@ async def test_auto_bind_swarm_sets_session_generated_and_open_library(
     skills_root = tmp_path / "skills"
     _write_swarm(skills_root)
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "jiuwenswarm.common.utils.primary_team_skill_library_dir",
         lambda: skills_root,
     )
 
@@ -193,7 +193,7 @@ async def test_bound_team_rejects_swarm_via_auto_bind_gate(
     skills_root = tmp_path / "skills"
     _write_swarm(skills_root)
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "jiuwenswarm.common.utils.primary_team_skill_library_dir",
         lambda: skills_root,
     )
     monkeypatch.setattr(chat_handlers, "_sessions_dir_for_request", lambda ctx: tmp_path)

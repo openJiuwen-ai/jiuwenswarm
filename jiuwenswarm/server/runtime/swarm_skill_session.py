@@ -81,14 +81,19 @@ def parse_request_skill_ids(params: dict[str, Any] | None) -> list[str]:
 
 
 def resolve_skill_package(skill_id: str) -> Path | None:
-    """Resolve ``skill_id`` under the agent skills library with path containment."""
-    from jiuwenswarm.common.utils import get_agent_skills_dir
+    """Resolve ``skill_id`` under the primary team Skill library with path containment.
+
+    Uses :func:`primary_team_skill_library_dir` (same pin as Hub / evolution /
+    ``configure_global_skills_dir``) so Ace SHARED tips resolve Swarm packages
+    from the writable user library rather than the agent workspace tree alone.
+    """
+    from jiuwenswarm.common.utils import primary_team_skill_library_dir
 
     name = str(skill_id or "").strip()
     if not name or "/" in name or "\\" in name or name in {".", ".."}:
         return None
     try:
-        skills_root = Path(get_agent_skills_dir()).expanduser().resolve()
+        skills_root = Path(primary_team_skill_library_dir()).expanduser().resolve()
     except OSError:
         return None
     if not skills_root.is_dir():
