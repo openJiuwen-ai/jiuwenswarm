@@ -164,7 +164,7 @@ export interface InstalledSkillDetailViewProps extends SkillDetailCommonProps {
   onEditSkill: (skillName: string, skillType?: string) => void;
   onUninstall: (pluginName: string) => void;
   onToggleSkillDisabled: (skillName: string) => void;
-  onGoToChat: (skillName: string, skillType?: string) => void;
+  onGoToChat: (skillName: string, skillType?: string, resetAttachmentDrafts?: boolean) => void;
   /** "包含技能"成员：点击进成员详情 */
   onOpenPackMember: (memberName: string) => void;
 }
@@ -502,7 +502,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
       {/* 去试试 */}
       <button
         onClick={
-          selectedSkill.enabled !== false ? () => onGoToChat(selectedSkill.name, selectedSkill.skill_type) : undefined
+          selectedSkill.enabled !== false
+            ? () => onGoToChat(selectedSkill.name, selectedSkill.skill_type, true)
+            : undefined
         }
         disabled={selectedSkill.enabled === false}
         className="ml-6 flex items-center justify-center rounded-[16px] text-sm text-control-emphasis bg-card border border-control-emphasis hover:bg-secondary/30 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
