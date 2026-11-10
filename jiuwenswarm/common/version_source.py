@@ -560,16 +560,26 @@ class GitCodeReleasesSource(VersionSource):
 
 
 def normalize_pypi_index_url(mirror: str) -> str:
-    """Accept either a Simple API index URL or a legacy mirror base URL."""
+    """Migrate the old Aliyun mirror base and preserve explicit index URLs."""
     mirror = mirror.strip()
     if not mirror:
         return ""
 
     parts = urlsplit(mirror)
-    path = parts.path.rstrip("/")
-    if not path.endswith("/simple"):
-        path += "/simple"
-    return urlunsplit((parts.scheme, parts.netloc, f"{path}/", parts.query, parts.fragment))
+    if (
+        parts.scheme in {"http", "https"}
+        and parts.netloc.lower() == "mirrors.aliyun.com"
+        and parts.path in {"/pypi", "/pypi/"}
+    ):
+        return urlunsplit(parts._replace(path="/pypi/simple/"))
+    return mirror
+
+
+def pypi_project_url(index_url: str, package: str) -> str:
+    """Append the package to the configured index path."""
+    parts = urlsplit(index_url)
+    path = f"{parts.path.removesuffix('/')}/{package}/"
+    return urlunsplit(parts._replace(path=path))
 
 
 class PyPIVersionSource(VersionSource):
@@ -581,8 +591,8 @@ class PyPIVersionSource(VersionSource):
     ) -> None:
         super().__init__(name=package, timeout_seconds=timeout_seconds)
         index_url = normalize_pypi_index_url(mirror) or PYPI_INDEX_URL
-        self._base_url = urljoin(index_url, "../")
-        self._api_url = urljoin(index_url, f"{package}/")
+        self._api_url = pypi_project_url(index_url, package)
+        self._base_url = urljoin(self._api_url, "../../")
 
     def fetch_latest(self, current_version: str = "") -> ReleaseInfo:
         del current_version

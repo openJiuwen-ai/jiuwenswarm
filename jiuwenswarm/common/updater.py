@@ -9,7 +9,6 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
 from jiuwenswarm.common._build_config import PACKAGE_NAME
 from jiuwenswarm.common.config import get_config_raw
@@ -23,6 +22,7 @@ from jiuwenswarm.common.version_source import (
     ReleaseAsset,
     ReleaseInfo,
     normalize_pypi_index_url,
+    pypi_project_url,
     release_timestamp_key,
 )
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -528,7 +528,7 @@ class UpdaterService:
             if api_type == "github":
                 release_api_url = DEFAULT_RELEASE_API_GITHUB.format(owner=owner, repo=repo)
             elif api_type == "pypi":
-                release_api_url = urljoin(pypi_mirror or PYPI_INDEX_URL, f"{package}/")
+                release_api_url = pypi_project_url(pypi_mirror or PYPI_INDEX_URL, package)
             else:
                 release_api_url = DEFAULT_RELEASE_API_GITCODE.format(owner=owner, repo=repo)
         timeout_seconds = updater.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)

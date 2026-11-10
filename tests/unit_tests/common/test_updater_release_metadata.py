@@ -55,6 +55,21 @@ def pip_install_mode(monkeypatch):
             "https://mirror.test/packages/pypi/simple/",
             "https://mirror.test/packages/pypi/simple/workswarm/",
         ),
+        (
+            "https://mirror.test/packages/",
+            "https://mirror.test/packages/",
+            "https://mirror.test/packages/workswarm/",
+        ),
+        (
+            "https://mirror.test/tenant/+simple?scope=team",
+            "https://mirror.test/tenant/+simple?scope=team",
+            "https://mirror.test/tenant/+simple/workswarm/?scope=team",
+        ),
+        (
+            "https://mirror.test/pypi",
+            "https://mirror.test/pypi",
+            "https://mirror.test/pypi/workswarm/",
+        ),
         ("", "", "https://pypi.org/simple/workswarm/"),
     ],
 )
@@ -161,7 +176,7 @@ def test_pypi_publish_time_falls_back_to_version_json_api(monkeypatch):
     monkeypatch.setattr(version_source, "urlopen", fake_urlopen)
     source = version_source.PyPIVersionSource(
         package="workswarm",
-        mirror="https://mirror.test/pypi",
+        mirror="https://mirror.test/pypi/simple/",
         timeout_seconds=5,
     )
 
@@ -204,7 +219,7 @@ def test_publish_time_gives_up_within_budget_when_upstream_hangs(monkeypatch):
     )
     source = version_source.PyPIVersionSource(
         package="workswarm",
-        mirror="https://mirror.test/pypi",
+        mirror="https://mirror.test/pypi/simple/",
         timeout_seconds=5,
     )
 
