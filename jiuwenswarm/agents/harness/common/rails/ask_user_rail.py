@@ -331,6 +331,16 @@ class StructuredAskUserRail(AskUserRail):
         """Return the list of registered structured tools."""
         return self._structured_tools
 
+    async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        """Do not reopen a call already rejected by a higher-priority rail."""
+        tool_call = getattr(ctx.inputs, "tool_call", None)
+        call_id = str(getattr(tool_call, "id", "") or "")
+        skipped = ctx.extra.get("_skip_tool_calls")
+        if call_id and isinstance(skipped, Mapping):
+            if skipped.get(call_id) is True and getattr(ctx.inputs, "tool_msg", None) is not None:
+                return
+        await super().before_tool_call(ctx)
+
     async def resolve_interrupt(
         self,
         ctx: AgentCallbackContext,
