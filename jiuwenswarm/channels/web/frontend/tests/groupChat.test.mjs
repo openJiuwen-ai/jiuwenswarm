@@ -272,8 +272,11 @@ test('file rename and delete call the group file APIs with the attachment path',
 test('confirmed file changes update loaded messages and keep untouched records identical', () => {
   const kept = { id: 'kept', attachments: [{ name: 'b.md', path: '/b.md' }] };
   const records = [{ id: 'one', attachments: [{ name: 'a.md', path: '/a.md' }, { name: 'b.md', path: '/b.md' }] }, kept];
-  const renamed = updateAttachments(records, '/a.md', 'final.md');
+  records[0].attachments[0].download_url = '/old-download';
+  const renamed = updateAttachments(records, '/a.md', 'final.md', '/final.md');
   assert.deepEqual(renamed[0].attachments.map((file) => file.name), ['final.md', 'b.md']);
+  assert.equal(renamed[0].attachments[0].path, '/final.md');
+  assert.equal(renamed[0].attachments[0].download_url, undefined);
   assert.equal(renamed[1], kept);
   const removed = updateAttachments(records, '/b.md', null);
   assert.deepEqual(removed.map((record) => record.attachments.length), [1, 0]);

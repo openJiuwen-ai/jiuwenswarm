@@ -279,14 +279,23 @@ export function formatFileSize(bytes: number): string {
 }
 
 /** Apply a confirmed file rename or delete to attachments already loaded on the client. */
+export function renameAttachment(file: Record<string, unknown>, name: string, path: string): Record<string, unknown> {
+  const renamed: Record<string, unknown> = { ...file, name, path };
+  if (path !== file.path) {
+    for (const key of ['url', 'download_url', 'download_token']) delete renamed[key];
+    if ('file_path' in renamed) renamed.file_path = path;
+  }
+  return renamed;
+}
+
 export function updateAttachments<T extends { attachments?: Record<string, unknown>[] }>(
-  records: T[], path: string, name: string | null,
+  records: T[], path: string, name: string | null, newPath: string = path,
 ): T[] {
   return records.map((record) => {
     if (!record.attachments?.some((file) => file.path === path)) return record;
     const attachments = name === null
       ? record.attachments.filter((file) => file.path !== path)
-      : record.attachments.map((file) => file.path === path ? { ...file, name } : file);
+      : record.attachments.map((file) => file.path === path ? renameAttachment(file, name, newPath) : file);
     return { ...record, attachments };
   });
 }
