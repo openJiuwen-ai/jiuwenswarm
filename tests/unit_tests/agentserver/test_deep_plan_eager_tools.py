@@ -18,8 +18,10 @@ from openjiuwen.core.foundation.tool import ToolCard
 from jiuwenswarm.agents.harness.common.rails import progressive_tool_rail as ptr
 from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import ProgressiveToolRail
 from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import InvokeToolInput
+from jiuwenswarm.agents.harness.work.prompt.work_plan_prompts import WORK_PLAN_ALLOWED_TOOLS
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _PLAN_MODE_EAGER_TOOLS,
+    _WORK_PLAN_EAGER_TOOLS,
     JiuWenSwarmDeepAdapter,
 )
 
@@ -56,7 +58,12 @@ def test_plan_capable_mode_pins_plan_tools_eager(mode):
     config = dict(_LAZY_CONFIG)
     rail = adapter._build_progressive_tool_rail(config)
     assert rail is not None
-    assert set(_PLAN_MODE_EAGER_TOOLS) <= set(rail.eager_tools)
+    # work 装配只钉 enter/exit（评审 CR-1，2026-11-10）：switch_mode 双态被
+    # WorkAgentModeRail 过滤，钉了只喂 ②号防线每轮假阳性。
+    assert set(_WORK_PLAN_EAGER_TOOLS) <= set(rail.eager_tools)
+    assert "switch_mode" not in rail.eager_tools
+    # ②号防线校验收敛到 work plan 白名单（白名单外成员设计性缺席）。
+    assert rail.plan_check_allowed_tools == frozenset(WORK_PLAN_ALLOWED_TOOLS)
     # 与 code 侧同款纪律：追加不得回写调用方 config。
     assert config["tool_lazy_load"]["eager_tools"] == ["read_file"]
 
@@ -65,7 +72,8 @@ def test_plan_capable_mode_pins_plan_tools_eager(mode):
 def test_team_mode_does_not_pin_plan_tools_eager(mode):
     # team 装配不挂 plan rails（无 AgentModeRail 过滤/审批 rail），钉 eager 会外泄。
     rail = _rail(mode)
-    assert not set(_PLAN_MODE_EAGER_TOOLS) & set(rail.eager_tools)
+    assert not set(_WORK_PLAN_EAGER_TOOLS) & set(rail.eager_tools)
+    assert rail.plan_check_allowed_tools is None
 
 
 def test_flash_adapter_does_not_pin_plan_tools_eager():
@@ -77,7 +85,23 @@ def test_flash_adapter_does_not_pin_plan_tools_eager():
     adapter = JiuwenSwarmFlashAdapter()
     rail = adapter._build_progressive_tool_rail(dict(_LAZY_CONFIG))
     assert rail is not None
-    assert not set(_PLAN_MODE_EAGER_TOOLS) & set(rail.eager_tools)
+    assert not set(_WORK_PLAN_EAGER_TOOLS) & set(rail.eager_tools)
+
+
+def test_code_adapter_keeps_trio_pin_and_scopes_plan_check():
+    # code 装配保持三件套（normal 态 switch_mode 是唯一 plan 入口），但
+    # ②号防线校验收敛到 code plan 白名单（plan 态 trio 白名单外成员缺席
+    # 是设计内过滤，不得告警）。
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        _CODE_PLAN_ALLOWED_TOOLS,
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    rail = adapter._build_progressive_tool_rail(dict(_LAZY_CONFIG))
+    assert rail is not None
+    assert set(_PLAN_MODE_EAGER_TOOLS) <= set(rail.eager_tools)
+    assert rail.plan_check_allowed_tools == frozenset(_CODE_PLAN_ALLOWED_TOOLS)
 
 
 @pytest.mark.asyncio
@@ -85,7 +109,7 @@ async def test_plan_tools_survive_progressive_filter_and_invoke_tool_refusal():
     rail = _rail("agent")
     eager = [
         _card(name)
-        for name in ["tools_search", "invoke_tool", "read_file", *_PLAN_MODE_EAGER_TOOLS]
+        for name in ["tools_search", "invoke_tool", "read_file", *_WORK_PLAN_EAGER_TOOLS]
     ]
     deferred = [_card("wps_1", "large schema description " * 50)]
     ctx = _context(rail, eager + deferred)
@@ -93,7 +117,7 @@ async def test_plan_tools_survive_progressive_filter_and_invoke_tool_refusal():
     await rail.before_model_call(ctx)
 
     names = {tool.name for tool in ctx.inputs.tools}
-    assert set(_PLAN_MODE_EAGER_TOOLS) <= names
+    assert set(_WORK_PLAN_EAGER_TOOLS) <= names
     assert "wps_1" not in names
 
     # 防线 1：exit_plan_mode 已常驻可见，经 invoke_tool 调用被拒绝，
@@ -185,7 +209,9 @@ async def test_eager_missing_warning_silent_in_normal_mode(caplog):
 async def test_eager_missing_warning_fires_in_plan_mode(caplog):
     """plan 态 eager 工具缺席即真异常（stale normal 竞速签名）→ 告警。"""
     rail = _rail("agent")
-    cards = [_card("tools_search"), _card("read_file")]
+    # ttse_consult 随环境 config（react.ttse.enabled）可进 eager 且属 work
+    # 白名单，输入补足该卡片使断言跨环境确定（CI ttse 关 → 不在 eager）。
+    cards = [_card("tools_search"), _card("read_file"), _card("ttse_consult")]
     ctx = _context_with_plan_state(rail, cards, plan_mode="plan")
 
     ptr.logger.addHandler(caplog.handler)
@@ -198,3 +224,52 @@ async def test_eager_missing_warning_fires_in_plan_mode(caplog):
     warnings = [r for r in caplog.records if "eager tools missing" in r.message]
     assert warnings
     assert "enter_plan_mode" in warnings[0].getMessage()
+    # 校验收敛（评审 CR-1，2026-11-10）：白名单外成员（lazy 支柱）不得掺入。
+    assert "invoke_tool" not in warnings[0].getMessage()
+    assert "tools_search" not in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_plan_check_skips_whitelist_excluded_eager_tools(caplog):
+    """plan 态白名单外 eager 成员（lazy 支柱/switch_mode）缺席不告警（CR-1）。
+
+    work plan 态输入即 WorkAgentModeRail 白名单过滤后形态：白名单成员在场，
+    tools_search/invoke_tool/switch_mode 设计性缺席——收敛前这会每轮假阳性。
+    ttse_consult 卡片补足环境 config 可能注入的 eager 白名单成员（见上例）。
+    """
+    rail = _rail("agent")
+    cards = [
+        _card("read_file"),
+        _card("enter_plan_mode"),
+        _card("exit_plan_mode"),
+        _card("ttse_consult"),
+    ]
+    ctx = _context_with_plan_state(rail, cards, plan_mode="plan")
+
+    ptr.logger.addHandler(caplog.handler)
+    caplog.set_level(logging.WARNING, logger=ptr.logger.name)
+    try:
+        await rail.before_model_call(ctx)
+    finally:
+        ptr.logger.removeHandler(caplog.handler)
+
+    assert not any("eager tools missing" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_plan_check_full_scope_when_no_whitelist_injected(caplog):
+    """未注入白名单的直接建轨（plan_check_allowed_tools=None）保持全量校验。"""
+    rail = ProgressiveToolRail(enabled=True, eager_tools=["read_file"])
+    cards = [_card("read_file")]
+    ctx = _context_with_plan_state(rail, cards, plan_mode="plan")
+
+    ptr.logger.addHandler(caplog.handler)
+    caplog.set_level(logging.WARNING, logger=ptr.logger.name)
+    try:
+        await rail.before_model_call(ctx)
+    finally:
+        ptr.logger.removeHandler(caplog.handler)
+
+    warnings = [r for r in caplog.records if "eager tools missing" in r.message]
+    assert warnings
+    assert "invoke_tool" in warnings[0].getMessage()
