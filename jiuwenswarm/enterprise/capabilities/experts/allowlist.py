@@ -127,10 +127,10 @@ def _kind_dir(kind: str) -> str:
 
 def _hub_record(kind: str, package_id: str):
     from jiuwenswarm.server.runtime.extension_package_manager import (
-        _hub_install_state_store,
+        hub_install_state_store,
     )
 
-    store = _hub_install_state_store(_kind_dir(kind))
+    store = hub_install_state_store(_kind_dir(kind))
     return store.get(package_id) or store.get_by_package_id(package_id)
 
 
@@ -174,9 +174,9 @@ def _is_user_owned(kind: str, package_id: str) -> bool:
         return False
     if _marketplace_source(kind, package_id) == "hub":
         return False
-    from jiuwenswarm.server.runtime.extension_package_manager import _local_root
+    from jiuwenswarm.server.runtime.extension_package_manager import get_local_root
 
-    root = _local_root(_kind_dir(kind)).resolve()
+    root = get_local_root(_kind_dir(kind)).resolve()
     candidate = (root / package_id).resolve()
     if candidate.parent != root:
         return False

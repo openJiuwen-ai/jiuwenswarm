@@ -7,6 +7,7 @@ import {
 } from './features/multiModelCollaboration/featureConfig';
 import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
+import { PluginReplacementDialog } from './components/ConnectorMarket/PluginReplacementDialog';
 import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS, PERSONAL_HIDDEN_NAV_ITEMS } from './edition';
 import { isTeamSessionLive, retainBubblesArrivedDuringHistory } from './services/sessionLive';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
@@ -5483,6 +5484,7 @@ function App({
         resolveSettingsRequest={resolveSettingsRequest}
       />
       <AssetPublishHost />
+      <PluginReplacementDialog />
     </ErrorBoundary>
   );
 }

@@ -1,4 +1,12 @@
 {
+  "pluginReplacement": {
+    "title": "插件已存在",
+    "message": "本地已存在插件 {{id}}（版本 {{localVersion}}）。是否使用广场版本 {{hubVersion}} 替换？本地修改将被覆盖。",
+    "confirm": "替换本地版本",
+    "busy": "旧版插件正在执行任务或关闭资源，待空闲后重新进行替换。",
+    "stale": "本地插件已发生变化，请重新安装并确认替换。",
+    "unknownVersion": "未知"
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity 未返回用户标识。",
     "noContext": "当前账号没有可用的 Agent，请先在管理面完成授权。",

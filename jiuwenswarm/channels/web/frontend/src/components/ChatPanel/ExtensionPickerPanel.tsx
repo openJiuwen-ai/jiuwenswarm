@@ -84,7 +84,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
       const id = connectingPluginIdRef.current;
       connectingPluginIdRef.current = null;
       if (id) {
-        clearInstallPending(id);
+        clearInstallPending(id, true);
         void installPlugin(id);
       }
     },
