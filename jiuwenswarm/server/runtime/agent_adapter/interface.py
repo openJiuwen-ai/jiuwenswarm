@@ -3835,7 +3835,11 @@ class JiuWenSwarm:
             # auto memory: extract memories after conversation ends
             # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
             mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
-            config = get_config()
+            from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+                resolved_agent_config_or_yaml,
+            )
+
+            config = resolved_agent_config_or_yaml()
             if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                 _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
 
@@ -5832,7 +5836,11 @@ class JiuWenSwarm:
         # auto memory: extract memories after conversation ends
         # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
         mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
-        config = get_config()
+        from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+            resolved_agent_config_or_yaml,
+        )
+
+        config = resolved_agent_config_or_yaml()
         if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
             _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
 

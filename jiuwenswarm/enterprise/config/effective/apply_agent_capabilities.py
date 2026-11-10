@@ -25,6 +25,7 @@ _SECTION_TABLES: tuple[tuple[str, str], ...] = (
     ("a4p_config", "a4p"),
     ("symphony_config", "symphony"),
 )
+_AUTO_MEMORY_TABLE = "auto_memory_config"
 
 
 def bind_resolved_agent_config(config: dict[str, Any] | None) -> None:
@@ -61,10 +62,14 @@ def apply_capability_bodies(
     config: dict[str, Any],
     bodies: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    """把各张表的 body 盖进配置副本。"""
+    """把各张表的 body 盖进配置副本。``auto_memory`` 写顶层 ``auto_memory_enabled``。"""
     merged = copy.deepcopy(config)
     for section, body in bodies.items():
         if not isinstance(body, dict) or not body:
+            continue
+        if section == "auto_memory":
+            if "enabled" in body:
+                merged["auto_memory_enabled"] = bool(body["enabled"])
             continue
         current = merged.get(section)
         target = copy.deepcopy(current) if isinstance(current, dict) else {}
@@ -96,7 +101,8 @@ async def apply_agent_capability_configs(
     from jiuwenswarm.enterprise.config.effective import db_queries
 
     bodies: dict[str, dict[str, Any]] = {}
-    for table, section in _SECTION_TABLES:
+    lookups = list(_SECTION_TABLES) + [(_AUTO_MEMORY_TABLE, "auto_memory")]
+    for table, section in lookups:
         try:
             rows = await db_queries.list_records(
                 table,

@@ -54,3 +54,11 @@ def test_symphony_overlay_keeps_local_paths() -> None:
     assert symphony["paths"]["skills_root"] == "/data/skills"
     assert symphony["paths"]["graph_dir"] == "/data/graph"
     assert symphony["skill_retrieval"]["enabled"] is True
+
+
+def test_auto_memory_sets_the_top_level_switch() -> None:
+    merged = apply_capability_bodies(
+        {"auto_memory_enabled": False},
+        {"auto_memory": {"enabled": True}},
+    )
+    assert merged["auto_memory_enabled"] is True

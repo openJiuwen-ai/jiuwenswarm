@@ -487,8 +487,11 @@ def is_auto_memory_enabled(mode: str, config: Optional[Dict[str, Any]] = None) -
     # agent mode: 读全局 auto_memory_enabled，路径/默认/行为全不变
     try:
         if config is None:
-            from jiuwenswarm.common.config import get_config
-            config = get_config()
+            from jiuwenswarm.enterprise.config.effective.apply_agent_capabilities import (
+                resolved_agent_config_or_yaml,
+            )
+
+            config = resolved_agent_config_or_yaml()
         return bool(config.get("auto_memory_enabled", False))
     except Exception:
         # 与旧实现保持一致：config 读取失败时默认 True
