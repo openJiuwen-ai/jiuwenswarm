@@ -85,6 +85,9 @@ class DingTalkCliRuntimePort(Protocol):
     async def group_history_identity(self, scope: DingTalkCliScope) -> str | None:
         ...
 
+    async def inspect_group_membership(self, scope: DingTalkCliScope, *, conversation_id: str) -> dict[str, str]:
+        ...
+
     async def read_group_history(
         self, scope: DingTalkCliScope, *, conversation_id: str, since: str,
     ) -> dict[str, Any]:
@@ -224,6 +227,21 @@ class DingTalkCliRuntimeService:
         if result is not None and (not isinstance(result, str) or not _GROUP_HISTORY_READER.fullmatch(result)):
             raise PersistentAgentError("Invalid DingTalk history identity", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
         return result
+
+    async def inspect_group_membership(self, scope: DingTalkCliScope, *, conversation_id: str) -> dict[str, str]:
+        """Host-only Bot membership check; absence of an inspector is not absence of the Bot."""
+        inspect_group = getattr(self._runtime, "inspect_group_membership", None)
+        if not callable(inspect_group) or not self.is_available(scope):
+            return {"status": "unknown"}
+        try:
+            result = await inspect_group(scope, conversation_id=conversation_id)
+        except Exception as exc:
+            logger.warning("DingTalk Bot membership inspection failed (%s, code=%s)",
+                           type(exc).__name__, getattr(exc, "code", "unavailable"))
+            return {"status": "unknown"}
+        if not isinstance(result, dict) or result.get("status") not in {"active", "left", "unknown"}:
+            return {"status": "unknown"}
+        return {"status": result["status"]}
 
     async def read_group_history(
         self, scope: DingTalkCliScope, *, conversation_id: str, since: str,
