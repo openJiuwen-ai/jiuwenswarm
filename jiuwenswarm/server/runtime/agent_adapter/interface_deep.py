@@ -20665,6 +20665,9 @@ class JiuWenSwarmDeepAdapter:
 
                 if chunk_type in ("llm_call_start", "llm_call_end"):
                     payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+                    if chunk_type == "llm_call_start":
+                        refs = payload.get("payload_refs")
+                        last_llm_payload_refs = refs if isinstance(refs, dict) else None
                     forward: dict[str, Any] = {
                         "event_type": "chat." + chunk_type,
                         "member_name": payload.get("member_name"),
@@ -20673,8 +20676,6 @@ class JiuWenSwarmDeepAdapter:
                     prompt = payload.get("prompt")
                     if isinstance(payload.get("payload_refs"), dict):
                         forward["payload_refs"] = payload["payload_refs"]
-                        if chunk_type == "llm_call_start":
-                            last_llm_payload_refs = payload["payload_refs"]
                     if prompt:
                         forward["prompt"] = prompt
                         if chunk_type == "llm_call_start":

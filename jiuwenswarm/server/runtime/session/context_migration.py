@@ -120,6 +120,15 @@ async def _migrate_history_context(*, context_engine: Any, session: Any, process
             migration_processors.append((key, config))
     count = 0
     compactions = 0
+
+    async def rollback() -> None:
+        await context_engine.clear_context(session_id=session_id)
+        session.update_state({"context": None})
+        session.update_state({"context": previous_session_context})
+        if previous_state is not None:
+            restored = await context_engine.create_context(session=session, processors=processors)
+            restored.load_state({restored.context_id(): previous_state})
+
     try:
         if previous_context is not None:
             await context_engine.clear_context(session_id=session_id)
@@ -168,6 +177,7 @@ async def _migrate_history_context(*, context_engine: Any, session: Any, process
                     raise HistoryReplayError(
                         "Only audit summaries remain; a verified native window or original history is required"
                     )
+                await rollback()
                 return False
         # Only the temporary migration context uses zero protected tail; the
         # live agent resumes with its original processor policy and tool pairs.
@@ -184,12 +194,7 @@ async def _migrate_history_context(*, context_engine: Any, session: Any, process
                     session_id, count, compactions, _message_bytes(context))
         return True
     except BaseException as exc:
-        await context_engine.clear_context(session_id=session_id)
-        session.update_state({"context": None})
-        session.update_state({"context": previous_session_context})
-        if previous_state is not None:
-            restored = await context_engine.create_context(session=session, processors=processors)
-            restored.load_state({restored.context_id(): previous_state})
+        await rollback()
         if isinstance(exc, (asyncio.CancelledError, HistoryReplayError)):
             raise
         if isinstance(exc, MemoryError):

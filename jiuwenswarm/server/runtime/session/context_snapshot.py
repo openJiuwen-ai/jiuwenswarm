@@ -314,6 +314,8 @@ def _advance_boundary(session_id: str, cursor: HistoryReplayCursor | None,
 
 
 def _prune_snapshots(session_id: str, current: dict, previous: Any) -> None:
+    if not isinstance(current, dict) or not isinstance(current.get("file"), str):
+        return
     directory = snapshot_directory(session_id)
     owner = current["file"].split("-", 1)[0]
     keep = {current["file"]}
@@ -358,7 +360,7 @@ async def save_context_snapshot(*, context_engine: Any, session: Any,
         reference = session.get_state(SNAPSHOT_KEY)
         try:
             await run_history_io(_prune_snapshots, session_id, reference, previous_reference)
-        except OSError:
+        except (OSError, TypeError, KeyError):
             logger.warning("Snapshot cleanup failed for %s", session_id, exc_info=True)
         return True
 

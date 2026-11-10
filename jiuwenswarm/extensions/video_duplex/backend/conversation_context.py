@@ -122,12 +122,13 @@ async def _sync_conversation_context(agent, session_id, context, react):
                     context.__dict__.pop(name, None)
                 else:
                     setattr(context, name, value)
-            if isinstance(exc, asyncio.CancelledError):
+            if not isinstance(exc, Exception):
                 raise
             raise HistoryReplayError("Could not save imported voice context") from exc
     seen.update(conversation_record_id(record) for record in records)
     # Never advance before both import and the ReAct reload snapshot succeeded.
-    context.duplex_history_cursor = batch.cursor if batch.cursor.path.suffix.lower() == ".jsonl" else None
+    cursor = batch.cursor
+    context.duplex_history_cursor = cursor if cursor is not None and cursor.path.suffix.lower() == ".jsonl" else None
     if context.duplex_history_cursor is not None:
         # The durable cursor fences all older imports, including messages that
         # Core has compacted. Keep only IDs still present in the active window.

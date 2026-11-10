@@ -437,7 +437,7 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 
 大型工具结果保留短预览，并可携带 `payload_refs`。`chat.llm_call_start` 的完整模型输入（messages 和 tools）也可通过该字段引用。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径；路径供宿主使用，客户端通过会话和摘要读取原文。
 
-`text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，完整工件仍可读取。已有小结果和内联历史保持原语义。
+`text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，模型/工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
 
 使用非流式 `history.get` 请求，传入以下 `params`：
 
@@ -445,6 +445,6 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 {"session_id":"web_example","artifact_sha256":"<64 位小写 SHA-256>","offset":0,"max_bytes":65536}
 ```
 
-响应 payload 包含 `content`、`offset`、`next_offset`、`eof`、`bytes` 和 `sha256`。offset 为 UTF-8 字节位置，必须落在字符边界；每次最多 64 KiB。客户端使用返回的 `next_offset` 继续读取，直到 `eof=true`。摘要限定在该会话目录内，接口不接受任意文件路径。无效摘要、范围、编码边界或缺失工件返回 `HISTORY_ARTIFACT_FAILED`。
+响应 payload 包含 `content`、`offset`、`next_offset`、`eof`、`bytes` 和 `sha256`。会话优先取 `params.session_id`，缺失时使用请求 envelope 的 `session_id`。offset 为 UTF-8 字节位置，必须落在字符边界；每次最多 64 KiB。客户端使用返回的 `next_offset` 继续读取，直到 `eof=true`。摘要限定在该会话目录内，接口不接受任意文件路径。无效摘要、范围、编码边界或缺失工件返回 `HISTORY_ARTIFACT_FAILED`。
 
 省略 `artifact_sha256` 时仍使用原历史分页/流式读取行为；E2A envelope 和协议版本不变。

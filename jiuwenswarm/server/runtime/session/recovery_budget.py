@@ -2,22 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
 from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 
-_loop = None
-_slots = None
+_slots = threading.BoundedSemaphore(2)
 _owner = ContextVar("context_recovery_budget_owner", default=None)
-
-
-def _current_slots():
-    global _loop, _slots
-    loop = asyncio.get_running_loop()
-    if _loop is not loop:
-        _loop, _slots = loop, asyncio.Semaphore(2)
-    return _slots
 
 
 @asynccontextmanager
@@ -26,14 +18,17 @@ async def admit_context_recovery():
     if _owner.get() is task:
         yield
         return
-    slots = _current_slots()
-    try:
-        await asyncio.wait_for(slots.acquire(), timeout=5)
-    except asyncio.TimeoutError as exc:
-        raise HistoryReplayError("Context recovery is busy; retry later", code="HISTORY_RESTORE_BUSY") from exc
+    # Nonblocking acquisition shares the process quota across event loops and
+    # leaves no background acquire behind when a waiting task is cancelled.
+    deadline = asyncio.get_running_loop().time() + 5
+    while not _slots.acquire(blocking=False):
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise HistoryReplayError("Context recovery is busy; retry later", code="HISTORY_RESTORE_BUSY")
+        await asyncio.sleep(min(.01, remaining))
     token = _owner.set(task)
     try:
         yield
     finally:
         _owner.reset(token)
-        slots.release()
+        _slots.release()

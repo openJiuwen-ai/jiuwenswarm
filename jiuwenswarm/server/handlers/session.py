@@ -114,11 +114,12 @@ async def handle_history_get(ctx: RequestContext) -> None:
     if "artifact_sha256" in params:
         from jiuwenswarm.server.runtime.session.history_artifacts import read_artifact_chunk
 
+        session_id = params.get("session_id") or ctx.request.session_id
         try:
-            if ctx.request.is_stream or not is_valid_session_id(params.get("session_id")):
+            if ctx.request.is_stream or not is_valid_session_id(session_id):
                 raise ValueError("Artifact retrieval requires a valid session and unary request")
             payload = await run_history_io(
-                read_artifact_chunk, params["session_id"], params["artifact_sha256"],
+                read_artifact_chunk, session_id, params["artifact_sha256"],
                 offset=params.get("offset", 0), max_bytes=params.get("max_bytes", 65536),
             )
             response = AgentResponse(request_id=ctx.request.request_id, channel_id=ctx.request.channel_id,

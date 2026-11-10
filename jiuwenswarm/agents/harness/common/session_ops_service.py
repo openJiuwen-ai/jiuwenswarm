@@ -1622,6 +1622,11 @@ async def warmup_session_context(
                 context_engine=context_engine, session=session, processors=_get_context_processors(react_agent),
                 before_request_id=history_before_request_id,
             )
+        except MemoryError as exc:
+            raise HistoryReplayError("Insufficient memory while reading restored history",
+                                     code="HISTORY_RESTORE_RESOURCE") from exc
+        except Exception as exc:
+            raise HistoryReplayError("History could not be read for context restore") from exc
         history_records = batch.records
         replay_cursor = batch.prefix_cursor
 
@@ -1707,7 +1712,9 @@ async def warmup_session_context(
         )
         restored_context = context_engine.get_context(session_id=session_id)
         if restored_context is not None:
-            restored_context.duplex_history_cursor = replay_cursor
+            restored_context.duplex_history_cursor = (
+                replay_cursor if replay_cursor is not None and replay_cursor.path.suffix.lower() == ".jsonl" else None
+            )
             if replay_cursor is not None:
                 from jiuwenswarm.server.runtime.session.context_snapshot import bind_recovery_boundary
 
@@ -1728,7 +1735,7 @@ async def warmup_session_context(
             existing_context.load_state({existing_context.context_id(): original_context_state})
         if callable(getattr(session, "update_state", None)):
             session.update_state({"context": previous_session_context})
-        if isinstance(exc, asyncio.CancelledError):
+        if not isinstance(exc, Exception):
             raise
         raise HistoryReplayError("Could not install the restored context") from exc
 
