@@ -179,7 +179,9 @@ async def _finish(state: dict[str, Any], *, response: Any = None, error: str | N
     try:
         if response is not None:
             try:
-                record["response"] = await run_history_io(llm_audit.save_response, state["target"]["session_id"], response)
+                record["response"] = await run_history_io(
+                    llm_audit.save_response, state["target"]["session_id"], response,
+                )
             except Exception:
                 record["capture_error"] = "Model response could not be saved"
                 logger.warning("LLM response artifact unavailable: call=%s", record["call_id"], exc_info=True)

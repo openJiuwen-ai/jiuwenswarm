@@ -20607,7 +20607,10 @@ class JiuWenSwarmDeepAdapter:
                         "member_name": payload.get("member_name"),
                         "role": payload.get("role"),
                     }
-                    for key in ("audit_schema", "call_id", "input_ref", "response_ref", "status", "error", "usage", "latency_ms"):
+                    audit_fields = (
+                        "audit_schema", "call_id", "input_ref", "response_ref", "status", "error", "usage", "latency_ms",
+                    )
+                    for key in audit_fields:
                         if key in payload:
                             forward[key] = payload[key]
                     if chunk_type == "llm_call_start":

@@ -239,7 +239,9 @@ def read_part(session_id: str, call_id: str, *, collection: str = "messages", in
     if not page["parts"]:
         raise ValueError("Audit part was not found")
     reference = page["parts"][0]
-    if type(offset) is not int or offset < 0 or type(max_bytes) is not int or not 4 <= max_bytes <= MAX_CHUNK_BYTES:
+    invalid_offset = type(offset) is not int or offset < 0
+    invalid_size = type(max_bytes) is not int or not 4 <= max_bytes <= MAX_CHUNK_BYTES
+    if invalid_offset or invalid_size:
         raise ValueError("Invalid audit byte range")
     path = _directory(session_id) / "blocks" / reference["sha256"]
     if path.stat().st_size != reference["bytes"] or offset > reference["bytes"]:
