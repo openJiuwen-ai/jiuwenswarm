@@ -1595,10 +1595,13 @@ def _reviewer_ui_metadata_from_interaction(
                 projected[key] = items
             continue
         if isinstance(value, str) and value.strip():
-            projected[key] = redact_secret_values(
-                value,
-                max_length=_AUTO_REVIEWER_UI_MAX_TEXT_LENGTH,
-            )
+            if key in {"evidence_summary", "manual_reason_summary", "user_review_hint"}:
+                projected[key] = value
+            else:
+                projected[key] = redact_secret_values(
+                    value,
+                    max_length=_AUTO_REVIEWER_UI_MAX_TEXT_LENGTH,
+                )
     return projected
 
 

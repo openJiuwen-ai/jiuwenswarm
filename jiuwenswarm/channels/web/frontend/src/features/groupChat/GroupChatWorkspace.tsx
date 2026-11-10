@@ -24,7 +24,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { FINISHED_EXECUTIONS, groupModelLocked, groupSessionSentIds, executionResult, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { FINISHED_EXECUTIONS, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -457,10 +457,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   for (const execution of executions) {
     for (const file of execution.attachments ?? []) files.set(getFileIdentityKey(file), file);
   }
-  const timeline = [
-    ...messages.map((message) => ({ id: message.message_id, at: message.timestamp, message, execution: null })),
-    ...executions.map((execution) => ({ id: execution.execution_id, at: execution.created_at * 1000, message: null, execution })),
-  ].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  const timeline = groupTimeline(messages, executions);
 
   const visibleMembers = group?.members.filter((member) => `${member.display_name ?? ''} ${member.member_name}`
     .toLocaleLowerCase().includes(memberQuery.trim().toLocaleLowerCase())) ?? [];

@@ -56,17 +56,17 @@ _CANCELLED_RID_TTL_SECONDS = 2.0
 
 
 async def _assemble_with_allowlist(envelope: E2AEnvelope, api_root: str):
-    """企业版先读库再组头。个人版直接组请求。"""
+    """企业版按这只 bot 的模板槽组头。个人版直接组请求。"""
     from agent_gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return assemble_rest_request(envelope, base_url=api_root)
     from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
-    from agent_gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
-        read_package_allowlist_packages,
-    )
+    from agent_gateway.enterprise.capabilities.experts.bound_packages import packages_for_bot
+    from jiuwenswarm.common.request_identity import web_routing_identity
 
-    packages = await read_package_allowlist_packages()
+    bot_id = web_routing_identity(envelope.channel_context).get("bot_id", "")
+    packages = await packages_for_bot(bot_id)
     with bind_outbound_allowlist(packages):
         return assemble_rest_request(envelope, base_url=api_root)
 
@@ -587,7 +587,11 @@ class HttpSseAgentServerClient(AgentServerClient):
 def _raise_for_pod_http_error(
     response: httpx.Response, *, base_url: str | None
 ) -> None:
-    """企业按次指定 Pod 时，5xx/429 抛给编排换 Pod；开源钉死那台仍转成 ok=False。"""
+    """企业按次指定 Pod 时，5xx/429 抛给编排换 Pod；开源钉死那台仍转成 ok=False。
+
+    业务上的「找不到」保持 HTTP 200。HTTP 404 不换机：它也可能是资源不存在，
+    旧进程缺网址靠重启 AgentServer，不靠把 404 解释成这台 Pod 坏了。
+    """
     if not base_url:
         return
     if response.status_code >= 500 or response.status_code == 429:

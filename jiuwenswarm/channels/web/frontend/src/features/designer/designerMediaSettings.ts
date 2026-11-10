@@ -60,6 +60,67 @@ export function effectiveImageSettings(
   };
 }
 
+/** Stored music-node length, or null when the node leaves the film's own duration in place. */
+export function effectiveAudioDurationSec(...candidates: unknown[]): number | null {
+  for (const value of candidates) {
+    const seconds = positiveWholeSeconds(value);
+    if (seconds !== null) return seconds;
+  }
+  return null;
+}
+
+export function audioDurationParts(totalSeconds: number): { minutes: number; seconds: number } {
+  const total = Math.max(0, Math.floor(totalSeconds));
+  return { minutes: Math.floor(total / 60), seconds: total % 60 };
+}
+
+/** Button preview: whole minutes drop the seconds, under a minute drops the minutes. */
+export function audioDurationLabelForm(totalSeconds: number): 'minutes' | 'seconds' | 'both' {
+  const { minutes, seconds } = audioDurationParts(totalSeconds);
+  if (minutes > 0 && seconds === 0) return 'minutes';
+  if (minutes === 0) return 'seconds';
+  return 'both';
+}
+
+/**
+ * Minutes and seconds fields as one length. An empty field counts as zero; seconds may be 60 or more.
+ * A zero total and non-integers are rejected; there is no maximum.
+ */
+export function parseAudioDurationFields(minutesRaw: string, secondsRaw: string): number | null {
+  const minutes = minutesRaw.trim() ? parseNonNegativeInt(minutesRaw) : 0;
+  const seconds = secondsRaw.trim() ? parseNonNegativeInt(secondsRaw) : 0;
+  if (minutes === null || seconds === null) return null;
+  const total = minutes * 60 + seconds;
+  if (!Number.isSafeInteger(total) || total <= 0) return null;
+  return total;
+}
+
+/** Music-node config with this length; null drops both length keys so the film's own duration applies. */
+export function withAudioDuration(config: Record<string, unknown>, seconds: number | null): Record<string, unknown> {
+  const next = { ...config };
+  if (seconds === null) {
+    delete next.duration_sec;
+    delete next.film_duration_sec;
+    return next;
+  }
+  next.duration_sec = seconds;
+  next.film_duration_sec = seconds;
+  return next;
+}
+
+function positiveWholeSeconds(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return Math.floor(value);
+}
+
+function parseNonNegativeInt(raw: string): number | null {
+  const text = raw.trim();
+  if (!/^\d+$/.test(text)) return null;
+  const value = Number(text);
+  if (!Number.isSafeInteger(value)) return null;
+  return value;
+}
+
 /** Whole seconds a video node generates at: its manual value, else the server's reading, clamped to the model. */
 export function effectiveVideoDuration(nodeId: string, durationSec: unknown, caps: DesignerMediaCapabilities): number {
   const { min_sec: min, max_sec: max } = caps.video;

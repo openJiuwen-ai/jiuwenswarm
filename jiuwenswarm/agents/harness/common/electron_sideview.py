@@ -18,6 +18,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from jiuwenswarm.common.utils import get_domain_data_dir
+
 if TYPE_CHECKING:
     from openjiuwen.harness.tools.browser_move.playwright_runtime.config import RuntimeSettings
 
@@ -68,9 +70,11 @@ def electron_browser_selected() -> bool:
 
 
 def electron_discovery_file_path() -> Path:
-    """Return the discovery file path inside the shared jiuwenswarm data dir."""
-    data_dir = (os.getenv("JIUWENSWARM_DATA_DIR") or "").strip() or str(Path.home() / ".jiuwenswarm")
-    return Path(data_dir) / "runtime_state" / DISCOVERY_FILE_NAME
+    """Return the discovery file path under the domain zone (cross-pod visible).
+
+    发现态随会话走，落 domain/runtime_state（与其他会话运行态同区）。
+    """
+    return get_domain_data_dir() / "runtime_state" / DISCOVERY_FILE_NAME
 
 
 def _pid_alive(pid: int) -> bool:

@@ -9,6 +9,7 @@
   --jm-muted-2: #fafafa;
   --jm-hover: #f0f0f0;
   --jm-dark: #1a1a1a;
+  --jm-dark-hover: #333333;
   --jm-blue: #2f6bff;
   --jm-blue-soft: #e8f0ff;
   --jm-warning: #f08a24;
@@ -2383,6 +2384,10 @@
 .jiuwenmate-composer__toolbar .jiuwenmate-composer__send:disabled {
   background: #d8d8d8;
   cursor: not-allowed;
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__send:hover:not(:disabled) {
+  background: var(--jm-dark-hover);
 }
 
 .jiuwenmate-composer__toolbar .jiuwenmate-composer__send--stop svg {

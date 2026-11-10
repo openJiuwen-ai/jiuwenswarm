@@ -1448,7 +1448,7 @@ class _CatalogPairHub:
 def _allow_hidden_and_sales():
     return bind_request_subject(
         {
-            "package_allowlist": [
+            "expert_packages": [
                 {"kind": "agent_template", "id": "sales-expert"},
                 {"kind": "agent_template", "id": _HIDDEN_EXPERT},
                 {"kind": "agent_group", "id": "sales-expert"},
