@@ -3757,6 +3757,7 @@
     },
     "artifact": {
       "empty": "暂无产物文件",
+      "noHarnessSnapshot": "该节点尚未生成 Harness 包",
       "loadFailed": "产物加载失败",
       "selectFile": "请选择文件",
       "copied": "已复制",

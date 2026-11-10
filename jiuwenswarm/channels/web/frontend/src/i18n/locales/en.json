@@ -3759,6 +3759,7 @@
       "readonly": "Read-only"
     },
     "artifact": {
+      "noHarnessSnapshot": "No Harness package has been generated for this node yet",
       "empty": "No artifact files",
       "loadFailed": "Failed to load artifacts",
       "selectFile": "Select a file",
