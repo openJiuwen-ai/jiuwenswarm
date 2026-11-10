@@ -45,6 +45,7 @@ import type { HumanShareCommand } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { useAgentGroupVisualIdentity } from '../../features/agentManagement/useAgentGroupAvatars';
 import { MessageList } from './MessageList';
+import { LlmCallAudit } from './LlmCallAudit';
 import { ContextCompressionLines } from './MessageItem';
 import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
@@ -2330,6 +2331,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <ClipboardList size={16} strokeWidth={2} aria-hidden />
               </button>
             )}
+            {activeSessionId && activeSessionId !== NEW_CONVERSATION_ID && <LlmCallAudit sessionId={activeSessionId} />}
             {composerDockVisible && onToggleComposerCollapsed && (
               <button
                 type="button"

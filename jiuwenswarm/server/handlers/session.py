@@ -110,7 +110,11 @@ async def _send_chunk(ctx: RequestContext, chunk: AgentResponseChunk, sequence: 
 
 async def handle_history_get(ctx: RequestContext) -> None:
     """读取历史。流式请求一片一片回，普通请求整页回。"""
-    if ctx.request.is_stream:
+    if "llm_audit" in (ctx.request.params or {}):
+        from jiuwenswarm.server.control.llm_audit_service import handle_llm_audit_request
+
+        await ctx.sink.send_response(await handle_llm_audit_request(ctx.request))
+    elif ctx.request.is_stream:
         await handle_history_get_stream(ctx)
     else:
         await handle_history_get_page(ctx)

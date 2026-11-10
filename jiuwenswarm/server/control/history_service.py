@@ -229,6 +229,10 @@ def load_history_query(params: dict[str, Any]) -> dict[str, Any] | None:
 
 async def handle_history_request(request: AgentRequest) -> AgentResponse:
     params = request.params if isinstance(request.params, dict) else {}
+    if "llm_audit" in params:
+        from jiuwenswarm.server.control.llm_audit_service import handle_llm_audit_request
+
+        return await handle_llm_audit_request(request)
     try:
         data = load_history_query(params)
     except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:

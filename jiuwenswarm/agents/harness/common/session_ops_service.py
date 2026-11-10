@@ -402,6 +402,10 @@ def fork_session(
     cutoff_timestamp: Any = None,
     session_equipment_override: dict[str, object] | None = None,
 ) -> dict[str, Any]:
+    from jiuwenswarm.server.runtime.session.llm_audit import AuditCopyError, copy_call
+
+    lc.validate_id(source_session_id)
+    lc.validate_id(target_session_id)
     sessions_dir = get_agent_sessions_dir()
     source_dir = sessions_dir / source_session_id
     target_dir = sessions_dir / target_session_id
@@ -456,6 +460,11 @@ def fork_session(
                     "session_id": source_session_id,
                     "original_id": record.get("id", ""),
                 }
+                audit_call = record.get("call_id")
+                if audit_call and record.get("audit_schema") == "llm-call.v1":
+                    copy_call(source_session_id, target_session_id, audit_call,
+                              include_response=record.get("event_type") == "chat.llm_call_end",
+                              required=bool(record.get("input_ref") or record.get("response_ref")))
                 forked_records.append(forked_record)
             if forked_records:
                 write_history_records(
@@ -464,8 +473,9 @@ def fork_session(
                     preserve_existing_format=False,
                 )
         except Exception as exc:
-            if has_message_cutoff:
-                shutil.rmtree(target_dir, ignore_errors=True)
+            if has_message_cutoff or isinstance(exc, AuditCopyError):
+                if target_dir.resolve().parent == sessions_dir.resolve() and target_dir.name == target_session_id:
+                    shutil.rmtree(target_dir, ignore_errors=True)
                 raise
             logger.warning("fork: failed to add forked_from to history: %s", exc)
 

@@ -1,0 +1,20 @@
+.llm-audit-dialog { width: min(1040px, 94vw); max-height: 90vh; }
+.llm-audit-dialog > section { padding: 20px; }
+.llm-audit-header { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; }
+.llm-audit-header h2 { flex: 1; margin: 0; font-size: 18px; }
+.llm-audit-header button, .llm-audit-body button {
+  color: var(--color-text-primary); background: var(--color-surface-muted);
+  border: 1px solid var(--color-border-default); border-radius: 6px; padding: 7px 10px; cursor: pointer;
+}
+.llm-audit-header button:disabled, .llm-audit-body button:disabled { opacity: .5; cursor: default; }
+.llm-audit-body { display: grid; grid-template-columns: minmax(180px, 30%) minmax(0, 1fr); gap: 16px; }
+.llm-audit-calls { display: flex; flex-direction: column; gap: 8px; overflow: auto; max-height: 65vh; }
+.llm-audit-call { display: flex; flex-direction: column; text-align: left; gap: 5px; overflow-wrap: anywhere; }
+.llm-audit-call small { color: var(--color-text-secondary); font-size: 10px; }
+.llm-audit-body button[aria-pressed="true"] { border-color: var(--color-text-link); }
+.llm-audit-detail { min-width: 0; }
+.llm-audit-tabs, .llm-audit-parts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.llm-audit-parts { max-height: 140px; overflow: auto; }
+.llm-audit-original { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 40vh;
+  padding: 12px; background: var(--color-surface-muted); border-radius: 6px; font-size: 12px; }
+@media (max-width: 720px) { .llm-audit-body { grid-template-columns: 1fr; } .llm-audit-calls { max-height: 160px; } }
