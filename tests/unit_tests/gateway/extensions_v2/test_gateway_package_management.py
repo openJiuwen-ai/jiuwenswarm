@@ -901,6 +901,33 @@ async def test_import_local_routes_agent_packages_to_the_agent_server(tmp_path, 
     assert calls[1]["params"] == {"path": str(plugin_source)}
 
 
+async def test_import_local_routes_a_managed_agent_package_zip_to_the_agent_server(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    _local_gateway(tmp_path, monkeypatch)
+    calls: list[dict] = []
+
+    async def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return True, {"reports": []}
+
+    monkeypatch.setattr(extension_package_handlers, "fetch_agent_unary", fake_fetch)
+    source = _example_package(tmp_path / "source", "demo.agent", " AgentServer ")
+    archive = tmp_path / "demo-agent.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for entry in source.rglob("*"):
+            if entry.is_file():
+                bundle.write(entry, f"demo.agent/0.1.0/{entry.relative_to(source).as_posix()}")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(archive)}
+    )
+
+    assert handled is True
+    assert calls[0]["req_method"] == extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL
+    assert calls[0]["params"] == {"paths": [str(archive)]}
+
+
 async def test_import_local_routes_a_zipped_plugin_package(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
