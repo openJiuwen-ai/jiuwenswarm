@@ -1158,12 +1158,19 @@ def _terminal_pool_rejection_reason(
     )
 
 
-def load_exact_global_pool(
+def _load_global_pool_by_manifest_id(
     store: TopicStarterStore,
     *,
     manifest_id: Any,
+    readable: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
-    """One stored global pool by its manifest ID, read only if it is still valid."""
+    """Load one stored global pool by manifest ID.
+
+    ``readable=False`` keeps the personalized write/read contract (news refresh,
+    exact successor identity). ``readable=True`` accepts the same pools the
+    serve path can show, including cold-start stand-ins used for short-delta
+    novelty comparison against the previous first screen.
+    """
 
     if not _nonempty(manifest_id):
         return None
@@ -1231,13 +1238,55 @@ def load_exact_global_pool(
         for revision in revisions
         if str(revision) in by_revision
     ]
-    if len(cards) != len(revisions) or not _valid_manifest(
+    if len(cards) != len(revisions):
+        return None
+    if readable:
+        if not _readable_pool_manifest(
+            manifest,
+            cards,
+            allow_legacy_summary_coverage=True,
+        ):
+            return None
+    elif not _valid_manifest(
         manifest,
         cards,
         allow_legacy_summary_coverage=True,
     ):
         return None
     return manifest, cards
+
+
+def load_exact_global_pool(
+    store: TopicStarterStore,
+    *,
+    manifest_id: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """One stored personalized global pool by its manifest ID."""
+
+    return _load_global_pool_by_manifest_id(
+        store,
+        manifest_id=manifest_id,
+        readable=False,
+    )
+
+
+def load_readable_global_pool(
+    store: TopicStarterStore,
+    *,
+    manifest_id: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """One stored global pool the serve path could still show.
+
+    Includes cold-start stand-ins. Use this when comparing a short-delta
+    successor against the previous first screen, not when rewriting a
+    personalized pool in place.
+    """
+
+    return _load_global_pool_by_manifest_id(
+        store,
+        manifest_id=manifest_id,
+        readable=True,
+    )
 
 
 def _short_delta_successor_rejection_reason(
@@ -1253,7 +1302,11 @@ def _short_delta_successor_rejection_reason(
         return None
     if predecessor_manifest_id is None:
         return None
-    predecessor = load_exact_global_pool(
+    # Novelty compares against whatever first screen was showing, including a
+    # cold-start corpus stand-in. Personalized exact-load rejects cold-start and
+    # would discard the first short-delta personalized write after only generic
+    # serve (manifest_short_delta_predecessor_exact_load_failed).
+    predecessor = load_readable_global_pool(
         store,
         manifest_id=predecessor_manifest_id,
     )
