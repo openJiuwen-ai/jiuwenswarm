@@ -60,6 +60,7 @@ class GitCodeIssueClient:
         *,
         params: Optional[dict[str, Any]] = None,
         json_body: Optional[dict[str, Any]] = None,
+        include_error_details: bool = True,
     ) -> Any:
         url = f"{self._base_url}{path}"
         with httpx.Client(
@@ -71,6 +72,8 @@ class GitCodeIssueClient:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if not include_error_details:
+                raise
             detail = response.text[:500]
             logger.warning("[GitCodeIssueClient] %s %s failed: %s", method, path, detail)
             raise RuntimeError(
@@ -216,6 +219,21 @@ class GitCodeIssueClient:
         if isinstance(data, list):
             return [item for item in data if isinstance(item, dict)]
         return []
+
+    def create_issue(self, *, owner: str, repo: str, title: str, body: str) -> GitCodeIssue:
+        """Create a new issue and return its repository-scoped number."""
+        data = self._request(
+            "POST",
+            f"/repos/{owner}/issues",
+            json_body={"repo": repo, "title": title, "body": body},
+            include_error_details=False,
+        )
+        if not isinstance(data, dict) or not data.get("number"):
+            raise ValueError("GitCode did not return an issue number.")
+        issue = self._normalize_issue(data)
+        if issue.number <= 0:
+            raise ValueError("GitCode returned an invalid issue number.")
+        return issue
 
     def create_issue_comment(self, *, owner: str, repo: str, number: int, body: str) -> dict[str, Any]:
         data = self._request(

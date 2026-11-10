@@ -14632,6 +14632,26 @@ class JiuWenSwarmDeepAdapter:
             self._instance.ability_manager.add(tool.card)
             registered_names.add(tool.card.name)
 
+    def _update_report_issue_tool(self, session_id: str | None, channel_id: str | None) -> None:
+        from jiuwenswarm.agents.harness.common.tools.report_issue import REPORT_ISSUE_TOOL_NAME, ReportIssueTool
+        from jiuwenswarm.enterprise import is_enterprise
+
+        manager = self._instance.ability_manager
+        eligible = (
+            channel_id == "web"
+            and session_id
+            and not session_id.startswith(("heartbeat", "health_check"))
+            and not is_enterprise()
+            and not is_team_mode(deprecate_mode(self._last_mode))
+            and not self._is_cron_execution_session(session_id)
+        )
+        if eligible and manager.get(REPORT_ISSUE_TOOL_NAME) is None:
+            tool = ReportIssueTool(session_id, language=self._resolve_runtime_language())
+            self._register_agent_owned_tool(tool, self._tool_owner_id())
+            manager.add(tool.card)
+        elif not eligible and manager.get(REPORT_ISSUE_TOOL_NAME) is not None:
+            manager.remove_ability(REPORT_ISSUE_TOOL_NAME)
+
     async def _update_session_tools(
         self,
         session_id: str | None,
@@ -14645,6 +14665,7 @@ class JiuWenSwarmDeepAdapter:
         这里每次请求只做幂等检查和运行时上下文更新。
         """
         self._ensure_session_messaging_tools_registered(session_id, channel_id)
+        self._update_report_issue_tool(session_id, channel_id)
 
         # send_file 工具：由 channels.<channel>.send_file_allowed 控制。工具实例只建一次，
         # 之后每次请求只用 update_runtime_context 刷新 request_id/session_id/channel 等

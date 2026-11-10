@@ -1,7 +1,7 @@
 ---
 title: 当前规约 S索引
-author: xinyang_bali
-author_email: 835397263@qq.com
+author: hienchuphan@gmail.com
+author_email: hienchuphan@gmail.com
 generated: true
 ---
 
@@ -15,15 +15,24 @@ generated: true
 
 | 模块 |
 |---|
-| [jiuwenswarm/agents/harness/common/rails](#module-1) |
-| [jiuwenswarm/agents/harness/common/tools](#module-2) |
-| [jiuwenswarm/channels/web/frontend](#module-3) |
-| [jiuwenswarm/extensions/sdk](#module-4) |
-| [jiuwenswarm/resources/plugins/ttse](#module-5) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-6) |
-| [未分类](#module-7) |
+| [jiuwenswarm/agents/harness/common/auto_harness/issue_fix](#module-1) |
+| [jiuwenswarm/agents/harness/common/rails](#module-2) |
+| [jiuwenswarm/agents/harness/common/tools](#module-3) |
+| [jiuwenswarm/channels/web/frontend](#module-4) |
+| [jiuwenswarm/extensions/sdk](#module-5) |
+| [jiuwenswarm/resources/plugins/ttse](#module-6) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-7) |
+| [未分类](#module-8) |
 
 <a id="module-1"></a>
+
+## jiuwenswarm/agents/harness/common/auto_harness/issue_fix
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_02_report-issue](jiuwenswarm/agents/harness/common/tools/S_02_report-issue.md) | S | Report a JiuwenSwarm bug from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py | — |
+
+<a id="module-2"></a>
 
 ## jiuwenswarm/agents/harness/common/rails
 
@@ -31,15 +40,16 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 
-<a id="module-2"></a>
+<a id="module-3"></a>
 
 ## jiuwenswarm/agents/harness/common/tools
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
+| [S_02_report-issue](jiuwenswarm/agents/harness/common/tools/S_02_report-issue.md) | S | Report a JiuwenSwarm bug from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py | — |
 
-<a id="module-3"></a>
+<a id="module-4"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -47,7 +57,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_01_app-agent-interaction](mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 
-<a id="module-4"></a>
+<a id="module-5"></a>
 
 ## jiuwenswarm/extensions/sdk
 
@@ -55,7 +65,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
-<a id="module-5"></a>
+<a id="module-6"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
@@ -63,7 +73,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_02_ttse-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_02_ttse-plugin-runtime.md) | S | TTSE Coding 插件运行契约 | xinyang_bali | jiuwenswarm/resources/plugins/ttse | jiuwenswarm/resources/plugins/ttse/rails/ttse_plugin_rail.py, jiuwenswarm/resources/plugins/ttse/manifest.json | — |
 
-<a id="module-6"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -71,9 +81,10 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_01_app-agent-interaction](mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
+| [S_02_report-issue](jiuwenswarm/agents/harness/common/tools/S_02_report-issue.md) | S | Report a JiuwenSwarm bug from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py | — |
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
-<a id="module-7"></a>
+<a id="module-8"></a>
 
 ## 未分类
 
