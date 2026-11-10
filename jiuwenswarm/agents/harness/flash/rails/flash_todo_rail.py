@@ -395,7 +395,7 @@ class FlashTodoRail(DeepAgentRail):
                 "source": "todo",
             })
 
-    async def _persist_cancel_open_todos(self, session: Any, open_todos: list):
+    async def _persist_cancel_open_todos(self, session: Any, open_todos: list) -> dict[str, Any] | None:
         modify = self.engines.get("modify")
         ids = [todo_id for todo_id, _ in open_todos]
         if modify is None or not ids:
@@ -412,23 +412,20 @@ class FlashTodoRail(DeepAgentRail):
             return None
         return result
 
-    async def _refusal_todo_rows(self, session: Any, result=None) -> list[dict[str, Any]] | None:
-        """Snapshot after cancel. Cancelled rows stay out, matching history replay."""
+    async def _refusal_todo_rows(self, session: Any, result: dict[str, Any]) -> list[dict[str, Any]] | None:
+        """优先使用取消回执；旧引擎沿用读取路径。"""
         snapshot = snapshot_from_result(result)
-        if snapshot is not None:
-            # 取消回执的内容和版本一起发送，不能拼接另一并发提交的读取结果。
-            if versioned_todo_output():
-                return project_todo_snapshot(snapshot)
-            return format_todos_for_frontend(snapshot.todos)
-        items = await self._load_todo_items(session)
+        # 回执内容与版本必须配对，避免混入后续提交。
+        items = snapshot.todos if snapshot is not None else await self._load_todo_items(session)
         if items is None:
             return None
-        if versioned_todo_output():
+        if not versioned_todo_output():
+            return format_todos_for_frontend(items)
+        if snapshot is None:
             snapshot = getattr(items, "snapshot", None)
-            if snapshot is None or not snapshot.exists or not snapshot.read_authoritative:
-                return None
-            return project_todo_snapshot(snapshot)
-        return format_todos_for_frontend(items)
+        if snapshot is None or not snapshot.exists or not snapshot.read_authoritative:
+            return None
+        return project_todo_snapshot(snapshot)
 
     async def _load_todo_items(self, session: Any) -> list[Any] | None:
         list_engine = self.engines.get("list")

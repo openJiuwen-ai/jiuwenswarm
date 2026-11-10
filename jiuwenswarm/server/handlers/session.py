@@ -16,7 +16,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_response_for_wire,
 )
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.todo_snapshot import project_todo_snapshot
+from jiuwenswarm.common.todo_snapshot import FrontendTodos, project_todo_snapshot
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
     _background_session_kvc_tasks,
@@ -69,7 +69,7 @@ def _coerce_int(value: object, default: int) -> int:
     return default
 
 
-async def _todo_snapshot_for_history(ctx: RequestContext, session_id: str):
+async def _todo_snapshot_for_history(ctx: RequestContext, session_id: str) -> FrontendTodos | None:
     """所属后端不可用时不回退宿主旧副本；历史消息仍可正常返回。"""
     manager = getattr(ctx.services, "agent_manager", None)
     if manager is None:
@@ -107,8 +107,6 @@ async def _todo_snapshot_for_history(ctx: RequestContext, session_id: str):
         if result is None:
             return None
         snapshot, generation_token = result
-        if not snapshot.exists or not snapshot.read_authoritative:
-            return None
         return project_todo_snapshot(snapshot, generation_token)
     except Exception:
         logger.warning("[history.get] owning Todo snapshot unavailable: session_id=%s", session_id, exc_info=True)
