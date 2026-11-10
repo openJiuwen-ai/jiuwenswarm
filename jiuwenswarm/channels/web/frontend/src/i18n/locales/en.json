@@ -143,6 +143,7 @@
       "removeAttachment": "Remove reference",
       "attachHint": "Images, video, or audio. Up to 5 images, 1 video, and 1 audio file.",
       "limitImages": "You can attach at most 5 reference images.",
+      "multipleMentions": "Referencing several nodes with @ in one message is not supported yet. Reference one node at a time.",
       "limitVideo": "You can attach at most 1 reference video.",
       "limitAudio": "You can attach at most 1 reference audio file.",
       "tooLarge": "File is larger than 6MB. Use a smaller file or a local path.",

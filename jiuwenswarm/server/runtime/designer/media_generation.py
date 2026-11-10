@@ -8,9 +8,9 @@ tool, a clip waits for its video job: the submit / check_video pair is polled
 here until the file is saved or the deadline passes.
 
 Vendor-native endpoints (MiniMax, ModelArk, DashScope, vLLM-Omni) use their own
-backends; any other endpoint (e.g. https://openrouter.ai/api/v1) is driven as an
-OpenRouter-style API through ``gen_toolkits.OPENROUTER``, which carries the
-reference images Design relies on.
+backends; an OpenRouter endpoint (https://openrouter.ai/api/v1) is driven through
+``gen_toolkits.OPENROUTER``, which carries the reference images Design relies on.
+Any other endpoint is reported by ``generation_problem`` before generation starts.
 """
 
 from __future__ import annotations
@@ -50,6 +50,14 @@ _VLLM_OMNI_VIDEO_TIMEOUT_SECONDS = 7200.0
 _IMAGE_TOOL_TIMEOUT_SECONDS = 1200.0
 _SAVED_TO = re.compile(r"^Saved to: (.+)$", re.MULTILINE)
 _PENDING_JOB = re.compile(r"^Video job (\S+) (?:submitted and still|is still) ")
+_OPENROUTER_HOST = re.compile(r"(^|\.)openrouter\.ai$", re.IGNORECASE)
+
+
+def _is_openrouter(protocol_env: str, api_base: str) -> bool:
+    """True when the slot is saved as OpenRouter or points at an openrouter.ai host."""
+    if os.environ.get(protocol_env, "").strip().lower() == gen_toolkits.OPENROUTER:
+        return True
+    return bool(_OPENROUTER_HOST.search(urlparse(api_base).hostname or ""))
 
 
 @dataclass(frozen=True)
@@ -59,7 +67,7 @@ class SlotSettings:
     api_key: str
     api_base: str
     model: str
-    # A native backend, gen_toolkits.OPENROUTER for any other endpoint, None when no URL is set.
+    # A native backend or gen_toolkits.OPENROUTER; None for an unsupported or missing endpoint.
     backend: str | None
 
     @property
@@ -73,7 +81,7 @@ def slot_settings(kind: Kind) -> SlotSettings:
     prefix = _ENV_PREFIX[kind]
     api_base = os.environ.get(f"{prefix}_API_BASE", "").strip()
     backend = gen_toolkits.detect_backend(f"{prefix}_PROTOCOL", api_base)
-    if backend is None and api_base:
+    if backend is None and api_base and _is_openrouter(f"{prefix}_PROTOCOL", api_base):
         backend = gen_toolkits.OPENROUTER
     return SlotSettings(
         api_key=os.environ.get(f"{prefix}_API_KEY", "").strip(),
@@ -117,8 +125,15 @@ def generation_problem(kind: Kind) -> str | None:
     label = _SETTINGS_LABEL[kind]
     if not generation_enabled(kind):
         return f"{label} is switched off in Settings > Agent."
-    if not slot_settings(kind).complete:
+    settings = slot_settings(kind)
+    if not settings.complete:
         return f"{label} is not configured: set the API URL, API key and model in Settings > Agent."
+    if settings.backend is None:
+        return (
+            f"{label} for Design needs a MiniMax, BytePlus ModelArk / Volcengine, Alibaba DashScope, "
+            f"vLLM-Omni or OpenRouter endpoint; {settings.api_base} is not one of them. "
+            "Change it in Settings > Agent."
+        )
     return None
 
 

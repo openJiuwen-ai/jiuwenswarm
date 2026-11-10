@@ -92,11 +92,6 @@ PIPELINES: frozenset[str] = frozenset(
     }
 )
 
-# Pipeline names other builds write into the shared graph store; read as ours.
-PIPELINE_ALIASES: dict[str, str] = {
-    "character_design": PIPELINE_CHARACTER,
-}
-
 PIPELINE_TO_TYPE: dict[str, str] = {
     PIPELINE_BRIEF: NODE_TYPE_TEXT,
     PIPELINE_CHARACTER: NODE_TYPE_IMAGE,
@@ -583,7 +578,7 @@ def normalize_node_config(raw: Any) -> DesignerNodeConfig:
     if pipeline is not None and not (isinstance(pipeline, str) and not pipeline.strip()):
         if not isinstance(pipeline, str) or not pipeline.strip():
             raise DesignerGraphValidationError("node.config.pipeline must be a non-empty string")
-        pipeline = PIPELINE_ALIASES.get(pipeline.strip(), pipeline.strip())
+        pipeline = pipeline.strip()
         if pipeline not in PIPELINES:
             raise DesignerGraphValidationError(f"unsupported node pipeline: {pipeline!r}")
         config[CONFIG_KEY_PIPELINE] = pipeline
@@ -591,7 +586,7 @@ def normalize_node_config(raw: Any) -> DesignerNodeConfig:
     if role is not None and not (isinstance(role, str) and not role.strip()):
         if not isinstance(role, str) or not role.strip():
             raise DesignerGraphValidationError("node.config.role must be a non-empty string")
-        role = PIPELINE_ALIASES.get(role.strip(), role.strip())
+        role = role.strip()
         if role in PIPELINES:
             if CONFIG_KEY_PIPELINE not in config:
                 config[CONFIG_KEY_PIPELINE] = role

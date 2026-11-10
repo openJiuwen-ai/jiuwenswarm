@@ -312,6 +312,11 @@ export function DesignerChatPanel() {
       toast.open({ content: blockedProblem, variant: 'error' });
       return;
     }
+    // One execution runs at a time, so one message may change one referenced node.
+    if (collectMentionedNodes(domainGraph, content).length > 1) {
+      toast.open({ content: t('designer.chat.multipleMentions'), variant: 'error' });
+      return;
+    }
     setSending(true);
     const files = attachments.map((item) => item.file);
     void filesToBootstrapReferences(files)
