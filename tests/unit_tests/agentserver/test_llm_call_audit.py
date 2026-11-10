@@ -272,6 +272,25 @@ async def test_scheduler_cancellation_without_rail_cleanup_is_finalized(audit_ho
 
 
 @pytest.mark.asyncio
+async def test_stream_producer_normal_exit_waits_for_consumer_completion(audit_home):
+    observer.bind_audit_scope(session_id=audit_home.sid, request_id="stream-consumer")
+
+    async def producer():
+        with LlmCallScope("producer-call"):
+            await audit_home.framework.trigger(LLMCallEvents.LLM_STREAM_INPUT, session=StreamSession(),
+                messages=[{"role": "user", "content": "STREAM ORIGINAL"}], tools=[])
+
+    await asyncio.create_task(producer())
+    await asyncio.sleep(.01)
+    assert audit.get_call(audit_home.sid, "producer-call")["status"] == "running"
+    with LlmCallScope("producer-call"):
+        await audit_home.framework.trigger(LLMCallEvents.LLM_STREAM_COMPLETED,
+            response={"role": "assistant", "content": "CONSUMER COMPLETED"})
+    assert audit.get_call(audit_home.sid, "producer-call")["status"] == "completed"
+    assert read_original(audit_home, "producer-call", "response", 0)["content"] == "CONSUMER COMPLETED"
+
+
+@pytest.mark.asyncio
 async def test_owner_reuse_projects_interrupted_and_manifest_corruption_fails(audit_home):
     await invoke(audit_home, [{"role": "user", "content": "OWNER ORIGINAL"}])
     record = audit.get_call(audit_home.sid, "call-one")
