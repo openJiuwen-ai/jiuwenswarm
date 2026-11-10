@@ -35,6 +35,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.appearance import AppearanceProvide
 from jiuwenswarm.gateway.extensions_v2.webui.host_settings import SplashPreferences
 from jiuwenswarm.gateway.extensions_v2.webui.settings_contributions import SETTINGS_SLOT, package_settings
 from jiuwenswarm.gateway.extensions_v2.webui.transfers import TransferManager
+from jiuwenswarm.gateway.extensions_v2.webui.presentation_control import PresentationControl, RESULT_METHOD
 
 SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background", "application.splash",
                    "application.presentation", SETTINGS_SLOT})
@@ -121,6 +122,7 @@ class BrowserBridge:
         self._tasks: set[asyncio.Task] = set()
         self.splash_preferences = SplashPreferences(runtime.config.data_dir)
         self.transfers = TransferManager(runtime)
+        self.presentations = PresentationControl(runtime)
         self.gateway_id = hashlib.sha256(str(runtime.config.install_dir.resolve()).encode()).hexdigest()
 
     @property
@@ -392,6 +394,7 @@ class BrowserBridge:
 
     def released(self, package_id: str) -> None:
         """Retire a package's views and appearance, and tell the affected browsers."""
+        self.presentations.invalidate(package_id=package_id)
         clears = self.runtime.registry.retire_package(package_id)
         revokes = self.appearance.release(package_id)
         if clears or revokes:
@@ -477,6 +480,7 @@ class BrowserBridge:
             connection.declaration_signature = signature
 
     def drop_connection(self, connection_id: str) -> None:
+        self.presentations.invalidate(connection_id=connection_id)
         self.connections.pop(connection_id, None)
         self.appearance.drop_connection(connection_id)
         self._appearance_locks.pop(connection_id, None)
@@ -496,6 +500,10 @@ class BrowserBridge:
         """Dispatch application UI only after the USER request policy continues."""
         async def dispatch_request(event, ops, next_handler):
             request = event.event_input
+            if (isinstance(request, GatewayRequestInput) and request.transport == "websocket"
+                    and request.method == RESULT_METHOD):
+                response = self.presentations.complete(request.connection_id, dict(request.params))
+                return GatewayRequestOutput(handled=True, route="consume", response=response)
             if (not self.application_enabled or not isinstance(request, GatewayRequestInput)
                     or request.transport != "websocket" or request.method != WEBUI_DISPATCH_METHOD):
                 return await next_handler(event)

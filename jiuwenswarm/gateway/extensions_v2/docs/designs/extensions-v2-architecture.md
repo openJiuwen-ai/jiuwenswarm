@@ -23,7 +23,7 @@
 | 执行语义 | Handler 调用 `next_handler(event)` 向内传递，不调用即短路内层 |
 | `ops.build` | 装配期只触发一次，BUILTIN Handler 向 `EventHandlerOpsBuilder` 添加命名空间与方法，之后能力目录冻结 |
 | 匹配规则 | `match_pattern_subset` 支持点路径，事件输入不匹配时跳过该 Handler |
-| 包契约 | `manifest.json` 的 `schemaVersion/package/package_type/extensions` 与 `package.domain`，`create_extension()` 接收 registrar |
+| 包契约 | `manifest.json` 的 `schemaVersion/package/package_type/extensions` 与 `package.domain`；无参 `create_extension()` 返回对象，其 `register(registrar)` 声明 Handler |
 | 失败语义 | 单个包或单条声明失败只记录告警，不影响其他包与宿主启动 |
 
 ### 1.2 Gateway 特有的差异

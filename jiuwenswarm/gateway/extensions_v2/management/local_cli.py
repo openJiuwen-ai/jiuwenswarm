@@ -12,13 +12,17 @@ from typing import Any
 
 from openjiuwen.core.extension.errors import OperationError
 
-from jiuwenswarm.common.extension_cli import LocalControl, source_domain
+from jiuwenswarm.common.extension_cli import METHODS, LocalControl, source_domain
 from jiuwenswarm.gateway.extensions_v2.management.notifications import notify_installed
 
 
 async def start_local_cli(runtime: Any) -> LocalControl:
     """Start a domain-restricted adapter for this live Gateway manager."""
     async def handle(action: str, params: dict[str, Any]) -> dict[str, Any]:
+        if action == "presentation.query":
+            return runtime.browser.presentations.query(params)
+        if action == "presentation.start":
+            return await runtime.browser.presentations.start(params)
         manager = runtime.packages
         package_id = params.get("package_id")
         try:
@@ -69,7 +73,7 @@ async def start_local_cli(runtime: Any) -> LocalControl:
             result["payload"]["outcome"] = "unknown"
             return result
 
-    control = LocalControl("gateway", handle)
+    control = LocalControl("gateway", handle, methods=METHODS | {"presentation.query", "presentation.start"})
     try:
         await control.start()
     except BaseException:

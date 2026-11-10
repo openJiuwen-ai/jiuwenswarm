@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / gateway-extension-runtime` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 设计依据 | [详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-07 |
+| 最近一次修订日期 | 2026-11-10 |
 | 契约状态 | 已实现；本文是 Gateway 扩展对外契约的唯一维护位置 |
 
 本文维护 Gateway 扩展运行时的对外契约：入口函数、事件数据类、路由语义、错误码、配置键与不变量。具体实现方案与决策历史见对应 feature 文档。
@@ -51,11 +51,17 @@
 | `package.id` | 非空标识符 |
 | `package.version` | 非空字符串 |
 | `package.domain` | 必填；`gateway` 才由 Gateway 加载，只允许 `agentserver` / `gateway` |
-| `modules` | 入口模块列表，执行后调用 `create_extension(registrar)` |
+| `extensions` | 入口模块声明，字段见系统插件包指南；每个模块的无参 `create_extension()` 返回扩展对象，再同步调用其 `register(registrar)` |
 | `ui` / `client` | 可选映射，缺省为空；声明贡献和请求绑定，详见 [浏览器接入规约](S_06_local-browser-bridge.md) |
 | Handler 层级 | 只能是 USER；登记按包事务化，任一声明失败则整包回滚并报 `FAILED`，不会半注册 |
 
 版本选择：同一 `package.id` 取最高版本目录。
+
+入口工厂与 `register` 均为同步函数；处理业务事件的 Handler 可以是异步函数。
+`registrar.register_event_handler(event_type, handler, match_pattern="*", handler_level="user")`
+返回包内 Handler ID。`match_pattern` 可为映射，支持 `target.package_id` 等点路径；`"*"` 表示匹配全部输入。
+Handler 接收 `(event, ops, next_handler)`，事件输入位于 `event.event_input`；调用
+`await next_handler(event)` 继续事件链。不在工厂或注册阶段取得连接相关 Ops，Ops 随实际 Handler 调用发放。
 
 ### 3.1 包存储与数据目录
 
