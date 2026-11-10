@@ -53,9 +53,8 @@ WORKDIR /app/jiuwenswarm
 RUN pip install --user uv
 ENV PATH=/home/app/.local/bin:$PATH
 ENV VIRTUAL_ENV=/app/.venv
-# uv pip resolves from wheel metadata, where the mother repo's openjiuwen pin
-# collides with agent-gateway's transitive pins ([tool.uv] override-dependencies
-# applies to project mode only). Export the locked closure and install it
+# uv pip resolves from wheel metadata and never reads uv.lock, so the image
+# must be lock-exact some other way: export the locked closure and install it
 # verbatim instead; the project itself goes in with --no-deps. cairosvg & co
 # must come after uv pip sync, which removes anything not listed in the file.
 RUN uv venv "$VIRTUAL_ENV" && \
