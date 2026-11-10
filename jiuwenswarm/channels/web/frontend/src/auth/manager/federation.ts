@@ -1,6 +1,8 @@
 import { UserManager, WebStorageStateStore } from 'oidc-client-ts';
 import { AuthApi, setFederationToken, type FederationConfiguration } from './userLogin';
 
+import { userWebPaths } from './userWebPaths';
+
 const OIDC_CONNECTION_KEY = 'openjiuwen_oidc_connection';
 
 const clients = new Map<string, Promise<UserManager>>();
@@ -13,7 +15,7 @@ function client(connectionId: string): Promise<UserManager> {
       if (config.connection_id !== connectionId || config.flow !== 'browser_pkce') {
         throw new Error('Unexpected federation connection');
       }
-      const path = `/auth/federation/${encodeURIComponent(connectionId)}`;
+      const path = `${userWebPaths().login}/federation/${encodeURIComponent(connectionId)}`;
       configurations.set(connectionId, config);
       return new UserManager({
         authority: config.authority,

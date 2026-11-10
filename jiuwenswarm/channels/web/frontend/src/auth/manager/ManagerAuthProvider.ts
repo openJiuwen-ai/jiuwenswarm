@@ -8,6 +8,7 @@ import {
   managerAuthenticatedFetch,
   redirectToManagerLogin,
 } from './authSession';
+import { userWebPaths } from './userWebPaths';
 import { resolveApiUrl } from '../../utils/env';
 
 interface ManagerResponse<T> {
@@ -75,7 +76,7 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
   },
   async logout() {
     if (localStorage.getItem('openjiuwen_oidc_connection')) {
-      window.location.assign(resolveApiUrl('/auth/federation/logout'));
+      window.location.assign(`${userWebPaths().login}/federation/logout`);
       return;
     }
     const refreshToken = getManagerRefreshToken();

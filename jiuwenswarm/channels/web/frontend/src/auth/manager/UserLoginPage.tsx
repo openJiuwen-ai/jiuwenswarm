@@ -8,6 +8,8 @@ import {
   consumeSilentCallback, endBrowserSession, rememberBrowserSession,
 } from './federation';
 import { AuthApi, type FederationConnection } from './userLogin';
+import { resolveApiUrl } from '../../utils/env';
+import { userWebPaths } from './userWebPaths';
 import './userLogin.css';
 
 export function UserLoginPage() {
@@ -24,9 +26,10 @@ export function UserLoginPage() {
     if (started.current) return;
     started.current = true;
     const url = new URL(window.location.href);
-    const callback = /^\/auth\/federation\/([A-Za-z0-9_-]+)\/(callback|silent-callback|logout-callback)$/.exec(url.pathname);
+    const { login, root, route } = userWebPaths(url.pathname);
+    const callback = /^\/auth\/federation\/([A-Za-z0-9_-]+)\/(callback|silent-callback|logout-callback)$/.exec(route);
     const code = url.searchParams.get('federation_code');
-    if (callback || code || url.pathname === '/auth/federation/logout') {
+    if (callback || code || route === '/auth/federation/logout') {
       setBusy(true);
       void (async () => {
         if (callback?.[2] === 'silent-callback') {
@@ -35,13 +38,13 @@ export function UserLoginPage() {
         }
         if (callback?.[2] === 'logout-callback') {
           await consumeLogoutCallback(callback[1]);
-          window.location.replace('/auth');
+          window.location.replace(login);
           return;
         }
-        if (url.pathname === '/auth/federation/logout') {
+        if (route === '/auth/federation/logout') {
           const refresh = getManagerRefreshToken();
           if (refresh) {
-            await fetch('/idp/v1/auth/logout', {
+            await fetch(resolveApiUrl('/idp/v1/auth/logout'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ refresh_token: refresh }),
@@ -49,7 +52,7 @@ export function UserLoginPage() {
           }
           await clearActiveUserCluster();
           clearManagerTokens();
-          if (!(await endBrowserSession())) window.location.replace('/auth');
+          if (!(await endBrowserSession())) window.location.replace(login);
           return;
         }
         if (callback) {
@@ -57,20 +60,20 @@ export function UserLoginPage() {
           await AuthApi.confirmFederationToken(callback[1], token);
           rememberBrowserSession(callback[1]);
         } else if (code) {
-          history.replaceState(null, '', '/auth');
+          history.replaceState(null, '', login);
           await AuthApi.exchangeFederationCode(code);
         }
-        window.location.replace('/');
+        window.location.replace(root);
       })().catch(() => {
-        history.replaceState(null, '', '/auth');
+        history.replaceState(null, '', login);
         setBusy(false);
         setError('userLogin.failed');
       });
     } else if (url.searchParams.has('federation_error')) {
-      history.replaceState(null, '', '/auth');
+      history.replaceState(null, '', login);
       setError('userLogin.failed');
     } else if (getManagerAccessToken()) {
-      window.location.replace('/');
+      window.location.replace(root);
     }
     void AuthApi.federationConnections().then(setConnections).catch(() => undefined);
   }, []);
@@ -81,7 +84,7 @@ export function UserLoginPage() {
     setBusy(true);
     try {
       await AuthApi.signIn(username.trim(), password);
-      window.location.replace('/');
+      window.location.replace(userWebPaths().root);
     } catch {
       setError('userLogin.failed');
       setBusy(false);

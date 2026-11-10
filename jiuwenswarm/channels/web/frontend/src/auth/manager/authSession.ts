@@ -1,3 +1,4 @@
+import { isUserLoginRoute, userWebPaths } from './userWebPaths';
 import { resolveApiUrl } from '../../utils/env';
 
 const ACCESS_KEY = 'openjiuwen_access_token';
@@ -67,15 +68,12 @@ export async function clearActiveUserCluster(): Promise<void> {
 
 export function redirectToManagerLogin(): boolean {
   clearManagerTokens();
-  if (typeof window === 'undefined' || window.location.pathname.endsWith('/auth')) {
-    return false;
-  }
+  if (typeof window === 'undefined') return false;
+  const { login, route } = userWebPaths();
+  if (isUserLoginRoute(route)) return false;
   if (!redirectStarted) {
     redirectStarted = true;
-    const pathname = window.location.pathname;
-    const chatIndex = pathname.search(/\/chat(?:\/|$)/);
-    const prefix = chatIndex > 0 && !pathname.startsWith('//') ? pathname.slice(0, chatIndex) : '';
-    window.location.replace(window.__JIUWEN_LOGIN_ENTRY_URL__ || `${prefix}/auth`);
+    window.location.replace(window.__JIUWEN_LOGIN_ENTRY_URL__ || login);
   }
   return true;
 }

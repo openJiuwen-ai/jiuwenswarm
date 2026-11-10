@@ -707,7 +707,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                         self.wfile.write(chunk)
                         self.wfile.flush()
                         chunk = resp.read1(65536)
-                except OSError:
+                except (OSError, http.client.HTTPException):
                     return
             elif self.command != "HEAD":
                 self.wfile.write(resp_body)
@@ -1084,7 +1084,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return True
             target = os.getenv("USER_WEB_MANAGER_TARGET", "")
             if target:
-                self._proxy_http(target=target, path="/api" + self.path.removeprefix("/manager-api"))
+                self._proxy_http(target=target, path=self.path.replace("/manager-api", "/api", 1))
             else:
                 self._write_proxy_error(503, "manager service is unavailable")
             return True
@@ -1103,7 +1103,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             else:
                 self.send_error(400, "expected websocket upgrade")
         else:
-            forward_path = "/api" + self.path.removeprefix("/gateway-api") if gateway_api else self.path
+            forward_path = self.path.replace("/gateway-api", "/api", 1) if gateway_api else self.path
             self._proxy_http(target=http_target, path=forward_path, stream_sse=True)
         return True
 
