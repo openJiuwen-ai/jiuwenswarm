@@ -121,8 +121,8 @@ def build_cua_repl_prompt(language: str, *, legacy_available: bool, api: str | N
             "Leave web page automation to the browser agent. Verify the outcome by observing it."
         )
         instructions = (
-            "cua_repl executes Python with top-level await. computer, print and print_image are preloaded. "
-            "Await SDK operations sequentially. Variables persist within this delegation. "
+            "cua_repl executes Python. computer, print and print_image are preloaded. "
+            "Call SDK methods synchronously. Variables persist within this delegation. "
             "The host closes the session afterwards. Reads present text automatically. "
             "Use print_image for images and read again to verify actions. "
             "After a timeout or cancellation, actions may already have executed. Never replay them "
@@ -137,8 +137,8 @@ def build_cua_repl_prompt(language: str, *, legacy_available: bool, api: str | N
             "网页自动化交给浏览器子代理。操作后观察结果以确认是否完成。"
         )
         instructions = (
-            "cua_repl 支持在 Python 顶层使用 await，已预载 computer、print 和 print_image。"
-            "请依次 await SDK 操作。变量在本次委派期间保留，委派结束后由宿主关闭会话。"
+            "cua_repl 执行 Python，已预载 computer、print 和 print_image。"
+            "直接调用同步 SDK 方法。变量在本次委派期间保留，委派结束后由宿主关闭会话。"
             "读取会自动显示文本，图片使用 print_image。操作后重新读取以验证结果。"
             "超时或取消时，动作可能已执行，禁止自动重放。代码以宿主用户的权限运行。"
         )
