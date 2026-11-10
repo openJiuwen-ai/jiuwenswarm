@@ -55,6 +55,27 @@ wheels = [
 ]
 
 [[package]]
+name = "agent-shield"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=develop#1e0b3b930c719b21e642edda8015b4b810623ac6" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[[package]]
+name = "agentdescent"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3a/d0/bc8127c4c760ccc244a26eab969a5ee426941f8faef8de386de98ddfe843/agentdescent-0.9.0.tar.gz", hash = "sha256:d7326460fbb1f8383e3d1dc4ef33044d45c7fcdac53760584a7bae60578e8625", size = 2130569, upload-time = "2026-11-06T08:34:29.069Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b4/37/133e89b2a464a36be8a7c0f0bac2c162f7acd6165f210de0b8b76218369a/agentdescent-0.9.0-py3-none-any.whl", hash = "sha256:76a698b34d190bb02cf2adb31e9282a891f1192dcfa7ee90e48ef947fc9ef74f", size = 1264137, upload-time = "2026-11-06T08:34:27.295Z" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3510,8 +3531,10 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#6db33ad057345421b6648b63fa8b2a96a6e8ecf0" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#4016bb9e24d705ff59ef037a6abe78c0462df680" }
 dependencies = [
+    { name = "agent-shield" },
+    { name = "agentdescent" },
     { name = "aiofiles" },
     { name = "aiohttp" },
     { name = "alembic" },
