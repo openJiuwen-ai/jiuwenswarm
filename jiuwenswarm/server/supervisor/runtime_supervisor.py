@@ -78,6 +78,10 @@ _WORKER_STALL_WARN = 30.0
 _WORKER_STALL_RESTART = 180.0
 
 
+class _ResidentHelloTimeout(TimeoutError):
+    """A resident Worker accepted IPC but did not complete its HELLO."""
+
+
 def _bounded_stall_context(value: object) -> dict[str, Any]:
     """Keep only diagnostic identity and frame locations, never business payloads."""
     if not isinstance(value, dict):
@@ -563,6 +567,16 @@ class RuntimeSupervisor:
                         self._ipc_ready.set()
                         logger.exception("[Supervisor] attached startup cleanup failed")
                         break
+                elif isinstance(exc, _ResidentHelloTimeout) and self._worker_pid is not None:
+                    try:
+                        await self._retire_unhealthy_worker()
+                    except Exception as cleanup_error:  # noqa: BLE001
+                        self._fatal = True
+                        self._fatal_reason = f"resident Worker startup cleanup failed: {cleanup_error}"
+                        self._readiness.mark_failed(self._fatal_reason)
+                        self._ipc_ready.set()
+                        logger.exception("[Supervisor] resident startup cleanup failed")
+                        break
                 logger.warning(
                     "[Supervisor] worker bring-up failed: %s",
                     exc if str(exc) else type(exc).__name__,
@@ -628,7 +642,7 @@ class RuntimeSupervisor:
                 self._reap_validated_worker, deadline=time.monotonic() + 5.0, terminate=True
             )
         await self._stop_spawned_process()
-        self._clear_attached_worker_identity()
+        self._clear_worker_identity()
 
     async def _connect_resident(self) -> tuple[dict, Any, float]:
         """Elect and validate a resident Worker while retaining the startup lock."""
@@ -637,8 +651,6 @@ class RuntimeSupervisor:
 
         async with self._session_lock:
             self._validated_conn = None
-            self._worker_pid = None
-            self._worker_create_time = None
             deadline = time.monotonic() + self._connect_timeout
             async with startup_lock(self._socket_path, deadline):
                 if self._stopping or self._terminating:
@@ -688,7 +700,12 @@ class RuntimeSupervisor:
                             raise RuntimeError("Worker startup cancelled by supervisor stop")
                         if conn is None:
                             raise ConnectionError("runtime worker ipc missing after bring-up")
-                        hello = await asyncio.wait_for(conn.recv(), timeout=_HELLO_TIMEOUT)
+                        try:
+                            hello = await asyncio.wait_for(conn.recv(), timeout=_HELLO_TIMEOUT)
+                        except asyncio.TimeoutError as exc:
+                            raise _ResidentHelloTimeout(
+                                "resident runtime worker HELLO timed out"
+                            ) from exc
                         if self._stopping or self._terminating:
                             raise RuntimeError("Worker startup cancelled by supervisor stop")
                         if not isinstance(hello, dict) or hello.get("kind") != KIND_HELLO:
@@ -757,7 +774,7 @@ class RuntimeSupervisor:
         """Spawn a fresh Worker without endpoint election or reattachment."""
         async with self._session_lock:
             await self._stop_spawned_process()
-            self._clear_attached_worker_identity()
+            self._clear_worker_identity()
             listener = FrontLoopbackListener(timeout=self._connect_timeout)
             process = WorkerProcess(
                 self._socket_path, host=self._host, port=self._port,
@@ -1572,16 +1589,15 @@ class RuntimeSupervisor:
             if forced:
                 incomplete.append("Validated Worker required forced exit")
         self._process = None
-        self._clear_attached_worker_identity()
+        self._clear_worker_identity()
         self._validated_conn = None
         if incomplete:
             raise WorkerShutdownIncomplete("; ".join(incomplete))
 
-    def _clear_attached_worker_identity(self) -> None:
-        if self._ipc_mode == FRONT_LOOPBACK:
-            self._worker_pid = None
-            self._worker_create_time = None
-            self._worker_instance = None
+    def _clear_worker_identity(self) -> None:
+        self._worker_pid = None
+        self._worker_create_time = None
+        self._worker_instance = None
 
     def _ignore_reused_attached_pid(self) -> bool:
         if self._ipc_mode != FRONT_LOOPBACK:
@@ -1589,7 +1605,7 @@ class RuntimeSupervisor:
         logger.warning(
             "[Supervisor] attached Worker PID was reused; skipping retired identity pid=%s", self._worker_pid,
         )
-        self._clear_attached_worker_identity()
+        self._clear_worker_identity()
         self._owns_process = False
         return True
 

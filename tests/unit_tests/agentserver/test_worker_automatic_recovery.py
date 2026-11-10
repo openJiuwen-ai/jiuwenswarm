@@ -181,3 +181,49 @@ async def test_confirmed_stalled_resident_is_replaced_instead_of_reattached(monk
         assert not psutil.pid_exists(old_pid)
     finally:
         await supervisor.stop(terminate_worker=True)
+
+
+@pytest.mark.asyncio
+async def test_resident_hello_timeout_retires_last_validated_worker(monkeypatch, tmp_path):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "resident")
+    monkeypatch.setattr(module, "_HELLO_TIMEOUT", 0.01)
+
+    class HangingConnection:
+        closed = False
+
+        async def recv(self):
+            await asyncio.Event().wait()
+
+        async def close(self):
+            self.closed = True
+
+    connection = HangingConnection()
+
+    async def try_connect(_path, *, timeout):
+        _ = timeout
+        return connection
+
+    monkeypatch.setattr(module, "try_connect", try_connect)
+    supervisor = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "runtime.sock"))
+    supervisor._worker_pid = 123
+    supervisor._worker_create_time = 456.0
+    retired = []
+
+    async def retire_worker():
+        retired.append(supervisor._worker_pid)
+        supervisor._worker_pid = None
+        supervisor._worker_create_time = None
+
+    async def stop_after_retirement(_reason):
+        assert retired == [123]
+        supervisor._stopping = True
+        return True
+
+    monkeypatch.setattr(supervisor, "_retire_unhealthy_worker", retire_worker)
+    monkeypatch.setattr(supervisor, "_schedule_restart", stop_after_retirement)
+
+    await supervisor._supervise()
+
+    assert connection.closed is True
+    assert retired == [123]

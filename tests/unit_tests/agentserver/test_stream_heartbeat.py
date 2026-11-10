@@ -136,6 +136,26 @@ async def test_socket_backlog_is_bounded_and_preserves_frames(transport, limit, 
 
 
 @pytest.mark.parametrize("transport", ["tcp", "unix"])
+async def test_stream_backlog_accepts_full_cron_reasoning_burst(transport, tmp_path):
+    burst_size = 731
+    async with _pair(transport, tmp_path) as (worker, peer):
+        first_message = asyncio.create_task(worker.recv())
+        for index in range(burst_size + 1):
+            await peer.send({"kind": "wire", "id": str(index)})
+        async with asyncio.timeout(3):
+            while (
+                worker.diagnostics()["receive_pending"] < burst_size
+                and worker._reader_error is None
+            ):
+                await asyncio.sleep(0.005)
+        assert worker._reader_error is None
+        assert worker.diagnostics()["receive_pending"] == burst_size
+        assert (await first_message)["id"] == "0"
+        for index in range(1, burst_size + 1):
+            assert (await worker.recv())["id"] == str(index)
+
+
+@pytest.mark.parametrize("transport", ["tcp", "unix"])
 async def test_cancelled_socket_receive_keeps_reader_available(transport, tmp_path):
     async with _pair(transport, tmp_path) as (worker, peer):
         with pytest.raises(TimeoutError):
