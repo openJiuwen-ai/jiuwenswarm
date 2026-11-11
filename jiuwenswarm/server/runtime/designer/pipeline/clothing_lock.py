@@ -318,22 +318,37 @@ def clothing_lock_clause(
 
 
 _COSTUME_CLAUSE_RE = re.compile(
-    r"costume\s*(?:\([^)]*\))?\s*[:\uff1a]\s*(?P<body>.+?)"
-    r"(?=(?:\.\s|\.$|\n)|photoreal|$)",
+    r"(?:costume|wardrobe|outfit|clothing)\s*(?:\([^)]*\))?\s*[:\uff1a]\s*(?P<body>.+?)"
+    r"(?=(?:\.\s|\.$|\n)|photoreal|framing|background|purpose|$)",
     re.IGNORECASE | re.DOTALL,
 )
 
-# Props ride along after the garments ("...; a brass lantern in his hand"); the
-# wardrobe lock never carries them, so the clause is cut at the first semicolon.
-_COSTUME_PROP_SPLIT_RE = re.compile(r"[;\uff1b]")
+# Garment nouns decide what belongs to the wardrobe. A plate may separate
+# garments with semicolons ("sweater …; trousers …; boots …") or commas, and a
+# prop can follow the same way ("…; a brass lantern in his hand"), so the
+# semicolon alone is not a boundary.
+_GARMENT_NOUN_RE = re.compile(
+    r"(?i)\b(sweaters?|pullovers?|jumpers?|cardigans?|shirts?|blouses?|tee|t-shirt|tops?|"
+    r"vests?|waistcoats?|jackets?|coats?|parkas?|anoraks?|trench|blazers?|suits?|dress(?:es)?|"
+    r"gowns?|skirts?|trousers?|pants?|jeans|shorts|leggings?|tights|boots?|shoes?|sneakers?|"
+    r"sandals?|loafers?|socks?|gloves?|scarfs?|scarves|shawls?|hats?|caps?|beanies?|helmets?|"
+    r"masks?|aprons?|robes?|uniforms?|belts?|ties?|cloaks?|capes?|ponchos?|overalls?|dungarees|"
+    r"turban|veil|glasses|sunglasses|uniform)\b"
+)
+_COSTUME_SPLIT_RE = re.compile(r"[;\uff1b]")
+
+
+def _is_wardrobe_segment(text: str) -> bool:
+    return bool(_GARMENT_NOUN_RE.search(text))
 
 
 def costume_clause_from_spec_prompt(prompt: str) -> str:
     """Garment clause a character spec prompt declares, or "".
 
     A character identity plate carries the authoritative wardrobe as
-    ``Costume (locked, exact): <garments>.`` When the user edits that plate's
-    prompt, this is the text downstream nodes must wear.
+    ``Costume (locked, exact): <garments>`` (also written ``COSTUME`` or
+    ``Wardrobe``). When the user edits that plate's prompt, this is the text
+    downstream nodes must wear.
     """
     text = re.sub(r"\s+", " ", str(prompt or "")).strip()
     if not text:
@@ -341,9 +356,12 @@ def costume_clause_from_spec_prompt(prompt: str) -> str:
     match = _COSTUME_CLAUSE_RE.search(text)
     if not match:
         return ""
-    body = _COSTUME_PROP_SPLIT_RE.split(match.group("body").strip())[0]
-    body = body.strip(" .,;:\uff1b")
-    return re.sub(r"\s+", " ", body)[:280]
+    segments = [seg.strip(" .,;:\uff1b") for seg in _COSTUME_SPLIT_RE.split(match.group("body"))]
+    garments = [seg for seg in segments if seg and _is_wardrobe_segment(seg)]
+    if not garments:
+        garments = [segments[0]] if segments and segments[0] else []
+    body = "; ".join(garments).strip(" .,;:\uff1b")
+    return re.sub(r"\s+", " ", body)[:480]
 
 
 def _spec_prompt_for(node: dict[str, Any]) -> str:

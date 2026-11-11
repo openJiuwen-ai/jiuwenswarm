@@ -87,6 +87,34 @@ def test_an_unedited_plate_or_a_plain_prompt_yields_nothing() -> None:
     assert costume_clause_from_spec_prompt("A lighthouse on a cliff at dawn.") == ""
 
 
+def test_a_plate_that_separates_garments_with_semicolons_keeps_them_all() -> None:
+    # Real plates use either commas or semicolons between garments, and the
+    # semicolon also introduces props - only garment segments belong in the lock.
+    prompt = (
+        "SUBJECT: One man. COSTUME (exact, nothing else): cream cable-knit wool sweater with "
+        "visible twisted cable pattern at chest and cuffs, worn ribbed collar at the neck; navy wool "
+        "trousers, straight leg, slightly creased; olive canvas coat, mid-length field coat with "
+        "corduroy collar; dark brown leather boots, laced, scuffed toes; olive-brown tweed flat cap "
+        "pulled level on the head. FRAMING: three-quarter body. BACKGROUND: plain grey backdrop."
+    )
+    clause = costume_clause_from_spec_prompt(prompt)
+    assert "cable-knit wool sweater" in clause
+    assert "navy wool trousers" in clause
+    assert "olive canvas coat" in clause
+    assert "leather boots" in clause
+    assert "flat cap" in clause
+    assert "FRAMING" not in clause and "BACKGROUND" not in clause
+
+
+def test_the_clause_label_may_be_uppercase_or_wardrobe() -> None:
+    assert costume_clause_from_spec_prompt("WARDROBE: white linen shirt, navy skirt.") == (
+        "white linen shirt, navy skirt"
+    )
+    assert costume_clause_from_spec_prompt("Clothing (locked): grey coat, black boots. Pose: neutral.") == (
+        "grey coat, black boots"
+    )
+
+
 def test_syncing_copies_the_plate_costume_onto_the_analysis_cast() -> None:
     graph = _graph()
     synced = sync_costume_from_specs(graph)
