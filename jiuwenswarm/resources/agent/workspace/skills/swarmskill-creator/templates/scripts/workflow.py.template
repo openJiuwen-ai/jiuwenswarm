@@ -379,10 +379,14 @@ async def run(args):
 #   Keep reviewer prompts inline. VerifyResult has verdict, votes, feedback,
 #   and passed. Branch on result.verdict: "pass", "fail", or None (undecided).
 #   result.passed is False for both fail and undecided.
-# - Vote fields: result.votes[i] is a dataclass with kind / decision / score /
-#   feedback / role (business role) / label (reviewer instance name; the event's
-#   verify_votes[].name is the same value). Votes have no `name`; a reviewer
-#   that did not vote still occupies a vote with decision/score None.
+# - `VerifyResult` has verdict ("pass"/"fail"/None), passed (bool), votes
+#   (list[`VerifyVote`]) and feedback (str). Each `VerifyVote` has kind
+#   ("verdict"/"score"), decision (bool|None), score (float|None), feedback
+#   (str), role ("verifier"/"inspector"/"challenger"|None) and label (reviewer
+#   instance name, unique; the event's verify_votes[].name is the same value).
+#   There is no `name`, and a reviewer that did not vote still occupies a vote
+#   with decision/score None. Read them like:
+#   `[(v.label, v.role, v.decision, v.score, v.feedback) for v in result.votes]`
 # - Verify tally: a complete verdict pool has one-vote veto; a complete score
 #   pool must meet the threshold on average. A verdict fail wins before score-pool missing
 #   votes; missing votes never produce a pass. Reviewer.role is display-only.
