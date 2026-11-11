@@ -90,6 +90,9 @@ def _add_template_crud(
 ) -> None:
     create_sync = make_sync_body(f"{tag.title().replace('_', '')}TemplateCreateSyncBody", create_body)
     update_sync = make_sync_body(f"{tag.title().replace('_', '')}TemplateUpdateSyncBody", update_body)
+    # 扩展配置模板写的表 runtime 不消费（D2），写后不戳 config_refresh；
+    # 其余模板维持既有"每写必戳"行为不变。
+    notify_runtime = tag != "extension_config"
 
     async def create_template(
         request: Request,
@@ -103,7 +106,8 @@ def _add_template_crud(
             )
         except ValueError as exc:
             raise _http_exc(exc) from exc
-        trigger_runtime_config_update()
+        if notify_runtime:
+            trigger_runtime_config_update()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, result)
         )
@@ -121,7 +125,8 @@ def _add_template_crud(
             )
         except ValueError as exc:
             raise _http_exc(exc) from exc
-        trigger_runtime_config_update()
+        if notify_runtime:
+            trigger_runtime_config_update()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
         )
@@ -136,7 +141,8 @@ def _add_template_crud(
             await svc_factory().delete(template_id)
         except ValueError as exc:
             raise _http_exc(exc) from exc
-        trigger_runtime_config_update()
+        if notify_runtime:
+            trigger_runtime_config_update()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
         )
