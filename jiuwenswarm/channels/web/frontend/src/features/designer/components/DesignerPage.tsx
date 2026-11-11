@@ -16,7 +16,6 @@ import {
   ShowEdgesIcon,
 } from '../designerIcons';
 import { bindDesignerExclusivePlayback } from '../designerMediaPlayback';
-import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
 import { DesignerMaterialViewer } from '../DesignerMaterialViewer';
@@ -218,8 +217,6 @@ export function DesignerPage({
   );
   const canvasInteractive =
     showCanvas && !bootstrapInProgress && !isDesignerPreviewGraph(domainGraph);
-  const editingLocked = useDesignerGraphEditingLocked();
-
   // The canvas has three independent players (node cards, the material viewer
   // which autoplays, the revision chooser). Keep exactly one of them audible so
   // opening the viewer never overlaps a running node preview (#5411).
@@ -271,11 +268,11 @@ export function DesignerPage({
             </button>
             <button
               type="button"
-              className={`designer-page__toolbar-icon-btn${editingLocked ? ' designer-edit-control' : ''}`}
+              className="designer-page__toolbar-icon-btn"
               aria-label={t('designer.toolbar.layoutNodes')}
               title={t('designer.toolbar.layoutNodes')}
               data-testid="designer-page-layout"
-              disabled={!canvasInteractive || editingLocked || !domainGraph?.nodes.length}
+              disabled={!canvasInteractive || !domainGraph?.nodes.length}
               onClick={requestAutoLayout}
             >
               <ArrangeNodesIcon aria-hidden />
