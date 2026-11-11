@@ -595,6 +595,113 @@ async def test_handle_skills_team_skills_hub_install_renamed_republish_never_cre
 
 
 @pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_install_explicit_newer_version_reports_conflict(
+    tmp_path,
+):
+    """显式传入与已装不同的版本：必须请求远端并报冲突，不得静默指向旧目录。"""
+    from jiuwenswarm.server.runtime.skill.archive_store import (
+        get_current_version,
+        write_skillhub_first_install_index,
+    )
+
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    dest = tmp_path / "skills" / "demo-skill"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: test\n---\nbody\n",
+        encoding="utf-8",
+    )
+    content = dest / ".archive" / "versions" / "content" / "ver-abc"
+    content.mkdir(parents=True)
+    shutil.copy2(dest / "SKILL.md", content / "SKILL.md")
+    write_skillhub_first_install_index(
+        dest,
+        version="1.0.0",
+        asset_id="demo-skill",
+        storage_id="ver-abc",
+        checksum_sha256="abc",
+    )
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        assert kwargs.get("params") == {"version": "2.0.0", "is_cli_download": True}
+        return {
+            "download_url": _TEAM_SKILLS_HUB_ZIP_URL,
+            "checksum_sha256": "",
+            "version": "2.0.0",
+        }
+
+    async def _should_not_download(*_a, **_k):  # noqa: ANN001
+        raise AssertionError("已装资产的版本决策只看远端元数据，不应下载制品")
+
+    manager.set_mock_get_data(_fake_get_data)
+    manager.set_mock_download(_should_not_download)
+
+    with pytest.raises(SkillRpcError) as exc_info:
+        await manager.handle_skills_team_skills_hub_install(
+            {"asset_id": "demo-skill", "version": "2.0.0"}
+        )
+    assert exc_info.value.code == "SKILL_NAME_CONFLICT"
+    assert "1.0.0" in exc_info.value.message and "2.0.0" in exc_info.value.message
+    assert get_current_version(dest) == "1.0.0"
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_install_output_dir_backstop_guard_reports_version_conflict(
+    tmp_path,
+):
+    """custom output 目录的第二道兜底守卫同样做版本比对：同资产不同版本报冲突。"""
+    from jiuwenswarm.server.runtime.skill.archive_store import (
+        get_current_version,
+        write_skillhub_first_install_index,
+    )
+
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    output_root = tmp_path / "custom-output"
+    dest = output_root / "demo-skill"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: test\n---\nbody\n",
+        encoding="utf-8",
+    )
+    content = dest / ".archive" / "versions" / "content" / "ver-abc"
+    content.mkdir(parents=True)
+    shutil.copy2(dest / "SKILL.md", content / "SKILL.md")
+    write_skillhub_first_install_index(
+        dest,
+        version="1.0.0",
+        asset_id="demo-skill",
+        storage_id="ver-abc",
+        checksum_sha256="abc",
+    )
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        return {
+            "download_url": _TEAM_SKILLS_HUB_ZIP_URL,
+            "checksum_sha256": "",
+            "version": "2.0.0",
+        }
+
+    async def _fake_download(url, **kwargs):  # noqa: ANN001
+        # 兜底守卫在下载后的落盘前生效：此路径允许下载
+        return _build_skill_zip_bytes(skill_name="demo-skill", version="2.0.0")
+
+    manager.set_mock_get_data(_fake_get_data)
+    manager.set_mock_download(_fake_download)
+
+    with pytest.raises(SkillRpcError) as exc_info:
+        await manager.handle_skills_team_skills_hub_install(
+            {"asset_id": "demo-skill", "output": str(output_root)}
+        )
+    assert exc_info.value.code == "SKILL_NAME_CONFLICT"
+    assert "1.0.0" in exc_info.value.message and "2.0.0" in exc_info.value.message
+    # custom output 目录保持原样：未覆盖、未写入新版本
+    assert get_current_version(dest) == "1.0.0"
+    assert (dest / "SKILL.md").read_text(encoding="utf-8").startswith(
+        "---\nname: demo-skill"
+    )
+
+
+@pytest.mark.asyncio
 async def test_handle_skills_team_skills_hub_install_name_conflict_even_with_force(tmp_path):
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
     zip_bytes = _build_skill_zip_bytes(skill_name="demo-skill")
