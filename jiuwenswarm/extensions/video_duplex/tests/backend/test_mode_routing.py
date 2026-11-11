@@ -215,6 +215,10 @@ async def test_design_through_real_adapter_wrapper_binds_only_once(monkeypatch, 
 
     monkeypatch.setattr(team_helpers, "_process_team_message_stream_with_design", native_stream)
     adapter = SimpleNamespace(
+        _process_stream_with_plugin_reservation=lambda req, inputs: (
+            JiuWenSwarmDeepAdapter._process_stream_with_plugin_reservation(adapter, req, inputs)
+        ),
+        _plugin_turn_packages=lambda _: [],
         _permission_request_admission=admission,
         validate_auto_permission_workspace_request=lambda _: None,
         _bind_permission_request_context=lambda _: nullcontext(),
