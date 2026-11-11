@@ -91,18 +91,18 @@ def build_session_messaging_tools(
 @harness_element(
     kind=ElementKind.TOOL,
     name=REPORT_ISSUE,
-    description="Leader-only public JiuwenSwarm bug reporting with Web confirmation.",
+    description="Leader-only JiuwenSwarm bug report template lookup and submission.",
 )
 def build_report_issue_tool(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
-    """Expose the reporting tool on personal Web Team leaders."""
-    from jiuwenswarm.agents.harness.common.tools.report_issue import ReportIssueTool
+    """Expose the reporting tools on personal Web Team leaders."""
+    from jiuwenswarm.agents.harness.common.tools.report_issue import build_issue_report_tools
     from jiuwenswarm.enterprise import is_enterprise
 
     if str(ctx.role) != "leader" or ctx.channel_id != "web" or is_enterprise():
         return []
     if not ctx.session_id or is_cron_execution_session(ctx.session_id):
         return []
-    return [ReportIssueTool(ctx.session_id, language=ctx.language)]
+    return build_issue_report_tools(ctx.session_id, ctx.language)
 
 
 class CronToolsInput(ConstructionInput):

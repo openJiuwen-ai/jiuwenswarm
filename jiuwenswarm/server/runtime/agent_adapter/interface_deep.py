@@ -14633,7 +14633,10 @@ class JiuWenSwarmDeepAdapter:
             registered_names.add(tool.card.name)
 
     def _update_report_issue_tool(self, session_id: str | None, channel_id: str | None) -> None:
-        from jiuwenswarm.agents.harness.common.tools.report_issue import REPORT_ISSUE_TOOL_NAME, ReportIssueTool
+        from jiuwenswarm.agents.harness.common.tools.report_issue import (
+            ISSUE_REPORT_TOOL_NAMES,
+            build_issue_report_tools,
+        )
         from jiuwenswarm.enterprise import is_enterprise
 
         manager = self._instance.ability_manager
@@ -14645,12 +14648,17 @@ class JiuWenSwarmDeepAdapter:
             and not is_team_mode(deprecate_mode(self._last_mode))
             and not self._is_cron_execution_session(session_id)
         )
-        if eligible and manager.get(REPORT_ISSUE_TOOL_NAME) is None:
-            tool = ReportIssueTool(session_id, language=self._resolve_runtime_language())
-            self._register_agent_owned_tool(tool, self._tool_owner_id())
-            manager.add(tool.card)
-        elif not eligible and manager.get(REPORT_ISSUE_TOOL_NAME) is not None:
-            manager.remove_ability(REPORT_ISSUE_TOOL_NAME)
+        if not eligible:
+            for name in ISSUE_REPORT_TOOL_NAMES:
+                if manager.get(name) is not None:
+                    manager.remove_ability(name)
+            return
+        missing = {name for name in ISSUE_REPORT_TOOL_NAMES if manager.get(name) is None}
+        if missing:
+            for tool in build_issue_report_tools(session_id, self._resolve_runtime_language()):
+                if tool.card.name in missing:
+                    self._register_agent_owned_tool(tool, self._tool_owner_id())
+                    manager.add(tool.card)
 
     async def _update_session_tools(
         self,

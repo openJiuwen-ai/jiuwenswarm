@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+from base64 import b64decode
 from dataclasses import dataclass
 import logging
 from typing import Any, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -220,12 +222,33 @@ class GitCodeIssueClient:
             return [item for item in data if isinstance(item, dict)]
         return []
 
-    def create_issue(self, *, owner: str, repo: str, title: str, body: str) -> GitCodeIssue:
+    def get_repository_file(self, *, owner: str, repo: str, path: str) -> str:
+        """Read a file from the repository's default branch."""
+        data = self._request(
+            "GET", f"/repos/{owner}/{repo}/contents/{quote(path)}", include_error_details=False,
+        )
+        content = data.get("content") if isinstance(data, dict) else None
+        if not isinstance(content, str):
+            raise ValueError("GitCode did not return repository file content.")
+        return b64decode("".join(content.split()), validate=True).decode("utf-8-sig")
+
+    def create_issue(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        title: str,
+        body: str,
+        labels: tuple[str, ...] = (),
+    ) -> GitCodeIssue:
         """Create a new issue and return its repository-scoped number."""
+        payload = {"repo": repo, "title": title, "body": body}
+        if labels:
+            payload["labels"] = ",".join(labels)
         data = self._request(
             "POST",
             f"/repos/{owner}/issues",
-            json_body={"repo": repo, "title": title, "body": body},
+            json_body=payload,
             include_error_details=False,
         )
         if not isinstance(data, dict) or not data.get("number"):
