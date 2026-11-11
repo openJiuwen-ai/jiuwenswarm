@@ -153,6 +153,7 @@ import {
 } from './multi-session/state/newConversationLifecycle';
 import { resolveNewConversationProjectDir } from './multi-session/state/newConversationProject';
 import { clearAttachmentDrafts } from './features/sessionAssets/attachmentDraftRegistry';
+import { clearQueuedDesktopLocalFiles } from './features/workspace/localFilePicker';
 import { toDisplaySessionTitle } from './utils/documentMessage';
 import {
   getHiddenNavItemsForPlatform,
@@ -3191,6 +3192,7 @@ function AppContent({
       };
       if (detail.resetAttachmentDrafts) {
         clearAttachmentDrafts(NEW_CONVERSATION_ID);
+        clearQueuedDesktopLocalFiles();
       }
       // 事件显式带了 mode 时用 forceMode，避免未发送的草稿会话把模式改回去
       // （例如「通过聊天创建技能」要求单 Agent，不能停在集群模式）。
