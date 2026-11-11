@@ -80,7 +80,7 @@ async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
     monkeypatch.setattr(catalog, "list_agent_groups", lambda _params=None: [
         {"id": "built-in-group", "source": "builtin", "installed": False}
     ])
-    monkeypatch.setattr(catalog, "_hub_install_state_store", lambda _kind: type(
+    monkeypatch.setattr(catalog, "hub_install_state_store", lambda _kind: type(
         "Store", (), {"get_by_package_id": lambda _self, _id: None}
     )())
 
@@ -125,7 +125,7 @@ async def test_hub_agent_group_installs_and_uninstalls_by_asset_id(extension_wor
     assert detail["id"] == "group-asset-id" and detail["installed"]
     assert detail["source"] == "hub"
     catalog.uninstall_agent_group({"id": "group-asset-id"})
-    assert catalog._hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
+    assert catalog.hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
 
 
 def _seed_valid_agent_group(
@@ -2210,10 +2210,10 @@ def test_hub_package_id_resolver_reuses_record_and_skips_claimed_ids(
         HubInstallRecord,
     )
 
-    local_root = catalog._local_root(AGENT_TEMPLATES)
+    local_root = catalog.get_local_root(AGENT_TEMPLATES)
     (local_root / "sales-expert").mkdir(parents=True)
     (local_root / "sales-expert-2").mkdir(parents=True)
-    catalog._hub_install_state_store(AGENT_TEMPLATES).upsert(
+    catalog.hub_install_state_store(AGENT_TEMPLATES).upsert(
         HubInstallRecord(
             asset_id="asset-alpha",
             package_id="sales-expert-2",
@@ -2422,13 +2422,13 @@ async def test_hub_packages_sharing_a_package_name_install_as_siblings(
     for asset_id in ("asset-1.2.0", "asset-1.3.0", "asset-1.3.0"):
         await install(asset_id)
 
-    local_root = catalog._local_root(kind)
+    local_root = catalog.get_local_root(kind)
     assert (local_root / package_name).is_dir()
     assert (local_root / f"{package_name}-2").is_dir()
     assert not (local_root / f"{package_name}-3").exists()
     assert downloader.calls == 2
 
-    store = catalog._hub_install_state_store(kind)
+    store = catalog.hub_install_state_store(kind)
     assert store.get("asset-1.2.0").package_id == package_name
     assert store.get("asset-1.3.0").package_id == f"{package_name}-2"
 

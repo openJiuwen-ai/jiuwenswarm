@@ -21,6 +21,14 @@ def save_state(sid, **changes):
         lc.save_locked("session", sid, value)
 
 
+def test_history_runtime_owner_accepts_proc_start_ticks(monkeypatch):
+    monkeypatch.setattr(service.os, "getpid", lambda: 123)
+
+    assert service._history_runtime_owner(
+        {"runtime_owner": {"pid": 123, "start_ticks": 456}}
+    ) == (123, 456)
+
+
 @pytest.fixture
 def stored_history(tmp_path, monkeypatch):
     sessions = tmp_path / "sessions"

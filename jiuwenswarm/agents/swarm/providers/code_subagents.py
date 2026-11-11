@@ -315,6 +315,8 @@ def build_swarm_cua_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext
         cua_snapshot_keep_last_k=inp.snapshot_keep_last_k,
         cua_pause_on_user_input=inp.pause_on_user_input,
     )
+    if spec is None:
+        return None
     # Preserve the cua_* factory kwargs baked in by agent-core; only add the
     # workspace flag.
     spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}

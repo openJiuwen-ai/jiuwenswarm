@@ -566,6 +566,12 @@ class TestSessionAdapter:
     async def test_enterprise_offline_team_delete_purges_by_session(self, monkeypatch) -> None:
         purged: list[dict] = []
         monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        monkeypatch.setenv("GATEWAY_DB_TYPE", "mysql")
+        monkeypatch.setenv("GATEWAY_DB_HOST", "127.0.0.1")
+        monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+        monkeypatch.setenv("GATEWAY_DB_USER", "team")
+        monkeypatch.setenv("GATEWAY_DB_PASSWORD", "team")
+        monkeypatch.setenv("GATEWAY_DB_NAME", "team")
         monkeypatch.setattr(
             "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
             lambda sid, cache_bust=False: {"mode": "team"},

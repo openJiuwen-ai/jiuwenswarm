@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
 from typing import Final
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.control.methods import CONTROL_SESSION_METHODS
+from jiuwenswarm.server.control.query_executor import run_control_query
 from jiuwenswarm.server.control.responses import (
     build_error_response,
     parse_int_param,
@@ -80,6 +82,11 @@ def _ok(request: AgentRequest, payload: dict) -> AgentResponse:
 
 
 async def handle_list(request: AgentRequest) -> AgentResponse:
+    """Run the full scan, pagination and Web projection outside the Front loop."""
+    return await run_control_query(partial(_load_list, request))
+
+
+def _load_list(request: AgentRequest) -> AgentResponse:
     params = request.params if isinstance(request.params, dict) else {}
     limit = _SESSION_LIST_LIMIT_DEFAULT
     offset = 0

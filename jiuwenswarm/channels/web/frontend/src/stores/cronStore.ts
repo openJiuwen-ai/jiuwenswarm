@@ -35,6 +35,8 @@ export function isWebChannelJob(targets?: string): boolean {
 }
 
 const CRON_UNREAD_KEY = 'jiuwenswarm_cron_unread';
+let cronSessionsRequestId = 0;
+const pendingCronSessionRequests = new Map<string, number>();
 
 interface CronState {
   runUpdates: Record<string, CronRunUpdate & { firstSeenAt: number }>;
@@ -192,22 +194,30 @@ export const useCronStore = create<CronState>((set, get) => ({
   },
 
   loadCronSessions: async (projectId: string, cronId: string) => {
+    const requestId = ++cronSessionsRequestId;
+    pendingCronSessionRequests.set(cronId, requestId);
+    const isCurrent = () => pendingCronSessionRequests.get(cronId) === requestId;
     set((state) => ({
       cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: true },
     }));
     try {
       const payload = await projectRegistryClient.getCronSessions(projectId, cronId);
+      if (!isCurrent()) return;
       set((state) => ({
         cronSessions: {
           ...state.cronSessions,
           [cronId]: payload.sessions || [],
         },
-        cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
       }));
     } catch {
-      set((state) => ({
-        cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
-      }));
+      // Retain the last successful list on a transient query failure.
+    } finally {
+      if (isCurrent()) {
+        pendingCronSessionRequests.delete(cronId);
+        set((state) => ({
+          cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
+        }));
+      }
     }
   },
 

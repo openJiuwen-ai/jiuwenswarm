@@ -157,7 +157,7 @@ def test_empty_allowlist_rejects_hub_download(
         prepared.append("downloaded")
         return "hub-expert"
 
-    monkeypatch.setattr(equipment, "_prepare_hub_equipment", _prepare)
+    monkeypatch.setattr(equipment, "prepare_hub_equipment", _prepare)
     monkeypatch.setattr(equipment, "_equipment_definition_exists", lambda *_args, **_kwargs: False)
     with _bind_allowlist([]):
         ok, payload = asyncio.run(

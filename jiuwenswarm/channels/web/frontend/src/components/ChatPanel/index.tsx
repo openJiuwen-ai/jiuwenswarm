@@ -104,7 +104,6 @@ import {
   buildSessionBoundEvent,
   buildTopicClickEvent,
   buildTopicStarterRequest,
-  topicStarterShowsSettingsAction,
   topicStarterShowsStatus,
   topicStarterStatusMessageKey,
   type TopicStarterEvent,
@@ -265,17 +264,22 @@ function SuggestionCard({
   const sourceText = typeof source?.source_text === 'string' ? source.source_text : '';
   const searchUrl = safeHttpUrl(typeof source?.search_url === 'string' ? source.search_url : sourceUrl);
   const listedAt = typeof source?.listed_at === 'string' ? new Date(source.listed_at) : null;
+  const listedAtLabel =
+    listedAt && !Number.isNaN(listedAt.getTime())
+      ? [
+          listedAt.getFullYear(),
+          String(listedAt.getMonth() + 1).padStart(2, '0'),
+          String(listedAt.getDate()).padStart(2, '0'),
+        ].join('-') +
+        ` ${String(listedAt.getHours()).padStart(2, '0')}:${String(listedAt.getMinutes()).padStart(2, '0')}`
+      : '';
   const sourceBadge = !sourceSite
     ? null
     : hotList
       ? [
           t(source?.publisher === 'weibo.com' ? 'chat.topicStarter.weiboHotList' : 'chat.topicStarter.baiduHotList'),
           t('chat.topicStarter.hotListRank', { rank: source?.hot_list_rank }),
-          listedAt && !Number.isNaN(listedAt.getTime())
-            ? t('chat.topicStarter.hotListListedAt', {
-                time: `${String(listedAt.getHours()).padStart(2, '0')}:${String(listedAt.getMinutes()).padStart(2, '0')}`,
-              })
-            : '',
+          listedAtLabel ? t('chat.topicStarter.hotListListedAt', { time: listedAtLabel }) : '',
         ].filter(Boolean).join(' · ')
       : [
           source?.source_kind === 'news_report' ? '资讯' : '近期',
@@ -1107,9 +1111,6 @@ function HumanShareCard({ commands, onShare }: { commands: HumanShareCommand[]; 
 
 // The dismissal notice stays long enough to use its buttons, fades out over its last second
 // (ChatPanel.css) and then leaves the page.
-// An open global new page asks for the hot-list check every 30 minutes. The gateway runs one only
-// 30 minutes after the last one ended, so the page asks a minute later to land past that mark.
-const NEWS_CHECK_INTERVAL_MS = 31 * 60 * 1000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
 const LOAD_OLDER_THRESHOLD_PX = 8;
 const VISIBILITY_RESTORE_SCROLL_SUPPRESS_MS = 300;
@@ -1231,6 +1232,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onToggleDiagnosis,
 }: ChatPanelProps) {
   const { t } = useTranslation();
+  const workMode = useWorkspaceStore((state) => state.workMode);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
   const expertIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
@@ -1324,7 +1326,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     : 'chat-content chat-content--welcome';
   const topicStarterVisitId = useMemo(
     () => newTopicStarterVisitId(),
-    [activeSessionId, autoFocusKey, topicStarterProjectId],
+    [activeSessionId, autoFocusKey, topicStarterProjectId, workMode],
   );
   const [dynamicSlate, setDynamicSlate] = useState<{
     visitId: string;
@@ -1720,30 +1722,6 @@ export const ChatPanel = React.memo(function ChatPanel({
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [activeSessionId, rememberSessionScrollTop, restoreSessionScrollTop]);
 
-  // 空白全局新建页回到前台、以及开在前台时每 30 分钟：让后台检查资讯，页面本身不等待结果。
-  useEffect(() => {
-    if (!isConnected || hasConversation || topicStarterProjectId) return;
-    const checkNews = () => {
-      if (document.hidden || !acceptingDynamicRef.current) return;
-      void webRequest('topic_starters.foreground', { context_scope: 'global_new_chat', visit_id: topicStarterVisitIdRef.current }).catch(() => undefined);
-    };
-    let timer: number | null = null;
-    const keepChecking = () => {
-      if (timer !== null) window.clearInterval(timer);
-      timer = document.hidden ? null : window.setInterval(checkNews, NEWS_CHECK_INTERVAL_MS);
-    };
-    const handleVisibility = () => {
-      checkNews();
-      keepChecking();
-    };
-    keepChecking();
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibility);
-      if (timer !== null) window.clearInterval(timer);
-    };
-  }, [hasConversation, isConnected, topicStarterProjectId]);
-
   useEffect(() => {
     const handleTopicPageVisibility = () => {
       const visible = document.visibilityState === 'visible';
@@ -1889,11 +1867,16 @@ export const ChatPanel = React.memo(function ChatPanel({
       return;
     }
     const requestSessionId = activeSessionId;
-    const requestParams = buildTopicStarterRequest(requestSessionId, topicStarterProjectId);
+    const requestParams = buildTopicStarterRequest(requestSessionId, topicStarterProjectId, workMode);
     let active = true;
     let receivedScopeState = false;
-    const unsubscribeReady = webClient.on<{ visit_id?: string; context_scope: string; state: string; pool_written?: boolean }>("topic_starters.ready", ({ payload }) => {
-      if (!active || (payload.visit_id && payload.visit_id !== topicStarterVisitId) || payload.context_scope !== requestParams.context_scope) return;
+    const unsubscribeReady = webClient.on<{ visit_id?: string; context_scope: string; work_mode?: string; state: string; pool_written?: boolean }>("topic_starters.ready", ({ payload }) => {
+      if (
+        !active
+        || (payload.visit_id && payload.visit_id !== topicStarterVisitId)
+        || payload.context_scope !== requestParams.context_scope
+        || (payload.work_mode || 'work') !== requestParams.work_mode
+      ) return;
       receivedScopeState = true;
       setRecommendationState(payload.state);
       // Preparation that wrote no pool leaves the cards on screen as the pool still serves them.
@@ -1937,7 +1920,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     // This read also serves a pool that became ready while the page was in the background.
     readyWhileHiddenRef.current = false;
     void webRequest<TopicStarterResponse>('topic_starters.get', {
-      ...requestParams, visit_id: topicStarterVisitId, manual_retry: false,
+      ...requestParams, visit_id: topicStarterVisitId,
       ...(refillSlateId ? { slate_id: refillSlateId } : {}),
     }, { timeoutMs: 60_000 })
       .then(response => {
@@ -1975,7 +1958,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       unsubscribeReady();
       unsubscribeControl();
     };
-  }, [activeSessionId, hasConversation, isConnected, topicStarterProjectId, topicStarterVisitId, recommendationRefresh]);
+  }, [activeSessionId, hasConversation, isConnected, topicStarterProjectId, topicStarterVisitId, recommendationRefresh, workMode]);
 
 
   useEffect(() => {
@@ -2629,16 +2612,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                     }
                   >
                     {t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate)))}
-                    {topicStarterShowsSettingsAction(recommendationState) ? (
-                      <button
-                        type="button"
-                        className="ml-2 text-text-link underline"
-                        data-testid="chat-panel-topic-settings"
-                        onClick={() => onOpenGeneralSettings?.()}
-                      >
-                        {t('chat.topicStarter.openSettings')}
-                      </button>
-                    ) : null}
                   </div>
                 ) : null}
                 {recommendationState !== 'disabled' && topicStarterErrorKey && topicStarterErrorKey !== 'network.requestFailed' && (

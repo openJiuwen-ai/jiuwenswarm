@@ -22,7 +22,7 @@ await build({
   stdin: {
     contents: [
       'import { createElement } from "react";',
-      'import { SettingsSourceProvider, SettingsSourceVisibility } from "./src/features/settings/services/SettingsSourceProvider";',
+      'import { SettingsSourceProvider } from "./src/features/settings/services/SettingsSourceProvider";',
       'import { SettingItemRenderer } from "./src/features/settings/components/SettingItemRenderer";',
       'import { experimentalModule } from "./src/features/settings/modules/experimental/definition";',
       'import { useSettingsConfig } from "./src/features/settings/services/useSettingsConfig";',
@@ -32,7 +32,7 @@ await build({
       'export * from "./src/features/settings/modules/experimental/multiModelCollaborationSettingsState";',
       'export * from "./src/features/multiModelCollaboration/featureConfig";',
       'export const experimentalSectionIds = experimentalModule.sections.map(section => section.id);',
-      'export const SettingsFixture = () => { const section = experimentalModule.sections.find(section => section.id === (globalThis.collaborationFixture.section ?? "multi-model-collaboration")); return createElement(SettingsSourceProvider, {source:"config"}, createElement(SettingsSourceVisibility, {when:section.visibleWhen}, createElement(SettingItemRenderer, {item:section.items[0], disabled:globalThis.collaborationFixture.disabled}))); };',
+      'export const SettingsFixture = () => { const section = experimentalModule.sections.find(section => section.id === (globalThis.collaborationFixture.section ?? "multi-model-collaboration")); return createElement(SettingsSourceProvider, {source:"config"}, createElement(SettingItemRenderer, {item:section.items[0], disabled:globalThis.collaborationFixture.disabled})); };',
     ].join('\n'),
     resolveDir: process.cwd(),
     loader: 'ts',
@@ -88,7 +88,15 @@ await build({
             .map((name) => `export const ${name} = () => null;`)
             .join('\n'),
           './A4PSettings': 'export const A4PSettings = () => null;',
-          '../../../../assets/settings': 'export const settingsNavigationIcons = {experimental: () => null};',
+          '../../../../assets/providers': [
+            'export const getProviderLogoUrl = () => undefined;',
+            'export const getVendorLogoUrl = () => undefined;',
+          ].join('\n'),
+          '../../../../assets/settings': [
+            'export const settingsNavigationIcons = {experimental: () => null};',
+            'export const settingsActionIcons = {};',
+            'export const settingsCustomModelIcon = () => null;',
+          ].join('\n'),
           'react-i18next':
             'export const useTranslation = () => ({ t: (key) => key, i18n:{resolvedLanguage:"zh",language:"zh"} });',
         };
@@ -230,20 +238,21 @@ const configured = {
 };
 
 for (const available of [undefined, 'false', false, 'true', true]) {
-  test(`computer control visibility follows backend availability: ${available}`, async () => {
+  test(`computer control remains visible and respects backend availability: ${available}`, async () => {
     await mount(
       { section: 'computer-control', config: { cua_backend_available: available, cua_agent_enabled: 'true' } },
-      async ({ get, saves, config, click }) => {
+      async ({ get, saves, click }) => {
         const toggle = get('settings-switch', 'cua-agent-enabled');
-        if (available !== true && available !== 'true') {
-          assert.equal(toggle, null);
-          assert.equal(config().cua_agent_enabled, 'true');
-          assert.deepEqual(saves, []);
-          return;
-        }
         assert.equal(toggle.getAttribute('aria-checked'), 'true');
         await click('settings-switch', 'cua-agent-enabled');
         assert.equal(toggle.getAttribute('aria-checked'), 'false');
+        if (available !== true && available !== 'true') {
+          assert.equal(toggle.disabled, true);
+          assert.match(document.body.textContent, /cua_agent_enabled\.unavailableDescription/);
+          assert.deepEqual(saves, [{ cua_agent_enabled: 'false' }]);
+          return;
+        }
+        assert.equal(toggle.disabled, false);
         await click('settings-switch', 'cua-agent-enabled');
         assert.equal(toggle.getAttribute('aria-checked'), 'true');
         assert.deepEqual(saves, [{ cua_agent_enabled: 'false' }, { cua_agent_enabled: 'true' }]);

@@ -611,3 +611,26 @@ async def test_summarize_sessions_reuses_content_matched_summary_after_model_cha
     assert batch_b.generated_summary_ids == ()
     assert batch_b.artifacts[0].summary_text == "qing summary"
     assert batch_b.artifacts[0].session_summary_id == stored["session_summary_id"]
+    # Pool write must accept reused provenance under the new run's coverage stamp.
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        _valid_session_summary_coverage_receipt,
+        _valid_session_summary_materialization_receipt,
+    )
+
+    reused = batch_b.artifacts[0]
+    assert reused.summary_config_version != batch_b.summary_config_version
+    materialization = pipeline._session_summary_materialization_receipt(
+        snapshot=snapshot,
+        summaries=batch_b.artifacts,
+        generated_summary_ids=batch_b.generated_summary_ids,
+        summary_config_version=batch_b.summary_config_version,
+    )
+    manifest = {
+        "generation_input_snapshot_id": snapshot.input_snapshot_id,
+        "context_scope": snapshot.context_scope,
+        "session_summary_artifacts": [summary.as_payload() for summary in batch_b.artifacts],
+        "session_summary_coverage_receipt": dict(batch_b.coverage_receipt),
+        "session_summary_materialization_receipt": materialization,
+    }
+    assert _valid_session_summary_coverage_receipt(manifest) is True
+    assert _valid_session_summary_materialization_receipt(manifest) is True
