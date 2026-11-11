@@ -1969,11 +1969,20 @@ def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, A
         if current is saved or current.get("model_id") in referenced_ids:
             remaining.append(current)
             continue
-        config = resolve_env_vars(current.get("model_client_config") or {})
+        raw_client = current.get("model_client_config")
+        if not isinstance(raw_client, dict):
+            remaining.append(current)
+            continue
+        config = resolve_env_vars(raw_client)
+        model_name = str(config.get("model_name") or "").strip()
+        api_base = str(config.get("api_base") or "").strip()
+        api_key = str(config.get("api_key") or "").strip()
+        # Unset template variables resolve to empty strings. A real endpoint
+        # or credential is enough to preserve the existing entry.
         if (
-            config.get("model_name") in PLACEHOLDER_MODEL_NAMES
-            and config.get("api_base") in PLACEHOLDER_API_BASES
-            and config.get("api_key") in PLACEHOLDER_API_KEYS
+            model_name in PLACEHOLDER_MODEL_NAMES
+            and (not api_base or api_base in PLACEHOLDER_API_BASES)
+            and (not api_key or api_key in PLACEHOLDER_API_KEYS)
         ):
             removed_default = removed_default or current.get("is_default") is True
         else:
