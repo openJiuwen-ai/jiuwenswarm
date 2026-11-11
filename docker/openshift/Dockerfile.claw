@@ -10,7 +10,7 @@ ARG AGENT_CORE_COMMIT=f3f8f576164cc405c046e43079c8ad00ee17f0c4
 ARG AGENT_PROTOCOL_REPOS=https://gitcode.com/openJiuwen/agent-protocol.git
 ARG AGENT_PROTOCOL_COMMIT=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11
 ARG AGENT_GATEWAY_REPOS=https://gitcode.com/openJiuwen/agent-gateway.git
-ARG AGENT_GATEWAY_COMMIT=54e5330d3ea6be972aa38de4c42a898ea73fed37
+ARG AGENT_GATEWAY_BRANCH=develop
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
 
 # 业务用户 app(1000)
@@ -36,16 +36,16 @@ RUN if [ -f packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extensi
         sed -i '/openjiuwen_runtime_management/d' packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml; \
     fi
 
-# agent-gateway 独立仓按构建参数取源（先浅取，不支持按 commit 取时回退全量），
-# 并从其 pyproject 删除源码依赖声明；clone 与安装须在同一 RUN，
-# 跨层 rm 无法回收上一层已提交的源码树与 .git
+# agent-gateway 独立仓按构建参数取源（BRANCH 可为分支 / tag / commit：先浅取，
+# 服务器不支持按 commit 取时回退全量），并从其 pyproject 删除源码依赖声明；
+# clone 与安装须在同一 RUN，跨层 rm 无法回收上一层已提交的源码树与 .git
 RUN git init -q /tmp/build/agent-gateway \
     && git -C /tmp/build/agent-gateway remote add origin "${AGENT_GATEWAY_REPOS}" \
-    && if git -C /tmp/build/agent-gateway fetch -q --depth 1 origin "${AGENT_GATEWAY_COMMIT}" 2>/dev/null; then \
+    && if git -C /tmp/build/agent-gateway fetch -q --depth 1 origin "${AGENT_GATEWAY_BRANCH}" 2>/dev/null; then \
         git -C /tmp/build/agent-gateway checkout -q --detach FETCH_HEAD; \
     else \
         git -C /tmp/build/agent-gateway fetch -q origin "+refs/heads/*:refs/remotes/origin/*" "+refs/tags/*:refs/tags/*" \
-        && git -C /tmp/build/agent-gateway checkout -q --detach "${AGENT_GATEWAY_COMMIT}"; \
+        && git -C /tmp/build/agent-gateway checkout -q --detach "${AGENT_GATEWAY_BRANCH}"; \
     fi \
     && sed -E -i \
         -e '/^[[:space:]]*"openjiuwen("| @|[<>=!~;])/d' \
