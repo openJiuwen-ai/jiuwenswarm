@@ -1144,10 +1144,6 @@
         "title": "启用 RSI",
         "description": "显示侧边栏「RSI」入口，可创建并查看 Harness 优化和产物优化（论文、程序）的 RSI 任务；关闭后隐藏该入口。"
       },
-      "cua_agent_enabled": {
-        "title": "启用电脑操控",
-        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
-      },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
         "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
