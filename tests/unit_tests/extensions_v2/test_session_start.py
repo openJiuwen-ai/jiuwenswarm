@@ -7,6 +7,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 
 from openjiuwen.core.common.exception.errors import ValidationError
 from openjiuwen.core.events import Event, HandlerLevel, SessionContext
@@ -46,7 +47,7 @@ def create_extension():
 '''
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def host(tmp_path, monkeypatch):
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")

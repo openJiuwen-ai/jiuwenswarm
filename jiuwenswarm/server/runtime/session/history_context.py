@@ -55,7 +55,14 @@ def history_context_scope(session_id: str, *, request_id: str | None = None) -> 
         yield
     finally:
         scope.active = False
-        _RUNTIME.reset(token)
+        try:
+            _RUNTIME.reset(token)
+        except ValueError:
+            # An async generator may be closed from a different task (for
+            # example through ``asyncio.wait_for(stream.aclose())``).  Its
+            # token belongs to the consumer task, but the shared scope has
+            # already been invalidated above, so it must not remain usable.
+            logger.debug("[SessionHistory] history context closed from another task")
 
 
 def history_context_request(method: Callable) -> Callable:
