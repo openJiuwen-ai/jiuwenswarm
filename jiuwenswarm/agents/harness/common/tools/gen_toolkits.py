@@ -526,9 +526,11 @@ async def _minimax_generate_image(
     return "Image generated successfully!\nSaved to: " + ", ".join(saved)
 
 
-def _minimax_video_resolution(resolution: str) -> str:
-    """Map the tool's resolution ("480p"/"720p"/"1080p") to H3's "768P" / "2K"."""
+def _minimax_video_resolution(resolution: str, model: str) -> str:
+    """Map the requested resolution to a tier the selected MiniMax model supports."""
     text = (resolution or "").strip().upper()
+    if model.lower() in {"minimax-h3-highspeed", "minimax-h3-lite"}:
+        return "480P" if text == "480P" else "768P"
     if text == "2K":
         return "2K"
     digits = re.sub(r"\D", "", text)
@@ -544,7 +546,7 @@ async def _minimax_submit_video(target: GenerationTarget, request: VideoRequest,
     body = {
         "model": model,
         "content": content,
-        "resolution": _minimax_video_resolution(resolution),
+        "resolution": _minimax_video_resolution(resolution, model),
         "duration": int(duration_seconds),
         "ratio": aspect_ratio if aspect_ratio in _MINIMAX_VIDEO_RATIOS else "16:9",
     }

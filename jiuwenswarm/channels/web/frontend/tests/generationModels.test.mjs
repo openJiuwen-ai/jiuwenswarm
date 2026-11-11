@@ -21,6 +21,13 @@ test('Ark generation accepts official regional addresses and rejects Coding Plan
   assert.equal(isArkGenerationApiBase('http://ark.cn-beijing.volces.com/api/v3'), false);
 });
 
+test('MiniMax video offers the H3, Highspeed and Lite presets', () => {
+  assert.deepEqual(
+    catalogModels('video_gen', 'minimax').map((entry) => entry.model),
+    ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite'],
+  );
+});
+
 test('DashScope lists wan 3.0 video and qwen-image 3.0 image models', () => {
   assert.deepEqual(
     catalogModels('video_gen', 'dashscope').map((entry) => entry.model),
