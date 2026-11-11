@@ -355,6 +355,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       expandedProjectIds: {},
       error: null,
     });
+    const activeSessionId = useChatStore.getState().activeSessionId;
+    if (workMode === 'work' && activeSessionId) {
+      useSessionStore.getState().removeEnabledPlugin(activeSessionId, 'ttse');
+    }
     await get().loadProjects();
   },
 

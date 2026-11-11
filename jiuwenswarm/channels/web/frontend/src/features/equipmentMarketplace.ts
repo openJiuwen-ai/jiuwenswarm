@@ -2,6 +2,10 @@ export type EquipmentKind = 'agent' | 'plugin' | 'mcp';
 export type EquipmentScope = 'catalog' | 'mine';
 export type EquipmentSource = 'builtin' | 'local' | 'hub';
 
+export function isPluginBlockedInWorkMode(runtimePackageName: string, workMode: string): boolean {
+  return workMode === 'work' && runtimePackageName === 'ttse';
+}
+
 export function equipmentListFilter(kind: 'agent' | 'plugin', scope: EquipmentScope): 'builtin+hub' | 'mine';
 export function equipmentListFilter(kind: 'mcp', scope: EquipmentScope): 'builtin' | 'local';
 export function equipmentListFilter(

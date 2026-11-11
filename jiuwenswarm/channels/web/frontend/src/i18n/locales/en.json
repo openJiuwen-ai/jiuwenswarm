@@ -1,4 +1,12 @@
 {
+  "pluginReplacement": {
+    "title": "Plugin already exists",
+    "message": "Local plugin {{id}} (version {{localVersion}}) already exists. Replace it with marketplace version {{hubVersion}}? Local changes will be overwritten.",
+    "confirm": "Replace local version",
+    "busy": "The previous plugin is executing or closing resources. Retry replacement when it is idle.",
+    "stale": "The local plugin has changed. Start installation again and confirm replacement.",
+    "unknownVersion": "unknown"
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
     "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
@@ -2152,6 +2160,7 @@
     "extension": "Extensions",
     "extensionSearchPlaceholder": "Search by keyword",
     "extensionEmpty": "No results",
+    "ttseWorkModeNotice": "TTSE experience learning is built into Work mode. To enable it, turn on “<strong>Local environment facts and task experience auto-evolution</strong>” in Settings.",
     "extensionConnect": "Connect",
     "extensionManagePlugins": "Manage My Plugins",
     "extensionManageMcps": "Manage My Connectors",
