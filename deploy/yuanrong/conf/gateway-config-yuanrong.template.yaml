@@ -378,6 +378,30 @@ agent_observability:
   traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
   file_retention_days: 7            # file exporter 文件保留天数
 
+# ============================================================
+# 单 Agent 轨迹观测 Web 数据面
+# ============================================================
+# enabled=true 会作为 Agent / Team OTel provider 的额外 demand，但仍完整复用
+# agent_observability / team_observability 的 exporter、采样、脱敏、字段长度
+# 与 Langfuse 配置。Processor 后的数据由 AgentServer 有界队列写入 SQLite；
+# Gateway 只读查询。Agent 与 Team 会话均向 Web 暴露轨迹。
+# auto_harness 不向 Web 暴露轨迹。
+# ============================================================
+trajectory_ui:
+  enabled: true                     # 数据面开关；由 diagnosis_enabled 同步写入，勿单独依赖实验设置
+  diagnosis_enabled: false           # 启用「诊断与归因」入口并记录轨迹数据；关闭后隐藏轨迹相关页面
+  db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
+  retention_days: 7                 # SQLite 轨迹保留天数
+  queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
+  batch_size: 64                    # writer 单事务最大记录数
+  flush_interval_ms: 200            # writer 最大合批等待时间
+  detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
+  # 流式帧只在 Span 未结束期间充当"尚未写完的输出"；Span 终态记录落库后，
+  # 记录本身即权威输出，前端会丢弃帧、详情查询不读帧、归档导出也不含帧。
+  # 置 true 时随终态记录一并删除这些帧（实测可省约 20% 轨迹库体积）；
+  # 若将来要做"逐帧回放已完成回答"，改为 false 可让帧保留至所属 turn 页被淘汰。
+  discard_final_span_frames: true
+
 react:
   agent_name: main_agent
   enable_task_loop: false
