@@ -129,7 +129,7 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
                 <button
                   type="button"
                   className="rsi-best__link"
-                  onClick={() => onOpenArtifact(bestArtifactSource.path, bestName ?? '论文预览')}
+                  onClick={() => onOpenArtifact(bestArtifactSource, bestName ?? task.name)}
                   data-testid="rsi-best-link"
                   data-variant="link"
                 >

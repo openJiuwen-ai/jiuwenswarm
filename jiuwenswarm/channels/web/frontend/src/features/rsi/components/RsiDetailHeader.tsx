@@ -186,9 +186,7 @@ export function RsiDetailHeader({
           // Harness artifacts are refs, not archives; the RSI installer resolves and registers the package.
           await rsiHarnessInstall(task.task_id);
           markTaskInstalled(task.task_id);
-          // The stable runtime keeps RSI versions in its own activation store.
-          const snapshotName =
-            report?.best_artifact?.name || task.best_artifact?.name;
+          const snapshotName = report?.best_artifact?.name || task.best_artifact?.name;
           showActionMessage(
             'success',
             t('rsi.detail.actionInstallSuccess', {

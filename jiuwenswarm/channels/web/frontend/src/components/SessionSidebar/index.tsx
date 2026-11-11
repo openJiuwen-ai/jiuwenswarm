@@ -36,6 +36,7 @@ type ContextMode = 'select' | 'custom';
 interface SessionSidebarProps {
   activeNav: MainNavKey;
   onNavigate: (nav: MainNavKey) => void;
+  onExperimentHover?: (hovering: boolean) => void;
   appVersion: string;
   isConnected: boolean;
   onNewSession?: () => void;
@@ -223,6 +224,7 @@ function AdvancedConfigPanel({
 export function SessionSidebar({
   activeNav,
   onNavigate,
+  onExperimentHover,
   appVersion,
   isConnected,
   onNewSession,
@@ -363,6 +365,8 @@ export function SessionSidebar({
           key={item.key}
           className={`icon-rail-nav-item${isNavItemActive(item) ? ' icon-rail-nav-item--active' : ''}`}
           onClick={() => handleNavClick(item.key)}
+          onMouseEnter={item.key === 'experiments' ? () => onExperimentHover?.(true) : undefined}
+          onMouseLeave={item.key === 'experiments' ? () => onExperimentHover?.(false) : undefined}
         >
           <span className="icon-rail-nav-item__icon">{item.icon}</span>
           <span className={`icon-rail-nav-item__label${item.key === 'personalContext' ? ' icon-rail-nav-item__label--multiline' : ''}`}>

@@ -111,3 +111,63 @@ async def test_live_adapter_switches_and_restores_stable_harness_resources(tmp_p
         assert "Second tested policy" not in agent.system_prompt_builder.build()
     finally:
         agent.ability_manager.teardown_tools()
+
+
+@pytest.mark.asyncio
+async def test_session_harness_selection_survives_reload_and_tracks_new_default(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.agents.harness.common.rsi import context
+    from jiuwenswarm.agents.harness.common.rsi.harness_activation import RsiHarnessActivationStore
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    tasks_root = tmp_path / "rsi" / "tasks"
+    store = RsiHarnessActivationStore(tasks_root)
+    versions = {}
+    for name in ("default", "selected", "new-default"):
+        runtime = tasks_root / "versions" / name
+        runtime.mkdir(parents=True)
+        versions[name] = {"installation_id": name, "runtime_path": str(runtime), "sha256": "a" * 64}
+    for name in ("selected", "default"):
+        store.commit(versions[name])
+    monkeypatch.setattr(context, "get_rsi_workspace_root", lambda: tasks_root.parent)
+    monkeypatch.setattr(interface_deep, "get_config", lambda: {"rsi": {"enabled": True}})
+    monkeypatch.setattr(interface_deep, "resolve_tenant_sessions_dir", lambda *args, **kwargs: tmp_path / "sessions")
+
+    def adapter():
+        result = interface_deep.JiuWenSwarmDeepAdapter(workspace_dir=str(tmp_path / "workspace"))
+        result.mark_as_session_scoped("session-a")
+        result._replace_rsi_harness = AsyncMock()
+        return result
+
+    field = "rsi_harness_installation_id"
+    request = SimpleNamespace(req_method=ReqMethod.CHAT_SEND, session_id="session-a",
+                              channel_id="web", metadata={}, params={field: "selected"})
+    first = adapter()
+    await first._sync_rsi_session_harness(request)
+    first._replace_rsi_harness.assert_awaited_once_with(
+        "activate", config_path=versions["selected"]["runtime_path"], installation_id="selected",
+    )
+    persisted = session_metadata.get_session_metadata("session-a", cache_bust=True, sessions_root=tmp_path / "sessions")
+    assert persisted[field] == "selected"
+    request.params = {field: "missing"}
+    with pytest.raises(ValueError, match="不可用"):
+        await first._sync_rsi_session_harness(request)
+    assert first._rsi_session_harness_id == "selected"
+
+    reloaded = adapter()
+    request.params = {}
+    await reloaded._sync_rsi_session_harness(request)
+    assert reloaded._rsi_session_harness_id == "selected"
+    store.commit(versions["new-default"])
+    result = await reloaded.apply_rsi_harness_install(
+        "activate", config_path=versions["new-default"]["runtime_path"], installation_id="new-default",
+    )
+    assert result["status"] == "SKIPPED"
+    request.params = {field: ""}
+    await reloaded._sync_rsi_session_harness(request)
+    reloaded._replace_rsi_harness.assert_awaited_with(
+        "activate", config_path=versions["new-default"]["runtime_path"], installation_id="new-default",
+    )
+    persisted = session_metadata.get_session_metadata("session-a", cache_bust=True, sessions_root=tmp_path / "sessions")
+    assert persisted[field] == ""

@@ -298,6 +298,12 @@
   --color-rsi-node-pruned: #dbdbdb;
   --color-rsi-node-selected-ring: #191919;
   --color-rsi-page-bg: #ffffff;
+  --color-overlay-rsi-rail: rgba(25, 25, 25, 0.4);
+  --color-rsi-node-failed: #ffc4e1;
+  --color-rsi-result-divider: var(--color-rsi-surface-48);
+  --color-sidebar-shadow: 2px 0 8px var(--color-rsi-surface-47);
+  --color-text-divider: var(--color-rsi-surface-26);
+  --color-text-meta: var(--color-rsi-surface-16);
   --color-rsi-primary-btn-bg: #191919;
   --color-rsi-primary-btn-text: #ffffff;
   --color-rsi-progress-track: #e4e3e3;

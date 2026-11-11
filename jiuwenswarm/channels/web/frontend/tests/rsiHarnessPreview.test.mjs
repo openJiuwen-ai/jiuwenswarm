@@ -10,6 +10,7 @@ const mocks = {
     export const rsiArtifactFilesList = (...args) => globalThis.rsiPreviewProbe.list(...args);
     export const rsiArtifactFilesGet = (...args) => globalThis.rsiPreviewProbe.read(...args);
   `,
+  '../rsiApi': 'export const rsiHarnessVersionsList = () => globalThis.rsiPreviewProbe.versions();',
   '../rsiStore': 'export const useRsiStore = selector => selector(globalThis.rsiPreviewState);',
   'react-i18next': 'const t = key => key; export const useTranslation = () => ({ t });',
   '../../../components/ArtifactsPanel/FilePreview': `
@@ -24,6 +25,7 @@ await build({
     'src/features/rsi/components/RsiArtifactDetailDialog.tsx',
     'src/features/rsi/components/RsiSelectedInfo.tsx',
     'src/features/rsi/components/RsiResultSummary.tsx',
+    'src/features/rsi/components/RsiSessionHarnessPicker.tsx',
   ],
   outdir: 'node_modules/.cache/rsi-harness-preview', outbase: 'src/features/rsi',
   outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm',
@@ -38,6 +40,7 @@ const files = await import('../node_modules/.cache/rsi-harness-preview/rsiArtifa
 const { RsiArtifactDetailDialog } = await import('../node_modules/.cache/rsi-harness-preview/components/RsiArtifactDetailDialog.mjs');
 const { RsiSelectedInfo } = await import('../node_modules/.cache/rsi-harness-preview/components/RsiSelectedInfo.mjs');
 const { RsiResultSummary } = await import('../node_modules/.cache/rsi-harness-preview/components/RsiResultSummary.mjs');
+const { RsiSessionHarnessPicker } = await import('../node_modules/.cache/rsi-harness-preview/components/RsiSessionHarnessPicker.mjs');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const node = (id, snapshot, type = 'ADOPTED') => ({
   node_id: id, snapshot_artifact_id: snapshot, type, adopted: type === 'ADOPTED', iteration: 1,
@@ -102,6 +105,27 @@ async function mounted(run) {
   }
 }
 
+test('session Harness picker restores the selected version and can clear it', () => mounted(async (root) => {
+  globalThis.rsiPreviewProbe.versions = async () => ({
+    versions: [
+      { installation_id: 'usable', harness_name: 'Usable', available: true },
+      { installation_id: 'missing', harness_name: 'Missing', available: false },
+    ],
+  });
+  const changes = [];
+  await act(async () => root.render(React.createElement(RsiSessionHarnessPicker, {
+    value: 'usable', disabled: false, onChange: (value) => changes.push(value),
+  })));
+  const select = document.querySelector('select');
+  assert.deepEqual(Array.from(select.options, (option) => option.value), ['', 'usable']);
+  assert.equal(select.value, 'usable');
+  await act(async () => {
+    select.value = '';
+    select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  });
+  assert.deepEqual(changes, ['']);
+}));
+
 test('baseline detail button loads the package tree and its configuration', () => mounted(async (root, calls) => {
   await act(async () => root.render(React.createElement(RsiSelectedInfo, { taskId: 'task' })));
   const button = document.querySelector('.rsi-selected-info__detail-btn');
@@ -155,7 +179,8 @@ test('an explicit best node ID selects its own snapshot rather than the latest n
   assert.equal(opened[0][0].artifactId, 'Aepoch-001');
   task.best_artifact = { artifact_id: 'missing-node', name: 'unavailable' };
   await act(async () => render());
-  assert.equal(document.querySelector('[data-testid="rsi-best-link"]'), null);
+  assert.equal(document.querySelector('[data-testid="rsi-best-link"][data-variant="link"]'), null);
+  assert.ok(document.querySelector('[data-testid="rsi-best-link"][data-variant="text"]'));
 }));
 
 test('file read errors are visible and selecting another file can recover', () => mounted(async root => {

@@ -42,6 +42,9 @@ class ChatSendParams(TypedDict, total=False):
     mode: NotRequired[str]
     """运行模式。如 agent.plan / agent.fast / code.normal / code.team / team。"""
 
+    rsi_harness_installation_id: NotRequired[str]
+    """已安装的会话 Harness 版本。省略时保留选择，空字符串恢复默认。"""
+
     attachments: NotRequired[list[dict]]
     """附件列表（@file 等）。结构待统一定义。"""
 

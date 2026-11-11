@@ -33,6 +33,11 @@ RSI versions are independent of the newer Plugin catalog. The production
 factory registers only the HARNESS adapter. Unsupported artifact scenarios and
 package declarations fail explicitly.
 
+Agent chats can select an installed RSI Harness version for the current
+session. The next chat turn applies and saves the selection. Subsequent
+turns restore the saved version, including after a restart. Choosing the
+default restores the latest globally active version.
+
 New tasks record continuous scoring and the two-stage promotion policy in the
 task profile. Resume uses the policy in the existing task snapshot. Harness
 previews use the task's immutable snapshot ID and leave the active artifact

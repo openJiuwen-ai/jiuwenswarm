@@ -4488,6 +4488,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             "cron_id": str(meta.get("cron_id", "")),
             "last_user_message_at": lum if isinstance(lum, (int, float)) and not isinstance(lum, bool) else None,
             "model": str(meta.get("model", "")),
+            "rsi_harness_installation_id": str(meta.get("rsi_harness_installation_id") or ""),
             "work_mode": str(meta.get("work_mode") or DEFAULT_WEB_WORK_MODE),
         }
 
