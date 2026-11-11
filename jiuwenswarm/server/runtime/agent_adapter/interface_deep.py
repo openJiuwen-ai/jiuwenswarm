@@ -730,6 +730,7 @@ from jiuwenswarm.common.runtime_workspace import (
     resolve_runtime_workspace_paths,
 )
 from jiuwenswarm.common.mcp_dynamic_token_patch import (
+    SSL_VERIFY_ENTRY_KEY,
     _registry_token_url,
     apply_mcp_dynamic_token_patch,
     mark_dynamic_token_server,
@@ -6109,7 +6110,23 @@ class JiuWenSwarmDeepAdapter:
         # 失败出口由 finally 统一 unmark。条目未携带 dynamic_token_url 或
         # 实例凭据未下发时 mark 是 no-op（该网关保持静态头）。
         server_id = str(getattr(cfg, "server_id", "") or "").strip()
-        marked = mark_dynamic_token_server(server_id, dynamic_token_url)
+        # 条目级 ssl_verify：build_mcp_server_config 只在「dynamic_token_url +
+        # 显式 false」时写入 params；随 mark 登记，取 token 客户端按 server_id
+        # 现读（见 DynamicTokenAuthStrategy / preflight）。
+        ssl_verify = (getattr(cfg, "params", None) or {}).get(
+            SSL_VERIFY_ENTRY_KEY
+        ) is not False
+        marked = mark_dynamic_token_server(
+            server_id, dynamic_token_url, ssl_verify=ssl_verify
+        )
+        logger.debug(
+            "[JiuWenSwarmDeepAdapter] dynamic-token gateway marked: name=%s "
+            "server_id=%s marked=%s ssl_verify=%s dynamic_token_url=set",
+            cfg.server_name,
+            server_id,
+            marked,
+            ssl_verify,
+        )
         ok_registered = False
         try:
             # stdio: command 必须可执行（npx/uvx/node 等），否则 SDK 启动子进程会

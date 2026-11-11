@@ -724,7 +724,7 @@ def _patch_httpx(monkeypatch):
 async def test_preflight_dynamic_token_success_adds_header(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _fake_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _fake_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         return "fresh-tok"
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
@@ -746,7 +746,7 @@ async def test_preflight_dynamic_token_success_adds_header(monkeypatch, _patch_h
 async def test_preflight_dynamic_token_failure_probes_with_empty_header(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _failing_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _failing_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         raise McpDynamicTokenUnavailableError(token_url, "connection refused")
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
@@ -768,7 +768,7 @@ async def test_preflight_dynamic_token_failure_probes_with_empty_header(monkeypa
 async def test_preflight_default_does_not_fetch_token(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _must_not_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _must_not_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         raise AssertionError("dynamic_token_url=None 时不应取 token")
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
@@ -1541,7 +1541,7 @@ def test_unmark_evicts_all_session_providers():
 async def test_preflight_dual_token_gateway_carries_turn_user_token(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _fake_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _fake_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         return "fresh-tok"
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
@@ -1590,7 +1590,7 @@ async def test_preflight_marked_gateway_without_creds_keeps_static(_patch_httpx)
 async def test_preflight_dual_token_actor_failure_with_user_token(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _failing_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _failing_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         raise McpDynamicTokenUnavailableError(token_url, "connection refused")
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
