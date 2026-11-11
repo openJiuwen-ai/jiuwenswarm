@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Minus, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   dedupeAgentGroupOptions,
+  duplicatePromptIndices,
   getAgentAvatarUrl,
   resolveAgentGroupSelectionId,
   type AgentCatalogItem,
@@ -69,6 +70,9 @@ export function AgentGroupEditor({
   const promptKeySeedRef = useMemo(() => ({ current: 0 }), []);
   const promptKeysRef = useMemo(() => ({ current: [] as string[] }), []);
 
+  const promptDuplicates = duplicatePromptIndices(draft.suggestedPrompts);
+  const firstDuplicate = promptDuplicates.find((item) => item !== null);
+  const hasDuplicatePrompts = firstDuplicate != null;
   const errors = useMemo(
     () => ({
       name: !draft.name.trim() ? t('agentManagement.group.form.errors.nameRequired') : '',
@@ -76,8 +80,11 @@ export function AgentGroupEditor({
       persona: !draft.persona.trim() ? t('agentManagement.group.form.errors.personaRequired') : '',
       leader: !draft.leaderId ? t('agentManagement.group.form.errors.leaderRequired') : '',
       members: draft.memberIds.length === 0 ? t('agentManagement.group.form.errors.membersRequired') : '',
+      prompts: firstDuplicate != null
+        ? t('agentManagement.group.form.errors.promptDuplicateAt', { index: firstDuplicate })
+        : '',
     }),
-    [draft.description, draft.leaderId, draft.memberIds.length, draft.name, draft.persona, t],
+    [draft.description, draft.leaderId, draft.memberIds.length, draft.name, draft.persona, firstDuplicate, t],
   );
   const hasErrors = Object.values(errors).some(Boolean);
   const uniqueAgentOptions = useMemo(() => dedupeAgentGroupOptions(agentOptions), [agentOptions]);
@@ -150,6 +157,7 @@ export function AgentGroupEditor({
           </div>
         }
         testId="agent-group-editor"
+        confirmDisabled={hasDuplicatePrompts}
         onConfirm={() => {
           setTouched(true);
           if (!hasErrors) onSave();
@@ -384,14 +392,22 @@ export function AgentGroupEditor({
             {draft.suggestedPrompts.length > 0 ? (
               <div className="space-y-2">
                 {draft.suggestedPrompts.map((prompt, index) => (
-                  <div className="flex items-center gap-2" key={promptKeyAt(index)}>
-                    <Input
-                      value={prompt}
-                      onChange={(value) => updatePrompt(index, value)}
-                      placeholder={t('agentManagement.group.form.promptPlaceholder')}
-                      data-testid="agent-group-editor-prompt-input"
-                      data-variant={promptKeyAt(index)}
-                    />
+                  <div className="flex items-start gap-2" key={promptKeyAt(index)}>
+                    <div className="flex-1 space-y-1">
+                      <Input
+                        value={prompt}
+                        onChange={(value) => updatePrompt(index, value)}
+                        placeholder={t('agentManagement.group.form.promptPlaceholder')}
+                        invalid={promptDuplicates[index] != null}
+                        data-testid="agent-group-editor-prompt-input"
+                        data-variant={promptKeyAt(index)}
+                      />
+                      {promptDuplicates[index] != null ? (
+                        <FieldError testId={`agent-group-editor-prompt-error-${index}`}>
+                          {t('agentManagement.group.form.errors.promptDuplicateAt', { index: promptDuplicates[index] })}
+                        </FieldError>
+                      ) : null}
+                    </div>
                     <button
                       type="button"
                       className="shrink-0 rounded-full p-1.5 text-text-muted hover:bg-secondary hover:text-text"

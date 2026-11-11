@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { type AgentDraft, type McpOption, type RequestStatus, type SkillOption } from '../../features/agentManagement';
+import { duplicatePromptIndices, type AgentDraft, type McpOption, type RequestStatus, type SkillOption } from '../../features/agentManagement';
 import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../features/agentManagement/limits';
 import { AgentTagPicker } from './AgentTagPicker';
 import { DeleteCardIcon } from './cardActions';
@@ -60,13 +60,19 @@ export function AgentEditor({
   const personaSurfaceRef = useRef<HTMLDivElement>(null);
   const personaTextareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const promptDuplicates = duplicatePromptIndices(draft.suggestedPrompts);
+  const firstDuplicate = promptDuplicates.find((item) => item !== null);
+  const hasDuplicatePrompts = firstDuplicate != null;
   const errors = useMemo(
     () => ({
       name: !draft.name.trim() ? t('agentManagement.form.errors.nameRequired') : '',
       description: !draft.description.trim() ? t('agentManagement.form.errors.descriptionRequired') : '',
       persona: !draft.persona.trim() ? t('agentManagement.form.errors.personaRequired') : '',
+      prompts: firstDuplicate != null
+        ? t('agentManagement.form.errors.promptDuplicateAt', { index: firstDuplicate })
+        : '',
     }),
-    [draft.description, draft.name, draft.persona, t],
+    [draft.description, draft.name, draft.persona, firstDuplicate, t],
   );
   const hasErrors = Object.values(errors).some(Boolean);
   const selectedSkills = skillOptions.filter((skill) => draft.skillRefs.includes(skill.id));
@@ -137,6 +143,7 @@ export function AgentEditor({
           </div>
         }
         testId="agent-management-editor"
+        confirmDisabled={hasDuplicatePrompts}
         onConfirm={() => {
           setTouched(true);
           if (!hasErrors) onSave();
@@ -410,14 +417,22 @@ export function AgentEditor({
             {draft.suggestedPrompts.length > 0 ? (
               <div className="space-y-2">
                 {draft.suggestedPrompts.map((prompt, index) => (
-                  <div className="flex items-center gap-2" key={index}>
-                    <Input
-                      value={prompt}
-                      onChange={(value) => updatePrompt(index, value)}
-                      placeholder={t('agentManagement.form.promptPlaceholder')}
-                      data-testid="agent-editor-prompt-input"
-                      data-variant={index}
-                    />
+                  <div className="flex items-start gap-2" key={index}>
+                    <div className="flex-1 space-y-1">
+                      <Input
+                        value={prompt}
+                        onChange={(value) => updatePrompt(index, value)}
+                        placeholder={t('agentManagement.form.promptPlaceholder')}
+                        invalid={promptDuplicates[index] != null}
+                        data-testid="agent-editor-prompt-input"
+                        data-variant={index}
+                      />
+                      {promptDuplicates[index] != null ? (
+                        <FieldError testId={`agent-editor-prompt-error-${index}`}>
+                          {t('agentManagement.form.errors.promptDuplicateAt', { index: promptDuplicates[index] })}
+                        </FieldError>
+                      ) : null}
+                    </div>
                     <button
                       type="button"
                       className="shrink-0 rounded-full p-1.5 text-text-muted hover:bg-secondary hover:text-text"

@@ -43,7 +43,7 @@ function agentTemplateWritePayload(draft: AgentDraft) {
     tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
     skills: draft.skillRefs,
     mcps: draft.useExternalHarness ? [] : draft.mcpRefs,
-    quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
+    quickInputs: Array.from(new Set(draft.suggestedPrompts.map((prompt) => prompt.trim()).filter(Boolean))),
     ...(draft.useExternalHarness
       ? { runtime: { provider_name: draft.externalHarnessProvider, config: {} } }
       : {}),
