@@ -24,6 +24,7 @@ from tests.unit_tests.runtime.test_client_tool_control_resume import (
     _DocumentAgent,
     _client_request,
     _paused,
+    _runtime,
 )
 from tests.unit_tests.agentserver.client_attachments_support import (  # noqa: F401 - the fixture
     CLIENT_APP,
@@ -322,3 +323,66 @@ def test_a_resume_whose_turn_runs_another_client_tool_sends_its_request(is_strea
     assert len(agent.delivered) == 1
     assert not [m for m in sent if (m.get("body") or {}).get("details", {}).get("code")]
     assert "call-c" in json.dumps(sent)
+
+
+
+def _chat(session_id: str, socket: str, **params) -> AgentRequest:
+    return AgentRequest(request_id=f"chat-{socket}", channel_id="web", session_id=session_id, user_id="user-1",
+                        req_method=ReqMethod.CHAT_SEND, is_stream=True, metadata={"ws_id": socket},
+                        params=params or {"query": "read the deck", "mode": "agent"})
+
+
+def _document_server(monkeypatch) -> tuple[AgentWebSocketServer, list[dict], _DocumentAgent]:
+    """AgentServer on a Runtime whose turn pauses on two client tool calls (call-a, call-b)."""
+    server, pushed = _pushing_server(monkeypatch)
+    agent = _DocumentAgent()
+    runtime, _admission = _runtime(agent)
+    server._execution_runtime = lambda: runtime
+    server._session_message_service = type(
+        "Mailbox", (), {"find_waiting_for_pause": AsyncMock(return_value=None)})()
+    server._trigger_before_chat_request_hook = AsyncMock()
+    give_access(pending=runtime.pending_interactions, push=server.send_push)
+    return server, pushed, agent
+
+
+def _streamed_calls(link: Socket) -> list[str]:
+    """The client tool calls the stream answering a chat.send carried to its sender."""
+    return [call for call in ("call-a", "call-b") if call in json.dumps(link.sent)]
+
+
+@pytest.mark.parametrize("holder", ["ws-2", "ws-1"])
+def test_a_call_goes_to_the_socket_holding_the_document_once_the_turn_pauses(holder, monkeypatch) -> None:
+    server, pushed, _agent = _document_server(monkeypatch)
+    link = Socket()
+
+    async def scenario() -> None:
+        assert (await answer_async(request(socket=holder)))["ok"] is True
+        await server.dispatch_parsed_request(link, _chat("session-1", "ws-1"), asyncio.Lock())
+
+    asyncio.run(scenario())
+
+    if holder == "ws-1":
+        assert _streamed_calls(link) == ["call-a", "call-b"]
+        assert _client_tool_requests(pushed) == []
+    else:
+        assert _streamed_calls(link) == []
+        assert _client_tool_requests(pushed) == [("web", "ws-2", "call-a"), ("web", "ws-2", "call-b")]
+
+
+def test_the_holder_answers_the_calls_of_a_turn_another_socket_started_and_the_turn_goes_on(monkeypatch) -> None:
+    server, pushed, agent = _document_server(monkeypatch)
+    holder = Socket()
+
+    async def scenario() -> None:
+        assert (await answer_async(request(socket="ws-2")))["ok"] is True
+        await server.dispatch_parsed_request(Socket(), _chat("session-1", "ws-1"), asyncio.Lock())
+        answers = [{"interrupt_id": m["payload"]["interrupt_id"], "request_id": m["payload"]["request_id"],
+                    "result": {"text": "read"}}
+                   for m in pushed if m["payload"].get("event_type") == "chat.client_tool_request"]
+        resume = _chat("session-1", "ws-2", source="client_tool_interrupt", answers=answers)
+        await server.dispatch_parsed_request(holder, resume, asyncio.Lock())
+
+    asyncio.run(scenario())
+
+    assert [[answer["request_id"] for answer in d["answers"]] for d in agent.delivered] == [["call-a", "call-b"]]
+    assert "done" in json.dumps(holder.sent)

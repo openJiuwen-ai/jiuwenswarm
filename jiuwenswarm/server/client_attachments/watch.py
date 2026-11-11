@@ -147,7 +147,7 @@ async def _sweep_conversation(session_id: str, now: float) -> None:
 
 async def _answer_as_gone(session_id: str, calls: list[dict[str, Any]], answering: frozenset[str]) -> None:
     if not await _answered_as_gone(session_id, calls, answering):
-        await _give_withheld_calls_to_a_client_attached_meanwhile(session_id)
+        await hand_calls_to_holder(session_id)
 
 
 async def _answered_as_gone(session_id: str, calls: list[dict[str, Any]], answering: frozenset[str]) -> bool:
@@ -166,7 +166,8 @@ async def _answered_as_gone(session_id: str, calls: list[dict[str, Any]], answer
     return True
 
 
-async def _give_withheld_calls_to_a_client_attached_meanwhile(session_id: str) -> None:
+async def hand_calls_to_holder(session_id: str) -> None:
+    """Push the client tool calls the pause of ``session_id`` waits on to the socket holding its resource, if any."""
     connection = get_attachment_directory().connection_for_session(session_id)
     if connection is None:
         return

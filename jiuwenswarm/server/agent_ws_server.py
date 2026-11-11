@@ -117,7 +117,7 @@ from jiuwenswarm.common.schema.agent import (
     AgentResponse,
     AgentResponseChunk,
 )
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.common.utils import (
     get_agent_root_dir,
@@ -141,6 +141,8 @@ from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS
 from jiuwenswarm.server.client_attachments import (
     CLIENT_ATTACH_REQ_METHODS,
     close_client_attachments,
+    get_attachment_directory,
+    hand_calls_to_holder,
     handle_client_attach_request,
     set_conversation_access,
     start_client_attachment_sweep,
@@ -5334,6 +5336,11 @@ class AgentWebSocketServer:
             send_lock,
         )
         runtime_stream: Any | None = None
+        sender = (request.channel_id or "", str((request.metadata or {}).get("ws_id") or ""))
+        # The conversation, as _organization_stream_key reads it: the request field first, then params.
+        conversation = request.session_id or (request.params if isinstance(request.params, dict) else {}).get(
+            "session_id") or ""
+        calls_for_holder = False
 
         async def _send_control_event(event: RuntimeEvent) -> None:
             await self._send_runtime_event(
@@ -5371,6 +5378,13 @@ class AgentWebSocketServer:
                     continue
                 outcome_tracker.observe(event)
                 await self._persist_repeated_session_question(event, resume_state)
+                if (
+                    event.event_type == EventType.CHAT_CLIENT_TOOL_REQUEST.value
+                    and get_attachment_directory().held_by_another_socket(conversation, sender)
+                ):
+                    # The socket holding the document runs the call, handed to it once the turn has paused.
+                    calls_for_holder = True
+                    continue
                 chunk_count += 1
                 # 通知 keepalive 有真实 chunk 发送，重置空闲计时。
                 keepalive.notify_activity(terminal=event.is_complete)
@@ -5396,6 +5410,8 @@ class AgentWebSocketServer:
                         request.request_id,
                     )
                     return
+            if calls_for_holder:
+                await hand_calls_to_holder(conversation)
             if resume_state is not None and resume_state.waiting_user:
                 outcome_tracker.waiting_user = True
             resume_outcome = outcome_tracker.outcome()

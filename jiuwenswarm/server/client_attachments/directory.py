@@ -75,6 +75,10 @@ class AttachmentDirectory:
     def connection_for_session(self, session_id: str) -> Attachment | None:
         return next((c for c in self._connections.values() if c.session_id == session_id), None)
 
+    def held_by_another_socket(self, session_id: str, key: tuple[str, str]) -> bool:
+        holder = self.connection_for_session(session_id)
+        return holder is not None and holder.key != key
+
     def attachments_for(self, session_id: str) -> list[Attachment]:
         """Attachments of the user whose client is attached to ``session_id``, by name."""
         caller = self.connection_for_session(session_id)

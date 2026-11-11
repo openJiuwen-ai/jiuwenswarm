@@ -22,6 +22,7 @@ _EXPORTS = {
     "load_client_capabilities": "attach",
     "get_attachment_directory": "directory",
     "close_client_attachments": "watch",
+    "hand_calls_to_holder": "watch",
     "set_conversation_access": "watch",
     "start_client_attachment_sweep": "watch",
     "sweep_once": "watch",
