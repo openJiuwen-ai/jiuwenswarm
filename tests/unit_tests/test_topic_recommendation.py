@@ -2231,10 +2231,20 @@ def test_topic_pools_isolate_by_work_mode(tmp_path):
         design_key
     )
     other_model = build_generation_trigger_key(**{**common, "model": "other"}, work_mode="work")
-    assert "model" not in build_serving_compatibility_key(work_key)
+    other_endpoint = build_generation_trigger_key(
+        **{**common, "model": "other", "generation_config_version": "cfg:base_url=https://other.example"},
+        work_mode="work",
+    )
+    serving = build_serving_compatibility_key(work_key)
+    assert "model" not in serving
+    assert "generation_config_version" not in serving
     assert serving_compatibility_keys_match(
-        {**build_serving_compatibility_key(work_key), "model": "legacy"},
+        {**serving, "model": "legacy"},
         build_serving_compatibility_key(other_model),
+    )
+    assert serving_compatibility_keys_match(
+        serving,
+        build_serving_compatibility_key(other_endpoint),
     )
 
     service = TopicService(
