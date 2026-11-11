@@ -440,8 +440,11 @@ async def test_handle_skills_team_skills_hub_install_idempotent_same_asset(tmp_p
 async def test_handle_skills_team_skills_hub_install_same_version_latest_is_idempotent(
     tmp_path,
 ):
-    """不指定版本时取远端最新比对：远端版本与已装一致 → 幂等成功且不动本地。"""
-    from jiuwenswarm.server.runtime.skill.archive_store import read_versions_index
+    """不指定版本时取远端元数据比对：版本一致 → 幂等成功且不下载制品、不动本地。"""
+    from jiuwenswarm.server.runtime.skill.archive_store import (
+        read_versions_index,
+        write_skillhub_first_install_index,
+    )
 
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
     dest = tmp_path / "skills" / "demo-skill"
@@ -453,8 +456,6 @@ async def test_handle_skills_team_skills_hub_install_same_version_latest_is_idem
     content = dest / ".archive" / "versions" / "content" / "ver-abc"
     content.mkdir(parents=True)
     shutil.copy2(dest / "SKILL.md", content / "SKILL.md")
-    from jiuwenswarm.server.runtime.skill.archive_store import write_skillhub_first_install_index
-
     write_skillhub_first_install_index(
         dest,
         version="1.0.0",
@@ -462,7 +463,6 @@ async def test_handle_skills_team_skills_hub_install_same_version_latest_is_idem
         storage_id="ver-abc",
         checksum_sha256="abc",
     )
-    download_calls: list[str] = []
 
     async def _fake_get_data(path, **kwargs):  # noqa: ANN001
         assert path == "/api/v1/artifacts/demo-skill"
@@ -472,17 +472,15 @@ async def test_handle_skills_team_skills_hub_install_same_version_latest_is_idem
             "version": "1.0.0",
         }
 
-    async def _fake_download(url, **kwargs):  # noqa: ANN001
-        download_calls.append(url)
-        return _build_skill_zip_bytes(skill_name="demo-skill")
+    async def _should_not_download(*_a, **_k):  # noqa: ANN001
+        raise AssertionError("版本一致时幂等成功不应下载制品")
 
     manager.set_mock_get_data(_fake_get_data)
-    manager.set_mock_download(_fake_download)
+    manager.set_mock_download(_should_not_download)
 
     payload = await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
     assert payload["success"] is True
     assert payload["skill"]["path"] == str(dest)
-    assert download_calls, "需要下载远端制品才能比对最新版本"
     index = read_versions_index(dest)
     assert index["current_version"] == "1.0.0"
     assert len(index["versions"]) == 1
@@ -523,11 +521,11 @@ async def test_handle_skills_team_skills_hub_install_newer_version_reports_confl
             "version": "2.0.0",
         }
 
-    async def _fake_download(url, **kwargs):  # noqa: ANN001
-        return _build_skill_zip_bytes(skill_name="demo-skill", version="2.0.0")
+    async def _should_not_download(*_a, **_k):  # noqa: ANN001
+        raise AssertionError("版本决策只看远端元数据，不应下载制品")
 
     manager.set_mock_get_data(_fake_get_data)
-    manager.set_mock_download(_fake_download)
+    manager.set_mock_download(_should_not_download)
 
     with pytest.raises(SkillRpcError) as exc_info:
         await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
@@ -542,6 +540,58 @@ async def test_handle_skills_team_skills_hub_install_newer_version_reports_confl
     assert (dest / "SKILL.md").read_text(encoding="utf-8").startswith(
         "---\nname: demo-skill"
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_install_renamed_republish_never_creates_second_directory(
+    tmp_path,
+):
+    """改名重发同一 asset_id：以本地目录为锚点报冲突，绝不落第二份目录/记录。"""
+    from jiuwenswarm.server.runtime.skill.archive_store import (
+        get_current_version,
+        write_skillhub_first_install_index,
+    )
+
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    dest = tmp_path / "skills" / "demo-skill"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: test\n---\nbody\n",
+        encoding="utf-8",
+    )
+    content = dest / ".archive" / "versions" / "content" / "ver-abc"
+    content.mkdir(parents=True)
+    shutil.copy2(dest / "SKILL.md", content / "SKILL.md")
+    write_skillhub_first_install_index(
+        dest,
+        version="1.0.0",
+        asset_id="demo-skill",
+        storage_id="ver-abc",
+        checksum_sha256="abc",
+    )
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        # 市场把同一 asset_id 改名为 demo-skill-pro 后重发 v2.0.0
+        return {
+            "download_url": _TEAM_SKILLS_HUB_ZIP_URL,
+            "checksum_sha256": "",
+            "version": "2.0.0",
+        }
+
+    async def _should_not_download(*_a, **_k):  # noqa: ANN001
+        raise AssertionError("已装资产的重装决策不应下载改名后的包")
+
+    manager.set_mock_get_data(_fake_get_data)
+    manager.set_mock_download(_should_not_download)
+
+    with pytest.raises(SkillRpcError) as exc_info:
+        await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
+    assert exc_info.value.code == "SKILL_NAME_CONFLICT"
+    # skills 根下仍然只有本地原有的一份目录，没有 demo-skill-pro
+    assert sorted(p.name for p in (tmp_path / "skills").iterdir()) == ["demo-skill"]
+    assert get_current_version(dest) == "1.0.0"
+    assert manager._state.get("local_skills", []) == []
+    assert manager._state.get("installed_plugins", []) == []
 
 
 @pytest.mark.asyncio

@@ -4146,23 +4146,28 @@ class SkillManager:
         requested_display_name = str(params.get("display_name") or "").strip()
 
         existing = self._find_skill_dir_by_installed_asset_id(asset_id)
-        if existing is not None and not is_skillpack(existing) and not skillpack_productization_enabled():
+        installed_local = (
+            existing is not None
+            and not is_skillpack(existing)
+            and not skillpack_productization_enabled()
+        )
+        installed_version = ""
+        if installed_local:
             try:
                 installed_version = get_current_version(existing) or ""
             except SkillArchiveError:
                 installed_version = ""
-            # 幂等短路仅限显式指定版本且与已装一致；未指定版本（取远端
-            # 最新）或版本不同都必须继续下载比对，市场更新不能静默假成功。
-            if version_str and installed_version == version_str:
-                return {
-                    "success": True,
-                    "skill": {
-                        "name": existing.name,
-                        "source": "teamskillshub",
-                        "asset_id": asset_id,
-                        "path": str(existing),
-                    },
-                }
+        if installed_local and version_str and installed_version == version_str:
+            # 显式指定版本且与已装一致：零网络幂等短路。
+            return {
+                "success": True,
+                "skill": {
+                    "name": existing.name,
+                    "source": "teamskillshub",
+                    "asset_id": asset_id,
+                    "path": str(existing),
+                },
+            }
 
         try:
             base_url = self._get_team_skills_hub_base_url(
@@ -4179,6 +4184,33 @@ class SkillManager:
                 raise SkillRpcError(
                     ERROR_SKILLHUB_INSTALL_FAILED,
                     "marketplace 返回数据格式错误",
+                )
+
+            if installed_local:
+                # 同一资产的重装/升级以 existing 为锚点，仅凭远端元数据
+                # 版本就地决策：不下载制品，也不按包内 name 生成第二个
+                # 安装目标（改名重发同 asset_id 时不落重复目录/记录）。
+                remote_version = str(artifact_data.get("version") or "").strip()
+                if remote_version and installed_version == remote_version:
+                    return {
+                        "success": True,
+                        "skill": {
+                            "name": existing.name,
+                            "source": "teamskillshub",
+                            "asset_id": asset_id,
+                            "path": str(existing),
+                        },
+                    }
+                version_note = (
+                    f"本地版本 v{installed_version}" if installed_version else "本地版本未知"
+                )
+                market_note = (
+                    f"市场版本 v{remote_version}" if remote_version else "市场版本未知"
+                )
+                raise SkillRpcError(
+                    ERROR_SKILL_NAME_CONFLICT,
+                    f"本地已安装 Skill: {existing.name}（{version_note}，{market_note}），"
+                    "请先卸载后重新安装以升级",
                 )
 
             download_url = str(artifact_data.get("download_url", "")).strip()
