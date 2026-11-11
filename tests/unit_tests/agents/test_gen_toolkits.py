@@ -186,6 +186,9 @@ def _mm_video_handler(statuses: list[str], *, error: Any = None) -> Handler:
         ("MiniMax-H3", "1080p", "2K"),
         ("MiniMax-H3-Highspeed", "1080p", "768P"),
         ("MiniMax-H3-Lite", "480p", "480P"),
+        ("MiniMax-H3-Max", "2K", "768P"),
+        ("minimax/MiniMax-H3-Highspeed-01", "2K", "768P"),
+        ("MiniMax H3 Lite", "1080p", "768P"),
     ],
 )
 async def test_minimax_video_submit_poll_download(monkeypatch, tmp_path, model, requested, expected):
