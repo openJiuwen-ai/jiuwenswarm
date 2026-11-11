@@ -1440,6 +1440,7 @@ test('multimodal dialogs reuse provider-first model configuration; topic probes 
   assert.match(dialog, /probeBeforeSave = modality === 'topic'/);
   assert.match(dialog, /'config\.validate_model'/);
   assert.match(mediaConfig, /buildMediaModelValidationPayload/);
+  assert.match(mediaConfig, /buildSavedTopicModelValidationPayload/);
   assert.doesNotMatch(dialog, /OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/);
 });
 
