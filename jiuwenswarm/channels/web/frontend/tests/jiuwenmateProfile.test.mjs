@@ -1768,6 +1768,24 @@ async function mountDashboard(extra = {}) {
   };
 }
 
+test('creating a task center schedule without an executor explains why nothing was saved', async () => {
+  const created = [];
+  const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+    await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+    await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+    assert.deepEqual(created, []);
+    assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]')?.textContent, '请选择执行者');
+    const executor = view.find('[data-testid="jiuwenmate-schedule-executor"]');
+    await act(async () => {
+      executor.value = 'agent-1';
+      executor.dispatchEvent(new window.Event('change', { bubbles: true }));
+    });
+    assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+  } finally { await view.close(); }
+});
+
 test('the task center runs the scheduled task whose menu was opened', async () => {
   const runs = [];
   const view = await mountDashboard({ onRunSchedule: (planId) => { runs.push(planId); } });
