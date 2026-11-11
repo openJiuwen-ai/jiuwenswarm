@@ -289,7 +289,7 @@ _POWERSHELL_COMMAND_ARG_PATTERN = re.compile(r"(?is)(?:^|\s)-(?:command|c)\s+(?P
 _POSIX_COMMANDS = frozenset({
     "ls", "grep", "egrep", "fgrep", "cat", "head", "tail", "find", "rm",
     "cp", "mv", "touch", "chmod", "chown", "sed", "awk", "gawk", "cut",
-    "sort", "uniq", "wc", "du", "df", "pwd", "which", "mkdir",
+    "sort", "uniq", "wc", "du", "df", "pwd", "which", "mkdir", "echo",
 })
 _QUOTED_WINDOWS_PATH_PATTERN = re.compile(r"(?P<quote>['\"])(?P<path>[A-Za-z]:\\[^'\"]+)(?P=quote)")
 _UNQUOTED_WINDOWS_PATH_PATTERN = re.compile(r"(?<![\w/])(?P<path>[A-Za-z]:\\[^\s|&;]+)")
