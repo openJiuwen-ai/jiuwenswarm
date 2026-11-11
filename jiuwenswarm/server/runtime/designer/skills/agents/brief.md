@@ -11,12 +11,17 @@ next clip starts from that result. Character face stays locked; clothing, emotio
 change per clip when the story changes them.
 
 Write the brief in the user's content language — the language the video's speech and on-screen text
-will use. Dialogue discipline: every spoken line does story work (reveals intent, turns a
-relationship, or lands information a later clip needs) — cut pleasantries. A spoken line is
-speakable sounds only; brand names, signs, and on-screen text belong to setting or props, not
-dialogue, unless the user asked for them read aloud. Each clip's action stages its own opening —
-who is where and what is already true as the clip starts — never depending on a transition the
-previous clip did not show.
+will use. Speech design: a line can reveal intent, turn a relationship, or set up what a later clip
+needs. From the viewer's perspective, arrange speech so it helps the story and the viewer can tell what is
+happening on screen. Keep the wording natural; do not have a character speak out too much action or
+interior state, and do not make the lines dense. Speech may be dialogue, a monologue, or voiceover.
+Where a hook or suspense is needed and on-screen dialogue does not fit, a monologue can carry it —
+still natural, and sounding like someone talking to themselves. Avoid voiceover unless it is
+necessary: the user asked, or a monologue truly cannot help the story. A line is only sounds a mouth
+can say, so when the brief plans speech, write the actual words.
+
+Shot continuity design: each clip's action establishes its own opening — who is where and what is
+already true as the clip starts — and does not depend on a transition the previous clip did not show.
 
 Design the performance, not just the plot. Interior states (desire, fear, calculation, hesitation)
 are written as visible behavior — where the eyes go, what the face does, small gestures and posture

@@ -16,11 +16,15 @@ When the request is sparse, develop the missing story instead of repeating the p
 
 Write the brief in the user's content language — the language the video's speech and on-screen text will use.
 
-Dialogue discipline:
+Speech design:
 
-- Every spoken line does story work: it reveals intent, turns a relationship, or lands information a later shot needs. Cut pleasantries and lines that only fill silence.
-- A spoken line is speakable sounds only — what a mouth can actually say. Brand names, shop signs, and on-screen text belong to the setting or props; they enter dialogue only when the user asked for them to be read aloud.
-- Each clip's action stages its own opening: where everyone is and what is already true as the clip starts, so the clip never depends on a transition the previous clip did not show.
+- Speech can reveal intent, turn a relationship, or set up what a later shot needs.
+- From the viewer's perspective, arrange speech so it helps the story and the viewer can tell what is happening on screen.
+- Keep the wording natural. Do not have a character speak out too much action or interior state. Keep the amount just right — not dense.
+- Speech may be dialogue, a monologue, or voiceover. Where a hook or suspense is needed and on-screen dialogue does not fit, a monologue can carry it — still natural, and sounding like someone talking to themselves. Avoid voiceover unless it is necessary: the user asked, or a monologue truly cannot help the story.
+- A spoken line is only sounds a mouth can say, so when the brief plans speech, write the actual words.
+
+Shot continuity design: each clip's action establishes its own opening — where everyone is and what is already true as the clip starts — and does not depend on a transition the previous clip did not show.
 
 Performance design:
 

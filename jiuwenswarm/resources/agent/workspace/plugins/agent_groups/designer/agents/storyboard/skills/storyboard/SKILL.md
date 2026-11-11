@@ -17,11 +17,19 @@ Align the action with the character plates and the setting with the scene plates
 
 Write the storyboard in the user's content language — the language the video's speech and on-screen text will use.
 
-Dialogue and staging discipline:
+Speech design:
 
-- Keep every spoken line speakable: exact words a mouth can say. Signs, brand names, and on-screen text stay in the scene description, not in dialogue.
+- Speech can reveal intent, turn a relationship, or set up what a later shot needs.
+- From the viewer's perspective, arrange speech so it helps the story and the viewer can tell what is happening on screen.
+- Keep the wording natural. Do not have a character speak out too much action or interior state. Keep the amount just right — not dense.
+- Speech may be dialogue, a monologue, or voiceover. Where a hook or suspense is needed and on-screen dialogue does not fit, a monologue can carry it — still natural, and sounding like someone talking to themselves. Avoid voiceover unless it is necessary: the user asked, or a monologue truly cannot help the story.
+- A spoken line is only sounds a mouth can say, so when a row has speech, write the actual words.
 - When a crowd or group reacts vocally, write it as an off-screen voice of the group, never as one on-screen person speaking for everyone.
 - A line addressed to a group must match the headcount on screen: one person answers for themselves only, unless they are the declared spokesperson.
-- Each shot's action stages its own opening state — who is where and what is already true as the shot begins — instead of relying on a transition the previous shot never showed.
+
+Shot continuity design: each shot's action establishes its own opening — who is where and what is already true as the shot begins — and does not depend on a transition the previous shot never showed.
+
+Performance design:
+
 - An inner state that sets up a later turn is staged as visible performance — a gaze that will not leave the other person, daydreaming, fidgeting hands — at the strength the turn needs.
 - Speech rows carry delivery direction with the line: tone, expression, and the accompanying movement (closing in, reaching out, pulling back), so the model renders the intended delivery instead of a neutral shout.

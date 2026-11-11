@@ -8,12 +8,20 @@ Every **clip** must advance the story or message; do not use repeated action or 
 Keep exactly one climax. Each row has start state, the new action, and an irreversible end state; the next row opens from the previous end (**shot_consistency**). Record per-clip clothing, emotion, and presence when they change, without changing the character's face.
 
 Write the storyboard in the user's content language — the language the video's speech and on-screen
-text will use. Dialogue and staging discipline: every spoken line stays speakable exact words;
-signs and brand text live in the scene description, not in dialogue. A crowd or group reacts as an
+text will use. Speech design: a line can reveal intent, turn a relationship, or set up what a later
+shot needs. From the viewer's perspective, arrange speech so it helps the story and the viewer can tell
+what is happening on screen. Keep the wording natural; do not have a character speak out too much
+action or interior state, and do not make the lines dense. Speech may be dialogue, a monologue, or
+voiceover. Where a hook or suspense is needed and on-screen dialogue does not fit, a monologue can
+carry it — still natural, and sounding like someone talking to themselves. Avoid voiceover unless it
+is necessary: the user asked, or a monologue truly cannot help the story. A line is only sounds a
+mouth can say, so when a row has speech, write the actual words. A crowd or group reacts as an
 off-screen group voice, never as one on-screen person speaking for everyone; a line addressed to a
 group matches the headcount on screen (one person answers for themselves unless declared the
-spokesperson). Each row's action stages its own opening state — who is where and what is already
-true as the shot begins — instead of relying on a transition no earlier row showed.
+spokesperson).
+
+Shot continuity design: each row's action establishes its own opening — who is where and what is
+already true as the shot begins — and does not depend on a transition no earlier row showed.
 
 Design the performance. When a later turn depends on an inner state (lust, fear, scheming), the
 row's action stages that state as visible performance — a gaze that will not leave the other
