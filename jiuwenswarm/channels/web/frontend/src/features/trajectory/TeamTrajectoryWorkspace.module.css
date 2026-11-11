@@ -411,6 +411,21 @@
   flex: 1 1 0;
 }
 
+/* Keep sibling lanes in the group's flow when an operator is expanded. */
+.workflowGroupSelected:has(> .workflowGroupLanes > .laneRow + .laneRow) {
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.workflowGroupSelected .workflowGroupLanes:has(> .laneRow + .laneRow) {
+  flex: 0 0 auto;
+}
+
+.workflowGroupSelected .workflowGroupLanes:has(> .laneRow + .laneRow) > .laneRowExpanded {
+  height: clamp(360px, 52vh, 420px);
+  flex: 0 0 auto;
+}
+
 .workflowGroupHeader {
   display: flex;
   width: 100%;
