@@ -62,17 +62,29 @@ export function validateDraft(draft: ScheduleDraft, executorId: string): string 
   return null;
 }
 
-export function filterSchedules<T extends { name: string; agentId: string; lastStatus: string }>(
-  plans: readonly T[],
+export function scheduleResumeBlocked(plan: Schedule, now: number): boolean {
+  return (plan.endsAt !== null && Date.parse(plan.endsAt) <= now)
+    || (plan.scheduleKind === 'once' && (plan.nextFireAt === null || Date.parse(plan.nextFireAt) <= now));
+}
+
+export function scheduleDisplayStatus(plan: Schedule, now: number): string {
+  if (plan.lastStatus !== 'completed' && plan.lastStatus !== 'paused') return plan.lastStatus;
+  const completedOnce = plan.scheduleKind === 'once' && plan.nextFireAt === null && plan.runCount > 0;
+  return !completedOnce && scheduleResumeBlocked(plan, now) ? 'expired' : plan.lastStatus;
+}
+
+export function filterSchedules(
+  plans: readonly Schedule[],
   query: string,
   agentId: string,
   status: string,
-): T[] {
+  now = Date.now(),
+): Schedule[] {
   const keyword = query.trim().toLowerCase();
   return plans.filter((plan) => {
     if (keyword && !plan.name.toLowerCase().includes(keyword)) return false;
     if (agentId && plan.agentId !== agentId) return false;
-    if (status && plan.lastStatus !== status) return false;
+    if (status && scheduleDisplayStatus(plan, now) !== status) return false;
     return true;
   });
 }

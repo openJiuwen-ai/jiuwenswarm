@@ -4,12 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { ActionMenu } from '../components/ActionMenu';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import type { JiuwenMateActivity, JiuwenMateCategory } from '../types';
-import { filterSchedules, scheduleSummary } from './state';
+import { filterSchedules, scheduleDisplayStatus, scheduleResumeBlocked, scheduleSummary } from './state';
 import { ScheduleDialog } from './ScheduleDialog';
 import { ScheduleHistory } from './ScheduleHistory';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './types';
 
-const STATUSES = ['', 'running', 'paused', 'failed', 'completed'] as const;
+const STATUSES = ['', 'running', 'paused', 'failed', 'completed', 'expired'] as const;
 const TIME_RANGES = ['7d', '30d', ''] as const;
 
 type BoardColleague = {
@@ -49,7 +49,8 @@ export function ScheduleBoard({
   const [timeRange, setTimeRange] = useState('7d');
   const [editing, setEditing] = useState<Schedule | null | undefined>(undefined);
   const [history, setHistory] = useState<{ plan: Schedule; runs: ScheduleRun[] } | null>(null);
-  const visible = filterSchedules(schedules, query, executor, status);
+  const now = Date.now();
+  const visible = filterSchedules(schedules, query, executor, status, now);
   const metrics = taskMetrics(schedules, activity, executor, timeRange);
   const colleagueOf = (agentId: string) => colleagues.find((item) => item.id === agentId);
   const nameOf = (agentId: string) => colleagueOf(agentId)?.name ?? agentId;
@@ -151,9 +152,11 @@ export function ScheduleBoard({
               </tr>
             ) : visible.map((plan) => {
               const colleague = colleagueOf(plan.agentId);
-              const nextExecution = plan.nextFireAt ?? (plan.scheduleKind === 'once' ? plan.runAt : null);
+              const resumeBlocked = scheduleResumeBlocked(plan, now);
+              const statusLabel = scheduleDisplayStatus(plan, now);
+              const nextExecution = resumeBlocked ? null : plan.nextFireAt;
               return (
-                <tr key={plan.id}>
+                <tr key={plan.id} data-testid="jiuwenmate-schedule-row" data-variant={plan.id}>
                   <td>{plan.name}</td>
                   <td>
                     <span className="jiuwenmate-schedule-board__executor">
@@ -180,18 +183,33 @@ export function ScheduleBoard({
                     </span>
                   </td>
                   <td>
-                    <span className="jiuwenmate-schedule-board__status" data-tone={plan.lastStatus}>
+                    <span className="jiuwenmate-schedule-board__status" data-tone={statusLabel}>
                       <i aria-hidden />
-                      {t(`jiuwenmate.schedule.status.${plan.lastStatus}`, { defaultValue: plan.lastStatus })}
+                      {t(`jiuwenmate.schedule.status.${statusLabel}`, { defaultValue: statusLabel })}
                     </span>
                   </td>
                   <td>{plan.runCount}</td>
                   <td>
                     <span className="jiuwenmate-schedule-board__actions">
-                      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={() => void onSetEnabled(plan.id, !plan.enabled)}>
-                        {plan.enabled ? t('jiuwenmate.schedule.pause') : t('jiuwenmate.schedule.resume')}
+                      {plan.enabled || !resumeBlocked ? (
+                        <button
+                          type="button"
+                          className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                          data-testid="jiuwenmate-schedule-toggle"
+                          onClick={() => {
+                            if (!plan.enabled && scheduleResumeBlocked(plan, Date.now())) {
+                              setEditing(plan);
+                              return;
+                            }
+                            void onSetEnabled(plan.id, !plan.enabled);
+                          }}
+                        >
+                          {plan.enabled ? t('jiuwenmate.schedule.pause') : t('jiuwenmate.schedule.resume')}
+                        </button>
+                      ) : null}
+                      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={() => setEditing(plan)} data-testid="jiuwenmate-schedule-edit">
+                        {t(resumeBlocked && !plan.enabled ? 'jiuwenmate.schedule.editExecutionTime' : 'jiuwenmate.schedule.edit')}
                       </button>
-                      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={() => setEditing(plan)}>{t('jiuwenmate.schedule.edit')}</button>
                       <ActionMenu
                         label={t('jiuwenmate.schedule.more')}
                         align="end"

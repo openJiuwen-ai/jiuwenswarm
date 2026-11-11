@@ -6491,6 +6491,7 @@
       "delete": "Delete",
       "pause": "Stop",
       "resume": "Enable",
+      "editExecutionTime": "Edit execution time",
       "more": "More",
       "basic": "Details",
       "back": "Back",
@@ -6525,6 +6526,7 @@
         "paused": "Paused",
         "failed": "Failed",
         "completed": "Completed",
+        "expired": "Expired",
         "queued": "Queued"
       },
       "run": {

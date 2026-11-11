@@ -6488,6 +6488,7 @@
       "delete": "删除",
       "pause": "停止",
       "resume": "启用",
+      "editExecutionTime": "编辑执行时间",
       "more": "更多",
       "basic": "基本信息",
       "back": "返回",
@@ -6522,6 +6523,7 @@
         "paused": "已暂停",
         "failed": "运行失败",
         "completed": "已完成",
+        "expired": "已过期",
         "queued": "排队中"
       },
       "run": {
