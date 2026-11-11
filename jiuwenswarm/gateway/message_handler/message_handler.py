@@ -3884,6 +3884,11 @@ class MessageHandler(ABC):
                                     else {}
                                 ),
                                 **(
+                                    {"model_input": (msg.params or {}).get("model_input")}
+                                    if (msg.params or {}).get("model_input")
+                                    else {}
+                                ),
+                                **(
                                     {"attachments": supplement_attachments}
                                     if supplement_attachments
                                     else {}
