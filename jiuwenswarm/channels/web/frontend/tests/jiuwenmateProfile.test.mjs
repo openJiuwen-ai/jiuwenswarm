@@ -1976,3 +1976,47 @@ for (const language of ['zh', 'en']) {
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }
+
+for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
+  test(`finished schedule plans are expired and successful history records remain completed in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const view = await mountDashboard({ schedules: [
+      { ...dashboardPlan, id: 'once-done', name: 'One-off', scheduleKind: 'once', runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'period-done', name: 'Periodic', runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'interval-done', name: 'Interval', scheduleKind: 'interval', intervalSeconds: 60, runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'period-active', name: 'Active periodic', lastStatus: 'running', runCount: 1 },
+      { ...dashboardPlan, id: 'interval-active', name: 'Active interval', scheduleKind: 'interval', intervalSeconds: 60, lastStatus: 'running', runCount: 1 },
+    ], onLoadScheduleHistory: async () => ({ plan: dashboardPlan, runs: [
+      { requestId: 'run-ok', scheduledFor: '2026-11-10T01:00:00Z', status: 'completed', description: '' },
+      { requestId: 'run-failed', scheduledFor: '2026-11-09T01:00:00Z', status: 'failed', description: '' },
+    ] }) });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      const row = view.find('[data-testid="jiuwenmate-schedule-board-row"][data-variant="once-done"]');
+      assert.equal(row.querySelector('.jiuwenmate-schedule-board__status').textContent, expected);
+      for (const id of ['period-done', 'interval-done']) {
+        assert.equal(view.find(`[data-variant="${id}"] .jiuwenmate-schedule-board__status`).textContent,
+          expected);
+      }
+      for (const id of ['period-active', 'interval-active']) {
+        assert.equal(view.find(`[data-variant="${id}"] .jiuwenmate-schedule-board__status`).textContent,
+          language === 'zh' ? '运行中' : 'Running');
+      }
+      const status = view.find('select[aria-label="' + i18n.t('jiuwenmate.schedule.runStatus') + '"]');
+      assert.ok(status.querySelector('option[value="expired"]'));
+      assert.equal(status.querySelector('option[value="completed"]'), null);
+      await act(async () => {
+        status.value = 'expired';
+        status.dispatchEvent(new window.Event('change', { bubbles: true }));
+      });
+      assert.deepEqual([...view.container.querySelectorAll('[data-testid="jiuwenmate-schedule-board-row"]')]
+        .map(item => item.dataset.variant), ['once-done', 'period-done', 'interval-done']);
+      await view.click(view.find('[data-variant="once-done"] .jiuwenmate-menu__trigger'));
+      await view.click(view.find('[role="menuitem"][data-variant="history"]'));
+      const history = view.find('[data-testid="jiuwenmate-schedule-history"]');
+      assert.ok(history);
+      assert.deepEqual([...history.querySelectorAll('.jiuwenmate-schedule-history__status')].map(item => item.textContent),
+        language === 'zh' ? ['已完成', '运行失败'] : ['Completed', 'Failed']);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}
