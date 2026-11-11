@@ -235,30 +235,9 @@ class AgentTaskExecutor:
         return bool(payload.get("pending"))
 
     async def wait_settled(self, task):
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.service import ExecutionUncertain
-
-        try:
-            async with asyncio.timeout(20):
-                while not self.store.read(task["id"])["execution_settled"]:
-                    await asyncio.sleep(0.05)
-        except TimeoutError as exc:
-            # Ask Core once before declaring the outcome unknown (#5486).
-            try:
-                if await self.reconciliation_ready():
-                    outcome = await self.reconcile(task)
-                    if outcome.get("status") != "failed" and (
-                        outcome.get("settled") or outcome.get("status") in {"completed", "cancelled"}
-                    ):
-                        self.store.update(task["id"], lambda t: t.update(
-                            execution_settled=True, checkpoint_open=False,
-                            execution_cancelled=outcome.get("status") == "cancelled" or t["status"] == "cancelling",
-                        ))
-                        return
-            except Exception:
-                logger.warning("Execution cleanup reconciliation failed task=%s", task["id"], exc_info=True)
-            raise ExecutionUncertain(
-                "Execution cleanup is unconfirmed; no work was replayed"
-            ) from exc
+        """Retain ownership until Core confirms settlement, including suspended turns."""
+        while not self.store.read(task["id"])["execution_settled"]:
+            await asyncio.sleep(0.05)
 
     @staticmethod
     def answer_input(task):
@@ -1143,7 +1122,17 @@ class VideoSearchManager:
                 )
             except ValueError as exc:
                 # Explicit receipt so the model cannot mistake a refusal for consent.
-                return dict(task_id=args["job_id"], state="rejected", applied=False, error=str(exc))
+                current = self.service.get(owner, scope, args["job_id"])
+                return dict(
+                    task_id=args["job_id"], state="rejected", applied=False, error=str(exc),
+                    current_task=self.voice_job(self.public(current)),
+                    message=(
+                        "The answer was not applied. Report the current task state from this receipt; "
+                        "do not claim approval, continued execution or completion without evidence. "
+                        "Query the current card before another answer. Do not recreate the task or "
+                        "transfer consent to a different card automatically."
+                    ),
+                )
         else:
             try:
                 result = self.service.modify(

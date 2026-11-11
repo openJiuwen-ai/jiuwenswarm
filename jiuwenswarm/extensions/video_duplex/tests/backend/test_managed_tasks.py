@@ -1278,3 +1278,67 @@ async def test_failed_stop_without_settlement_becomes_unknown_and_retains_capaci
     await asyncio.sleep(0.03)
     assert service.store.read(waiting["id"])["status"] == "queued"
     assert len(executor.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_dispatches_only_opened_owner_and_conversation(tmp_path):
+    store = TaskStore(tmp_path / "scoped-recovery.sqlite")
+    executor = Executor(store)
+    service = TaskService(store, executor)
+    scopes = [("alice", "task-duplex:current"), ("alice", "task-duplex:other"),
+              ("bob", "task-duplex:current")]
+    queued = [service._new(owner, session, "pending", {}) for owner, session in scopes]
+    with store.transaction() as db:
+        for task in queued:
+            store.put(db, task)
+    try:
+        service.snapshot(*scopes[0])
+        await until(lambda: len(executor.calls) == 1)
+        assert executor.calls[0]["id"] == queued[0]["id"]
+        executor.gates[queued[0]["id"]].set()
+        await until(lambda: not service.workers)
+        service.kick()
+        await asyncio.sleep(0)
+        assert len(executor.calls) == 1
+        assert all(store.read(task["id"])["status"] == "queued" for task in queued[1:])
+
+        # Opening another conversation activates it even after service startup.
+        service.snapshot(*scopes[1])
+        await until(lambda: len(executor.calls) == 2)
+        assert executor.calls[1]["id"] == queued[1]["id"]
+        assert store.read(queued[2]["id"])["status"] == "queued"
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
+
+    monkeypatch.setattr(module, "RECONCILE_INTERVAL", 0.01)
+
+    store = TaskStore(tmp_path / "scoped-running.sqlite")
+    executor = SimpleNamespace(reconcile=AsyncMock(return_value={"status": "running"}))
+    service = TaskService(store, executor)
+    current = service._new("alice", "current", "running", {})
+    other = service._new("alice", "other", "running", {})
+    for task in (current, other):
+        task["status"] = "running"
+    with store.transaction() as db:
+        for task in (current, other):
+            store.put(db, task)
+    try:
+        service.snapshot("alice", "current")
+        await until(lambda: executor.reconcile.await_count == 1)
+        assert executor.reconcile.await_args.args[0]["id"] == current["id"]
+        assert store.read(current["id"])["status"] == "running"
+        assert store.read(other["id"])["status"] == "running"
+        service.snapshot("alice", "current")
+        await asyncio.sleep(0.04)
+        assert executor.reconcile.await_count == 1
+        service.snapshot("alice", "other")
+        await until(lambda: executor.reconcile.await_count == 2)
+        assert store.read(other["id"])["status"] == "running"
+    finally:
+        await service.close()
