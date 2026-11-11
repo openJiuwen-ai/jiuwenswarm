@@ -269,6 +269,7 @@ class FileCronJobStore:
         job_id = str(job_id or "").strip()
         if not job_id:
             return False
+
         def _body() -> bool:
             data = self._read_json_unlocked()
             jobs_raw = data.get("jobs") or []
