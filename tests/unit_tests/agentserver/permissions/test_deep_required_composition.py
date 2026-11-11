@@ -8,6 +8,7 @@ from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness import DeepAgent, DeepAgentConfig
 from openjiuwen.harness.observability import AgentObservabilityRail
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
+from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
 
 from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail import (
     PlanApprovalInterruptRail,
@@ -126,7 +127,7 @@ def test_parent_composition_preserves_order_and_wiring(
     attrs = (
         "_root_permission_queue_rail _root_context_rail "
         "_runtime_prompt_rail _skill_rail _skill_retrieval_prompt_rail "
-        "_symphony_orchestration_rail _response_prompt_rail "
+        "_symphony_orchestration_rail _web_research_budget_rail _response_prompt_rail "
         "_multimodal_image_rail "
         "_stream_event_rail _task_planning_rail _security_rail "
         "_model_anomaly_detection_rail _heartbeat_rail _session_messaging_route_rail "
@@ -164,6 +165,22 @@ def test_parent_composition_preserves_order_and_wiring(
         plan = adapter._work_plan_approval_rail
         assert permission.priority >= ask.priority > plan.priority
         assert rails.index(permission) < rails.index(ask)
+
+
+def test_web_research_budget_preserves_response_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _adapter()
+    response_builder = MagicMock(return_value=object())
+    _stub_profile(adapter, monkeypatch)
+    monkeypatch.setattr(adapter, "_build_response_prompt_rail", response_builder)
+    rails = adapter._build_agent_rails(
+        {}, {"permissions": {"enabled": False}}, mode="agent",
+    )
+    budget_rails = [rail for rail in rails if isinstance(rail, WebResearchBudgetRail)]
+    assert budget_rails == [adapter._web_research_budget_rail]
+    response_builder.assert_called_once()
+    assert rails.index(budget_rails[0]) < rails.index(response_builder.return_value)
 
 
 @pytest.mark.parametrize(

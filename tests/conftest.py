@@ -38,6 +38,11 @@ def pytest_unconfigure(config):
         handler.close()
     logging.shutdown()
     _test_environment.undo()
+    logger = logging.getLogger("jiuwenswarm")
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+    logging.shutdown()
     _collection_home.cleanup()
 
 
