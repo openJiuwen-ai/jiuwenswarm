@@ -1624,14 +1624,16 @@ function ProfileSectionDetail({
                     <img src={platform === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
                     <strong>{t(`jiuwenmate.im.${platform}`)}</strong>
                   </span>
-                  <button
-                    type="button"
-                    className="jiuwenmate-link-button jiuwenmate-link-button--blue"
-                    onClick={() => onConfigureIm(undefined, platform)}
-                    data-testid={platformConnections.length ? 'jiuwenmate-profile-im-add' : 'jiuwenmate-profile-im-authorize'}
-                  >
-                    {t(platformConnections.length ? 'jiuwenmate.profile.addConnection' : 'jiuwenmate.profile.authorize')}
-                  </button>
+                  {platformConnections.length === 0 ? (
+                    <button
+                      type="button"
+                      className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                      onClick={() => onConfigureIm(undefined, platform)}
+                      data-testid="jiuwenmate-profile-im-authorize"
+                    >
+                      {t('jiuwenmate.profile.authorize')}
+                    </button>
+                  ) : null}
                 </header>
                 {platformConnections.length > 0 ? (
                   <ul className="jiuwenmate-profile__connections" data-testid="jiuwenmate-profile-connections">
