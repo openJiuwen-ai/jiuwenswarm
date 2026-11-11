@@ -73,20 +73,22 @@ def hub_card(
 async def list_hub_system_plugins(
     state: Any,
     install_dir: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Return Hub cards, degrading to an empty list when the Hub is unreachable."""
+    *,
+    refresh: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Return Hub cards and cache state, degrading to no cards when the Hub is unreachable."""
 
     from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import cached_asset_catalog
 
     port = create_default_hub_asset_port()
     try:
-        items, _ = await cached_asset_catalog(port, SYSTEM_PLUGIN_KIND)
+        items, cache = await cached_asset_catalog(port, SYSTEM_PLUGIN_KIND, refresh=refresh)
     except Exception:  # noqa: BLE001 - the local catalog must stay usable offline
         logger.warning("[ExtensionsV2] failed to list Hub system plugins", exc_info=True)
-        return []
+        return [], None
     index = build_state_index(state)
     store = ExtensionInstallState.for_install_dir(install_dir) if install_dir is not None else _install_state(index)
-    return [hub_card(item, index, store) for item in items]
+    return [hub_card(item, index, store) for item in items], cache
 
 
 async def get_hub_system_plugin(asset_id: str, version: str = "") -> HubAssetDetail:

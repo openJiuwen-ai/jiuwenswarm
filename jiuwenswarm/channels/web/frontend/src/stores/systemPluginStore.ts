@@ -1,8 +1,33 @@
 import { create } from 'zustand';
 import { systemPluginApi } from '../services/extensionsV2Api';
+import { catalogScope, scheduleCatalogRefresh } from '../features/catalogCache';
 import type { SystemPluginDetail, SystemPluginSummary } from '../types/systemPlugin';
 
 type MutationResult = { ok: true } | { ok: false; error: string };
+type SystemPluginLoadOptions = { refresh?: boolean; silent?: boolean };
+
+// Hub preview links are short-lived presigned URLs that change on every request.
+const PREVIEW_URL_TTL_MS = 20 * 60 * 1000;
+const PREVIEW_URL_LIMIT = 32;
+const previewUrls = new Map<string, { url: string; at: number }>();
+
+function reusePreviewUrl(detail: SystemPluginDetail): SystemPluginDetail {
+  if (!detail.preview || !/^https?:\/\//i.test(detail.preview)) return detail;
+  const key = `${detail.assetId || detail.packageId || detail.id}@${detail.version}`;
+  const cached = previewUrls.get(key);
+  if (cached && Date.now() - cached.at < PREVIEW_URL_TTL_MS) {
+    previewUrls.delete(key);
+    previewUrls.set(key, cached);
+    return { ...detail, preview: cached.url };
+  }
+  previewUrls.set(key, { url: detail.preview, at: Date.now() });
+  while (previewUrls.size > PREVIEW_URL_LIMIT) {
+    const oldest = previewUrls.keys().next().value;
+    if (oldest === undefined) break;
+    previewUrls.delete(oldest);
+  }
+  return detail;
+}
 
 interface SystemPluginState {
   catalog: SystemPluginSummary[];
@@ -11,8 +36,8 @@ interface SystemPluginState {
   busyIds: Record<string, boolean>;
   loading: boolean;
   error: string | null;
-  loadCatalog: () => Promise<void>;
-  loadMine: () => Promise<void>;
+  loadCatalog: (options?: SystemPluginLoadOptions) => Promise<void>;
+  loadMine: (options?: SystemPluginLoadOptions) => Promise<void>;
   loadDetail: (id: string, version?: string) => Promise<boolean>;
   install: (id: string, version?: string) => Promise<MutationResult>;
   importPath: (path: string) => Promise<MutationResult>;
@@ -51,18 +76,34 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
   };
 
   let pendingLoads = 0;
+  const listRequestSeq: Record<'catalog' | 'mine', number> = { catalog: 0, mine: 0 };
 
-  const load = async (scope: 'catalog' | 'mine') => {
-    pendingLoads += 1;
-    set({ loading: true });
+  const load = async (scope: 'catalog' | 'mine', options?: SystemPluginLoadOptions) => {
+    const silent = options?.silent ?? false;
+    const seq = ++listRequestSeq[scope];
+    const requestScope = catalogScope();
+    if (!silent) {
+      pendingLoads += 1;
+      set({ loading: true });
+    }
     try {
-      const packages = await systemPluginApi.catalog(scope);
+      const packages = await systemPluginApi.catalog(scope, options?.refresh === true);
+      if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return;
+      scheduleCatalogRefresh(
+        `systemPluginStore.ts:${scope}`,
+        packages.cache,
+        () => { void load(scope, { silent: true }); },
+        () => listRequestSeq[scope] === seq,
+      );
       set(scope === 'catalog' ? { catalog: packages } : { mine: packages });
     } catch (error) {
-      set({ error: messageOf(error) });
+      if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return;
+      if (!silent) set({ error: messageOf(error) });
     } finally {
-      pendingLoads -= 1;
-      if (pendingLoads === 0) set({ loading: false });
+      if (!silent) {
+        pendingLoads -= 1;
+        if (pendingLoads === 0) set({ loading: false });
+      }
     }
   };
 
@@ -92,15 +133,16 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
 
     clearError: () => set({ error: null }),
 
-    loadCatalog: () => load('catalog'),
+    loadCatalog: (options) => load('catalog', options),
 
-    loadMine: () => load('mine'),
+    loadMine: (options) => load('mine', options),
 
     loadDetail: async (id, version) => {
       try {
         const detail = await systemPluginApi.show(id, version);
         if (!detail) return false;
-        set((state) => ({ detailCache: { ...state.detailCache, [id]: detail } }));
+        const next = reusePreviewUrl(detail);
+        set((state) => ({ detailCache: { ...state.detailCache, [id]: next } }));
         return true;
       } catch (error) {
         set({ error: messageOf(error) });
