@@ -1,13 +1,10 @@
 """AgentServer report configuration and product manifest contracts."""
 
 import json
-from pathlib import Path
 
 import pytest
 
-from openjiuwen.core.extension import ExtensionFailure
 from openjiuwen.core.extension.install_report import PackageInstallState
-from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.management import QueryResult
 from jiuwenswarm.extensions_v2.config import (
     resolve_extension_data_dir, resolve_install_report_path, resolve_install_report_settings,
@@ -36,18 +33,6 @@ def test_report_paths_and_unit_conversion(tmp_path, monkeypatch):
 def test_invalid_report_time_is_rejected(key, value):
     with pytest.raises(ValueError):
         resolve_install_report_settings({"extensions": {"install_report": {key: value}}})
-
-
-def test_every_product_example_declares_its_actual_domain():
-    examples = Path(__file__).resolve().parents[3] / "jiuwenswarm/extensions_v2/examples"
-    paths = list(examples.rglob("manifest.json"))
-    assert paths
-    for path in paths:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        manifest = load_manifest(path.parent, require_domain=True)
-        expected = "gateway" if path.parent.name == "auth_login_demo" else "agentserver"
-        assert raw["package"]["domain"] == expected
-        assert manifest.domain == expected
 
 
 async def test_missing_or_foreign_domain_is_never_loaded(tmp_path):

@@ -209,6 +209,38 @@ async def test_gateway_package_install_publish_and_uninstall(tmp_path):
     assert manager.installed() == []
 
 
+async def test_gateway_install_switches_to_a_new_version_and_rejects_the_same_one(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+    await manager.install([_package_zip(tmp_path)])
+
+    upgraded = await manager.install([_package_zip(tmp_path, version="0.2.0")])
+
+    assert [report.status for report in upgraded] == ["SUCCESS"]
+    assert (tmp_path / "extension_pkgs" / "demo.gateway" / "0.1.0").is_dir()
+    assert (tmp_path / "extension_pkgs" / "demo.gateway" / "0.2.0").is_dir()
+    assert runtime.active_record("demo.gateway").version == "0.2.0"
+
+    duplicate = await manager.install([_package_zip(tmp_path / "again", version="0.2.0")])
+
+    assert duplicate[0].status == "FAILED"
+    assert duplicate[0].error.code == "EXTENSION_PACKAGE_EXISTS"
+
+
+async def test_gateway_uninstall_one_version_keeps_the_other(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+    await manager.install([_package_zip(tmp_path)])
+    await manager.install([_package_zip(tmp_path, version="0.2.0")])
+
+    report = await manager.uninstall("demo.gateway", "0.2.0")
+
+    assert report.status == "SUCCESS"
+    assert (tmp_path / "extension_pkgs" / "demo.gateway" / "0.1.0").is_dir()
+    assert not (tmp_path / "extension_pkgs" / "demo.gateway" / "0.2.0").exists()
+    assert runtime.active_record("demo.gateway") is None
+
+
 HELPER_ENTRY = """\
 from .helpers import ANSWER
 
@@ -709,11 +741,17 @@ async def test_catalog_lists_disabled_installed_gateway_package(tmp_path, monkey
     assert runtime.channel.responses[0]["payload"]["packages"] == [
         {
             "id": "demo.gateway",
+            "packageId": "demo.gateway",
+            "assetId": "",
             "version": "0.1.0",
+            "installedVersion": "0.1.0",
+            "versions": ["0.1.0"],
             "displayName": {"zh": "demo.gateway", "en": "demo.gateway"},
             "displayDescription": {"zh": "", "en": ""},
             "tags": [],
             "avatar": None,
+            "source": "local",
+            "origin": "user",
             "installed": True,
             "active": False,
             "enabled": False,
@@ -1030,6 +1068,67 @@ async def test_reported_disable_and_enable_keep_copy_and_settle_report(tmp_path)
                 assert state.active_version == "0.1.0"
             else:
                 assert state is None
+    finally:
+        await manager.close()
+        await runtime.shutdown()
+
+
+async def test_reported_install_switches_to_a_new_version_and_rejects_the_same_one(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        assert (await manager.install([_package_zip(tmp_path)]))[0].status == "SUCCESS"
+
+        upgraded = await manager.install([_package_zip(tmp_path, version="0.2.0")])
+
+        assert [report.status for report in upgraded] == ["SUCCESS"]
+        assert (tmp_path / "extension_pkgs" / "demo.gateway" / "0.1.0").is_dir()
+        assert runtime.active_record("demo.gateway").version == "0.2.0"
+
+        duplicate = await manager.install([_package_zip(tmp_path / "again", version="0.2.0")])
+
+        assert duplicate[0].status == "FAILED"
+        assert duplicate[0].error.code == "EXTENSION_PACKAGE_EXISTS"
+    finally:
+        await manager.close()
+        await runtime.shutdown()
+
+
+def test_merge_packages_applies_gateway_state_to_remote_cards():
+    remote = [
+        {
+            "id": "asset-1",
+            "packageId": "webui.login-demo",
+            "installed": False,
+            "active": False,
+            "enabled": True,
+        }
+    ]
+    state = {
+        "active": [{"package_id": "webui.login-demo"}],
+        "installed_packages": [{"package_id": "webui.login-demo", "version": "1.0.0"}],
+    }
+
+    merged = extension_package_handlers._merge_packages([], remote, state)
+
+    assert merged[0]["installed"] is True
+    assert merged[0]["active"] is True
+    assert merged[0]["enabled"] is True
+
+
+async def test_reported_uninstall_one_version_keeps_the_other(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        await manager.install([_package_zip(tmp_path)])
+        await manager.install([_package_zip(tmp_path, version="0.2.0")])
+
+        report = await manager.uninstall("demo.gateway", "0.2.0")
+
+        assert report.status == "SUCCESS"
+        assert (tmp_path / "extension_pkgs" / "demo.gateway" / "0.1.0").is_dir()
+        assert not (tmp_path / "extension_pkgs" / "demo.gateway" / "0.2.0").exists()
+        assert runtime.active_record("demo.gateway") is None
     finally:
         await manager.close()
         await runtime.shutdown()

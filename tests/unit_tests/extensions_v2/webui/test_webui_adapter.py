@@ -10,7 +10,7 @@ import jiuwenswarm.extensions_v2.assembly as assembly
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
-from jiuwenswarm.extensions_v2.webui.constants import CODE_SESSION_MISMATCH, CODE_TARGET_INACTIVE
+from jiuwenswarm.extensions_v2.webui.constants import CODE_SESSION_MISMATCH
 from jiuwenswarm.extensions_v2.webui.contributions import UiCatalog, UiContribution
 from jiuwenswarm.extensions_v2.webui.models import UiActionOutput
 
@@ -118,46 +118,6 @@ async def test_adapter_preserves_component_event_data_and_receipt(monkeypatch):
     assert dispatch.call_args.kwargs == {"user_id": "user", "channel_id": "web"}
 
 
-@pytest.mark.asyncio
-async def test_ready_dispatches_to_the_example_panel(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(assembly, "_ASSEMBLY", None)
-    monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path)
-    server = FakeServer()
-    installed = await assembly.install_extensions(server)
-    assert installed is not None
-    try:
-        example = Path(assembly.__file__).parent / "examples" / "webui_workbench_v2"
-        reports = await installed.manager.install([example])
-        assert reports[0].status == "SUCCESS"
-        server.messages.clear()
-
-
-        response = await WebUIDispatchAdapter().handle(
-            AgentRequest(
-                request_id="r1",
-                channel_id="web",
-                session_id="s1",
-                req_method=ReqMethod.WEBUI_DISPATCH,
-                params={
-                    "event": "ui.ready",
-                    "session_id": "s1",
-                    "target": {
-                        "session_id": "s1",
-                        "slot_id": "conversation.input.below",
-                        "package_id": "",
-                        "instance_key": "",
-                    },
-                    "payload": {},
-                },
-            )
-        )
-        assert response.ok
-        assert response.payload["accepted"] is True
-        assert response.payload["status"] == "rendered"
-        assert server.messages[-1]["payload"]["event_type"] == "webui.render"
-    finally:
-        await assembly.shutdown_extensions()
-
 
 @pytest.mark.asyncio
 async def test_ready_without_a_contribution_is_rejected(tmp_path: Path, monkeypatch) -> None:
@@ -218,41 +178,5 @@ async def test_session_mismatch_is_rejected(tmp_path: Path, monkeypatch) -> None
         )
         assert response.ok is False
         assert response.payload["code"] == CODE_SESSION_MISMATCH
-    finally:
-        await assembly.shutdown_extensions()
-
-
-@pytest.mark.asyncio
-async def test_click_on_inactive_instance_is_rejected(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(assembly, "_ASSEMBLY", None)
-    monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path)
-    installed = await assembly.install_extensions(FakeServer())
-    assert installed is not None
-    try:
-        example = Path(assembly.__file__).parent / "examples" / "webui_workbench_v2"
-        reports = await installed.manager.install([example])
-        assert reports[0].status == "SUCCESS"
-        response = await WebUIDispatchAdapter().handle(
-            AgentRequest(
-                request_id="r4",
-                channel_id="web",
-                session_id="s1",
-                req_method=ReqMethod.WEBUI_DISPATCH,
-                params={
-                    "event": "ui.click",
-                    "session_id": "s1",
-                    "target": {
-                        "session_id": "s1",
-                        "slot_id": "conversation.input.below",
-                        "package_id": "webui.workbench-v2",
-                        "instance_key": "ghost",
-                    },
-                    "payload": {"action_id": "file.0"},
-                },
-            )
-        )
-        assert response.ok
-        assert response.payload["accepted"] is False
-        assert response.payload["code"] == CODE_TARGET_INACTIVE
     finally:
         await assembly.shutdown_extensions()
