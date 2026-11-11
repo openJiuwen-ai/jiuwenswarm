@@ -82,7 +82,16 @@ class FakeWebChannel:
         self.connect_handler = handler
 
     def on_disconnect(self, handler):
-        self.disconnect_handler = handler
+        previous = self.disconnect_handler
+        if previous is None:
+            self.disconnect_handler = handler
+            return
+
+        async def combined(ws, session_ids):
+            await previous(ws, session_ids)
+            await handler(ws, session_ids)
+
+        self.disconnect_handler = combined
 
     async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
         self.responses.append(

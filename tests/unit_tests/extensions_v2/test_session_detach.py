@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 
 from openjiuwen.core.events import Event, SessionContext
 
@@ -74,7 +75,7 @@ def create_extension():
 '''
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def detach_host(attach_host, monkeypatch):
     output = attach_host.output.parent / "detach.jsonl"
     monkeypatch.setenv("SESSION_DETACH_TEST_OUTPUT", str(output))

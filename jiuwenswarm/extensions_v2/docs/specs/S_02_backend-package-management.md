@@ -112,13 +112,13 @@ Report 字段沿用 Core，`error` 编码为 `{code, message, params}`，不发�
 未取得匹配记录时不伪造目录，原始 Report 仍保留。失败 Report 不产生安装成功提示。
 
 AgentServer 在包进入可重新就绪状态后，将本次 `SUCCESS` 包 ID 通知曾上报 `ui.ready` 的连接。
-安装由公共管理适配器发送；热重载由旧代际的视图清理回调在下发 `webui.render.clear` 后发送，避免异步 clear 擦掉新视图。
+安装和成功启用由公共管理适配器发送；热重载由旧代际的视图清理回调在下发 `webui.render.clear` 后发送，避免异步 clear 擦掉新视图。
 网页 `/extension install`、本机 CLI 和其它调用该适配器的入口共用安装通知，CLI 不重复通知。
 前端收到 `extensions.v2.installed` 后，为仍挂载且允许 ready 的槽位重新发送 `ui.ready`，无需手动刷新页面。
-安装完成和热重载清理完成后，`extensions.v2.installed` 都表示指定包需要重新发送 `ui.ready`。
+安装完成、成功启用和热重载清理完成后，`extensions.v2.installed` 都表示指定包需要重新发送 `ui.ready`。
 Gateway 下发该事件时保留完整结构，包括 `package_ids` 和 `session_id`（应用级通知为空字符串），
 不得按聊天消息只提取 `content`；通知继续按 `metadata.ws_id` 定向发送。
-安装响应的 `ui_notified` 表示通知是否送达；未连接或通知失败时为 false，不改变安装报告和 `ok`，不回滚已成功的安装。
+安装和成功启用响应的 `ui_notified` 表示通知是否送达；未连接或通知失败时为 false，不改变成功 Report 和 `ok`，不回滚已成功的操作。
 热重载的代际释放与通知在成功 Report 返回后异步执行，因此 reload 响应不承诺该通知已经送达。
 失败包不加入通知；全部失败时不发送通知。通知送达不等于插件自身渲染或业务验收通过。
 

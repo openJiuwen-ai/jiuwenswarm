@@ -60,7 +60,7 @@ Gateway 在 `commands.list` 中登记 `/extension` 的说明、用法和示例�
 已有真实会话时继续携带该会话标识。命令清单和 Web 注册表都声明无需已有会话，避免菜单或提交入口提前拦截。
 具体语法见 [S_02 第 3 节](../specs/S_02_backend-package-management.md#3-web-命令)。
 
-包成功安装后，公共适配器通知网页和本机 CLI；页面收到通知后重新发送 `ui.ready`，无需手动刷新。
+包成功安装或启用后，公共适配器通知网页和本机 CLI；页面收到通知后重新发送 `ui.ready`，无需手动刷新。
 热重载会异步清理旧代际的视图。视图发送 `webui.render.clear` 后，再发送相同通知，页面据此为新代际
 重新发送 `ui.ready`。通知事件名为 `extensions.v2.installed`，表示指定包需要重新就绪。失败边界见 S_02，
 验证记录见 [F_31 第 7 节](F_31_extension-cli.md#7-验证)。

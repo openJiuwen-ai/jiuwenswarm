@@ -10,6 +10,7 @@ import json
 import subprocess
 
 import pytest
+import pytest_asyncio
 from openjiuwen.core.events import Event, HandlerLevel, PackageMetadata, SessionContext
 
 from jiuwenswarm.common import utils
@@ -70,7 +71,7 @@ def _window(sid="session-a", tokens=120, estimated=False):
                         "parts": {"messages": {"tokens": 90, "estimated": True}}}, "turn": None}
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def query_host(tmp_path, monkeypatch):
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")

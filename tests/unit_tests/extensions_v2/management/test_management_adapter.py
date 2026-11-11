@@ -104,6 +104,31 @@ async def test_request_set_enabled_keeps_the_installed_package(
     assert (manager.install_dir / "test.pkg" / "1.0.0").is_dir()
 
 
+async def test_request_enable_notifies_ready_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    await manager.install([write_package(tmp_path / "source", module_source=METADATA_EXTENSION)])
+    adapter = PackageManagementAdapter()
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+        lambda: SimpleNamespace(notify_packages_changed=notify),
+    )
+
+    disabled = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_SET_ENABLED, {"package_id": "test.pkg", "enable": False})
+    )
+    enabled = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_SET_ENABLED, {"package_id": "test.pkg", "enable": True})
+    )
+
+    assert disabled.ok and "ui_notified" not in disabled.payload
+    assert enabled.ok and enabled.payload["reports"][0]["operation"] == "enable"
+    assert enabled.payload["ui_notified"] is True
+    notify.assert_awaited_once_with(["test.pkg"])
+
+
 async def test_install_switches_to_a_new_version_and_rejects_the_same_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

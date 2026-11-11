@@ -113,7 +113,9 @@ class PackageManagementAdapter(GatewayAdapter):
         except Exception:  # noqa: BLE001 - keep management failures at the request boundary
             logger.exception("[ExtensionsV2] management request failed: %s", method)
             return await _failed_request(request, manager, parsed.package_id, "V2 package management failed")
-        if method == ReqMethod.EXTENSIONS_V2_INSTALL.value:
+        if method == ReqMethod.EXTENSIONS_V2_INSTALL.value or (
+            method == ReqMethod.EXTENSIONS_V2_SET_ENABLED.value and parsed.enable is True
+        ):
             payload["ui_notified"] = await _notify_installed_packages(payload.get("reports", ()))
         try:
             return AgentResponse(

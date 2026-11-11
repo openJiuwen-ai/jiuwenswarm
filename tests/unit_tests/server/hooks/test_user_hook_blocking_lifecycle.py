@@ -158,7 +158,7 @@ async def test_parallel_hook_allow_cannot_override_another_tools_block(monkeypat
 ])
 async def test_goal_approval_resume_stops_only_its_blocked_original_goal(monkeypatch, goal_change, resume_mode):
     outer = DeepAgent(AgentCard(id=uuid4().hex, name="outer-goal-resume", description="outer-goal-resume"))
-    outer.configure(DeepAgentConfig(rails=[]))
+    outer.configure(DeepAgentConfig(rails=[], auto_create_workspace=False))
     inner = outer._react_agent
     inner._config.parallel_tool_calls = False
     outer._loop_coordinator = LoopCoordinator()
