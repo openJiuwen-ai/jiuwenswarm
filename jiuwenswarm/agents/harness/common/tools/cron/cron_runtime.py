@@ -364,6 +364,11 @@ class _CronToolsCronBackend(CronToolBackend):
     async def run_now(self, job_id: str) -> str:
         run_result = await self._with_route(None, self._cron_tools.run_now(job_id))
         if isinstance(run_result, dict):
+            # CronTools 的 ack 形状是 {"action": ..., "data": {"run_id": ...}}；
+            # 顶层 run_id 仅兼容旧实现，未拿到 ack（data 为 None）时保持空串。
+            data = run_result.get("data")
+            if isinstance(data, dict):
+                return str(data.get("run_id") or run_result.get("run_id") or "")
             return str(run_result.get("run_id") or "")
         return str(run_result or "")
 
