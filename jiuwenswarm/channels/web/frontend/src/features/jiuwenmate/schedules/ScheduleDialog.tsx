@@ -125,14 +125,10 @@ export function ScheduleDialog({
   const draft = toDraft(form, timezone);
   const save = () => {
     const reason = validateDraft(draft, chosenExecutor);
-    if (reason === 'executorRequired' && executorRef.current) {
-      setError('');
-      executorRef.current.focus();
-      executorRef.current.reportValidity();
-      return;
-    }
     if (reason) {
+      // The native validity bubble is not shown in every desktop shell, so keep an inline message as well.
       setError(t(`jiuwenmate.schedule.error.${reason}`));
+      if (reason === 'executorRequired') executorRef.current?.focus();
       return;
     }
     setError('');
@@ -157,7 +153,10 @@ export function ScheduleDialog({
           {executors ? (
             <label className="jiuwenmate-field">
               <span>{t('jiuwenmate.schedule.executor')}</span>
-              <select ref={executorRef} required value={chosenExecutor} onChange={(event) => setChosenExecutor(event.target.value)} data-testid="jiuwenmate-schedule-executor">
+              <select ref={executorRef} required value={chosenExecutor} onChange={(event) => {
+                  setChosenExecutor(event.target.value);
+                  if (event.target.value && error === t('jiuwenmate.schedule.error.executorRequired')) setError('');
+                }} data-testid="jiuwenmate-schedule-executor">
                 <option value="">{t('jiuwenmate.schedule.chooseExecutor')}</option>
                 {executors.map((item) => (
                   <option key={item.id} value={item.id}>{item.name}</option>
