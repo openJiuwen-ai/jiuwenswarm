@@ -185,9 +185,27 @@ def index_row(doc: Document, parent: Path, designs: dict[str, Document]) -> str:
     return "| " + " | ".join(fields) + " |"
 
 
+def index_metadata(path: Path, title: str, identity: GitIdentity) -> dict:
+    """Build a generated index header that keeps the index's original author.
+
+    An index is attributed once, to whoever first generated it. Regenerating
+    it later is a mechanical refresh, not authorship, so the existing
+    ``author`` / ``author_email`` survive and the current Git identity is used
+    only when the index is new or has no readable author yet.
+    """
+    author: object = identity.name
+    author_email: object = identity.email
+    if path.is_file():
+        existing, _, error = lib_frontmatter.parse_frontmatter(path.read_text(encoding="utf-8"))
+        if error is None and existing.get("author"):
+            author = existing["author"]
+            author_email = existing.get("author_email")
+    return {"title": title, "author": author, "author_email": author_email, "generated": True}
+
+
 def render_index(path: Path, title: str, docs: list[Document], identity: GitIdentity, designs: dict[str, Document]) -> str:
     """Generate module navigation and document listings without global totals."""
-    metadata = {"title": title, "author": identity.name, "author_email": identity.email, "generated": True}
+    metadata = index_metadata(path, title, identity)
     header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
     unique_docs = list({doc.path: doc for doc in docs}.values())
     grouped: dict[str, list[Document]] = {}
@@ -258,10 +276,13 @@ def synchronize(root: Path, identity: GitIdentity, current_document: Path | None
                 record.parse_error = None
         timestamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(timespec="minutes")
         index_body = generate_index.build_index(records, timestamp)
-        index_metadata = {"title": "设计文档索引", "author": identity.name, "author_email": identity.email, "generated": True}
-        header = yaml.safe_dump(index_metadata, allow_unicode=True, sort_keys=False).rstrip()
+        design_index_metadata = index_metadata(design_root / "INDEX.md", "设计文档索引", identity)
+        header = yaml.safe_dump(design_index_metadata, allow_unicode=True, sort_keys=False).rstrip()
         writes[design_root / "INDEX.md"] = f"---\n{header}\n---\n\n{index_body}"
     for path, content in writes.items():
+        if path.exists() and generate_index.normalize(path.read_text(encoding="utf-8")) == generate_index.normalize(content):
+            # Only the generation timestamp would change: keep the file as is.
+            continue
         if not path.exists() or path.read_text(encoding="utf-8") != content:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")

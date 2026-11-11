@@ -145,8 +145,8 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def _normalize(text: str) -> str:
-    """剔除易变的 generated-at 行，用于 --check 比对。"""
+def normalize(text: str) -> str:
+    """剔除易变的 generated-at 行，用于 --check 和重新生成时比对内容是否变化。"""
     return _GENERATED_AT_RE.sub("", text)
 
 
@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("INDEX.md 不存在，需要生成。", file=sys.stderr)
                 return 1
             current = index_path.read_text(encoding="utf-8")
-            if _normalize(current) == _normalize(content):
+            if normalize(current) == normalize(content):
                 print("✓ INDEX.md 已是最新。")
                 return 0
             print("✗ INDEX.md 已过期，请运行：python .agents/skills/jw-design/scripts/generate_index.py", file=sys.stderr)
