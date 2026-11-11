@@ -231,7 +231,7 @@ def _normalize_model_id(value: str) -> str:
     text = value.strip().lower()
     for prefix in ("models/", "openai/", "account/", "endpoints/"):
         if text.startswith(prefix):
-            text = text[len(prefix) :]
+            text = text[len(prefix):]
     return text
 
 
@@ -342,8 +342,9 @@ def _parse_stage_json(text: str) -> Any:
                 return data
             except json.JSONDecodeError as exc:
                 last_error = exc
-    assert last_error is not None
-    raise last_error
+    if last_error is not None:
+        raise last_error
+    raise json.JSONDecodeError("unparseable stage content", raw, 0)
 
 
 def _looks_like_always_think_rejection(exc: BaseException) -> bool:
