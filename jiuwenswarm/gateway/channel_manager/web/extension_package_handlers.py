@@ -424,15 +424,17 @@ async def _handle_locally(
             )
             return True
         report = await manager.set_enabled(package_id, params["enable"])
+        payload = {"reports": [_encode(report)]}
         if report.status == "SUCCESS":
             store = ExtensionInstallState.for_install_dir(manager.install_dir)
             if params["enable"]:
                 version = _active_version(manager, package_id)
                 if version:
                     store.mark(package_id, version=version, active=True, enabled=True)
+                payload["ui_notified"] = await notify_installed(runtime, [package_id])
             else:
                 store.mark(package_id, active=False, enabled=False)
-        await _respond(channel, ws, req_id, ok=True, payload={"reports": [_encode(report)]})
+        await _respond(channel, ws, req_id, ok=True, payload=payload)
         return True
     version = params.get("version")
     version = version.strip() if isinstance(version, str) else ""

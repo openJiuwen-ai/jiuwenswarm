@@ -23,6 +23,9 @@ async def notify_installed(runtime: GatewayRuntime, package_ids: Sequence[str]) 
         return True
     await runtime.browser.settle()
     try:
+        # The browser must know the new activation before it renders again; otherwise the
+        # first frame of a re-enabled package would be rejected as undeclared (S_06).
+        await runtime.browser.publish_declarations()
         await runtime.channel.broadcast_event("extensions.v2.installed", {"package_ids": list(package_ids)})
     except Exception:  # noqa: BLE001 - installation has already committed
         logger.warning("[GatewayExtensions] installed packages could not notify browsers", exc_info=True)

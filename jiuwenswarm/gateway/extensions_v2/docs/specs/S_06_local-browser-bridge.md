@@ -35,7 +35,8 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 
 ## 协议
 
-- 连接建立、首次请求及包激活信息变化时下发 `client.declarations`。字段复用前端 ClientDeclarationSnapshot。
+- 连接建立、首次请求及包激活信息变化（安装、启用、重载、禁用、卸载）时下发 `client.declarations`。字段复用前端 ClientDeclarationSnapshot。
+  移除包时先用被释放激活的代次发送 `webui.render.clear`，再下发不再包含该包的声明；浏览器无需刷新即可卸载旧视图并撤销请求绑定。
 - `client.operation` 保留用于原请求结束等待的 `invocation_id`；不生成没有回执、去重或关联消费者的逐操作标识。
 - `request_context` 作为请求扩展区独立传递给 gateway.request，不合并进业务 params。
 - HTTP 只提供真实 header 和路径给事件；请求的判定属于插件。
@@ -78,6 +79,7 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 3. localStorage 写删仅向发起调用的浏览器投递，Gateway 不保存浏览器数据副本。
 4. 无包时不改变原请求；请求路由及异常语义沿用已合入的 Gateway 逻辑。
 5. 断线清理实例和连接映射；包失活拒绝旧动作与旧资源。重载后实例 revision 不复用，旧激活中延迟的 Ops 不得投递到新激活。
+   禁用或卸载客户端包的清除帧携带被释放激活的代次，声明在清除之后撤回；因此无需刷新页面，且迟到的旧清除不会影响新一代插件 UI。
 6. 活动客户端包的浏览器能力不依赖额外授权；安装、重载和重启统一使用本条规则。
    请求绑定、`client.declarations` 与 `ops.client.*` 只属于声明 `client` 的包；仅声明槽位的包调用 `ops.client.*` 被拒绝。
 7. 素材请求与其他 HTTP 请求一样先经 `gateway.request`，插件拒绝与接管保持有效；策略继续后由平台判定包、激活代次与路径。
@@ -114,7 +116,10 @@ Active installed client packages can write/delete their own storage, bind reques
 separate permission declarations or deployment configuration. Package identity, connection ownership, activation
 generation and input validation still apply. Gateway and frontend use the same declaration and operation protocol.
 Declarations contain no grant fields. Operations retain invocation_id for request completion coordination and do not
-carry unused operation identifiers.
+carry unused operation identifiers. Disabling or uninstalling a client package sends its clear frames with the retired
+activation generation before the declaration withdrawal, so mounted views disappear without a page reload, and a late
+clear of an old activation cannot remove a newer one. Enabling a package synchronizes declarations before the frontend
+is asked to render again.
 The built frontend server forwards `/extension-assets/` to WebChannel HTTP, preserving GET/HEAD responses and backend
 errors instead of serving the SPA entry page. Asset identity and activation checks remain owned by the Gateway.
 Successful and error responses produced by the two file routes include `Access-Control-Allow-Origin: *`

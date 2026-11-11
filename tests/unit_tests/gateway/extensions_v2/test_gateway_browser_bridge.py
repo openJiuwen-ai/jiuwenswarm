@@ -12,6 +12,7 @@ from openjiuwen.core.events import Event, SessionContext
 
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
+from jiuwenswarm.gateway.extensions_v2.management.notifications import notify_installed
 from jiuwenswarm.gateway.extensions_v2.models import GatewayRequestOutput
 from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
@@ -340,3 +341,71 @@ async def test_frames_a_render_causes_carry_the_activation_that_rendered(tmp_pat
         assert {name: frame.get("activation_generation") for name, frame in frames.items()} == dict.fromkeys(names, generation)
     finally:
         await runtime.shutdown()
+
+
+async def _ready(runtime, ws, slot):
+    await runtime.intercept(ws, "ready", "webui.dispatch", {
+        "event": "ui.ready",
+        "target": {"scope": "application", "slot_id": slot, "package_id": PACKAGE, "instance_key": "default"},
+        "payload": {},
+    })
+
+
+async def test_release_clears_the_retired_generation_before_withdrawing_declarations(tmp_path):
+    """A disable or uninstall removes the mounted view without a page reload (S_06)."""
+    runtime = await _runtime(tmp_path)
+    try:
+        ws = SimpleNamespace(closed=False)
+        await _ready(runtime, ws, "application.sidebar.footer")
+        await _click_params(runtime, ws, "application.sidebar.footer")
+        generation = runtime.browser.generations[PACKAGE]
+        runtime.channel.events.clear()
+
+        runtime.unpublish(PACKAGE)
+        await runtime.browser.settle()
+
+        events = runtime.channel.events
+        clears = [item for item in events if item["event"] == "webui.render.clear"]
+        declarations = [item for item in events if item["event"] == "client.declarations"]
+        assert len(clears) == 1, events
+        assert clears[0]["payload"]["target"]["slot_id"] == "application.sidebar.footer"
+        assert clears[0]["payload"]["activation_generation"] == generation
+        assert declarations and declarations[-1]["payload"]["packages"] == []
+        assert events.index(clears[0]) < events.index(declarations[-1])
+    finally:
+        await runtime.shutdown()
+
+
+async def test_notify_installed_publishes_declarations_before_asking_slots_to_render(tmp_path):
+    """Re-enabling a package must refresh declarations before the slot renders again (S_06)."""
+    runtime = await _runtime(tmp_path)
+    try:
+        ws = SimpleNamespace(closed=False)
+        await _ready(runtime, ws, "application.sidebar.footer")
+        package = runtime.active_packages()[0]
+        runtime.unpublish(PACKAGE)
+        await runtime.browser.settle()
+        runtime.publish(package)
+        notices = []
+        original_send = runtime.channel.send_event
+
+        async def send_event(ws, event, payload):
+            notices.append((event, payload))
+            await original_send(ws, event, payload)
+
+        async def broadcast(event, payload):
+            notices.append((event, payload))
+
+        runtime.channel.send_event = send_event
+        runtime.channel.broadcast_event = broadcast
+        runtime.channel.events.clear()
+
+        assert await notify_installed(runtime, [PACKAGE]) is True
+
+        # Declarations must reach the browser before it is asked to render the package again.
+        assert [event for event, _ in notices] == ["client.declarations", "extensions.v2.installed"]
+        assert notices[1][1] == {"package_ids": [PACKAGE]}
+        assert notices[0][1]["packages"][0]["activationGeneration"] == runtime.browser.generations[PACKAGE]
+    finally:
+        await runtime.shutdown()
+

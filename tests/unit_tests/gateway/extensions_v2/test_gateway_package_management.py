@@ -775,6 +775,37 @@ async def test_set_enabled_accepts_proxy_metadata_fields(tmp_path, monkeypatch):
     assert runtime.user_handler_count == 1
 
 
+async def test_set_enabled_notifies_mounted_slots_after_enabling(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    await runtime.packages.install([_package_zip(tmp_path, enable=False)])
+    notices = []
+
+    async def broadcast(event, payload):
+        notices.append((event, payload))
+
+    runtime.channel.broadcast_event = broadcast
+
+    await _handle(
+        runtime,
+        extension_package_handlers.ReqMethod.EXTENSIONS_V2_SET_ENABLED,
+        {"package_id": "demo.gateway", "enable": True},
+    )
+
+    assert runtime.channel.responses[0]["payload"]["ui_notified"] is True
+    assert notices == [("extensions.v2.installed", {"package_ids": ["demo.gateway"]})]
+
+    await _handle(
+        runtime,
+        extension_package_handlers.ReqMethod.EXTENSIONS_V2_SET_ENABLED,
+        {"package_id": "demo.gateway", "enable": False},
+        req_id="r2",
+    )
+
+    assert "ui_notified" not in runtime.channel.responses[1]["payload"]
+    assert notices == [("extensions.v2.installed", {"package_ids": ["demo.gateway"]})]
+
+
 async def test_show_answers_for_an_uninstalled_gateway_preset(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
