@@ -14,6 +14,7 @@ globalThis.document = browser.window.document;
 const { createRoot } = await import('react-dom/client');
 
 const { ColleagueProfilePage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js');
+const { OfficeDashboardPage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/OfficeDashboardPage.js');
 const { ScheduleBoard } = await import('../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js');
 const { ColleagueDeleteDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js');
 const { ImAuthorizeDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ImAuthorizeDialog.js');
@@ -1247,6 +1248,7 @@ test('schedule board keeps the executor avatar color selected for the colleague'
       onUpdate: noop,
       onSetEnabled: noop,
       onDelete: noop,
+      onRun: noop,
       onLoadHistory: async () => ({ plan: null, runs: [] }),
     }),
   );
@@ -1269,6 +1271,7 @@ test('schedule board keeps the default executor portrait unfiltered', () => {
       onUpdate: noop,
       onSetEnabled: noop,
       onDelete: noop,
+      onRun: noop,
       onLoadHistory: async () => ({ plan: null, runs: [] }),
     }),
   );
@@ -1671,5 +1674,116 @@ test('removing an employee model drops the stale option and requires a valid rep
     assert.ok(view.find('model-empty'));
     assert.equal(view.container.querySelector('input[name="jiuwenmate-profile-model"]'), null);
     assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), null);
+  } finally { await view.close(); }
+});
+
+const dashboardPlan = {
+  id: 'plan-run',
+  agentId: 'agent-1',
+  name: '晨报',
+  prompt: '汇总昨日事项',
+  cronExpr: '0 9 * * *',
+  timezone: 'Asia/Shanghai',
+  enabled: true,
+  nextFireAt: '2026-10-18T01:00:00+00:00',
+  scheduleKind: 'cron',
+  intervalSeconds: null,
+  runAt: null,
+  startsAt: null,
+  endsAt: null,
+  conversationId: 'schedule:plan-run',
+  runCount: 0,
+  lastStatus: 'completed',
+};
+
+const dashboardWeeklyPlan = {
+  ...dashboardPlan,
+  id: 'plan-weekly',
+  name: '周报',
+  conversationId: 'schedule:plan-weekly',
+};
+
+const dashboardProps = {
+  colleagues: [{
+    id: 'agent-1',
+    name: '小九',
+    description: '通用办公助理',
+    tags: [],
+    category: 'custom',
+    imConfigured: true,
+    disabled: false,
+  }],
+  schedules: [dashboardPlan, dashboardWeeklyPlan],
+  savingSchedule: false,
+  activity: null,
+  activityStatus: 'ready',
+  onCreate: noop,
+  onChat: noop,
+  onManage: noop,
+  onToggleDisabled: noop,
+  onDelete: noop,
+  onOpenTrace: noop,
+  onCreateSchedule: noop,
+  onUpdateSchedule: noop,
+  onSetScheduleEnabled: noop,
+  onDeleteSchedule: noop,
+  onRunSchedule: noop,
+  onLoadScheduleHistory: async () => ({ plan: dashboardPlan, runs: [] }),
+};
+
+async function mountDashboard(extra = {}) {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(React.createElement(OfficeDashboardPage, { ...dashboardProps, ...extra }));
+  });
+  return {
+    container,
+    find(selector) {
+      return container.querySelector(selector);
+    },
+    async click(element) {
+      assert.ok(element, 'Missing element to click');
+      await act(async () => { element.click(); });
+    },
+    async close() {
+      await act(async () => root.unmount());
+      dom.window.close();
+      if (previous.window === undefined) delete globalThis.window;
+      else globalThis.window = previous.window;
+      if (previous.document === undefined) delete globalThis.document;
+      else globalThis.document = previous.document;
+      if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+      else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+    },
+  };
+}
+
+test('the task center runs the scheduled task whose menu was opened', async () => {
+  const runs = [];
+  const view = await mountDashboard({ onRunSchedule: (planId) => { runs.push(planId); } });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+    assert.ok(view.find('[data-testid="jiuwenmate-schedule-board"]'));
+    // Locate the row by its task name, a locator that predates this fix, so a
+    // failure points at the missing menu item rather than a testid added here.
+    const row = [...view.container.querySelectorAll('tr')].find((item) => item.textContent.includes('周报'));
+    assert.ok(row, 'Missing the second scheduled task row');
+    await view.click(row.querySelector('.jiuwenmate-menu__trigger'));
+    const item = view.find('[role="menu"] [role="menuitem"][data-variant="run"]');
+    assert.ok(item, 'The task center does not offer run now');
+    assert.equal(item.textContent, '立即运行');
+    await view.click(item);
+    assert.deepEqual(runs, ['plan-weekly']);
   } finally { await view.close(); }
 });
