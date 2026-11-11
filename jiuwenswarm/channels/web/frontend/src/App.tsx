@@ -706,6 +706,11 @@ function AppContent({
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
+  // 断线重连后的首次元数据快照允许纠正运行态：断线期间终态事件可能已经丢失。
+  // 其余场景下快照只能把运行态拉起来，不能把正在跑的轮次压回空闲——worker 的
+  // 运行态快照会滞后于事件流，用滞后快照回落会让发送按钮和任务转圈闪回空闲
+  // （#6196 新建会话首条消息、#6154 code 模式首条消息空白、#6155 切回会话不转圈）。
+  const metadataDowngradeAllowedRef = useRef(new Set<string>());
   const sessionViewIdRef = useRef(generateUuidV4());
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
@@ -2082,19 +2087,26 @@ function AppContent({
         const trackedLastRun = Object.values(useCronStore.getState().lastRunSessionId).includes(
           targetSessionId,
         );
-        if (!shouldKeepLocalCronProcessing(
-          targetSessionId,
-          session.is_processing,
-          localProcessing,
-          {
+        const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
+        const locallyBusy = Boolean(
+          useChatStore.getState().getRuntime(targetSessionId)?.foregroundIsProcessing,
+        );
+        // 快照只能把运行态拉起来，把运行态打回空闲只认终态事件
+        // （processing_status(false) / chat.final / interrupt），或断线重连后的首次
+        // 快照（断线期间终态事件可能丢失）。worker 运行态快照会滞后于事件流，
+        // 用它回落会让新建会话首条消息和切回会话的运行态闪回空闲。
+        const metadataMaySettleProcessing = session.is_processing || allowDowngrade || !locallyBusy;
+        if (
+          metadataMaySettleProcessing
+          && !shouldKeepLocalCronProcessing(targetSessionId, session.is_processing, localProcessing, {
             // 统一会话未必 cron_ 前缀，靠 cron_id / lastRun 放行
             hasCronMetadata: Boolean(session.cron_id) || trackedLastRun,
             // 组织负责人停止是权威空闲，不能被守卫吞掉
             authoritativeIdle:
               session.organization_owner_stopped === true
               || isOrganizationOwnerStopped(targetSessionId),
-          },
-        )) {
+          })
+        ) {
           setProcessing(targetSessionId, session.is_processing);
           if (!session.is_processing) {
             setThinking(targetSessionId, false);
@@ -2656,10 +2668,18 @@ function AppContent({
     };
   }, [initialDataLoaded, isConnected, loadProjects]);
 
+  // 记录连接状态跃迁：断线期间终态事件可能丢失，重连后允许用一次元数据快照
+  // 把残留的运行态纠正回空闲。
+  const prevConnectedRef = useRef(isConnected);
   useEffect(() => {
+    const reconnected = isConnected && prevConnectedRef.current === false;
+    prevConnectedRef.current = isConnected;
     if (!isConnected || !routeSessionId) {
       setMissingSessionId(null);
       return;
+    }
+    if (reconnected) {
+      metadataDowngradeAllowedRef.current.add(routeSessionId);
     }
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
