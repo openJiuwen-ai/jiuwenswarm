@@ -46,7 +46,7 @@ symphony:
 
   fingerprint:
     scan:
-      max_depth:
+      max_depth: 1
     extraction:
       workers: 4
       batch_size: 2
@@ -744,7 +744,8 @@ react:
       # Browser Agent 独立轮次预算；未配置时默认 100。
       # max_iterations: 100
     # cua_agent: 桌面自动化子代理，通过截图和真实鼠标键盘输入操作本机应用窗口；
-    # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
+    # 使用支持图片输入的模型。安装日常 wheel 的 Computer Use 依赖时构建本机驱动。
+    # Windows/Linux 上的单步工具还需安装 cua 可选依赖（pip install "workswarm[cua]"）。
     # 运行时会真实移动鼠标、向前台窗口输入，执行期间请勿操作电脑。
     cua_agent:
       enabled: null # null follows the release default (currently off); user changes persist true/false.
@@ -1591,7 +1592,7 @@ updater:
   # Fallback for whichever platform pattern above is left empty.
   asset_name_pattern: ""
   timeout_seconds: 20
-  pypi_mirror: "https://mirrors.aliyun.com/pypi"
+  pypi_mirror: "https://mirrors.aliyun.com/pypi/simple/"
 
 extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：

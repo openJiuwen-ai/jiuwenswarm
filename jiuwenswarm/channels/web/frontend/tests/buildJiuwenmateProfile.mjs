@@ -25,6 +25,7 @@ await esbuild.build({
     'src/features/jiuwenmate/pages/ColleagueProfilePage.tsx',
     'src/features/jiuwenmate/schedules/ScheduleBoard.tsx',
     'src/features/jiuwenmate/components/ColleagueDeleteDialog.tsx',
+    'src/features/jiuwenmate/components/ImAuthorizeDialog.tsx',
     'src/features/jiuwenmate/pages/ColleagueWorkspacePage.tsx',
     { in: 'src/services/webClient.ts', out: 'webClient' },
   ],

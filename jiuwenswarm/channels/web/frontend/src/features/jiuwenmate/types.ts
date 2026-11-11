@@ -26,6 +26,7 @@ export interface JiuwenMateModelOption {
   id: string;
   label: string;
   provider: string;
+  vendorKey?: string;
 }
 
 export interface JiuwenMateCapabilities {
@@ -86,6 +87,7 @@ export interface JiuwenMateColleague extends JiuwenMateColleagueDraft {
   isDefault?: boolean;
   currentVersion?: string | null;
   hasUnpublishedChanges?: boolean;
+  hasUnpublishedModelChanges?: boolean;
   /** Office directory on the server host; the colleague may read the files placed here. */
   workspaceDir?: string | null;
 }
@@ -100,6 +102,7 @@ export interface JiuwenMateBoundItem {
 export interface JiuwenMateTemplate extends JiuwenMateColleagueDraft {
   id: string;
   persona: string;
+  coreAbilities?: readonly JiuwenMateBoundItem[];
   skills: readonly JiuwenMateBoundItem[];
   tools: readonly JiuwenMateBoundItem[];
   rails: readonly JiuwenMateBoundItem[];

@@ -195,7 +195,7 @@ export function DesignerLanding({ onCreated }: DesignerLandingProps) {
                 </div>
                 <div className="designer-landing__actions">
                   {/* Design mode does not support model groups yet. */}
-                  <ChatModelSelector disabled={submitting} allowModelGroups={false} />
+                  <ChatModelSelector disabled={submitting} includeModelGroups={false} />
                   <button
                     type="button"
                     className={prompt.trim() && !submitting ? 'designer-landing__send designer-landing__send--active' : 'designer-landing__send'}

@@ -37,11 +37,11 @@ import {
   selectableColleagueResources,
   selectableKnowledgePages,
   selectablePluginPackages,
-  withColleagueEdit,
   type ColleagueResourceOption,
   type JiuwenMateDeleteMode,
   type JiuwenMateModelCatalog,
   type JiuwenMateSchedule,
+  type JiuwenMateSettingsEdit,
 } from './jiuwenmateApi';
 import {
   templateSkillSearchQueries,
@@ -82,6 +82,8 @@ import type {
   JiuwenMateImPlatform,
 } from './types';
 import { useGroupDirectory } from '../groupChat/useGroupDirectory';
+import { useModelRefreshStatus } from '../settings/modules/models/useModelRefreshStatus';
+import { requestSettingsModule } from '../settings/settingsNavigation';
 import './jiuwenmate.css';
 
 export interface JiuwenMateAppProps {
@@ -178,6 +180,9 @@ export function JiuwenMateApp({
     section: 'overview',
   });
   const [connectionEpoch, setConnectionEpoch] = useState(0);
+  const { refreshStatus: modelRefreshStatus, checkRefreshStatus } = useModelRefreshStatus(
+    webClient.getState() === 'ready', webRequest,
+  );
   const [resourceCatalog, setResourceCatalog] = useState<ColleagueResourceCatalog>({
     skills: [],
     connectors: [],
@@ -196,7 +201,9 @@ export function JiuwenMateApp({
   const [schedules, setSchedules] = useState<JiuwenMateSchedule[]>([]);
   const [savingSchedule, setSavingSchedule] = useState(false);
 
+  const colleagueLoadRequest = useRef(0);
   const loadColleagues = useCallback(async () => {
+    const requestId = ++colleagueLoadRequest.current;
     setLoadStatus('loading');
     setLoadError('');
     try {
@@ -210,6 +217,7 @@ export function JiuwenMateApp({
           () => ({ ok: false as const, value: null }),
         ),
       ]);
+      if (requestId !== colleagueLoadRequest.current) return;
       setState((current) =>
         replaceColleagues(
           current,
@@ -234,6 +242,7 @@ export function JiuwenMateApp({
       );
       setLoadStatus('ready');
     } catch (error) {
+      if (requestId !== colleagueLoadRequest.current) return;
       setLoadError(errorMessage(error));
       setLoadStatus('failed');
     }
@@ -266,6 +275,18 @@ export function JiuwenMateApp({
   useEffect(() => {
     void loadColleagues();
   }, [loadColleagues]);
+
+  useEffect(() => {
+    checkRefreshStatus();
+  }, [checkRefreshStatus, connectionEpoch, existingPage]);
+
+  useEffect(() => webClient.on('models.updated', checkRefreshStatus), [checkRefreshStatus]);
+
+  useEffect(() => {
+    if (!modelRefreshStatus || modelRefreshStatus.status === 'pending' ||
+        modelRefreshStatus.status === 'unavailable' || modelRefreshStatus.generation === 0) return;
+    void loadColleagues();
+  }, [loadColleagues, modelRefreshStatus]);
 
   // A group route always lands in the chat view, where group chats live.
   useEffect(() => {
@@ -374,7 +395,12 @@ export function JiuwenMateApp({
     return () => {
       active = false;
     };
-  }, [api]);
+  }, [api, connectionEpoch, existingPage, modelRefreshStatus]);
+
+  const openModelSettings = () => {
+    setExistingPage('settings');
+    requestSettingsModule('models');
+  };
 
   const canLeaveSettings = (nextPage: JiuwenMateExistingPage | null) => {
     if (existingPage !== 'settings' || nextPage === 'settings') return true;
@@ -544,6 +570,28 @@ export function JiuwenMateApp({
   const requestDelete = (colleagueId: string) => {
     const colleague = state.colleagues.find((item) => item.id === colleagueId);
     if (colleague) setPendingConfirm({ kind: 'delete', colleague });
+  };
+
+  const saveColleagueSettings = async (agentId: string, edit: JiuwenMateSettingsEdit) => {
+    setSavingResources(true);
+    setActionError('');
+    try {
+      const fresh = await api.saveSettings(agentId, modelCatalog.models, edit);
+      setState((current) => ({
+        ...current,
+        colleagues: current.colleagues.map((item) => item.id === fresh.id
+          ? {
+              ...fresh,
+              imConfigured: item.imConfigured,
+              feishuConfigured: item.feishuConfigured,
+              dingtalkConfigured: item.dingtalkConfigured,
+              welinkConfigured: item.welinkConfigured,
+            }
+          : item),
+      }));
+    } finally {
+      setSavingResources(false);
+    }
   };
 
   const refreshColleague = async (colleagueId: string) => {
@@ -875,36 +923,8 @@ export function JiuwenMateApp({
             resourceCatalog={resourceCatalog}
             savingResources={savingResources}
             onLoadSettings={api.readSettings}
-            onSaveSettings={(edit) => {
-              setSavingResources(true);
-              setActionError('');
-              const settings = withColleagueEdit(selectedColleague, modelCatalog.models, edit);
-              return api
-                .updateSettings(selectedColleague.id, settings)
-                .then(() => api.publish(selectedColleague.id))
-                .then(() => api.getColleague(selectedColleague.id))
-                .then((fresh) => {
-                  setState((current) => ({
-                    ...current,
-                    colleagues: current.colleagues.map((item) =>
-                      item.id === fresh.id
-                        ? {
-                            ...fresh,
-                            imConfigured: item.imConfigured,
-                            feishuConfigured: item.feishuConfigured,
-                            welinkConfigured: item.welinkConfigured,
-                            disabled: item.disabled,
-                          }
-                        : item,
-                    ),
-                  }));
-                })
-                .catch((error: unknown) => {
-                  setActionError(errorMessage(error));
-                  throw error;
-                })
-                .finally(() => setSavingResources(false));
-            }}
+            onSaveSettings={(edit) => saveColleagueSettings(selectedColleague.id, edit)}
+            onOpenModelSettings={openModelSettings}
             activity={activity?.members.find((item) => item.agentId === selectedColleague.id) ?? null}
             schedules={schedules.filter((plan) => plan.agentId === selectedColleague.id)}
             savingSchedule={savingSchedule}
@@ -980,32 +1000,10 @@ export function JiuwenMateApp({
             channelApi={api}
             modelCatalog={modelCatalog}
             savingPermissionProfile={savingResources}
-            onSavePermissionProfile={(agentId, permissionProfile) => {
-              const colleague = state.colleagues.find((item) => item.id === agentId);
-              if (!colleague) return Promise.reject(new Error('Colleague not found'));
-              setSavingResources(true);
-              setActionError('');
-              const settings = withColleagueEdit(colleague, modelCatalog.models, { permissionProfile });
-              return api
-                .updateSettings(agentId, settings)
-                .then(() => api.publish(agentId))
-                .then(() => api.getColleague(agentId))
-                .then((fresh) => {
-                  setState((current) => ({
-                    ...current,
-                    colleagues: current.colleagues.map((item) =>
-                      item.id === fresh.id
-                        ? { ...fresh, imConfigured: item.imConfigured, disabled: item.disabled }
-                        : item,
-                    ),
-                  }));
-                })
-                .catch((error: unknown) => {
-                  setActionError(errorMessage(error));
-                  throw error;
-                })
-                .finally(() => setSavingResources(false));
-            }}
+            onSavePermissionProfile={(agentId, permissionProfile) => saveColleagueSettings(agentId, { permissionProfile })}
+            savingModel={savingResources}
+            onSaveModel={(agentId, model) => saveColleagueSettings(agentId, { model })}
+            onOpenModelSettings={openModelSettings}
             onRenameColleague={async (agentId, name) => {
               const settings = await api.readSettings(agentId);
               await api.updateSettings(agentId, { ...settings, name: name.trim() });

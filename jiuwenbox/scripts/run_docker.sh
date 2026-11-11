@@ -223,6 +223,11 @@ fi
 
 echo
 
+# isolated + uplink 在容器自己的 netns 里转发 veth 流量，要求
+# net.ipv4.ip_forward=1。--sysctl 在 runc 把 /proc/sys 挂成只读之前写入，
+# 因此不需要 Docker 25+ 才有的 --security-opt systempaths=unconfined。
+# 若容器不是由本脚本拉起、sysctl 也没设上，supervisor 会在第一次建沙箱时
+# 把 /proc/sys remount 成可写再写一次。
 docker run -itd \
     --name "$CONTAINER_NAME" \
     --restart=unless-stopped \
@@ -231,7 +236,6 @@ docker run -itd \
     --cap-add=NET_ADMIN \
     --security-opt seccomp=unconfined \
     --security-opt apparmor=unconfined \
-    --security-opt systempaths=unconfined \
     --cgroupns=host \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
     "${DOCKER_PORT_ARGS[@]}" \

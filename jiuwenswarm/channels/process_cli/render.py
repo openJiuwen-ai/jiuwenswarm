@@ -10,6 +10,7 @@ import sys
 from typing import Any, TextIO
 
 from jiuwenswarm.channels.process_cli.ui import HumanRunUI
+from jiuwenswarm.common.model_error_messages import humanize_model_error
 from jiuwenswarm.runtime.events import RuntimeEvent
 
 _HUMAN_ERROR_TRANSLATIONS = {
@@ -30,11 +31,16 @@ def _event_text(payload: dict[str, Any]) -> str:
 
 def _human_error_summary(message: str) -> str:
     translated = _HUMAN_ERROR_TRANSLATIONS.get(message, message)
-    if "model call failed" in translated.lower():
+    # 只对模型调用类错误做归一化，避免把进程超时等其它错误误判成网络问题。
+    if "model call failed" in translated.lower() or "apistatuserror" in translated.lower():
         status = re.search(r"Error code:\s*(\d{3})", translated)
         suffix = f"（HTTP {status.group(1)}）" if status else ""
         if "access denied" in translated.lower():
             return f"模型服务拒绝访问{suffix}；请检查模型账号或服务权限。"
+        # 欠费等已知服务商错误给出可执行的提示；未知错误仍走原有的通用摘要。
+        friendly = humanize_model_error(translated)
+        if friendly:
+            return friendly
         if len(translated) > 240 or "\n" in translated:
             return f"模型调用失败{suffix}；详细原因见诊断日志。"
     first_line = (

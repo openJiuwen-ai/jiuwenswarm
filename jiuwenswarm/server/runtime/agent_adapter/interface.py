@@ -3116,7 +3116,10 @@ class JiuWenSwarm:
                     )
             elif method == ReqMethod.PLUGIN_PACKAGES_INSTALL:
                 ok, payload = await asyncio.wait_for(
-                    package_manager.install_equipment_from_hub_gated("plugin_packages", params),
+                    package_manager.install_equipment_from_hub_gated(
+                        "plugin_packages", params,
+                        before_replace=self._prepare_live_plugin_replacement,
+                    ),
                     timeout=120,
                 )
                 if not ok:
@@ -3359,12 +3362,6 @@ class JiuWenSwarm:
                 cancelled = await team_manager.cancel_session_runtime(
                     session_id, reason=reason, workflow_disposition=workflow_disposition
                 )
-                if workflow_disposition == "stop":
-                    from jiuwenswarm.enterprise.team.session_live import (
-                        stop_team_session_live,
-                    )
-
-                    await stop_team_session_live(session_id, drop_queued=True)
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,
@@ -3427,14 +3424,14 @@ class JiuWenSwarm:
 
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 
         with bind_request_subject(request.metadata):
             return await self._process_message(request, schedule_session=True)
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 
         with bind_request_subject(request.metadata):
             return await self._process_message(request, schedule_session=False)
@@ -3905,7 +3902,7 @@ class JiuWenSwarm:
         """Inject an interaction answer into this Session's active execution."""
         if not is_interrupt_resume_payload(request.params):
             raise ValueError("control input must answer an active interaction")
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 
         # 续聊不经过 process_message。这里绑定当次请求的名单，深研适配器里的 allows 才能放行已授权专家。
         # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
@@ -4216,7 +4213,7 @@ class JiuWenSwarm:
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求，并带上本次请求的用户身份。"""
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 
         # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
         stream = self._process_message_stream(request)
@@ -6099,6 +6096,14 @@ class JiuWenSwarm:
         if unload is None:
             return
         await unload(kind, package_id)
+
+    async def _prepare_live_plugin_replacement(self, package_id: str) -> Any:
+        """Detach idle plugins and retain a rollback for all live selections."""
+        adapter = getattr(self, "_adapter", None)
+        prepare = getattr(adapter, "prepare_plugin_replacement", None)
+        if prepare is not None:
+            return await prepare(package_id)
+        return None
 
     async def compress_context(
             self,
