@@ -36,6 +36,7 @@ from typing import Any
 from openjiuwen.core.foundation.llm import ProviderType
 
 from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
+from jiuwenswarm.common.team_goal_config import leader_goal_enabled, resolve_leader_goal_update
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
@@ -80,8 +81,8 @@ from jiuwenswarm.common.config import (
     update_team_organization_ui_in_config,
     update_comfyui_workflow_enabled_in_config,
     update_task_asr_in_config,
-    update_team_scheduled_dispatch_in_config,
     update_team_code_todo_reminder_disabled_in_config,
+    update_team_goal_settings_in_config,
     update_team_member_messaging_in_config,
     update_team_member_subtasks_in_config,
     update_team_task_verification_in_config,
@@ -229,6 +230,10 @@ class ConfigChangeSet:
             scopes.add("search")
         for key in self.yaml_updated:
             key_text = str(key)
+            if key_text == "team_leader_goal_enabled":
+                # New-team policy only: do not rebuild active runners.
+                scopes.add("web_ui")
+                continue
             if key_text in MOA_CONFIG_KEYS:
                 # Refresh UI settings; execution adopts snapshots at the next turn.
                 scopes.add("web_ui")
@@ -414,6 +419,7 @@ CONFIG_YAML_KEYS = frozenset({
     "team_member_messaging_enabled",
     "team_member_subtasks_enabled",
     "team_code_todo_reminder_disabled",
+    "team_leader_goal_enabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -435,6 +441,7 @@ TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_member_messaging_enabled",
     "team_member_subtasks_enabled",
     "team_code_todo_reminder_disabled",
+    "team_leader_goal_enabled",
 })
 # Settings toggles that only change YAML; AgentServer reads the file next turn.
 RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
@@ -642,7 +649,9 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
         DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
     )
     subtask_depth = get_nested_config_value(raw, TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, 0)
+    team = get_nested_config_value(raw, ("modes", "team", "jiuwen_team"), {})
     return {
+        "team_leader_goal_enabled": "true" if leader_goal_enabled(team) else "false",
         "team_scheduled_dispatch_enabled": "true" if str(dispatch_mode).strip() == "scheduled" else "false",
         "team_task_verification_enabled": "true" if parse_config_switch_bool(verification) else "false",
         "team_member_messaging_enabled": "true" if parse_config_switch_bool(member_messaging) else "false",
@@ -1448,6 +1457,23 @@ def apply_config_payload(
         value = params["cua_agent_enabled"]
         if value is not None and not isinstance(value, bool) and value not in ("true", "false"):
             raise ConfigPanelBadRequest("cua_agent_enabled must be true, false or null")
+    if "team_leader_goal_enabled" in params:
+        value = params["team_leader_goal_enabled"]
+        if not isinstance(value, bool) and value not in ("true", "false"):
+            raise ConfigPanelBadRequest("team_leader_goal_enabled must be true or false")
+    goal_settings = {key: parse_config_bool(params[key]) for key in (
+        "team_scheduled_dispatch_enabled", "team_leader_goal_enabled"
+    ) if key in params}
+    if goal_settings:
+        raw_team = get_nested_config_value(get_config_raw(), ("modes", "team", "jiuwen_team"), {})
+        try:
+            resolve_leader_goal_update(
+                raw_team,
+                scheduled=goal_settings.get("team_scheduled_dispatch_enabled"),
+                enabled=goal_settings.get("team_leader_goal_enabled"),
+            )
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
     moa_params = {key: value for key, value in params.items() if key in MOA_CONFIG_KEYS}
     if moa_params:
         try:
@@ -1526,6 +1552,16 @@ def apply_config_payload(
             logger.warning("[config.set] 写回 modes.team 失败: %s", exc)
             raise ConfigPanelInternalError("failed to update modes.team") from exc
 
+    if goal_settings:
+        try:
+            update_team_goal_settings_in_config(
+                scheduled=goal_settings.get("team_scheduled_dispatch_enabled"),
+                enabled=goal_settings.get("team_leader_goal_enabled"),
+            )
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
+        yaml_updated.append("team_leader_goal_enabled")
+
     external_cli_agents_updated = False
     try:
         from jiuwenswarm.common.design_generation_selection import (
@@ -1567,7 +1603,7 @@ def apply_config_payload(
             elif param_key == "swarmflow_budget":
                 update_swarmflow_budget_in_config(str(val).strip())
             elif param_key == "team_scheduled_dispatch_enabled":
-                update_team_scheduled_dispatch_in_config(parsed)
+                # Dispatch and leader goal were committed together above.
                 if not parsed:
                     # Reset the child switches when scheduled dispatch is disabled.
                     update_team_task_verification_in_config(False)
@@ -1578,6 +1614,8 @@ def apply_config_payload(
                     yaml_updated.append("team_member_subtasks_enabled")
                     update_team_code_todo_reminder_disabled_in_config(False)
                     yaml_updated.append("team_code_todo_reminder_disabled")
+            elif param_key == "team_leader_goal_enabled":
+                continue
             elif param_key in (
                 "team_task_verification_enabled",
                 "team_member_messaging_enabled",
@@ -1955,6 +1993,7 @@ async def config_get_handler(
         )
         payload.setdefault("team_member_subtasks_enabled", "false")
         payload.setdefault("team_code_todo_reminder_disabled", "false")
+        payload.setdefault("team_leader_goal_enabled", "false")
         for key, value in _default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
