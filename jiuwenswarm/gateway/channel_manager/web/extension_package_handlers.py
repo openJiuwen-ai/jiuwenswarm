@@ -614,7 +614,15 @@ def _read_manifest(path: Path) -> Mapping[str, Any] | None:
                 raw = stream.read() if stream is not None else b""
         else:
             with ZipFile(path) as archive:
-                entry = archive.getinfo("manifest.json")
+                candidates = [
+                    entry
+                    for entry in archive.infolist()
+                    if Path(entry.filename).name == "manifest.json"
+                    and len(Path(entry.filename).parts) <= 3
+                ]
+                if len(candidates) != 1:
+                    return None
+                entry = candidates[0]
                 if entry.file_size > _MANIFEST_LIMIT:
                     return None
                 raw = archive.read(entry)

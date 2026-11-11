@@ -3187,7 +3187,11 @@ function AppContent({
         secondSkillName?: string;
         metadata?: Record<string, unknown>;
         mode?: AgentMode;
+        resetAttachmentDrafts?: boolean;
       };
+      if (detail.resetAttachmentDrafts) {
+        clearAttachmentDrafts(NEW_CONVERSATION_ID);
+      }
       // 事件显式带了 mode 时用 forceMode，避免未发送的草稿会话把模式改回去
       // （例如「通过聊天创建技能」要求单 Agent，不能停在集群模式）。
       enterNewConversation(

@@ -79,7 +79,12 @@ def set_current_multimodal_image_files(image_files: list[dict[str, Any]]) -> Any
 
 
 def reset_current_multimodal_image_files(token: Any) -> None:
-    _CURRENT_MULTIMODAL_IMAGE_FILES.reset(token)
+    try:
+        _CURRENT_MULTIMODAL_IMAGE_FILES.reset(token)
+    except ValueError:
+        # Streaming teardown can run in a cancellation task different from
+        # the request task that created the ContextVar token.
+        pass
 
 
 def current_multimodal_image_files() -> list[dict[str, Any]]:

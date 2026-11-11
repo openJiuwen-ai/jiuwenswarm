@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Protocol
 
 from openjiuwen.core.events import (
@@ -59,7 +59,7 @@ def _absolute_path(value: object, capability: str) -> str | None:
         return None
     if not isinstance(value, str):
         raise TypeError(f"{capability} requires a string path or None")
-    if not value or not Path(value).is_absolute():
+    if not value or not (Path(value).is_absolute() or PureWindowsPath(value).is_absolute()):
         raise ValueError(f"{capability} requires an absolute path")
     return value
 

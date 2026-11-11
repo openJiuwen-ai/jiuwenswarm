@@ -23,7 +23,10 @@ def restore_process_state():
     without restoration, later tests in the same process would inherit them.
     """
     policy = asyncio.get_event_loop_policy()
-    previous_loop = policy.get_event_loop()
+    try:
+        previous_loop = policy.get_event_loop()
+    except RuntimeError:
+        previous_loop = None
     previous_handlers = {
         sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
     }

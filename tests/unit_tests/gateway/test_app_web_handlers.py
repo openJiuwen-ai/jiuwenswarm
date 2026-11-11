@@ -53,7 +53,16 @@ class FakeWebChannel:
         self.connect_handler = handler
 
     def on_disconnect(self, handler):
-        self.disconnect_handler = handler
+        previous = self.disconnect_handler
+        if previous is None:
+            self.disconnect_handler = handler
+            return
+
+        async def combined(ws, session_ids):
+            await previous(ws, session_ids)
+            await handler(ws, session_ids)
+
+        self.disconnect_handler = combined
 
     async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
         self.responses.append(
@@ -2847,7 +2856,7 @@ async def test_config_set_appends_replaced_path_when_switching_to_builtin(monkey
         lambda cli_agent, cli_path="": pytest.fail("built-in mode must not validate cli_path"),
     )
     monkeypatch.setattr(
-        "gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: None,
     )
     monkeypatch.setattr(
@@ -2919,7 +2928,7 @@ async def test_config_set_appends_replaced_cli_path_to_history(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: None,
     )
     monkeypatch.setattr(

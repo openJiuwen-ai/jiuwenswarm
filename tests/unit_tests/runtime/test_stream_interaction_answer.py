@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+import pytest_asyncio
 
 from jiuwenswarm.channels.process_cli.client import (
     InProcessRuntimeClient,
@@ -102,7 +103,7 @@ def _execution(snapshot, request_id: str):
     raise AssertionError(f"missing execution for {request_id}")
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def harness(monkeypatch: pytest.MonkeyPatch):
     async def original(request):
         yield _chunk(
@@ -832,7 +833,9 @@ async def test_real_facade_control_wrapper_closes_retained_adapter_stream(
         ),
         _adapter_mode_for_request=Mock(return_value="normal"),
         _session_manager=SimpleNamespace(get_session_id=Mock(return_value=SESSION_ID)),
-        _build_inputs=Mock(return_value=({}, "", False)),
+        _build_inputs_async=AsyncMock(return_value=({}, "", False)),
+        _persist_ask_user_answer_history=AsyncMock(),
+        _persist_control_chunk_to_history=AsyncMock(),
         reconcile_session_mcp=AsyncMock(),
     )
     monkeypatch.setattr(interface, "restore_chat_send_equipment_params", Mock())
