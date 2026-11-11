@@ -909,6 +909,33 @@ def _cursor_stream_key(session_id: str, subagent_id: str | None) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def read_history_index_page(
+    session_id: str,
+    *,
+    page_idx: int,
+    page_size: int,
+    is_restorable: Callable[[dict[str, Any]], bool],
+    subagent_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Drain writes and read one legacy page without materializing all history."""
+    from jiuwenswarm.server.runtime.session.history_paging import read_indexed_history
+
+    def restorable_record(record: dict[str, Any]) -> bool:
+        content = record.get("content")
+        if record.get("role") in {"user", "human"} and isinstance(content, str):
+            record["content"] = collapse_file_content_blocks(content)
+        return is_restorable(record)
+
+    with _QUEUE_ENQUEUE_LOCK:
+        WRITE_QUEUE.join()
+        with FILE_LOCK:
+            path = get_read_history_path(session_id, subagent_id=subagent_id)
+            return read_indexed_history(
+                path, session_id=session_id, page_idx=page_idx, page_size=page_size,
+                is_restorable=restorable_record,
+            )
+
+
 def _encode_history_cursor(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     return base64.urlsafe_b64encode(raw.encode("ascii")).decode("ascii").rstrip("=")

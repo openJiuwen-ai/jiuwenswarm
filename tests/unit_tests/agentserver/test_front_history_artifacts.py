@@ -61,6 +61,44 @@ async def test_front_reads_complete_utf8_artifact_in_chunks(stored, explicit_ses
     finally:
         await front.stop()
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_front_index_page_budget_failure_is_an_explicit_error(stored, monkeypatch, stream):
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from jiuwenswarm.server.runtime.session import history_paging
+
+    stored.write([user("normal", "preserve original")])
+    original = stored.path.read_bytes()
+    monkeypatch.setattr(history_paging, "_PAGE_BYTES", 1)
+    front = AgentServerFront(port=0)
+    await front.start()
+    try:
+        port = front._server.sockets[0].getsockname()[1]
+        async with websockets.connect(f"ws://127.0.0.1:{port}") as socket:
+            await socket.recv()
+            rid = uuid4().hex
+            await socket.send(json.dumps({
+                "protocol_version": "1.0", "request_id": rid, "channel": "web",
+                "session_id": stored.sid, "user_id": "budget-test-owner", "identity_origin": "user",
+                "method": "history.get", "is_stream": stream,
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "params": {"session_id": stored.sid, "page_idx": 1},
+            }))
+            async with asyncio.timeout(10):
+                while True:
+                    raw = json.loads(await socket.recv())
+                    if raw.get("request_id") == rid:
+                        break
+            reply = parse_agent_server_wire_chunk(raw) if stream else parse_agent_server_wire_unary(raw)
+            assert reply.payload["code"] == "HISTORY_RESTORE_LIMIT"
+            if stream:
+                assert reply.is_complete and reply.payload["status"] == "error"
+            else:
+                assert not reply.ok
+    finally:
+        await front.stop()
+    assert stored.path.read_bytes() == original
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", [

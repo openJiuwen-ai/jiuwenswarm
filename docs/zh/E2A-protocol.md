@@ -448,3 +448,7 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 响应 payload 包含 `content`、`offset`、`next_offset`、`eof`、`bytes` 和 `sha256`。会话优先取 `params.session_id`，缺失时使用请求 envelope 的 `session_id`。offset 为 UTF-8 字节位置，必须落在字符边界；每次最多 64 KiB。客户端使用返回的 `next_offset` 继续读取，直到 `eof=true`。摘要限定在该会话目录内，接口不接受任意文件路径。无效摘要、范围、编码边界或缺失工件返回 `HISTORY_ARTIFACT_FAILED`。
 
 省略 `artifact_sha256` 时仍使用原历史分页/流式读取行为；E2A envelope 和协议版本不变。
+
+旧 `page_idx` 分页按块扫描历史，只保留请求页，保持最新到最旧的顺序及准确的 `total_pages`；旧 JSON 数组也使用流式读取。单次扫描最多 8 GiB / 120 秒，请求页保留内容最多 16 MiB；超大诊断字段不会整体加载。预算或内存分配失败返回明确的 `HISTORY_RESTORE_LIMIT`，源文件被替换或截断返回 `HISTORY_RESTORE_CHANGED`，不返回空历史成功。
+
+旧历史的上下文恢复仍使用扫描预算；分批恢复之间等待模型压缩的时间不计入扫描耗时，实际磁盘读取和解析仍受时间限制。

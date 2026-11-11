@@ -511,3 +511,7 @@ Use a unary `history.get` request with these `params`:
 The response payload contains `content`, `offset`, `next_offset`, `eof`, `bytes`, and `sha256`. The session is taken from `params.session_id`, falling back to the request envelope's `session_id`. Offsets are UTF-8 byte positions and must align with character boundaries; each read is limited to 64 KiB. Continue from the returned `next_offset` until `eof=true`. Digests are resolved within the selected session; arbitrary file paths are not accepted. Invalid digests, ranges, encoding boundaries, or missing artifacts produce `HISTORY_ARTIFACT_FAILED`.
 
 Omitting `artifact_sha256` preserves existing history paging/streaming behavior. The E2A envelope and protocol version are unchanged.
+
+Legacy `page_idx` paging scans history in blocks and retains only the requested page, preserving newest-first order and exact `total_pages`. Old JSON arrays are also streamed. Each scan is limited to 8 GiB / 120 seconds, and the retained page to 16 MiB; giant diagnostic fields are not loaded in full. Budget or allocation failures return an explicit `HISTORY_RESTORE_LIMIT`; replacement or truncation returns `HISTORY_RESTORE_CHANGED`, rather than a successful empty history.
+
+Legacy context recovery retains its scan budget. Time spent waiting for model compression between recovery batches does not consume scanning time; actual disk reads and parsing remain time-limited.
