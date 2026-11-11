@@ -49,6 +49,23 @@ def reset_group_turn(token: Token) -> None:
     _CURRENT_TURN.reset(token)
 
 
+def _verified_public_broadcast(message: Any, meta: Any, trigger_id: str, member_name: str, team_name: str) -> bool:
+    """Accept only the persisted broadcast that this member was actually mentioned in."""
+    if message is None or not isinstance(meta, dict):
+        return False
+    if meta.get("type") != "group_chat" or message.team_name != team_name:
+        return False
+    if message.from_member_name != "user" or not message.broadcast:
+        return False
+    if message.message_id != trigger_id:
+        return False
+    client_message_id = meta.get("client_message_id")
+    if not isinstance(client_message_id, str) or not client_message_id.strip():
+        return False
+    mentions = meta.get("mentions")
+    return isinstance(mentions, list) and member_name in mentions
+
+
 def is_group_notice(part: str) -> bool:
     return _NOTICE.match(str(part)) is not None
 
@@ -83,15 +100,9 @@ async def expand_public_group_inputs(parts: list[str], backend: Any, member_name
             message = await backend.db.message.get_message(trigger_id)
             raw = getattr(message, "meta", None)
             meta = json.loads(raw) if isinstance(raw, str) else raw
-            if (message is None or not isinstance(meta, dict)
-                    or meta.get("type") != "group_chat"
-                    or message.team_name != backend.team_name
-                    or message.from_member_name != "user" or not message.broadcast
-                    or message.message_id != trigger_id
-                    or not isinstance(meta.get("client_message_id"), str)
-                    or not meta["client_message_id"].strip()
-                    or not isinstance(meta.get("mentions"), list)
-                    or member_name not in meta["mentions"]):
+            if not _verified_public_broadcast(
+                message, meta, trigger_id, member_name, backend.team_name,
+            ):
                 continue
             parts[index] = await context_for(backend, member_name, message)
         except (OSError, ValueError, AttributeError, TypeError):
@@ -136,8 +147,9 @@ def _unaccepted_organization(turn: GroupTurn | None) -> bool:
     from jiuwenswarm.agents.swarm.group_route import candidate
 
     item = candidate(turn.session_id, turn.client_message_id)
-    if item is not None and item["owner_member"] == turn.member_name and item["status"] in {"pending", "chat", "clarification"}:
-        return True
+    if item is not None and item["owner_member"] == turn.member_name:
+        if item["status"] in {"pending", "chat", "clarification"}:
+            return True
     plan = recorded_organization_plan(turn.session_id, turn.member_name, turn.client_message_id)
     return (
         plan is not None and plan.get("status") in {"pending", "running"}

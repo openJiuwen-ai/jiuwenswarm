@@ -38,11 +38,16 @@ def close_card(record: dict, status: str, reason: str | None = None) -> bool:
 
 
 def _active(session_id: str, plan_id: str) -> bool:
-    from jiuwenswarm.agents.swarm import group_org_bootstrap as boot
+    from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+        organization_member_runs, owner_run_is_active, queue_run_is_active,
+    )
 
-    return (boot._owner_run_active(session_id, plan_id) or boot._queue_run_active(session_id, plan_id)
-            or any(sid == session_id and pid == plan_id and not task.done()
-                   for (sid, pid, _), task in boot._member_runs.items()))
+    if owner_run_is_active(session_id, plan_id) or queue_run_is_active(session_id, plan_id):
+        return True
+    for (sid, pid, _), task in organization_member_runs().items():
+        if sid == session_id and pid == plan_id and not task.done():
+            return True
+    return False
 
 
 async def _pool_for(plan: dict):
@@ -64,16 +69,18 @@ async def _pool_for(plan: dict):
 
 async def _runtime_has_binding(runtime, session_id: str, plan: dict, pool) -> bool:
     """A live old binding is evidence of possible recovery, not permission to stop it."""
-    from jiuwenswarm.agents.swarm import group_org_bootstrap as boot
+    from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+        bound_organization_id, instance_team_id, live_team_backend,
+    )
 
-    teams = {boot.instance_team_id(session_id, name) for name in plan.get("members", [])}
+    teams = {instance_team_id(session_id, name) for name in plan.get("members", [])}
     teams.update(row["team_id"] for row in groups.group_organization_teams(session_id, plan["organization_id"]))
     summary = await pool.get_summary_team()
     if summary is not None and summary.summary_team_id:
         teams.add(summary.summary_team_id)
     for team_id in teams:
-        backend = await boot._live_backend(runtime, team_id, session_id)
-        if backend is not None and boot._bound_organization(backend) == plan["organization_id"]:
+        backend = await live_team_backend(runtime, team_id, session_id)
+        if backend is not None and bound_organization_id(backend) == plan["organization_id"]:
             return True
         # A Summary Team belongs only to this organization; do not delete its
         # backing rows while it is loaded, even if it lacks an org manager.
@@ -96,9 +103,9 @@ async def reconcile_group(session_id: str) -> None:
         return
     if not group.get("organization_plans"):
         return
-    runtime, _, _ = boot._organization_runtime()
+    runtime, _, _ = boot.load_organization_runtime()
     # Same lock as instance binding, plus the cross-process group write lock.
-    async with boot._lock_for(session_id):
+    async with boot.session_organization_lock(session_id):
         async with groups.group_lock(session_id):
             for saved in groups.group_organization_plans(session_id):
                 plan_id = saved["plan_id"]
@@ -106,9 +113,19 @@ async def reconcile_group(session_id: str) -> None:
                     continue
                 store = GroupExecutions(session_id)
                 records = store.read()
-                cards = [r for r in records.values() if r.get("execution_kind") == "organization"
-                         and r.get("organization_plan_id") == plan_id]
-                owner = saved.get("run_owner") or next((r.get("owner") for r in cards if r.get("owner")), None)
+                cards = []
+                for record in records.values():
+                    if record.get("execution_kind") != "organization":
+                        continue
+                    if record.get("organization_plan_id") != plan_id:
+                        continue
+                    cards.append(record)
+                owner = saved.get("run_owner")
+                if not owner:
+                    for record in cards:
+                        if record.get("owner"):
+                            owner = record.get("owner")
+                            break
                 if not owner:
                     continue
                 try:
@@ -122,12 +139,14 @@ async def reconcile_group(session_id: str) -> None:
                     if await _runtime_has_binding(runtime, session_id, saved, pool):
                         continue
                 except Exception:
-                    logger.warning("Organization recovery ownership unavailable session=%s plan=%s", session_id, plan_id,
-                                   exc_info=True)
+                    logger.warning(
+                        "Organization recovery ownership unavailable session=%s plan=%s",
+                        session_id, plan_id, exc_info=True,
+                    )
                     continue
                 # Re-read under the binding lock. A recovered generation must
                 # never be fenced by an earlier snapshot.
-                current = boot._plan_record(session_id, plan_id)
+                current = boot.organization_plan_record(session_id, plan_id)
                 if current != saved or _active(session_id, plan_id):
                     continue
                 reason = "服务重启或执行进程退出，组织任务已中断，请重新发起。"
@@ -149,12 +168,17 @@ async def reconcile_group(session_id: str) -> None:
                 try:
                     await asyncio.wait_for(pool.dissolve_organization(), 15)
                     groups.clear_group_organization_binding(session_id, saved["organization_id"])
-                    groups.update_group_organization_plan(session_id, plan_id, cleanup_status="done", cleanup_error=None)
+                    groups.update_group_organization_plan(
+                        session_id, plan_id, cleanup_status="done", cleanup_error=None,
+                    )
                 except Exception as exc:
                     groups.update_group_organization_plan(session_id, plan_id,
                                                           cleanup_status="pending", cleanup_error=str(exc)[:500])
-                    logger.warning("Organization cleanup pending session=%s plan=%s", session_id, plan_id, exc_info=True)
-                boot._plan_event(session_id, plan_id).set()
+                    logger.warning(
+                        "Organization cleanup pending session=%s plan=%s",
+                        session_id, plan_id, exc_info=True,
+                    )
+                boot.organization_plan_event(session_id, plan_id).set()
                 for record in changed:
                     try:
                         await store.publish(record, "updated")

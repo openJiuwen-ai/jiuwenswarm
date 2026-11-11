@@ -300,7 +300,11 @@ def update_group_organization_plan(
     for item in plans:
         if item["plan_id"] == plan_id:
             if item.get("cleanup_status") and "status" in fields and not fields.get("runtime_interrupted"):
-                fields = {key: value for key, value in fields.items() if key not in {"status", "error", "run_id", "run_owner"}}
+                kept = {}
+                for key, value in fields.items():
+                    if key not in {"status", "error", "run_id", "run_owner"}:
+                        kept[key] = value
+                fields = kept
             item.update(copy.deepcopy(fields))
             break
     state["organization_plans"] = plans

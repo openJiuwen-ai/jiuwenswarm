@@ -138,8 +138,11 @@ async def record_candidate(session_id: str, *, mentions: list[str], body: str, p
             return item
         # Retries of pre-admission-version messages keep their existing plan.
         # They must not be reclassified as chat while that organization runs.
-        previous = next((plan for plan in group_service.group_organization_plans(session_id)
-                         if plan.get("plan_id") == plan_id), None)
+        previous = None
+        for plan in group_service.group_organization_plans(session_id):
+            if plan.get("plan_id") == plan_id:
+                previous = plan
+                break
         if previous is not None:
             return previous
         item = dict(plan_id=plan_id, members=names, owner_member=names[0], body=body,
@@ -150,7 +153,9 @@ async def record_candidate(session_id: str, *, mentions: list[str], body: str, p
     return item
 
 
-async def set_status(session_id: str, message_id: str, status: str, *, expected: set[str], **fields: Any) -> dict | None:
+async def set_status(
+    session_id: str, message_id: str, status: str, *, expected: set[str], **fields: Any,
+) -> dict | None:
     async with route_lock(session_id, message_id):
         records = routes(session_id)
         item = candidate(session_id, message_id)
@@ -202,11 +207,13 @@ def admission_block_reason(session_id: str, message_id: str, member_name: str, t
     )
 
     plan = recorded_organization_plan(session_id, member_name, message_id)
-    if (plan is not None and plan.get("status") in {"pending", "running"}
-            and not organization_plan_accepted(session_id, message_id, member_name)
-            and tool_name not in {"run_team", "read_file"}):
-        return "Join this accepted organization with run_team first; do not repeat its pre-start clarification."
-    return None
+    if plan is None or plan.get("status") not in {"pending", "running"}:
+        return None
+    if organization_plan_accepted(session_id, message_id, member_name):
+        return None
+    if tool_name in {"run_team", "read_file"}:
+        return None
+    return "Join this accepted organization with run_team first; do not repeat its pre-start clarification."
 
 
 async def activate(session_id: str, message_id: str, backend: Any) -> ToolOutput | None:
@@ -226,9 +233,13 @@ async def activate(session_id: str, message_id: str, backend: Any) -> ToolOutput
         if item["status"] == "clarification":
             from jiuwenswarm.server.runtime.group_questions import GroupQuestions
 
-            questions = [question for question in GroupQuestions(session_id).read().values()
-                         if question.get("client_message_id") == message_id
-                         and question.get("member_name") == item["owner_member"]]
+            questions = []
+            for question in GroupQuestions(session_id).read().values():
+                if question.get("client_message_id") != message_id:
+                    continue
+                if question.get("member_name") != item["owner_member"]:
+                    continue
+                questions.append(question)
             if any(question["status"] == "pending" for question in questions):
                 return ToolOutput(success=False, error="Wait for the user's clarification before starting work.")
             answers = [question["answers"] for question in questions if question.get("status") == "answered"]
@@ -272,7 +283,7 @@ async def activate(session_id: str, message_id: str, backend: Any) -> ToolOutput
 
                     error = "Organization admission failed before the Owner started: " + str(exc)
                     async with group_service.group_lock(session_id):
-                        bootstrap._fail_open_organization_plan(session_id, message_id, error)
+                        bootstrap.fail_open_organization_plan(session_id, message_id, error)
                     item.update(status="failed", error=error)
                     await save_candidate(session_id, item)
                     await bootstrap.publish_organization_card(
@@ -284,7 +295,10 @@ async def activate(session_id: str, message_id: str, backend: Any) -> ToolOutput
                     await publish(session_id, item)
                     if isinstance(exc, asyncio.CancelledError):
                         raise
-                    return ToolOutput(success=False, error="Participant notification failed. This request has ended; resend it.")
+                    return ToolOutput(
+                        success=False,
+                        error="Participant notification failed. This request has ended; resend it.",
+                    )
                 item["notified"].append(member)
                 await save_candidate(session_id, item)
     return None
@@ -311,9 +325,13 @@ async def expand_route_notices(parts: list[str], backend: Any, session_id: str, 
         if meta.get("type") != "swarm_group_route":
             continue
         item = candidate(session_id, meta.get("plan_id"))
-        if (item is None or item["status"] != "task" or member_name not in item["members"]
-                or row.to_member_name != member_name or row.from_member_name != item["owner_member"]
-                or row.team_name != backend.team_name):
+        if item is None or item["status"] != "task":
+            parts[index] = "This organization notification is no longer actionable."
+            continue
+        if member_name not in item["members"] or row.to_member_name != member_name:
+            parts[index] = "This organization notification is no longer actionable."
+            continue
+        if row.from_member_name != item["owner_member"] or row.team_name != backend.team_name:
             parts[index] = "This organization notification is no longer actionable."
             continue
         trigger_id = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(
@@ -362,8 +380,14 @@ async def ordinary_reply(tool: Any, inputs: dict, message_id: str,
         if item["status"] == "clarification":
             from jiuwenswarm.server.runtime.group_questions import GroupQuestions
 
-            if any(question.get("client_message_id") == message_id and question.get("status") == "pending"
-                   for question in GroupQuestions(session_id).read().values()):
+            pending_clarification = False
+            for question in GroupQuestions(session_id).read().values():
+                if question.get("client_message_id") != message_id:
+                    continue
+                if question.get("status") == "pending":
+                    pending_clarification = True
+                    break
+            if pending_clarification:
                 return ToolOutput(success=False, error="Wait for the user's clarification before replying.")
         item.update(status="chat", updated_at=time.time())
         item.setdefault("reply_content", inputs["content"])

@@ -169,7 +169,8 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 "and loads the context from its earlier child task. "
                 "Results are posted automatically; do not post or submit them twice. "
                 "For a message mentioning only multiple expert teams, the first mentioned team is the Owner. "
-                "Only the Owner decides: ordinary conversation uses group_send_message; substantive work uses run_team; "
+                "Only the Owner decides: ordinary conversation uses group_send_message; "
+                "substantive work uses run_team; "
                 "missing requirements use ask_user. A mention alone does not require an organization task. "
                 "Other proxies wait until the Owner accepts a task, then each calls run_team for that message. "
                 "Only the Owner posts the group's reply. "
@@ -1109,7 +1110,10 @@ class RunTeam(_GroupTool):
                         payload = getattr(chunk, "payload", None)
                         # Core task_failed uses a typed CustomSchema payload.
                         # Check it before the dictionary-only progress path.
-                        payload_type = payload.get("type") if isinstance(payload, dict) else getattr(payload, "type", None)
+                        payload_type = (
+                            payload.get("type") if isinstance(payload, dict)
+                            else getattr(payload, "type", None)
+                        )
                         if payload_type == "task_failed":
                             raise RuntimeError("expert-team execution failed")
                         if not isinstance(payload, dict):

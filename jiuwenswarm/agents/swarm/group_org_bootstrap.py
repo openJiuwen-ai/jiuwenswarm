@@ -205,6 +205,10 @@ def _lock_for(session_id: str) -> asyncio.Lock:
     return lock
 
 
+def session_organization_lock(session_id: str) -> asyncio.Lock:
+    return _lock_for(session_id)
+
+
 def _plan_event(session_id: str, plan_id: str) -> asyncio.Event:
     key = (session_id, plan_id)
     event = _plan_events.get(key)
@@ -212,6 +216,10 @@ def _plan_event(session_id: str, plan_id: str) -> asyncio.Event:
         event = asyncio.Event()
         _plan_events[key] = event
     return event
+
+
+def organization_plan_event(session_id: str, plan_id: str) -> asyncio.Event:
+    return _plan_event(session_id, plan_id)
 
 
 def _now_ms() -> int:
@@ -493,6 +501,18 @@ def _queue_run_active(session_id: str, plan_id: str) -> bool:
         if queued_session == session_id and queued_plan == plan_id and not task.done():
             return True
     return False
+
+
+def owner_run_is_active(session_id: str, plan_id: str) -> bool:
+    return _owner_run_active(session_id, plan_id)
+
+
+def queue_run_is_active(session_id: str, plan_id: str) -> bool:
+    return _queue_run_active(session_id, plan_id)
+
+
+def organization_member_runs() -> dict[tuple[str, str, str], asyncio.Task]:
+    return _member_runs
 
 
 def _collect_live_plans(session_id: str, member_name: str) -> list[dict]:
@@ -1008,6 +1028,10 @@ async def fail_unstarted_organization_round(session_id: str, plan_id: str) -> No
     await _close_unstarted_organization_plan(session_id, plan_id)
 
 
+def fail_open_organization_plan(session_id: str, plan_id: str, error: str) -> None:
+    _fail_open_organization_plan(session_id, plan_id, error)
+
+
 def _fail_open_organization_plan(session_id: str, plan_id: str, error: str) -> None:
     """Mark a still-open plan failed. A finished plan is left as it is."""
     from jiuwenswarm.server.runtime.group_service import update_group_organization_plan
@@ -1018,6 +1042,10 @@ def _fail_open_organization_plan(session_id: str, plan_id: str, error: str) -> N
     update_group_organization_plan(
         session_id, plan_id, status="failed", error=error
     )
+
+
+def organization_plan_record(session_id: str, plan_id: str) -> dict | None:
+    return _plan_record(session_id, plan_id)
 
 
 def _plan_record(session_id: str, plan_id: str) -> dict | None:
@@ -1381,6 +1409,10 @@ async def _set_member_instance_silence(
     )
 
 
+def load_organization_runtime() -> tuple[Any, Any, Any]:
+    return _organization_runtime()
+
+
 def _organization_runtime() -> tuple[Any, Any, Any]:
     from jiuwenswarm.agents.harness.team.expert_org.wiring import (
         install_expert_org_adapters,
@@ -1401,11 +1433,19 @@ def _organization_runtime() -> tuple[Any, Any, Any]:
     return runtime, org_runtime, launcher
 
 
+async def live_team_backend(runtime: Any, team_id: str, session_id: str) -> Any | None:
+    return await _live_backend(runtime, team_id, session_id)
+
+
 async def _live_backend(runtime: Any, team_id: str, session_id: str) -> Any | None:
     entry = await runtime.pool.get(team_id)
     if entry is None or entry.current_session_id != session_id:
         return None
     return getattr(entry.agent, "team_backend", None)
+
+
+def bound_organization_id(backend: Any) -> str:
+    return _bound_organization(backend)
 
 
 def _bound_organization(backend: Any) -> str:
@@ -2280,12 +2320,17 @@ def _pending_join_members(session_id: str, organization_id: str) -> set[str]:
     if plan is None:
         return set()
     plan_id = plan["plan_id"]
-    waiting = {member for (sid, pid, member), task in [*_queued_plans.items(), *_member_runs.items()]
-               if sid == session_id and pid == plan_id and not task.done()}
+    waiting = set()
+    for (sid, pid, member), task in [*_queued_plans.items(), *_member_runs.items()]:
+        if sid != session_id or pid != plan_id or task.done():
+            continue
+        waiting.add(member)
     for question in GroupQuestions(session_id).read().values():
-        if (question.get("status") == "pending" and question.get("client_message_id") == plan_id
-                and question.get("member_name") in plan["members"] and question.get("execution_id") is None):
-            waiting.add(question["member_name"])
+        if question.get("status") != "pending" or question.get("client_message_id") != plan_id:
+            continue
+        if question.get("member_name") not in plan["members"] or question.get("execution_id") is not None:
+            continue
+        waiting.add(question["member_name"])
     return waiting
 
 

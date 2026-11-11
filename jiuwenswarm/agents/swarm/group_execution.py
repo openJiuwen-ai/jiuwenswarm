@@ -216,7 +216,10 @@ class GroupMessageTool(GroupSendMessageTool):
 
         turn = current_group_turn(self.context.session_id, member_name)
         if turn is not None and turn.route == "unknown":
-            return ToolOutput(success=False, error="group_send_message requires an unambiguous triggering group message")
+            return ToolOutput(
+                success=False,
+                error="group_send_message requires an unambiguous triggering group message",
+            )
         if turn is not None and turn.route == "organization":
             result = await ordinary_reply(self, inputs, turn.client_message_id, super().invoke)
             if result is not None:
@@ -315,7 +318,8 @@ class GroupTaskPolicyRail(DeepAgentRail):
                 ctx.request_force_finish({"output": "", "result_type": "answer"})
                 return
             content = (
-                "Decide only this original multi-team message: " + json.dumps({"client_message_id": turn.client_message_id})
+                "Decide only this original multi-team message: "
+                + json.dumps({"client_message_id": turn.client_message_id})
                 + ". You are its Owner. No organization task exists yet. For greetings, acknowledgements, "
                 "or ordinary conversation, reply on behalf of the mentioned teams using group_send_message. "
                 "For substantive work, call run_team to create this message's organization. "
@@ -462,10 +466,11 @@ class GroupTaskPolicyRail(DeepAgentRail):
             from jiuwenswarm.agents.swarm.group_turn import TOKEN_KEY, TURN_KEY, bind_group_turn
 
             turn = ctx.extra.get(TURN_KEY)
-            if ctx.inputs.tool_name == "run_team" and turn is not None and turn.route == "organization" and turn.client_message_id:
-                note_organization_run_attempt(
-                    self.context.session_id, self.context.member_name, turn.client_message_id,
-                )
+            if ctx.inputs.tool_name == "run_team" and turn is not None:
+                if turn.route == "organization" and turn.client_message_id:
+                    note_organization_run_attempt(
+                        self.context.session_id, self.context.member_name, turn.client_message_id,
+                    )
             if turn is not None or ctx.inputs.tool_name == "run_team":
                 ctx.extra[TOKEN_KEY] = bind_group_turn(turn)
             if turn is not None and turn.route == "unknown":
@@ -548,8 +553,9 @@ class GroupTaskPolicyRail(DeepAgentRail):
         if blocked:
             _reject_tool(ctx, blocked)
             return
-        if turn is not None and turn.route == "organization" and item is not None and item["status"] != "task":
-            return
+        if turn is not None and turn.route == "organization":
+            if item is not None and item["status"] != "task":
+                return
         store = GroupExecutions(self.context.session_id)
         active = store.active(self.context.member_name)
         backend = get_team_backend(self.context)

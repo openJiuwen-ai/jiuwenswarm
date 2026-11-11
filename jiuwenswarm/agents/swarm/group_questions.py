@@ -27,7 +27,7 @@ class _GroupResumeBindingRail(AgentRail):
         self.owner = owner
 
     async def before_invoke(self, ctx):
-        self.owner._restore_organization_turn(ctx)
+        self.owner.restore_organization_turn(ctx)
         from jiuwenswarm.agents.swarm.group_turn import TURN_KEY
 
         turn = ctx.extra.get(TURN_KEY)
@@ -70,7 +70,7 @@ class GroupAskUserRail(StructuredAskUserRail):
                     from openjiuwen.core.runner.callback import AbortError
 
                     raise AbortError("Cannot install group clarification binding", cause=exc) from exc
-        self._restore_organization_turn(ctx)
+        self.restore_organization_turn(ctx)
 
     async def after_invoke(self, ctx):
         mounted = getattr(ctx, "extra", {}).pop(_RESUME_RAIL_KEY, None)
@@ -78,7 +78,7 @@ class GroupAskUserRail(StructuredAskUserRail):
             inner, binding = mounted
             await inner.unregister_rail(binding)
 
-    def _restore_organization_turn(self, ctx):
+    def restore_organization_turn(self, ctx):
         """Rebind a fresh invoke from its exact persisted ask-user call, never the latest plan."""
         from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
         from jiuwenswarm.agents.swarm.group_turn import GroupTurn, TURN_KEY
@@ -87,9 +87,11 @@ class GroupAskUserRail(StructuredAskUserRail):
         query = getattr(getattr(ctx, "inputs", None), "query", None)
         if not isinstance(query, InteractiveInput) or self.context.session_id != self.group_id:
             return
-        expected = {native_id: payload[ORGANIZATION_RESUME_KEY]
-                    for native_id, payload in query.user_inputs.items()
-                    if isinstance(payload, dict) and ORGANIZATION_RESUME_KEY in payload}
+        expected = {}
+        for native_id, payload in query.user_inputs.items():
+            if not isinstance(payload, dict) or ORGANIZATION_RESUME_KEY not in payload:
+                continue
+            expected[native_id] = payload[ORGANIZATION_RESUME_KEY]
         identities = {value for value in expected.values() if isinstance(value, str) and value}
         failed_message_id = next(iter(identities)) if len(identities) == 1 else None
         # Retain the server's intended message only for failure reporting. It
@@ -97,13 +99,18 @@ class GroupAskUserRail(StructuredAskUserRail):
         unknown = GroupTurn(self.group_id, self.member_name, failed_message_id, "unknown",
                             "The clarification has no unambiguous organization owner.")
         try:
-            records = [record for record in GroupQuestions(self.group_id).read().values()
-                       if record.get("native_request_id") in query.user_inputs
-                       and record.get("target") == self.target
-                       and record.get("member_name") == self.member_name
-                       and record.get("execution_id") is None
-                       and isinstance(record.get("client_message_id"), str)
-                       and record["client_message_id"]]
+            records = []
+            for record in GroupQuestions(self.group_id).read().values():
+                if record.get("native_request_id") not in query.user_inputs:
+                    continue
+                if record.get("target") != self.target or record.get("member_name") != self.member_name:
+                    continue
+                if record.get("execution_id") is not None:
+                    continue
+                client_message_id = record.get("client_message_id")
+                if not isinstance(client_message_id, str) or not client_message_id:
+                    continue
+                records.append(record)
         except (ValueError, OSError, AttributeError, TypeError):
             ctx.extra[TURN_KEY] = unknown
             logger.exception("Cannot read group clarification ownership group=%s", self.group_id)
