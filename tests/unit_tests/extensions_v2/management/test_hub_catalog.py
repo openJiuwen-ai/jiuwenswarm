@@ -307,3 +307,48 @@ def _query(detail: HubAssetDetail):
         return detail
 
     return query
+
+
+@pytest.mark.parametrize("runtime_active", [False, True])
+@pytest.mark.parametrize("origin", ["hub", "user"])
+@pytest.mark.parametrize("target_enabled", [False, True])
+def test_catalog_uses_restored_manifest_instead_of_install_record(
+    tmp_path: Path, origin: str, target_enabled: bool, runtime_active: bool,
+) -> None:
+    import json
+
+    from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+    from jiuwenswarm.extensions_v2.management.catalog import list_mine
+
+    package_id = "webui.restore-probe"
+    install_dir = tmp_path / "installed"
+    source = write_package(tmp_path / "source", package_id=package_id, version="1.0.0")
+    root = install_dir / package_id / "1.0.0"
+    copytree(source, root)
+    manifest_path = root / "manifest.json"
+    document = json.loads(manifest_path.read_text())
+    document["enable"] = target_enabled
+    manifest_path.write_text(json.dumps(document))
+    recovery = SystemPluginRecovery(install_dir, tmp_path / "recovery")
+    point = recovery.begin_session("catalog-test")
+    document["enable"] = not target_enabled
+    manifest_path.write_text(json.dumps(document))
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    store.upsert(ExtensionInstallRecord(
+        package_id=package_id, version="1.0.0", origin=origin,
+        enabled=not target_enabled, active=not target_enabled,
+    ))
+
+    recovery.restore(point["id"])
+    active = [SimpleNamespace(package_id=package_id, version="1.0.0", root=root)] if runtime_active else []
+    state = SimpleNamespace(active=active, installed=[root])
+    card = list_mine(tmp_path / "examples", state, install_dir=install_dir)[0]
+    entry = entry_from_root(root)
+    assert entry is not None
+    detail = project_detail(entry, state, install_dir=install_dir)
+
+    assert store.get(package_id).enabled is not target_enabled
+    for result in (card, detail):
+        assert result["enabled"] is target_enabled
+        assert result["active"] is runtime_active
+        assert result["origin"] == origin
