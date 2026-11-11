@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 
 def _safe_segment(value: str, fallback: str = "_") -> str:
@@ -32,7 +32,7 @@ def _safe_segment(value: str, fallback: str = "_") -> str:
 
 def debug_trace_dir(mode: str) -> Path:
     """Return the trace directory for *mode* (``.agent`` or ``.code``)."""
-    root = get_infra_data_dir()
+    root = get_user_workspace_dir()
     kind = ".code" if (mode or "").startswith("code") else ".agent"
     return root / kind / "traces"
 

@@ -16,12 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import (
-    get_agent_sessions_dir,
-    get_agent_workspace_dir,
-    get_domain_data_dir,
-    get_user_workspace_dir,
-)
+from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir, get_user_workspace_dir
 from jiuwenswarm.server.runtime.session.session_history import load_history_records
 
 
@@ -1008,14 +1003,13 @@ class DiffService:
             HISTORY_PRIORITY_SHARED_WORKSPACE,
         )
         add_history_file(
-            get_domain_data_dir() / ".agent_history" / f"file_ops_{self._agent_id}.json",
+            get_user_workspace_dir() / ".agent_history" / f"file_ops_{self._agent_id}.json",
             HISTORY_PRIORITY_SHARED_WORKSPACE,
         )
 
         # 2. session-specific file_ops（如 file_ops_jiuwenswarm_tui_xxx.json）
         if session_id:
-            for base_dir in (get_agent_workspace_dir(),
-                             get_domain_data_dir(), get_user_workspace_dir()):
+            for base_dir in (get_agent_workspace_dir(), get_user_workspace_dir()):
                 hist_dir = base_dir / ".agent_history"
                 if not hist_dir.is_dir():
                     continue
@@ -2418,8 +2412,7 @@ class DiffService:
         """
         file_ops_paths: list[Path] = []
 
-        for base_dir in (get_agent_workspace_dir(),
-                         get_domain_data_dir(), get_user_workspace_dir()):
+        for base_dir in (get_agent_workspace_dir(), get_user_workspace_dir()):
             hist_dir = base_dir / ".agent_history"
             if not hist_dir.is_dir():
                 continue

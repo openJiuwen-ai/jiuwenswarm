@@ -39,6 +39,76 @@ def _online_document_runtime(tmp_path, monkeypatch, responses):
 
 
 @pytest.mark.asyncio
+async def test_group_discovery_only_returns_groups_containing_the_employees_exact_robot(tmp_path, monkeypatch):
+    runtime, calls = _online_document_runtime(tmp_path, monkeypatch, [
+        {'success': True, 'result': {'groups': [
+            {'openConversationId': 'cid-other', 'title': 'Unrelated'},
+            {'openConversationId': 'cid-employee', 'title': 'Employee group'},
+        ], 'hasMore': True, 'nextCursor': 5}},
+        {'success': True, 'result': {'bots': [{'robotCode': 'other-robot'}]}},
+        {'success': True, 'result': {'bots': [{'robotCode': 'employee-robot'}]}},
+    ])
+    monkeypatch.setattr(runtime, '_config', lambda: _config(
+        {**_app('employee-1', 'ding-app', 'secret', is_default=True), 'robot_code': 'employee-robot'},
+    ))
+    result = await runtime.discover_groups(DingTalkCliScope('local', 'employee-1', app_id='ding-app'), cursor=0)
+
+    assert result['groups'] == [{'conversation_id': 'cid-employee', 'name': 'Employee group'}]
+    assert result['hasMore'] is True and result['nextCursor'] == 5
+    assert result['failed'] is False
+    assert len(result['readerKey']) == 64
+    assert calls[0][0][1:6] == ['chat', 'group', 'list-all', '--limit', '5']
+    assert calls[0][0][6:8] == ['--cursor', '0']
+    assert all(call[0][1:4] != ['chat', 'message', 'list'] for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_group_discovery_without_employee_authorization_never_lists_account_groups(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    runtime, calls = _online_document_runtime(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(runtime, 'dingtalk_auth_status', AsyncMock(return_value={'status': 'not_connected'}))
+    with pytest.raises(PersistentAgentError) as failure:
+        await runtime.discover_groups(DingTalkCliScope('local', 'employee-1', app_id='ding-app'))
+    assert failure.value.code == 'DINGTALK_CLI_USER_AUTH_REQUIRED'
+    assert not calls
+
+
+@pytest.mark.asyncio
+async def test_group_discovery_keeps_verified_groups_when_another_group_cannot_be_inspected(tmp_path, monkeypatch):
+    runtime, calls = _online_document_runtime(tmp_path, monkeypatch, [
+        {'success': True, 'result': {'groups': [
+            {'openConversationId': 'cid-denied', 'title': 'Denied'},
+            {'openConversationId': 'cid-employee', 'title': 'Employee group'},
+        ], 'hasMore': True, 'nextCursor': 100}},
+        {'success': False, 'errorCode': 'denied'},
+        {'success': True, 'result': {'bots': [{'robotCode': 'ding-app'}]}},
+    ])
+    result = await runtime.discover_groups(DingTalkCliScope('local', 'employee-1', app_id='ding-app'))
+    assert result['groups'] == [{'conversation_id': 'cid-employee', 'name': 'Employee group'}]
+    assert result['failed'] is True
+    assert result['hasMore'] is True and result['nextCursor'] == 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('invalid', ['missing_groups', 'invalid_id', 'repeated_cursor', 'oversized_page'])
+async def test_group_discovery_rejects_invalid_page_before_reading_bots(tmp_path, monkeypatch, invalid):
+    page = {'groups': [{'openConversationId': 'cid-ok', 'title': 'Group'}], 'hasMore': False, 'nextCursor': 0}
+    if invalid == 'missing_groups':
+        page.pop('groups')
+    elif invalid == 'invalid_id':
+        page['groups'][0]['openConversationId'] = 'bad id'
+    elif invalid == 'repeated_cursor':
+        page.update(hasMore=True, nextCursor=0)
+    else:
+        page['groups'] *= 6
+    runtime, calls = _online_document_runtime(tmp_path, monkeypatch, [{'success': True, 'result': page}])
+    with pytest.raises(PersistentAgentError) as failure:
+        await runtime.discover_groups(DingTalkCliScope('local', 'employee-1', app_id='ding-app'), cursor=0)
+    assert failure.value.code == 'DINGTALK_CLI_GROUP_HISTORY_INVALID'
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_group_history_reads_bounded_pages_with_employee_oauth(tmp_path, monkeypatch):
     runtime, calls = _online_document_runtime(tmp_path, monkeypatch, [
         {'success': True, 'result': {'bots': [
@@ -70,6 +140,24 @@ async def test_group_history_reads_bounded_pages_with_employee_oauth(tmp_path, m
     assert len(result['readerKey']) == 64
     assert result['botCodes'] == ['ding-app', 'other-bot']
     assert result['botSenders'] == {'ding-app': 'open-bot'}
+
+
+@pytest.mark.asyncio
+async def test_group_history_does_not_treat_a_verified_bot_welcome_as_a_human_task(tmp_path, monkeypatch):
+    runtime, calls = _online_document_runtime(tmp_path, monkeypatch, [
+        {'success': True, 'result': {'bots': [{'robotCode': 'ding-app', 'botOpenDingTalkId': 'open-bot'}]}},
+        {'contractVersion': '1.0', 'complete': True, 'hasMore': False, 'messages': [
+            {'messageId': 'welcome', 'openConversationId': 'cid-known', 'senderOpenDingTalkId': 'open-bot',
+             'sendType': 'user', 'text': 'any bot text', 'createTime': '2026-11-05 14:13:50'},
+            {'messageId': 'human', 'openConversationId': 'cid-known', 'senderOpenDingTalkId': 'open-person',
+             'sendType': 'user', 'text': 'please introduce yourselves', 'createTime': '2026-11-05 14:14:00'},
+        ]},
+    ])
+    result = await runtime.read_group_history(DingTalkCliScope('local', 'employee-1'),
+                                            conversation_id='cid-known', since='2026-11-05T06:13:00+00:00')
+    assert [(message['messageId'], message['sendType']) for message in result['messages']] == [
+        ('welcome', 'robot'), ('human', 'user'),
+    ]
 
 
 @pytest.mark.asyncio
@@ -782,6 +870,100 @@ def test_dingtalk_auth_status_reads_cli_top_level_authentication(tmp_path, authe
         assert len(calls) == 2
     else:
         assert len(calls) == 1
+
+
+@pytest.mark.parametrize("has_saved_state", [False, True])
+def test_uninitialized_dingtalk_auth_status_does_not_install_cli(tmp_path, monkeypatch, has_saved_state):
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path,
+        config_loader=lambda: _config(_app("employee-1", "ding-app", "secret", is_default=True)),
+        npx_path=Path("/tools/npx"),
+    )
+    scope = DingTalkCliScope("local", "employee-1", app_id="ding-app")
+    root = runtime._oauth_root(scope)
+    if has_saved_state:
+        (root / "saved-cli-profile").write_text("existing private state", encoding="utf-8")
+    monkeypatch.setattr(runtime, "_cached_dws_binary", lambda: None)
+    calls = []
+
+    def run(argv, *, env, cwd, timeout):
+        calls.append(argv)
+        payload = ({"success": True, "authenticated": True} if argv[:2] == ["auth", "status"] else
+                   {"success": True, "profiles": [{"current": True, "userName": "tester"}]})
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(runtime, "_run_cli", run)
+    result = runtime._dingtalk_auth_status(scope)
+    assert result["status"] == ("connected" if has_saved_state else "not_connected")
+    assert len(calls) == (2 if has_saved_state else 0)
+
+
+def test_dingtalk_program_cache_survives_project_reset_without_restoring_oauth(tmp_path):
+    import shutil
+    project = tmp_path / 'project'
+    programs = tmp_path / 'programs'
+    package = programs / 'managed' / 'dingtalk-workspace-cli'
+    (package / 'vendor').mkdir(parents=True)
+    (package / 'package.json').write_text(json.dumps({'version': '1.0.65'}), encoding='utf-8')
+    binary = package / 'vendor' / ('dws.exe' if os.name == 'nt' else 'dws')
+    binary.write_bytes(b'program')
+    binary.chmod(0o700)
+    factory = lambda: LocalDingTalkCliRuntime(
+        root=project, cache_root=programs,
+        config_loader=lambda: _config(_app('employee-1', 'ding-app', 'secret')),
+    )
+    runtime = factory()
+    scope = DingTalkCliScope('local', 'employee-1')
+    oauth = runtime._oauth_root(scope)
+    (oauth / 'private-login').write_text('old authorization', encoding='utf-8')
+    assert runtime._cached_dws_binary() == binary
+    assert runtime._npm_cache_dir().is_relative_to(programs)
+    assert oauth.is_relative_to(project)
+    shutil.rmtree(project)
+    reopened = factory()
+    assert reopened._cached_dws_binary() == binary
+    assert not (reopened._oauth_root(scope) / 'private-login').exists()
+
+
+def test_legacy_dingtalk_program_is_migrated_without_copying_private_account_data(tmp_path):
+    import shutil
+    project, programs = tmp_path / 'project', tmp_path / 'programs'
+    package = project / 'npm-cache' / '1.0.65' / '_npx' / 'old' / 'node_modules' / 'dingtalk-workspace-cli'
+    (package / 'vendor').mkdir(parents=True)
+    (package / 'package.json').write_text(json.dumps({'version': '1.0.65'}), encoding='utf-8')
+    binary = package / 'vendor' / ('dws.exe' if os.name == 'nt' else 'dws')
+    binary.write_bytes(b'legacy-program')
+    binary.chmod(0o700)
+    (package / 'private-account-data').write_text('must remain private', encoding='utf-8')
+    runtime = LocalDingTalkCliRuntime(root=project, cache_root=programs)
+    migrated = runtime._cached_dws_binary()
+    assert migrated.is_relative_to(programs)
+    assert migrated.read_bytes() == b'legacy-program'
+    assert not list(programs.rglob('private-account-data'))
+    shutil.rmtree(project)
+    reopened = LocalDingTalkCliRuntime(root=project, cache_root=programs)
+    assert reopened._cached_dws_binary() == migrated
+
+
+@pytest.mark.parametrize('platform,relative', [
+    ('darwin', 'Library/Caches/WorkSwarm/dingtalk-cli'),
+    ('linux', '.cache/workswarm/dingtalk-cli'),
+    ('win32', 'AppData/Local/WorkSwarm/Cache/dingtalk-cli'),
+])
+def test_default_dingtalk_program_cache_is_outside_project_data(tmp_path, monkeypatch, platform, relative):
+    import sys
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.jiuwenmate import service
+    from jiuwenswarm.server.jiuwenmate import dingtalk_cli_local_provider
+    from jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider import create_provider
+    monkeypatch.setattr(dingtalk_cli_local_provider, '_find_npx', lambda: tmp_path / 'npx')
+    monkeypatch.setattr(sys, 'platform', platform)
+    monkeypatch.setattr(utils, 'get_user_home', lambda: tmp_path)
+    monkeypatch.setattr(service, 'default_data_dir', lambda: tmp_path / '.jiuwenswarm' / 'jiuwenmate')
+    for name in ('LOCALAPPDATA', 'XDG_CACHE_HOME', 'JIUWENMATE_DINGTALK_CLI_HOME', 'JIUWENMATE_DWS_BIN'):
+        monkeypatch.delenv(name, raising=False)
+    runtime = create_provider()
+    assert runtime._npm_cache_dir() == tmp_path / relative / 'npm-cache' / '1.0.65'
 
 
 
@@ -1833,6 +2015,161 @@ async def test_disconnect_stops_pending_device_authorization_before_deleting_pro
     assert not root.exists()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['permission', 'missing_child', 'incomplete'])
+async def test_disconnect_reports_private_profile_cleanup_failure(tmp_path, monkeypatch, failure):
+    import shutil
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(_app('employee-1', 'app', 'secret')),
+    )
+    scope = DingTalkCliScope('local', 'employee-1', app_id='app')
+    private = runtime._oauth_root(scope) / 'private-login'
+    private.write_text('fake-login', encoding='utf-8')
+    def refuse(path, ignore_errors=False):
+        if not ignore_errors:
+            if failure == 'permission':
+                raise PermissionError('profile is locked')
+            if failure == 'missing_child':
+                raise FileNotFoundError('a concurrent child disappeared')
+    monkeypatch.setattr(shutil, 'rmtree', refuse)
+    with pytest.raises(PersistentAgentError) as error:
+        await runtime.dingtalk_auth_disconnect(scope)
+    assert error.value.code == 'DINGTALK_CLI_AUTH_CLEANUP_FAILED'
+    assert private.exists()
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='A POSIX signal handler exposes a late credential write')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['pending', 'connected', 'retry'])
+async def test_disconnect_waits_for_the_login_process_before_deleting_credentials(tmp_path, monkeypatch, state):
+    import sys
+    def runner(args, **options):
+        payload = {'authenticated': True} if args[1:3] == ['auth', 'status'] else {
+            'profiles': [{'current': True, 'userName': 'Test account', 'corpName': 'Test organization'}],
+        }
+        return subprocess.CompletedProcess(args, 0, json.dumps(payload), '')
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(_app('employee-1', 'app', 'secret')),
+        dws_path=Path('/tools/dws'), runner=runner,
+    )
+    scope = DingTalkCliScope('local', 'employee-1', app_id='app')
+    root = runtime._oauth_root(scope)
+    operation = runtime._scope_digest(scope) + '.' + 'a' * 32
+    log, pid, _ = runtime._oauth_paths(scope, operation)
+    log.parent.mkdir(parents=True)
+    script = (
+        'import signal,sys,time\nfrom pathlib import Path\n'
+        'def stop(*args):\n'
+        ' time.sleep(0.2)\n p=Path(sys.argv[1]);p.mkdir(parents=True,exist_ok=True)\n'
+        ' (p/"late-login").write_text("fake-login")\n sys.exit(0)\n'
+        'signal.signal(signal.SIGTERM,stop)\nprint("ready",flush=True)\ntime.sleep(30)\n'
+    )
+    process = subprocess.Popen([sys.executable, '-c', script, str(root)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert await asyncio.to_thread(process.stdout.readline) == 'ready\n'
+        pid.write_text(str(process.pid), encoding='utf-8')
+        runtime._oauth_current(scope).write_text(operation, encoding='utf-8')
+        if state == 'connected':
+            assert (await runtime.dingtalk_auth_status(scope))['status'] == 'connected'
+            assert pid.exists(), 'A live login process must remain tracked after credentials are visible'
+        if state == 'retry':
+            monkeypatch.setattr(runtime, '_dingtalk_auth_status', lambda scope: {
+                'status': 'error', 'error_code': 'org_access_denied', 'cli_version': 'test',
+            })
+            def cannot_start(*args, **options):
+                raise OSError('new login process cannot start')
+            monkeypatch.setattr(subprocess, 'Popen', cannot_start)
+            with pytest.raises(PersistentAgentError) as error:
+                await runtime.dingtalk_auth_begin(scope)
+            assert error.value.code == 'DINGTALK_CLI_AUTH_START_FAILED'
+            assert process.poll() is not None, 'Retrying must stop the old flow before dropping its PID'
+        await runtime.dingtalk_auth_disconnect(scope)
+        assert process.poll() is not None
+        assert not root.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_can_clean_private_state_without_a_cli_binary(tmp_path, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliRuntimeService
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(_app('employee-1', 'app', 'secret')),
+    )
+    monkeypatch.setattr(runtime, '_npx_path', None)
+    scope = DingTalkCliScope('local', 'employee-1', app_id='app')
+    private = runtime._oauth_root(scope)
+    (private / 'private-login').write_text('fake-login', encoding='utf-8')
+    result = await DingTalkCliRuntimeService(runtime=runtime).dingtalk_auth_disconnect(scope)
+    assert result['status'] == 'not_connected'
+    assert not private.exists()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_clears_old_credential_revisions_without_touching_other_employee_or_program_cache(tmp_path):
+    config = _config(_app('employee-1', 'app', 'old-secret'))
+    runtime = LocalDingTalkCliRuntime(root=tmp_path, config_loader=lambda: config)
+    scope = DingTalkCliScope('local', 'employee-1', app_id='app')
+    previous = runtime._oauth_root(scope)
+    (previous / 'private-login').write_text('old-login', encoding='utf-8')
+    config['channels']['dingtalk']['apps'][0]['client_secret'] = 'new-secret'
+    current = runtime._oauth_root(scope)
+    (current / 'private-login').write_text('new-login', encoding='utf-8')
+    other = runtime._scope_root(DingTalkCliScope('local', 'employee-2')) / 'user-oauth' / 'other-login'
+    other.parent.mkdir(parents=True)
+    other.write_text('other-employee', encoding='utf-8')
+    program = runtime._npm_cache_dir() / 'program'
+    program.parent.mkdir(parents=True)
+    program.write_text('pinned-program', encoding='utf-8')
+    await runtime.dingtalk_auth_disconnect(scope)
+    assert not previous.exists() and not current.exists()
+    assert other.read_text(encoding='utf-8') == 'other-employee'
+    assert program.read_text(encoding='utf-8') == 'pinned-program'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('online_document', [False, True])
+@pytest.mark.parametrize('separate_runtime', [False, True])
+async def test_disconnect_waits_for_oauth_commands_before_removing_their_late_writes(tmp_path, online_document, separate_runtime):
+    entered, release = threading.Event(), threading.Event()
+    def runner(args, *, env, **options):
+        entered.set()
+        assert release.wait(timeout=5)
+        profile = Path(env['DWS_CONFIG_DIR'])
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / 'refreshed-private-login').write_text('fake-login', encoding='utf-8')
+        payload = {'status': 'success'} if online_document else {'success': True}
+        return subprocess.CompletedProcess(args, 0, json.dumps(payload), '')
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(_app('employee-1', 'app', 'secret')),
+        dws_path=Path('/tools/dws'), runner=runner,
+    )
+    cleanup_runtime = LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(_app('employee-1', 'app', 'secret')),
+    ) if separate_runtime else runtime
+    scope = DingTalkCliScope('local', 'employee-1', app_id='app')
+    root = runtime._oauth_root(scope)
+    command = (runtime._execute_online_document(scope, ['doc', '+fetch', 'node'], profile='test-profile', error_code='TEST')
+               if online_document else runtime._execute_oauth_command(scope, ['drive', 'info', '--node', 'node'], profile='test-profile'))
+    running = asyncio.create_task(command)
+    cleanup = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        cleanup = asyncio.create_task(cleanup_runtime.dingtalk_auth_disconnect(scope))
+        await asyncio.sleep(0.05)
+        assert not cleanup.done(), 'Cleanup must wait until the process can no longer refresh private credentials'
+        release.set()
+        await running
+        assert (await cleanup)['status'] == 'not_connected'
+        assert not root.exists()
+    finally:
+        release.set()
+        await asyncio.gather(running, *([cleanup] if cleanup is not None else []), return_exceptions=True)
+
+
 def test_cancel_rejects_an_operation_from_another_employee(tmp_path):
     runtime = LocalDingTalkCliRuntime(
         root=tmp_path, config_loader=lambda: _config(_app('employee-1', 'app', 'secret', is_default=True)),
@@ -1900,6 +2237,33 @@ def test_oauth_status_does_not_invent_an_account_or_logout_on_cli_failure(tmp_pa
     assert runtime._dingtalk_auth_status(DingTalkCliScope('local', 'employee-1'))['status'] == 'error'
 
 
+@pytest.mark.parametrize('has_profile_user_id', [False, True])
+def test_oauth_display_lookup_has_a_short_process_budget_without_losing_verified_login(tmp_path, has_profile_user_id):
+    budgets = []
+    def runner(args, *, timeout, **options):
+        budgets.append(timeout)
+        if args[1:3] == ['auth', 'status']:
+            body = {'authenticated': True}
+        elif args[1:3] == ['profile', 'list']:
+            profile = {'profile': 'corp', 'corpId': 'corp', 'corpName': 'Resolved organization', 'isCurrent': True}
+            if has_profile_user_id:
+                profile['userId'] = 'opaque-user-id'
+            body = {'profiles': [profile]}
+        else:
+            assert 'contact' in args and '+me' in args
+            assert int(args[args.index('--timeout') + 1]) <= 3
+            raise subprocess.TimeoutExpired(args, timeout)
+        return subprocess.CompletedProcess(args, 0, json.dumps(body), '')
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(_app('employee-1', 'app', 'secret')),
+        dws_path=Path('/tools/dws'), runner=runner,
+    )
+    status = runtime._dingtalk_auth_status(DingTalkCliScope('local', 'employee-1'))
+    assert status['status'] == 'connected'
+    assert len(budgets) == 3 and max(budgets[:2]) <= 5 and budgets[2] <= 4
+    assert 'account' not in status
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('command', [['drive', 'info', '--node', 'node'], ['chat', 'group', 'members', '--id', 'group']])
 async def test_user_cli_response_limit_applies_to_document_and_calendar_paths(tmp_path, command):
@@ -1939,6 +2303,48 @@ async def test_concurrent_device_authorization_reuses_one_pending_process(tmp_pa
     assert len(started) == 1
     assert first['operation_id'] == second['operation_id']
     assert first['user_code'] == 'TEST-CODE'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prepare_ok', [True, False])
+async def test_device_authorization_prepares_cli_before_starting_login(tmp_path, monkeypatch, prepare_ok):
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(_app('employee-1', 'app', 'secret')),
+        npx_path=Path('/tools/npx'),
+    )
+    cached = []
+    events = []
+    binary = tmp_path / 'prepared-dws'
+    monkeypatch.setattr(runtime, '_cached_dws_binary', lambda: cached[0] if cached else None)
+    monkeypatch.setattr(runtime, '_dingtalk_auth_status', lambda scope: {'status': 'not_connected'})
+
+    def prepare(argv, *, env, cwd, timeout=None):
+        events.append('prepare')
+        assert argv == ['--version'] and timeout is not None
+        if prepare_ok:
+            binary.write_text('prepared', encoding='utf-8')
+            cached.append(binary)
+        return subprocess.CompletedProcess(argv, 0 if prepare_ok else 1, '1.0.65', '')
+
+    def login(argv, *, stdin, stdout, stderr, env, cwd, start_new_session):
+        events.append('login')
+        assert argv[0] == str(binary)
+        assert argv[1:] == ['auth', 'login', '--device', '--no-browser']
+        stdout.write(b'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=TEST-CODE')
+        stdout.flush()
+        return type('Pending', (), {'pid': 987654, 'poll': lambda self: None})()
+
+    monkeypatch.setattr(runtime, '_run_cli', prepare)
+    monkeypatch.setattr(subprocess, 'Popen', login)
+    if prepare_ok:
+        result = await runtime.dingtalk_auth_begin(DingTalkCliScope('local', 'employee-1'))
+        assert result['status'] == 'authorizing' and result['user_code'] == 'TEST-CODE'
+        assert events == ['prepare', 'login']
+    else:
+        with pytest.raises(PersistentAgentError) as error:
+            await runtime.dingtalk_auth_begin(DingTalkCliScope('local', 'employee-1'))
+        assert error.value.code == 'DINGTALK_CLI_PREPARE_FAILED'
+        assert events == ['prepare']
 
 
 @pytest.mark.parametrize('kind,expected', [

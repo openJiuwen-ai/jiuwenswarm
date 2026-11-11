@@ -77,6 +77,11 @@
   font-size: 14px;
 }
 
+.jiuwenmate-profile__settings-error {
+  color: var(--color-feedback-danger);
+  font-size: 13px;
+}
+
 .jiuwenmate-action-error {
   position: fixed;
   z-index: 40;
@@ -2357,8 +2362,48 @@
   cursor: pointer;
 }
 
-.jiuwenmate-composer__model {
-  cursor: default;
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__model {
+  height: 34px;
+  max-width: 220px;
+  border-radius: 10px;
+  color: var(--color-text-primary);
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__model:hover:not(:disabled) {
+  background: rgba(var(--color-surface-panel-strong-rgb), 0.42);
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__model[data-state='open'] {
+  background: rgba(var(--color-surface-panel-strong-rgb), 0.55);
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__model .model-provider-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.jiuwenmate-composer__model .chat-mode-select__value {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.jiuwenmate-composer__model > svg,
+.jiuwenmate-composer__model small {
+  flex-shrink: 0;
+}
+
+.jiuwenmate-composer__model-menu .chat-mode-select__option .ui-dropdown-menu__item-label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.jiuwenmate-composer__model-menu .model-select__add-btn .ui-dropdown-menu__item-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .jiuwenmate-composer__toolbar button:hover:not(:disabled) {
@@ -4508,12 +4553,16 @@
   padding-top: 12px;
 }
 
+.jiuwenmate-profile__content[data-variant='save-error']:not([data-section='overview']) {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .jiuwenmate-profile__content[data-section]:not([data-section='overview']) > .jiuwenmate-profile__header {
   display: none;
 }
 
 .jiuwenmate-profile__content[data-section='persona'] > .jiuwenmate-profile__block {
-  grid-template-rows: min-content minmax(0, 1fr) auto;
+  grid-template-rows: min-content minmax(min-content, 1fr) auto;
   align-content: stretch;
   min-height: 0;
 }
@@ -4828,10 +4877,17 @@
   font-size: 12px;
 }
 
+.jiuwenmate-profile__persona-editor {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
 .jiuwenmate-profile__persona-editor textarea {
   display: block;
+  flex: 1 0 auto;
   width: 100%;
-  height: 100%;
+  height: auto;
   min-height: 500px;
   padding: 18px 20px;
   border: 1px solid var(--jm-border);
@@ -4852,6 +4908,18 @@
 .jiuwenmate-profile__model-list {
   display: grid;
   gap: 10px;
+}
+
+.jiuwenmate-profile__block--empty-model {
+  grid-template-rows: auto minmax(280px, 1fr);
+}
+
+.jiuwenmate-profile__model-empty-hint {
+  max-width: 360px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
 }
 
 .jiuwenmate-profile__model-option {

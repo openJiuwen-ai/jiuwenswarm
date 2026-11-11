@@ -1,6 +1,6 @@
 import type { SessionId } from './clientAttachment';
 import type { DocumentId } from './documentIdentity';
-import { isRecord, type GatewayClient } from './gatewayClient';
+import { isRecord, type GatewayClient, type JsonObject } from './gatewayClient';
 import { POWERPOINT_CLIENT_APP } from './presentationContract';
 
 /** A user-picked image, base64-encoded, waiting to be persisted server-side. */
@@ -63,7 +63,57 @@ export class PresentationSessionFacade {
         : []));
   }
 
-  async sendText(sessionId: SessionId, content: string, images: OutgoingImageAttachment[] = []): Promise<void> {
+  /** The models a message can run on (``models.list``), and the server's active one, as the web chat picks it. */
+  async models(): Promise<{ names: string[]; active: string }> {
+    const response = await this.gateway.request('models.list');
+    const names = (Array.isArray(response.models) ? response.models : []).flatMap(model => (
+      isRecord(model) && typeof model.model_name === 'string' && model.model_name ? [model.model_name] : []));
+    const active = typeof response.active_model === 'string' && response.active_model ? response.active_model : names[0];
+    if (!active) throw new Error('没有可用于对话的模型');
+    return { names: names.includes(active) ? names : [active, ...names], active };
+  }
+
+  /** The model a new conversation runs on. */
+  async defaultModel(): Promise<string> {
+    return (await this.models()).active;
+  }
+
+  /** The latest page of a conversation's history, oldest first, without reasoning text. */
+  async history(sessionId: SessionId): Promise<JsonObject[]> {
+    const response = await this.gateway.request('client.conversation.messages', { target_session_id: sessionId });
+    if (!Array.isArray(response.messages)) throw new Error('client.conversation.messages 未返回 messages');
+    return response.messages.filter(isRecord);
+  }
+
+  /** The user's attached documents (``client.list``), by the conversation each is attached to. */
+  async openDocuments(sessionId: SessionId): Promise<Map<string, string>> {
+    const response = await this.gateway.request('client.list', { session_id: sessionId });
+    const attachments = Array.isArray(response.attachments) ? response.attachments.filter(isRecord) : [];
+    return new Map(attachments.flatMap(item => (
+      typeof item.session_id === 'string' && typeof item.display_name === 'string'
+        ? [[item.session_id, item.display_name] as const] : [])));
+  }
+
+  /** Answer the question a paused turn asks (``chat.ask_user_question``); the turn goes on. */
+  async answer(sessionId: SessionId, { requestId, interruptId, source }: {
+    requestId: string; interruptId: string; source: string;
+  }, answers: JsonObject[]): Promise<void> {
+    await this.gateway.request('chat.send', {
+      session_id: sessionId,
+      query: '',
+      mode: 'agent.work.normal',
+      work_mode: 'work',
+      request_id: requestId,
+      answers,
+      source,
+      ...(interruptId ? { interrupt_id: interruptId } : {}),
+    });
+  }
+
+  /** A message, on ``modelName`` when given (``chat.send`` ``model_name``, as the web chat's model picker sends it). */
+  async sendText(
+    sessionId: SessionId, content: string, images: OutgoingImageAttachment[] = [], modelName?: string,
+  ): Promise<void> {
     const mediaItems = images.length ? await this.persistImages(sessionId, images) : undefined;
     const uploadedImages = mediaItems?.map(({ filename, path, mime_type, size_bytes }) => (
       { filename, path, mime_type, size_bytes }));
@@ -74,19 +124,22 @@ export class PresentationSessionFacade {
         content,
         mode: 'agent.work.normal',
         work_mode: 'work',
+        ...(modelName ? { model_name: modelName } : {}),
         ...(mediaItems ? { media_items: mediaItems, files: { uploaded_images: uploadedImages } } : {}),
       },
       { stream: true, timeoutMs: 60_000 },
     );
   }
 
+  /** Stop the running turn; a supplement starts the next one on ``modelName``, as ``chat.send`` does. */
   async interrupt(
-    sessionId: SessionId, intent: 'pause' | 'resume' | 'cancel' | 'supplement', newInput?: string,
+    sessionId: SessionId, intent: 'pause' | 'resume' | 'cancel' | 'supplement', newInput?: string, modelName?: string,
   ): Promise<void> {
     await this.gateway.request('chat.interrupt', {
       session_id: sessionId,
       intent,
       ...(intent === 'supplement' ? { new_input: newInput ?? '' } : {}),
+      ...(modelName ? { model_name: modelName } : {}),
     });
   }
 

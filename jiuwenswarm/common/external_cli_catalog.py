@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.config import get_config, update_external_cli_builtin_models_in_config
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,7 @@ def _run_probes(targets: dict[str, str | None], timeout_s: float) -> dict[str, d
 
 def reported_models_path() -> Path:
     """Return the file holding each CLI's last reported model list."""
-    return get_infra_data_dir() / "runtime" / "external-cli-models.json"
+    return get_user_workspace_dir() / "runtime" / "external-cli-models.json"
 
 
 def load_reported_models() -> dict[str, dict[str, list[str]]]:

@@ -103,9 +103,9 @@ def _configure_openjiuwen_logging() -> None:
     loggers here, or control-plane failures (``history.get`` included) would
     disappear from Front's logs.
     """
-    from jiuwenswarm.common.utils import get_config_dir, get_logs_dir
+    from jiuwenswarm.common.utils import get_root_dir
 
-    logging_yaml = get_config_dir() / "logging.yaml"
+    logging_yaml = get_root_dir() / "config" / "logging.yaml"
     if logging_yaml.exists():
         try:
             from openjiuwen.core.common.logging.log_config import configure_log
@@ -122,10 +122,15 @@ def _configure_openjiuwen_logging() -> None:
     try:
         from openjiuwen.core.common.logging.log_config import configure_log_config
 
+        home = (
+            os.environ.get("JIUWENSWARM_HOME")
+            or os.environ.get("HOME")
+            or os.path.expanduser("~")
+        )
         configure_log_config({
             "backend": "default",
             "level": "INFO",
-            "log_path": f"{get_logs_dir() / 'core'}/",
+            "log_path": f"{home}/.jiuwenswarm/logs/",
             "log_file": "run/jiuwen.log",
             "output": ["file"],
             "structured_output_format": "json",
@@ -138,21 +143,6 @@ def _configure_openjiuwen_logging() -> None:
             "[AgentServer] openjiuwen log config failed; Front keeps default logging",
             exc_info=True,
         )
-
-
-def _start_team_mysql_before_traffic() -> None:
-    """Create team tables before this process accepts chat.
-
-    Personal edition does not use Gateway MySQL, so this returns immediately.
-    """
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import (
-        get_team_mysql_actor,
-        use_team_mysql,
-    )
-
-    if not use_team_mysql():
-        return
-    get_team_mysql_actor()
 
 
 async def _run(host: str, port: int) -> None:
@@ -176,7 +166,6 @@ async def _run(host: str, port: int) -> None:
         time.monotonic() - startup_t0,
     )
 
-    await asyncio.to_thread(_start_team_mysql_before_traffic)
     front = AgentServerFront(host=host, port=port)
     from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
 
