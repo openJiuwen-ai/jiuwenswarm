@@ -15,6 +15,15 @@ import { copy, reasonOf } from './copy';
 import type { DocumentId } from './documentIdentity';
 import type { ConnectionState, GatewayClient, GatewayEvent } from './gatewayClient';
 import type { PresentationSessionFacade, ResourceConversation } from './presentationSessionFacade';
+import type { SlideSnapshots } from './slideSnapshots';
+
+/** The turns the transcript offers to undo, by their ``changes`` entry. */
+export interface UndoState {
+  /** None while a turn runs. */
+  offers: ReadonlySet<string>;
+  /** The undo that waits for the user's word: slides changed since would be overwritten. */
+  confirm?: string;
+}
 
 export interface PaneState {
   attachment: AttachmentState;
@@ -31,6 +40,7 @@ export interface PaneState {
   /** The models a message can run on, and the one the next message runs on. */
   models: readonly string[];
   model?: string;
+  undo: UndoState;
 }
 
 type Attachment = Pick<
@@ -49,16 +59,21 @@ export class TaskPaneController {
   private loads = 0;
   /** Live events of the shown conversation that arrived before its history. */
   private held: GatewayEvent[] = [];
+  /** The line the next message starts with after an undo, as the agent's slide ids are stale. */
+  private undoNote: string | undefined;
+  /** An undo is under way; a second click waits for none. */
+  private undoing = false;
   private readonly listeners = new Set<(state: PaneState) => void>();
 
   constructor(private readonly options: {
     attachment: Attachment; sessions: Sessions; documentId: DocumentId;
     connection: Pick<GatewayClient, 'onConnectionChange'>;
+    snapshots: Pick<SlideSnapshots, 'closeTurn' | 'undoable' | 'undo'>;
   }) {
     const { attachment } = options;
     this.value = {
       attachment: attachment.current(), conversation: emptyConversation, conversations: [], documents: new Map(),
-      loadingHistory: false, connection: { kind: 'open' }, models: [],
+      loadingHistory: false, connection: { kind: 'open' }, models: [], undo: { offers: new Set() },
     };
     attachment.onStateChange(state => this.attachmentChanged(state));
     attachment.onEvent(event => this.received(event));
@@ -76,9 +91,7 @@ export class TaskPaneController {
 
   /** Attach the document to its most recent conversation, or to a new one. */
   async open(): Promise<void> {
-    void this.options.sessions.models().then(
-      ({ names, active }) => this.update({ models: names, model: this.value.model ?? active }),
-      () => undefined);
+    void this.loadModels();
     let latest: SessionId | undefined;
     try {
       [latest] = (await this.refreshConversations()).map(item => item.sessionId);
@@ -122,19 +135,30 @@ export class TaskPaneController {
     this.update({ alert: undefined });
   }
 
-  /** Send a message; while the turn runs, it stops the turn and the next one takes it as a supplement. */
+  /**
+   * Send a message; while the turn runs, it stops the turn and the next one takes it as a supplement. After an
+   * undo the message starts with a line saying so, as the agent's slide ids went stale.
+   */
   async send(text: string): Promise<boolean> {
     const content = text.trim();
     const { attachment } = this.value;
     if (!content || attachment.kind !== 'attached' || this.value.conversation.prompt) return false;
     const { sessionId } = attachment;
     const running = this.value.conversation.turn === 'running';
+    const note = this.undoNote;
+    const message = note ? `${note}\n${content}` : content;
     const sent = addUserMessage(running ? this.value.conversation : startTurn(this.value.conversation), content);
     const messageId = sent.entries[sent.entries.length - 1].id;
     this.update({ conversation: sent, alert: undefined });
     try {
-      if (running) await this.options.sessions.interrupt(sessionId, 'supplement', content);
-      else await this.options.sessions.sendText(sessionId, content, [], this.value.model);
+      if (running) {
+        await this.options.sessions.interrupt(sessionId, 'supplement', message, this.value.model);
+        // The next turn starts over from the message; a write the stopped turn still had queued would surprise it.
+        this.options.attachment.cancelToolCalls();
+      } else {
+        await this.options.sessions.sendText(sessionId, message, [], this.value.model);
+      }
+      if (this.undoNote === note) this.undoNote = undefined;
       return true;
     } catch (error) {
       if (sessionId !== this.shown) return false;
@@ -175,6 +199,38 @@ export class TaskPaneController {
       return;
     }
     this.updateShown(sessionId, conversation => (conversation.prompt === prompt ? clearPrompt(conversation) : conversation));
+  }
+
+  /**
+   * Undo the turn a ``changes`` entry closes, and every later one. When slides changed since would be overwritten
+   * it asks first (``undo.confirm``); ``overwrite`` is the user's yes.
+   */
+  async undo(card: string, overwrite = false): Promise<void> {
+    const entry = this.value.conversation.entries.find(item => item.id === card);
+    if (entry?.kind !== 'changes' || !this.value.undo.offers.has(card) || this.undoing) return;
+    this.undoing = true;
+    this.update({ undo: { ...this.value.undo, confirm: undefined } });
+    let result;
+    try {
+      result = await this.options.snapshots.undo(entry.callIds, overwrite);
+    } catch (error) {
+      this.update({ alert: { tone: 'error', text: copy.undoFailed(reasonOf(error)) } });
+      return;
+    } finally {
+      this.undoing = false;
+    }
+    if (result.kind === 'changed') {
+      this.update({ undo: { ...this.value.undo, confirm: card } });
+    } else if (result.kind === 'gone') {
+      this.update({ alert: { tone: 'info', text: copy.undoGone } });
+    } else {
+      this.undoNote = copy.undoNote(result.positions);
+      this.update({});
+    }
+  }
+
+  cancelUndo(): void {
+    this.update({ undo: { ...this.value.undo, confirm: undefined } });
   }
 
   private attachmentChanged(state: AttachmentState): void {
@@ -218,6 +274,10 @@ export class TaskPaneController {
       if (this.shown) void this.refreshDocuments(this.shown);
       return;
     }
+    if (event.event === 'models.updated') {
+      void this.loadModels();
+      return;
+    }
     if (this.value.loadingHistory) {
       this.held.push(event);
       return;
@@ -227,6 +287,17 @@ export class TaskPaneController {
     this.update({ conversation });
     // A turn that ended may have titled its conversation.
     if (before.turn === 'running' && conversation.turn === 'idle') void this.refreshConversations().catch(() => undefined);
+  }
+
+  /** The models a message can run on; the one picked stays while the server still offers it. */
+  private async loadModels(): Promise<void> {
+    try {
+      const { names, active } = await this.options.sessions.models();
+      const { model } = this.value;
+      this.update({ models: names, model: model && names.includes(model) ? model : active });
+    } catch {
+      // The picker stays as it was; a message then runs on the conversation's model.
+    }
   }
 
   private async refreshConversations(): Promise<readonly ResourceConversation[]> {
@@ -250,7 +321,25 @@ export class TaskPaneController {
   }
 
   private update(change: Partial<PaneState>): void {
+    const before = this.value.conversation;
     this.value = { ...this.value, ...change };
+    this.value.undo = { ...this.value.undo, offers: this.undoOffers() };
     this.listeners.forEach(listener => listener(this.value));
+    // A changes entry closes its turn: the turn's undo records what the turn left, then the entry offers it.
+    if (newCard(before, this.value.conversation)) void this.options.snapshots.closeTurn().then(() => this.update({}));
   }
+
+  /** A turn's undo while no turn runs and the pane holds the document. */
+  private undoOffers(): ReadonlySet<string> {
+    const { conversation, attachment } = this.value;
+    if (conversation.turn === 'running' || attachment.kind !== 'attached') return new Set();
+    return new Set(conversation.entries.flatMap(entry => (
+      entry.kind === 'changes' && this.options.snapshots.undoable(entry.callIds) ? [entry.id] : [])));
+  }
+}
+
+/** Whether ``after`` goes on from ``before`` with a ``changes`` entry ``before`` did not have. */
+function newCard(before: Conversation, after: Conversation): boolean {
+  const last = after.entries.at(-1);
+  return last?.kind === 'changes' && !before.entries.some(entry => entry.id === last.id);
 }

@@ -3,6 +3,7 @@ import { copy, toolLabel } from '../copy';
 import type { JsonObject } from '../gatewayClient';
 import { h } from './dom';
 import { icon } from './icons';
+import { isImeKey } from './ime';
 import { renderMarkdown } from './markdown';
 
 /** How long after the sheet appears or another key an Enter is taken as typing under way, not as consent. */
@@ -10,6 +11,24 @@ export const ENTER_GUARD_MS = 350;
 
 /** The order the sheet offers the backend's permission choices; ``always_allow`` (every conversation) is not offered. */
 const APPROVAL_ORDER = ['reject', 'session_allow', 'allow_once'];
+
+/** Sends the answer; settles once it went out, or did not. */
+type Answer = (choices: PromptChoice[]) => Promise<void>;
+
+/**
+ * ``send`` only while no answer is on its way: the backend takes one answer per question and turns a
+ * second into an error that ends the turn. An answer that did not go out leaves the card to answer again.
+ */
+function once<A extends unknown[]>(send: (...args: A) => Promise<void>): (...args: A) => void {
+  let sending = false;
+  return (...args) => {
+    if (sending) return;
+    sending = true;
+    void send(...args).finally(() => {
+      sending = false;
+    });
+  };
+}
 
 export interface Interaction {
   element: HTMLElement;
@@ -29,14 +48,14 @@ const OWN_ESCAPE = 'input, textarea, select, [contenteditable]';
  * another key is ignored. It takes no focus of its own accord.
  */
 export function approvalSheet(
-  prompt: Prompt, documents: ReadonlyMap<string, string>, answer: (choices: PromptChoice[]) => void,
+  prompt: Prompt, documents: ReadonlyMap<string, string>, answer: Answer,
   now: () => number = () => performance.now(),
 ): Interaction {
   const [question] = prompt.questions;
   let guardStart = now();
   const known = APPROVAL_ORDER.flatMap(value => question.options.filter(option => option.value === value));
   const choices = known.length ? known : question.options;
-  const choose = (option: PromptOption): void => answer([{ selected: [option] }]);
+  const choose = once((option: PromptOption) => answer([{ selected: [option] }]));
   const titleId = `approval-${prompt.requestId}`;
   const sheet = h('section', { class: 'sheet approval', role: 'region', 'aria-labelledby': titleId },
     h('div', { class: 'sheet-head' }, icon('shield', 'sheet-icon'),
@@ -60,7 +79,7 @@ export function approvalSheet(
   const allowOnce = known.find(option => option.value === 'allow_once');
   const onKey = (event: KeyboardEvent): void => {
     if (event.key !== 'Enter') guardStart = now();
-    if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.defaultPrevented || isImeKey(event) || event.altKey || event.ctrlKey || event.metaKey) return;
     const target = event.target instanceof Element ? event.target : null;
     if (event.key === 'Escape' && reject && !target?.closest(OWN_ESCAPE)) {
       event.preventDefault();
@@ -86,17 +105,14 @@ function payloadSummary(payload: JsonObject, documents: ReadonlyMap<string, stri
 }
 
 /** The agent's own question: one or more options, an answer of the user's own, sent together. */
-export function questionCard(prompt: Prompt, answer: (choices: PromptChoice[]) => void): Interaction {
+export function questionCard(prompt: Prompt, answer: Answer): Interaction {
   const submit = h('button', { type: 'button', class: 'button button-primary' }, copy.submitAnswer);
   const readers = prompt.questions.map((question, index) => questionFields(prompt.requestId, question, index, () => {
     submit.disabled = !readers.every(read => read().selected.length || read().customInput);
   }));
   submit.disabled = true;
-  submit.addEventListener('click', () => answer(readers.map(read => read())));
-  const titleId = `ask-${prompt.requestId}`;
-  const card = h('section', { class: 'sheet question', role: 'region', 'aria-labelledby': titleId },
-    h('div', { class: 'sheet-head' }, icon('question', 'sheet-icon'),
-      h('h2', { class: 'sheet-title', id: titleId }, copy.askTitle)),
+  submit.addEventListener('click', once(() => answer(readers.map(read => read()))));
+  const card = h('section', { class: 'sheet question', role: 'region', 'aria-label': copy.askTitle },
     ...readers.map(read => read.fieldset),
     h('div', { class: 'sheet-actions' }, submit));
   return { element: card, dispose: () => undefined };
@@ -111,7 +127,7 @@ function questionFields(requestId: string, question: PromptQuestion, index: numb
     option, input: h('input', { type: question.multiSelect ? 'checkbox' : 'radio', name, onchange: changed }),
   }));
   const custom = h('textarea', {
-    class: 'question-custom', rows: '2', placeholder: copy.customAnswer, 'aria-label': copy.customAnswer, oninput: changed,
+    class: 'question-custom', rows: '1', placeholder: copy.customAnswer, 'aria-label': copy.customAnswer, oninput: changed,
   });
   const read = (): PromptChoice => ({
     selected: inputs.filter(({ input }) => input.checked).map(({ option }) => option),

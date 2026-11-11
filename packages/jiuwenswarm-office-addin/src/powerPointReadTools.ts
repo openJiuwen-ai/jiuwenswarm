@@ -7,12 +7,17 @@ import type { ClientToolResponse, HostTimings } from './presentationToolTypes';
 export type PowerPointRun = <T>(batch: (context: PowerPoint.RequestContext) => Promise<T>) => Promise<T>;
 
 /** One host round trip at a time: what a batch loads is readable after its ``sync``. */
-interface Batch {
+export interface Batch {
   presentation: PowerPoint.Presentation;
   sync(): Promise<void>;
 }
 
 /** A shape as the listing and the checks read it; positions in points. */
+/** The longest ``expected_changes`` verify_slide_visual takes, as tools.json says. */
+const MAX_EXPECTED_CHANGES_CHARS = 1500;
+/** The most of a shape's text list_slide_shapes gives; the whole text is one edit away. */
+const SHAPE_TEXT_CHARS = 400;
+
 interface MeasuredShape {
   id: string;
   name: string;
@@ -24,7 +29,7 @@ interface MeasuredShape {
   /** ``#RRGGBB`` of a solid fill; null for any other fill. */
   fill: string | null;
   /** Null when the shape has no text frame; ``color`` is null for mixed or named colours. */
-  text: { length: number; color: string | null } | null;
+  text: { value: string; color: string | null } | null;
 }
 
 interface MeasuredSlide {
@@ -38,7 +43,7 @@ interface SlideSize {
   assumed: boolean;
 }
 
-interface Deck {
+export interface Deck {
   slides: PowerPoint.Slide[];
   size: SlideSize;
 }
@@ -75,38 +80,29 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
   documentName: () => Promise<string>;
   languages: Pick<Office.Context, 'displayLanguage' | 'contentLanguage'>;
 }): PresentationToolRuntime {
-  const supports = (version: string) => host.isSetSupported('PowerPointApi', version);
-
-  async function readDeck({ presentation, sync }: Batch): Promise<Deck> {
-    const slides = presentation.slides;
-    slides.load('items/id');
-    const setup = supports('1.10') ? presentation.pageSetup : null;
-    setup?.load('slideWidth,slideHeight');
-    await sync();
-    return { slides: slides.items,
-      size: setup ? { width: setup.slideWidth, height: setup.slideHeight, assumed: false } : ASSUMED_SIZE };
-  }
+  const readDeck = (batch: Batch) => readSlides(batch, host);
 
   /** The contract promises that a failed template or selection read leaves the inventory intact. */
-  async function optional<T>(version: string, fallback: T, read: () => Promise<T>): Promise<T> {
-    return supports(version) ? read().catch(() => fallback) : fallback;
+  async function optional<T>(fallback: T, read: () => Promise<T>): Promise<T> {
+    return read().catch(() => fallback);
   }
 
   async function readContext({ batch }: Call): Promise<ClientToolResponse> {
-    const [title, { deck, shapeIds, hasText }, masters, selectedSlideIds, selectedShapeIds] = await Promise.all([
+    const [title, { deck, hasContent }, masters, selectedSlideIds, selectedShapeIds] = await Promise.all([
       documentName(),
       batch(async b => {
         const deck = await readDeck(b);
-        if (!supports('1.4')) return { deck, shapeIds: deck.slides.map(() => []), hasText: false };
         for (const slide of deck.slides) slide.shapes.load('items/id,items/type');
         await b.sync();
-        const frames = await textFrames(b, deck.slides.flatMap(slide => slide.shapes.items), 'hasText');
-        return { deck, shapeIds: deck.slides.map(slide => slide.shapes.items.map(shape => shape.id)),
-          hasText: [...frames.values()].some(frame => frame.hasText) };
+        const shapes = deck.slides.flatMap(slide => slide.shapes.items);
+        const frames = await textFrames(b, shapes, 'hasText');
+        // A picture, a table or a drawn shape is content without text; an empty placeholder is not.
+        return { deck, hasContent: shapes.some(shape => shape.type !== 'Placeholder')
+          || [...frames.values()].some(frame => frame.hasText) };
       }),
-      optional('1.3', [], () => batch(readMasters)),
-      optional('1.5', [], () => batch(b => selectedIds(b, b.presentation.getSelectedSlides()))),
-      optional('1.5', [], () => batch(b => selectedIds(b, b.presentation.getSelectedShapes()))),
+      optional([], () => batch(readMasters)),
+      optional([], () => batch(b => selectedIds(b, b.presentation.getSelectedSlides()))),
+      optional([], () => batch(b => selectedIds(b, b.presentation.getSelectedShapes()))),
     ]);
     const slideIds = deck.slides.map(slide => slide.id);
     return { ok: true, result: {
@@ -116,7 +112,7 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
       slide_height_points: deck.size.height,
       ...(deck.size.assumed ? { dimensions_assumed_warning: DIMENSIONS_ASSUMED_WARNING } : {}),
       is_default_theme: masters[0]?.name === 'Office Theme',
-      has_content: hasText,
+      has_content: hasContent,
       // These come from the theme and master parts of the OOXML package, which this runtime does not read yet.
       theme_palette: null,
       theme_fonts: null,
@@ -128,7 +124,7 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
       selected_slide_ids: selectedSlideIds,
       selected_slide_positions: selectedSlideIds.map(id => slideIds.indexOf(id) + 1).filter(position => position > 0),
       selected_shape_ids: selectedShapeIds,
-      structure_fingerprint: structureFingerprint(slideIds.flatMap((id, index) => [id, ...shapeIds[index]])),
+      structure_fingerprint: deckFingerprint(deck.slides),
     } };
   }
 
@@ -189,6 +185,12 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
 
     async verify_slide_visual(call) {
       const slideId = slideIdArgument(call.input);
+      const unknown = Object.keys(call.input).filter(key => key !== 'slide_id' && key !== 'expected_changes');
+      if (unknown.length) throw new InvalidArgument(`verify_slide_visual takes slide_id and expected_changes, not ${unknown.join(', ')}`);
+      const expected = call.input.expected_changes;
+      if (expected !== undefined && (typeof expected !== 'string' || expected.length > MAX_EXPECTED_CHANGES_CHARS)) {
+        throw new InvalidArgument(`expected_changes must be a string of at most ${MAX_EXPECTED_CHANGES_CHARS} characters`);
+      }
       const [{ slide, size }, { image }] = await Promise.all([
         measureOne(call, slideId), renderOne(call, slideId, { width: DEFAULT_RENDER_WIDTH })]);
       return { ok: true, imageBase64: image, result: { slide_id: slideId, geometry: {
@@ -222,6 +224,22 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
       }
     },
   };
+}
+
+/** The slides in order, and their size. */
+export async function readSlides({ presentation, sync }: Batch, host: PresentationHost): Promise<Deck> {
+  const slides = presentation.slides;
+  slides.load('items/id');
+  const setup = host.isSetSupported('PowerPointApi', '1.10') ? presentation.pageSetup : null;
+  setup?.load('slideWidth,slideHeight');
+  await sync();
+  return { slides: slides.items,
+    size: setup ? { width: setup.slideWidth, height: setup.slideHeight, assumed: false } : ASSUMED_SIZE };
+}
+
+/** The structure fingerprint of slides whose shapes are loaded, as read_presentation_context reports it. */
+export function deckFingerprint(slides: readonly PowerPoint.Slide[]): string {
+  return structureFingerprint(slides.flatMap(slide => [slide.id, ...slide.shapes.items.map(shape => shape.id)]));
 }
 
 async function readMasters({ presentation, sync }: Batch) {
@@ -285,7 +303,7 @@ async function measureSlides(batch: Batch, slides: PowerPoint.Slide[]): Promise<
       id: shape.id, name: shape.name, type: shape.type,
       left: shape.left, top: shape.top, width: shape.width, height: shape.height,
       fill: shape.fill.type === 'Solid' ? hexColor(shape.fill.foregroundColor) : null,
-      text: frame ? { length: frame.textRange.text.length, color: hexColor(frame.textRange.font.color) } : null,
+      text: frame ? { value: frame.textRange.text, color: hexColor(frame.textRange.font.color) } : null,
     };
   }) }));
 }
@@ -339,9 +357,12 @@ function rounded(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/** A shape as list_slide_shapes reports it; its text is cut at ``SHAPE_TEXT_CHARS``. */
 function shapeEntry(slideId: string, shape: MeasuredShape): JsonObject {
+  const text = shape.text?.value;
   return { ref: `${slideId}:${shape.id}`, id: shape.id, name: shape.name, type: shape.type,
-    left: rounded(shape.left), top: rounded(shape.top), width: rounded(shape.width), height: rounded(shape.height) };
+    left: rounded(shape.left), top: rounded(shape.top), width: rounded(shape.width), height: rounded(shape.height),
+    ...(text ? { text: text.length > SHAPE_TEXT_CHARS ? `${text.slice(0, SHAPE_TEXT_CHARS)}…` : text } : {}) };
 }
 
 /** Overlap candidates, shapes past the slide's edges, and text that fails WCAG AA on its own fill. */
@@ -359,7 +380,7 @@ function findings(shapes: MeasuredShape[], size: SlideSize): JsonObject {
     const x = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
     const y = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
     if (x < EPSILON || y < EPSILON) return;
-    const bothText = !!a.text?.length && !!b.text?.length;
+    const bothText = !!a.text?.value && !!b.text?.value;
     // A shape almost wholly inside another is layering (text on a card), unless both hold text.
     const contained = x * y >= 0.9 * Math.min(a.width * a.height, b.width * b.height);
     if (contained && !bothText) return;
@@ -368,7 +389,7 @@ function findings(shapes: MeasuredShape[], size: SlideSize): JsonObject {
   }));
 
   const contrastWarnings = shapes.flatMap(shape => {
-    const color = shape.text?.length ? shape.text.color : null;
+    const color = shape.text?.value ? shape.text.color : null;
     if (!color || !shape.fill) return [];
     const ratio = contrastRatio(color, shape.fill);
     if (ratio >= WCAG_AA) return [];
