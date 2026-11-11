@@ -701,13 +701,19 @@ def _build_member_sandbox_specs(
 
     team_ctx = _team_context_from_spec(spec)
     if team_ctx is None:
+        # An unresolvable team context must NOT cancel sandboxing: dropping
+        # members back to the host is strictly worse than sandboxing them
+        # without the 4 team mounts (project_dir / agent workspace / files.*
+        # still mount). Loud, but injection continues with team mounts off.
         logger.warning(
-            "[swarm.assembly] team members stay LOCAL: team context "
-            "unresolvable (team=%s)",
+            "[swarm.assembly] team mounts skipped: team context "
+            "unresolvable, members stay sandboxed without team mounts "
+            "(team=%s)",
             spec.team_name,
         )
-        return
-    team_ctx["session_id"] = str(session_id or "")
+        team_ctx = None  # explicit: intent(None) == [] (no team mounts)
+    else:
+        team_ctx["session_id"] = str(session_id or "")
 
     injected: list[str] = []
     failed_entries: list[str] = []

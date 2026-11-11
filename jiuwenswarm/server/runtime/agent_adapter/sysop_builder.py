@@ -547,17 +547,24 @@ def build_yuanrong_sandbox_status_view() -> dict[str, Any]:
 def _team_context_from_spec(spec: Any) -> dict[str, str] | None:
     """Derive the team mount context from a ``TeamAgentSpec``.
 
-    The team home is derived from the workspace root ONLY when the root ends
-    with the canonical ``team-workspace`` segment (the default layout, where
-    ``<root>/.agent_teams/<team>/team-workspace`` parent IS the team home).
-    A relocated workspace root (e.g. a group-chat child team's private runs
-    workspace) has no such relationship — its parent is a runs directory, not
-    a team home — so no team home is guessed: the caller receives ``None`` and
-    team mounts are skipped (a missing mount degrades loudly; a WRONG mount
-    binds unrelated host directories into the sandbox). An empty or missing
-    ``workspace.root_path`` falls back to the default
-    ``team_home(team_name) / "team-workspace"`` (same expression as the
-    swarm assembly path).
+    The team home ALWAYS resolves through openjiuwen's authoritative
+    ``team_home(team_name)`` — never reverse-derived from the workspace root.
+    Two verified facts make this safe for every layout (PR #9847 review):
+
+    1. Member real workspaces live under ``team_home(team_name)/workspaces/``
+       regardless of the spec's workspace root shape — verified against
+       ``prepare_member_workspace``/``team_member_workspace_dir``, which key
+       off the team NAME only. A group-chat child team (workspace root =
+       ``<outer>/runs/<hash>``) still has its members' workspaces under the
+       standard team home.
+    2. jiuwenswarm aligns the openjiuwen home to its own data root at startup
+       (``configure_openjiuwen_home(get_domain_data_dir())``, bootstrap.py),
+       so ``team_home(team_name)`` and the jiuwenswarm-side team directory
+       are the same tree — there is no second data root to diverge.
+
+    The workspace root is carried for information only (it is NOT used to
+    derive mounts). An empty/missing root keeps the default
+    ``team_home(team_name) / "team-workspace"`` value for the field.
 
     Returns:
         ``{"team_name", "session_id", "team_home", "workspace_root"}``,
@@ -568,6 +575,7 @@ def _team_context_from_spec(spec: Any) -> dict[str, str] | None:
     team_name = str(getattr(spec, "team_name", "") or "").strip()
     if not team_name:
         return None
+    team_home_dir = team_home(team_name)
     workspace = getattr(spec, "workspace", None)
     raw_root = getattr(workspace, "root_path", None) if workspace is not None else None
     root_str = str(raw_root or "").strip()
@@ -575,31 +583,16 @@ def _team_context_from_spec(spec: Any) -> dict[str, str] | None:
         if root_str:
             workspace_root = Path(root_str).expanduser().resolve()
         else:
-            workspace_root = team_home(team_name) / "team-workspace"
+            workspace_root = team_home_dir / "team-workspace"
     except OSError as exc:
+        # Unresolvable root string: mounts do not depend on it (team home is
+        # authoritative), so keep the context and carry the raw string.
         logger.warning(
             "[sysop_builder] team workspace root resolution failed (team=%s): %s",
             team_name,
             exc,
         )
-        return None
-    # workspace_root is <team_home>/team-workspace (or a relocated equivalent):
-    # the team home is its parent, so group-chat children and relocated roots
-    # derive their own subtree without hardcoding the .agent_teams layout.
-    if workspace_root.name == "team-workspace":
-        team_home_dir = workspace_root.parent
-    else:
-        # Relocated layout (group-chat runs workspace &c.): the parent is not
-        # a team home. Skipping is the conservative choice — binding the runs
-        # directory tree as if it were the team's would both miss the real
-        # member directories and expose unrelated host paths rw.
-        logger.warning(
-            "[sysop_builder] team workspace root %s does not follow the "
-            "team-workspace layout (team=%s); skipping team mounts",
-            workspace_root,
-            team_name,
-        )
-        return None
+        workspace_root = Path(root_str or str(team_home_dir / "team-workspace"))
     return {
         "team_name": team_name,
         "session_id": "",

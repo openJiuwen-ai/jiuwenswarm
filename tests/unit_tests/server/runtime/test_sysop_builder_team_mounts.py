@@ -62,9 +62,11 @@ def test_team_context_derivation_with_relative_and_empty_root(
 
     spec.workspace = WorkspaceSpec(root_path="./relative-ws")
     monkeypatch.chdir(tmp_path)
-    # a non team-workspace root is a relocated layout: no team home is guessed
+    # team home resolves authoritatively regardless of the root's shape
     ctx_rel = sysop_builder._team_context_from_spec(spec)
-    assert ctx_rel is None or sysop_builder._team_mount_intent(ctx_rel) == []
+    assert ctx_rel is not None
+    from openjiuwen.agent_teams.paths import team_home as _oj2
+    assert ctx_rel["team_home"] == str(_oj2("unit-team"))
 
 
 def test_policy_build_encodes_team_intent_into_bind_mounts(tmp_path: Path) -> None:
@@ -188,18 +190,22 @@ def test_team_context_default_layout_derives_parent(tmp_path) -> None:
     assert Path(ctx["team_home"]).name == "unit-team"
 
 
-def test_team_context_relocated_workspace_skips_team_home_guess() -> None:
-    """Fix-3: a relocated workspace root (group-chat runs layout) must NOT be
-    reverse-derived into a wrong team home — team mounts are skipped with a
-    warning instead of binding wrong host directories."""
-    import logging as _logging
-
+def test_team_context_relocated_workspace_resolves_authoritative_team_home() -> None:
+    """Widened mounts: team_home always resolves via team_home(team_name)
+    (openjiuwen's authoritative layout, aligned to the jiuwenswarm data root
+    by configure_openjiuwen_home at startup). A group-chat runs workspace
+    root no longer disables team context — members keep their real team
+    mounts (their workspaces live under team_home(team_name), verified
+    against prepare_member_workspace, NOT under the runs dir)."""
     from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
     from openjiuwen.harness.schema.deep_agent_spec import WorkspaceSpec
 
     spec = TeamAgentSpec(agents={}, team_name="child-team")
     spec.workspace = WorkspaceSpec(root_path="/tmp/runs/abc123/workspace")  # runs layout
     ctx = sysop_builder._team_context_from_spec(spec)
-    # relocated layout: no guessed team_home — the intent function must yield
-    # no team mounts rather than bind /tmp/runs/... as if it were a team tree
-    assert ctx is None or sysop_builder._team_mount_intent(ctx) == []
+    assert ctx is not None, "relocated layout must not disable team context"
+    from openjiuwen.agent_teams.paths import team_home as _oj_team_home
+    assert ctx["team_home"] == str(_oj_team_home("child-team"))
+    # mounts derive from the authoritative team home, never from the runs dir
+    paths = [h for h, _ in sysop_builder._team_mount_intent(ctx)]
+    assert all("/tmp/runs" not in h for h in paths), paths

@@ -2474,18 +2474,19 @@ def _rebuild_member_sandbox_gate(
 
     team_ctx = _team_context_from_spec(spec)
     if team_ctx is None:
-        if get_sandbox_team_fail_closed():
-            raise RuntimeError(
-                "teammate refuses unsandboxed members (sandbox.team_fail_closed=true): "
-                "team context unresolvable"
-            )
+        # Mirror the leader side: an unresolvable team context skips the 4
+        # team mounts but NEVER cancels sandboxing — members stay sandboxed
+        # with project_dir / agent workspace / files.* mounts. fail_closed is
+        # not consulted here because members are NOT left unsandboxed.
         logger.warning(
-            "[RemoteMemberBootstrap] team members stay LOCAL: team context "
-            "unresolvable (team=%s)",
+            "[RemoteMemberBootstrap] team mounts skipped: team context "
+            "unresolvable, members stay sandboxed without team mounts "
+            "(team=%s)",
             getattr(spec, "team_name", ""),
         )
-        return
-    team_ctx["session_id"] = str(session_id or "")
+        team_ctx = None  # explicit: intent(None) == [] (no team mounts)
+    else:
+        team_ctx["session_id"] = str(session_id or "")
 
     failed_entries: list[str] = []
     for entry_name, agent_spec in list(spec.agents.items()):

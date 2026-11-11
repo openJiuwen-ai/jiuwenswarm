@@ -345,3 +345,48 @@ def test_entry_sandbox_slug_cjk_team_and_member() -> None:
     id_b = _entry_sandbox_slug("我的团队", "赵六")
     assert id_a != id_b
     assert re.fullmatch(r"[0-9a-z_-]+", id_a)
+
+
+def test_injection_survives_unresolvable_team_context(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Widened mounts: an unresolvable team context must NOT cancel sandbox
+    injection — members still get sandboxed with the non-team mounts
+    (project_dir, agent workspace, files.*) and only the 4 team mounts are
+    skipped. Cancelling injection would drop members back to the host."""
+    import logging
+
+    import jiuwenswarm.server.runtime.agent_adapter.sysop_builder as sb_mod
+    import jiuwenswarm.agents.swarm.assembly as asm_mod
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.assembly.get_config", lambda: _sandbox_config()
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_sandbox_runtime",
+        lambda: {"enabled": True, "files": {"allow": [], "deny": []}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_sandbox_endpoint",
+        lambda: {"url": "http://sandbox.local", "type": "jiuwenbox"},
+    )
+    monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: False)
+    # force the team context to be unresolvable (e.g. exotic layout edge)
+    monkeypatch.setattr(sb_mod, "_team_context_from_spec", lambda spec: None)
+
+    spec = _make_team_spec()
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.agents.swarm.assembly"):
+        _build_member_sandbox_specs(
+            {"react": {"evolution": {}}}, spec, session_id="sess-1"
+        )
+
+    # members ARE sandboxed (not LOCAL) despite the missing team context
+    assert spec.agents["leader"].sys_operation is not None
+    assert spec.agents["leader"].sys_operation.mode == OperationMode.SANDBOX
+    # the team-mount absence is loud
+    assert any("team mounts" in r.getMessage() for r in caplog.records)
+    # and the built policy carries NO team mounts (intent empty), but the
+    # card exists — sandboxing itself never regressed to LOCAL
+    pol = spec.agents["leader"].sys_operation.gateway_config.launcher_config.extra_params["policy"]
+    binds = pol["filesystem_policy"]["bind_mounts"]
+    assert not any("agent_teams" in b["host_path"] for b in binds)
