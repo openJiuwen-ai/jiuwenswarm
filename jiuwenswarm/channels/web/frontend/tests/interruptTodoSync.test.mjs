@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import vm from 'node:vm';
-import test from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
 import { build } from 'esbuild';
 import ts from 'typescript';
 
@@ -60,12 +60,24 @@ const originalTodos = [
 const cancelledTodos = originalTodos.map(todo => ({ ...todo, status: todo.status === 'completed' ? 'completed' : 'cancelled' }));
 const statuses = sid => useTodoStore.getState().getRuntime(sid).todos.map(todo => todo.status);
 
-async function exercise({ ending = 'error', success = true, todos = cancelledTodos, status = 200, missingEvent = false } = {}) {
-  globalThis.window = { __JIUWENSWARM_EDITION__: 'enterprise' };
+let previousWindow;
+let previousFetch;
+beforeEach(() => {
+  previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  previousFetch = globalThis.fetch;
+  globalThis.window = { __JIUWENSWARM_EDITION__: 'enterprise', setTimeout, clearTimeout };
   for (const sid of ['s1', 'unrelated']) {
     useTodoStore.getState().ensureRuntime(sid);
     useTodoStore.getState().setTodos(sid, originalTodos);
   }
+});
+afterEach(() => {
+  if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+  else delete globalThis.window;
+  globalThis.fetch = previousFetch;
+});
+
+async function exercise({ ending = 'error', success = true, todos = cancelledTodos, status = 200, missingEvent = false } = {}) {
   const client = new WebHttpClient();
   const events = [];
   const requests = [];
@@ -102,7 +114,8 @@ for (const ending of ['error', 'eof', 'chat-error']) {
     assert.equal(requests[0].url, '/api/v1/chat/s1/actions/interrupt');
     assert.deepEqual(requests[0].body, { intent: 'cancel' });
     assert.equal(events.length, 1);
-    assert.equal(events[0].request_id, 'r1');
+    assert.notEqual(events[0].request_id, 'r1');
+    assert.equal(events[0].request_id, requests[0].headers['X-Request-ID']);
     assert.equal(events[0].payload.session_id, 's1');
     assert.deepEqual(statuses('s1'), ['completed', 'cancelled', 'cancelled']);
   });
@@ -125,7 +138,68 @@ test('an authoritative empty snapshot clears Progress', async () => {
   await exercise({ todos: [] });
   assert.deepEqual(statuses('s1'), []);
 });
-test('manual cancellation receipt follows the same Todo synchronization', () => {
-  handler({ payload: { session_id: 's1', intent: 'cancel', success: true, todos: cancelledTodos } });
+test('manual cancellation receipt follows the same Todo synchronization', async () => {
+  const client = new WebHttpClient();
+  client.state = 'ready';
+  client.on('chat.interrupt_result', handler);
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, payload: {
+    event_type: 'chat.interrupt_result', intent: 'cancel', success: true, todos: cancelledTodos,
+  } }));
+  await client.request('chat.interrupt', { session_id: 's1', intent: 'cancel' });
   assert.deepEqual(statuses('s1'), ['completed', 'cancelled', 'cancelled']);
 });
+
+for (const [source, nextSession] of [
+  ['automatic', 's1'], ['automatic', 'unrelated'], ['manual', 's1'], ['manual', 'unrelated'],
+]) {
+  for (const nextFinished of [false, true]) {
+    test(`late ${source} cancel after ${nextSession} starts (finished=${nextFinished})`, async () => {
+      const client = new WebHttpClient();
+      client.state = 'ready';
+      const events = [];
+      client.on('chat.interrupt_result', event => { events.push(event); handler(event); });
+      let resolveCancel;
+      let nextStream;
+      globalThis.fetch = async url => {
+        if (url.endsWith('/actions/interrupt')) {
+          return new Promise(resolve => { resolveCancel = resolve; });
+        }
+        return new Response(new ReadableStream({ start(s) { nextStream = s; } }), {
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      };
+      let nextRequest;
+      client.on('chat.processing_status', () => {
+        nextRequest ??= client.request('chat.send', { session_id: nextSession, query: 'next turn' });
+      });
+      let manualRequest;
+      if (source === 'automatic') {
+        await client.pumpSse(new Response(new ReadableStream({ start(s) { s.close(); } })),
+          'old-chat', 'sse', new AbortController(), 's1');
+      } else {
+        manualRequest = client.request('chat.interrupt', { session_id: 's1', intent: 'cancel' });
+        await new Promise(resolve => setImmediate(resolve));
+        nextRequest = client.request('chat.send', { session_id: nextSession, query: 'next turn' });
+      }
+      await nextRequest;
+      if (nextFinished) {
+        nextStream.enqueue(new TextEncoder().encode(`event: chat.processing_status\ndata: {"session_id":"${nextSession}","is_processing":false}\n\n`));
+        nextStream.close();
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      resolveCancel(new Response(JSON.stringify({ ok: true, payload: {
+        event_type: 'chat.interrupt_result', session_id: 's1', intent: 'cancel',
+        success: true, todos: cancelledTodos,
+      } })));
+      await manualRequest;
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(events.length, nextSession === 's1' ? 0 : 1);
+      assert.deepEqual(statuses('s1'), nextSession === 's1'
+        ? ['completed', 'in_progress', 'pending'] : ['completed', 'cancelled', 'cancelled']);
+      if (!nextFinished) assert.equal(client.sseInflight.size, 1);
+      await client.disconnect();
+      if (!nextFinished) nextStream.close();
+      await new Promise(resolve => setImmediate(resolve));
+    });
+  }
+}
