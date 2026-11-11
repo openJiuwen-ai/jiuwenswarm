@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any
 
+from jiuwenswarm.common.minimax_video_models import MiniMaxH3Variant, minimax_h3_variant
+
 
 @dataclass(frozen=True)
 class VideoModelCapacity:
@@ -125,6 +127,12 @@ _H3_MAX = VideoModelCapacity(
     supports_reference_images=False,
 )
 
+_MINIMAX_H3_CAPACITY = {
+    MiniMaxH3Variant.MAX: _H3_MAX,
+    MiniMaxH3Variant.HIGHSPEED: _H3_HIGHSPEED,
+    MiniMaxH3Variant.LITE: _H3_LITE,
+}
+
 _CATALOG: tuple[VideoModelCapacity, ...] = (
     _WAN3,
     _SEEDANCE_25,
@@ -144,12 +152,9 @@ def capacity_for_model(model_id: str) -> VideoModelCapacity:
     key = _norm(model_id)
     if not key:
         return _WAN3
-    if "h3max" in key or ("minimax" in key and key.endswith("max")):
-        return _H3_MAX
-    if key == "minimaxh3highspeed":
-        return _H3_HIGHSPEED
-    if key == "minimaxh3lite":
-        return _H3_LITE
+    variant = minimax_h3_variant(model_id)
+    if variant is not None:
+        return _MINIMAX_H3_CAPACITY[variant]
     if "minimaxh3" in key or key in {"h3", "minimaxh3"}:
         return _H3
     if "seedance" in key and ("25" in key or "260628" in key):

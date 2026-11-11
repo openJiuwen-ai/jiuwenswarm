@@ -100,6 +100,7 @@ import requests
 from agent_gateway.common.volcengine_endpoints import normalize_ark_api_base
 from jiuwenswarm.agents.harness.common.tools import vllm_omni_gen
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
+from jiuwenswarm.common.minimax_video_models import minimax_h3_variant
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
 
@@ -561,7 +562,7 @@ async def _minimax_generate_image(
 def _minimax_video_resolution(resolution: str, model: str) -> str:
     """Map the requested resolution to a tier the selected MiniMax model supports."""
     text = (resolution or "").strip().upper()
-    if model.lower() in {"minimax-h3-highspeed", "minimax-h3-lite"}:
+    if minimax_h3_variant(model) is not None:
         return "480P" if text == "480P" else "768P"
     if text == "2K":
         return "2K"
