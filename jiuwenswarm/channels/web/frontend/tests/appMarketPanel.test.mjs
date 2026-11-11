@@ -408,6 +408,47 @@ test('desktop startup and reopen use the app view without conversation or headle
   }
 });
 
+test('Electron keeps an already open pane visible and can hide, close and reopen it', async () => {
+  const opens = [];
+  const closes = [];
+  window.jiuwenDesktop = {
+    isElectron: true,
+    openMarketApp: async (...args) => { opens.push(args); return true; },
+    setMarketAppViewport: async () => true,
+    closeMarketApp: async id => { closes.push(id); return true; },
+  };
+  const ctx = await mount(method => response(method, [running]));
+  try {
+    await click(find('app-market-open'));
+    const pane = find('app-market-browser-pane');
+    assert.ok(pane);
+    assert.deepEqual(opens, [[app.app_id, running.url, app.name, true]]);
+    await click(find('app-market-open'));
+    assert.equal(find('app-market-browser-pane'), pane);
+    assert.equal(opens.length, 1, 'reopening a mounted view must not hide it via Electron IPC');
+    await click(find('app-market-browser-expand'));
+    assert.ok(find('app-market-panel').classList.contains('app-market-layout-expanded'));
+    await click(find('app-market-browser-expand'));
+    assert.ok(!find('app-market-panel').classList.contains('app-market-layout-expanded'));
+    await click(find('app-market-browser-hide'));
+    assert.equal(find('app-market-browser-pane'), null);
+    assert.deepEqual(closes, []);
+    await click(find('app-market-open'));
+    assert.ok(find('app-market-browser-pane'));
+    assert.equal(opens.length, 2);
+    await click(find('app-market-browser-close'));
+    assert.equal(find('app-market-browser-pane'), null);
+    assert.deepEqual(closes, [app.app_id]);
+    await click(find('app-market-open'));
+    assert.ok(find('app-market-browser-pane'));
+    assert.equal(opens.length, 3);
+    assert.equal(ctx.calls.some(({ method }) => method === 'app_market.stop'), false);
+  } finally {
+    await ctx.close();
+    delete window.jiuwenDesktop;
+  }
+});
+
 test('Web app uses an embedded iframe and preserves it across hiding and market navigation', async () => {
   let instances = [running];
   const handler = method => {

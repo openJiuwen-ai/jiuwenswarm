@@ -72,7 +72,8 @@ function StateIcon({ state, label }: { state: AppState; label: string }) {
 export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {}) {
   const { t } = useTranslation();
   const isElectron = !!window.jiuwenDesktop?.isElectron;
-  const hintKey = isElectron ? 'app-market-desktop-window-hint-dismissed' : PANE_HINT_DISMISSED;
+  const useEmbeddedPane = !isElectron || !!window.jiuwenDesktop?.setMarketAppViewport;
+  const hintKey = !useEmbeddedPane ? 'app-market-desktop-window-hint-dismissed' : PANE_HINT_DISMISSED;
   const [windowHintVisible, setWindowHintVisible] = useState(() => {
     try { return localStorage.getItem(hintKey) !== '1'; } catch { return true; }
   });
@@ -135,6 +136,10 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
   const openApplication = async (app: AppInfo, instance: InstanceInfo, edit = false) => {
     if (!instance.url) return;
     const revision = ++openRevision.current;
+    if (!edit && useEmbeddedPane && activeApp?.app_id === app.app_id
+      && activeApp.instanceId === instance.instance_id && hasAppMarketView(app.app_id, instance.instance_id)) {
+      return;
+    }
     const intent = viewIntent.current;
     const isCurrent = () => revision === openRevision.current && intent === viewIntent.current;
     try {
@@ -143,7 +148,7 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
         if (!desktop.openMarketApp) throw new Error(t('appMarket.desktopUpdateRequired'));
         if (edit && !desktop.setMarketAppViewport) throw new Error(t('appMarket.desktopUpdateRequired'));
       }
-      if (!await openAppMarketView(instance, app.name, edit)) throw new Error(t('appMarket.openFailed'));
+      if (!await openAppMarketView(instance, app.name, edit || useEmbeddedPane)) throw new Error(t('appMarket.openFailed'));
       if (!edit && isCurrent()) setActiveApp({ ...app, instanceId: instance.instance_id });
       if (edit && isCurrent() && onEdit && app.entry_path) {
         await onEdit({ appId: app.app_id, name: app.name, instanceId: instance.instance_id,
@@ -284,7 +289,7 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
   const displayApps = activeTab === 'all' ? apps : apps.filter((app) => getState(app.app_id) !== 'stopped');
 
   return (
-    <div className={`app-market-layout${!isElectron && activeApp && paneExpanded ? ' app-market-layout-expanded' : ''}`} data-testid="app-market-panel">
+    <div className={`app-market-layout${useEmbeddedPane && activeApp && paneExpanded ? ' app-market-layout-expanded' : ''}`} data-testid="app-market-panel">
       <div className="app-market-list flex min-h-0 flex-1 flex-col gap-5" data-testid="app-market-list">
       <div className="page-shell flex shrink-0 flex-wrap items-center justify-between gap-4">
         <CategoryTabs<Tab>
@@ -317,7 +322,7 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
           className="page-shell flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
           data-testid="app-market-pane-hint"
         >
-            <p data-testid="app-market-pane-hint-text">{t(isElectron ? 'appMarket.desktopWindowHint' : 'appMarket.paneHint')}</p>
+            <p data-testid="app-market-pane-hint-text">{t(useEmbeddedPane ? 'appMarket.paneHint' : 'appMarket.desktopWindowHint')}</p>
           <Button
             variant="quiet"
             size="sm"
@@ -442,7 +447,7 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
         )}
       </div>
       </div>
-      {!isElectron && activeApp && (
+      {useEmbeddedPane && activeApp && (
         <AppMarketBrowserPane key={activeApp.instanceId} appId={activeApp.app_id} name={activeApp.name}
           controls={{ expanded: paneExpanded, onExpand: () => setPaneExpanded(current => !current),
             onHide: hideApplication, onClose: () => void closeApplication(activeApp, activeApp.instanceId) }}
