@@ -49,6 +49,11 @@ start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%"
 if errorlevel 1 exit /b 1
 
 echo.
+echo Verifying frozen Gateway extensions bundle...
+start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_gateway_extensions_bundle.py"
+if errorlevel 1 exit /b 1
+
+echo.
 echo Verifying frozen Computer Use runtime without build tools...
 start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_computer_use_bundle.py"
 if errorlevel 1 exit /b 1
