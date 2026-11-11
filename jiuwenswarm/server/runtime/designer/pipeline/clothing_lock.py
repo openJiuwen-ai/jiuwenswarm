@@ -374,6 +374,123 @@ def _spec_prompt_for(node: dict[str, Any]) -> str:
     return str(gen.get("prompt") or "").strip()
 
 
+def refresh_dependent_costumes(graph: dict[str, Any] | None) -> list[str]:
+    """Rewrite a stale wardrobe wherever a dependent node already carries it.
+
+    ``sync_costume_from_specs`` fixes the analysis cast, but a clip prompt that
+    was authored (or edited) keeps the wardrobe text inline, and the prompt
+    builder honours that authored text. Replace the old phrasing in the clip's
+    prompt fields and costume lock so the next run wears what the plate shows.
+    Returns short notes about what changed.
+    """
+    if not isinstance(graph, dict):
+        return []
+    notes: list[str] = []
+    meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
+    analysis = meta.get("script_analysis") if isinstance(meta.get("script_analysis"), dict) else {}
+    characters = analysis.get("characters") if isinstance(analysis.get("characters"), list) else []
+    by_id = {
+        str(ch.get("id")): ch
+        for ch in characters
+        if isinstance(ch, dict) and str(ch.get("id") or "").strip()
+    }
+    if not by_id:
+        return []
+    # character id -> (name, old wardrobe text, new clause)
+    updates: dict[str, tuple[str, str, str]] = {}
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        if not _is_character_spec(cfg, node):
+            continue
+        clause = costume_clause_from_spec_prompt(_spec_prompt_for(node))
+        if not clause:
+            continue
+        for cid in _character_ids_for_spec(cfg):
+            ch = by_id.get(cid)
+            if not isinstance(ch, dict):
+                continue
+            name = str(ch.get("name") or cid).strip()
+            old = str(ch.get("costume_clause") or ch.get("costume_lock") or "").strip()
+            if not old or old == clause:
+                continue
+            updates[cid] = (name, old, clause)
+    if not updates:
+        return []
+    sync_costume_from_specs(graph)
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        cids = _character_ids_for_spec(cfg)
+        targets = [cid for cid in cids if cid in updates] or list(updates)
+        changed = False
+        for cid in targets:
+            name, old, clause = updates[cid]
+            old_phrase = wearable_phrase(old, name=name)
+            new_phrase = wearable_phrase(clause, name=name)
+            replacements = [(old, clause)]
+            if old_phrase and old_phrase != old:
+                replacements.append((old_phrase, new_phrase))
+            # Structured locks ("top=cream cable-knit sweater") are quoted into
+            # prompts by their slot values too, so refresh those as well; a prose
+            # lock is quoted by its garment segments.
+            stale_garments = list(_LOCK_SLOT_RE.findall(old))
+            if not stale_garments:
+                stale_garments = re.split(r"[,\uff0c;\uff1b]", old)
+            for garment in stale_garments:
+                garment = garment.strip()
+                if len(garment) >= 8 and garment not in clause:
+                    replacements.append((garment, new_phrase or clause))
+            # Longest first, so a whole-clause match wins over a segment of it.
+            replacements.sort(key=lambda pair: len(pair[0]), reverse=True)
+            for key, value in list(cfg.items()):
+                if not isinstance(value, str) or not value:
+                    continue
+                if key not in _WARDROBE_PROMPT_FIELDS and key != "costume_lock":
+                    continue
+                updated = value
+                for stale, fresh in replacements:
+                    if stale and stale in updated:
+                        updated = updated.replace(stale, fresh)
+                if updated != value:
+                    cfg[key] = updated
+                    changed = True
+            prompt = cfg.get("generate") if isinstance(cfg.get("generate"), dict) else None
+            if isinstance(prompt, dict) and isinstance(prompt.get("prompt"), str):
+                text = prompt["prompt"]
+                updated = text
+                for stale, fresh in replacements:
+                    if stale and stale in updated:
+                        updated = updated.replace(stale, fresh)
+                if updated != text:
+                    prompt = dict(prompt)
+                    prompt["prompt"] = updated
+                    cfg["generate"] = prompt
+                    changed = True
+        if changed:
+            node["config"] = cfg
+            notes.append(f"{node.get('id')}: wardrobe refreshed from the character spec")
+    return notes
+
+
+_WARDROBE_PROMPT_FIELDS = (
+    "prompt",
+    "last_wan_prompt",
+    "last_still_prompt",
+    "last_approved_prompt",
+    "user_edit_prompt",
+    "clip_prompt_preview",
+    "director_task",
+)
+
+_LOCK_SLOT_RE = re.compile(
+    r"(?:outfit|top|bottom|outerwear|footwear|accessories)\s*=\s*([^;\uff1b]+)",
+    re.IGNORECASE,
+)
+
+
 def sync_costume_from_specs(graph: dict[str, Any] | None) -> set[str]:
     """Copy each character spec node's current wardrobe into the analysis cast.
 

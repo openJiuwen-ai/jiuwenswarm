@@ -16,6 +16,7 @@ from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
     costume_clause_from_spec_prompt,
     costume_lock_for_ids,
     detailed_costume_lock_for_character,
+    refresh_dependent_costumes,
     spec_costume_by_character,
     sync_costume_from_specs,
 )
@@ -64,7 +65,7 @@ def _graph(plate_prompt: str = _PLATE_PROMPT) -> dict:
                     {
                         "id": "char_1",
                         "name": "Lighthouse Keeper",
-                        "costume_lock": "cream wool sweater, navy trousers, olive storm coat",
+                        "costume_lock": "cream cable-knit sweater, navy trousers, olive canvas coat",
                     }
                 ]
             }
@@ -142,9 +143,46 @@ def test_clip_prompt_wears_the_edited_plate_costume_not_the_stale_lock() -> None
     assert "cream wool sweater" not in prompt
 
 
-def test_a_plate_without_a_costume_clause_leaves_the_stored_lock_alone() -> None:
+def _graph_with_authored_clip(plate_prompt: str = _PLATE_PROMPT) -> dict:
+    """A clip whose prompt already quotes the wardrobe, as the canvas leaves it."""
+    graph = _graph(plate_prompt)
+    clip_cfg = graph["nodes"][1]["config"]
+    clip_cfg["generate"] = {
+        "prompt": (
+            "The scene is as in Image 2. Lighthouse Keeper from Image 1, wearing cream cable-knit "
+            "sweater, at center frame, is climbing the stairs. photoreal cinematic."
+        )
+    }
+    clip_cfg["last_wan_prompt"] = clip_cfg["generate"]["prompt"]
+    clip_cfg["clip_prompt_preview"] = clip_cfg["generate"]["prompt"]
+    return graph
+
+
+def test_an_authored_clip_prompt_is_rewritten_to_the_plate_costume() -> None:
+    graph = _graph_with_authored_clip()
+    notes = refresh_dependent_costumes(graph)
+    assert any("n_clip_1" in note for note in notes)
+    clip_cfg = graph["nodes"][1]["config"]
+    prompt = clip_cfg["generate"]["prompt"]
+    assert "deep crimson" in prompt
+    assert "cream cable-knit sweater" not in prompt
+    assert "cream cable-knit sweater" not in clip_cfg["last_wan_prompt"]
+    assert "cream cable-knit sweater" not in clip_cfg["clip_prompt_preview"]
+
+
+def test_refreshing_twice_changes_nothing_the_second_time() -> None:
+    graph = _graph_with_authored_clip()
+    refresh_dependent_costumes(graph)
+    assert refresh_dependent_costumes(graph) == []
+
+
+def test_a_plate_without_a_costume_clause_leaves_clip_prompts_untouched() -> None:
+    graph = _graph_with_authored_clip(plate_prompt="A lighthouse keeper identity plate, neutral pose.")
+    assert refresh_dependent_costumes(graph) == []
+    assert "cream cable-knit sweater" in graph["nodes"][1]["config"]["generate"]["prompt"]
+
     graph = _graph(plate_prompt="A lighthouse keeper identity plate, neutral pose.")
     assert sync_costume_from_specs(graph) == set()
     ch = graph["metadata"]["script_analysis"]["characters"][0]
-    assert ch["costume_lock"] == "cream wool sweater, navy trousers, olive storm coat"
+    assert ch["costume_lock"] == "cream cable-knit sweater, navy trousers, olive canvas coat"
     assert detailed_costume_lock_for_character(ch).startswith("Lighthouse Keeper:")

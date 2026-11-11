@@ -515,6 +515,20 @@ def build_clip_prompt(
     cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
     cfg = dict(cfg)
     try:
+        from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
+            refresh_dependent_costumes,
+        )
+
+        # A costume edited on the identity plate outranks the wardrobe this clip
+        # was authored with, including the phrase already written into its prompt.
+        for note in refresh_dependent_costumes(graph):
+            logger.info("clip costume refresh: %s", note)
+        if isinstance(node, dict):
+            cfg = node.get("config") if isinstance(node.get("config"), dict) else cfg
+            cfg = dict(cfg)
+    except Exception:
+        logger.debug("refresh_dependent_costumes failed in build_clip_prompt", exc_info=True)
+    try:
         from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
             ensure_prior_clip_story_on_cfg,
         )
