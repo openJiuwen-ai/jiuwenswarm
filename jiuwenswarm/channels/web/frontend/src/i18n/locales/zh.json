@@ -5844,6 +5844,8 @@
     "clickToViewDetail": "点击查看详情",
     "runIdTooltip": "运行 ID：{{id}}",
     "executorTooltip": "当前由 {{name}} 执行",
+    "forkFromSession": "从会话 {{name}} 分叉",
+    "forkChildSession": "分叉产生的子会话",
     "executorOrchestration": "【{{name}} 的编排 · {{workflow}}】",
     "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}"
   },
