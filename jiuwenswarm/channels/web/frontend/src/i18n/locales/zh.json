@@ -2160,6 +2160,7 @@
     "extension": "扩展",
     "extensionSearchPlaceholder": "请输入关键字搜索",
     "extensionEmpty": "暂无内容",
+    "ttseWorkModeNotice": "ttse经验沉淀功能已内置在work模式中，如需开启，请在设置中打开“<strong>本地环境事实与任务经验自动演进</strong>”开关。",
     "extensionConnect": "连接",
     "extensionManagePlugins": "管理我的插件",
     "extensionManageMcps": "管理我的连接器",

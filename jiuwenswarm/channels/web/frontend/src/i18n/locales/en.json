@@ -2160,6 +2160,7 @@
     "extension": "Extensions",
     "extensionSearchPlaceholder": "Search by keyword",
     "extensionEmpty": "No results",
+    "ttseWorkModeNotice": "TTSE experience learning is built into Work mode. To enable it, turn on “<strong>Local environment facts and task experience auto-evolution</strong>” in Settings.",
     "extensionConnect": "Connect",
     "extensionManagePlugins": "Manage My Plugins",
     "extensionManageMcps": "Manage My Connectors",

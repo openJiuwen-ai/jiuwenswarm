@@ -3192,10 +3192,28 @@ class JiuWenSwarmDeepAdapter:
             if adapter is not self:
                 adapter.assert_plugin_replacement_idle(package_id)
 
+    def plugin_replacement_rollback(self, package_id: str) -> Callable[[], Awaitable[None]] | None:
+        """Capture this adapter's selection for restoring a failed replacement."""
+        names = self._current_plugin_names()
+        if package_id not in names:
+            return None
+
+        async def restore() -> None:
+            manager = getattr(self, "_plugin_runtime_manager", None)
+            params = {"plugin_names": names}
+            if manager is None:
+                await self._load_plugins_for_request(params)
+            else:
+                session_id = getattr(self, "_parent_session_id", None) or "default"
+                async with manager.transition(params, session_id):
+                    await self._load_plugins_for_request(params)
+
+        return restore
+
     async def prepare_plugin_replacement(self, package_id: str) -> Callable[[], Awaitable[None]]:
         """Detach idle live plugins and return a rollback for their selections."""
         self.assert_plugin_replacement_idle(package_id)
-        selections = []
+        rollbacks = []
         pending = [self]
         visited = set()
         while pending:
@@ -3203,23 +3221,16 @@ class JiuWenSwarmDeepAdapter:
             if id(adapter) in visited:
                 continue
             visited.add(id(adapter))
-            names = adapter._current_plugin_names()
-            if package_id in names:
-                selections.append((adapter, names))
+            rollback = adapter.plugin_replacement_rollback(package_id)
+            if rollback is not None:
+                rollbacks.append(rollback)
             pending.extend(getattr(adapter, "_session_adapters", {}).values())
 
         async def restore() -> None:
             errors = []
-            for adapter, names in selections:
+            for rollback in rollbacks:
                 try:
-                    manager = getattr(adapter, "_plugin_runtime_manager", None)
-                    params = {"plugin_names": names}
-                    if manager is None:
-                        await adapter._load_plugins_for_request(params)
-                    else:
-                        session_id = getattr(adapter, "_parent_session_id", None) or "default"
-                        async with manager.transition(params, session_id):
-                            await adapter._load_plugins_for_request(params)
+                    await rollback()
                 except Exception as exc:
                     errors.append(exc)
             if errors:

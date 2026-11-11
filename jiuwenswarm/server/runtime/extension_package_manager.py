@@ -1066,11 +1066,11 @@ def _resources_root(kind: str) -> Path | None:
     return None
 
 
-def _read_marketplace_entries(marketplace_path: Path) -> list[dict]:
-    if not marketplace_path.is_file():
+def _read_marketplace_entries(registry_path: Path) -> list[dict]:
+    if not registry_path.is_file():
         return []
     try:
-        data = json.loads(marketplace_path.read_text(encoding="utf-8"))
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return []
     if not isinstance(data, dict):
@@ -1094,23 +1094,23 @@ def _slim_marketplace_entry(entry: dict) -> dict:
     return slim
 
 
-def _write_marketplace_entries(marketplace_path: Path, entries: list[dict]) -> None:
-    marketplace_path.parent.mkdir(parents=True, exist_ok=True)
+def _write_marketplace_entries(registry_path: Path, entries: list[dict]) -> None:
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"plugins": [_slim_marketplace_entry(entry) for entry in entries]}
     temp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
-            dir=marketplace_path.parent,
-            prefix=f".{marketplace_path.name}.",
+            dir=registry_path.parent,
+            prefix=f".{registry_path.name}.",
             suffix=".tmp",
             delete=False,
         ) as stream:
             temp_path = Path(stream.name)
             json.dump(payload, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
-        temp_path.replace(marketplace_path)
+        temp_path.replace(registry_path)
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
@@ -3355,17 +3355,16 @@ async def install_equipment_from_hub_gated(
     if kind == _AGENT_TEMPLATE_KIND and not _package_allowed(kind_label, requested_id):
         return False, {"error": f"package not allowed: {kind_label} {requested_id}"}
     state_store = hub_install_state_store(kind)
-    if kind == _PLUGIN_PACKAGE_KIND and (
-        params.get("from_hub") or params.get("replace_local")
-        or not _equipment_definition_exists(kind, requested_id)
-    ):
-        from jiuwenswarm.server.runtime.plugin_package_replacement import handle_local_conflict
+    if kind == _PLUGIN_PACKAGE_KIND:
+        if (params.get("from_hub") or params.get("replace_local")
+                or not _equipment_definition_exists(kind, requested_id)):
+            from jiuwenswarm.server.runtime.plugin_package_replacement import handle_local_conflict
 
-        conflict_result = await handle_local_conflict(
-            params, hub_port=hub_port, downloader=downloader, before_replace=before_replace,
-        )
-        if conflict_result is not None:
-            return conflict_result
+            conflict_result = await handle_local_conflict(
+                params, hub_port=hub_port, downloader=downloader, before_replace=before_replace,
+            )
+            if conflict_result is not None:
+                return conflict_result
     record = state_store.get(requested_id) or state_store.get_by_package_id(
         requested_id
     )
