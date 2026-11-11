@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from functools import partial
 import math
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypedDict
 
 from openjiuwen.core.events import ExtensionEventBus
@@ -78,7 +78,11 @@ def _text(value: object) -> bool:
 
 
 def _path(value: object) -> bool:
-    return isinstance(value, str) and bool(value) and Path(value).is_absolute()
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and (Path(value).is_absolute() or PureWindowsPath(value).is_absolute())
+    )
 
 
 def _plain_data(value: object, depth: int = 0) -> bool:

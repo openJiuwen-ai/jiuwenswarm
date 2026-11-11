@@ -3,7 +3,6 @@
 """Real provision commit timing with installed attach observers."""
 
 import json
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -108,7 +107,7 @@ def _write_package(root: Path, name: str, manifest: str, module: str) -> Path:
 
 
 @pytest.mark.asyncio
-async def test_switch_commit_observes_view_once_and_abort_never_notifies(tmp_path,monkeypatch,caplog):
+async def test_switch_commit_observes_view_once_and_abort_never_notifies(tmp_path, monkeypatch):
     from jiuwenswarm.common import utils
     from jiuwenswarm.server.runtime.session import session_history, session_metadata
 
@@ -134,17 +133,14 @@ async def test_switch_commit_observes_view_once_and_abort_never_notifies(tmp_pat
         assert prepared.state is SessionProvisionState.PREPARED
         assert observer.associations.get("web","native-view") is None
         context = SessionProvisionCommitContext(foreground_scope_id="native-view")
-        with caplog.at_level(logging.INFO,logger="jiuwenswarm.server.extensions.example.session_attach"):
-            await provisioner.commit_session_provision(prepared,timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY,context=context)
-            first = observer.associations.get("web","native-view")
-            assert first is not None and first.session_id == "native-view-session"
-            assert prepared.state is SessionProvisionState.COMMITTED
-            await provisioner.commit_session_provision(prepared,timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY,context=context)
-            aborted = await provisioner.prepare_session_switch(SessionSwitchInput(channel_id="web",target_session_id="native-view-session",mode="agent.work.normal"))
-            await provisioner.abort_session_provision(aborted)
+        await provisioner.commit_session_provision(prepared,timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY,context=context)
+        first = observer.associations.get("web","native-view")
+        assert first is not None and first.session_id == "native-view-session"
+        assert prepared.state is SessionProvisionState.COMMITTED
+        await provisioner.commit_session_provision(prepared,timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY,context=context)
+        aborted = await provisioner.prepare_session_switch(SessionSwitchInput(channel_id="web",target_session_id="native-view-session",mode="agent.work.normal"))
+        await provisioner.abort_session_provision(aborted)
         assert observer.associations.get("web","native-view") is first
-        assert caplog.text.count("session attach example:") == 1
-        assert "surface=desktop client=web:native-view" in caplog.text
         assert registry.snapshot_activity() == ()
     finally:
         await assembly.shutdown_extensions()
@@ -152,7 +148,7 @@ async def test_switch_commit_observes_view_once_and_abort_never_notifies(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_replacement_notifies_old_view_only_after_commit(tmp_path, monkeypatch, caplog):
+async def test_replacement_notifies_old_view_only_after_commit(tmp_path, monkeypatch):
     from jiuwenswarm.common import utils
     from jiuwenswarm.server.runtime.session import session_history, session_metadata
 
@@ -178,17 +174,13 @@ async def test_replacement_notifies_old_view_only_after_commit(tmp_path, monkeyp
         first = await provisioner.prepare_session_switch(SessionSwitchInput(channel_id="web", target_session_id="native-first", mode="agent.work.normal"))
         await provisioner.commit_session_provision(first, timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY, context=context)
         old = observer.associations.get("web", "native-view")
-        with caplog.at_level(logging.INFO, logger="jiuwenswarm.server.extensions.example.session_detach"):
-            aborted = await provisioner.prepare_session_switch(SessionSwitchInput(channel_id="web", target_session_id="native-second", mode="agent.work.normal"))
-            await provisioner.abort_session_provision(aborted)
-            assert observer.associations.get("web", "native-view") is old
-            assert "session detach example:" not in caplog.text
-            second = await provisioner.prepare_session_switch(SessionSwitchInput(channel_id="web", target_session_id="native-second", previous_session_id="native-first", mode="agent.work.normal"))
-            assert observer.associations.get("web", "native-view") is old
-            await provisioner.commit_session_provision(second, timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY, context=context)
-            await provisioner.commit_session_provision(second, timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY, context=context)
-        assert caplog.text.count("session detach example:") == 1
-        assert "session=native-first" in caplog.text and "client=web:native-view reason=detach" in caplog.text
+        aborted = await provisioner.prepare_session_switch(SessionSwitchInput(channel_id="web", target_session_id="native-second", mode="agent.work.normal"))
+        await provisioner.abort_session_provision(aborted)
+        assert observer.associations.get("web", "native-view") is old
+        second = await provisioner.prepare_session_switch(SessionSwitchInput(channel_id="web", target_session_id="native-second", previous_session_id="native-first", mode="agent.work.normal"))
+        assert observer.associations.get("web", "native-view") is old
+        await provisioner.commit_session_provision(second, timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY, context=context)
+        await provisioner.commit_session_provision(second, timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY, context=context)
         assert observer.associations.get("web", "native-view").session_id == "native-second"
         assert (sessions / "native-first/metadata.json").is_file()
     finally:

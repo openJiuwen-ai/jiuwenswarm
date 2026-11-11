@@ -12,6 +12,7 @@ import subprocess
 import threading
 
 import pytest
+import pytest_asyncio
 from openjiuwen.core.events import Event, EventHandlerOpsBuilder, SessionContext
 
 from jiuwenswarm.extensions_v2 import assembly
@@ -62,13 +63,19 @@ def _git(directory: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+def _init_repository(directory: Path, branch: str) -> None:
+    """Initialize a repository with a named branch on supported Git versions."""
+    _git(directory, "init")
+    _git(directory, "checkout", "-b", branch)
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     if shutil.which("git") is None:
         pytest.skip("real Git executable required")
     directory = tmp_path / "仓库 with spaces"
     directory.mkdir()
-    _git(directory, "init", "-b", "feature/repo-test")
+    _init_repository(directory, "feature/repo-test")
     (directory / "readme.txt").write_text("first\n", encoding="utf-8")
     _git(directory, "add", "readme.txt")
     _git(directory, "-c", "commit.gpgsign=false", "commit", "-m", "initial")
@@ -84,7 +91,7 @@ def _ui_event(payload: dict | None = None) -> Event:
     return Event("ui.ready", UiActionInput("ui.ready", RenderTarget("repo-session", "chat.header"), payload or {}))
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def repo_host(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "store")
@@ -147,7 +154,7 @@ async def test_detached_head_does_not_invent_branch(repository: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_unborn_repository_reports_branch_without_commit(tmp_path: Path) -> None:
-    _git(tmp_path, "init", "-b", "unborn")
+    _init_repository(tmp_path, "unborn")
     assert await session_ops.session_repo(_ops(str(tmp_path))) == {
         "repo_root": str(tmp_path.resolve()), "branch": "unborn", "head": None, "detached": False,
     }
@@ -247,7 +254,7 @@ async def test_git_failures_are_sanitized(tmp_path: Path, monkeypatch, stderr: s
 async def test_git_environment_cannot_redirect_to_another_repository(repository: Path, tmp_path: Path, monkeypatch) -> None:
     other = tmp_path / "other"
     other.mkdir()
-    _git(other, "init", "-b", "wrong")
+    _init_repository(other, "wrong")
     monkeypatch.setenv("GIT_DIR", str(other / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(other))
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")

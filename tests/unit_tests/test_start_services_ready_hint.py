@@ -195,9 +195,15 @@ def test_terminate_processes_keeps_descendants_for_forced_shutdown(
         def kill():
             fallback.append("kill")
 
-    clock = iter((0.0, 8.0))
+    # Logging reads the shared ``time`` module too, so it can make additional
+    # timestamp reads while the production loop is being exercised.
+    clock = iter((0.0, 0.0, 8.0))
+
+    def now() -> float:
+        return next(clock, 8.0)
+
     monkeypatch.setattr(psutil, "Process", find_process)
-    monkeypatch.setattr(start_services.time, "time", lambda: next(clock))
+    monkeypatch.setattr(start_services.time, "time", now)
 
     start_services._terminate_processes({"app": _Launcher()})
 

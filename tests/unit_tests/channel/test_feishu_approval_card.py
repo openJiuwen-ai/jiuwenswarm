@@ -20,14 +20,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.harness.rails.interrupt.confirm_rail import ConfirmPayload
-from openjiuwen_protocol.message import EventType, Message
-
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import (
     FeishuChannel,
     FeishuConfig,
     _ApprovalCardContext,
 )
+from jiuwenswarm.common.schema.message import EventType, Message
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
 ALLOW_ONCE = {"label": "本次允许", "value": "allow_once"}

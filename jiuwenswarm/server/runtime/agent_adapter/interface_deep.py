@@ -763,6 +763,14 @@ def _permission_user_text_for_request(request: AgentRequest) -> str:
 logger = logging.getLogger(__name__)
 
 
+def _reset_context_variable(variable: ContextVar[Any], token: Token[Any]) -> None:
+    """Reset a request context unless a different task owns stream teardown."""
+    try:
+        variable.reset(token)
+    except ValueError:
+        logger.debug("[AgentServer] request context closed from another task")
+
+
 def _model_name_names_selection(model_name: str, selection: ModelSelection) -> bool:
     """Whether an ordinary model name and a stable model selection pick the same catalog model.
 
@@ -17386,9 +17394,9 @@ class JiuWenSwarmDeepAdapter:
                 cleanup.callback(setattr, permission_rail, "run_permission_levels", previous_rail_levels)
                 permission_rail.run_permission_levels = tool_levels
             context_token = CURRENT_RUN_CONTEXT.set(context)
-            cleanup.callback(CURRENT_RUN_CONTEXT.reset, context_token)
+            cleanup.callback(_reset_context_variable, CURRENT_RUN_CONTEXT, context_token)
             run_permissions_token = RUN_PERMISSIONS.set(tool_levels)
-            cleanup.callback(RUN_PERMISSIONS.reset, run_permissions_token)
+            cleanup.callback(_reset_context_variable, RUN_PERMISSIONS, run_permissions_token)
             runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
             root_invocation_token = bind_root_permission_request(
                 root_session_id=self._resolve_interrupt_session_id(request.session_id),
@@ -17401,11 +17409,11 @@ class JiuWenSwarmDeepAdapter:
             channel_token = TOOL_PERMISSION_CHANNEL_ID.set(
                 (request.channel_id or "").strip()
             )
-            cleanup.callback(TOOL_PERMISSION_CHANNEL_ID.reset, channel_token)
+            cleanup.callback(_reset_context_variable, TOOL_PERMISSION_CHANNEL_ID, channel_token)
             request_token = TOOL_PERMISSION_REQUEST_ID.set(
                 (request.request_id or "").strip()
             )
-            cleanup.callback(TOOL_PERMISSION_REQUEST_ID.reset, request_token)
+            cleanup.callback(_reset_context_variable, TOOL_PERMISSION_REQUEST_ID, request_token)
             if self._is_session_scoped_adapter and self._sys_operation is not None:
                 command_token = bind_command_execution(
                     self._sys_operation,

@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 
 from openjiuwen.core.events import Event, SessionContext
 
@@ -76,7 +77,7 @@ def create_extension():
 '''
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def attach_host(tmp_path, monkeypatch):
     from jiuwenswarm.common import utils
     from jiuwenswarm.server.runtime.session import session_history, session_metadata, model_selection_store

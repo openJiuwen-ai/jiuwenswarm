@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
@@ -123,7 +125,7 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
     monkeypatch.setattr(
         JiuWenSwarmDeepAdapter,
         "_seed_runtime_cwd",
-        lambda self, cwd=None, workspace=None: captured.update(
+        lambda self, cwd=None, workspace=None, session_id=None: captured.update(
             cwd=cwd,
             workspace=workspace,
         ),
@@ -156,10 +158,11 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
         )
     )
 
+    first_project_dir = os.path.abspath("/different/project")
     assert captured == {
         "channel": "web",
-        "cwd": "/different/project",
-        "workspace": "/different/project",
+        "cwd": first_project_dir,
+        "workspace": first_project_dir,
     }
 
     await adapter._update_runtime_config(
@@ -171,8 +174,9 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
         )
     )
 
+    second_project_dir = os.path.abspath("/task/second-project")
     assert captured == {
         "channel": "web",
-        "cwd": "/task/second-project",
-        "workspace": "/task/second-project",
+        "cwd": second_project_dir,
+        "workspace": second_project_dir,
     }

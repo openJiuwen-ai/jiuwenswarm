@@ -21,6 +21,9 @@
 `ExtensionManager.set_enabled(package_id, enabled)` 复用 Core 的公开管理接口。禁用会撤销 Handler 并保留
 目录；启用会在写入 `true` 后登记 Handler。Gateway 使用相同语义，只处理声明为 `package.domain: gateway` 的包。
 
+对声明 WebUI 槽位的 AgentServer 包，成功启用后会通知此前已上报 `ui.ready` 的网页连接重新发送
+`ui.ready`，使插件无需刷新页面即可重新渲染。禁用和卸载仍沿用视图释放流程，不发送重新就绪通知。
+
 启动发现只加载 `enable: true` 的受管副本。目录和详情投影读取受管 manifest，因此已安装但禁用的包可继续被查询、展示和再次启用。
 `/extension reload <package_id>` 不改变安装副本的 `enable`。已启用包按正常流程热重载；已安装但禁用的包会成功返回，
 但不加载模块或登记 Handler，`enable` 仍为 `false`。需要重新生效时，应先执行启用操作。

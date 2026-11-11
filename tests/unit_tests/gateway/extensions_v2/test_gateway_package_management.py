@@ -939,6 +939,7 @@ async def test_import_local_routes_agent_packages_to_the_agent_server(tmp_path, 
     assert calls[1]["params"] == {"path": str(plugin_source)}
 
 
+@pytest.mark.asyncio
 async def test_import_local_routes_a_managed_agent_package_zip_to_the_agent_server(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
