@@ -1060,6 +1060,8 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:
                 await asyncio.wait_for(attached.wait(), 2)
+                pid = supervisor.worker_pid
+                assert pid is not None
                 await asyncio.wait_for(
                     supervisor.dispatch_parsed_request(
                         gateway["ws"],
@@ -1074,8 +1076,13 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
         assert "Traceback" in stderr and "WorkerForceExit" in stderr
         assert "injected diagnostic exit" in stderr
         assert "fatal exit" in stderr
-        assert f"[Worker stderr pid={supervisor.worker_pid}]" in caplog.text
-        assert "injected diagnostic exit" in caplog.text
+        if supervisor._ipc_mode == supervisor_module.FRONT_LOOPBACK:
+            async with asyncio.timeout(15):
+                while (
+                    f"[Worker stderr pid={pid}]" not in caplog.text
+                    or "injected diagnostic exit" not in caplog.text
+                ):
+                    await asyncio.sleep(0.05)
         (tmp_path / "acceptance.json").write_text(
             json.dumps(
                 {

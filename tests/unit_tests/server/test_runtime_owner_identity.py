@@ -61,3 +61,19 @@ def test_assert_runtime_owner_allows_different_proc_start_ticks(monkeypatch) -> 
     monkeypatch.setattr(lc, "_proc_start_ticks", lambda _pid: 9898)
 
     lc.assert_runtime_owner("session-1")
+
+
+def test_assert_runtime_owner_fails_closed_when_proc_start_ticks_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        lc,
+        "state",
+        lambda _kind, _resource_id: {
+            "runtime_owner": {"pid": 123, "start_ticks": 4242}
+        },
+    )
+    monkeypatch.setattr(lc.os, "getpid", lambda: 456)
+    monkeypatch.setattr(psutil, "Process", lambda _pid: object())
+    monkeypatch.setattr(lc, "_proc_start_ticks", lambda _pid: None)
+
+    with pytest.raises(lc.LifecycleError, match="cannot verify the previous runtime owner"):
+        lc.assert_runtime_owner("session-1")

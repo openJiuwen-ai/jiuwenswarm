@@ -12,8 +12,8 @@ import sys
 import threading
 import time
 import uuid
-from typing import BinaryIO
 from pathlib import Path
+from typing import BinaryIO
 
 from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
 
@@ -185,8 +185,8 @@ class WorkerProcess:
         self._ipc_listener = ipc_listener
         self._proc: subprocess.Popen[bytes] | None = None
         self.launch_identity: str | None = None
-        self._stdout_file: BinaryIO | None = None
-        self._stderr_file: BinaryIO | None = None
+        self._stdout_stream: BinaryIO | None = None
+        self._stderr_stream: BinaryIO | None = None
         self._stdout_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
         self._worker_log_dir = Path(socket_path).parent / "worker-logs"
@@ -237,47 +237,54 @@ class WorkerProcess:
         logger.info("[Supervisor] spawning runtime worker: %s", " ".join(command))
         # Resident Workers outlive the Front. Attached Workers share its
         # process session and also stop on IPC EOF.
-        stdout_file: BinaryIO | None = None
-        stderr_file: BinaryIO | None = None
+        resident = self._ipc_listener is None
         try:
             self._worker_log_dir.mkdir(parents=True, exist_ok=True)
-            stdout_file = self._stdout_path.open("ab", buffering=0)
-            stderr_file = self._stderr_path.open("ab", buffering=0)
-            self._proc = subprocess.Popen(
-                command,
-                env=os.environ.copy(),
-                start_new_session=self._ipc_listener is None,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            if resident:
+                with self._stdout_path.open("ab", buffering=0) as stdout_file:
+                    with self._stderr_path.open("ab", buffering=0) as stderr_file:
+                        self._proc = subprocess.Popen(
+                            command,
+                            env=os.environ.copy(),
+                            start_new_session=True,
+                            stdin=subprocess.PIPE,
+                            stdout=stdout_file,
+                            stderr=stderr_file,
+                        )
+            else:
+                self._proc = subprocess.Popen(
+                    command,
+                    env=os.environ.copy(),
+                    start_new_session=False,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
         except OSError as exc:
-            for output_file in (stdout_file, stderr_file):
-                if output_file is not None:
-                    output_file.close()
             if self._ipc_listener is not None:
                 raise OSError(exc.errno, f"runtime_ipc=front_loopback stage=spawn errno={exc.errno}") from None
             raise
-        self._stdout_file = stdout_file
-        self._stderr_file = stderr_file
-        stdout_stream = self._proc.stdout
-        stderr_stream = self._proc.stderr
-        if stdout_file is not None and stdout_stream is not None:
-            self._stdout_thread = threading.Thread(
-                target=self._drain_output,
-                args=(stdout_stream, stdout_file, self._proc.pid, "stdout"),
-                name=f"runtime-worker-stdout-{self._proc.pid}",
-                daemon=True,
-            )
-            self._stdout_thread.start()
-        if stderr_file is not None and stderr_stream is not None:
-            self._stderr_thread = threading.Thread(
-                target=self._drain_output,
-                args=(stderr_stream, stderr_file, self._proc.pid, "stderr"),
-                name=f"runtime-worker-stderr-{self._proc.pid}",
-                daemon=True,
-            )
-            self._stderr_thread.start()
+        if not resident:
+            stdout_stream = self._proc.stdout
+            stderr_stream = self._proc.stderr
+            if stdout_stream is not None:
+                self._stdout_stream = stdout_stream
+                self._stdout_thread = threading.Thread(
+                    target=self._drain_output,
+                    args=(stdout_stream, self._stdout_path, self._proc.pid, "stdout"),
+                    name=f"runtime-worker-stdout-{self._proc.pid}",
+                    daemon=True,
+                )
+                self._stdout_thread.start()
+            if stderr_stream is not None:
+                self._stderr_stream = stderr_stream
+                self._stderr_thread = threading.Thread(
+                    target=self._drain_output,
+                    args=(stderr_stream, self._stderr_path, self._proc.pid, "stderr"),
+                    name=f"runtime-worker-stderr-{self._proc.pid}",
+                    daemon=True,
+                )
+                self._stderr_thread.start()
         try:
             self._proc.stdin.write(payload)
             self._proc.stdin.close()
@@ -297,22 +304,23 @@ class WorkerProcess:
     @staticmethod
     def _drain_output(
         output_stream: BinaryIO,
-        output_file: BinaryIO,
+        output_path: Path,
         pid: int,
         stream_name: str,
     ) -> None:
         """Persist one Worker output stream and mirror it to the supervisor log."""
-        log = logger.error if stream_name == "stderr" else logger.info
+        log = logger.warning if stream_name == "stderr" else logger.debug
         try:
-            while True:
-                chunk = output_stream.readline()
-                if not chunk:
-                    break
-                output_file.write(chunk)
-                output_file.flush()
-                text = chunk.decode("utf-8", errors="replace").rstrip("\r\n")
-                if text:
-                    log("[Worker %s pid=%s] %s", stream_name, pid, text)
+            with output_path.open("ab", buffering=0) as output_file:
+                while True:
+                    chunk = output_stream.readline()
+                    if not chunk:
+                        break
+                    output_file.write(chunk)
+                    output_file.flush()
+                    text = chunk.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if text:
+                        log("[Worker %s pid=%s] %s", stream_name, pid, text)
         except (OSError, ValueError) as exc:
             logger.warning(
                 "[Supervisor] worker %s drain failed pid=%s: %s",
@@ -323,18 +331,36 @@ class WorkerProcess:
         finally:
             try:
                 output_stream.close()
-            finally:
-                output_file.close()
+            except (OSError, ValueError):
+                pass
+
+    def _close_output_stream(self, stream_name: str) -> None:
+        stream = getattr(self, f"_{stream_name}_stream")
+        if stream is None:
+            return
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
 
     def _join_output_threads(self, timeout: float = 0.5) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
         for stream_name in ("stdout", "stderr"):
             thread = getattr(self, f"_{stream_name}_thread")
             if thread is None or thread is threading.current_thread():
                 continue
-            thread.join(timeout)
+            thread.join(max(0.0, deadline - time.monotonic()))
+            if thread.is_alive():
+                self._close_output_stream(stream_name)
+                thread.join(0.1)
             if not thread.is_alive():
                 setattr(self, f"_{stream_name}_thread", None)
-                setattr(self, f"_{stream_name}_file", None)
+                setattr(self, f"_{stream_name}_stream", None)
+            else:
+                logger.warning(
+                    "[Supervisor] worker %s drain thread did not stop before cleanup",
+                    stream_name,
+                )
 
     async def wait(self, *, timeout: float | None = None) -> int | None:
         """Return the exit code, or ``None`` when ``timeout`` elapses first."""
@@ -345,7 +371,7 @@ class WorkerProcess:
         while True:
             code = proc.poll()
             if code is not None:
-                self._join_output_threads()
+                await asyncio.to_thread(self._join_output_threads)
                 return code
             if deadline is not None:
                 remaining = deadline - time.monotonic()
@@ -358,7 +384,7 @@ class WorkerProcess:
     async def stop(self, *, timeout: float = 5.0) -> None:
         proc = self._proc
         if proc is None or proc.poll() is not None:
-            self._join_output_threads()
+            await asyncio.to_thread(self._join_output_threads)
             return
         deadline = time.monotonic() + max(0.0, timeout)
         proc.terminate()

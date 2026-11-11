@@ -642,7 +642,7 @@ def _proc_start_ticks(pid: int, *, proc_root: Path = Path("/proc")) -> int | Non
     closing_paren = text.rfind(")")
     if closing_paren < 0:
         return None
-    fields = text[closing_paren + 2 :].split()
+    fields = text[closing_paren + 2:].split()
     # The slice starts at field 3 (state); field 22 is starttime, index 19.
     if len(fields) <= 19:
         return None
