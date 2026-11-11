@@ -614,3 +614,62 @@ async def test_strict_file_store_rejects_corruption(tmp_path):
     assert await store.list_jobs() == []
     with pytest.raises(ValueError):
         await store.list_jobs(strict=True)
+
+
+def test_upsert_clears_vendor_identity_omitted_from_payload(catalog_state):
+    """#6440：编辑模型切到自定义供应商时 payload 不携带 vendor 三元组，落库须清除。"""
+    catalog_state["models"]["defaults"][0]["model_client_config"].update({
+        "vendor_key": "deepseek",
+        "plan": "custom_api",
+        "endpoint_profile": "deepseek",
+    })
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_a",
+        "model_client_config": {
+            "model_name": "my-model",
+            "client_provider": "OpenAI",
+            "api_base": "https://my.custom.endpoint/v1",
+        },
+    })
+    mcc = saved["model_client_config"]
+    assert mcc["api_base"] == "https://my.custom.endpoint/v1"
+    assert "vendor_key" not in mcc
+    assert "plan" not in mcc
+    assert "endpoint_profile" not in mcc
+
+
+def test_upsert_keeps_vendor_identity_when_payload_carries_it(catalog_state):
+    """同供应商编辑（payload 携带 vendor_key）时身份保持不变。"""
+    catalog_state["models"]["defaults"][0]["model_client_config"].update({
+        "vendor_key": "deepseek",
+        "plan": "custom_api",
+        "endpoint_profile": "deepseek",
+    })
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_a",
+        "model_client_config": {
+            "vendor_key": "deepseek",
+            "model_name": "deepseek-flash",
+        },
+    })
+    mcc = saved["model_client_config"]
+    assert mcc["vendor_key"] == "deepseek"
+    assert mcc["plan"] == "custom_api"
+    assert mcc["endpoint_profile"] == "deepseek"
+
+
+def test_upsert_explicit_none_vendor_identity_is_cleared(catalog_state):
+    """显式传 None 清除供应商身份时不落 null 值。"""
+    catalog_state["models"]["defaults"][0]["model_client_config"].update({
+        "vendor_key": "deepseek",
+        "plan": "custom_api",
+        "endpoint_profile": "deepseek",
+    })
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_a",
+        "model_client_config": {"vendor_key": None, "model_name": "x"},
+    })
+    mcc = saved["model_client_config"]
+    assert "vendor_key" not in mcc
+    assert "plan" not in mcc
+    assert "endpoint_profile" not in mcc
