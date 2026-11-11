@@ -21,6 +21,7 @@ await build({
     name: 'isolate-personal-context-settings',
     setup(builder) {
       const dependencies = new Map([
+        ['../../features/settings/components/SettingItemRenderer', 'export const SettingItemRenderer = () => null;'],
         ['../../stores', `
           import { useSyncExternalStore } from 'react';
           export const usePersonalContextStore = () => useSyncExternalStore(globalThis.__pcSubscribe, globalThis.__pcSnapshot);
