@@ -1,4 +1,5 @@
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
+import { restoredGitIdentity } from './components/ChatPanel/executionSettings';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
   applyMultiModelCollaborationSnapshot,
@@ -2191,6 +2192,11 @@ function AppContent({
         }
         if (restoredBootstrapMode) {
           useSessionStore.getState().setTeamBootstrapMode(targetSessionId, restoredBootstrapMode);
+        }
+        // 恢复会话时同步独立 Git 身份：后端把 chat.send 提交的设置镜像到 metadata.execution_settings。
+        const restoredIdentity = restoredGitIdentity(sessionRecord);
+        if (restoredIdentity !== undefined) {
+          useSessionStore.getState().setIndependentGitIdentity(targetSessionId, restoredIdentity);
         }
       }
       return session;

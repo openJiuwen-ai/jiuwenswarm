@@ -56,7 +56,6 @@ import ChatModelSelector from './ChatModelSelector';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
-import { restoredGitIdentity, saveIndependentGitIdentity } from './executionSettings';
 import { GitIdentityOption } from './GitIdentityOption';
 import {
   markUploadDispatched,
@@ -1658,46 +1657,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const independentGitIdentity = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.independentGitIdentity ?? false,
   );
-  const gitIdentitySessionRef = useRef(activeSessionId);
-  gitIdentitySessionRef.current = activeSessionId;
-  const [gitIdentityPending, setGitIdentityPending] = useState(false);
-  const [gitIdentityError, setGitIdentityError] = useState(false);
-  useEffect(() => { setGitIdentityError(false); }, [activeSessionId]);
-  useEffect(() => {
-    if (gitIdentityPending || !isTeamMode || workMode !== 'code' || !activeSessionId || activeSessionId === NEW_CONVERSATION_ID) return;
-    let cancelled = false;
-    webRequest<{ settings: { independent_git_identity: boolean }; version: number }>('session.execution_settings', {
-      session_id: activeSessionId,
-      mode: 'team',
-    }).then((result) => {
-      if (!cancelled) {
-        const store = useSessionStore.getState();
-        const draft = store.getRuntime(activeSessionId)?.independentGitIdentity ?? false;
-        store.setIndependentGitIdentity(activeSessionId, restoredGitIdentity(result, draft));
-      }
-    }).catch(() => {
-      if (!cancelled) setGitIdentityError(true);
-    });
-    return () => { cancelled = true; };
-  }, [activeSessionId, isTeamMode, workMode, attachMenuOpen, gitIdentityPending]);
-
-  const toggleIndependentGitIdentity = async (next: boolean) => {
-    if (!activeSessionId || gitIdentityPending) return;
-    const sessionId = activeSessionId;
-    setGitIdentityError(false);
-    if (sessionId === NEW_CONVERSATION_ID) {
-      useSessionStore.getState().setIndependentGitIdentity(sessionId, next);
-      return;
-    }
-    setGitIdentityPending(true);
-    try {
-      const saved = await saveIndependentGitIdentity(webRequest, sessionId, next);
-      useSessionStore.getState().setIndependentGitIdentity(sessionId, saved.settings.independent_git_identity);
-    } catch {
-      if (gitIdentitySessionRef.current === sessionId) setGitIdentityError(true);
-    } finally {
-      setGitIdentityPending(false);
-    }
+  // 开关只改本地会话状态，随下一条 team chat.send 的 execution_settings 下发并由后端提交。
+  const toggleIndependentGitIdentity = (next: boolean) => {
+    if (!activeSessionId) return;
+    useSessionStore.getState().setIndependentGitIdentity(activeSessionId, next);
   };
 
   const appendTaskAsrTranscript = useCallback(
@@ -5045,12 +5008,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                         <GitIdentityOption
                           visible={isTeamMode && workMode === 'code'}
                           checked={independentGitIdentity}
-                          pending={gitIdentityPending}
-                          error={gitIdentityError}
                           label={t('gitIdentity.label')}
                           hint={t('gitIdentity.hint')}
-                          savingLabel={t('common.saving')}
-                          errorLabel={t('gitIdentity.error')}
                           onChange={toggleIndependentGitIdentity}
                         />
                         {isTeamMode && teamScheduledDispatchEnabled && (

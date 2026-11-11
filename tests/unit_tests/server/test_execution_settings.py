@@ -43,29 +43,53 @@ def test_disabled_policy_and_unicode_email() -> None:
 
 
 @pytest.mark.asyncio
-async def test_read_does_not_erase_first_send_draft_and_cas_updates(
+async def test_chat_send_seeds_then_merges_carried_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(policy, "get_session_metadata", lambda *args, **kwargs: {})
-    writes = []
-    monkeypatch.setattr(policy, "persist_settings_mirror", lambda sid, settings: writes.append(settings))
     db = TeamDatabase(DatabaseConfig(connection_string=str(tmp_path / "team.db")))
     try:
-        before = await policy._request_with_database("session", db, {})
-        assert before["version"] == -1
-        assert await db.session_settings.get("session") is None
-        await policy.initialize_settings("session", db, {"independent_git_identity": True})
-        current = await policy._request_with_database("session", db, {})
-        assert current["settings"]["independent_git_identity"] is True
-        saved = await policy._request_with_database("session", db, {
-            "expected_version": current["version"], "settings": {"independent_git_identity": False},
+        seeded = await policy.apply_requested_settings("session", db, {
+            "independent_git_identity": True, "environment": {"BUILD": "debug"},
         })
-        assert saved["version"] == 1
-        with pytest.raises(ValueError, match="refresh"):
-            await policy._request_with_database("session", db, {
-                "expected_version": 0, "settings": {"independent_git_identity": True},
-            })
-        assert writes[-1]["independent_git_identity"] is False
+        assert seeded["version"] == 0
+        unchanged = await policy.apply_requested_settings("session", db, {"independent_git_identity": True})
+        assert unchanged["version"] == 0, "an identical turn must not bump the version"
+        kept = await policy.apply_requested_settings("session", db, None)
+        assert kept == seeded, "a turn without settings keeps the committed policy"
+        updated = await policy.apply_requested_settings("session", db, {"independent_git_identity": False})
+        assert updated["version"] == 1
+        assert updated["settings"] == {"independent_git_identity": False, "environment": {"BUILD": "debug"}}
+        assert await db.session_settings.get("session") == updated
+        with pytest.raises(ValueError):
+            await policy.apply_requested_settings("session", db, {"independent_git_identity": "true"})
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_send_update_retries_after_a_concurrent_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(policy, "get_session_metadata", lambda *args, **kwargs: {})
+    db = TeamDatabase(DatabaseConfig(connection_string=str(tmp_path / "team.db")))
+    try:
+        await policy.initialize_settings("session", db, {"environment": {"A": "1"}})
+        real_initialize = policy.initialize_settings
+
+        async def stale_read(session_id, database, initial=None):
+            current = await real_initialize(session_id, database, initial)
+            # Another writer commits between this read and the CAS.
+            await database.session_settings.replace(
+                session_id, {"independent_git_identity": False, "environment": {"A": "2"}},
+                expected_version=current["version"],
+            )
+            return current
+
+        monkeypatch.setattr(policy, "initialize_settings", stale_read)
+        result = await policy.apply_requested_settings("session", db, {"independent_git_identity": True})
+        assert result["version"] == 2
+        assert result["settings"] == {"independent_git_identity": True, "environment": {"A": "2"}}
     finally:
         await db.close()
 
@@ -128,7 +152,7 @@ async def test_real_git_commits_have_member_authors_and_disabled_fallback(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_preparation_seeds_policy_and_cold_recovery_preserves_update(
+async def test_preparation_seeds_policy_and_later_turns_update(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(policy, "get_session_metadata", lambda *args, **kwargs: {"work_mode": "code"})
@@ -144,32 +168,11 @@ async def test_preparation_seeds_policy_and_cold_recovery_preserves_update(
     try:
         await db.initialize()
         await db.session_settings.replace("session", {"independent_git_identity": False}, expected_version=0)
-        await policy.prepare_session_execution("session", spec, {"independent_git_identity": True})
+        await policy.prepare_session_execution("session", spec, None)
         assert (await db.session_settings.get("session"))["settings"]["independent_git_identity"] is False
-    finally:
-        await db.close()
-
-
-@pytest.mark.asyncio
-async def test_execution_settings_api_uses_live_member_database(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness.team import team_manager
-
-    monkeypatch.setattr(policy, "get_session_metadata", lambda *args, **kwargs: {"work_mode": "code", "mode": "team"})
-    monkeypatch.setattr(policy, "persist_settings_mirror", lambda sid, settings: None)
-    db = TeamDatabase(DatabaseConfig(connection_string=str(tmp_path / "team.db")))
-    manager = SimpleNamespace(get_team_agent=lambda sid: SimpleNamespace(team_backend=SimpleNamespace(db=db)))
-    monkeypatch.setattr(team_manager, "get_team_manager", lambda channel: manager)
-    try:
-        initial = await policy.session_settings_request("session", {}, "web")
-        assert initial["version"] == -1
-        saved = await policy.session_settings_request("session", {
-            "expected_version": -1, "settings": {"independent_git_identity": True},
-        }, "web")
-        assert saved["settings"]["independent_git_identity"] is True
-        monkeypatch.setattr(policy, "get_session_metadata", lambda *args, **kwargs: {"work_mode": "work", "mode": "team"})
-        with pytest.raises(ValueError, match="code team"):
-            await policy.session_settings_request("session", {}, "web")
+        await policy.prepare_session_execution("session", spec, {"independent_git_identity": True})
+        committed = await db.session_settings.get("session")
+        assert committed["settings"]["independent_git_identity"] is True
+        assert committed["version"] == 2
     finally:
         await db.close()

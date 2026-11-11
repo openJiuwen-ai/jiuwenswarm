@@ -6,9 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { GitIdentityOption } from '../node_modules/.cache/execution-settings/GitIdentityOption.mjs';
 
 const props = {
-  visible: true, checked: false, pending: false, error: false,
-  label: '独立 Git 身份', hint: 'Member identity', savingLabel: 'Saving', errorLabel: 'Retry',
-  onChange: () => {},
+  visible: true, checked: false, label: '独立 Git 身份', hint: 'Member identity', onChange: () => {},
 };
 const render = (overrides = {}) => renderToStaticMarkup(React.createElement(GitIdentityOption, { ...props, ...overrides }));
 
@@ -20,10 +18,4 @@ test('renders an accessible unchecked switch by default', () => {
   assert.match(html, /aria-checked="false"/);
   assert.match(html, /独立 Git 身份/);
 });
-test('shows the acknowledged enabled state and disables while saving', () => {
-  const html = render({ checked: true, pending: true });
-  assert.match(html, /aria-checked="true"/);
-  assert.match(html, /disabled=""/);
-  assert.match(html, /aria-label="Saving"/);
-});
-test('failed saves have a visible alert', () => assert.match(render({ error: true }), /role="alert"[^>]*>Retry/));
+test('shows the enabled state', () => assert.match(render({ checked: true }), /aria-checked="true"/));

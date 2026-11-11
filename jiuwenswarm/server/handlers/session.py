@@ -237,34 +237,6 @@ def _try_read_live_plan_mode(agent_manager: Any, session_id: str) -> str | None:
     return None
 
 
-async def handle_session_execution_settings(ctx: RequestContext) -> None:
-    """``session.execution_settings``：读取或更新会话执行策略（独立 Git 身份 / 环境变量）。
-
-    与 WS ``AgentWebSocketServer._handle_session_execution_settings`` 同契约，
-    供 HTTP 南向分发复用。
-    """
-    from jiuwenswarm.server.runtime.session.execution_settings import session_settings_request
-
-    request = ctx.request
-    params = request.params if isinstance(request.params, dict) else {}
-    sid = str(params.get("session_id") or request.session_id or "").strip()
-    try:
-        payload = await session_settings_request(sid, params, request.channel_id)
-        ok = True
-    except (ValueError, RuntimeError) as exc:
-        payload = {"error": str(exc), "code": "BAD_REQUEST"}
-        ok = False
-    resp = AgentResponse(
-        request_id=request.request_id,
-        channel_id=request.channel_id,
-        ok=ok,
-        payload=payload,
-        metadata=request.metadata,
-    )
-    resp.agent_ref = request.agent_ref
-    await ctx.sink.send_response(resp)
-
-
 async def handle_session_plan_status(ctx: RequestContext) -> None:
     """``session.plan_status``：只读查询当前会话是否处于计划模式。
 

@@ -3528,9 +3528,6 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.SESSION_SWITCH:
                 await self._handle_session_switch(ws, request, send_lock)
                 return
-            if request.req_method == ReqMethod.SESSION_EXECUTION_SETTINGS:
-                await self._handle_session_execution_settings(ws, request, send_lock)
-                return
             if request.req_method == ReqMethod.SESSION_PLAN_STATUS:
                 await self._handle_session_plan_status(ws, request, send_lock)
                 return
@@ -4333,31 +4330,6 @@ class AgentWebSocketServer:
     @staticmethod
     def _session_may_hold_plan_state(request: AgentRequest, session_id: str) -> bool:
         return _SERVER_PLAN_CONTROLLER.may_hold_state(request, session_id)
-
-    async def _handle_session_execution_settings(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock,
-    ) -> None:
-        """Read or update the authenticated session's execution policy."""
-        from jiuwenswarm.server.runtime.session.execution_settings import session_settings_request
-
-        params = request.params if isinstance(request.params, dict) else {}
-        sid = str(params.get("session_id") or request.session_id or "").strip()
-        try:
-            payload = await session_settings_request(sid, params, request.channel_id)
-            ok = True
-        except (ValueError, RuntimeError) as exc:
-            payload = {"error": str(exc), "code": "BAD_REQUEST"}
-            ok = False
-        resp = AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=ok,
-            payload=payload,
-            metadata=request.metadata,
-        )
-        resp.agent_ref = request.agent_ref
-        async with send_lock:
-            await send_wire_payload(ws, encode_agent_response_for_wire(resp, response_id=request.request_id))
 
     async def _handle_session_plan_status(
         self,

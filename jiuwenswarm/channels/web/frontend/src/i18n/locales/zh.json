@@ -48,8 +48,7 @@
   },
   "gitIdentity": {
     "label": "独立 Git 身份",
-    "hint": "使用成员名称和 @jiuwenswarm.com 邮箱署名 Git 提交；切换后对新工具调用生效。",
-    "error": "设置未同步，请重试。"
+    "hint": "使用成员名称和 @jiuwenswarm.com 邮箱署名 Git 提交；切换后从下一条消息起生效。"
   },
   "common": {
     "searchName": "搜索名称",

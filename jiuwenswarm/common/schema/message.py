@@ -174,8 +174,6 @@ _ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
 # registry entry it created (see session_assets.py). The pinned protocol
 # package does not define this member yet.
 _ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
-# Team-session execution policy (independent Git identity / environment).
-_ensure_req_method("SESSION_EXECUTION_SETTINGS", "session.execution_settings")
 # Hub expert/equipment catalog served by AgentServer (dispatch.py / methods.py /
 # http_invoke.py reference this member); 协议包当前 pin 尚未定义。
 _ensure_req_method("HUB_EXPERT_PACKAGES_CATALOG", "hub.expert_packages.catalog")

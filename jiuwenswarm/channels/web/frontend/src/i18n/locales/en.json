@@ -48,8 +48,7 @@
   },
   "gitIdentity": {
     "label": "Independent Git identity",
-    "hint": "Sign Git commits with each member name and an @jiuwenswarm.com email. Changes apply to new tool calls.",
-    "error": "Settings could not be synchronized. Please retry."
+    "hint": "Sign Git commits with each member name and an @jiuwenswarm.com email. Takes effect from the next message."
   },
   "common": {
     "searchName": "Search names",
