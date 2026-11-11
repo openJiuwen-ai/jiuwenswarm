@@ -4848,9 +4848,8 @@ class JiuWenSwarm:
         # 只有最后一个非工具轮非空 final（=推荐话术）落盘带 source/rec_id——否则刷新
         # 后 history 里每一条 chat.final 都带 rec_id，被渲染成多张推荐卡片（bug）。
         # "最后一个"要等流结束才能确定，故缓存话术轮候选、流末补落。
-        is_proactive_request = bool(
-            request.params.get("source") == "proactive_recommendation"
-        )
+        # Proactive recommendation engine removed; never inject recommendation cards.
+        is_proactive_request = False
         proactive_pending_final: dict[str, Any] | None = None
         # 自上一个 chat.final 以来是否出现过 chat.tool_call（用于识别工具轮总结 final）。
         saw_proactive_tool_call_since_final = False
