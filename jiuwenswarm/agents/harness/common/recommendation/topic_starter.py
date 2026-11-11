@@ -19,9 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
-    _extract_json_from_response,
-    _extract_output_text,
+from jiuwenswarm.agents.harness.common.recommendation.llm_helpers import (
+    extract_json_from_response,
+    extract_output_text,
 )
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
@@ -817,7 +817,7 @@ async def _invoke_json(agent: Any, prompt: str, conversation_prefix: str) -> dic
             result = await agent.invoke({"query": prompt}, session=session)
         else:
             result = await agent.invoke({"query": prompt, "conversation_id": conversation_id})
-        candidate = _extract_json_from_response(_extract_output_text(result))
+        candidate = extract_json_from_response(extract_output_text(result))
         parsed = json.loads(candidate)
         return parsed if isinstance(parsed, dict) else None
     except Exception as exc:  # noqa: BLE001
@@ -1901,8 +1901,8 @@ def _build_topic_starter_agents() -> tuple[Any, Any, Any]:
     from openjiuwen.core.single_agent import AgentCard
     from openjiuwen.harness.factory import create_deep_agent
 
-    from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
-        _get_model,
+    from jiuwenswarm.agents.harness.common.recommendation.llm_helpers import (
+        get_recommendation_model,
     )
     from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import (
         mcp_free_search,
@@ -1924,7 +1924,7 @@ def _build_topic_starter_agents() -> tuple[Any, Any, Any]:
             timeout_seconds=timeout_seconds,
         )
 
-    model = _get_model(temperature=0.0)
+    model = get_recommendation_model(temperature=0.0)
     if model is None:
         return None, None, fetch_page
     curator = create_deep_agent(

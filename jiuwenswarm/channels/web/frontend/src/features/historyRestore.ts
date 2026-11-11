@@ -7,7 +7,6 @@ import { describeChatError } from './free-models/chatError';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { extractAutomation } from '../utils/heartbeatAutomation';
-import { proactiveAssistantMessageId } from '../utils/proactiveRecommendation';
 import {
   crossSessionAssistantMessageId,
   crossSessionUserMessageId,
@@ -1297,23 +1296,16 @@ function parseSessionHistoryTimelineEntry(
         },
       };
     }
-    // 主动推荐消息：从历史记录还原 source/proactive_type，使刷新后仍按
-    // ProactiveRecommendationCard 渲染（否则会退化为普通白色气泡）。
-    const histSource = typeof payload.source === 'string' ? payload.source : '';
-    const isProactiveRecommendation = histSource === 'proactive_recommendation';
-    const histProactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : '';
-    const agentTemplateName = isProactiveRecommendation
-      ? undefined
-      : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
-    // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
-    const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
+    // Scheduled proactive recommendation history is no longer restored into the chat UI.
+    if (isProactiveRecommendationRecord(record) || isProactiveRecommendationRecord(payload)) {
+      return null;
+    }
+    const agentTemplateName = readAgentTemplateName(payload) ?? readAgentTemplateName(record);
     const assistantCrossSession =
       extractCrossSessionMessage(payload) ?? extractCrossSessionMessage(record);
     const id = assistantCrossSession
       ? crossSessionAssistantMessageId(record.request_id, assistantCrossSession.messageId)
-      : isProactiveRecommendation && histProactiveRecId
-        ? proactiveAssistantMessageId(histProactiveRecId)
-        : restoredId;
+      : restoredId;
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const recordCompletedAtMs = parseTimestampToMs(record.completed_at);
     const completedAtMs = Number.isFinite(recordCompletedAtMs)
@@ -1339,12 +1331,7 @@ function parseSessionHistoryTimelineEntry(
           ? { keepExpanded: true }
           : {}),
         ...(completedAt ? { completedAt, outputReplayUntil: completedAtMs } : {}),
-        ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
-        ...(isProactiveRecommendation && histProactiveType
-          ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
-          : {}),
         ...(agentTemplateName ? { agentTemplateName } : {}),
-        ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
         ...(assistantCrossSession ? { crossSession: assistantCrossSession } : {}),
         // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
         // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
