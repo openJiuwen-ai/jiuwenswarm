@@ -237,11 +237,11 @@ and returns a visible failure/degraded result when exhausted. Confirm script
 branches follow the template's mixed-pool fail/undecided precedence. Account
 for one agent call per reviewer.
 
-Read votes only through the engine's fields (see the template's verify block):
-kind / decision / score / feedback / role / label (no `name`). `label` is the
-reviewer instance name, `role` the business role; a reviewer that did not vote
-still occupies a vote with decision/score None. `build_reviewers` must be
-imported explicitly from `openjiuwen.agent_teams.workflow.review`.
+Read the result through the documented fields: `VerifyResult{verdict, passed,
+votes, feedback}` and `VerifyVote{kind, decision, score, feedback, role, label}`
+(no `name`; `label` is the reviewer instance name, `role` the reviewer type).
+`build_reviewers` must be imported explicitly from
+`openjiuwen.agent_teams.workflow.review`.
 
 ### B17. Forks preserve session ownership
 
