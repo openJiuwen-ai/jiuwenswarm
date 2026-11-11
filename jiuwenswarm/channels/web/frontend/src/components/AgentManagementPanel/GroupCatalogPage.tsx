@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isEnterprise } from '../../edition';
 import { useTranslation } from 'react-i18next';
+import { marketplaceCategoryLabel } from '../marketplace/categoryLabel';
 import type { AgentGroupCatalogItem, RequestStatus } from '../../features/agentManagement';
 import { CategoryTabs, EmptyState } from '../ui';
 // 深引入而非 ../ui barrel：本组件会被 esbuild 独立打包进测试
@@ -120,7 +121,7 @@ export function GroupCatalogPage({
               { value: '', label: t('agentManagement.categoryAll') },
               ...categories.map((item) => ({
                 value: item,
-                label: t(`agentManagement.categories.${item}`, { defaultValue: item }),
+                label: marketplaceCategoryLabel(t, item, 'agentManagement'),
               })),
             ]}
             value={category}

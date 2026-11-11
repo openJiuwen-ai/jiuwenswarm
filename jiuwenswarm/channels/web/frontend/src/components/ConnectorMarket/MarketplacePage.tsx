@@ -4,6 +4,7 @@ import { catalogCacheOf } from '../../features/catalogCache';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { marketplaceCategoryLabel } from '../marketplace/categoryLabel';
 // 深引入而非 ../ui barrel：本组件经 esbuild 独立打包进测试
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { useConnectorStore } from '../../stores/connectorStore';
@@ -302,7 +303,7 @@ export function MarketplacePage({
     const hasOther = packages.some((pkg) => !pluginTopCategorySet.has(pkg.category.trim()));
     const tabs = [
       { value: 'all', label: t('connectorMarket.categories.all') },
-      ...pluginTopCategories.map((key) => ({ value: key, label: t(`connectorMarket.categories.${key}`, key) })),
+      ...pluginTopCategories.map((key) => ({ value: key, label: marketplaceCategoryLabel(t, key, 'connectorMarket') })),
     ];
     if (hasOther) tabs.push({ value: 'other', label: t('connectorMarket.categories.other') });
     return tabs;

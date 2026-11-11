@@ -3,6 +3,7 @@ import { isEnterprise } from '../../edition';
 import { LoaderCircle } from 'lucide-react';
 
 import { useTranslation } from 'react-i18next';
+import { marketplaceCategoryLabel } from '../marketplace/categoryLabel';
 import { type AgentCatalogItem, type RequestStatus } from '../../features/agentManagement';
 import { getAgentAvatarUrl } from '../../features/agentManagement';
 import { CategoryTabs, EmptyState, PageCard } from '../ui';
@@ -131,7 +132,7 @@ export function CatalogPage({
               { value: '', label: t('agentManagement.categoryAll') },
               ...categories.map((item) => ({
                 value: item,
-                label: t(`agentManagement.categories.${item}`, { defaultValue: item }),
+                label: marketplaceCategoryLabel(t, item, 'agentManagement'),
               })),
             ]}
             value={category}
