@@ -358,6 +358,36 @@ def _capture_logs(caplog):
             logger.removeHandler(caplog.handler)
 
 
+@pytest.mark.asyncio
+async def test_worker_process_persists_stdout_and_stderr(tmp_path, monkeypatch):
+    """Capture both Worker output streams in the private worker log directory."""
+    monkeypatch.setattr(
+        process_module,
+        "build_worker_command",
+        lambda *args, **kwargs: [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "print('stdout diagnostic', flush=True); "
+                "print('stderr diagnostic', file=sys.stderr, flush=True)"
+            ),
+        ],
+    )
+    process = process_module.WorkerProcess(
+        str(tmp_path / "worker.pipe"),
+        host="127.0.0.1",
+        port=18092,
+    )
+
+    await process.spawn()
+    assert await process.wait(timeout=5) == 0
+
+    assert process.stdout_path.parent == process.stderr_path.parent
+    assert process.stdout_path.read_text(encoding="utf-8") == "stdout diagnostic\n"
+    assert process.stderr_path.read_text(encoding="utf-8") == "stderr diagnostic\n"
+
+
 @asynccontextmanager
 async def _worker(mode, tmp_path, monkeypatch, *, max_restarts=0):
     fixture = Path(__file__).parent / "fixtures" / "diagnostic_worker.py"
@@ -1030,6 +1060,8 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:
                 await asyncio.wait_for(attached.wait(), 2)
+                pid = supervisor.worker_pid
+                assert pid is not None
                 await asyncio.wait_for(
                     supervisor.dispatch_parsed_request(
                         gateway["ws"],
@@ -1044,6 +1076,13 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
         assert "Traceback" in stderr and "WorkerForceExit" in stderr
         assert "injected diagnostic exit" in stderr
         assert "fatal exit" in stderr
+        if supervisor._ipc_mode == supervisor_module.FRONT_LOOPBACK:
+            async with asyncio.timeout(15):
+                while (
+                    f"[Worker stderr pid={pid}]" not in caplog.text
+                    or "injected diagnostic exit" not in caplog.text
+                ):
+                    await asyncio.sleep(0.05)
         (tmp_path / "acceptance.json").write_text(
             json.dumps(
                 {
