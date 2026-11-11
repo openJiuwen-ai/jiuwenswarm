@@ -36,7 +36,10 @@ export function filterSkillSuggestions<
   return skills.filter((skill) => {
     const supported = isTeamMode
       ? skill.skill_type === 'swarm_skill'
-      : !skill.skill_type || skill.skill_type === 'skill' || (!forCommand && skill.skill_type === 'skillpack');
+      : !skill.skill_type
+        || skill.skill_type === 'skill'
+        || skill.skill_type === 'multimodal_skill'
+        || (!forCommand && skill.skill_type === 'skillpack');
     return (
       supported &&
       (!normalizedQuery ||
