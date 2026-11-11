@@ -13,7 +13,10 @@ import yaml
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
 )
-from jiuwenswarm.common.config import is_subagent_runtime_enabled
+from jiuwenswarm.common.config import (
+    is_subagent_runtime_enabled,
+    subagent_runtime_limits,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _agent_ras_kwargs_from_config,
@@ -31,7 +34,46 @@ def test_shipped_template_subagent_runtime_enabled_by_default() -> None:
     )
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["react"]["subagent_runtime"]["enabled"] is True
+    assert config["react"]["subagent_runtime"]["max_spawn_depth"] == 2
+    assert config["react"]["subagent_runtime"]["max_concurrent_running"] == 20
+    assert config["react"]["subagent_runtime"]["max_subagents"] == 20
     assert is_subagent_runtime_enabled(config) is True
+    assert subagent_runtime_limits(config) == {
+        "max_spawn_depth": 2,
+        "max_concurrent_running": 20,
+        "max_subagents": 20,
+    }
+
+
+def test_subagent_runtime_limits_defaults_and_rejects_bad_pairs() -> None:
+    assert subagent_runtime_limits({}) == {
+        "max_spawn_depth": 2,
+        "max_concurrent_running": 20,
+        "max_subagents": 20,
+    }
+    with pytest.raises(ValueError, match="max_spawn_depth"):
+        subagent_runtime_limits({"react": {"subagent_runtime": {"max_spawn_depth": 0}}})
+    with pytest.raises(ValueError, match="max_subagents"):
+        subagent_runtime_limits(
+            {"react": {"subagent_runtime": {"max_subagents": 1, "max_concurrent_running": 5}}}
+        )
+    with pytest.raises(ValueError, match="must be >= 1"):
+        subagent_runtime_limits(
+            {"react": {"subagent_runtime": {"max_concurrent_running": 0}}}
+        )
+    with pytest.raises(ValueError, match="must be an integer"):
+        subagent_runtime_limits(
+            {"react": {"subagent_runtime": {"max_concurrent_running": False}}}
+        )
+    with pytest.raises(ValueError, match="must be an integer"):
+        subagent_runtime_limits(
+            {"react": {"subagent_runtime": {"max_spawn_depth": 0.9}}}
+        )
+    numeric = subagent_runtime_limits(
+        {"react": {"subagent_runtime": {"max_concurrent_running": "20", "max_subagents": "20"}}}
+    )
+    assert numeric["max_concurrent_running"] == 20
+    assert numeric["max_subagents"] == 20
 
 
 def test_is_subagent_runtime_enabled_defaults_off() -> None:
@@ -159,6 +201,82 @@ def test_code_mode_create_instance_passes_agent_ras_kwargs() -> None:
 
     source = inspect.getsource(JiuwenSwarmCodeAdapter.create_instance)
     assert "**_agent_ras_kwargs_from_config(config_base)" in source
+    assert "_bind_subagent_runtime_config(config_base)" in source
+
+
+def test_bind_runtime_limits_uses_instance_config_and_survives_bad_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common import config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "get_config",
+        lambda: {
+            "react": {
+                "subagent_runtime": {
+                    "max_spawn_depth": 1,
+                    "max_concurrent_running": 4,
+                    "max_subagents": 4,
+                }
+            }
+        },
+    )
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = SimpleNamespace()
+    adapter._bind_subagent_runtime_config(
+        {
+            "react": {
+                "subagent_runtime": {
+                    "max_spawn_depth": 2,
+                    "max_concurrent_running": 20,
+                    "max_subagents": 20,
+                }
+            }
+        }
+    )
+    bound = adapter._instance.subagent_runtime_config
+    assert bound.max_concurrent_running == 20
+    assert bound.max_subagents == 20
+
+    broken = JiuWenSwarmDeepAdapter()
+    broken._instance = SimpleNamespace()
+    broken._bind_subagent_runtime_config(
+        {"react": {"subagent_runtime": {"max_spawn_depth": 0}}}
+    )
+    assert not hasattr(broken._instance, "subagent_runtime_config")
+
+
+def test_bind_runtime_limits_warns_when_sdk_drops_a_key(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from dataclasses import dataclass
+
+    import openjiuwen.harness.subagent_runtime.config as sdk_config
+
+    @dataclass
+    class _OldRuntimeConfig:
+        max_subagents: int = 10
+        max_concurrent_running: int = 10
+
+    monkeypatch.setattr(sdk_config, "SubagentRuntimeConfig", _OldRuntimeConfig)
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = SimpleNamespace()
+    with caplog.at_level("WARNING"):
+        adapter._bind_subagent_runtime_config(
+            {
+                "react": {
+                    "subagent_runtime": {
+                        "max_spawn_depth": 2,
+                        "max_concurrent_running": 20,
+                        "max_subagents": 20,
+                    }
+                }
+            }
+        )
+    assert "max_spawn_depth" in caplog.text
+    assert adapter._instance.subagent_runtime_config.max_concurrent_running == 20
 
 
 def test_optional_enable_subagent_runtime_follows_deep_agent_config_signature() -> None:

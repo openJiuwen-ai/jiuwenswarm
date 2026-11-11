@@ -67,6 +67,8 @@ export interface ModelEntry {
    * 新增条目不带此字段。
    */
   origin_index?: number;
+  /** RSI 模型目录中的免费模型标识；仅用于前端展示分组。 */
+  is_free?: boolean;
 }
 
 export interface OffloadFileListResponse {

@@ -171,6 +171,23 @@ _SUBAGENT_UPDATED_WEB_GOLDEN = {
 }
 
 
+def test_subagent_updated_keeps_lineage_fields() -> None:
+    payload = project_subagent_updated_for_web(
+        {
+            "subagent_id": "sa-1",
+            "parent_session_id": "parent1",
+            "status": "running",
+            "display_name": "Explore",
+            "parent_id": "gp-1",
+            "depth": 2,
+            "descendant_count": 0,
+        }
+    )
+    assert payload["parent_id"] == "gp-1"
+    assert payload["depth"] == 2
+    assert payload["descendant_count"] == 0
+
+
 def test_subagent_updated_payload_golden() -> None:
     """Origin: 自拟 §6.H. Projection payload contract beside the WS-shaped sequence."""
     payload = project_subagent_updated_for_web(

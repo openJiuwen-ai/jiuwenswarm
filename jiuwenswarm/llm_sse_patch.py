@@ -888,7 +888,22 @@ def _resolve_model_http_purpose(kwargs: dict) -> str:
 
 
 async def _trigger_before_model_http(client: Any, kwargs: dict) -> None:
+    mcc = getattr(client, "model_client_config", None)
+    mc = getattr(client, "model_config", None)
+    await apply_model_http_hook(
+        api_base=str(getattr(mcc, "api_base", "") or ""),
+        model_name=str(getattr(mc, "model_name", "") or ""),
+        kwargs=kwargs,
+    )
+
+
+async def apply_model_http_hook(
+    *, api_base: str, model_name: str, kwargs: dict,
+    request_scope: tuple[str, str] | None = None,
+) -> None:
     """触发 ``before_model_http`` 埋点并把扩展口袋合并进本次调用。
+
+    模型出口和隔离 DeepResearch 子进程启动路径共用过滤与失败语义。
 
     - 扩展框架不可导入或 registry 未初始化（``trigger_if_initialized``
       返回 False）：零副作用跳过；
@@ -906,14 +921,11 @@ async def _trigger_before_model_http(client: Any, kwargs: dict) -> None:
         logger.debug("[before_model_http] extension framework unavailable, skip")
         return
 
-    mcc = getattr(client, "model_client_config", None)
-    mc = getattr(client, "model_config", None)
     ctx = ModelHttpHookContext(
-        # api_base 来自 ModelClientConfig（与 x-span-id 补丁同源）；
-        # model_name 来自 ModelRequestConfig（base 客户端组参同源）
-        api_base=str(getattr(mcc, "api_base", "") or ""),
-        model_name=str(getattr(mc, "model_name", "") or ""),
+        api_base=api_base,
+        model_name=model_name,
         purpose=_resolve_model_http_purpose(kwargs),
+        request_scope=request_scope,
     )
     try:
         triggered = await ExtensionRegistry.trigger_if_initialized(
@@ -922,17 +934,20 @@ async def _trigger_before_model_http(client: Any, kwargs: dict) -> None:
     except Exception:
         logger.warning(
             "[before_model_http] handler failed; send request without hook attrs",
-            exc_info=True,
+            exc_info=request_scope is None,
         )
         return
     if not triggered:
         return
     try:
+        if request_scope is not None:
+            ctx.headers = ctx.scoped_headers
+            ctx.extra_body = {}
         _merge_model_http_hook_ctx(ctx, kwargs)
     except Exception:
         logger.warning(
             "[before_model_http] merge hook attrs failed; send without them",
-            exc_info=True,
+            exc_info=request_scope is None,
         )
 
 
