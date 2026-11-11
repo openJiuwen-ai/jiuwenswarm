@@ -1163,7 +1163,12 @@
       "cua_agent_enabled": {
         "title": "启用电脑操控",
         "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
-        "unavailableDescription": "当前环境不支持电脑操控。"
+        "unavailableDescription": "当前环境不支持电脑操控。",
+        "unavailableReasons": {
+          "native_build_failed": "电脑操作暂不可用，安装时未能编译 computer-use 驱动。",
+          "backend_missing": "未找到可用的电脑操作驱动。",
+          "unsupported_platform": "当前操作系统或版本不支持电脑操控。"
+        }
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
