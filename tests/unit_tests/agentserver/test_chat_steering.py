@@ -658,3 +658,104 @@ async def test_non_owner_stream_preserves_original_steering_binding(
     assert outputs == [{"event_type": "runtime.accepted"}]
     assert original.active
     assert (await control.handle(control_request(), query=False))["status"] == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# steer 携带 files:合并进活跃清单 + 引用行追加(wire 原文与幂等摘要不受影响)
+# ---------------------------------------------------------------------------
+
+def _steer_files():
+    return [{"type": "image", "name": "new.png", "path": "/tmp/new.png"}]
+
+
+@pytest.mark.asyncio
+async def test_steer_files_merge_into_manifest_and_append_reference_lines():
+    control, _, agent, _ = session()
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "accepted"
+    kwargs = agent.steer_active.await_args.kwargs
+    assert kwargs["content"].startswith("Only analyse East China")
+    assert "[image #1] path=/tmp/new.png filename=new.png mime=image/png" in kwargs["content"]
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    manifest = current_multimodal_image_files_from_agent(agent)
+    assert manifest and manifest[0]["path"] == "/tmp/new.png"
+
+
+@pytest.mark.asyncio
+async def test_steer_files_dedupe_against_existing_manifest():
+    control, _, agent, _ = session()
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        store_current_multimodal_image_files_on_agent,
+    )
+
+    store_current_multimodal_image_files_on_agent(
+        agent,
+        [
+            {
+                "type": "image",
+                "filename": "new.png",
+                "path": "/tmp/new.png",
+                "mime_type": "image/png",
+            }
+        ],
+    )
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "accepted"
+    kwargs = agent.steer_active.await_args.kwargs
+    assert kwargs["content"] == "Only analyse East China"
+
+
+@pytest.mark.asyncio
+async def test_steer_without_files_keeps_content_unchanged():
+    control, _, agent, _ = session()
+    await control.handle(control_request(), query=False)
+    agent.steer_active.assert_awaited_once_with(
+        active_request_id="run-1", input_id="input-1", content="Only analyse East China"
+    )
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        "not-a-list",
+        [{"nope": 1}],
+        [{"type": "image", "path": ""}],
+        [{"type": "image", "path": "x" * 513}],
+        [{"type": "image", "path": f"/tmp/{i}.png"} for i in range(17)],
+    ],
+)
+def test_steer_validate_rejects_malformed_files(files):
+    from jiuwenswarm.server.handlers.steering import _validate
+
+    params = dict(control_request().params)
+    params["files"] = files
+    assert _validate(params, query=False) == "CONTENT_UNSUPPORTED"
+
+
+def test_steer_validate_allows_files_with_valid_shape():
+    from jiuwenswarm.server.handlers.steering import _validate
+
+    params = dict(control_request().params)
+    params["files"] = _steer_files()
+    assert _validate(params, query=False) is None
+
+
+def test_steer_validate_rejects_files_on_status_query():
+    from jiuwenswarm.server.handlers.steering import _validate
+
+    params = dict(control_request(query=True).params)
+    params.pop("client_message_id", None)
+    params.pop("content", None)
+    params["files"] = _steer_files()
+    assert _validate(params, query=True) == "INVALID_REQUEST"
+
+
+def test_steer_validate_still_rejects_other_attachment_shapes():
+    from jiuwenswarm.server.handlers.steering import _validate
+
+    params = dict(control_request().params)
+    params["attachments"] = [{"path": "/tmp/a.png"}]
+    assert _validate(params, query=False) == "CONTENT_UNSUPPORTED"

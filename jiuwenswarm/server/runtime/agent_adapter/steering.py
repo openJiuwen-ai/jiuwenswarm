@@ -47,6 +47,118 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+_MAX_STEER_IMAGE_FILES = 16
+_STEER_CONTENT_LIMIT = 32000
+
+
+def _extract_steer_image_files(files: Any) -> list[dict[str, Any]]:
+    """Normalize the wire steer ``files`` payload into image-file records.
+
+    wire 形态（relay 下发的 list[{type,name,path,uri}]）：``name`` → ``filename``
+    映射后复用请求级提取器；非 image 类型 / 空 path / 非 inline mime 会被过滤。
+    """
+    if not isinstance(files, list) or not files:
+        return []
+    mapped: list[Any] = []
+    for item in files[:_MAX_STEER_IMAGE_FILES]:
+        if isinstance(item, dict) and not item.get("filename") and item.get("name"):
+            item = {**item, "filename": str(item["name"])}
+        mapped.append(item)
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        extract_multimodal_image_files,
+    )
+
+    return extract_multimodal_image_files({"files": mapped})
+
+
+def _live_manifest(agent: Any) -> list[dict[str, Any]]:
+    """读 agent 当前的上传清单（live 通道优先）。
+
+    - live harness ``build_context.request_metadata``（team：成员/leader rail 每轮
+      从同一 build context 重建时读取的通道）；
+    - agent 实例镜像（deep 单代理 rail 的实时读取通道）。
+    两处按 path 去重合并；都读不到时返回空列表。
+    """
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+        normalize_image_path,
+        team_request_image_files,
+    )
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add(images: Any) -> None:
+        if not isinstance(images, list):
+            return
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            key = normalize_image_path(str(image.get("path") or ""))
+            if key and key not in seen:
+                seen.add(key)
+                merged.append(image)
+
+    try:
+        harness = getattr(agent, "harness", None)
+        build_context = getattr(harness, "build_context", None)
+        metadata = getattr(build_context, "request_metadata", None)
+        _add(team_request_image_files(metadata))
+    except Exception:  # pragma: no cover - 防御性读取
+        pass
+    _add(current_multimodal_image_files_from_agent(agent))
+    return merged
+
+
+def _apply_steer_image_files(
+    runtime: Any, content: str, image_files: list[dict[str, Any]]
+) -> str:
+    """把 steer 携带的图片合并进活跃清单，并在 content 追加引用行。
+
+    清单双写（与普通消息的非首轮上传同一组通道，见 ``team_helpers``）：
+    - live harness ``request_metadata``：后续轮 NativeHarness 重建时 provider 从
+      同一 build context 构造 rail，读到合并后的清单（成员同样生效）；
+    - agent 实例镜像：未绑定清单的 rail（deep 单代理）实时读取，本轮即可物化。
+    引用行追加进 steer content：本轮执行中模型至少拿到文本引用行 + read_file 取回
+    通道。content 超出 inbox 的 32k 硬校验预算时仅保留清单、舍弃引用行。
+    """
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        build_image_reference_line,
+        normalize_image_path,
+        store_current_multimodal_image_files_on_agent,
+    )
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+        _bind_round_image_files_to_agent,
+    )
+
+    existing = _live_manifest(runtime)
+    seen = {normalize_image_path(str(image.get("path") or "")) for image in existing}
+    fresh = [
+        image
+        for image in image_files
+        if normalize_image_path(str(image.get("path") or "")) not in seen
+    ]
+    if not fresh:
+        return content
+    merged = existing + fresh
+    try:
+        store_current_multimodal_image_files_on_agent(runtime, merged)
+    except Exception:  # pragma: no cover - 冻结实例等写入失败时仅靠 build context
+        pass
+    try:
+        _bind_round_image_files_to_agent(runtime, merged)
+    except Exception:  # pragma: no cover - 非 team runtime 无 harness 时为 no-op
+        pass
+    lines = [
+        build_image_reference_line(image, len(existing) + offset)
+        for offset, image in enumerate(fresh, start=1)
+    ]
+    enriched = content.rstrip() + "\n" + "\n".join(lines)
+    if len(enriched) > _STEER_CONTENT_LIMIT:
+        return content
+    return enriched
+
+
 @dataclass
 class _Input:
     digest: str
@@ -242,12 +354,17 @@ class SteeringSession:
             # same input ID queryable, instead of encouraging a duplicate send.
             binding.inputs[input_id] = item
             binding.client_ids[client_id] = input_id
+            # 幂等摘要仍按 wire 原文 content 计算；补充图片仅影响投递内容。
+            content = params["content"]
+            steer_images = _extract_steer_image_files(params.get("files"))
+            if steer_images:
+                content = _apply_steer_image_files(runtime, content, steer_images)
             try:
                 result = normalize_result(
                     await runtime.steer_active(
                         active_request_id=runtime_id,
                         input_id=input_id,
-                        content=params["content"],
+                        content=content,
                     )
                 )
             except Exception:
