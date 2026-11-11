@@ -564,7 +564,7 @@ function isSseContentType(contentType: string | null | undefined): boolean {
 }
 
 /**
- * HTTP unary ``chat.interrupt`` 把 ``accepted`` 与 ``interrupt_result`` 合在同一 JSON body。
+ * HTTP unary ``chat.interrupt`` 等待最终 ``interrupt_result``，而不只返回 ``accepted`` ACK。
  * 只在 Gateway 明确给出 ``event_type`` 时映射为 WS 事件，前端不伪造 success。
  */
 export function interruptUnaryToEvents(payload: unknown, requestId?: string): WsEvent | null {
@@ -1115,7 +1115,7 @@ export class WebHttpClient {
       if (!assembled) {
         return;
       }
-      await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
+      const response = await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
         method: assembled.verb,
         headers: {
           ...this.identityHeaders(requestId, { session_id: sessionId }),
@@ -1123,6 +1123,12 @@ export class WebHttpClient {
         },
         body: JSON.stringify(assembled.jsonBody ?? { intent: 'cancel' }),
       });
+      const payload = await this.readUnaryPayload(response, requestId);
+      const event = interruptUnaryToEvents(payload, requestId);
+      if (event) {
+        event.payload.session_id ??= sessionId;
+        this.dispatchEvent(event);
+      }
     } catch {
       // 打断失败不掩盖本次 abort
     }
