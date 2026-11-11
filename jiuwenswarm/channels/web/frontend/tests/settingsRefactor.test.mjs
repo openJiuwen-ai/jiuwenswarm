@@ -1425,9 +1425,10 @@ test('search credential fields are optional so keys can be cleared', () => {
   assert.match(agentSettings, /<Form form=\{form\} items=\{items\}/);
 });
 
-test('multimodal dialogs reuse provider-first model configuration without model testing or account login', () => {
+test('multimodal dialogs reuse provider-first model configuration; topic probes like chat models', () => {
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
   const dialog = source('src/features/settings/modules/agent/MediaModelConfigDialog.tsx');
+  const mediaConfig = source('src/features/settings/modules/agent/mediaModelConfig.ts');
   assert.match(agentSettings, /<MediaModelConfigDialog/);
   assert.match(dialog, /<ModelProviderSelect/);
   assert.match(dialog, /includeOpenAIAccount=\{false\}/);
@@ -1435,7 +1436,11 @@ test('multimodal dialogs reuse provider-first model configuration without model 
   assert.match(dialog, /'vendors\.list'/);
   assert.match(dialog, /'vendors\.fetch_models'/);
   assert.match(dialog, /showOptional=\{false\}/);
-  assert.doesNotMatch(dialog, /config\.validate_model|OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/);
+  // Vision/audio/video stay form-only; topic chat LLMs reuse config.validate_model.
+  assert.match(dialog, /probeBeforeSave = modality === 'topic'/);
+  assert.match(dialog, /'config\.validate_model'/);
+  assert.match(mediaConfig, /buildMediaModelValidationPayload/);
+  assert.doesNotMatch(dialog, /OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/);
 });
 
 test('legacy multimodal configuration remains custom while provider selections persist exact catalog identity', () => {

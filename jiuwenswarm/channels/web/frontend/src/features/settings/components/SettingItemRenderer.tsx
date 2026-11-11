@@ -11,7 +11,7 @@ import { SettingRow } from './SettingRow';
 
 type EditingChange = (id: string, editing: boolean) => void;
 
-function settingFieldKey(key: string, suffix: 'title' | 'description' | 'placeholder'): string {
+function settingFieldKey(key: string, suffix: 'title' | 'description' | 'placeholder' | 'unavailableDescription'): string {
   return `settingsPanel.fields.${key}.${suffix}`;
 }
 
@@ -129,6 +129,8 @@ function SimpleSettingItem({
   if (item.component === 'switch') {
     const Configuration = item.configure;
     const checked = parseConfigBoolean(source.values[item.key]);
+    const unavailable = item.availableWhen !== undefined && !parseConfigBoolean(source.values[item.availableWhen]);
+    const switchDescription = unavailable ? t(settingFieldKey(item.key, 'unavailableDescription')) : description;
     const buildSwitchUpdates = (next: boolean): Record<string, boolean> => {
       const updates: Record<string, boolean> = { [item.key]: next };
       if (!next && item.subItems?.uncheckWithParent) {
@@ -143,7 +145,7 @@ function SimpleSettingItem({
         aria-label={title}
         aria-describedby={error?.id}
         checked={checked}
-        disabled={controlDisabled || configuring || editingSubItems.size > 0}
+        disabled={controlDisabled || configuring || editingSubItems.size > 0 || (unavailable && !checked)}
         onChange={(next) => {
           if (next && Configuration) setConfiguring(true);
           else void source.save(buildSwitchUpdates(next), item.id).catch(() => undefined);
@@ -159,7 +161,7 @@ function SimpleSettingItem({
         <SettingRow
           className={item.rowClassName}
           title={title}
-          description={<>{description}{error && <span className="setting-row__error" id={error.id} role="alert" data-testid="settings-item-error" data-variant={item.id}>{error.message}</span>}</>}
+          description={<>{switchDescription}{error && <span className="setting-row__error" id={error.id} role="alert" data-testid="settings-item-error" data-variant={item.id}>{error.message}</span>}</>}
           subSettings={
             item.subItems && showSubItems
               ? item.subItems.items.map((subItem) => (

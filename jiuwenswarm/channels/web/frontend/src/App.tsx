@@ -4857,17 +4857,20 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
 
   if (isJiuwenMate) {
     return (
-      <JiuwenMateApp
-        onExit={() => {
-          setIsJiuwenMate(false);
-          if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
-        }}
-        groupId={route.kind === 'group-chat' ? route.groupId : undefined}
-        onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
-        renderExistingPage={renderJiuwenMateExistingPage}
-        useInstalledExpertRef={openInstalledExpertRef}
-        confirmDiscardSettings={confirmDiscardSettings}
-      />
+      <>
+        <JiuwenMateApp
+          onExit={() => {
+            setIsJiuwenMate(false);
+            if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
+          }}
+          groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+          onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
+          renderExistingPage={renderJiuwenMateExistingPage}
+          useInstalledExpertRef={openInstalledExpertRef}
+          confirmDiscardSettings={confirmDiscardSettings}
+        />
+        <LoginDialog />
+      </>
     );
   }
 
@@ -5457,6 +5460,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         </div>
       )}
 
+      {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
+      <LoginDialog />
     </div>
   );
 }
@@ -5475,7 +5480,6 @@ function App({
         settingsPageDefinition={settingsPageDefinition}
         resolveSettingsRequest={resolveSettingsRequest}
       />
-      <LoginDialog />
       <AssetPublishHost />
     </ErrorBoundary>
   );

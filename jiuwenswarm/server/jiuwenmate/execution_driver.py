@@ -26,6 +26,7 @@ from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchi
 from jiuwenswarm.server.jiuwenmate.conversation_search import ConversationSearch
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
 from jiuwenswarm.server.jiuwenmate.group_collaboration import build_group_execution_guidance
+from jiuwenswarm.server.jiuwenmate.group_directory import prepare_group_directory_invocation
 from jiuwenswarm.server.jiuwenmate.group_search_cursor_repository import GroupSearchCursorRepository
 from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestRecord, RequestState
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
@@ -36,7 +37,9 @@ from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAc
 from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort, MembershipVerifier, unavailable_membership
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-from jiuwenswarm.server.jiuwenmate.bash_runtime import bind_bash_runtime, close_bash_runtime
+from jiuwenswarm.server.jiuwenmate.bash_runtime import (
+    bind_bash_runtime, close_bash_runtime, shell_environment_guidance,
+)
 from jiuwenswarm.server.jiuwenmate.dropped_stream_retry import install_dropped_stream_retry
 from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
@@ -266,14 +269,15 @@ class ExecutionDriver:
                         )
                         roster = []
                     guidance = build_group_execution_guidance(roster)
-            guidance_sections = (
+            guidance_items = (
+                await shell_environment_guidance(getattr(published_spec, "language", None) or "cn"),
                 guidance,
                 dingtalk_execution_guidance(record.route_snapshot, card=published_spec.card),
                 welink_execution_guidance(record.route_snapshot),
                 _session_workspace_guidance(record.session_id, session_workspace, output_dir),
                 vision_guidance(),
             )
-            addenda = [item for item in guidance_sections if item]
+            addenda = [item for item in guidance_items if item]
             spec, context = build_invocation(
                 snapshot,
                 record,
@@ -281,6 +285,7 @@ class ExecutionDriver:
                 ports=ports,
                 system_prompt_addendum="\n\n".join(addenda),
             )
+            spec = prepare_group_directory_invocation(spec, context, self._groups)
             spec = await prepare_agent_mail_invocation(spec, context, self._agent_mail_runtime)
             spec = await prepare_dingtalk_cli_invocation(
                 spec,

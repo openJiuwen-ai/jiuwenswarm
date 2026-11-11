@@ -19,7 +19,8 @@ from pathlib import Path
 
 from openjiuwen.harness.persistent_agent import GroupMessageQuery
 
-from jiuwenswarm.server.jiuwenmate.group_chat_repository import utc_time
+from jiuwenswarm.server.jiuwenmate.group_chat_repository import SHARING_INVALIDATION_SCHEMA, utc_time
+from jiuwenswarm.server.jiuwenmate.group_share_content import content_fingerprints, unreviewed_content
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 from jiuwenswarm.server.jiuwenmate.search_contracts import GroupMessageSearchResult
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
@@ -30,7 +31,7 @@ MAX_PREVIEW_TEXT_BYTES = 512 * 1024
 _MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 _MAX_SCOPE_BYTES = 64 * 1024
 _DECISIONS = {"once": "approved_once", "permanent": "approved_permanent", "reject": "rejected"}
-_SCHEMA = """
+_SCHEMA = SHARING_INVALIDATION_SCHEMA + """
 CREATE TABLE IF NOT EXISTS group_share_approvals (
     approval_id TEXT PRIMARY KEY,
     namespace_id TEXT NOT NULL,
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS group_share_approvals (
     native_approval_id TEXT,
     tool_call_id TEXT,
     tool_call_ids_json TEXT NOT NULL DEFAULT '[]',
+    reused_content_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     decision TEXT,
     created_at TEXT NOT NULL,
@@ -173,7 +175,7 @@ class GroupShareRepository(SQLiteStore):
         with self._transaction(write=False) as conn:
             rows = conn.execute(
                 "SELECT * FROM group_share_approvals WHERE namespace_id=? AND agent_id=? "
-                "AND status IN ('approved_once','approved_permanent') "
+                "AND status IN ('approved_once','approved_permanent','owner_read') "
                 "AND json_extract(result_json, '$.session_id')=? ORDER BY created_at",
                 (namespace_id, agent_id, session_id),
             ).fetchall()
@@ -190,14 +192,25 @@ class GroupShareRepository(SQLiteStore):
                          request_id: str | None) -> list[str]:
         """Immutable receipt boundaries, including the initial window without any once approval."""
         receipts = self.approvals_for_session(namespace_id, agent_id, session_id)
-        return ['', *(row['decided_at'] + ':' + row['request_id'] for row in receipts
-                      if row['status'] == 'approved_once' and row['request_id'] != request_id)]
+        boundaries = ['']
+        for row in receipts:
+            reusable = row['status'] == 'approved_once' and row['decision'] != 'reused_once'
+            if reusable and row['request_id'] != request_id:
+                boundaries.append(row['decided_at'] + ':' + row['request_id'])
+        return boundaries
 
     def window_revoked_at(self, namespace_id: str, agent_id: str, session_id: str) -> str | None:
         """Find the latest revocation affecting any private context in this Session."""
         receipts = self.approvals_for_session(namespace_id, agent_id, session_id)
         cutoffs = []
         with self._transaction(write=False) as conn:
+            boundary = conn.execute(
+                "SELECT MAX(invalidated_at) AS cutoff FROM group_share_invalidations "
+                "WHERE namespace_id=? AND agent_id=? AND session_id=?",
+                (namespace_id, agent_id, session_id),
+            ).fetchone()
+            if boundary["cutoff"] is not None:
+                cutoffs.append(boundary["cutoff"])
             for receipt in receipts:
                 if receipt['status'] != 'approved_permanent':
                     continue
@@ -231,6 +244,8 @@ class GroupShareRepository(SQLiteStore):
 
     def request_window_is_current(self, namespace_id: str, request_id: str) -> bool:
         with self._transaction(write=False) as conn:
+            if self._invalidated(conn, namespace_id, request_id):
+                return False
             row = conn.execute(
                 "SELECT * FROM group_share_request_windows WHERE namespace_id=? AND request_id=?",
                 (namespace_id, request_id),
@@ -261,6 +276,46 @@ class GroupShareRepository(SQLiteStore):
                 return datetime.fromisoformat(received.replace('Z', '+00:00')) > datetime.fromisoformat(cutoff)
         return True
 
+    @staticmethod
+    def _invalidated(conn, namespace_id, request_id):
+        return conn.execute(
+            "SELECT 1 FROM group_share_invalidations WHERE namespace_id=? AND request_id=?",
+            (namespace_id, request_id),
+        ).fetchone() is not None
+
+    @staticmethod
+    def _check_source_memberships(conn, scope, sources):
+        """Close the read-to-freeze race using the same transaction as receipt creation."""
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='agent_group_access'").fetchone() is None:
+            return
+        for source in sources:
+            group_id = source["group_id"]
+            if conn.execute("SELECT 1 FROM group_chats WHERE namespace_id=? AND group_chat_id=?",
+                            (scope["namespace_id"], group_id)).fetchone() is None:
+                continue
+            active = conn.execute(
+                "SELECT app_id,visible_from FROM agent_group_access WHERE namespace_id=? AND agent_id=? "
+                "AND group_id=? AND status='active'", (scope["namespace_id"], scope["agent_id"], group_id),
+            ).fetchall()
+            saved = scope.get("source_authorizations", {}).get(group_id)
+            if len(active) != 1 or (saved is not None and saved != dict(active[0])):
+                raise PersistentAgentError("Source group access changed; submit a new request.", code="FORBIDDEN")
+        target = scope["target"]
+        if target["kind"] != "group":
+            return
+        group = conn.execute(
+            "SELECT group_chat_id FROM group_chats WHERE namespace_id=? AND platform=? AND platform_chat_id=?",
+            (scope["namespace_id"], target["channel"], target["id"]),
+        ).fetchone()
+        if group is None:
+            return
+        active = conn.execute(
+            "SELECT app_id FROM agent_group_access WHERE namespace_id=? AND agent_id=? AND group_id=? "
+            "AND status='active'", (scope["namespace_id"], scope["agent_id"], group["group_chat_id"]),
+        ).fetchall()
+        if len(active) != 1 or active[0]["app_id"] != target["app_id"]:
+            raise PersistentAgentError("Target group access changed; submit a new request.", code="FORBIDDEN")
+
     def saved_request_window(self, namespace_id: str, request_id: str) -> str:
         """Cleanup must settle the original confirmation, even after its generation was retired."""
         with self._transaction(write=False) as conn:
@@ -274,6 +329,11 @@ class GroupShareRepository(SQLiteStore):
         super().__init__(db_path)
         with self._transaction() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(group_share_approvals)")}
+            if "reused_content_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE group_share_approvals "
+                    "ADD COLUMN reused_content_json TEXT NOT NULL DEFAULT '[]'"
+                )
             if "tool_call_ids_json" not in columns:
                 conn.execute(
                     "ALTER TABLE group_share_approvals ADD COLUMN tool_call_ids_json TEXT NOT NULL DEFAULT '[]'"
@@ -312,6 +372,8 @@ class GroupShareRepository(SQLiteStore):
         scope = json.loads(row["scope_json"])
         sources = json.loads(row["source_groups_json"])
         frozen = json.loads(row["result_json"])
+        content_types = _result_content_types(frozen)
+        frozen = unreviewed_content(frozen, set(json.loads(row["reused_content_json"])))
         messages = [{
             "group_id": hit["group_id"], "group_name": hit["group_name"],
             "platform": hit.get("platform"), "platform_chat_id": hit.get("platform_chat_id"),
@@ -334,7 +396,6 @@ class GroupShareRepository(SQLiteStore):
             excerpts.append(text if len(text) <= 100 else text[:99] + "…")
         target_name = scope["target"]["name"]
         target_label = target_name if len(target_name) <= 40 else target_name[:39] + "…"
-        content_types = _result_content_types(frozen)
         counts = []
         if messages:
             counts.append(f"{len(messages)} 条消息")
@@ -457,7 +518,10 @@ class GroupShareRepository(SQLiteStore):
 
         with self._transaction() as conn:
             existing_rows = []
-            for scope, query_digest, scope_json, *_ in prepared:
+            for scope, query_digest, scope_json, result_json, source_json in prepared:
+                if self._invalidated(conn, scope["namespace_id"], scope["request_id"]):
+                    raise PersistentAgentError("Group access changed; submit a new request.", code="FORBIDDEN")
+                self._check_source_memberships(conn, scope, json.loads(source_json))
                 existing = conn.execute(
                     "SELECT * FROM group_share_approvals WHERE namespace_id=? AND agent_id=? "
                     "AND request_id=? AND query_digest=?",
@@ -474,14 +538,23 @@ class GroupShareRepository(SQLiteStore):
             approval_ids = []
             for scope, query_digest, scope_json, result_json, source_json in prepared:
                 approval_id = "share_" + secrets.token_hex(16)
+                owner_read = scope.get("release_policy") == "owner_direct"
+                if owner_read and not all((
+                    scope["namespace_id"] == "local", scope["principal_ref"] == "local",
+                    scope["target"]["channel"] == "web", scope["target"]["kind"] == "direct",
+                    not scope["target"]["app_id"],
+                )):
+                    raise PersistentAgentError("invalid owner-only sharing audience", code="FORBIDDEN")
                 conn.execute(
                     "INSERT INTO group_share_approvals "
                     "(approval_id, namespace_id, config_id, agent_id, request_id, query_digest, scope_json, "
-                    "result_json, source_groups_json, status, created_at, expires_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?)",
+                    "result_json, source_groups_json, status, decision, created_at, expires_at, decided_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (approval_id, scope["namespace_id"], scope["config_id"], scope["agent_id"], scope["request_id"],
                      query_digest, scope_json, result_json, source_json,
-                     stamp.isoformat(), (stamp + APPROVAL_TIMEOUT).isoformat()),
+                     "owner_read" if owner_read else "pending", "owner_read" if owner_read else None,
+                     stamp.isoformat(), (stamp + APPROVAL_TIMEOUT).isoformat(),
+                     stamp.isoformat() if owner_read else None),
                 )
                 approval_ids.append(approval_id)
             return [self._record(self._required(conn, approval_id), private=True) for approval_id in approval_ids]
@@ -515,7 +588,7 @@ class GroupShareRepository(SQLiteStore):
         ]
 
     def _for_request(self, namespace_id: str, request_id: str, *, approved: bool) -> list[dict]:
-        states = "('approved_once','approved_permanent')" if approved else "('pending')"
+        states = "('approved_once','approved_permanent','owner_read')" if approved else "('pending')"
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT * FROM group_share_approvals WHERE namespace_id=? AND request_id=? "
@@ -606,14 +679,18 @@ class GroupShareRepository(SQLiteStore):
         self._owner(owner_principal)
         with self._transaction() as conn:
             approvals = conn.execute(
-                "SELECT * FROM group_share_approvals WHERE namespace_id=? AND config_id=? ORDER BY rowid",
+                "SELECT * FROM group_share_approvals WHERE namespace_id=? AND config_id=? "
+                "AND status<>'owner_read' ORDER BY rowid",
                 (namespace_id, config_id),
             ).fetchall()
             grants = conn.execute(
                 "SELECT * FROM group_share_grants WHERE namespace_id=? AND config_id=? ORDER BY rowid",
                 (namespace_id, config_id),
             ).fetchall()
-        visible_approvals = [row for row in approvals if len(json.loads(row["source_groups_json"])) == 1]
+        visible_approvals = []
+        for row in approvals:
+            if len(json.loads(row["source_groups_json"])) == 1 and row['decision'] != 'reused_once':
+                visible_approvals.append(row)
         return {"approvals": [self._approval_view(row) for row in visible_approvals],
                 "grants": [self._grant_view(row) for row in grants]}
 
@@ -648,10 +725,12 @@ class GroupShareRepository(SQLiteStore):
             return self._has_grant(conn, scope, source_group_id, content_types)
 
     def authorize_from_grants(self, approval_id: str, *, now: datetime) -> dict:
-        """Record existing current grants atomically, without creating or restoring any grant."""
+        """Use live grants or exact once consent in this request, without minting a grant."""
         stamp = utc_time(now).isoformat()
         with self._transaction() as conn:
             row = self._required(conn, approval_id)
+            if self._invalidated(conn, row["namespace_id"], row["request_id"]):
+                raise PersistentAgentError("Group access changed; submit a new request.", code="FORBIDDEN")
             if row["status"] != "pending":
                 return self._record(row)
             if stamp >= row["expires_at"]:
@@ -662,8 +741,44 @@ class GroupShareRepository(SQLiteStore):
             if not sources or not content_types or not all(
                 self._has_grant(conn, scope, group["group_id"], content_types) for group in sources
             ):
-                return self._record(row)
+                return self._reuse_once_content(conn, row, stamp)
             return self._transition(conn, row, "approved_permanent", stamp, "permanent")
+
+    def _reuse_once_content(self, conn: sqlite3.Connection, row: sqlite3.Row, stamp: str) -> dict:
+        """Reuse only actual approved content with identical trusted scope and provenance."""
+        scope = json.loads(row['scope_json'])
+        frozen = json.loads(row['result_json'])
+        sources = json.loads(row['source_groups_json'])
+        if len(sources) != 1:
+            return self._record(row)
+        group_id = sources[0]['group_id']
+        receipts = conn.execute(
+            "SELECT * FROM group_share_approvals WHERE namespace_id=? AND config_id=? AND agent_id=? "
+            "AND request_id=? AND status='approved_once' AND decision='once' "
+            "AND native_approval_id IS NOT NULL AND decided_at IS NOT NULL",
+            (row['namespace_id'], row['config_id'], row['agent_id'], row['request_id']),
+        ).fetchall()
+        covered: set[str] = set()
+        for receipt in receipts:
+            saved_scope = json.loads(receipt['scope_json'])
+            saved_sources = json.loads(receipt['source_groups_json'])
+            if [source['group_id'] for source in saved_sources] != [group_id]:
+                continue
+            if _grant_key(saved_scope, group_id) != _grant_key(scope, group_id):
+                continue
+            if any(saved_scope.get(key) != scope.get(key) for key in ('principal_ref', 'source_authorizations')):
+                continue
+            saved = json.loads(receipt['result_json'])
+            if any(saved.get(key) != frozen.get(key) for key in ('session_id', 'source_ref')):
+                continue
+            covered.update(content_fingerprints(saved))
+        required = content_fingerprints(frozen)
+        covered &= required
+        conn.execute('UPDATE group_share_approvals SET reused_content_json=? WHERE approval_id=?',
+                     (_json(sorted(covered), _MAX_SCOPE_BYTES), row['approval_id']))
+        if required and covered == required:
+            return self._transition(conn, row, 'approved_once', stamp, 'reused_once')
+        return self._record(self._required(conn, row['approval_id']))
 
     def decide(
         self, approval_id: str, *, namespace_id: str, config_id: str, owner_principal: str,
@@ -677,6 +792,8 @@ class GroupShareRepository(SQLiteStore):
         with self._transaction() as conn:
             row = self._required(conn, approval_id)
             self._owned(row, namespace_id, config_id)
+            if self._invalidated(conn, namespace_id, row["request_id"]):
+                raise PersistentAgentError("Group access changed; submit a new request.", code="FORBIDDEN")
             if len(json.loads(row["source_groups_json"])) != 1:
                 raise PersistentAgentError(
                     "group sharing approval must contain exactly one source group", code="CONFLICT"

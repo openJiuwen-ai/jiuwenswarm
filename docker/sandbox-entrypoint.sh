@@ -1,18 +1,17 @@
 #!/bin/sh
-# jiuwenbox 沙箱容器 entrypoint。
+# jiuwenbox 沙箱容器入口。
 
-# 沙箱启动时要读 /home/app 下的文件（bind 源路径）。沙箱里的 bwrap 开了
-# user namespace，root 的特权对这个目录不生效，只能按普通权限检查——
-# 所以 /home/app 必须允许其他人进入（x 位），这里统一改回 755。
+# bwrap 进入 user namespace 之后，访问 /home/app 只检查文件权限，root 不能绕过。
+# openEuler 的 useradd 受 UMASK 077 影响，家目录是 0700，其他人进不去。
+# 改成 0755，沙箱才能遍历作为 bind 源的这个目录。失败只告警，不阻止启动。
 chmod 755 /home/app 2>/dev/null || \
     echo '[jiuwenbox-entrypoint] WARN: failed to chmod 755 /home/app, sandbox bind source traversal may fail'
 
-# isolated 网络模式的沙箱创建（supervisor/network.py 的 setup_network_uplink）
-# 第一步要写 /proc/sys/net/ipv4/ip_forward，而 OCI 运行时默认把 /proc/sys 挂成只读。
-# 容器已具备 SYS_ADMIN（capabilities_add），启动时 remount 为 rw 即可，无需 privileged。
+# 容器运行时默认把 /proc/sys 挂成只读。isolated 网络建立 uplink 时要写
+# /proc/sys/net/ipv4/ip_forward。容器已有 SYS_ADMIN，这里把它重新挂成可写。
+# 失败只告警：服务继续启动，沙箱网络若因此失败会在创建时报错。
 mount -o remount,rw /proc/sys 2>/dev/null || \
     echo '[jiuwenbox-entrypoint] WARN: failed to remount /proc/sys rw, sandbox network setup may fail'
 
-# exec "$@" 使 launcher 成为 PID 1，保留 jiuwenbox 的
-# PR_SET_CHILD_SUBREAPER / SIGCHLD 兜底逻辑。
+# exec 让后面的进程成为 PID 1，jiuwenbox 才能回收自己拉起的子进程。
 exec "$@"
