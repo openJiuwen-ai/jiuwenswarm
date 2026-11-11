@@ -4854,22 +4854,25 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
 
   if (isJiuwenMate) {
     return (
-      <JiuwenMateApp
-        onExit={() => {
-          setIsJiuwenMate(false);
-          if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
-        }}
-        groupId={route.kind === 'group-chat' ? route.groupId : undefined}
-        onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
-        renderExistingPage={renderJiuwenMateExistingPage}
-        useInstalledExpertRef={openInstalledExpertRef}
-        confirmDiscardSettings={() => {
-          if (!settingsHasChangesRef.current) return true;
-          if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
-          setRequestedSettingsModuleId(null);
-          return true;
-        }}
-      />
+      <>
+        <JiuwenMateApp
+          onExit={() => {
+            setIsJiuwenMate(false);
+            if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
+          }}
+          groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+          onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
+          renderExistingPage={renderJiuwenMateExistingPage}
+          useInstalledExpertRef={openInstalledExpertRef}
+          confirmDiscardSettings={() => {
+            if (!settingsHasChangesRef.current) return true;
+            if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
+            setRequestedSettingsModuleId(null);
+            return true;
+          }}
+        />
+        <LoginDialog />
+      </>
     );
   }
 

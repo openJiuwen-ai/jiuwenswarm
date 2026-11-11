@@ -419,6 +419,27 @@ pytest 选项为 `-q -o addopts= -o log_cli=false -o asyncio_mode=auto -p no:cac
 未运行全仓 UT、完整前端/桌面打包或 CI 镜像重建；远端 CI 需推送后重跑验证。
 没有改变主工作区、主虚拟环境、Git 默认身份或用户服务，也未新增跳过用例。
 
+## 合并官方 develop（2026-11-11）
+
+!9841 以 `e5bbb24d5` 为源分支基线，合并官方 `b98ec8c7d`。
+解决 pyproject 的 source 冲突并重新生成文档总索引，保留 Core 官方 `2dc7477a`，
+Gateway 引用跟随官方 Swarm 更新为 `54e5330d3ea6be972aa38de4c42a898ea73fed37`。
+官方删除的已迁出 Gateway 测试保持删除，没有借此跳过本地新发现的群任务测试。
+
+用户明确要求暂不提交 11 月 10 日的群锁取消修复；对应运行时代码、测试清理、新用例和故障记录
+单独备份，不进入本次合并。主工作区环境不变，使用独立锁定环境验证本 PR 候选。
+
+- Python 3.11.5，真实安装官方 Core `2dc7477a`、Gateway `54e5330d`，没有本地 SDK 覆盖。
+- 发布依赖门禁、真实构建 hook、搜索/浏览器路由、提示词、配置与推荐逻辑：**441 passed**。
+  Windows 日志退出清理仅由临时测试启动器完成，不进入候选提交；未绕过任何测试断言。
+- `npm run test:settings-panel`：**67 passed、1 failed**。失败为
+  `modelSettings.test.mjs:721` 的源码反向断言：测试禁止 `MODEL_SELECTION_REFERENCED`，
+  但 `ModelsSettings.tsx:457` 已使用此错误码。两个文件均与官方目标分支一致，本次不改动。
+- `uv lock --check --offline` 通过；未运行全仓 CI 或声称 st_gateway 安装通过。
+
+核对时官方 Gateway develop 为 `127851ab`，SDK pin 仍是 `f3f8f576`，依赖对齐 PR !76 未合入。
+因此 Gateway 代码虽已前移，pip 的两个 Core 直链冲突仍存在；不能将 Core 降级来隐藏问题。
+
 ## 残余限制
 
 语义评估仍可能误判或不可用，不能把所有相关搜索结果变成实时证据。剩余搜索源和页面布局也可能变动。

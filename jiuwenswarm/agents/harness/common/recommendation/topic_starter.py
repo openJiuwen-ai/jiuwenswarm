@@ -56,8 +56,10 @@ _EVENT_PAYLOAD_QUERY_FIELDS = frozenset(
         "model",
         "provider_response_id",
         "status",
+        "work_mode",
         "generation_trigger_key.context_scope",
         "generation_trigger_key.model",
+        "generation_trigger_key.work_mode",
     }
 )
 
@@ -1558,27 +1560,6 @@ class TopicStarterService:
         self.generator_agent = generator_agent
         self.fetch_page = fetch_page
 
-    def _explicit_negative_evidence(self, evidence_until: float) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        for event in self.store.list_events():
-            if event.get("event_type") != "not_interested":
-                continue
-            created_at = float(event.get("created_at") or 0.0)
-            if created_at <= evidence_until:
-                continue
-            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-            result.append(
-                {
-                    "evidence_id": f"event:{event.get('event_key')}",
-                    "content": str(payload.get("title") or event.get("topic_id") or ""),
-                    "timestamp": created_at,
-                    "source": "explicit_negative_feedback",
-                    "topic_id": str(event.get("topic_id") or ""),
-                    "explicit_negative": True,
-                }
-            )
-        return result
-
     async def _maybe_update_profile(
         self,
         all_evidence: list[dict[str, Any]],
@@ -1591,14 +1572,11 @@ class TopicStarterService:
             for item in all_evidence
             if float(item.get("timestamp") or 0.0) > evidence_until
         ]
-        explicit_negative = self._explicit_negative_evidence(evidence_until)
-        delta.extend(explicit_negative)
 
         if snapshot is not None and not delta:
             return snapshot
 
-        explicit_correction = any(item.get("explicit_negative") is True for item in delta)
-        if snapshot is not None and not explicit_correction:
+        if snapshot is not None:
             if len(delta) < _MIN_DRIFT_EVIDENCE:
                 return snapshot
             grounded_anchors = _project_grounded_anchors(snapshot, all_evidence)
@@ -1620,7 +1598,7 @@ class TopicStarterService:
                     drift.score,
                 )
 
-        initial_evidence = [*all_evidence, *explicit_negative]
+        initial_evidence = list(all_evidence)
         if snapshot is None and not initial_evidence and not user_memory:
             return None
 
@@ -1651,8 +1629,7 @@ class TopicStarterService:
             prompt = (
                 "按 Update、Retain、New 整理推荐兴趣信念快照。保留未受新证据影响的单元，"
                 "更新相关单元，对一致的新模式新建单元；单次系统曝光或弱点击不能升级为"
-                "稳定偏好。explicit_negative_feedback 应写入或更新具体负偏好，不能扩大为"
-                "对整个兴趣领域的否定。输出完整 JSON，字段仍为 interests、"
+                "稳定偏好。输出完整 JSON，字段仍为 interests、"
                 "negative_preferences 和 evidence_labels；evidence_labels 仍必须是"
                 " {evidence_id, interest_id} 对象列表，interest_id 必须逐字引用"
                 " interests[].id；evidence_id 只能来自当前快照或新增证据，不得虚构。"
@@ -1747,11 +1724,7 @@ class TopicStarterService:
                 return snapshot
         if not isinstance(curated.get("negative_preferences"), list):
             curated["negative_preferences"] = []
-        window = [
-            item
-            for item in (initial_evidence if snapshot is None else delta)
-            if item.get("explicit_negative") is not True
-        ]
+        window = list(initial_evidence if snapshot is None else delta)
         if window:
             curated["drift_reference_labels"] = _curated_window_labels(window, curated)
             curated["drift_reference_origin"] = (
@@ -1787,9 +1760,7 @@ class TopicStarterService:
                 continue
             evidence.append(item)
         user_memory = _read_user_memory()
-        profile_required = bool(
-            evidence or user_memory or self._explicit_negative_evidence(0.0)
-        )
+        profile_required = bool(evidence or user_memory)
         snapshot = await self._maybe_update_profile(evidence, user_memory)
         if snapshot is None and profile_required:
             return {"available": False, "reason": "profile_unavailable"}
