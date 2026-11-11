@@ -473,8 +473,15 @@ def test_prepare_workspace_copies_rsi_program_dataset_creator(
     ).is_file()
 
 
-@pytest.mark.parametrize("skill_name", ["rsi-program-dataset-creator", "agent-group-creator"])
-def test_ensure_default_builtin_skills_installs_program_evolution_design(
+@pytest.mark.parametrize(
+    "skill_name",
+    [
+        "rsi-program-dataset-creator",
+        "agent-group-creator",
+        "jiuwen-system-plugin-dev",
+    ],
+)
+def test_ensure_default_builtin_skills_installs_newly_added_skills(
     tmp_path: Path,
     monkeypatch,
     skill_name,
