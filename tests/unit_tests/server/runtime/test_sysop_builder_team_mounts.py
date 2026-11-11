@@ -182,7 +182,6 @@ def test_team_context_default_layout_derives_parent(tmp_path) -> None:
     from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 
     spec = TeamAgentSpec(agents={}, team_name="unit-team")
-    ws = tmp_path / ".agent_teams" / "unit-team" / "team-workspace"
     ctx = sysop_builder._team_context_from_spec(spec)
     assert ctx is not None
     # empty workspace_root falls back to team_home(<team>)/team-workspace whose

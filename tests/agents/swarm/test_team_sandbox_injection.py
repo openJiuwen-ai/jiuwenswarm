@@ -357,7 +357,6 @@ def test_injection_survives_unresolvable_team_context(
     import logging
 
     import jiuwenswarm.server.runtime.agent_adapter.sysop_builder as sb_mod
-    import jiuwenswarm.agents.swarm.assembly as asm_mod
 
     monkeypatch.setattr(
         "jiuwenswarm.agents.swarm.assembly.get_config", lambda: _sandbox_config()

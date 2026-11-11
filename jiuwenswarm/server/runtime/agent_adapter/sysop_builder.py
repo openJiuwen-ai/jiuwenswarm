@@ -552,9 +552,9 @@ def _team_context_from_spec(spec: Any) -> dict[str, str] | None:
     Two verified facts make this safe for every layout (PR #9847 review):
 
     1. Member real workspaces live under ``team_home(team_name)/workspaces/``
-       regardless of the spec's workspace root shape — verified against
-       ``prepare_member_workspace``/``team_member_workspace_dir``, which key
-       off the team NAME only. A group-chat child team (workspace root =
+       regardless of the spec's workspace root shape — openjiuwen's member
+       workspace layout keys off the team NAME only (see its team workspace
+       binder / paths modules), never off the spec's workspace root. A group-chat child team (workspace root =
        ``<outer>/runs/<hash>``) still has its members' workspaces under the
        standard team home.
     2. jiuwenswarm aligns the openjiuwen home to its own data root at startup
