@@ -2,7 +2,7 @@
   {
     "type": "custom",
     "name": "read_presentation_context",
-    "description": "Read the current presentation file, slide inventory, selection and template context in one call. Returns title, slide_count, slide_width_points / slide_height_points, is_default_theme, has_content, theme_palette, theme_fonts, template_body_font_pt, content_language, display_language, masters (layouts with ids), slides_metadata (1-based position to stable slide id), the selection and a structure_fingerprint. Optional template or selection failures do not discard the file inventory. The fingerprint tracks title and slide/shape IDs, not text or styling.",
+    "description": "Read the current presentation file, slide inventory, selection and template context in one call. Returns title, slide_count, slide_width_points / slide_height_points, is_default_theme, has_content, theme_palette, theme_fonts, template_body_font_pt, content_language, display_language, masters (layouts with ids), slides_metadata (1-based position to stable slide id), the selection and a structure_fingerprint. Optional template or selection failures do not discard the file inventory. The fingerprint tracks slide and shape IDs, not the title, text or styling.",
     "input_schema": {"type": "object", "properties": {}, "required": []},
     "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
     "host_requirements": {"powerpoint_api": "1.2"}
@@ -59,7 +59,7 @@
     "type": "custom",
     "name": "read_slide_image",
     "description": "Render one PowerPoint slide as a PNG for visual inspection. Use slide IDs returned by read_presentation_context.",
-    "input_schema": {"type": "object", "properties": {"slide_id": {"type": "string", "description": "Slide ID from read_presentation_context.slides_metadata[].slide_id."}, "width": {"type": "integer", "minimum": 320, "maximum": 2400, "description": "PNG width in pixels. Defaults to 1600."}, "height": {"type": "integer", "minimum": 320, "maximum": 2400, "description": "PNG height in pixels. Defaults to 900."}}, "required": ["slide_id"]},
+    "input_schema": {"type": "object", "properties": {"slide_id": {"type": "string", "description": "Slide ID from read_presentation_context.slides_metadata[].slide_id."}, "width": {"type": "integer", "minimum": 320, "maximum": 2400, "description": "PNG width in pixels. Defaults to 960."}, "height": {"type": "integer", "minimum": 320, "maximum": 2400, "description": "PNG height in pixels. Defaults to 540 on a 16:9 slide (the slide's aspect ratio at the width)."}}, "required": ["slide_id"]},
     "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
     "host_requirements": {"powerpoint_api": "1.8"}
   },
@@ -83,7 +83,7 @@
     "type": "custom",
     "name": "verify_slides",
     "description": "Verify slides for overlapping-shape candidates, out-of-bounds positioning, and low-contrast text. Returns structured results per slide with a `slideId` field, plus `total_slides` / `from_slide` / `to_slide` coverage metadata. When a shape's font color fails WCAG AA (4.5:1) against its own solid fill, a `contrast_warnings` array lists `{shape_id, shape_name, font_color, bg_color, ratio, msg}` — inspect and fix genuine defects before declaring the slide done. To read or edit a flagged shape's text, call list_slide_shapes with that slideId to get refs. For large decks, call with a slide range (0-based indexes, one less than the 1-based slides_metadata position: `{from_slide: 0, to_slide: 19}` is slides 1 to 20) to avoid truncation; if `to_slide < total_slides - 1`, call again for the remainder. Geometry overlap remains a candidate until visually confirmed because intentional layering can produce false positives.",
-    "input_schema": {"type": "object", "properties": {"from_slide": {"type": "integer", "minimum": 0, "description": "0-based index of the first slide (the slides_metadata position minus 1). Defaults to 0 (first slide)."}, "to_slide": {"type": "integer", "minimum": 0, "description": "0-based index of the last slide, inclusive (the slides_metadata position minus 1). Defaults to the last slide."}}, "required": []},
+    "input_schema": {"type": "object", "properties": {"from_slide": {"type": "integer", "minimum": 0, "description": "0-based index of the first slide (the slides_metadata position minus 1). Defaults to 0 (first slide)."}, "to_slide": {"type": "integer", "minimum": 0, "description": "0-based index of the last slide, inclusive (the slides_metadata position minus 1). Defaults to from_slide + 19 (a page of 20 slides); the result's to_slide says where it stopped."}}, "required": []},
     "annotations": {"mutating": false, "exposure": "deferred", "parallel_safe": true},
     "host_requirements": {"powerpoint_api": "1.4"}
   },

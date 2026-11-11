@@ -6,6 +6,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from itertools import count
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, 
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE, JiuwenMateWebAdapter
+from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 from jiuwenswarm.server.runtime.gateway_adapter import AdapterRegistry
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
@@ -117,6 +119,72 @@ async def test_opening_the_page_shows_the_default_colleague(host):
     assert [item["agent_id"] for item in listed.payload["colleagues"]] == [colleague["agent_id"]]
 
 
+@pytest.mark.parametrize("model_configured", [True, False])
+async def test_default_colleague_has_one_durable_empty_conversation(host, monkeypatch, model_configured):
+    if not model_configured:
+        monkeypatch.setattr(FakeModels, "default_selection", lambda self: None)
+    ensured = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    assert ensured.ok
+    colleague = ensured.payload["colleague"]
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    initial = store.list(WEB_NAMESPACE, colleague["agent_id"])
+    assert len(initial) == 1
+    assert initial[0].title == "新对话"
+    assert host.adapter._manager is None
+    if not model_configured:
+        assert colleague["current_version"] is None
+
+    await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    reopened = Host(host.tmp_path)
+    again = await reopened.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    assert again.payload["colleague"]["agent_id"] == colleague["agent_id"]
+    assert WebConversationStore(host.tmp_path / "agents.sqlite3").list(WEB_NAMESPACE, colleague["agent_id"]) == initial
+    store.delete(WEB_NAMESPACE, colleague["agent_id"], initial[0].conversation_id, now=initial[0].created_at)
+    await reopened.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    assert store.list(WEB_NAMESPACE, colleague["agent_id"]) == []
+
+
+@pytest.mark.parametrize("existing", ["missing", "active", "deleted"])
+async def test_default_conversation_initialization_preserves_existing_conversation_records(host, existing):
+    colleague = host.adapter._colleagues().ensure_default_colleague(WEB_NAMESPACE)
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    if existing != "missing":
+        store.adopt(WEB_NAMESPACE, colleague.agent_id, "existing-conversation", text="已有会话",
+                    created_at=colleague.created_at, updated_at=colleague.created_at)
+        if existing == "deleted":
+            store.delete(WEB_NAMESPACE, colleague.agent_id, "existing-conversation", now=colleague.created_at)
+
+    response = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+
+    assert response.ok
+    conversations = store.list(WEB_NAMESPACE, colleague.agent_id)
+    if existing == "deleted":
+        assert conversations == []
+    else:
+        assert len(conversations) == 1
+        assert conversations[0].title == ("新对话" if existing == "missing" else "已有会话")
+
+
+async def test_concurrent_default_initialization_creates_only_one_conversation(host):
+    colleague = host.adapter._colleagues().ensure_default_colleague(WEB_NAMESPACE)
+    responses = await asyncio.gather(*[
+        host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT) for _ in range(4)
+    ])
+    assert all(response.ok for response in responses)
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    assert len(store.list(WEB_NAMESPACE, colleague.agent_id)) == 1
+    assert host.adapter._manager is None
+
+
+async def test_deleted_default_colleague_does_not_get_another_conversation(host):
+    colleague = host.adapter._colleagues().ensure_default_colleague(WEB_NAMESPACE)
+    host.adapter._colleagues().hide_colleague(WEB_NAMESPACE, colleague.agent_id)
+    response = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    assert response.ok and response.payload["colleague"] is None
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    assert store.list(WEB_NAMESPACE, colleague.agent_id) == []
+
+
 async def test_colleague_list_restores_im_binding_status_from_owner_config(host, monkeypatch):
     created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
     agent_id = created.payload["colleague"]["agent_id"]
@@ -137,6 +205,131 @@ async def test_colleague_list_restores_im_binding_status_from_owner_config(host,
     ]
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("method", [
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS,
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN,
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL,
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_CANCEL,
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT,
+])
+async def test_dingtalk_user_auth_uses_the_current_bound_employee_and_app(host, monkeypatch, legacy, method):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload["colleague"]["agent_id"]
+    agent_id = config_id
+    if legacy:
+        from tests.unit_tests.server.jiuwenmate.test_colleague_connections import seed_legacy_connection
+        agent_id = seed_legacy_connection(host.adapter._colleagues(), WEB_NAMESPACE, config_id, "dingtalk", "ding-app")
+    monkeypatch.setattr(web_adapter, "_bound_apps", lambda: {"dingtalk": {("ding-app", agent_id)}})
+    monkeypatch.setattr(web_adapter, "_dingtalk_disconnect_bindings", lambda: {("ding-app", agent_id)})
+    status = {"status": "not_connected", "cli_version": "test"}
+    action = AsyncMock(return_value=status)
+    runtime = SimpleNamespace(dingtalk_auth_status=action, dingtalk_auth_begin=action,
+                             dingtalk_auth_cancel=action, dingtalk_auth_disconnect=action)
+    monkeypatch.setattr(host.adapter, "_runtime", AsyncMock(return_value=SimpleNamespace(dingtalk_cli_runtime=runtime)))
+
+    response = await host.call(method, agent_id=config_id, connection_key="ding-app", operation_id="test-operation")
+
+    assert response.ok, response.payload
+    key = "authorization" if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN else "dingtalk_auth"
+    assert response.payload[key] == status
+    scope = action.await_args.args[0]
+    assert (scope.namespace_id, scope.agent_id, scope.app_id) == (WEB_NAMESPACE, agent_id, "ding-app")
+
+
+async def test_dingtalk_connected_account_separately_reports_the_im_runtime_group_status(host, monkeypatch):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    agent_id = created.payload['colleague']['agent_id']
+    monkeypatch.setattr(web_adapter, '_bound_apps', lambda: {'dingtalk': {('ding-app', agent_id)}})
+    monkeypatch.setattr(host.adapter, '_runtime', AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_status=AsyncMock(return_value={'status': 'connected'})),
+    )))
+    host.adapter._dingtalk_group_status = lambda ns, agent, app: (
+        {'status': 'listening', 'group_count': 2} if (ns, agent, app) == ('local', agent_id, 'ding-app') else None
+    )
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS, agent_id=agent_id, connection_key='ding-app')
+    assert response.ok
+    assert response.payload['dingtalk_auth'] == {
+        'status': 'connected', 'group_monitor': {'status': 'listening', 'group_count': 2},
+    }
+
+
+@pytest.mark.parametrize("binding", [set(), {("ding-app", "other-employee")}, {("other-app", "self")}])
+async def test_dingtalk_user_auth_rejects_a_missing_or_foreign_binding(host, monkeypatch, binding):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload["colleague"]["agent_id"]
+    bindings = {(app, config_id if agent == "self" else agent) for app, agent in binding}
+    monkeypatch.setattr(web_adapter, "_bound_apps", lambda: {"dingtalk": bindings})
+    action = AsyncMock(return_value={"status": "connected"})
+    monkeypatch.setattr(host.adapter, "_runtime", AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_status=action),
+    )))
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS, agent_id=config_id, connection_key="ding-app")
+    assert not response.ok and response.payload["code"] == "NOT_FOUND"
+    assert action.await_count == 0
+
+
+@pytest.mark.parametrize('bound', [True, False])
+async def test_dingtalk_disconnect_resolves_a_current_legacy_runtime_owner(host, monkeypatch, bound):
+    from tests.unit_tests.server.jiuwenmate.test_colleague_connections import seed_legacy_connection
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload['colleague']['agent_id']
+    agent_id = seed_legacy_connection(host.adapter._colleagues(), WEB_NAMESPACE, config_id, 'dingtalk', 'ding-app')
+    monkeypatch.setattr(web_adapter, '_bound_apps', lambda: {'dingtalk': {('ding-app', agent_id if bound else 'other-agent')}})
+    monkeypatch.setattr(web_adapter, '_dingtalk_disconnect_bindings', lambda: {('ding-app', agent_id if bound else 'other-agent')})
+    action = AsyncMock(return_value={'status': 'not_connected', 'cli_version': 'test'})
+    monkeypatch.setattr(host.adapter, '_runtime', AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_disconnect=action),
+    )))
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT,
+                               agent_id=agent_id, connection_key='ding-app')
+    assert response.ok == bound, response.payload
+    if bound:
+        scope = action.await_args.args[0]
+        assert (scope.agent_id, scope.app_id) == (agent_id, 'ding-app')
+    else:
+        assert action.await_count == 0
+
+
+async def test_dingtalk_begin_rechecks_binding_after_waiting_for_the_unbind_lock(host, monkeypatch):
+    from contextlib import asynccontextmanager
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload['colleague']['agent_id']
+    bindings = {('ding-app', config_id)}
+    monkeypatch.setattr(web_adapter, '_bound_apps', lambda: {'dingtalk': bindings})
+    @asynccontextmanager
+    async def revoked(platform, app_id):
+        assert (platform, app_id) == ('dingtalk', 'ding-app')
+        bindings.clear()
+        yield
+    monkeypatch.setattr('jiuwenswarm.common.im_binding_lock.im_binding_lock', revoked)
+    action = AsyncMock(return_value={'status': 'authorizing', 'cli_version': 'test'})
+    monkeypatch.setattr(host.adapter, '_runtime', AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_begin=action),
+    )))
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN,
+                               agent_id=config_id, connection_key='ding-app')
+    assert not response.ok
+    assert action.await_count == 0
+
+
+async def test_dingtalk_disconnect_can_revoke_a_disabled_robot_without_enabling_it(host, monkeypatch):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload['colleague']['agent_id']
+    config = {'channels': {'dingtalk': {'apps': [{
+        'client_id': 'ding-app', 'client_secret': 'fake', 'persistent_agent_id': config_id, 'enabled': False,
+    }]}}}
+    monkeypatch.setattr('jiuwenswarm.common.config.get_config', lambda: config)
+    action = AsyncMock(return_value={'status': 'not_connected', 'cli_version': 'test'})
+    monkeypatch.setattr(host.adapter, '_runtime', AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_disconnect=action),
+    )))
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT,
+                               agent_id=config_id, connection_key='ding-app')
+    assert response.ok, response.payload
+    assert config['channels']['dingtalk']['apps'][0]['enabled'] is False
+
+
 async def test_created_colleague_is_published_with_the_default_model(host):
     created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
 
@@ -147,6 +340,22 @@ async def test_created_colleague_is_published_with_the_default_model(host):
     assert colleague["current_version"] == "v1" and not colleague["has_unpublished_changes"]
     fetched = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=colleague["agent_id"])
     assert fetched.payload["colleague"] == colleague
+
+
+async def test_creating_a_colleague_persists_an_empty_conversation_before_any_message(host):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    assert created.ok
+    agent_id = created.payload["colleague"]["agent_id"]
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    listed = store.list(WEB_NAMESPACE, agent_id)
+    assert len(listed) == 1
+    assert listed[0].title == "新对话"
+    assert host.adapter._manager is None, "Creating a chat entry must not start model execution"
+    reopened = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    assert reopened.list(WEB_NAMESPACE, agent_id) == listed
+    store.delete(WEB_NAMESPACE, agent_id, listed[0].conversation_id, now=listed[0].created_at)
+    await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=agent_id)
+    assert reopened.list(WEB_NAMESPACE, agent_id) == [], "Reading an employee must not recreate a deleted chat"
 
 
 async def test_settings_change_waits_for_publication(host):
@@ -285,6 +494,7 @@ def test_configured_model_catalog_carries_no_secret(monkeypatch):
                 "client_provider": "OpenAI",
                 "api_key": SECRET,
                 "api_base": "https://example.invalid/v1",
+                "vendor_key": "deepseek",
             },
             "model_config_obj": {},
             "is_default": True,
@@ -295,45 +505,27 @@ def test_configured_model_catalog_carries_no_secret(monkeypatch):
     catalog = web_adapter.configured_model_catalog()
 
     assert [item["model_name"] for item in catalog["models"]] == ["deepseek"]
+    assert catalog["models"][0]["vendor_key"] == "deepseek"
     assert catalog["current_selection"] == catalog["models"][0]["selection_key"]
     assert SECRET not in json.dumps(catalog)
     assert "api_base" not in json.dumps(catalog)
 
 
-def test_web_gateway_does_not_forward_internal_jiuwenmate_methods():
-    # Refresh status has its own worker proxy, not the jiuwenmate.* forwarder.
-    methods = JiuwenMateWebAdapter.methods - {ReqMethod.MODELS_REFRESH_STATUS.value}
-    internal_methods = {
-        ReqMethod.JIUWENMATE_WELINK_INBOUND.value,
-        ReqMethod.JIUWENMATE_DINGTALK_BINDING_CHECK.value,
-        ReqMethod.JIUWENMATE_FEISHU_INBOUND.value,
-        ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value,
-        ReqMethod.JIUWENMATE_CONNECTION_ATTACH.value,
-        ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS.value,
-        ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE.value,
-        ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
-        ReqMethod.JIUWENMATE_FEISHU_PREPARE.value,
-        ReqMethod.JIUWENMATE_DELIVERY_ACK.value,
-        ReqMethod.JIUWENMATE_GROUP_RESPONSE.value,
-        ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
-    }
-    # Gateway handles deletion itself: it removes the IM apps first, then asks AgentServer.
-    gateway_methods = {ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value}
-    web_methods = {
-        method.value
-        for method in ReqMethod
-        if method.value.startswith("jiuwenmate.")
-    } - internal_methods - gateway_methods
+def test_team_model_list_omits_placeholders_but_keeps_model_selection_indexes(monkeypatch):
+    entries = [
+        {"model_client_config": {"model_name": "your-model-name", "client_provider": "OpenAI",
+                                 "api_key": "sk-xxxxxxxxx", "api_base": "https://example.com/compatible-mode/v1"}},
+        {"model_client_config": {"model_name": "deepseek", "client_provider": "OpenAI",
+                                 "api_key": SECRET, "api_base": "https://example.invalid/v1", "vendor_key": "deepseek"}},
+    ]
+    monkeypatch.setattr("jiuwenswarm.common.config.get_default_models", lambda: entries)
 
-    assert web_methods == methods
-    assert gateway_methods.isdisjoint(methods)
-    assert gateway_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
-    assert gateway_methods.isdisjoint(app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS)
-    assert internal_methods.isdisjoint(methods)
-    assert methods <= app_web_handlers._FORWARD_REQ_METHODS
-    assert methods <= app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
-    assert internal_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
-    assert internal_methods.isdisjoint(app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS)
+    catalog = web_adapter.configured_model_catalog()
+
+    assert [item["selection_key"] for item in catalog["models"]] == ["deepseek#1"]
+    assert catalog["models"][0]["vendor_key"] == "deepseek"
+    assert catalog["current_selection"] == "deepseek#1"
+    assert SECRET not in json.dumps(catalog)
 
 
 async def test_agent_server_dispatches_the_methods_to_the_adapter(host):
