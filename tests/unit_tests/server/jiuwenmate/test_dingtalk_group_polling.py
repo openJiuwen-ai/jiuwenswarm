@@ -33,6 +33,7 @@ def _fixture(tmp_path, monkeypatch, *, agents=2, groups=1):
         get_colleague=lambda ns, agent: SimpleNamespace(enabled=enabled[agent]),
         read_settings=lambda ns, agent: SimpleNamespace(group_reply_mode=modes[agent]),
         connection_of=lambda ns, agent: connections.get(agent),
+        get_config=lambda ns, agent: SimpleNamespace(agent_id=agent),
     )
     reads = []
     delivered = []
@@ -86,6 +87,194 @@ def _message(message_id='message-1', time='2026-10-30 20:00:01'):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("canonical_binding", [False, True])
+async def test_first_authorization_discovers_groups_without_a_prior_bot_callback(tmp_path, monkeypatch, canonical_binding):
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    f = _fixture(tmp_path, monkeypatch, agents=1, groups=0)
+    if canonical_binding:
+        f.connections.clear()
+    repository = GroupChatRepository(tmp_path / 'new-groups.sqlite3')
+    f.manager.group_chats = repository
+    f.connections.clear()
+    scopes = []
+    async def discover(scope, *, cursor=None):
+        scopes.append((scope.agent_id, scope.app_id, cursor))
+        return {'readerKey': 'a' * 64, 'groups': [{'conversation_id': 'cid-group-0', 'name': 'New group'}],
+                'hasMore': False, 'nextCursor': None, 'failed': False}
+    f.manager.dingtalk_cli_runtime.discover_groups = discover
+    f.response['messages'] = [_message()]
+
+    assert await f.poller.poll_once() == 1
+    access, = repository.active_accesses('local', 'agent-0')
+    group = repository.get('local', access.group_id)
+    assert group.platform_chat_id == 'cid-group-0'
+    assert repository.name_of('local', access.group_id) == 'New group'
+    assert access.app_id == 'app-0' and access.visible_from == f.now[0]
+    assert f.delivered == [('agent-0', 'message-1', access.group_id, f.now[0])]
+    assert scopes == [('agent-0', 'app-0', None)]
+    assert f.poller.status('local', 'agent-0', 'app-0') == {'status': 'listening', 'group_count': 1}
+    revision = access.revision
+    f.now[0] += timedelta(seconds=70)
+    await f.poller.poll_once()
+    assert repository.access_for('local', 'agent-0', access.group_id).revision == revision
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['unbind', 'disable', 'passive', 'account'])
+async def test_discovery_does_not_register_groups_after_binding_or_authorization_changes(tmp_path, monkeypatch, change):
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    f = _fixture(tmp_path, monkeypatch, agents=1, groups=0)
+    f.manager.group_chats = GroupChatRepository(tmp_path / 'new-groups.sqlite3')
+    async def discover(scope, *, cursor=None):
+        if change == 'unbind':
+            f.bindings.clear()
+        elif change == 'disable':
+            f.enabled['agent-0'] = False
+        elif change == 'passive':
+            f.modes['agent-0'] = 'passive'
+        else:
+            f.identities['agent-0'] = 'b' * 64
+        return {'readerKey': 'a' * 64, 'groups': [{'conversation_id': 'cid-group-0', 'name': 'New group'}],
+                'hasMore': False, 'nextCursor': None, 'failed': False}
+    f.manager.dingtalk_cli_runtime.discover_groups = discover
+
+    assert await f.poller.poll_once() == 0
+    assert not f.manager.group_chats.active_accesses('local', 'agent-0')
+    assert not f.delivered and not f.reads
+
+
+@pytest.mark.asyncio
+async def test_discovery_pages_and_rescans_without_requiring_a_group_message(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, monkeypatch, agents=1, groups=0)
+    cursors = []
+    async def discover(scope, *, cursor=None):
+        cursors.append(cursor)
+        return {'readerKey': 'a' * 64, 'groups': [], 'hasMore': cursor is None,
+                'nextCursor': 5 if cursor is None else None, 'failed': False}
+    f.manager.dingtalk_cli_runtime.discover_groups = discover
+    await f.poller.poll_once()
+    f.now[0] += timedelta(seconds=10)
+    await f.poller.poll_once()
+    assert f.poller.status('local', 'agent-0', 'app-0') == {'status': 'no_groups', 'group_count': 0}
+    f.now[0] += timedelta(seconds=10)
+    await f.poller.poll_once()
+    assert cursors == [None, 5]
+    f.now[0] += timedelta(seconds=60)
+    await f.poller.poll_once()
+    assert cursors == [None, 5, None]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_first_discovery_preserves_messages_since_authorized_observation(tmp_path, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    f = _fixture(tmp_path, monkeypatch, agents=1, groups=0)
+    f.manager.group_chats = GroupChatRepository(tmp_path / 'new-groups.sqlite3')
+    start = f.now[0]
+    async def discover(scope, *, cursor=None):
+        f.now[0] += timedelta(seconds=60)
+        return {'readerKey': 'a' * 64, 'groups': [{'conversation_id': 'cid-group-0', 'name': 'New group'}],
+                'hasMore': False, 'nextCursor': None, 'failed': False}
+    f.manager.dingtalk_cli_runtime.discover_groups = discover
+    f.response['messages'] = [_message()]
+    await f.poller.poll_once()
+    access, = f.manager.group_chats.active_accesses('local', 'agent-0')
+    assert access.visible_from == start
+    assert access.verified_at == start + timedelta(seconds=60)
+    assert f.delivered[0][3] == start
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delay,expected_floor_seconds', [(120, 0), (3600, 3300)])
+async def test_a_new_group_catches_up_during_discovery_with_a_five_minute_limit(tmp_path, monkeypatch, delay, expected_floor_seconds):
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    f = _fixture(tmp_path, monkeypatch, agents=1, groups=0)
+    f.manager.group_chats = GroupChatRepository(tmp_path / 'new-groups.sqlite3')
+    start = f.now[0]
+    async def discover(scope, *, cursor=None):
+        return {'readerKey': 'a' * 64,
+                'groups': [] if f.now[0] == start else [{'conversation_id': 'cid-group-0', 'name': 'New group'}],
+                'hasMore': False, 'nextCursor': None, 'failed': False}
+    f.manager.dingtalk_cli_runtime.discover_groups = discover
+    await f.poller.poll_once()
+    f.now[0] += timedelta(seconds=delay)
+    await f.poller.poll_once()
+    access, = f.manager.group_chats.active_accesses('local', 'agent-0')
+    assert access.visible_from == start + timedelta(seconds=expected_floor_seconds)
+    assert datetime.fromisoformat(f.reads[0][2]) <= access.visible_from
+    assert next(iter(f.poller._floors.values())) == access.visible_from
+
+
+@pytest.mark.asyncio
+async def test_initial_catchup_never_starts_before_the_account_is_confirmed_authorized(tmp_path, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    f = _fixture(tmp_path, monkeypatch, agents=1, groups=0)
+    f.manager.group_chats = GroupChatRepository(tmp_path / 'new-groups.sqlite3')
+    start = f.now[0]
+    async def identity(scope):
+        if f.now[0] == start:
+            f.now[0] += timedelta(seconds=30)
+        return 'a' * 64
+    async def discover(scope, *, cursor=None):
+        return {'readerKey': 'a' * 64, 'groups': [{'conversation_id': 'cid-group-0', 'name': 'New group'}],
+                'hasMore': False, 'nextCursor': None, 'failed': False}
+    f.manager.dingtalk_cli_runtime.group_history_identity = identity
+    f.manager.dingtalk_cli_runtime.discover_groups = discover
+    await f.poller.poll_once()
+    access, = f.manager.group_chats.active_accesses('local', 'agent-0')
+    assert access.visible_from == start + timedelta(seconds=30)
+
+
+@pytest.mark.asyncio
+async def test_revocation_during_discovery_clears_the_initial_catchup_observation(tmp_path, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    f = _fixture(tmp_path, monkeypatch, agents=1, groups=0)
+    f.manager.group_chats = GroupChatRepository(tmp_path / 'new-groups.sqlite3')
+    available = [True, False]
+    async def identity(scope):
+        return 'a' * 64 if not available or available.pop(0) else None
+    async def discover(scope, *, cursor=None):
+        return {'readerKey': 'a' * 64, 'groups': [{'conversation_id': 'cid-group-0', 'name': 'New group'}],
+                'hasMore': False, 'nextCursor': None, 'failed': False}
+    f.manager.dingtalk_cli_runtime.group_history_identity = identity
+    f.manager.dingtalk_cli_runtime.discover_groups = discover
+    await f.poller.poll_once()
+    assert not f.manager.group_chats.active_accesses('local', 'agent-0')
+    f.now[0] += timedelta(seconds=120)
+    await f.poller.poll_once()
+    access, = f.manager.group_chats.active_accesses('local', 'agent-0')
+    assert access.visible_from == f.now[0]
+
+
+@pytest.mark.asyncio
+async def test_switching_authorized_accounts_drops_the_old_discovery_error(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, monkeypatch, agents=1, groups=0)
+    async def discover(scope, *, cursor=None):
+        if f.identities['agent-0'] == 'a' * 64:
+            raise PersistentAgentError('temporary', code='DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE')
+        return {'readerKey': 'b' * 64, 'groups': [], 'hasMore': False, 'nextCursor': None, 'failed': False}
+    f.manager.dingtalk_cli_runtime.discover_groups = discover
+    await f.poller.poll_once()
+    assert f.poller.status('local', 'agent-0', 'app-0')['status'] == 'error'
+    f.identities['agent-0'] = 'b' * 64
+    f.now[0] += timedelta(seconds=10)
+    await f.poller.poll_once()
+    assert f.poller.status('local', 'agent-0', 'app-0') == {'status': 'no_groups', 'group_count': 0}
+
+
+@pytest.mark.asyncio
+async def test_one_successful_group_does_not_hide_another_groups_read_failure(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, monkeypatch, agents=1, groups=2)
+    original = f.manager.dingtalk_cli_runtime.read_group_history
+    async def read(scope, *, conversation_id, since):
+        if conversation_id == 'cid-group-0':
+            raise PersistentAgentError('temporary', code='DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE')
+        return await original(scope, conversation_id=conversation_id, since=since)
+    f.manager.dingtalk_cli_runtime.read_group_history = read
+    await f.poller.poll_once()
+    assert f.poller.status('local', 'agent-0', 'app-0') == {'status': 'error', 'group_count': 2}
+
+
+@pytest.mark.asyncio
 async def test_same_account_reads_once_and_fans_out_to_authorized_employees(tmp_path, monkeypatch):
     f = _fixture(tmp_path, monkeypatch)
     f.response['messages'] = [_message()]
@@ -93,6 +282,64 @@ async def test_same_account_reads_once_and_fans_out_to_authorized_employees(tmp_
     assert len(f.reads) == 1
     assert {item[0] for item in f.delivered} == {'agent-0', 'agent-1'}
     assert all(item[3] == f.now[0] for item in f.delivered)
+
+
+@pytest.mark.asyncio
+async def test_canonical_employee_without_legacy_connection_receives_ordinary_group_messages(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, monkeypatch, agents=1)
+    f.connections.clear()
+    f.response['messages'] = [_message()]
+    assert await f.poller.poll_once() == 1
+    assert len(f.reads) == 1
+    assert [(item[0], item[1]) for item in f.delivered] == [('agent-0', 'message-1')]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('invalid', ['missing_config', 'hidden_config', 'wrong_platform', 'wrong_connection'])
+async def test_invalid_canonical_or_legacy_identity_does_not_read_group_history(tmp_path, monkeypatch, invalid):
+    f = _fixture(tmp_path, monkeypatch, agents=1)
+    if invalid in {'missing_config', 'hidden_config'}:
+        f.connections.clear()
+        def missing(ns, agent):
+            raise PersistentAgentError('configuration is not visible', code='NOT_FOUND')
+        f.service.get_config = missing
+    else:
+        f.connections['agent-0'] = SimpleNamespace(
+            channel='feishu' if invalid == 'wrong_platform' else 'dingtalk', connection_key='wrong-app',
+        )
+    assert await f.poller.poll_once() == 0
+    assert not f.reads and not f.delivered
+
+
+@pytest.mark.asyncio
+async def test_group_history_identity_and_read_use_each_binding_application(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, monkeypatch)
+    checked = []
+    async def identity(scope):
+        expected = 'app-0' if scope.agent_id == 'agent-0' else 'app-1'
+        checked.append((scope.agent_id, scope.app_id))
+        return f.identities[scope.agent_id] if scope.app_id == expected else None
+    original_read = f.manager.dingtalk_cli_runtime.read_group_history
+    async def read(scope, **options):
+        assert scope.app_id == ('app-0' if scope.agent_id == 'agent-0' else 'app-1')
+        return await original_read(scope, **options)
+    f.manager.dingtalk_cli_runtime.group_history_identity = identity
+    f.manager.dingtalk_cli_runtime.read_group_history = read
+    f.response['messages'] = [_message()]
+    assert await f.poller.poll_once() == 1
+    assert {item[0] for item in f.delivered} == {'agent-0', 'agent-1'}
+    assert {('agent-0', 'app-0'), ('agent-1', 'app-1')} <= set(checked)
+
+
+@pytest.mark.asyncio
+async def test_canonical_employee_loses_access_when_the_verified_bot_list_excludes_it(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, monkeypatch, agents=1)
+    f.connections.clear()
+    f.response['botCodes'] = []
+    assert await f.poller.poll_once() == 1
+    assert len(f.membership_updates) == 1
+    assert f.accesses['agent-0'] == []
+    assert not f.delivered
 
 
 @pytest.mark.asyncio
