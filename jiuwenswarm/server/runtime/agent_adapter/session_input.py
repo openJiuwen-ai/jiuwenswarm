@@ -117,10 +117,13 @@ def enqueue_bound_session_input(
             "the targeted execution has ended or changed; supplemental input was not sent"
         )
     if execution is not None:
+        # Allow steering when execution is RUNNING or WAITING_FOR_CONTROL
+        # (pending ask/confirm/permission card). Previously only RUNNING was
+        # allowed, which blocked steering during confirmations.
         if (
             execution.session_id != request.session_id
-            or execution.state is not SessionExecutionState.RUNNING
             or execution.cancellation_requested
+            or execution.state not in (SessionExecutionState.RUNNING, SessionExecutionState.WAITING_FOR_CONTROL)
         ):
             raise SessionInputTargetError(
                 "the targeted execution has ended or changed; supplemental input was not sent"
