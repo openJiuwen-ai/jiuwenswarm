@@ -169,6 +169,12 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
       return;
     }
 
+    // Stale-response guard: switching files re-runs this effect before the
+    // previous fetch resolves, and the late response would otherwise overwrite
+    // the newly selected file's content (and, via edit+save, write the old
+    // file's content into the new path).
+    let stale = false;
+
     const loadFile = async () => {
       setLoading(true);
       setError(null);
@@ -192,17 +198,26 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
         }
 
         const text = await response.text();
+        if (stale) return;
         setContent(text);
         setDraftContent(text);
       } catch (err) {
-        console.error('Failed to load file:', err);
+        if (stale) return;
+        // Drop the previous file's content on failure: the error banner renders
+        // alongside the body, and keeping stale content here would let edit+save
+        // write the old file's text into the current (failed) path.
+        setContent('');
+        setDraftContent('');
         setError(err instanceof Error ? err.message : t('fileViewer.unknownError'));
       } finally {
-        setLoading(false);
+        if (!stale) setLoading(false);
       }
     };
 
     loadFile();
+    return () => {
+      stale = true;
+    };
   }, [filePath, fileName, isPreviewable, reloadNonce, fileEncoding]);
 
   useEffect(() => {
@@ -317,8 +332,11 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
               ) : (
                 <button
                   type="button"
-                  className="btn !px-3 !py-1.5"
+                  className="btn !px-3 !py-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                   onClick={handleStartEdit}
+                  // A failed load leaves the viewer without trustworthy content;
+                  // editing then would overwrite the file with a stale or empty draft.
+                  disabled={Boolean(error)}
                   data-testid="agent-panel-file-viewer-edit-button"
                 >
                   {t('fileViewer.edit')}
