@@ -1,7 +1,7 @@
 ---
 title: 实施与决策 F索引
-author: hienchuphan@gmail.com
-author_email: hienchuphan@gmail.com
+author: xinyang_bali
+author_email: 835397263@qq.com
 generated: true
 ---
 
@@ -16,15 +16,17 @@ generated: true
 | 模块 |
 |---|
 | [gateway/channel_manager/web](#module-1) |
-| [jiuwenswarm](#module-2) |
-| [jiuwenswarm/agents/harness](#module-3) |
-| [jiuwenswarm/agents/harness/common/auto_harness/issue_fix](#module-4) |
-| [jiuwenswarm/agents/harness/common/rails](#module-5) |
+| [jiuwenswarm/agents/harness](#module-2) |
+| [jiuwenswarm/agents/harness/common/auto_harness/issue_fix](#module-3) |
+| [jiuwenswarm/agents/harness/common/rails](#module-4) |
+| [jiuwenswarm/agents/harness/common/rails/interrupt](#module-5) |
 | [jiuwenswarm/agents/harness/common/tools](#module-6) |
-| [jiuwenswarm/channels/web/frontend](#module-7) |
-| [jiuwenswarm/extensions/sdk](#module-8) |
-| [jiuwenswarm/resources/plugins/ttse](#module-9) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-10) |
+| [jiuwenswarm/agents/swarm](#module-7) |
+| [jiuwenswarm/channels/web/frontend](#module-8) |
+| [jiuwenswarm/channels/web/frontend/src/components/InteractionSlot](#module-9) |
+| [jiuwenswarm/extensions/sdk](#module-10) |
+| [jiuwenswarm/resources/plugins/ttse](#module-11) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-12) |
 
 <a id="module-1"></a>
 
@@ -36,35 +38,35 @@ generated: true
 
 <a id="module-2"></a>
 
-## jiuwenswarm
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261030_2018_teammate-swarmflow-adaptation](F_20261030_2018_teammate-swarmflow-adaptation.md) | F | 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配） | @xiajing | jiuwenswarm | jiuwenswarm/agents/harness/team/handlers/workflow_state.py, jiuwenswarm/server/runtime/agent_adapter/team_helpers.py | 无独立 D：本仓侧为 teammate 接入 swarmflow 的适配与硬化，无独立设计文档。 |
-
-<a id="module-3"></a>
-
 ## jiuwenswarm/agents/harness
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-4"></a>
+<a id="module-3"></a>
 
 ## jiuwenswarm/agents/harness/common/auto_harness/issue_fix
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [F_20261110_1435_report-issue](F_20261110_1435_report-issue.md) | F | Submit a JiuwenSwarm bug report from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, tests/unit_tests/agentserver/test_report_issue.py, docs/en/Contributing.md, docs/zh/贡献指南.md | 无独立 D：The user confirmed direct issue submission in chat. No standalone design document was created. |
+| [F_20261110_1435_report-issue](F_20261110_1435_report-issue.md) | F | Submit a JiuwenSwarm bug report from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/agents/swarm, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/rails/interrupt, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/tools/issue_report_template.py, jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py, jiuwenswarm/channels/web/frontend/src/types/websocket.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/IssueReviewPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/promptRouting.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/index.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/InteractionSlot.css, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/runtime_tools.py, jiuwenswarm/agents/swarm/registry.py, tests/unit_tests/agentserver/test_report_issue.py, tests/unit_tests/agentserver/test_team_helpers.py, docs/en/Contributing.md, docs/zh/贡献指南.md | 无独立 D：The user confirmed direct issue submission in chat. No standalone design document was created. |
 
-<a id="module-5"></a>
+<a id="module-4"></a>
 
 ## jiuwenswarm/agents/harness/common/rails
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
+
+<a id="module-5"></a>
+
+## jiuwenswarm/agents/harness/common/rails/interrupt
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261110_1435_report-issue](F_20261110_1435_report-issue.md) | F | Submit a JiuwenSwarm bug report from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/agents/swarm, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/rails/interrupt, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/tools/issue_report_template.py, jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py, jiuwenswarm/channels/web/frontend/src/types/websocket.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/IssueReviewPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/promptRouting.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/index.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/InteractionSlot.css, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/runtime_tools.py, jiuwenswarm/agents/swarm/registry.py, tests/unit_tests/agentserver/test_report_issue.py, tests/unit_tests/agentserver/test_team_helpers.py, docs/en/Contributing.md, docs/zh/贡献指南.md | 无独立 D：The user confirmed direct issue submission in chat. No standalone design document was created. |
 
 <a id="module-6"></a>
 
@@ -73,9 +75,17 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
-| [F_20261110_1435_report-issue](F_20261110_1435_report-issue.md) | F | Submit a JiuwenSwarm bug report from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, tests/unit_tests/agentserver/test_report_issue.py, docs/en/Contributing.md, docs/zh/贡献指南.md | 无独立 D：The user confirmed direct issue submission in chat. No standalone design document was created. |
+| [F_20261110_1435_report-issue](F_20261110_1435_report-issue.md) | F | Submit a JiuwenSwarm bug report from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/agents/swarm, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/rails/interrupt, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/tools/issue_report_template.py, jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py, jiuwenswarm/channels/web/frontend/src/types/websocket.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/IssueReviewPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/promptRouting.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/index.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/InteractionSlot.css, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/runtime_tools.py, jiuwenswarm/agents/swarm/registry.py, tests/unit_tests/agentserver/test_report_issue.py, tests/unit_tests/agentserver/test_team_helpers.py, docs/en/Contributing.md, docs/zh/贡献指南.md | 无独立 D：The user confirmed direct issue submission in chat. No standalone design document was created. |
 
 <a id="module-7"></a>
+
+## jiuwenswarm/agents/swarm
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261110_1435_report-issue](F_20261110_1435_report-issue.md) | F | Submit a JiuwenSwarm bug report from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/agents/swarm, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/rails/interrupt, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/tools/issue_report_template.py, jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py, jiuwenswarm/channels/web/frontend/src/types/websocket.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/IssueReviewPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/promptRouting.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/index.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/InteractionSlot.css, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/runtime_tools.py, jiuwenswarm/agents/swarm/registry.py, tests/unit_tests/agentserver/test_report_issue.py, tests/unit_tests/agentserver/test_team_helpers.py, docs/en/Contributing.md, docs/zh/贡献指南.md | 无独立 D：The user confirmed direct issue submission in chat. No standalone design document was created. |
+
+<a id="module-8"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -83,7 +93,15 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 
-<a id="module-8"></a>
+<a id="module-9"></a>
+
+## jiuwenswarm/channels/web/frontend/src/components/InteractionSlot
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261110_1435_report-issue](F_20261110_1435_report-issue.md) | F | Submit a JiuwenSwarm bug report from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/agents/swarm, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/rails/interrupt, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/tools/issue_report_template.py, jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py, jiuwenswarm/channels/web/frontend/src/types/websocket.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/IssueReviewPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/promptRouting.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/index.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/InteractionSlot.css, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/runtime_tools.py, jiuwenswarm/agents/swarm/registry.py, tests/unit_tests/agentserver/test_report_issue.py, tests/unit_tests/agentserver/test_team_helpers.py, docs/en/Contributing.md, docs/zh/贡献指南.md | 无独立 D：The user confirmed direct issue submission in chat. No standalone design document was created. |
+
+<a id="module-10"></a>
 
 ## jiuwenswarm/extensions/sdk
 
@@ -91,7 +109,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-9"></a>
+<a id="module-11"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
@@ -99,7 +117,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-10"></a>
+<a id="module-12"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -108,4 +126,4 @@ generated: true
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
-| [F_20261110_1435_report-issue](F_20261110_1435_report-issue.md) | F | Submit a JiuwenSwarm bug report from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, tests/unit_tests/agentserver/test_report_issue.py, docs/en/Contributing.md, docs/zh/贡献指南.md | 无独立 D：The user confirmed direct issue submission in chat. No standalone design document was created. |
+| [F_20261110_1435_report-issue](F_20261110_1435_report-issue.md) | F | Submit a JiuwenSwarm bug report from Web chat | hienchuphan@gmail.com | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/auto_harness/issue_fix, jiuwenswarm/agents/swarm, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/rails/interrupt, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot | jiuwenswarm/agents/harness/common/tools/report_issue.py, jiuwenswarm/agents/harness/common/tools/issue_report_template.py, jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py, jiuwenswarm/channels/web/frontend/src/types/websocket.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/IssueReviewPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/promptRouting.ts, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/index.tsx, jiuwenswarm/channels/web/frontend/src/components/InteractionSlot/InteractionSlot.css, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/agents/harness/common/auto_harness/issue_fix/gitcode_issue_client.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/runtime_tools.py, jiuwenswarm/agents/swarm/registry.py, tests/unit_tests/agentserver/test_report_issue.py, tests/unit_tests/agentserver/test_team_helpers.py, docs/en/Contributing.md, docs/zh/贡献指南.md | 无独立 D：The user confirmed direct issue submission in chat. No standalone design document was created. |
