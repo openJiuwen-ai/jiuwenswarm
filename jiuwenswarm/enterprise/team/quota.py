@@ -32,7 +32,7 @@ from agent_gateway.enterprise.team.quota_policy import (
     _now,
     leader_spawn_names,
 )
-from jiuwenswarm.common.utils import get_infra_data_dir, get_user_workspace_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.enterprise.team.control_store import TEAM_ACTIVE_STATUSES, OwnerIdentity
 
 logger = logging.getLogger(__name__)
@@ -387,7 +387,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
 
     @staticmethod
     def _default_sqlite_path() -> Path:
-        return get_infra_data_dir() / "agent" / "teams" / "team_control.db"
+        return get_user_workspace_dir() / "agent" / "teams" / "team_control.db"
 
     @staticmethod
     def _quota_config() -> dict[str, Any]:

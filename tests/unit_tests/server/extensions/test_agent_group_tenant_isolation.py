@@ -30,7 +30,7 @@ def test_personal_group_root_stays_on_data_root(
     del extension_workspace
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     assert catalog._kind_root("agent_groups") == (
-        utils.get_domain_data_dir() / ".agent_teams" / "agent_groups"
+        utils.get_user_workspace_dir() / ".agent_teams" / "agent_groups"
     )
 
 
@@ -41,7 +41,7 @@ def test_unbound_enterprise_does_not_write_the_data_root(
 ) -> None:
     del extension_workspace
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    data_root = utils.get_domain_data_dir()
+    data_root = utils.get_user_workspace_dir()
     source = _seed_valid_agent_group(
         tmp_path / "source" / "agent" / "workspace",
         "finance-team",
@@ -66,7 +66,7 @@ def test_bound_tenants_do_not_see_each_others_groups(
 ) -> None:
     del extension_workspace
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    data_root = utils.get_domain_data_dir()
+    data_root = utils.get_user_workspace_dir()
     source = _seed_valid_agent_group(
         tmp_path / "source" / "agent" / "workspace",
         "finance-team",

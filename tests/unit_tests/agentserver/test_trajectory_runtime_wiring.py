@@ -322,7 +322,7 @@ def test_agent_observability_init_receives_process_processor(monkeypatch, tmp_pa
             state.__setitem__("initialized", True),
         ),
     )
-    monkeypatch.setattr(agent_observability, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(agent_observability, "get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(
         agent_observability,
         "get_config",
@@ -361,7 +361,7 @@ def test_team_observability_init_receives_process_processor(monkeypatch, tmp_pat
             state.__setitem__("initialized", True),
         ),
     )
-    monkeypatch.setattr(team_manager, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(team_manager, "get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(
         team_manager,
         "get_config",

@@ -169,7 +169,7 @@ def test_desktop_executor_rejects_truncated_download(monkeypatch, tmp_path):
 
     statuses = []
     monkeypatch.setattr(upgrade_executor, "urlopen", lambda request, timeout: TruncatedResponse())
-    monkeypatch.setattr(upgrade_executor, "get_infra_data_dir", lambda: tmp_path / "infra")
+    monkeypatch.setattr(upgrade_executor, "get_user_workspace_dir", lambda: tmp_path)
     executor = DesktopExecutor(
         {
             "timeout_seconds": 20,
@@ -183,8 +183,8 @@ def test_desktop_executor_rejects_truncated_download(monkeypatch, tmp_path):
 
     assert statuses[-1]["state"] == "error"
     assert "Incomplete download" in statuses[-1]["error"]
-    assert not (tmp_path / "infra" / ".updates" / "WorkSwarm-current.dmg").exists()
-    assert not (tmp_path / "infra" / ".updates" / "WorkSwarm-current.dmg.part").exists()
+    assert not (tmp_path / ".updates" / "WorkSwarm-current.dmg").exists()
+    assert not (tmp_path / ".updates" / "WorkSwarm-current.dmg.part").exists()
 
 
 def test_global_asset_name_pattern_applies_to_all_platforms(monkeypatch):
