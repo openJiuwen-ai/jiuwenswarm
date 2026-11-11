@@ -1588,9 +1588,15 @@ function isAssistantLikeHistoryMessage(message: Message): boolean {
 /**
  * 与实时 `addFileItems` 对齐：chat.file 挂到「已经出现的」最近一条助手消息。
  * 旧逻辑挂到下一条 final，会导致刷新后文件从总结上方跑到总结气泡内部下方。
+ * 产物不跨轮：回溯遇到 user 消息说明本轮还没有可挂的助手消息（“先调工具发文件、
+ * 后写正文”的轮次），此时必须停在轮次边界返回 false，让调用方按文件自身时间戳
+ * 建独立气泡（与实时行为一致）；跨轮回溯会把本轮产物挂到上一轮末尾（#6159）。
  */
-function attachFilesToPreviousAssistant(messages: Message[], files: FileDownloadItem[]): boolean {
+export function attachFilesToPreviousAssistant(messages: Message[], files: FileDownloadItem[]): boolean {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === 'user') {
+      return false;
+    }
     if (!isAssistantLikeHistoryMessage(messages[i])) {
       continue;
     }
