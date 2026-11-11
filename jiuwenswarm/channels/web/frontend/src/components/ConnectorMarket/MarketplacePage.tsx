@@ -17,7 +17,7 @@ import { pluginPackagesApi } from '../../services/pluginPackagesApi';
 import type { PluginPackageSummary } from '../../types/pluginPackage';
 import { MarketCard } from './MarketCard';
 import { MyMarketCard } from './MyMarketCard';
-import { Switch } from '../Switch';
+import { SystemPluginSwitch } from './SystemPluginSwitch';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import type { ConnectorConnectResponse, ConnectorSummary } from '../../types/connector';
@@ -182,10 +182,11 @@ export function MarketplacePage({
       : t('connectorMarket.systemPlugin.enable');
     return (
       <span data-testid="connector-market-system-plugin-enabled" title={action}>
-        <Switch
+        <SystemPluginSwitch
+          packageId={packageId}
           checked={pkg.enabled}
           disabled={!!systemBusyIds[pkg.id] || !!systemBusyIds[packageId]}
-          onChange={(enable) => { void setSystemPluginEnabled(packageId, enable); }}
+          onChange={(enable) => setSystemPluginEnabled(packageId, enable)}
         />
       </span>
     );
