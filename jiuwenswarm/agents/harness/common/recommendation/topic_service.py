@@ -584,8 +584,8 @@ class TopicService:
         """
 
         expected_serving = build_serving_compatibility_key(trigger_key)
-        # Match serving keys in Python so rows that still embed model id remain
-        # successors after a recommendation-model change.
+        # Match serving keys in Python so rows that still embed model id or
+        # generation_config_version remain successors after a connection change.
         rows = self.store.query_events(
             event_type="starter_slate_manifest",
             policy_id=POLICY_ID,
@@ -627,6 +627,7 @@ class TopicService:
             "input_revision_receipt",
             "negative_preference_version",
             "model",
+            "generation_config_version",
         }
         accepted_trigger = {
             key: value
