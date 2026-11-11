@@ -4615,8 +4615,14 @@ def _identity_consistency_patch(graph: DesignerExecutionGraph) -> list[str]:
         detailed = costume_lock_for_ids(analysis_chars, cids) if cids else ""
         has_slots = any(key in costume_lock for key in ("top=", "bottom=", "outfit="))
         spec_supplied = bool(spec_costume_ids.intersection(cids))
-        if detailed and (not costume_lock or not has_slots or (spec_supplied and detailed != costume_lock)):
-            refreshed = bool(costume_lock) and detailed != costume_lock
+        # Split in two decisions so each condition stays within three clauses.
+        stamp_reason = ""
+        if detailed and (not costume_lock or not has_slots):
+            stamp_reason = "stamped"
+        elif detailed and spec_supplied and detailed != costume_lock:
+            stamp_reason = "refreshed"
+        if stamp_reason:
+            was_set = bool(costume_lock)
             costume_lock = detailed
             cfg["costume_lock"] = costume_lock
             identity = cfg.get("identity_refs") if isinstance(cfg.get("identity_refs"), dict) else {}
@@ -4626,7 +4632,7 @@ def _identity_consistency_patch(graph: DesignerExecutionGraph) -> list[str]:
                 cfg["identity_refs"] = identity
             notes.append(
                 f"{node.get('id')}: costume_lock refreshed from the character spec"
-                if refreshed
+                if stamp_reason == "refreshed" and was_set
                 else f"{node.get('id')}: clothing costume_lock stamped"
             )
         elif not costume_lock and cids:
