@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import {
@@ -97,6 +99,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             disabled: 'when-parent-unchecked',
             uncheckWithParent: true,
             items: [
+              { id: 'team-leader-goal-enabled', component: 'switch', key: 'team_leader_goal_enabled' },
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
               { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
               { id: 'team-member-subtasks-enabled', component: 'switch', key: 'team_member_subtasks_enabled' },

@@ -14,6 +14,7 @@ from typing import Any
 from openjiuwen.agent_teams.paths import get_agent_teams_home
 from openjiuwen.harness.prompts import resolve_language
 
+from jiuwenswarm.common.team_goal_config import normalize_team_goal
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.auth.login_credentials import bare_model_name
 from jiuwenswarm.common.config import coerce_subtask_depth, get_config, get_default_models
@@ -479,6 +480,8 @@ def _build_leader_spec(team_raw: dict[str, Any]) -> dict[str, Any]:
         or "TeamLeader"
     )
     return {
+        "goal": normalize_team_goal(leader_raw.get("goal"), path="leader.goal")
+        if team_raw.get("dispatch_mode") == "scheduled" else None,
         "member_name": leader_raw.get("member_name", "team_leader"),
         "display_name": leader_raw.get("display_name", "Team Leader"),
         "name": leader_name,
@@ -629,6 +632,15 @@ def load_team_spec_dict(
     # the top-level progressive_tool_enabled switch in config_specs instead.
     spec_dict["progressive_tool"] = bool(spec_dict.pop("swarmflow_progressive_tool", False))
     spec_dict["leader"] = _build_leader_spec(team_raw)
+    spec_dict["member_goal"] = normalize_team_goal(team_raw.get("member_goal"), path="member_goal")
+    if spec_dict["leader"]["goal"] is not None or spec_dict["member_goal"] is not None:
+        from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
+
+        if "goal" not in LeaderSpec.model_fields or "member_goal" not in TeamAgentSpec.model_fields:
+            raise ValueError("Team Goal requires an updated openjiuwen dependency")
+        if spec_dict["leader"]["goal"] is not None and (team_raw.get("leader") or {}).get("cli_agent"):
+            raise ValueError("leader.goal is not supported for a CLI leader")
+
     spec_dict["agents"] = agents
     language = str(config_base.get("preferred_language", "zh")).strip().lower()
     spec_dict["language"] = resolve_language("cn" if language == "zh" else language)

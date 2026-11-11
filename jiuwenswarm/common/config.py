@@ -2859,6 +2859,25 @@ def _set_config_path(path: tuple[str, ...], value: Any) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_team_goal_settings_in_config(
+    *, scheduled: bool | None, enabled: bool | None,
+) -> None:
+    """Commit dispatch mode and leader goal together under the config lock."""
+    from jiuwenswarm.common.team_goal_config import resolve_leader_goal_update
+
+    def mutate(data: dict[str, Any]) -> dict[str, Any]:
+        modes = _ensure_config_object(data, "modes", "modes")
+        teams = _ensure_config_object(modes, "team", "modes.team")
+        team = _ensure_config_object(teams, "jiuwen_team", "modes.team.jiuwen_team")
+        mode, goal = resolve_leader_goal_update(team, scheduled=scheduled, enabled=enabled)
+        leader = _ensure_config_object(team, "leader", "modes.team.jiuwen_team.leader")
+        team["dispatch_mode"] = mode
+        leader["goal"] = goal
+        return data
+
+    update_config(mutate)
+
+
 def update_team_scheduled_dispatch_in_config(enabled: bool) -> None:
     """Update ``modes.team.jiuwen_team.dispatch_mode`` (scheduled / autonomous)."""
     _set_config_path(TEAM_DISPATCH_MODE_CONFIG_PATH, "scheduled" if enabled else "autonomous")

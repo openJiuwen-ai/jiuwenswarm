@@ -6,7 +6,7 @@ generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-03T16:00+08:00 -->
+<!-- generated-at: 2026-11-11T17:58+08:00 -->
 
 # 设计文档索引 (INDEX)
 
@@ -19,9 +19,14 @@ generated: true
 | [agent_teams](#module-1) |
 | [agent_teams/workflow](#module-2) |
 | [jiuwenswarm](#module-3) |
-| [jiuwenswarm/channels/web/frontend](#module-4) |
-| [jiuwenswarm/gateway/channel_manager/web](#module-5) |
-| [jiuwenswarm/observability](#module-6) |
+| [jiuwenswarm/agents/harness/team](#module-4) |
+| [jiuwenswarm/channels/web/frontend](#module-5) |
+| [jiuwenswarm/channels/web/frontend/src/features/settings](#module-6) |
+| [jiuwenswarm/common/config_panel](#module-7) |
+| [jiuwenswarm/gateway/channel_manager/web](#module-8) |
+| [jiuwenswarm/observability](#module-9) |
+| [jiuwenswarm/server/control](#module-10) |
+| [openjiuwen/agent_teams](#module-11) |
 
 <a id="module-1"></a>
 
@@ -59,6 +64,16 @@ generated: true
 
 <a id="module-4"></a>
 
+## jiuwenswarm/agents/harness/team
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
+<a id="module-5"></a>
+
 ## jiuwenswarm/channels/web/frontend
 
 ### 开发前 (proposals)
@@ -67,7 +82,27 @@ generated: true
 |---|---|---|---|---|---|
 | [SDD-0026](proposals/SDD-0026-trajectory-observability-web-ui/design.md) | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | draft | @alan_cheng | observability | 2026-09-15 |
 
-<a id="module-5"></a>
+<a id="module-6"></a>
+
+## jiuwenswarm/channels/web/frontend/src/features/settings
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
+<a id="module-7"></a>
+
+## jiuwenswarm/common/config_panel
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
+<a id="module-8"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -77,7 +112,7 @@ generated: true
 |---|---|---|---|---|---|
 | [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
 
-<a id="module-6"></a>
+<a id="module-9"></a>
 
 ## jiuwenswarm/observability
 
@@ -86,3 +121,23 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
+
+<a id="module-10"></a>
+
+## jiuwenswarm/server/control
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
+<a id="module-11"></a>
+
+## openjiuwen/agent_teams
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |

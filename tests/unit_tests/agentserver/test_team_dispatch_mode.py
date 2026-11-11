@@ -101,6 +101,7 @@ async def _build_spec(
 ) -> SimpleNamespace:
     spec = SimpleNamespace(
         team_name="team",
+        leader=SimpleNamespace(goal={"max_attempts": 10}),
         dispatch_mode="scheduled",
         bootstrap_mode=config_bootstrap_mode,
         enable_task_verification=True,
@@ -130,6 +131,7 @@ async def test_autonomous_session_overrides_spec_and_drops_verification(monkeypa
     spec = await _build_spec(monkeypatch, "autonomous")
 
     assert spec.dispatch_mode == "autonomous"
+    assert spec.leader.goal is None
     assert spec.enable_task_verification is False
     assert spec.enable_member_messaging is False
     assert spec.max_subtask_depth == 0
@@ -140,6 +142,7 @@ async def test_unspecified_dispatch_mode_keeps_team_config(monkeypatch: pytest.M
     spec = await _build_spec(monkeypatch, None)
 
     assert spec.dispatch_mode == "scheduled"
+    assert spec.leader.goal == {"max_attempts": 10}
     assert spec.enable_task_verification is True
     assert spec.enable_member_messaging is True
     assert spec.max_subtask_depth == 2
