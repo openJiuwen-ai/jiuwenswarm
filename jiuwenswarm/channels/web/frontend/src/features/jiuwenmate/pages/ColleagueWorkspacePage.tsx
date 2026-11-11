@@ -143,6 +143,7 @@ interface ColleagueWorkspacePageProps {
   onUpdateSchedule?: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
   onSetScheduleEnabled?: (planId: string, enabled: boolean) => void | Promise<void>;
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
+  onRunSchedule: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
   channelApi?: JiuwenMateChannelApi;
   modelCatalog?: JiuwenMateModelCatalog;
@@ -191,6 +192,7 @@ export function ColleagueWorkspacePage({
   onUpdateSchedule,
   onSetScheduleEnabled,
   onDeleteSchedule,
+  onRunSchedule,
   onLoadScheduleHistory,
   channelApi,
   modelCatalog = EMPTY_MODEL_CATALOG,
@@ -1445,6 +1447,7 @@ export function ColleagueWorkspacePage({
             onUpdate={onUpdateSchedule}
             onSetEnabled={onSetScheduleEnabled}
             onDelete={onDeleteSchedule}
+            onRun={onRunSchedule}
             onLoadHistory={onLoadScheduleHistory}
           />
         ) : activeGroupId && groupChat ? (
