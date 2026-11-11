@@ -275,7 +275,10 @@ class ReportIssueTool(Tool, InterruptOwnerMixin):
             message=f"{heading}\n\n{_TRACKER_URL}\n\n{preview}",
             payload_schema=ConfirmPayload.to_schema(),
             ui_options=[{"value": ALLOW_ONCE, "label": allow}, {"value": REJECT, "label": reject}],
-            metadata={"report_digest": digest},
+            metadata={
+                "report_digest": digest,
+                "issue_report": {**draft.model_dump(mode="json"), "tracker_url": _TRACKER_URL},
+            },
         )
         self.stamp_interrupt(request)
         raise ToolInterruptException(request=request, tool_call=tool_call)

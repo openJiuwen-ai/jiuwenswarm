@@ -1859,6 +1859,10 @@ def _format_question_from_interaction(
         ),
         "multi_select": False,
     }
+    if source == "confirm_interrupt" and tool_name == "report_issue":
+        issue_report = _extract_interrupt_metadata(value_obj).get("issue_report")
+        if isinstance(issue_report, dict):
+            question_data["issue_report"] = issue_report
     if source == "permission_interrupt":
         if is_enterprise():
             metadata = _extract_interaction_metadata(payload)

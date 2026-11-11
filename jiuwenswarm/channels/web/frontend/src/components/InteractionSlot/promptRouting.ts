@@ -15,9 +15,9 @@
  * 提交时一律回传后端下发的原始取值，不在这里生成新的拼写。
  */
 
-import type { AskUserQuestionPayload, Question, QuestionOption, UserAnswer } from '../../types';
+import type { AskUserQuestionPayload, IssueReviewDraft, Question, QuestionOption, UserAnswer } from '../../types';
 
-export type PromptKind = 'authorization' | 'interaction' | 'experience' | 'legacy' | 'none';
+export type PromptKind = 'authorization' | 'issue-review' | 'interaction' | 'experience' | 'legacy' | 'none';
 
 const AUTHORIZATION_SOURCES = new Set([
   'permission_interrupt',
@@ -47,8 +47,22 @@ export function isSkillPackagePrompt(pq: AskUserQuestionPayload | null | undefin
   return (pq.request_id ?? '').startsWith('symphony_experience_');
 }
 
+export function getIssueReviewDraft(pq: AskUserQuestionPayload | null | undefined): IssueReviewDraft | undefined {
+  if (pq?.source !== 'confirm_interrupt' || !pq.interruptId || pq.questions?.length !== 1) return;
+  const draft = pq.questions[0].issue_report;
+  if (
+    typeof draft?.title !== 'string' || !draft.title.trim() ||
+    typeof draft.body !== 'string' || !draft.body.trim() ||
+    !Array.isArray(draft.labels) || !draft.labels.every((label) => typeof label === 'string') ||
+    typeof draft.tracker_url !== 'string' ||
+    !/^https:\/\/gitcode\.com\/[\w.-]+\/[\w.-]+\/issues$/.test(draft.tracker_url)
+  ) return;
+  return draft;
+}
+
 export function classifyPrompt(pq: AskUserQuestionPayload | null | undefined): PromptKind {
   if (!pq) return 'none';
+  if (getIssueReviewDraft(pq)) return 'issue-review';
   if (isSkillPackagePrompt(pq)) return 'experience';
   if (pq.source === 'swarmflow_human') return 'interaction';
   // 技能演进审批（evolution_interrupt）协议已冻结为与 permission_interrupt 一致的
