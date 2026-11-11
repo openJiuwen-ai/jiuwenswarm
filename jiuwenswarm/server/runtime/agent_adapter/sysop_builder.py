@@ -617,6 +617,22 @@ def _team_mount_intent(team_context: dict[str, str] | None) -> list[tuple[str, s
       - ``<team_home>/../jiuwen_team_members/`` dynamic/predefined member
         real directories (outside the team tree; the in-team entries are
         only links and link-creation failure retreats to this directory).
+      - ``workspace_root`` — when it is NOT the default
+        ``<team_home>/team-workspace`` (e.g. a group-chat child team's
+        private runs workspace). Projectless members' cwd lives under
+        ``workspace_root/artifacts/<date>/chat-n>/work/<member>/``, so
+        without this bind their cwd is invisible inside the sandbox
+        (PR #9847 review). Mounted only when it passes a pure-geometry
+        boundary check (see below).
+
+    Boundary check for the workspace-root bind (zero-state, spec-only):
+    the root must live inside the ``.agent_teams`` tree (the deployment's
+    team state root, == ``team_home.parent``) at depth >= 2. Depth 0 is the
+    teams root itself (all teams + team.db — never mountable via this
+    path); depth 1 is some other team's home. The symlinks are already
+    resolved by the context builder, so a link pointing outside the tree
+    resolves outside and is rejected here. Anything outside the teams tree
+    (a tampered spec value) is rejected with a warning.
     """
     if not team_context:
         return []
@@ -633,9 +649,39 @@ def _team_mount_intent(team_context: dict[str, str] | None) -> list[tuple[str, s
         team_home_dir / "sessions" / session_id / "worktrees",
         team_home_dir.parent / "jiuwen_team_members",
     ]
+    # Group-chat / relocated workspace root: mount it so projectless member
+    # cwd (its artifacts tree) resolves in the sandbox (PR #9847 review).
+    # Pure-geometry boundary: inside the teams tree at depth >= 2; the
+    # default layout is already covered by the team-workspace entry above.
+    ws_root_raw = str(team_context.get("workspace_root") or "").strip()
+    approved_ws_root = None
+    if ws_root_raw:
+        ws_root = Path(ws_root_raw)
+        teams_root = team_home_dir.parent
+        is_default_layout = ws_root == team_home_dir / "team-workspace"
+        in_tree_deep = (
+            teams_root in ws_root.parents
+        ) and ws_root.parent != teams_root
+        if is_default_layout:
+            pass  # default layout: the team-workspace entry already covers it
+        elif in_tree_deep:
+            # inside the teams tree at depth >= 2 (e.g. <outer>/runs/<hash>,
+            # legacy team-runs/<key>/workspace) — mount it
+            approved_ws_root = ws_root
+            paths.append(ws_root)
+        else:
+            logger.warning(
+                "[sysop_builder] workspace root %s is outside the teams "
+                "tree or too shallow; skipping its mount (projectless "
+                "member cwd may be invisible in the sandbox) (team=%s)",
+                ws_root,
+                team_context.get("team_name", ""),
+            )
     # Defense in depth: every in-team path must stay inside team_home (the
     # members dir is the sanctioned sibling). A composed path that escaped
     # (impossible with the sanitizer above, kept as a guard) is dropped.
+    # The geometry-approved workspace root (outside team_home by design for
+    # relocated layouts) rides through as a third sanctioned shape.
     team_home_resolved = team_home_dir
     safe_paths = []
     for p in paths:
@@ -643,6 +689,8 @@ def _team_mount_intent(team_context: dict[str, str] | None) -> list[tuple[str, s
             if p.parent == team_home_dir.parent:
                 safe_paths.append(p)
         elif team_home_resolved == p or team_home_resolved in p.parents:
+            safe_paths.append(p)
+        elif approved_ws_root is not None and p == approved_ws_root:
             safe_paths.append(p)
     return [(str(p), "rw") for p in safe_paths]
 

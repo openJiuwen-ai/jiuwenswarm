@@ -209,3 +209,74 @@ def test_team_context_relocated_workspace_resolves_authoritative_team_home() -> 
     # mounts derive from the authoritative team home, never from the runs dir
     paths = [h for h, _ in sysop_builder._team_mount_intent(ctx)]
     assert all("/tmp/runs" not in h for h in paths), paths
+
+
+def test_mount_intent_covers_group_chat_runs_workspace() -> None:
+    """B': a group-chat runs workspace root must be mounted so projectless
+    members' cwd (workspace_root/artifacts/.../work/<member>) resolves in
+    the sandbox — the review finding."""
+    ctx = {
+        "team_name": "group-expert-abc",
+        "session_id": "s1",
+        "team_home": "/data/.agent_teams/group-expert-abc",
+        "workspace_root": "/data/.agent_teams/outer-team/runs/abc123def456",
+    }
+    from pathlib import Path as _P
+    paths = [h for h, _ in sysop_builder._team_mount_intent(ctx)]
+    ws = str(_P("/data/.agent_teams/outer-team/runs/abc123def456"))
+    assert ws in paths, paths
+
+
+def test_mount_intent_rejects_teams_root_itself_and_direct_child() -> None:
+    """B' hardening: depth >= 2 only — the teams root itself (all teams,
+    team.db) and a direct child (another team's home) must NOT be mounted."""
+    # ws == the .agent_teams root
+    ctx = {
+        "team_name": "t", "session_id": "s",
+        "team_home": "/data/.agent_teams/t",
+        "workspace_root": "/data/.agent_teams",
+    }
+    from pathlib import Path as _P
+    paths = [h for h, _ in sysop_builder._team_mount_intent(ctx)]
+    assert str(_P("/data/.agent_teams")) not in paths
+    # ws == a sibling team's home (direct child of the teams root)
+    ctx2 = {
+        "team_name": "t", "session_id": "s",
+        "team_home": "/data/.agent_teams/t",
+        "workspace_root": "/data/.agent_teams/other-team",
+    }
+    from pathlib import Path as _P2
+    paths2 = [h for h, _ in sysop_builder._team_mount_intent(ctx2)]
+    assert str(_P2("/data/.agent_teams/other-team")) not in paths2
+
+
+def test_mount_intent_rejects_workspace_root_outside_teams_tree(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """B': a workspace root pointing outside the .agent_teams tree (e.g. a
+    tampered spec) is not mounted and warns."""
+    import logging
+
+    ctx = {
+        "team_name": "t", "session_id": "s",
+        "team_home": "/data/.agent_teams/t",
+        "workspace_root": "/home/ling/.ssh/x",
+    }
+    with caplog.at_level(logging.WARNING, logger=sysop_builder.logger.name):
+        from pathlib import Path as _P
+    paths = [h for h, _ in sysop_builder._team_mount_intent(ctx)]
+    assert str(_P("/home/ling/.ssh/x")) not in paths
+    assert any("workspace root" in r.message for r in caplog.records)
+
+
+def test_mount_intent_default_layout_no_duplicate_workspace_mount() -> None:
+    """B': the default layout (workspace_root == team_home/team-workspace)
+    adds no duplicate bind — the existing team-workspace entry covers it."""
+    ctx = {
+        "team_name": "t", "session_id": "s",
+        "team_home": "/data/.agent_teams/t",
+        "workspace_root": "/data/.agent_teams/t/team-workspace",
+    }
+    from pathlib import Path as _P
+    paths = [h for h, _ in sysop_builder._team_mount_intent(ctx)]
+    assert paths.count(str(_P("/data/.agent_teams/t/team-workspace"))) == 1
