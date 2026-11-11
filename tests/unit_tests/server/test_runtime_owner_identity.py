@@ -32,6 +32,36 @@ def test_runtime_owner_record_falls_back_to_proc_start_ticks(monkeypatch) -> Non
     assert lc._runtime_owner_record(123) == {"pid": 123, "start_ticks": 4242}
 
 
+def test_runtime_owner_alive_rejects_stale_started_at_when_ticks_match(
+    monkeypatch,
+) -> None:
+    class _Process:
+        def create_time(self) -> float:
+            return 100.0
+
+    monkeypatch.setattr(psutil, "Process", lambda _pid: _Process())
+    monkeypatch.setattr(lc, "_proc_start_ticks", lambda _pid: 4242)
+
+    owner = {"pid": 123, "started_at": 100.0, "start_ticks": 4242}
+    assert lc.runtime_owner_alive(owner)
+    assert not lc.runtime_owner_alive({**owner, "started_at": 99.0})
+
+
+def test_runtime_owner_alive_uses_ticks_when_started_at_is_unreadable(
+    monkeypatch,
+) -> None:
+    class _DeniedProcess:
+        def create_time(self) -> float:
+            raise psutil.AccessDenied(pid=123, name="create_time")
+
+    monkeypatch.setattr(psutil, "Process", lambda _pid: _DeniedProcess())
+    monkeypatch.setattr(lc, "_proc_start_ticks", lambda _pid: 4242)
+
+    assert lc.runtime_owner_alive(
+        {"pid": 123, "started_at": 100.0, "start_ticks": 4242}
+    )
+
+
 def test_assert_runtime_owner_compares_proc_start_ticks(monkeypatch) -> None:
     monkeypatch.setattr(
         lc,
