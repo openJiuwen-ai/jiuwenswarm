@@ -523,7 +523,7 @@ from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
-from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
+from jiuwenswarm.common.tool_ownership import mark_stateless, qualify_tool_id, register_tool, unregister_tool
 from jiuwenswarm.observability.turn import SessionTurnTracker, TurnIdentity
 from jiuwenswarm.server.client_attachments.registry import Capability, conversation_app
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
@@ -14640,6 +14640,10 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.enterprise import is_enterprise
 
         manager = self._instance.ability_manager
+        registered = [
+            card for card in (manager.list() or [])
+            if isinstance(card, ToolCard) and card.name in ISSUE_REPORT_TOOL_NAMES
+        ]
         eligible = (
             channel_id == "web"
             and session_id
@@ -14649,15 +14653,19 @@ class JiuWenSwarmDeepAdapter:
             and not self._is_cron_execution_session(session_id)
         )
         if not eligible:
-            for name in ISSUE_REPORT_TOOL_NAMES:
-                if manager.get(name) is not None:
-                    manager.remove_ability(name)
+            if registered:
+                owner_id = self._tool_owner_id()
+                remove = getattr(manager, "remove_ability", None) or manager.remove
+                for card in registered:
+                    if card.id == qualify_tool_id(card, owner_id):
+                        remove(card.name)
             return
-        missing = {name for name in ISSUE_REPORT_TOOL_NAMES if manager.get(name) is None}
+        missing = set(ISSUE_REPORT_TOOL_NAMES) - {card.name for card in registered}
         if missing:
+            owner_id = self._tool_owner_id()
             for tool in build_issue_report_tools(session_id, self._resolve_runtime_language()):
                 if tool.card.name in missing:
-                    self._register_agent_owned_tool(tool, self._tool_owner_id())
+                    self._register_agent_owned_tool(tool, owner_id)
                     manager.add(tool.card)
 
     async def _update_session_tools(

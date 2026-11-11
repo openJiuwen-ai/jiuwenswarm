@@ -18,6 +18,8 @@ from jiuwenswarm.agents.harness.common.tools import report_issue
 from jiuwenswarm.agents.harness.common.tools.issue_report_template import BugReportInput, load_bug_report_template
 from jiuwenswarm.agents.swarm import config_specs, registry
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.common.tool_ownership import qualify_tool_id
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from tests.unit_tests.agentserver.permissions.test_permission_answer_cutover import (
     _request,
     answer_host,  # noqa: F401
@@ -194,6 +196,27 @@ def test_team_specs_mount_report_issue_on_the_leader_only(mode, monkeypatch):
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     assert report_spec.build(language="en", context=leader_context) == []
+
+
+def test_report_tool_refresh_removes_only_adapter_owned_cards(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._last_mode = "team.work.normal"
+    adapter._tool_owner_id = lambda: "single-agent-adapter"
+    local_tool, leader_tool = report_issue.build_issue_report_tools("web-report", "en")
+    local_tool.card.id = qualify_tool_id(local_tool.card, "single-agent-adapter")
+    leader_tool.card.id = qualify_tool_id(leader_tool.card, "team-leader")
+    cards = [local_tool.card, leader_tool.card]
+
+    def remove(name):
+        cards[:] = [card for card in cards if card.name != name]
+
+    manager = SimpleNamespace(list=lambda: list(cards), remove=remove)
+    adapter._instance = SimpleNamespace(ability_manager=manager)
+
+    adapter._update_report_issue_tool("web-report", "web")
+
+    assert cards == [leader_tool.card]
 
 
 def test_chinese_template_validates_the_required_branch_module_pair(issue_api):

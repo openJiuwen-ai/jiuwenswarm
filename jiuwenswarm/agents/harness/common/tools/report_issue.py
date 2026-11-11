@@ -198,7 +198,8 @@ class ReportIssueTool(Tool, InterruptOwnerMixin):
         ctx = _tool_callback_context
         tool_call = ctx.inputs.tool_call if ctx is not None else None
         run = AUTHORIZATION_EXECUTION_CONTEXTS.get(self._session_id)
-        if tool_call is None or not tool_call.id or run is None or not run.is_interactive_web:
+        is_interactive_web = run is not None and run.is_interactive_web
+        if tool_call is None or not tool_call.id or not is_interactive_web:
             return {"status": "unavailable", "message": "Reporting requires interactive Web chat."}
         try:
             report = BugReportInput.model_validate(inputs)

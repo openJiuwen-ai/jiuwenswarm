@@ -164,7 +164,7 @@ class BugReportTemplate:
         }
         sections = []
         for section in self.sections:
-            value = values[section.key]
+            value = values.get(section.key)
             if section.required and not value:
                 raise ValueError(f"Provide the required field: {section.heading}.")
             if value:
@@ -181,11 +181,11 @@ def load_bug_report_template(owner: str, repo: str, language: str) -> BugReportT
         contents = GitCodeIssueClient(token="", timeout=8).get_repository_file(owner=owner, repo=repo, path=path)
     except httpx.HTTPError as exc:
         if (owner.casefold(), repo.casefold()) != ("openjiuwen", "jiuwenswarm"):
-            raise
+            raise exc
         if isinstance(exc, httpx.HTTPStatusError):
             status = exc.response.status_code
             if status != 429 and status < 500:
-                raise
+                raise exc
         with httpx.Client(timeout=8, trust_env=False) as client:
             response = client.get(f"{_GITHUB_TEMPLATE_ROOT}/{path}")
             response.raise_for_status()
@@ -199,7 +199,7 @@ def load_bug_report_template(owner: str, repo: str, language: str) -> BugReportT
         if field.type == "markdown":
             continue
         heading = field.attributes.get("label")
-        if not isinstance(heading, str) or not heading.strip() or "\n" in heading or "\r" in heading:
+        if not isinstance(heading, str) or not heading.strip() or any(char in heading for char in ("\n", "\r")):
             raise ValueError("The Bug Report template has an invalid section heading.")
         if field.type == "textarea":
             key = _SECTION_KEYS.get(heading)
