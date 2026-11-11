@@ -182,6 +182,8 @@ class TestLooksLikePosix:
             "ls && cat file.txt",
             "mkdir dir; ls",
             "echo hello",
+            "python script.py",
+            "python3 -c 'print(1)'",
         ],
     )
     def test_detects_posix_commands(self, command: str) -> None:
@@ -190,7 +192,6 @@ class TestLooksLikePosix:
     @pytest.mark.parametrize(
         "command",
         [
-            "python script.py",
             "git status",
             "npm install",
             "dir /s pattern",
@@ -245,7 +246,7 @@ class TestResolveExecutionPlanWindows:
         assert use_shell is False
 
     def test_non_posix_stays_on_cmd(self, _no_bash) -> None:
-        plan, use_shell, resolved_shell = _resolve_execution_plan("python script.py", "auto")
+        plan, use_shell, resolved_shell = _resolve_execution_plan("npm install", "auto")
         assert resolved_shell == "cmd"
         assert use_shell is True
 
