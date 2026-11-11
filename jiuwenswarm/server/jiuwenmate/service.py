@@ -254,9 +254,9 @@ def show_agent_template(template_id: str) -> Mapping[str, Any] | None:
 
 
 def default_data_dir() -> Path:
-    from jiuwenswarm.common.utils import get_domain_data_dir
+    from jiuwenswarm.common.utils import get_user_workspace_dir
 
-    return get_domain_data_dir() / "jiuwenmate"
+    return get_user_workspace_dir() / "jiuwenmate"
 
 
 def _utcnow() -> datetime:

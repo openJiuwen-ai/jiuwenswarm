@@ -1401,12 +1401,8 @@ export function FileDownloadList({
   }, [files]);
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
-    const pathHref = isEnterprise() && file.path
-      ? `/file-api/raw-file?path=${encodeURIComponent(file.path)}`
-      : '';
-    const href = file.download_url || pathHref;
-    if (expiredSet.has(index) || !href) return;
-    if (file.download_url && isEnterprise() && !(await prepareFileDownload(file.download_url))) {
+    if (expiredSet.has(index) || !file.download_url) return;
+    if (isEnterprise() && !(await prepareFileDownload(file.download_url))) {
       window.alert(t('artifacts.downloadFailed', { name: file.name }));
       return;
     }
@@ -1414,7 +1410,7 @@ export function FileDownloadList({
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
       const outcome = await executeDesktopSave(() =>
-        pywebviewApi.download_file!(href, file.name || 'download')
+        pywebviewApi.download_file!(file.download_url, file.name || 'download')
       );
       if (outcome === 'failed') {
         window.alert(t('artifacts.downloadFailed', { name: file.name }));
@@ -1422,7 +1418,7 @@ export function FileDownloadList({
       return;
     }
     const link = document.createElement('a');
-    link.href = href;
+    link.href = file.download_url;
     link.download = file.name || '';
     document.body.appendChild(link);
     link.click();

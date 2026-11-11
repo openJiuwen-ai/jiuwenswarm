@@ -29,7 +29,7 @@ import yaml
 from jiuwenswarm.common.utils import (
     get_agent_skills_dir,
     get_agent_workspace_dir,
-    get_domain_data_dir,
+    get_user_workspace_dir,
     mask_sensitive,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
@@ -1036,7 +1036,7 @@ def _agent_group_catalog_bound() -> bool:
 def _agent_group_home(*, agent_workspace: Path | None = None) -> Path:
     """Home directory that owns ``.agent_teams/agent_groups``.
 
-    Personal edition keeps the domain data root. Enterprise uses the tenant
+    Personal edition keeps the data root. Enterprise uses the tenant
     root already bound on this request. An unbound enterprise call must not
     fall back to the shared data root or the default tenant key.
     """
@@ -1054,7 +1054,7 @@ def _agent_group_home(*, agent_workspace: Path | None = None) -> Path:
                 "AGENT_GROUP_TENANT_REQUIRED",
             )
         return bound
-    return get_domain_data_dir()
+    return get_user_workspace_dir()
 
 
 def _kind_root(kind: str, *, agent_workspace: Path | None = None) -> Path:

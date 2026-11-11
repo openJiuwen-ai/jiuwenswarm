@@ -16,7 +16,6 @@ import os
 import threading
 from pathlib import Path
 
-from jiuwenswarm.common.utils import get_infra_data_dir
 from jiuwenswarm.server.ipc.io_loop import ipc_io
 from jiuwenswarm.server.ipc.stream import (
     _PIPE_AUTHKEY,
@@ -30,8 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 def _restrict_runtime_dir(parent: Path) -> None:
-    """Tighten the local-zone ``run`` directory when the socket lives there."""
-    run_dir = get_infra_data_dir() / "run"
+    """Tighten ``~/.jiuwenswarm/run`` when the socket lives there."""
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    run_dir = get_user_workspace_dir() / "run"
     if parent != run_dir:
         return
     try:

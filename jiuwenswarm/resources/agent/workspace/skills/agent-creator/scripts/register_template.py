@@ -38,14 +38,16 @@ def write_stdout(text: str) -> None:
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
 
 
-def get_agent_workspace_dir() -> Path:
-    """agent 工作区（domain 区）：JIUWENSWARM_DATA_DIR env > ~/.jiuwenswarm。
-
-    分区契约：业务数据落 domain/，运行时产物落 infra/（数据根不直接暴露）。
-    """
+def get_jiuwenswarm_data_dir() -> Path:
+    """Read data root from env; host must inject JIUWENSWARM_DATA_DIR when non-default."""
     raw = os.environ.get("JIUWENSWARM_DATA_DIR", "").strip()
-    base = Path(raw).expanduser() if raw else Path.home() / ".jiuwenswarm"
-    return base / "domain" / "agent" / "workspace"
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".jiuwenswarm"
+
+
+def get_agent_workspace_dir() -> Path:
+    return get_jiuwenswarm_data_dir() / "agent" / "workspace"
 
 
 def get_agent_templates_local_dir() -> Path:
