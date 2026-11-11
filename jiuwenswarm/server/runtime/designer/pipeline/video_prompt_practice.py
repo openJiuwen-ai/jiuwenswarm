@@ -920,7 +920,8 @@ def _cast_form_for(token: str, name: str, graph: dict[str, Any] | None) -> str:
             continue
         cid = str(char.get("id") or "")
         cname = str(char.get("name") or "")
-        if cid == token or cname == token or (name and cname.casefold() == name.casefold()):
+        name_matches = bool(name) and cname.casefold() == name.casefold()
+        if cid == token or cname == token or name_matches:
             return str(char.get("cast_form") or "").strip().lower()
     return ""
 

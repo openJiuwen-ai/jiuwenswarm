@@ -328,14 +328,16 @@ def _spatial_geography_lock_patch(graph: DesignerExecutionGraph) -> list[str]:
         if sid and isinstance(by_setting.get(sid), dict):
             return dict(by_setting[sid])
         node_scene_name = scene_name_by_id.get(sid, "").casefold() if sid else ""
-        if sid and node_scene_name and lock_setting_name and node_scene_name != lock_setting_name:
+        setting_known = bool(sid and node_scene_name and lock_setting_name)
+        if setting_known and node_scene_name != lock_setting_name:
             derived = {
                 "setting": sid,
                 "architecture": scene_desc_by_id.get(sid) or "one coherent interior",
             }
             for key in ("static_rule", "crowd_rule"):
-                if str(lock.get(key) or "").strip():
-                    derived[key] = str(lock[key])
+                rule = lock.get(key)
+                if str(rule or "").strip():
+                    derived[key] = str(rule)
             return derived
         return lock
 
