@@ -2,12 +2,15 @@
 
 TTSE（Two-Track Self-Evolution）从对话轨迹归纳环境事实（FACT）与能力选择提示（TIP），注入系统 prompt。它与 [Skill 正文演进](Skill自演进.md) 相互独立：**不改 SKILL.md，也没有审批弹窗**。
 
-由 `react.ttse.enabled` 控制，**仅 agent 模式**生效（code / team 不挂载）。随包模板 **默认开启**：挂载 `TTSERail`，并把 `ttse_consult` 放入首轮 schema（无需 `tools_search`）。设 `enabled: false` 可关闭。
+单 Agent 由 `react.ttse.enabled` 控制，**仅 agent 模式**挂载 `TTSERail`（code 不挂载）。随包模板里该开关 **默认开启**：挂载 `TTSERail`，并把 `ttse_consult` 放入首轮 schema（无需 `tools_search`）。设 `enabled: false` 只关闭单 Agent。
+
+专家团由 `react.ttse.team_enabled` 单独控制，与 `enabled` 解耦。缺省或未写时为 **关闭**；设为 `true` 后团长挂载 `TEAM_TTSE`、成员挂载 `MEMBER_TTSE`。
 
 ```yaml
 react:
   ttse:
-    enabled: true           # agent 模式是否挂载 TTSERail
+    enabled: true           # 单 Agent；true 才在 agent 模式挂载 TTSERail
+    team_enabled: false     # 专家团；与 enabled 独立，默认关闭
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（静默整理经验库，不劫持用户回合）
