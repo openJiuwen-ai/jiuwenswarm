@@ -269,9 +269,10 @@ async def test_adapter_history_read_uses_session_owned_tool_path_and_backend():
     )))
     fs = SimpleNamespace(mode="sandbox", read_file=read)
     tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), "/owned/remote/todo")
-    session_adapter = SimpleNamespace(
-        _get_todo_modify_tool=lambda sid: tool,
-        _instance=SimpleNamespace(_interaction_session=SimpleNamespace(get_state=lambda _key: "owner-generation")),
+    session_adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    session_adapter._get_todo_modify_tool = lambda sid: tool
+    session_adapter._instance = SimpleNamespace(
+        _interaction_session=SimpleNamespace(get_state=lambda _key: "owner-generation"),
     )
     parent = object.__new__(JiuWenSwarmDeepAdapter)
     parent._get_or_create_session_adapter = AsyncMock(return_value=session_adapter)

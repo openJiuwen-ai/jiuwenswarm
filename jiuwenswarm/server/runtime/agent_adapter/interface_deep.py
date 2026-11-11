@@ -14681,7 +14681,7 @@ class JiuWenSwarmDeepAdapter:
         if not is_valid_session_id(session_id):
             return None
         adapter = await self._get_or_create_session_adapter(session_id, request=request)
-        tool = adapter._get_todo_modify_tool(session_id)
+        tool = adapter.get_todo_modify_tool(session_id)
         if tool is None:
             return None
         instance = getattr(adapter, "_instance", None)
@@ -14694,10 +14694,15 @@ class JiuWenSwarmDeepAdapter:
                 logger.debug("[history.get] Todo generation unavailable: session_id=%s", session_id, exc_info=True)
         items = await tool.read_todos(session_id)
         snapshot = getattr(items, "snapshot", None)
-        if (snapshot is None or not snapshot.exists or not snapshot.read_authoritative
-                or snapshot.read_only_backend):
+        if snapshot is None or not snapshot.exists:
+            return None
+        if not snapshot.read_authoritative or snapshot.read_only_backend:
             return None
         return snapshot, generation_token
+
+    def get_todo_modify_tool(self, session_id: str) -> TodoModifyTool | None:
+        """取得所属会话的 Todo 引擎，保留各模式的选择逻辑。"""
+        return self._get_todo_modify_tool(session_id)
 
     def _get_todo_modify_tool(self, session_id: str) -> TodoModifyTool | None:
         """Return a session-scoped TodoModifyTool, or None if DeepAgent unavailable.

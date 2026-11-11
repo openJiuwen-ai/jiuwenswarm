@@ -313,8 +313,9 @@ async def capture_deepresearch_todo_target(todo_path: Path, *, tool=None, sessio
         read_snapshot,
     )
     bound_tool, bound_session_id = bound_todo_tool()
-    if tool is None and bound_tool is not None and (session_id is None or session_id == bound_session_id):
-        tool, session_id = bound_tool, bound_session_id
+    if tool is None and bound_tool is not None:
+        if session_id is None or session_id == bound_session_id:
+            tool, session_id = bound_tool, bound_session_id
     if tool is None or session_id is None:
         return None
     if Path(tool.get_file_path(session_id)).resolve() != todo_path.resolve():
@@ -357,8 +358,9 @@ async def persist_deepresearch_task_update(
     strict = target.strict_stages if target.strict_stages is not None else owner is not None
 
     def check_active():
-        if (owner is None or owner.done() or owner.cancelling()
-                or (target.write_scope is not None and not target.write_scope.active)):
+        owner_inactive = owner is None or owner.done() or owner.cancelling()
+        scope_closed = target.write_scope is not None and not target.write_scope.active
+        if owner_inactive or scope_closed:
             raise ValueError("DeepResearch Todo callback belongs to an inactive request")
 
     check_active()
