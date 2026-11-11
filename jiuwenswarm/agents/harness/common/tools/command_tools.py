@@ -873,14 +873,31 @@ def _resolve_execution_plan(command: str, shell_type: str) -> tuple[list[str] | 
     raise RuntimeError(f"Unsupported shell_type: {normalized}")
 
 
-def _decode_subprocess_output(output: bytes | None) -> str:
-    """Decode CLI output as UTF-8, falling back to the system encoding."""
+def _resolve_encoding(resolved_shell: str) -> str:
+    """Choose subprocess text encoding based on the resolved shell type.
+
+    - bash / sh on Windows (e.g. Git Bash / MSYS2) output UTF-8 by default.
+    - cmd uses the system code page (typically CP936/GBK on Chinese Windows).
+    - PowerShell also uses the system code page by default; safest to use
+      the system code page and rely on ``errors='replace'`` for edge cases.
+    """
+    if os.name == "nt" and resolved_shell in ("bash", "sh"):
+        return "utf-8"
+    return locale.getpreferredencoding(False) or "utf-8"
+
+
+def _decode_subprocess_output(output: bytes | None, resolved_shell: str = "cmd") -> str:
+    """Decode CLI output using the correct encoding for the resolved shell type.
+
+    Uses ``_resolve_encoding`` to pick UTF-8 for bash/sh on Windows and the
+    system code page for cmd/PowerShell, instead of always trying UTF-8 first.
+    """
     if not output:
         return ""
+    encoding = _resolve_encoding(resolved_shell)
     try:
-        return output.decode("utf-8")
-    except UnicodeDecodeError:
-        encoding = locale.getpreferredencoding(False) or "utf-8"
+        return output.decode(encoding)
+    except (UnicodeDecodeError, LookupError):
         return output.decode(encoding, errors="replace")
 
 
@@ -1089,8 +1106,8 @@ def _run_command_sync(
             if stream is not None and not drain.is_alive():
                 with contextlib.suppress(Exception):
                     stream.close()
-    stdout = _decode_subprocess_output(stdout_drain.data())
-    stderr = _decode_subprocess_output(stderr_drain.data())
+    stdout = _decode_subprocess_output(stdout_drain.data(), resolved_shell)
+    stderr = _decode_subprocess_output(stderr_drain.data(), resolved_shell)
     if stdout_drain.truncated:
         stdout += _DRAIN_TRUNCATED_SUFFIX
     if stderr_drain.truncated:
@@ -1098,8 +1115,8 @@ def _run_command_sync(
     return subprocess.CompletedProcess(
         args=plan,
         returncode=proc.returncode if proc.returncode is not None else -1,
-        stdout=stdout,
-        stderr=stderr,
+        stdout=stdout or "",
+        stderr=stderr or "",
     ), resolved_shell
 
 
@@ -1126,8 +1143,6 @@ def _run_command_background(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
-        encoding="utf-8",
-        errors="replace",
         **popen_kw,
     )
     try:
