@@ -511,11 +511,13 @@ class AgentRuntime:
             setter(self._session_message_goal_busy)
 
     def session_message_requires_queue(self, session_id: str) -> bool:
-        """Prevent cross-session steering from interrupting plans or active goals."""
-        return (
-            session_id in self._plan_controller.active_sessions
-            or self._session_message_goal_busy(session_id)
-        )
+        """Prevent cross-session steering from interrupting plans or active goals.
+
+        MODIFIED: Steering is now always allowed. Plans and active goals no
+        longer block steering — the user's steered message should always be
+        injected into the active context.
+        """
+        return False
 
     def _voice_task_card_refusal(self, request: AgentRequest) -> list[RuntimeEvent]:
         """Refuse a new voice task while a chat turn waits on a card (#5487).
@@ -548,16 +550,12 @@ class AgentRuntime:
         )]
 
     def _require_cross_session_input_admission(self, request: AgentRequest) -> None:
-        from agent_gateway.common.mode_matrix import is_plan_mode
-        from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+        """Refuse cross-session steering in protected modes.
 
-        if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) and (
-            is_plan_mode(request.params.get("mode"))
-            or self.session_message_requires_queue(request.session_id)
-        ):
-            raise SessionInputQueueRequiredError(
-                "cross-session messages must queue while a plan or goal is active"
-            )
+        MODIFIED: Steering is now always allowed. Plan mode and active goals
+        no longer block cross-session steering.
+        """
+        return
 
     def _session_message_goal_busy(self, session_id: str) -> bool:
         """Check Goal ownership, including rounds without an output consumer."""

@@ -462,9 +462,13 @@ class SessionMessageService:
         }
 
     def _must_queue(self, session_id: str, metadata: dict[str, Any]) -> bool:
-        return is_plan_mode(metadata.get("mode")) or bool(
-            self._requires_task_queue and self._requires_task_queue(session_id)
-        )
+        # Steering is now always allowed — the user's steered message should
+        # always be injected into the active context regardless of plan mode,
+        # pending confirmations, active goals, or other blocking states.
+        # Previously: is_plan_mode(metadata.get("mode")) or bool(
+        #     self._requires_task_queue and self._requires_task_queue(session_id)
+        # )
+        return False
 
     async def _defer_steering(self, record: SessionMessageRecord) -> None:
         async def persist():

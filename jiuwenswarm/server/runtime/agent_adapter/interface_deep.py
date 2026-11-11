@@ -19194,30 +19194,16 @@ class JiuWenSwarmDeepAdapter:
         self._session_input_guard = guard
 
     def _require_cross_session_task_admission(self, request: AgentRequest) -> None:
-        """Refuse protected-mode steering before any SDK submission."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
-        from agent_gateway.common.mode_matrix import is_plan_mode
-        from jiuwenswarm.runtime.context import get_current_runtime
-        from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+        """Refuse protected-mode steering before any SDK submission.
 
-        runtime = get_current_runtime()
-        checker = getattr(runtime, "session_message_requires_queue", None)
-        protected = (
-            is_plan_mode(self._last_mode)
-            or is_plan_mode(request.params.get("mode"))
-            or self.has_active_goal_interaction()
-            or bool(callable(checker) and checker(request.session_id))
-        )
-        if not protected and self._instance is not None:
-            session = resolve_live_agent_session(self._instance, request.session_id)
-            if session is not None:
-                # enter_plan_mode may run after the request mode was selected.
-                protected = self._instance.load_state(session).plan_mode.mode == "plan"
-        if protected:
-            raise SessionInputQueueRequiredError(
-                "cross-session messages must queue while a plan or goal is active; "
-                "supplemental input was not sent"
-            )
+        MODIFIED: Steering is now always allowed — plan mode, active goals,
+        and other protected states no longer block cross-session steering.
+        The user's steered message should always be injected into context.
+        """
+        # Previously this method checked is_plan_mode, has_active_goal_interaction,
+        # session_message_requires_queue, and plan_mode.mode == "plan" to block
+        # steering. All those checks are now bypassed to allow steering in all states.
+        return
 
     def _select_steer_image_tool(self) -> str:
         """Use the active owner's registered tools and live native-image policy."""
@@ -19298,11 +19284,9 @@ class JiuWenSwarmDeepAdapter:
                     "image supplemental input requires an active execution; supplemental input was not sent"
                 )
             return False
-        if self._stream_completion_state(had_interaction=False) == "suspended":
-            raise SessionInputRejectedError(
-                "session is waiting for an interaction answer; "
-                "supplemental input was not sent"
-            )
+        # Allow steering even when session is suspended waiting for an interaction
+        # answer (ask/confirm/permission card). Previously this raised
+        # SessionInputRejectedError which deferred the steer to the queue.
         bound_round = instance.active_round
 
         def require_open_input() -> None:
@@ -19314,12 +19298,11 @@ class JiuWenSwarmDeepAdapter:
                     accepting = False
                 else:
                     accepting = guard.accepting
-                if not accepting:
-                    raise SessionInputRejectedError(
-                        "session is finishing or changing execution state; "
-                        "supplemental input was not sent, "
-                        "retry after it settles"
-                    )
+                # Allow steering even when the guard is not accepting (model
+                # idle, between iterations, post-exception). Previously this
+                # raised SessionInputRejectedError which deferred to queue.
+                # The steer will be picked up on the next model iteration or
+                # tool execution cycle.
 
         require_open_input()
         media_items = []
