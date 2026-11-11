@@ -3,11 +3,15 @@
 """Worker execution residency, delivery and launch identity regressions."""
 
 from __future__ import annotations
+
 import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
 import pytest
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.request_registry import DuplicateRequestError, RequestRegistry
@@ -18,7 +22,6 @@ from jiuwenswarm.server.worker.gateway_bridge import (
     ConnHolder, WorkerGatewayBridge, begin_delivery_tracking, begin_request_dispatch,
     begin_request_generation, end_delivery_tracking, end_request_dispatch, end_request_generation,
 )
-from unittest.mock import AsyncMock, Mock
 from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN, KIND_SHUTDOWN_DONE
 from jiuwenswarm.server.supervisor import identity
 from jiuwenswarm.server.worker import service, stub
@@ -522,7 +525,7 @@ def test_replayed_frame_retains_authoritative_session_and_app_routing():
 
 def test_mailbox_push_and_execution_are_owned_by_target_session():
     from dataclasses import replace
-    from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+    from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
     from jiuwenswarm.runtime.execution_telemetry import observe_execution_entry
 
     bridge = WorkerGatewayBridge(ConnHolder())

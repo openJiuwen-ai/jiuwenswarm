@@ -11,7 +11,7 @@ from concurrent.futures import Future
 from dataclasses import asdict
 from typing import Any, Awaitable, Optional
 
-from jiuwenswarm.common.e2a.wire_codec import (
+from e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )

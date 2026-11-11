@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 from agent_gateway.routing.agent_client import AgentServerClient
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.common.request_identity import web_routing_identity
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.extensions.runtime_management_extension.agent_authorization import (
@@ -249,7 +249,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._on_server_push = handler
 
     async def _handle_pod_push(self, base_url: str, wire: dict[str, Any]) -> None:
-        from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+        from e2a.wire_codec import parse_agent_server_wire_chunk
 
         chunk = parse_agent_server_wire_chunk(wire)
         payload = chunk.payload if isinstance(chunk.payload, dict) else {}

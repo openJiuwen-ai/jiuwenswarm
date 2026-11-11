@@ -1679,7 +1679,7 @@ def _register_panel(channel, *, service, store, queue) -> None:
     """Register the panel methods against an AgentServer that owns the stub pipeline."""
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
-    from jiuwenswarm.common.e2a.models import E2AResponse
+    from e2a.models import E2AResponse
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.recommendation_host import RecommendationHost
 
@@ -3638,7 +3638,7 @@ async def test_recommendation_host_stop_failure_does_not_escape() -> None:
 @pytest.mark.asyncio
 async def test_rebind_reports_success_when_recommendation_hook_fails(monkeypatch) -> None:
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
-    from jiuwenswarm.common.e2a.models import E2AResponse
+    from e2a.models import E2AResponse
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
