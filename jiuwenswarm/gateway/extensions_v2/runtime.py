@@ -360,7 +360,10 @@ class GatewayRuntime:
             return False
         self._drop_handlers(activation.registered)
         activation.release()
-        self.browser.released(package_id)
+        # The release frames keep the generation of the record being dropped: the browser
+        # still holds that declaration, so a clear without it would be rejected (S_06).
+        generation = activation.generation if activation.package.client else None
+        self.browser.released(package_id, generation=generation)
         return True
 
     def _drop_handlers(self, registered: Sequence[str]) -> None:

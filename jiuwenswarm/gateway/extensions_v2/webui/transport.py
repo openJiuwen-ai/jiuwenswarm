@@ -46,8 +46,13 @@ class GatewayTransport:
     async def send_frame(self, frame: RenderFrame, *, generation: str | None = None) -> bool:
         return await self._send(frame.target.connection_id, FRAME_RENDER, frame.to_payload(), generation)
 
-    async def send_clear(self, frame: ClearFrame, *, generation: str | None = None) -> bool:
-        return await self._send(frame.target.connection_id, FRAME_CLEAR, frame.to_payload(), generation)
+    async def send_clear(
+        self, frame: ClearFrame, *, generation: str | None = None, released_generation: str | None = None,
+    ) -> bool:
+        return await self._send(
+            frame.target.connection_id, FRAME_CLEAR, frame.to_payload(), generation,
+            released_generation=released_generation,
+        )
 
     async def send_appearance(self, connection_id: str, payload: Mapping[str, Any]) -> bool:
         """Send one appearance contribution or revocation (S_08)."""
@@ -85,8 +90,12 @@ class GatewayTransport:
         )
 
     async def _send(self, connection_id: str, event: str, payload: Mapping[str, Any],
-                    generation: str | None = None) -> bool:
-        """Deliver one frame; ``generation`` is the calling activation's, or None for the host's own frames."""
+                    generation: str | None = None, *, released_generation: str | None = None) -> bool:
+        """Deliver one frame; ``generation`` is the calling activation's, or None for the host's own frames.
+
+        ``released_generation`` is the retired activation's on a release clear frame. The runtime
+        drops that record before the frame is sent, so the generation is used as given.
+        """
         channel = self._channel
         if channel is None or not connection_id:
             return False
@@ -97,7 +106,7 @@ class GatewayTransport:
         body = dict(payload)
         if self._generation is not None:
             package_id = body.get("target", {}).get("package_id", "")
-            stamped = self._generation(package_id, generation)
+            stamped = released_generation or self._generation(package_id, generation)
             if stamped:
                 body["activation_generation"] = stamped
         try:

@@ -120,6 +120,8 @@ class BrowserBridge:
         self._appearance_locks: dict[str, asyncio.Lock] = {}
         # Browser notifications started from synchronous package release.
         self._tasks: set[asyncio.Task] = set()
+        # Releases that still have to clear their views before declarations are withdrawn.
+        self._releases_pending = 0
         self.splash_preferences = SplashPreferences(runtime.config.data_dir)
         self.transfers = TransferManager(runtime)
         self.presentations = PresentationControl(runtime)
@@ -383,8 +385,8 @@ class BrowserBridge:
     def frame_generation(self, package_id: str, generation: str | None = None) -> str | None:
         """The generation a frame carries: the calling activation's, else the current one.
 
-        Frames a package's render caused stay attributed to the activation that called it; frames the
-        host sends on its own (release, eviction, shutdown) carry the current one. Only client-capability
+        Frames a package's render caused stay attributed to the activation that called it; a
+        release frame passes the retired generation explicitly instead. Only client-capability
         packages are declared to the browser, so frames of other application packages carry none.
         """
         activation = self.runtime.current_activation(package_id)
@@ -392,26 +394,53 @@ class BrowserBridge:
             return None
         return generation or activation.generation
 
-    def released(self, package_id: str) -> None:
-        """Retire a package's views and appearance, and tell the affected browsers."""
+    def released(self, package_id: str, generation: str | None = None) -> None:
+        """Retire a package's views and appearance, and tell the affected browsers.
+
+        ``generation`` is the retired activation's generation for a client package: its clear
+        frames must carry it to stay acceptable until the browser withdraws the declaration.
+        """
         self.presentations.invalidate(package_id=package_id)
         clears = self.runtime.registry.retire_package(package_id)
         revokes = self.appearance.release(package_id)
-        if clears or revokes:
-            self.spawn(self._notify_release(package_id, clears, revokes))
+        if clears or revokes or generation is not None:
+            task = self.spawn(self._notify_release(package_id, clears, revokes, generation))
+            if task is not None:
+                # The browser must clear before any declarations withdraw the package (S_06).
+                self._releases_pending += 1
         for upload in self.transfers.release(package_id=package_id):
             self.transfers.discard_later(upload)
 
-    async def _notify_release(self, package_id: str, clears, revokes) -> None:
+    async def _notify_release(self, package_id: str, clears, revokes,
+                              generation: str | None = None) -> None:
         transport = self.runtime.webui.transport
-        for frame in clears:
-            await transport.send_clear(frame)
-        for connection_id, revision in revokes:
-            # The connection lock orders the revoke after a frame that was still in flight.
-            async with self._appearance_locks.setdefault(connection_id, asyncio.Lock()):
-                await transport.send_appearance(connection_id, {
-                    "package_id": package_id, "revision": revision, "appearance": None,
-                })
+        try:
+            pending: dict[str, list] = {}
+            for frame in clears:
+                pending.setdefault(frame.target.connection_id, []).append(frame)
+            # A release frame must reach each browser with the retired generation while that
+            # browser still holds the declaration; a later declaration withdrawal would make
+            # the clear unacceptable and leave the view mounted until the page reloads (S_06).
+            for connection_id, frames in pending.items():
+                connection = self.connections.get(connection_id)
+                if connection is None:
+                    for frame in frames:
+                        await transport.send_clear(frame, released_generation=generation)
+                    continue
+                async with connection.lock:
+                    for frame in frames:
+                        await transport.send_clear(frame, released_generation=generation)
+            for connection_id, revision in revokes:
+                # The connection lock orders the revoke after a frame that was still in flight.
+                async with self._appearance_locks.setdefault(connection_id, asyncio.Lock()):
+                    await transport.send_appearance(connection_id, {
+                        "package_id": package_id, "revision": revision, "appearance": None,
+                    })
+        finally:
+            self._releases_pending -= 1
+            if self._releases_pending == 0:
+                # Declarations are withdrawn only after every release cleared its views.
+                await self.publish_declarations()
 
     def spawn(self, coroutine) -> asyncio.Task | None:
         """Run a browser notification or file cleanup in the background; ``settle`` waits for it."""
@@ -429,7 +458,11 @@ class BrowserBridge:
     async def settle(self) -> None:
         """Wait until release notifications have been sent."""
         while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            pending = list(self._tasks)
+            await asyncio.gather(*pending, return_exceptions=True)
+            # A task that already finished yields nothing when gathered, so discard it here
+            # instead of waiting for its done callback, which would spin this loop.
+            self._tasks.difference_update(pending)
 
     async def apply_appearance(self, caller: Caller, appearance: Mapping[str, Any] | None) -> dict[str, Any]:
         """Deliver or revoke the calling package's appearance on its browser connection (S_08)."""
@@ -468,6 +501,9 @@ class BrowserBridge:
             await self._declare(connection)
 
     async def _declare(self, connection: BrowserConnection) -> None:
+        if self._releases_pending:
+            # The last pending release withdraws the package after its clear frames arrive.
+            return
         packages = [{"packageId": activation.package_id, "activationGeneration": activation.generation,
                      "requestBindings": activation.package.client["requestBindings"]}
                     for activation in self.runtime.current_activations() if activation.package.client]
@@ -478,6 +514,19 @@ class BrowserBridge:
                 "connectionEpoch": connection.epoch, "packages": packages,
             })
             connection.declaration_signature = signature
+
+    async def publish_declarations(self) -> None:
+        """Send current declarations to every connected browser.
+
+        Activation changes triggered by management frames are not followed by a business
+        frame, so the next request may not connect and refresh them in time.
+        """
+        for connection in list(self.connections.values()):
+            async with connection.lock:
+                try:
+                    await self._declare(connection)
+                except Exception:  # noqa: BLE001 - one closed socket must not hide the others
+                    logger.warning("[GatewayExtensions] declarations could not be delivered", exc_info=True)
 
     def drop_connection(self, connection_id: str) -> None:
         self.presentations.invalidate(connection_id=connection_id)
