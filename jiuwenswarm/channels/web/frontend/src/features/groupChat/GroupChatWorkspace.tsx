@@ -23,6 +23,8 @@ import type { AgentGroupCatalogItem } from '../agentManagement/types';
 import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
+import { IssueReviewPanel } from '../../components/InteractionSlot/IssueReviewPanel';
+import { getIssueReviewDraft } from '../../components/InteractionSlot/promptRouting';
 import '../../components/InteractionSlot/InteractionSlot.css';
 import { FINISHED_EXECUTIONS, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, renameAttachment, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
@@ -250,7 +252,11 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
         void refresh();
         return;
       }
-      if (type === 'chat.ask_user_question' && payload.source === 'ask_user_interrupt') {
+      if (
+        type === 'chat.ask_user_question'
+        && (payload.source === 'ask_user_interrupt'
+          || (payload.source === 'confirm_interrupt' && payload.group_id === groupId))
+      ) {
         const pending = payload as unknown as GroupQuestion;
         if (answeredQuestions.current.has(pending.request_id)) return;
         setQuestions((current) => [...current.filter((item) => item.request_id !== pending.request_id), pending]);
@@ -325,15 +331,19 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
     return () => observer.disconnect();
   }, [messages, executions, loading]);
 
-  async function answerQuestion(requestId: string, answers: UserAnswer[]) {
+  async function answerQuestion(requestId: string, answers: UserAnswer[], source?: string) {
     if (!groupId) return false;
     try {
-      await groupChatClient.answer(groupId, requestId, answers);
+      await groupChatClient.answer(groupId, requestId, answers, source);
       answeredQuestions.current.add(requestId);
       if (alive.current) setQuestions((current) => current.filter((item) => item.request_id !== requestId));
       return true;
     } catch (reason) { report(reason); return false; }
   }
+
+  const pendingQuestion = questions[0];
+  const pendingIssueReview = pendingQuestion && { ...pendingQuestion, interruptId: pendingQuestion.interrupt_id };
+  const issueDraft = getIssueReviewDraft(pendingIssueReview);
 
   async function loadOlder() {
     if (!groupId || loadingOlder) return;
@@ -577,16 +587,21 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           ))}
         </div>
         <div className="group-chat-composer-area">
-          {questions[0] && <div className="interaction-slot" data-testid="group-chat-question">
+          {pendingQuestion && <div className="interaction-slot" data-testid="group-chat-question">
             <p className="group-chat-question-owner" data-testid="group-chat-question-owner">
               {t('groupChat.questionFrom', { name: group.members.find(
-                (member) => member.member_name === questions[0].member_name,
-              )?.display_name || questions[0].member_name || group.name })}
+                (member) => member.member_name === pendingQuestion.member_name,
+              )?.display_name || pendingQuestion.member_name || group.name })}
             </p>
-            <InteractionPrompt key={questions[0].request_id} pending={questions[0]} echoAnswer={false} variant="composer"
-              onSubmit={answerQuestion} />
+            {issueDraft && pendingIssueReview ? (
+              <IssueReviewPanel key={pendingQuestion.request_id} pending={pendingIssueReview}
+                draft={issueDraft} onSubmit={answerQuestion} />
+            ) : (
+              <InteractionPrompt key={pendingQuestion.request_id} pending={pendingQuestion} echoAnswer={false}
+                variant="composer" onSubmit={answerQuestion} />
+            )}
           </div>}
-          {!questions[0] && <form className="group-chat-composer" data-testid="group-chat-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+          {!pendingQuestion && <form className="group-chat-composer" data-testid="group-chat-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
             <textarea ref={textarea} value={input} maxLength={20000}
               aria-label={t('groupChat.message')} placeholder={t('groupChat.placeholder')} data-testid="group-chat-input"
               aria-controls={mentionMenu ? 'group-chat-mention-list' : undefined}

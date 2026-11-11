@@ -289,14 +289,16 @@ test('file sizes use compact units', () => {
   assert.equal(formatFileSize(5 * 1024 * 1024), '5M');
 });
 
-test('question answers resume through the owning group without exposing private sessions', async () => {
-  const answers = [{ question: 'Budget?', selected_options: ['Low'], custom_input: '' }];
-  const result = await groupChatClient.answer('group-one', 'question-one', answers);
-  assert.equal(result.method, 'chat.send');
-  assert.deepEqual(result.params, {
-    group_id: 'group-one', query: '', source: 'ask_user_interrupt', request_id: 'question-one', answers,
+for (const [source, option] of [['ask_user_interrupt', 'Low'], ['confirm_interrupt', 'allow_once']]) {
+  test(`${source} resumes through the owning group without exposing private sessions`, async () => {
+    const answers = [{ question: 'Question?', selected_options: [option] }];
+    const result = await groupChatClient.answer('group-one', 'question-one', answers, source);
+    assert.equal(result.method, 'chat.send');
+    assert.deepEqual(result.params, {
+      group_id: 'group-one', query: '', source, request_id: 'question-one', answers,
+    });
   });
-});
+}
 
 const executionBundlePath = 'node_modules/.cache/group-chat/ExecutionCard.mjs';
 await build({

@@ -135,7 +135,7 @@ def _post_report(draft: IssueDraft, token: str) -> dict[str, Any]:
 class GetIssueTemplateTool(Tool):
     """Expose the current Bug Report form without creating an issue."""
 
-    def __init__(self, session_id: str, language: str = "en") -> None:
+    def __init__(self, session_id: str, language: str = "en", *, group_chat: bool = False) -> None:
         super().__init__(ToolCard(
             id=GET_ISSUE_TEMPLATE_TOOL_NAME,
             name=GET_ISSUE_TEMPLATE_TOOL_NAME,
@@ -149,10 +149,12 @@ class GetIssueTemplateTool(Tool):
         ))
         self._session_id = session_id
         self._language = language
+        self._group_chat = group_chat
 
     async def invoke(self, inputs: Any, *, session: Any = None) -> dict[str, Any]:
         run = AUTHORIZATION_EXECUTION_CONTEXTS.get(self._session_id)
-        if run is None or not run.is_interactive_web:
+        is_interactive_web = run is not None and run.is_interactive_web
+        if not (self._group_chat or is_interactive_web):
             return {"status": "unavailable", "message": "Issue template lookup requires interactive Web chat."}
         try:
             template = await asyncio.to_thread(load_bug_report_template, _OWNER, _REPO, self._language)
@@ -170,7 +172,7 @@ class ReportIssueTool(Tool, InterruptOwnerMixin):
     accepts_tool_callback_context = True
     interrupt_kind = InterruptKind.CONFIRM
 
-    def __init__(self, session_id: str, language: str = "en") -> None:
+    def __init__(self, session_id: str, language: str = "en", *, group_chat: bool = False) -> None:
         super().__init__(ToolCard(
             id=REPORT_ISSUE_TOOL_NAME,
             name=REPORT_ISSUE_TOOL_NAME,
@@ -187,6 +189,7 @@ class ReportIssueTool(Tool, InterruptOwnerMixin):
         ))
         self._session_id = session_id
         self._language = language
+        self._group_chat = group_chat
 
     async def invoke(
         self,
@@ -199,7 +202,7 @@ class ReportIssueTool(Tool, InterruptOwnerMixin):
         tool_call = ctx.inputs.tool_call if ctx is not None else None
         run = AUTHORIZATION_EXECUTION_CONTEXTS.get(self._session_id)
         is_interactive_web = run is not None and run.is_interactive_web
-        if tool_call is None or not tool_call.id or not is_interactive_web:
+        if tool_call is None or not tool_call.id or not (self._group_chat or is_interactive_web):
             return {"status": "unavailable", "message": "Reporting requires interactive Web chat."}
         try:
             report = BugReportInput.model_validate(inputs)
@@ -285,5 +288,8 @@ class ReportIssueTool(Tool, InterruptOwnerMixin):
         raise ToolInterruptException(request=request, tool_call=tool_call)
 
 
-def build_issue_report_tools(session_id: str, language: str) -> list[Tool]:
-    return [GetIssueTemplateTool(session_id, language), ReportIssueTool(session_id, language)]
+def build_issue_report_tools(session_id: str, language: str, *, group_chat: bool = False) -> list[Tool]:
+    return [
+        GetIssueTemplateTool(session_id, language, group_chat=group_chat),
+        ReportIssueTool(session_id, language, group_chat=group_chat),
+    ]

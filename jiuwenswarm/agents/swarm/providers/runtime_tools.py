@@ -31,6 +31,7 @@ from openjiuwen.agent_teams.harness.manifest import (
     harness_element,
     param_field,
 )
+from openjiuwen.agent_teams.rails.team_context import get_team_backend
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
@@ -91,18 +92,23 @@ def build_session_messaging_tools(
 @harness_element(
     kind=ElementKind.TOOL,
     name=REPORT_ISSUE,
-    description="Leader-only JiuwenSwarm bug report template lookup and submission.",
+    description="JiuwenSwarm bug report template lookup and submission for team leaders and group members.",
 )
 def build_report_issue_tool(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
-    """Expose the reporting tools on personal Web Team leaders."""
+    """Expose reporting in personal Web sessions with a user confirmation route."""
     from jiuwenswarm.agents.harness.common.tools.report_issue import build_issue_report_tools
     from jiuwenswarm.enterprise import is_enterprise
 
-    if str(ctx.role) != "leader" or ctx.channel_id != "web" or is_enterprise():
+    if ctx.channel_id != "web" or is_enterprise():
         return []
     if not ctx.session_id or is_cron_execution_session(ctx.session_id):
         return []
-    return build_issue_report_tools(ctx.session_id, ctx.language)
+    backend = get_team_backend(ctx)
+    group_chat = getattr(backend, "conversation_mode", None) == "group_chat"
+    role = str(ctx.role)
+    if role != "leader" and not (group_chat and role == "teammate"):
+        return []
+    return build_issue_report_tools(ctx.session_id, ctx.language, group_chat=group_chat)
 
 
 class CronToolsInput(ConstructionInput):

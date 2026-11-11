@@ -11,6 +11,7 @@ export interface GroupMember {
 }
 
 export interface GroupQuestion extends AskUserQuestionPayload {
+  interrupt_id?: string;
   member_name?: string;
   execution_id?: string | null;
 }
@@ -117,9 +118,9 @@ export const groupChatClient = {
       isStream: true, timeoutMs: 60_000, signal: controller.signal, onRequestId: (id) => { requestId = id; },
     }).catch(fail);
   }),
-  answer: (groupId: string, requestId: string, answers: UserAnswer[]) =>
+  answer: (groupId: string, requestId: string, answers: UserAnswer[], source = 'ask_user_interrupt') =>
     webRequest<{ request_id: string; accepted: boolean }>('chat.send', {
-      group_id: groupId, query: '', source: 'ask_user_interrupt', request_id: requestId, answers,
+      group_id: groupId, query: '', source, request_id: requestId, answers,
     }),
   renameFile: (groupId: string, path: string, name: string) =>
     webRequest<{ group_id: string; path: string; old_path: string; name: string }>(

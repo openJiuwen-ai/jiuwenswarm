@@ -101,12 +101,14 @@ TASK_RULES = (
 )
 
 
-def install_execution_policy(agent, *, include_tools=True):
+def install_execution_policy(agent, *, include_start_task=True):
+    from jiuwenswarm.agents.swarm.providers.runtime_tools import REPORT_ISSUE
+
     tools = list(agent.tools or [])
     known = {getattr(tool, "type", None) for tool in tools}
     tools = [tool for tool in tools if getattr(tool, "type", None) != "swarm.group_submit_task"]
-    task_tools = (START_TASK,) if include_tools else ()
-    for tool_type in task_tools:
+    group_tools = (REPORT_ISSUE, START_TASK) if include_start_task else (REPORT_ISSUE,)
+    for tool_type in group_tools:
         if tool_type not in known:
             tools.append(BuiltinToolSpec(type=tool_type))
     agent.tools = tools
@@ -530,10 +532,13 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
     async def after_invoke(self, ctx):
         from jiuwenswarm.agents.swarm.group_org_bootstrap import finish_organization_member_turn
+        from jiuwenswarm.agents.swarm.group_questions import publish_group_issue_reviews
         from jiuwenswarm.server.runtime.group_questions import GroupQuestions
 
-        if read_group(self.context.session_id) is None:
+        group = read_group(self.context.session_id)
+        if group is None:
             return
+        await publish_group_issue_reviews(ctx, self.context, group)
         if GroupQuestions(self.context.session_id).pending(self.context.member_name):
             return
 
