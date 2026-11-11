@@ -103,6 +103,9 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
     global _agent_observability_active, _force_ever_enabled
 
     config = get_config()
+    if config.get("trace_enabled") is False:
+        shutdown_agent_observability()
+        return
     cfg = config.get("agent_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = (

@@ -152,6 +152,9 @@ def sync_team_observability() -> None:
     """
     global _observability_active
     config = get_config()
+    if config.get("trace_enabled") is False:
+        shutdown_team_observability()
+        return
     cfg = config.get("team_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = get_skill_evolution_enabled(

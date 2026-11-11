@@ -813,3 +813,35 @@ def test_processor_failure_is_counted_without_escaping():
 def test_mapping_is_not_a_missing_scalar_option(key):
     runtime = telemetry.configure_gateway_telemetry({"telemetry": {"enabled": True, key: {}}})
     assert runtime.tracer is None
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_platform_trace_switch_overrides_environment_and_trace_settings(monkeypatch, enabled):
+    exporter = InMemorySpanExporter()
+    endpoints = []
+    monkeypatch.setattr(
+        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter",
+        lambda **options: endpoints.append(options["endpoint"]) or exporter,
+    )
+    monkeypatch.setenv("OTEL_ENABLED", "false" if enabled else "true")
+    runtime = telemetry.configure_gateway_telemetry({
+        "trace_enabled": enabled,
+        "telemetry": {
+            "enabled": not enabled,
+            "exporter": "otlp",
+            "protocol": "grpc",
+            "endpoint": "http://collector:4317",
+            "traces": {"exporter": "invalid", "protocol": "invalid", "endpoint": []},
+        },
+    })
+    try:
+        operation = telemetry.start_request_trace("r", "models.list", channel="web", connection_id="c")
+        assert (operation is not None) is enabled
+        if operation:
+            operation.finish("success")
+            runtime.provider.force_flush()
+        assert len(exporter.get_finished_spans()) == int(enabled)
+        assert endpoints == (["http://collector:4317"] if enabled else [])
+    finally:
+        if runtime.provider:
+            runtime.provider.shutdown()
