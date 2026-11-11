@@ -25,9 +25,11 @@ _config_update_handle: asyncio.TimerHandle | None = None
 def invalidate_local_enterprise_config_caches() -> None:
     """只失效本进程（gateway）的企业配置缓存，不调度 runtime 刷新。
 
-    用于写的表 runtime 池子不消费、但 loader 消费的场景（如扩展配置模板）：
-    下次 load_effective_enterprise_config 即重读库看到新内容，而 AgentServer Pod
-    不再被无条件日落（config_refresh 不携带模板内容，本就不是其生效路径）。
+    供扩展配置模板写端点调用（研发评审："只做缓存失效，不调度 config_refresh"）。
+    gateway 进程自身经同一 loader 模块级缓存读企业配置（web 渠道
+    app_web_handlers 的模型列表等槽位），失效后下次调用即重读库看到新内容；
+    AgentServer Pod 的进程内 loader 缓存独立于本进程、收不到该失效（温 Pod
+    滞留上限=TTL），精确失效通道交平台研发跟进。
     失败仅告警，不影响写端点本身。
     """
     try:

@@ -90,12 +90,11 @@ def _add_template_crud(
     tag: str,
     create_body: type,
     update_body: type,
+    *,
+    notify_runtime: bool = True,
 ) -> None:
     create_sync = make_sync_body(f"{tag.title().replace('_', '')}TemplateCreateSyncBody", create_body)
     update_sync = make_sync_body(f"{tag.title().replace('_', '')}TemplateUpdateSyncBody", update_body)
-    # 扩展配置模板写的表 runtime 不消费（D2），写后不戳 config_refresh；
-    # 其余模板维持既有"每写必戳"行为不变。
-    notify_runtime = tag != "extension_config"
 
     async def create_template(
         request: Request,
@@ -112,8 +111,8 @@ def _add_template_crud(
         if notify_runtime:
             trigger_runtime_config_update()
         else:
-            # 扩展配置：runtime 池子不消费其表，只失效本进程企业配置缓存
-            # （下次 loader 读库即新内容），不调度 config_refresh 换血。
+            # 扩展配置：不调度 runtime 刷新（理由见注册处注释），只失效本进程
+            # 企业配置缓存（web 渠道经同一 loader 模块级缓存读企业配置）。
             invalidate_local_enterprise_config_caches()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, result)
@@ -135,8 +134,8 @@ def _add_template_crud(
         if notify_runtime:
             trigger_runtime_config_update()
         else:
-            # 扩展配置：runtime 池子不消费其表，只失效本进程企业配置缓存
-            # （下次 loader 读库即新内容），不调度 config_refresh 换血。
+            # 扩展配置：不调度 runtime 刷新（理由见注册处注释），只失效本进程
+            # 企业配置缓存（web 渠道经同一 loader 模块级缓存读企业配置）。
             invalidate_local_enterprise_config_caches()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
@@ -155,8 +154,8 @@ def _add_template_crud(
         if notify_runtime:
             trigger_runtime_config_update()
         else:
-            # 扩展配置：runtime 池子不消费其表，只失效本进程企业配置缓存
-            # （下次 loader 读库即新内容），不调度 config_refresh 换血。
+            # 扩展配置：不调度 runtime 刷新（理由见注册处注释），只失效本进程
+            # 企业配置缓存（web 渠道经同一 loader 模块级缓存读企业配置）。
             invalidate_local_enterprise_config_caches()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
@@ -213,12 +212,22 @@ _add_template_crud(
     EmbeddingTemplateCreateRequest,
     EmbeddingTemplateUpdateRequest,
 )
+# 扩展配置写后不戳 config_refresh（create/update/delete 同）：
+# - runtime 池子只消费 service_config_template/service_config_container/routing_scope
+#   三张表（P0 报告 D2），写扩展配置对池子配置零数据效果；
+# - config_refresh 是无载荷的全池无条件日落（每轮成功=代次+1+候选集全量软摘），
+#   客户 11-10 实测 3.1 万条扩展配置写/天被放大成 930 轮换血（409 风暴）——P0；
+# - 扩展配置的真实消费方：①客户 agentserver 运行时直读 gateway 库（热生效）；
+#   ②平台标准形态经 loader 槽位在 AS Pod 进程内消费（TTL 3600s/600s），存量温 Pod
+#   最长约 1h 后生效——精确失效通道（loader 按表 TTL 覆盖或 CONFIG_CACHE_CLEAR 扩展
+#   +gateway 广播）交平台研发跟进，见 P0 报告"B1′ v2"节。
 _add_template_crud(
     "/extension-config-templates",
     ExtensionConfigTemplateService,
     "extension_config",
     ExtensionConfigTemplateCreateRequest,
     ExtensionConfigTemplateUpdateRequest,
+    notify_runtime=False,
 )
 _add_template_crud(
     "/skill-prebuilt-templates",
