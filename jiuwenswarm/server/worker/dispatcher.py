@@ -272,8 +272,16 @@ class WorkerDispatcher:
                 # with no remaining owner must not keep a pruned input busy.
                 # Active handlers can still be warming or awaiting admission.
                 if not record.active:
-                    record.is_processing = False
-                    record.interactions.clear()
+                    # An empty ledger only proves the Coordinator stopped
+                    # retaining the execution. A single-agent turn keeps
+                    # streaming after its handler returns, and a freshly
+                    # created session may not have registered its execution
+                    # yet, so pruning must not cancel the stream's own
+                    # processing claim (chat.processing_status). Records whose
+                    # busy flag came from elsewhere keep the old pruning.
+                    if not record.stream_processing_claim:
+                        record.is_processing = False
+                        record.interactions.clear()
                     self._bridge.events.finish(record.dispatch_id)
                 continue
             ongoing = [item for item in executions if not item.state.terminal]

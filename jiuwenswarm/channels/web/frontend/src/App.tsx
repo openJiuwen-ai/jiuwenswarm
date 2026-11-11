@@ -701,6 +701,11 @@ function AppContent({
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
+  // 断线重连后的首次元数据快照允许纠正运行态：断线期间终态事件可能已经丢失。
+  // 其余场景下快照只能把运行态拉起来，不能把正在跑的轮次压回空闲——worker 的
+  // 运行态快照会滞后于事件流，用滞后快照回落会让发送按钮和任务转圈闪回空闲
+  // （#6196 新建会话首条消息、#6154 code 模式首条消息空白、#6155 切回会话不转圈）。
+  const metadataDowngradeAllowedRef = useRef(new Set<string>());
   const sessionViewIdRef = useRef(generateUuidV4());
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
@@ -2067,10 +2072,18 @@ function AppContent({
       // session 的运行态并覆盖，不是磁盘 metadata 的历史值。刷新页面时用这条
       // 明确状态恢复停止按钮；之后同一 WebSocket 上的 processing_status 事件
       // 继续按发送顺序推进状态机。
+      // 但 worker 的运行态快照会滞后于事件流：新建会话刚发出、切走再切回时，
+      // 快照可能仍报告未运行。允许这种滞后快照把运行态压回空闲，会让发送按钮
+      // 和任务转圈闪回空闲，所以只有断线重连后的首次快照才允许它回落，其余情况
+      // 运行态的结束交给终态事件（processing_status(false) / chat.final）。
       if (typeof session.is_processing === 'boolean') {
-        setProcessing(targetSessionId, session.is_processing);
-        if (!session.is_processing) {
-          setThinking(targetSessionId, false);
+        const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
+        const locallyBusy = useChatStore.getState().getRuntime(targetSessionId)?.foregroundIsProcessing === true;
+        if (session.is_processing || allowDowngrade || !locallyBusy) {
+          setProcessing(targetSessionId, session.is_processing);
+          if (!session.is_processing) {
+            setThinking(targetSessionId, false);
+          }
         }
       }
       if (session.session_equipment && typeof session.session_equipment === 'object') {
@@ -2628,10 +2641,18 @@ function AppContent({
     };
   }, [initialDataLoaded, isConnected, loadProjects]);
 
+  // 记录连接状态跃迁：断线期间终态事件可能丢失，重连后允许用一次元数据快照
+  // 把残留的运行态纠正回空闲。
+  const prevConnectedRef = useRef(isConnected);
   useEffect(() => {
+    const reconnected = isConnected && prevConnectedRef.current === false;
+    prevConnectedRef.current = isConnected;
     if (!isConnected || !routeSessionId) {
       setMissingSessionId(null);
       return;
+    }
+    if (reconnected) {
+      metadataDowngradeAllowedRef.current.add(routeSessionId);
     }
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
