@@ -11,7 +11,7 @@ import hashlib
 import json
 import sqlite3
 from textwrap import indent
-from typing import Any, Never
+from typing import Any, NoReturn
 
 import httpx
 from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
