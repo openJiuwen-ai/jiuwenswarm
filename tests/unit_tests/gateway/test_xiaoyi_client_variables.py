@@ -37,6 +37,10 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect impo
     XiaoyiChannelConfig,
     _normalize_approval_text,
 )
+from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.a2a_vars import (
+    extract_model_input,
+    normalize_model_input,
+)
 
 
 # ------------------------------------------------------------------ fixtures
@@ -318,6 +322,36 @@ def test_approval_reply_vocabulary():
     assert session not in ch._pending_approvals
 
 
+# ------------------------------------------------------------------ a2a_vars：模型输入模态
+
+
+def test_normalize_model_input_list_string_and_empty():
+    assert normalize_model_input([" Text ", "text", "IMAGE", ""]) == ["text", "image"]
+    # 单字符串形态（手机实测为 "" / 也兼容 "text,image" 扁平写法）
+    assert normalize_model_input("text,image") == ["text", "image"]
+    assert normalize_model_input("IMAGE") == ["image"]
+    assert normalize_model_input("") is None
+    assert normalize_model_input([]) is None
+    assert normalize_model_input(None) is None
+    assert normalize_model_input(["", "  ", 1, None]) is None
+
+
+def test_extract_model_input_from_client_variables():
+    def msg_with(client_vars):
+        return [{
+            "kind": "data",
+            "data": {"variables": {"clientVariables": client_vars}},
+        }]
+
+    assert extract_model_input(msg_with({"modelInput": ["text", "image"]})) == ["text", "image"]
+    assert extract_model_input(msg_with({"modelInput": "text,image"})) == ["text", "image"]
+    # 空字符串 = 不声明（手机 Auto-Model 实测形态）
+    assert extract_model_input(msg_with({"modelInput": ""})) is None
+    assert extract_model_input(msg_with({"modelName": "Auto-Model"})) is None
+    assert extract_model_input([{"kind": "text", "text": "hi"}]) is None
+    assert extract_model_input(None) is None
+
+
 # ------------------------------------------------------------------ 消息流全链路
 
 
@@ -366,6 +400,43 @@ async def test_message_stream_applies_workspace_and_permission(cfg_file, workspa
         n = len(captured)
         await ch._handle_message_stream(_build_stream_msg("", {"workspace": str(workspace)}, task="task-4"))
         assert len(captured) == n
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_message_stream_forwards_model_input(cfg_file, workspace):
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        # 手机选中支持图片的模型：modelInput 随 chat.send params 透传给 AgentServer
+        await ch._handle_message_stream(
+            _build_stream_msg(
+                "看看这张图",
+                {"modelName": "DeepSeek_V4.1_Flash_VE", "modelInput": ["text", "image"]},
+            )
+        )
+        m = captured[-1]
+        assert m.params["model_name"] == "DeepSeek_V4.1_Flash_VE"
+        assert m.params["model_input"] == ["text", "image"]
+
+        # 扁平字符串形态（"text,image"）归一化后同样透传
+        await ch._handle_message_stream(
+            _build_stream_msg(
+                "再看看",
+                {"modelName": "DeepSeek_V4.1_Flash_VE", "modelInput": "text,image"},
+                task="task-2",
+            )
+        )
+        assert captured[-1].params["model_input"] == ["text", "image"]
+
+        # 空 modelInput（手机 Auto-Model 实测形态）：不注入，保持旧行为
+        await ch._handle_message_stream(
+            _build_stream_msg("普通消息", {"modelName": "Auto-Model", "modelInput": ""}, task="task-3")
+        )
+        m = captured[-1]
+        assert m.params["model_name"] == "Auto-Model"
+        assert "model_input" not in m.params
     finally:
         _cleanup_tasks(ch)
 

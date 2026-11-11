@@ -57,6 +57,7 @@ from jiuwenswarm.common.xiaoyi_reference import (
     coerce_references,
 )
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.a2a_vars import (
+    extract_model_input,
     extract_model_name,
 )
 from jiuwenswarm.common.permission_profile import (
@@ -3608,6 +3609,12 @@ class XiaoyiChannel(BaseChannel):
         if model_name:
             params["model_name"] = model_name
             logger.info("[Xiaoyi] Found modelName: %s", model_name)
+        # Per-request input modalities of the selected model (e.g. ["text","image"]).
+        # Empty/missing = no declaration: agent falls back to its own config/probe.
+        model_input = extract_model_input(parts)
+        if model_input:
+            params["model_input"] = model_input
+            logger.info("[Xiaoyi] Found modelInput: %s", model_input)
 
         user_message = Message(
             id=message.get("id", ""),
