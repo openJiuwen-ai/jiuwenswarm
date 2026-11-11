@@ -19962,6 +19962,10 @@ class JiuWenSwarmDeepAdapter:
                     payload["steering_generation_start"] = True
             if event_type in ("chat.tool_call", "chat.tool_update", "chat.tool_result"):
                 had_tool_output = True
+            if event_type == "chat.tool_call" or event_type in USER_INTERACTION_EVENTS:
+                # The history writer closes the text segment here; the stream-end
+                # final patches the open segment only.
+                visible_answer_deltas.clear()
             if event_type == "chat.delta":
                 # Single choke point for forwarded text: memo it so a demoted
                 # goal attempt final can skip text the bubble already shows.
