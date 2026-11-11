@@ -62,24 +62,20 @@ class LastIterationFinalizeRail(DeepAgentRail):
             if not tool_calls:
                 return
 
-        # 临时手段：``max_iterations_reached`` 前缀是给下游 relay-claw 分类用的
-        # 文本标记。本 PR 已把 finish_reason 透传为 chat.error.code，但 relay-claw
-        # classifyError 目前没有 errorCode == "max_iterations" 的归类分支、仍只靠
-        # 正则 /max iterations reached|max_iterations_reached/i 命中文本，所以前缀
-        # 暂保留；它会泄漏到 Web/TUI 等非 relay-claw 通道的用户可见文案，属已知代价。
-        # 移除条件：待 relay-claw classifyError 增加该 code 分支后，删除此前缀、
-        # 恢复纯中文/英文用户文案。
+        # 分类不再依赖用户可见文案：``finish_reason="max_iterations"`` 经流式层
+        # build_chat_error_event 透传为 chat.error.code，下游 relay-claw classifyError
+        # 已按 errorCode == "max_iterations" 精确归类（不依赖文案正则）。因此 output
+        # 保持纯中文/英文用户文案，不掺入任何给下游分类用的英文技术标记。
         if self._language == "en":
             output = (
-                "max_iterations_reached: The maximum number of reasoning "
+                "The maximum number of reasoning "
                 f"iterations ({iteration}/{max_iterations}) was reached and the "
                 "task did not complete.\nNarrow the task scope or provide the "
                 "missing data source, then retry."
             )
         else:
             output = (
-                f"max_iterations_reached：已达到最大思考轮数"
-                f"（{iteration}/{max_iterations}），任务未完成。\n"
+                f"已达到最大思考轮数（{iteration}/{max_iterations}），任务未完成。\n"
                 "建议：缩小任务范围，或补充数据源后重试。"
             )
 
