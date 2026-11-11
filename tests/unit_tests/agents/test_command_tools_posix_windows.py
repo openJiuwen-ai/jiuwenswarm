@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools.command_tools import (
-    _decode_subprocess_output,
     _looks_like_posix,
+    _resolve_encoding,
     _resolve_execution_plan,
     _run_command_sync,
     _split_shell_segments,
@@ -21,24 +21,29 @@ from jiuwenswarm.agents.harness.common.tools.command_tools import (
 )
 
 
-class TestDecodeSubprocessOutput:
-    def test_prefers_utf8_over_windows_locale(self, monkeypatch) -> None:
+class TestResolveEncoding:
+    def test_bash_on_windows_uses_utf8(self, monkeypatch) -> None:
+        if os.name != "nt":
+            pytest.skip("Windows-only test")
+        assert _resolve_encoding("bash") == "utf-8"
+        assert _resolve_encoding("sh") == "utf-8"
+
+    def test_cmd_uses_system_encoding(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "jiuwenswarm.agents.harness.common.tools.command_tools.locale.getpreferredencoding",
             lambda _do_setlocale: "gbk",
         )
+        assert _resolve_encoding("cmd") == "gbk"
+        assert _resolve_encoding("powershell") == "gbk"
 
-        assert _decode_subprocess_output("中文 output".encode()) == "中文 output"
-
-    def test_falls_back_to_system_encoding(self, monkeypatch) -> None:
+    def test_falls_back_to_utf8_when_no_locale(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "jiuwenswarm.agents.harness.common.tools.command_tools.locale.getpreferredencoding",
-            lambda _do_setlocale: "gbk",
+            lambda _do_setlocale: "",
         )
+        assert _resolve_encoding("cmd") == "utf-8"
 
-        assert _decode_subprocess_output("中文 output".encode("gbk")) == "中文 output"
-
-    def test_sync_command_decodes_stdout_and_stderr_from_bytes(self, monkeypatch) -> None:
+    def test_sync_command_uses_text_mode_with_encoding(self, monkeypatch) -> None:
         popen_kwargs = {}
 
         class FakeProcess:
@@ -51,7 +56,7 @@ class TestDecodeSubprocessOutput:
                 return self.returncode
 
             def communicate(self, timeout):
-                return "标准输出".encode(), "错误输出".encode()
+                return "标准输出", "错误输出"
 
         def fake_popen(*_args, **kwargs):
             popen_kwargs.update(kwargs)
@@ -59,19 +64,20 @@ class TestDecodeSubprocessOutput:
 
         monkeypatch.setattr(
             "jiuwenswarm.agents.harness.common.tools.command_tools._resolve_execution_plan",
-            lambda *_args: (["utf8-cli"], False, "cmd"),
+            lambda *_args: (["utf8-cli"], False, "bash"),
         )
         monkeypatch.setattr(
             "jiuwenswarm.agents.harness.common.tools.command_tools.subprocess.Popen",
             fake_popen,
         )
 
-        completed, _resolved_shell = _run_command_sync("utf8-cli", 5, Path("."), "cmd")
+        completed, _resolved_shell = _run_command_sync("utf8-cli", 5, Path("."), "bash")
 
         assert completed.stdout == "标准输出"
         assert completed.stderr == "错误输出"
-        assert "text" not in popen_kwargs
-        assert "encoding" not in popen_kwargs
+        assert popen_kwargs.get("text") is True
+        assert popen_kwargs.get("encoding") == "utf-8"
+        assert popen_kwargs.get("errors") == "replace"
 
 
 # ── _translate_mkdir_p_to_powershell ────────────────────────────────
