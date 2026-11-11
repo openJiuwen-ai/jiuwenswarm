@@ -596,11 +596,22 @@ def rewrite_orphan_attached_markers(messages: list[Any]) -> int:
     需要改写;字符串消息本身不可能携带像素块,其中的 attached 状态行必为
     孤儿。无命中时消息保持原形态(字符串不强转列表)。
 
+    改写只作用于 user 消息(与 ``is_user_authored_message`` 的模块口径一致):
+    状态行仅由上传入口写入 user 消息;tool result / assistant 正文里的同格式
+    行是**文件内容**(如 read_file 读到的会话导出),就地改写会让持久化历史
+    与磁盘实际内容不一致,破坏工具结果的权威记录。消费端统计也全部只认
+    user 消息,非 user 消息不参与改写不损失任何契约行为。
+
     Returns:
         改写的标记行数(0 = 没有孤儿)。
     """
     rewritten = 0
     for message in messages:
+        # 状态行只在 user 消息上是状态行;其余角色里的同格式行是文件内容,
+        # 不参与改写(与 _processed_image_paths / collect_provided_image_paths
+        # 的消费端口径一致)。
+        if not is_user_authored_message(message):
+            continue
         # 经 _message_parts 取 parts（与 _rewrite_reference_line_index /
         # _apply_image_evictions 同口径）：字符串 content 在此折成 text part。
         # DialogueCompressor 的替换消息即 UserMessage(content=str)——纯文本摘要

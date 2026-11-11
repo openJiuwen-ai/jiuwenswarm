@@ -245,6 +245,37 @@ def test_rewrite_orphan_attached_markers_string_summary() -> None:
     assert plain["content"] == "普通文本,没有标记"
 
 
+def test_rewrite_orphan_attached_markers_skips_non_user_messages() -> None:
+    """tool result / assistant 正文里的同格式行不改写。
+
+    状态行仅由上传入口写入 user 消息;其余角色里的同格式行是文件内容
+    (如 read_file 读到的会话导出),就地改写会让持久化历史与磁盘实际
+    内容不一致,破坏工具结果的权威记录。
+    """
+
+    # read_file 文本文件场景:tool 结果的字符串 content 里带一整行暗号。
+    tool_result = {
+        "role": "tool",
+        "content": "Image file read: log.txt\n[image #5 attached]\nend",
+    }
+    assert rewrite_orphan_attached_markers([tool_result]) == 0
+    assert tool_result["content"] == "Image file read: log.txt\n[image #5 attached]\nend"
+
+    # assistant 消息同样不改写(列表形态)。
+    assistant = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "[image #7 attached]"}],
+    }
+    assert rewrite_orphan_attached_markers([assistant]) == 0
+    assert assistant["content"][0]["text"] == "[image #7 attached]"
+
+    # user 消息照常改写(对照,主场景不受过滤影响)。
+    user_msg = {"role": "user", "content": "看这张\n[image #5 attached]"}
+    assert rewrite_orphan_attached_markers([user_msg]) == 1
+    assert "[image #5 attached]" not in str(user_msg["content"])
+    assert "[image #5 omitted: compacted]" in str(user_msg["content"])
+
+
 def test_sync_mutator_resyncs_prompt_after_compaction() -> None:
     """压缩搬走 image block 后，同步 mutator 应删策略段、并把附件重写为 0 张。"""
 
