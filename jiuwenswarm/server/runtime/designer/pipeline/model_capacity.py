@@ -10,7 +10,7 @@ with an API key is the one that applies.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -108,6 +108,10 @@ _H3 = VideoModelCapacity(
     supports_reference_images=True,
 )
 
+_H3_HIGHSPEED = replace(_H3, model_id="MiniMax-H3-Highspeed", resolutions=("480P", "768P"))
+_H3_LITE = replace(_H3_HIGHSPEED, model_id="MiniMax-H3-Lite")
+
+
 # MiniMax-H3-Max: 5–15s, 480P/768P. Reference images are rejected by the API.
 _H3_MAX = VideoModelCapacity(
     model_id="MiniMax-H3-Max",
@@ -142,6 +146,10 @@ def capacity_for_model(model_id: str) -> VideoModelCapacity:
         return _WAN3
     if "h3max" in key or ("minimax" in key and key.endswith("max")):
         return _H3_MAX
+    if key == "minimaxh3highspeed":
+        return _H3_HIGHSPEED
+    if key == "minimaxh3lite":
+        return _H3_LITE
     if "minimaxh3" in key or key in {"h3", "minimaxh3"}:
         return _H3
     if "seedance" in key and ("25" in key or "260628" in key):
