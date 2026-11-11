@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.enterprise.edition import is_enterprise
 
 _PLAN_MODE_EXITED = "plan.mode_exited"
 # 客户端断开后没人再取帧。队列有上限，满了就等，避免一轮长聊天把内存堆满。
@@ -110,7 +111,9 @@ class SSESink:
         if self._closed:
             return False
         await self._emit(chunk_to_dict(chunk, sequence=sequence))
-        if chunk.is_complete:
+        # Enterprise Runtime must finish its waiting-control bookkeeping before
+        # invoke_stream closes HTTP; an early EOF can cancel that pending owner.
+        if chunk.is_complete and not is_enterprise():
             await self.close()
         return True
 

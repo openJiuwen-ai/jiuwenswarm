@@ -54,8 +54,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction impo
     sanitize_permission_ui_payload,
 )
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.enterprise import is_enterprise
-
 SKILL_EVOLUTION_APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
 EVOLUTION_INTERRUPT_SOURCE = "evolution_interrupt"
 LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE = "skill_evolution_approval"
@@ -166,6 +164,8 @@ def is_interrupt_resume_payload(params: Any) -> bool:
         return True
     if not has_interrupt_resume_payload(params):
         return False
+    if is_subagent_approval_answer(params):
+        return True
     if str(params.get("source") or "").strip() != LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE:
         return False
     evolution_meta = params.get("evolution_meta")
@@ -173,6 +173,16 @@ def is_interrupt_resume_payload(params: Any) -> bool:
         isinstance(evolution_meta, dict)
         and evolution_meta.get("approval_transport") == "interrupt"
     )
+
+
+def is_subagent_approval_answer(params: Any) -> bool:
+    """Route enterprise delegated answers outside the waiting parent's work lane."""
+    if not is_enterprise() or not has_interrupt_resume_payload(params):
+        return False
+    source = str(params.get("source") or "").strip()
+    return source in {"subagent_skill_load", "subagent_tool_permission"} and str(
+        params["request_id"]
+    ).startswith(source + "_")
 
 
 def build_permission_rail(
@@ -213,9 +223,6 @@ def build_permission_rail(
 
     from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
         compose_host_effective_permissions,
-    )
-    from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
-        JiuwenSwarmPermissionInterruptRail,
     )
     from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
         load_session_permissions,
@@ -867,7 +874,16 @@ def build_permission_rail(
             permission_scene_hook=_permission_scene_hook,
         )
 
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
+            JiuwenSwarmPermissionInterruptRail,
+        )
         permission_rail_class = JiuwenSwarmPermissionInterruptRail
+        if is_enterprise():
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.permission_bridge import (
+                SkillAuthorizationPermissionRail,
+            )
+
+            permission_rail_class = SkillAuthorizationPermissionRail
         if channel_id == "process_cli":
             from jiuwenswarm.channels.process_cli.permissions import ProcessCliPermissionInterruptRail
             permission_rail_class = ProcessCliPermissionInterruptRail
@@ -1132,12 +1148,14 @@ def _parse_plan_metadata_from_message(message: str) -> tuple[str, str]:
 
 _SOURCE_BY_KIND = {
     InterruptKind.PERMISSION: "permission_interrupt",
+    InterruptKind.SKILL_AUTHORIZATION: "permission_interrupt",
     InterruptKind.CONFIRM: "confirm_interrupt",
 }
 _APPROVAL_KINDS = frozenset({
     InterruptKind.PERMISSION,
     InterruptKind.CONFIRM,
     InterruptKind.SKILL_EVOLUTION_APPROVAL,
+    InterruptKind.SKILL_AUTHORIZATION,
     InterruptKind.TEAM_TOOL_APPROVAL,
 })
 
@@ -1737,6 +1755,10 @@ def _classify_structured_approval(
     question_data: dict[str, Any],
 ) -> dict[str, Any] | None:
     del question_data
+    schema = _read_value_field(value_obj, "payload_schema", {})
+    card = schema.get("x-skill-approval-card") if isinstance(schema, dict) else None
+    if isinstance(card, dict) and card.get("kind") == "skill_approval" and card.get("schema_version") == 1:
+        return {"skill_approval_card": card}
     metadata = _extract_interrupt_metadata(value_obj)
     source = str(metadata.get("source") or "").strip()
     tool_name = _extract_tool_name(value_obj)

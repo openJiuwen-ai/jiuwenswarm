@@ -21,6 +21,7 @@ from jiuwenswarm.channels.process_cli.client import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.enterprise.tenant.single_tenant_strategy import SingleTenantStrategy
 from jiuwenswarm.runtime.agent_definition import (
     RuntimeAgentDefinition,
     RuntimeAgentExecution,
@@ -145,6 +146,7 @@ async def harness(monkeypatch: pytest.MonkeyPatch):
     )
     runtime = AgentRuntime(
         agent_manager=manager,
+        tenant_strategy=SingleTenantStrategy(manager),
         initializer=AsyncMock(),
         plan_controller=plan,
         admission_controller=admission,
@@ -395,6 +397,45 @@ async def test_overlapping_moa_resume_matches_web_progress_contract(
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["subagent_skill_load", "subagent_tool_permission"])
+async def test_enterprise_child_answer_does_not_queue_behind_its_live_parent(
+    harness, monkeypatch, source,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    answered, asked = asyncio.Event(), asyncio.Event()
+    interaction_id = source + "_probe"
+
+    async def original(request):
+        yield _chunk(request, "chat.ask_user_question", request_id=interaction_id, source=source)
+        asked.set()
+        await answered.wait()
+        yield _chunk(request, "chat.final", content="child completed")
+
+    async def delivered(request):
+        assert request.req_method is ReqMethod.CHAT_ANSWER
+        assert request.params["request_id"] == interaction_id
+        answered.set()
+        yield _chunk(request, "runtime.accepted", accepted=True, resolved=True)
+
+    harness.agent.process_message_stream = original
+    harness.agent.deliver_control_input = delivered
+    parent = asyncio.create_task(_collect(harness.runtime.stream(_request(), trigger_hook=False)))
+    try:
+        await asyncio.wait_for(asked.wait(), 1)
+        assert not parent.done()
+        result = await asyncio.wait_for(
+            harness.client.answer_interaction_input(_answer(interaction_id, source=source, mode="")), 1,
+        )
+        assert result[0].payload["resolved"] is True
+        events = await asyncio.wait_for(parent, 1)
+        assert events[-1].payload["content"] == "child completed"
+        harness.manager.begin_foreground_chat.assert_awaited_once()
+    finally:
+        parent.cancel()
+        await asyncio.gather(parent, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -841,12 +882,9 @@ async def test_real_facade_control_wrapper_closes_retained_adapter_stream(
         _persist_control_chunk_to_history=AsyncMock(),
         _persist_pending_final_text_control=AsyncMock(),
     )
-
-    async def _stream_control_input(request: AgentRequest):
-        async for chunk in interface.JiuWenSwarm._stream_control_input(facade, request):
-            yield chunk
-
-    facade._stream_control_input = _stream_control_input
+    facade._stream_control_input = lambda request: (
+        interface.JiuWenSwarm._stream_control_input(facade, request)
+    )
     monkeypatch.setattr(interface, "restore_chat_send_equipment_params", Mock())
     monkeypatch.setattr(
         interface, "compute_chat_send_mcp_needed", Mock(return_value=False)

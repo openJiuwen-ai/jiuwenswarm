@@ -39,7 +39,6 @@ for (const [key, value] of Object.entries({
   cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
   fetch: () => { throw new Error('Unexpected HTTP request'); }, WebSocket: MemoryWebSocket,
 })) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-after(() => dom.window.close());
 
 const { useWebSocket } = await import('../node_modules/.cache/permission-answer-transport/hooks/useWebSocket.js');
 const { AuthorizationPrompt, AuthorizationQuestionDetails } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/AuthorizationPrompt.js');
@@ -49,6 +48,9 @@ const { useChatStore, useSessionStore } = await import('../node_modules/.cache/p
 const { default: i18n } = await import('../node_modules/.cache/permission-answer-transport/i18n/index.js');
 const { webClient } = await import('../node_modules/.cache/permission-answer-transport/services/webClient.js');
 const { evaluatePlanToggle } = await import('../node_modules/.cache/permission-answer-transport/features/planMode/planModeGate.js');
+const { InlineQuestionCard } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/InlineQuestionCard.js');
+after(() => dom.window.close());
+
 const sessionId = 'permission-transport';
 
 test('only enterprise cards display literal matched rules in both languages', async () => {
@@ -93,6 +95,9 @@ async function mounted(run, content = null) {
     observed.api = useWebSocket({ activeSessionId: sessionId, onError: (error) => observed.errors.push(error) });
     const pending = useChatStore((state) => state.runtimes[sessionId]?.pendingQuestions[0]);
     if (content) return content;
+    if (pending?.skill_approval_card) return createElement(InlineQuestionCard, {
+      onSubmit: (...args) => observed.api.sendUserAnswer(sessionId, ...args),
+    });
     return pending ? createElement(AuthorizationPrompt, {
       pending,
       onSubmit: async (...args) => {
@@ -139,6 +144,27 @@ const assertPlanToggleAllowed = (allowed) => {
   for (const next of [false, true]) assert.equal(evaluatePlanToggle(sessionId, next).ok, allowed);
 };
 
+for (const action of ['approve_once', 'approve_session', 'continue_without_overlay']) {
+  test(`Skill approval ${action}: live payload → card → existing answer transport`, async () => mounted(async ({ socket }) => {
+    const card = {
+      kind: 'skill_approval', schema_version: 1, skill_name: 'probe', source: 'builtin',
+      version: '1', trust: 'builtin', permissions_hash: 'hash', agent_scope_id: 'main',
+      diff: { widened: ['write_file: ask → allow'], tightened: [], rejected: [] },
+      actions: ['approve_once', 'approve_session', 'continue_without_overlay'],
+    };
+    await deliver(socket, { ...payload(), skill_approval_card: card, interrupt_id: 'intr_skill' });
+    assert.ok(document.querySelector('[data-testid="chat-panel-skill-approval-card"]'));
+    assert.equal(prompt(), null, 'Skill gate must not render a second ordinary permission card');
+    await act(async () => document.querySelector(`[data-testid="chat-panel-skill-approval-${action}"]`).click());
+    const request = socket.requests.findLast((item) => item.method === 'chat.send');
+    assert.equal(request.params.answers[0].action, action);
+    assert.equal(request.params.interrupt_id, 'intr_skill');
+    assert.equal(request.params.source, 'permission_interrupt');
+    await respond(socket, request);
+    assert.equal(document.querySelector('[data-testid="chat-panel-skill-approval-card"]'), null);
+  }));
+}
+
 for (const count of [1, 2]) for (const action of ['allow-once', 'reject']) {
   test(`legacy ${count}-question ${action}: actual event → prompt → hook → res consumes pending`, async () => mounted(async ({ socket, observed }) => {
     await deliver(socket, payload(Array.from({ length: count }, () => question())));
@@ -162,6 +188,36 @@ for (const count of [1, 2]) for (const action of ['allow-once', 'reject']) {
     assert.deepEqual(observed.errors, []);
   }));
 }
+
+test('child Skill approval answers its Future, not a new chat turn', async () => mounted(async ({ socket }) => {
+  const card = {
+    kind: 'skill_approval', schema_version: 1, skill_name: 'child-probe', source: 'installed',
+    trust: 'other', permissions_hash: 'hash', agent_scope_id: 'child-1',
+    diff: { widened: ['write_file: ask → allow'], tightened: [], rejected: [] },
+    actions: ['approve_once', 'continue_without_overlay'],
+  };
+  await deliver(socket, { ...payload(), request_id: 'subagent_skill_load_1',
+    source: 'subagent_skill_load', skill_approval_card: card });
+  assert.equal(document.querySelector('[data-testid="chat-panel-skill-approval-approve_session"]'), null);
+  await act(async () => document.querySelector('[data-testid="chat-panel-skill-approval-approve_once"]').click());
+  const request = socket.requests.findLast((item) => item.method === 'chat.user_answer');
+  assert.equal(request.params.source, 'subagent_skill_load');
+  assert.equal(request.params.answers[0].action, 'approve_once');
+  assert.equal(socket.requests.some((item) => item.method === 'chat.send'), false);
+  await respond(socket, request);
+  assert.equal(document.querySelector('[data-testid="chat-panel-skill-approval-card"]'), null);
+}));
+
+test('child expiry consumes only the matching request and source', async () => mounted(async ({ socket }) => {
+  await deliver(socket, { ...payload(), request_id: 'subagent_tool_permission_1', source: 'subagent_tool_permission' });
+  const expiry = { type: 'event', event: 'chat.ask_user_question_expired', payload: {
+    session_id: sessionId, request_id: 'subagent_tool_permission_1', source: 'subagent_skill_load', reason: 'timeout',
+  } };
+  await act(async () => socket.receive(expiry));
+  assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+  await act(async () => socket.receive({ ...expiry, payload: { ...expiry.payload, source: 'subagent_tool_permission' } }));
+  assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 0);
+}));
 
 const automatic = {
   reviewer_status: 'approved', final_reviewer_status: 'approved', decision_source: 'auto_reviewer',

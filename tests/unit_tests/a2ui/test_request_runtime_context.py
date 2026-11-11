@@ -117,7 +117,7 @@ def test_request_context_preserves_existing_run_metadata(monkeypatch):
         "kind": "heartbeat",
         "context": {
             "session_id": "heartbeat-session",
-            "extra": {"existing": "kept"},
+            "extra": {"existing": "kept", "__jiuwenswarm_chat_send_source__": "permission_interrupt"},
         },
     }
     inputs = _build_inputs(
@@ -144,7 +144,10 @@ def test_request_context_preserves_existing_run_metadata(monkeypatch):
         JIUWENSWARM_CHANNEL_CONTEXT_KEY: "web",
         JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY: True,
     }
-    assert original_run["context"]["extra"] == {"existing": "kept"}
+    assert original_run["context"]["extra"] == {
+        "existing": "kept",
+        "__jiuwenswarm_chat_send_source__": "permission_interrupt",
+    }
 
 
 def test_cron_context_keeps_channel_and_cron_payload(monkeypatch):

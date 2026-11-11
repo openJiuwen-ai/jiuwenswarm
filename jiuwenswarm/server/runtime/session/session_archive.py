@@ -677,6 +677,13 @@ class SessionArchiveService:
         await asyncio.to_thread(lc.fence_writes, "session", session_id)
         if action == "delete":
             await asyncio.to_thread(lc.update, "session", session_id, phase="delete_directory")
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.adapter import (
+                clear_deleted_skill_authorization,
+            )
+
+            await asyncio.to_thread(
+                clear_deleted_skill_authorization, session_id, sessions_root=active.parent,
+            )
             result = await self.runtime.delete_session(
                 channel_id=owner_channel, session_id=session_id
             )

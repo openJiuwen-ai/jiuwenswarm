@@ -164,6 +164,7 @@ export interface Question {
  * 用户问题请求 Payload（服务端 -> 客户端）
  */
 export interface AskUserQuestionPayload {
+  skill_approval_card?: SkillApprovalCardPayload;
   duplexJobId?: string;
   interruptId?: string;
   request_id: string;
@@ -191,6 +192,7 @@ export interface AskUserQuestionPayload {
  * 用户回答
  */
 export interface UserAnswer {
+  action?: SkillApprovalAction;
   /**
    * 服务端下发的原始问题文本。
    * ask_user_interrupt 场景必填，后端据此把答案归属到对应问题。
@@ -205,6 +207,22 @@ export interface UserAnswer {
 /**
  * 用户回答 Payload（客户端 -> 服务端）
  */
+export type SkillApprovalAction = 'approve_once' | 'approve_session' | 'continue_without_overlay';
+
+export interface SkillApprovalCardPayload {
+  kind: 'skill_approval';
+  schema_version: 1;
+  skill_name: string;
+  source: string;
+  version?: string | null;
+  trust: 'builtin' | 'other';
+  permissions_hash: string;
+  agent_scope_id: string;
+  cached_decision?: 'local' | 'session' | null;
+  diff: { widened: string[]; tightened: string[]; rejected: string[] };
+  actions: SkillApprovalAction[];
+}
+
 export interface UserAnswerPayload {
   request_id: string;
   answers: UserAnswer[];

@@ -5507,6 +5507,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
       }),
+      webClient.on('chat.ask_user_question_expired', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+        const data = payload as Record<string, unknown>;
+        const store = useChatStore.getState();
+        for (const question of store.getRuntime(sessionId)?.pendingQuestions ?? []) {
+          if (question.request_id === data.request_id && question.source === data.source) {
+            store.consumePendingQuestion(sessionId, question);
+          }
+        }
+      }),
       webClient.on('chat.ask_user_question', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -5541,6 +5552,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ? questionPayload.plan_language
             : undefined;
         const normalizedPayload: AskUserQuestionPayload = {
+          skill_approval_card: (questionPayload.skill_approval_card ?? questionPayload['x-skill-approval-card']) as AskUserQuestionPayload['skill_approval_card'],
           request_id: typeof questionPayload.request_id === 'string' ? questionPayload.request_id : '',
           source: typeof questionPayload.source === 'string' ? questionPayload.source : undefined,
           questions,
