@@ -87,6 +87,30 @@ export function MarketplacePage({
   onRegisterCustomMcp,
 }: MarketplacePageProps) {
   const { t, i18n } = useTranslation();
+
+  const systemPluginTags = (pkg: SystemPluginSummary): string[] => {
+    const source = pkg.source === 'hub'
+      ? t('connectorMarket.systemPlugin.sourceHub')
+      : pkg.source === 'local'
+        ? t('connectorMarket.systemPlugin.sourceLocal')
+        : '';
+    const status = t(
+      pkg.active
+        ? 'connectorMarket.systemPlugin.statusActive'
+        : pkg.installed
+          ? pkg.enabled
+            ? 'connectorMarket.systemPlugin.statusInstalled'
+            : 'connectorMarket.systemPlugin.statusDisabled'
+          : 'connectorMarket.systemPlugin.statusAvailable',
+    );
+    return Array.from(new Set([
+      t('connectorMarket.systemPlugin.badge'),
+      source,
+      status,
+      ...pkg.tags.map((tag) => localizedText(tag, i18n.language)),
+    ].filter((tag): tag is string => Boolean(tag))));
+  };
+
   const [category, setCategory] = useState<string>('all');
   const [query, setQuery] = useState('');
   const [marketConnectorResults, setMarketConnectorResults] = useState<ConnectorSummary[] | null>(null);
@@ -144,6 +168,7 @@ export function MarketplacePage({
 
   const systemPluginHeaderAction = (pkg: SystemPluginSummary) => {
     if (!pkg.installed) return undefined;
+    const packageId = pkg.packageId || pkg.id;
     const action = pkg.enabled
       ? t('connectorMarket.systemPlugin.disable')
       : t('connectorMarket.systemPlugin.enable');
@@ -151,8 +176,8 @@ export function MarketplacePage({
       <span data-testid="connector-market-system-plugin-enabled" title={action}>
         <Switch
           checked={pkg.enabled}
-          disabled={!!systemBusyIds[pkg.id]}
-          onChange={(enable) => { void setSystemPluginEnabled(pkg.id, enable); }}
+          disabled={!!systemBusyIds[pkg.id] || !!systemBusyIds[packageId]}
+          onChange={(enable) => { void setSystemPluginEnabled(packageId, enable); }}
         />
       </span>
     );
@@ -654,15 +679,11 @@ export function MarketplacePage({
             : visibleMyPlugins.map((entry) => {
                 if (entry.kind === 'system') {
                   const pkg = entry.pkg;
-                  const tags = Array.from(new Set([
-                    t('connectorMarket.systemPlugin.badge'),
-                    ...pkg.tags.map((tag) => localizedText(tag, i18n.language)),
-                  ]));
                   return (
                     <MyMarketCard
                       key={`system-${pkg.id}`}
                       title={localizedText(pkg.displayName, i18n.language)}
-                      tags={tags}
+                      tags={systemPluginTags(pkg)}
                       description={localizedText(pkg.displayDescription, i18n.language)}
                       iconUrl={pkg.avatar || undefined}
                       state={systemBusyIds[pkg.id] ? 'connecting' : pkg.installed ? 'connected' : 'idle'}
@@ -731,7 +752,7 @@ export function MarketplacePage({
                 <MarketCard
                   key={pkg.id}
                   title={localizedText(pkg.displayName, i18n.language)}
-                  tags={pkg.tags.map((tag) => localizedText(tag, i18n.language))}
+                  tags={systemPluginTags(pkg)}
                   description={localizedText(pkg.displayDescription, i18n.language)}
                   iconUrl={pkg.avatar || undefined}
                   state={systemBusyIds[pkg.id] ? 'connecting' : pkg.installed ? 'connected' : 'idle'}

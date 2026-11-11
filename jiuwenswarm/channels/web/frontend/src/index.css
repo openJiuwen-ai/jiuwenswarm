@@ -720,6 +720,11 @@ body.workspace-resize-active iframe {
     opacity: var(--opacity-agent-muted);
   }
 
+  .detail-action--installed {
+    color: var(--color-text-secondary);
+    cursor: default;
+  }
+
   /* 带边框药丸动作（使用）：min-width 56px / 水平内边距 28px；hover 与底态同貌
      （agent-management 详情操作区内 use 按钮 hover 不变貌），禁用为 not-allowed 弱化 */
   .detail-action--use {

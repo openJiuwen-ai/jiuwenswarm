@@ -4887,6 +4887,8 @@
     },
     "systemPlugin": {
       "badge": "System plugin",
+      "sourceHub": "OpenJiuwen Agentic Hub",
+      "sourceLocal": "Local",
       "install": "Install",
       "uninstall": "Uninstall",
       "reload": "Reload",
@@ -4908,7 +4910,14 @@
       "tabsLabel": "Plugin detail sections",
       "noDetails": "No details",
       "expandReadme": "Show full text",
-      "uninstallConfirm": "Uninstall \"{{name}}\"? This removes the installed package."
+      "version": "Version",
+      "installedVersion": "Installed v{{version}}",
+      "switchVersion": "Switch version",
+      "switchVersionConfirm": "Switch \"{{name}}\" from v{{installed}} to v{{target}}? The current version will stop running, but its files stay in the workspace and are not deleted, so you can switch back later.",
+      "publish": "Publish",
+      "uninstallConfirm": "Choose how to uninstall: \"Uninstall v{{version}}\" removes only the active version and keeps other installed versions (inactive); \"Uninstall all\" deletes every version of \"{{name}}\" from the workspace and cannot be undone.",
+      "uninstallVersion": "Uninstall v{{version}}",
+      "uninstallAll": "Uninstall all"
     },
     "common": {
       "back": "Back",

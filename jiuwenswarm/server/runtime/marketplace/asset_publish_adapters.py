@@ -387,6 +387,36 @@ def _agent_group(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
     return {"normalizations": changes, "dependencies": dependencies, "wrapper": None}
 
 
+def _system_plugin(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
+    """Validate a system plugin and normalize its nested package identity."""
+
+    manifest = _json(root / "manifest.json")
+    if manifest.get("package_type") != "extension":
+        _fail(field="package_type", message="System plugins require package_type=extension")
+    package = manifest.get("package")
+    if not isinstance(package, dict):
+        _fail(field="package", message="System plugins require a package object")
+    if package.get("domain") not in ("agentserver", "gateway"):
+        _fail(field="package.domain", message="System plugins must target the agentserver or gateway domain")
+    _text(package.get("id"), "package.id")
+    _text(package.get("version"), "package.version")
+    display = manifest.get("display")
+    if not isinstance(display, dict):
+        _fail(field="display", message="System plugins require display metadata")
+    changes = []
+    if package.get("id") != identity.package_name:
+        package["id"] = identity.package_name
+        changes.append("manifest.package.id")
+    if package.get("version") != identity.version:
+        package["version"] = identity.version
+        changes.append("manifest.package.version")
+    if changes:
+        (root / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    return {"normalizations": changes, "dependencies": [], "wrapper": None}
+
+
 def normalize_and_validate(
     snapshot: Path, identity: PublishIdentity, metadata: dict[str, object]
 ) -> dict[str, object]:
@@ -407,6 +437,8 @@ def normalize_and_validate(
         return _skill(root, identity, metadata)
     if identity.kind == "agent_group":
         return _agent_group(root, identity, metadata)
+    if identity.kind == "system_plugin":
+        return _system_plugin(root, identity, metadata)
     if len(list(root.rglob("manifest.json"))) != 1:
         _fail(
             "MULTIPLE_MANIFESTS",

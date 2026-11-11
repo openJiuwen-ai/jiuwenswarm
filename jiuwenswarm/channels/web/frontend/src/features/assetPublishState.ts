@@ -1,4 +1,4 @@
-import type { PublishMetadata, PublishRecord } from '../types/assetPublish';
+import type { PublishAssetKind, PublishMetadata, PublishRecord } from '../types/assetPublish';
 
 export function canShowAssetPublish(installed: boolean | undefined, capability = true): boolean {
   return installed === true && capability;
@@ -48,9 +48,18 @@ export function isSubmissionLocked(record: PublishRecord): boolean {
 export function canStartNewVersion(record: PublishRecord): boolean {
   return !isSubmissionLocked(record);
 }
-export function validateMetadata(metadata: PublishMetadata): string[] {
+export function validateMetadata(
+  metadata: PublishMetadata,
+  kind?: PublishAssetKind,
+): string[] {
   const errors: string[] = [];
-  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(metadata.asset_name)) errors.push('asset_name');
+  const systemPluginName = /^[a-z][a-z0-9.-]{0,63}$/.test(metadata.asset_name)
+    && !metadata.asset_name.includes('..')
+    && !metadata.asset_name.endsWith('.');
+  const nameValid = kind === 'system_plugin'
+    ? systemPluginName
+    : /^[a-z0-9][a-z0-9_-]{0,63}$/.test(metadata.asset_name);
+  if (!nameValid) errors.push('asset_name');
   if (!/^(?:\d+\.\d+\.\d+|[0-9a-f]{7})$/.test(metadata.version)) errors.push('version');
   if (!metadata.display_name.trim() || metadata.display_name.length > 128) errors.push('display_name');
   return errors;

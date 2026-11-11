@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from openjiuwen.core.extension.versions import parse_version
+
 from .asset_package_builder import PackageBuildError
 from .asset_publish_adapters import PublishValidationError
 from .asset_publish_models import PublishIdentity
@@ -91,7 +93,40 @@ def resolve_local_asset(kind: str, local_id: str):
         if isinstance(custom, dict):
             return CustomMcpSource(config=dict(custom))
         raise PublishAPIError("RESOURCE_NOT_FOUND")
+    if kind == "system_plugin":
+        from jiuwenswarm.common.extension_config import resolve_install_dir
+        from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
+            ExtensionInstallState,
+        )
+
+        root = resolve_install_dir()
+        package_dir = root / local_id
+        if package_dir.is_symlink() or not package_dir.is_dir():
+            raise PublishAPIError("RESOURCE_NOT_FOUND")
+        candidates = [
+            path
+            for path in package_dir.iterdir()
+            if path.is_dir() and not path.is_symlink() and (path / "manifest.json").is_file()
+        ]
+        if not candidates:
+            raise PublishAPIError("RESOURCE_NOT_FOUND")
+        record = ExtensionInstallState.for_install_dir(root).get(local_id)
+        chosen = next(
+            (path for path in candidates if record is not None and path.name == record.version),
+            None,
+        ) or max(candidates, key=_version_key)
+        if not chosen.resolve().is_relative_to(root.resolve()):
+            raise PublishAPIError("RESOURCE_NOT_FOUND")
+        return chosen
     raise PublishAPIError("INVALID_KIND")
+
+
+def _version_key(path: Path) -> tuple[int, int, int, str]:
+    try:
+        version = parse_version(path.name)
+    except (TypeError, ValueError):
+        return (0, 0, 0, path.name)
+    return (version.major, version.minor, version.patch, path.name)
 
 
 def _defaults(kind: str, local_id: str, source) -> dict:
@@ -117,6 +152,20 @@ def _defaults(kind: str, local_id: str, source) -> dict:
         if isinstance(value, dict):
             value = value.get("zh") or value.get("en") or ""
         return value if isinstance(value, str) else ""
+
+    if kind == "system_plugin":
+        package = data.get("package") if isinstance(data.get("package"), dict) else {}
+        display = data.get("display") if isinstance(data.get("display"), dict) else {}
+        name = label(package.get("id")) or local_id
+        tags = display.get("tags")
+        return dict(
+            asset_name=name,
+            version=label(package.get("version")) or "1.0.0",
+            display_name=label(display.get("name")) or name,
+            description=label(display.get("description")),
+            tags=[tag for tag in (label(item) for item in tags) if tag] if isinstance(tags, list) else [],
+            visibility="public",
+        )
 
     manifest_name = label(data.get("name"))
     if kind in {"agent_template", "agent_group"} and isinstance(source, Path):
@@ -248,7 +297,7 @@ class AssetPublishAPI:
             raise PublishAPIError("INVALID_PARAMETERS")
         if method == "local_status":
             kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
-            if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp"}:
+            if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp", "system_plugin"}:
                 raise PublishAPIError("INVALID_KIND")
             # Workspace access remains enforced by the Web/Gateway route and local
             # resolver. This read-only summary never grants Hub account access.
@@ -265,7 +314,7 @@ class AssetPublishAPI:
         try:
             if method in {"describe", "prepare", "records"}:
                 kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
-                if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp"}:
+                if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp", "system_plugin"}:
                     raise PublishAPIError("INVALID_KIND")
                 if method == "records":
                     return {

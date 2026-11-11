@@ -13,10 +13,10 @@ interface SystemPluginState {
   error: string | null;
   loadCatalog: () => Promise<void>;
   loadMine: () => Promise<void>;
-  loadDetail: (id: string) => Promise<boolean>;
-  install: (id: string) => Promise<MutationResult>;
+  loadDetail: (id: string, version?: string) => Promise<boolean>;
+  install: (id: string, version?: string) => Promise<MutationResult>;
   importPath: (path: string) => Promise<MutationResult>;
-  uninstall: (id: string) => Promise<MutationResult>;
+  uninstall: (id: string, version?: string) => Promise<MutationResult>;
   reload: (id: string) => Promise<MutationResult>;
   setEnabled: (id: string, enable: boolean) => Promise<MutationResult>;
   clearError: () => void;
@@ -96,9 +96,9 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
 
     loadMine: () => load('mine'),
 
-    loadDetail: async (id) => {
+    loadDetail: async (id, version) => {
       try {
-        const detail = await systemPluginApi.show(id);
+        const detail = await systemPluginApi.show(id, version);
         if (!detail) return false;
         set((state) => ({ detailCache: { ...state.detailCache, [id]: detail } }));
         return true;
@@ -108,7 +108,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       }
     },
 
-    install: (id) => mutate(id, () => systemPluginApi.install(id)),
+    install: (id, version) => mutate(id, () => systemPluginApi.install(id, version)),
     importPath: async (path) => {
       set({ loading: true });
       try {
@@ -121,7 +121,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
         set({ loading: false });
       }
     },
-    uninstall: (id) => mutate(id, () => systemPluginApi.uninstall(id)),
+    uninstall: (id, version) => mutate(id, () => systemPluginApi.uninstall(id, version)),
     reload: (id) => mutate(id, () => systemPluginApi.reload(id)),
     setEnabled: (id, enable) => mutate(id, () => systemPluginApi.setEnabled(id, enable)),
   };

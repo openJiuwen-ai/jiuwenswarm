@@ -329,6 +329,28 @@ class HubClient(HubAssetPort):
         content = payload.get("content") if isinstance(payload, dict) else None
         return content[:20000] if isinstance(content, str) else ""
 
+    async def list_version_files(
+        self, asset_id: str, version: str, *, with_content: str | None = None
+    ) -> dict[str, Any]:
+        """Return one version's file listing, optionally with a file's text content.
+
+        Uses the same version files endpoint as ``read_public_readme``, so previews
+        never download the package archive.
+        """
+        wanted = str(asset_id or "").strip()
+        wanted_version = str(version or "").strip()
+        if not wanted or not wanted_version:
+            raise ValueError("asset_id and version are required")
+        files_path = (
+            f"/api/v1/plugins/{quote(wanted, safe='')}/versions/"
+            f"{quote(wanted_version, safe='')}/files"
+        )
+        params = {"with_content": with_content} if with_content else None
+        payload = await self.transport.get_data(files_path, params=params)
+        if not isinstance(payload, dict) or not isinstance(payload.get("files"), list):
+            raise HubProtocolError("Hub file listing is malformed")
+        return payload
+
     async def get_artifact(
         self, asset_id: str, *, version: str | None = None
     ) -> HubArtifact:
@@ -402,7 +424,7 @@ class HubClient(HubAssetPort):
             request.asset_id, plugin_type=contract.hub_plugin_type
         )
         self._require_request_kind(request.kind, item.plugin_type, item.asset_type)
-        version = item.public_latest_version
+        version = request.version or item.public_latest_version
         if not version:
             raise HubProtocolError(f"Hub asset has no public version: {request.asset_id}")
         detail = await self.get_version(item.asset_id, version)
@@ -419,7 +441,9 @@ class HubClient(HubAssetPort):
             icon_uri=self._normalize_icon_uri(detail.icon_uri or item.icon_uri),
             tags=detail.tags,
             package_name=detail.name or item.name,
+            preview_url=self._normalize_icon_uri(detail.preview_url),
             package_profile=detail.package_profile,
+            versions=item.all_versions,
         )
 
     async def resolve_download(

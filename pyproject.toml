@@ -186,8 +186,6 @@ jiuwenswarm = [
     "symphony/**/*.md",
     "extensions/**/*.yaml",
     "extensions/**/*.yml",
-    "extension_pkgs/examples/**/*",
-    "extension_pkgs/examples/*",
     "extensions/**/*.md",
 ]
 jiuwenbox = [

@@ -65,28 +65,38 @@ export const systemPluginApi = {
     return Array.isArray(packages) ? packages : [];
   },
 
-  async show(packageId: string): Promise<SystemPluginDetail | null> {
-    const result = await readPluginState('extensions.v2.show', { package_id: packageId });
+  async show(packageId: string, version?: string): Promise<SystemPluginDetail | null> {
+    const result = await readPluginState('extensions.v2.show', {
+      package_id: packageId,
+      ...(version ? { version } : {}),
+    });
     return (result as { package?: SystemPluginDetail } | null)?.package ?? null;
   },
 
-  async files(packageId: string): Promise<DefinitionFileEntry[]> {
-    const result = await webRequest<RawAgentFileListPayload>('extensions.v2.file.list', { package_id: packageId });
+  async files(packageId: string, version?: string): Promise<DefinitionFileEntry[]> {
+    const result = await webRequest<RawAgentFileListPayload>('extensions.v2.file.list', {
+      package_id: packageId,
+      ...(version ? { version } : {}),
+    });
     return normalizeAgentFileTree(result?.tree);
   },
 
-  async file(packageId: string, path: string): Promise<AgentFileContent> {
+  async file(packageId: string, path: string, version?: string): Promise<AgentFileContent> {
     const result = await webRequest<RawAgentFileReadPayload>('extensions.v2.file.read', {
       package_id: packageId,
       path,
+      ...(version ? { version } : {}),
     });
     return normalizeAgentFileContent(result ?? { path });
   },
 
-  async install(packageId: string): Promise<void> {
+  async install(packageId: string, version?: string): Promise<void> {
     const result = (await webRequest(
       'extensions.v2.install',
-      { package_ids: [packageId] },
+      {
+        package_ids: [packageId],
+        ...(version ? { version } : {}),
+      },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
     const failure = result ? reportFailure(result) : 'INSTALL_FAILED';
@@ -103,10 +113,10 @@ export const systemPluginApi = {
     if (failure) throw new Error(failure);
   },
 
-  async uninstall(packageId: string): Promise<void> {
+  async uninstall(packageId: string, version?: string): Promise<void> {
     const result = (await webRequest(
       'extensions.v2.uninstall',
-      { package_id: packageId },
+      { package_id: packageId, ...(version ? { version } : {}) },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
     const failure = result ? reportFailure(result) : 'UNINSTALL_FAILED';

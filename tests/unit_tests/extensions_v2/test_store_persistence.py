@@ -14,14 +14,12 @@ from openjiuwen.core.events import Event, SessionContext
 from jiuwenswarm.extensions_v2 import assembly
 from jiuwenswarm.extensions_v2.event_types.context_usage import (
     ContextUsageUpdate,
-    notify_context_usage,
     register_context_usage_events,
 )
 from jiuwenswarm.extensions_v2.management import ExtensionManager
 from tests.unit_tests.extensions_v2.management.support import make_bus
 
 PACKAGE_ID = "example.store-probe"
-EXAMPLES = Path(assembly.__file__).parent / "examples"
 
 _EXTENSION_PY = """\
 import asyncio
@@ -217,37 +215,5 @@ async def test_agentserver_assembly_injects_the_host_store_directory(tmp_path, m
         assert json.loads(path.read_text(encoding="utf-8")) == {"counter": 1}
         assert (await instance.manager.uninstall(PACKAGE_ID)).status == "SUCCESS"
         assert not path.exists()
-    finally:
-        await assembly.shutdown_extensions()
-
-
-@pytest.mark.parametrize("glass_first", [True, False])
-async def test_usage_reaches_every_installed_package(
-    tmp_path, monkeypatch, store_probe_logs, glass_first,
-) -> None:
-    await assembly.shutdown_extensions()
-    monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
-    instance = await assembly.install_extensions()
-    assert instance is not None
-    try:
-        glass = _archive(tmp_path, EXAMPLES / "token_weather_glass")
-        probe = _archive(tmp_path)
-        for archive in ((glass, probe) if glass_first else (probe, glass)):
-            report = (await instance.manager.install([archive]))[0]
-            assert report.status == "SUCCESS", report
-        update = ContextUsageUpdate("coexist", "r1", input_tokens=10, output_tokens=5, total_tokens=15)
-        task = notify_context_usage(update)
-        assert task is not None
-        await task
-        path = tmp_path / "package-data" / f"{PACKAGE_ID}.json"
-        assert path.exists(), "The usage chain did not reach Store Probe"
-        assert json.loads(path.read_text(encoding="utf-8")) == {"counter": 1}
-        assert "previous=0 current=1 saved=True" in store_probe_logs.text
-
-        task = notify_context_usage(update)
-        assert task is not None
-        await task
-        assert json.loads(path.read_text(encoding="utf-8")) == {"counter": 2}
-        assert "previous=1 current=2 saved=True" in store_probe_logs.text
     finally:
         await assembly.shutdown_extensions()

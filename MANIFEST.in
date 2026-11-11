@@ -1,6 +1,5 @@
 # 包含 package resources 目录
 recursive-include jiuwenswarm/resources *
-recursive-include jiuwenswarm/extensions_v2/examples *
 include jiuwenswarm/agents/harness/common/rsi/harness_config.yaml
 include OPEN_SOURCE_SOFTWARE_NOTICE.md
 include scripts/build_config.py

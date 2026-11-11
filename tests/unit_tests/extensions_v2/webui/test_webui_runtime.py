@@ -18,7 +18,6 @@ from jiuwenswarm.extensions_v2.webui.models import (
 from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
 from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
 
-EXAMPLES = Path(__file__).resolve().parents[4] / "jiuwenswarm" / "extensions_v2" / "examples" / "token_weather_glass"
 SLOT = "conversation.input.below"
 PACKAGE = "webui.token-weather-glass"
 INSTANCE = "token-weather.summary"
@@ -114,21 +113,6 @@ async def test_oversized_frame_is_rejected_without_commit(tmp_path: Path) -> Non
     assert output is not None and output.status is RenderStatus.REJECTED
     assert runtime.registry.get(target) is None
     assert transport.errors
-
-
-@pytest.mark.asyncio
-async def test_uninstall_clears_views_of_the_package(tmp_path: Path) -> None:
-    transport = FakeTransport()
-    runtime, manager = await _runtime(tmp_path, transport)
-    await manager.install([EXAMPLES])
-    target = RenderTarget("s1", SLOT, PACKAGE, INSTANCE)
-    await runtime.render(UiRenderInput(target=target, root=RenderNode("Text", {"value": "hello"})))
-    assert runtime.registry.get(target) is not None
-
-    report = await manager.uninstall(PACKAGE)
-    assert report.status == "SUCCESS"
-    assert runtime.registry.get(target) is None
-    assert [frame.target.key for frame in transport.clears] == [target.key]
 
 
 @pytest.mark.asyncio

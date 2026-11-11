@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,10 @@ from jiuwenswarm.gateway.extensions_v2.manifest import (
     package_domain,
     read_manifest_document,
 )
+from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
+    ExtensionInstallRecord,
+    ExtensionInstallState,
+)
 
 _AVATAR_MIME = {
     ".png": "image/png",
@@ -29,7 +33,7 @@ _AVATAR_MIME = {
 }
 _AVATAR_LIMIT = 1024 * 1024
 _PREVIEW_IMAGE = "assets/preview.png"
-_PREVIEW_IMAGE_LIMIT = 10 * 1024 * 1024
+_PREVIEW_IMAGE_LIMIT = 5 * 1024 * 1024
 _README_LIMIT = 64 * 1024
 
 
@@ -53,6 +57,7 @@ class _Facts:
 
     active: dict[str, Mapping[str, Any]]
     installed: dict[str, Path]
+    roots: dict[str, tuple[Path, ...]] = field(default_factory=dict)
 
 
 def _facts(state: Mapping[str, Any]) -> _Facts:
@@ -62,21 +67,32 @@ def _facts(state: Mapping[str, Any]) -> _Facts:
         if isinstance(record, Mapping) and record.get("package_id")
     }
     installed: dict[str, Path] = {}
+    roots: dict[str, list[Path]] = {}
     for root in state.get("installed") or []:
         if not isinstance(root, str) or not root:
             continue
         path = Path(root)
+        roots.setdefault(path.parent.name, []).append(path)
         current = installed.get(path.parent.name)
         if current is None or _version_key(path) > _version_key(current):
             installed[path.parent.name] = path
-    return _Facts(active=active, installed=installed)
+    return _Facts(
+        active=active,
+        installed=installed,
+        roots={package_id: tuple(sorted(items, key=_version_key)) for package_id, items in roots.items()},
+    )
 
 
 def list_presets(examples_dir: Path, state: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Return the Gateway presets shown in the market tab, installed or not."""
 
     facts = _facts(state)
-    return [_summary(entry, facts) for entry in _scan(examples_dir, exposed_only=True)]
+    store = _install_state(facts)
+    result = []
+    for entry in _scan(examples_dir, exposed_only=True):
+        record = _record(store, entry.package_id, _installed_version(facts, entry.package_id))
+        result.append(_summary(entry, facts, origin=record.origin if record else "preset", origin_record=record))
+    return result
 
 
 def list_installed(examples_dir: Path, state: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -84,12 +100,13 @@ def list_installed(examples_dir: Path, state: Mapping[str, Any]) -> list[dict[st
 
     facts = _facts(state)
     presets = {entry.package_id: entry for entry in _scan(examples_dir, exposed_only=False)}
+    store = _install_state(facts)
     packages: list[dict[str, Any]] = []
     package_ids = set(facts.active) | set(facts.installed)
     for package_id in sorted(package_ids):
-        record = facts.active.get(package_id)
+        active_record = facts.active.get(package_id)
         roots: list[Path] = []
-        active_root = record.get("root") if record is not None else None
+        active_root = active_record.get("root") if active_record is not None else None
         if isinstance(active_root, str) and active_root:
             roots.append(Path(active_root))
         installed_root = facts.installed.get(package_id)
@@ -101,7 +118,9 @@ def list_installed(examples_dir: Path, state: Mapping[str, Any]) -> list[dict[st
                 break
             entry = _entry(root)
         if entry is not None:
-            packages.append(_summary(entry, facts))
+            origin_record = _record(store, package_id, _installed_version(facts, package_id))
+            origin = origin_record.origin if origin_record else ("preset" if package_id in presets else "user")
+            packages.append(_summary(entry, facts, origin=origin, origin_record=origin_record))
     return packages
 
 
@@ -111,7 +130,8 @@ def package_detail(package_id: str, examples_dir: Path, state: Mapping[str, Any]
     entry = _find(package_id, examples_dir, state)
     facts = _facts(state)
     display = _display(entry.document)
-    detail = _summary(entry, facts)
+    record = _record(_install_state(facts), package_id, _installed_version(facts, package_id))
+    detail = _summary(entry, facts, origin=record.origin if record else "preset", origin_record=record)
     detail.update(
         {
             "details": _localized(display.get("details"), ""),
@@ -165,10 +185,8 @@ def _entry(root: Path) -> MarketEntry | None:
 
 
 def _find(package_id: str, examples_dir: Path, state: Mapping[str, Any]) -> MarketEntry:
-    presets = {entry.package_id: entry for entry in _scan(examples_dir, exposed_only=False)}
-    entry = presets.get(package_id)
-    if entry is not None:
-        return entry
+    """Resolve a Gateway package, preferring the loaded copy over the preset."""
+
     facts = _facts(state)
     record = facts.active.get(package_id)
     roots = [record["root"]] if record is not None and isinstance(record.get("root"), str) else []
@@ -179,26 +197,100 @@ def _find(package_id: str, examples_dir: Path, state: Mapping[str, Any]) -> Mark
         resolved = _entry(Path(root))
         if resolved is not None:
             return resolved
+    presets = {entry.package_id: entry for entry in _scan(examples_dir, exposed_only=False)}
+    entry = presets.get(package_id)
+    if entry is not None:
+        return entry
     raise PackageNotFound(package_id)
 
 
-def _summary(entry: MarketEntry, facts: _Facts) -> dict[str, Any]:
+def _summary(
+    entry: MarketEntry,
+    facts: _Facts,
+    *,
+    origin: str,
+    origin_record: ExtensionInstallRecord | None = None,
+) -> dict[str, Any]:
     document = entry.document
     display = _display(document)
     record = facts.active.get(entry.package_id)
     installed_root = facts.installed.get(entry.package_id)
     installed = record is not None or installed_root is not None
+    installed_version_value = _installed_version(facts, entry.package_id)
+    versions = _installed_versions(facts, entry.package_id)
+    if entry.version not in versions:
+        versions.append(entry.version)
+    versions = _sort_versions(versions)
     return {
         "id": entry.package_id,
+        "packageId": entry.package_id,
+        "assetId": origin_record.asset_id if origin_record is not None else "",
         "version": entry.version,
+        "installedVersion": installed_version_value,
+        "versions": versions,
         "displayName": _localized(display.get("name"), entry.package_id),
         "displayDescription": _localized(display.get("description"), ""),
         "tags": _localized_list(display.get("tags")),
         "avatar": _avatar(entry.root, display),
+        "source": "hub" if origin == "hub" else "local",
+        "origin": origin,
         "installed": installed,
         "active": record is not None,
-        "enabled": _enabled(entry, installed_root),
+        "enabled": record is not None or (
+            origin_record.enabled if origin_record is not None else _enabled(entry, installed_root)
+        ),
     }
+
+
+def _installed_version(facts: _Facts, package_id: str) -> str:
+    record = facts.active.get(package_id)
+    if record is not None:
+        return str(record.get("version") or "")
+    root = facts.installed.get(package_id)
+    if root is None:
+        return ""
+    entry = _entry(root)
+    return entry.version if entry is not None else root.name
+
+
+def _installed_versions(facts: _Facts, package_id: str) -> list[str]:
+    versions: list[str] = []
+    for root in facts.roots.get(package_id, ()):
+        entry = _entry(root)
+        versions.append(entry.version if entry is not None else root.name)
+    return versions
+
+
+def _version_text_key(version: str) -> tuple[int, int, int, str]:
+    try:
+        parsed = parse_version(version)
+    except (TypeError, ValueError):
+        return (0, 0, 0, version)
+    return (parsed.major, parsed.minor, parsed.patch, version)
+
+
+def _sort_versions(versions: Sequence[str]) -> list[str]:
+    return sorted({version for version in versions if version}, key=_version_text_key)
+
+
+def _install_state(facts: _Facts) -> ExtensionInstallState | None:
+    root = next(iter(facts.installed.values()), None)
+    if root is not None:
+        return ExtensionInstallState.for_install_dir(root.parent.parent)
+    record = next(iter(facts.active.values()), None)
+    if record is not None and isinstance(record.get("root"), str):
+        return ExtensionInstallState.for_install_dir(Path(record["root"]).parent.parent)
+    return None
+
+
+def _record(
+    store: ExtensionInstallState | None,
+    package_id: str,
+    version: str,
+) -> ExtensionInstallRecord | None:
+    if store is None:
+        return None
+    return store.get(package_id, version) or store.get(package_id)
 
 
 def _enabled(entry: MarketEntry, installed_root: Path | None) -> bool:

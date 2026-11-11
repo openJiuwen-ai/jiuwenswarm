@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,10 @@ from jiuwenswarm.extensions_v2.manifest_io import (
     package_domain,
     read_manifest_document,
 )
+from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
+    ExtensionInstallRecord,
+    ExtensionInstallState,
+)
 
 _AVATAR_MIME = {
     ".png": "image/png",
@@ -28,7 +32,7 @@ _AVATAR_MIME = {
 }
 _AVATAR_LIMIT = 1024 * 1024
 _PREVIEW_IMAGE = "assets/preview.png"
-_PREVIEW_IMAGE_LIMIT = 10 * 1024 * 1024
+_PREVIEW_IMAGE_LIMIT = 5 * 1024 * 1024
 _README_LIMIT = 64 * 1024
 
 
@@ -53,16 +57,23 @@ class StateIndex:
 
     active: dict[str, Any]
     installed: dict[str, Path]
+    roots: dict[str, tuple[Path, ...]] = field(default_factory=dict)
 
 
 def build_state_index(state: Any) -> StateIndex:
     active = {record.package_id: record for record in state.active}
     installed: dict[str, Path] = {}
+    roots: dict[str, list[Path]] = {}
     for root in state.installed:
+        roots.setdefault(root.parent.name, []).append(root)
         current = installed.get(root.parent.name)
         if current is None or _version_key(root) > _version_key(current):
             installed[root.parent.name] = root
-    return StateIndex(active=active, installed=installed)
+    return StateIndex(
+        active=active,
+        installed=installed,
+        roots={package_id: tuple(sorted(items, key=_version_key)) for package_id, items in roots.items()},
+    )
 
 
 def scan_examples(
@@ -107,28 +118,49 @@ def entry_from_root(root: Path) -> MarketEntry | None:
     )
 
 
-def list_catalog(examples_dir: Path, state: Any, *, domain: str | None = None) -> list[dict[str, Any]]:
+def list_catalog(
+    examples_dir: Path,
+    state: Any,
+    *,
+    domain: str | None = None,
+    install_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     """Return the preset packages shown in the market tab, regardless of install state."""
 
     index = build_state_index(state)
-    return [_summary(entry, index) for entry in scan_examples(examples_dir, domain=domain)]
+    store = _install_state(install_dir)
+    result = []
+    for entry in scan_examples(examples_dir, domain=domain):
+        record = _record(store, entry.package_id, installed_version(index, entry.package_id))
+        result.append(_summary(entry, index, origin=record.origin if record else "preset", origin_record=record))
+    return result
 
 
-def list_mine(examples_dir: Path, state: Any, *, domain: str | None = None) -> list[dict[str, Any]]:
+def list_mine(
+    examples_dir: Path,
+    state: Any,
+    *,
+    domain: str | None = None,
+    install_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     """Return installed packages, including ones currently kept disabled."""
 
     index = build_state_index(state)
     examples = {
         entry.package_id: entry for entry in scan_examples(examples_dir, exposed_only=False, domain=domain)
     }
+    store = _install_state(install_dir)
     packages: list[dict[str, Any]] = []
     package_ids = set(index.active) | set(index.installed)
     for package_id in sorted(package_ids):
         record = index.active.get(package_id)
         root = record.root if record is not None else index.installed[package_id]
-        entry = examples.get(package_id) or entry_from_root(root)
+        entry = entry_from_root(root) or examples.get(package_id)
         if entry is not None and (domain is None or entry.domain == domain):
-            packages.append(_summary(entry, index))
+            installed = installed_version(index, package_id)
+            record = _record(store, package_id, installed)
+            origin = record.origin if record else ("preset" if package_id in examples else "user")
+            packages.append(_summary(entry, index, origin=origin, origin_record=record))
     return packages
 
 
@@ -140,14 +172,8 @@ def find_entry(
     domain: str | None = None,
     install_dir: Path | None = None,
 ) -> MarketEntry:
-    """Resolve one package from examples, active records or the install directory."""
+    """Resolve one package, preferring the installed copy over the preset."""
 
-    examples = {
-        entry.package_id: entry for entry in scan_examples(examples_dir, exposed_only=False, domain=domain)
-    }
-    entry = examples.get(package_id)
-    if entry is not None:
-        return entry
     index = build_state_index(state)
     record = index.active.get(package_id)
     roots = [record.root] if record is not None else []
@@ -162,15 +188,29 @@ def find_entry(
         resolved = _installed_entry(package_id, install_dir)
         if resolved is not None and (domain is None or resolved.domain == domain):
             return resolved
+    examples = {
+        entry.package_id: entry for entry in scan_examples(examples_dir, exposed_only=False, domain=domain)
+    }
+    entry = examples.get(package_id)
+    if entry is not None:
+        return entry
     raise PackageNotFound(package_id)
 
 
-def project_detail(entry: MarketEntry, state: Any) -> dict[str, Any]:
+def project_detail(
+    entry: MarketEntry,
+    state: Any,
+    *,
+    install_dir: Path | None = None,
+) -> dict[str, Any]:
     """Return the detail payload for one package."""
 
     index = build_state_index(state)
     display = _display(entry.document)
-    detail = _summary(entry, index)
+    store = _install_state(install_dir or _entry_install_dir(entry, index))
+    installed = installed_version(index, entry.package_id)
+    record = _record(store, entry.package_id, installed)
+    detail = _summary(entry, index, origin=record.origin if record else "preset", origin_record=record)
     detail.update(
         {
             "details": _localized(display.get("details"), ""),
@@ -216,24 +256,104 @@ def _installed_entry(package_id: str, install_dir: Path) -> MarketEntry | None:
     return None
 
 
-def _summary(entry: MarketEntry, index: StateIndex) -> dict[str, Any]:
+def _summary(
+    entry: MarketEntry,
+    index: StateIndex,
+    *,
+    origin: str = "preset",
+    origin_record: ExtensionInstallRecord | None = None,
+) -> dict[str, Any]:
     document = entry.document
     display = _display(document)
-    record = index.active.get(entry.package_id)
+    active_record = index.active.get(entry.package_id)
     installed_root = index.installed.get(entry.package_id)
-    managed_root = record.root if record is not None else installed_root
-    installed = record is not None or installed_root is not None
+    managed_root = active_record.root if active_record is not None else installed_root
+    installed = active_record is not None or installed_root is not None
+    installed_version_value = installed_version(index, entry.package_id)
+    versions = installed_versions(index, entry.package_id)
+    if entry.version not in versions:
+        versions.append(entry.version)
+    versions = sort_versions(versions)
+    active = active_record is not None
+    enabled = active_record is not None or (
+        origin_record.enabled if origin_record is not None else _enabled(entry, managed_root)
+    )
     return {
         "id": entry.package_id,
+        "packageId": entry.package_id,
+        "assetId": origin_record.asset_id if origin_record is not None else "",
         "version": entry.version,
+        "installedVersion": installed_version_value,
+        "versions": versions,
         "displayName": _localized(display.get("name"), entry.package_id),
         "displayDescription": _localized(display.get("description"), ""),
         "tags": _localized_list(display.get("tags")),
         "avatar": _avatar(entry.root, display),
+        "source": "hub" if origin == "hub" else "local",
+        "origin": origin,
         "installed": installed,
-        "active": record is not None,
-        "enabled": _enabled(entry, managed_root),
+        "active": active,
+        "enabled": enabled,
     }
+
+
+def installed_version(index: StateIndex, package_id: str) -> str:
+    record = index.active.get(package_id)
+    if record is not None:
+        version = getattr(record, "version", "")
+        if version:
+            return str(version)
+    root = index.installed.get(package_id)
+    if root is None:
+        return ""
+    entry = entry_from_root(root)
+    return entry.version if entry is not None else root.name
+
+
+def installed_versions(index: StateIndex, package_id: str) -> list[str]:
+    """Return every package version present in the managed install store."""
+
+    versions: list[str] = []
+    for root in index.roots.get(package_id, ()):
+        entry = entry_from_root(root)
+        versions.append(entry.version if entry is not None else root.name)
+    return versions
+
+
+def sort_versions(versions: Sequence[str]) -> list[str]:
+    """Return unique versions in ascending order for the version selector."""
+
+    return sorted({version for version in versions if version}, key=_version_text_key)
+
+
+def merge_versions(*groups: Sequence[str]) -> list[str]:
+    """Merge available and locally installed versions without duplicates."""
+
+    return sort_versions([version for group in groups for version in group])
+
+
+def _install_state(install_dir: Path | None) -> ExtensionInstallState | None:
+    return ExtensionInstallState.for_install_dir(install_dir) if install_dir is not None else None
+
+
+def _record(
+    store: ExtensionInstallState | None,
+    package_id: str,
+    version: str,
+) -> ExtensionInstallRecord | None:
+    if store is None:
+        return None
+    return store.get(package_id, version) or store.get(package_id)
+
+
+def _entry_install_dir(entry: MarketEntry, index: StateIndex) -> Path | None:
+    root = index.installed.get(entry.package_id)
+    if root is not None:
+        return root.parent.parent
+    record = index.active.get(entry.package_id)
+    if record is not None:
+        return record.root.parent.parent
+    return None
 
 
 def _enabled(entry: MarketEntry, installed_root: Path | None) -> bool:
@@ -346,3 +466,11 @@ def _version_key(root: Path) -> tuple[int, int, int]:
     except (TypeError, ValueError):
         return (0, 0, 0)
     return (version.major, version.minor, version.patch)
+
+
+def _version_text_key(version: str) -> tuple[int, int, int, str]:
+    try:
+        parsed = parse_version(version)
+    except (TypeError, ValueError):
+        return (0, 0, 0, version)
+    return (parsed.major, parsed.minor, parsed.patch, version)

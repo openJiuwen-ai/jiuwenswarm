@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import re
 from typing import Literal
 
-PublishAssetKind = Literal["skill", "agent_template", "agent_group", "plugin", "mcp"]
+PublishAssetKind = Literal["skill", "agent_template", "agent_group", "plugin", "mcp", "system_plugin"]
 
 
 class PublishProtocolError(ValueError):
@@ -27,6 +27,7 @@ class PublishIdentity:
             "agent_group",
             "plugin",
             "mcp",
+            "system_plugin",
         }:
             raise ValueError("Unsupported publish kind")
         if (
