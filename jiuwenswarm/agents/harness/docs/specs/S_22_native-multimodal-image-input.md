@@ -199,7 +199,7 @@
 - 改上传 / 引用行格式 → `_IMAGE_REFERENCE_LINE_RE` / `parse_image_references` / `build_image_reference_line` 三处同改；旧历史里的旧格式必须仍可解析
 - 改 team 原生图片（N10 三要素）→ 能力位（`config_specs` 的 `update["enable_read_image_multimodal"]`）、全成员 rail 挂载（leader 带 `dispatch_hint`）、清单通道（`team_helpers` 的 `request_metadata` 覆盖写 + live build context 刷新）三处必须同时改；只改其一 = 挂 rail 也 0 张。清单键只允许 adapter/team_helpers 覆盖写，禁止信任请求 metadata 里同名外部值
 - 改成员授权边界 → 物化前提保持"清单内路径 + 该成员 user-authored 引用行"两条同时成立；任务看板 / 工具结果里的路径不得物化（否则读文件内容可被诱导成像素注入）。想收紧到"按任务分配图"需另建 task→paths 授权表，不能靠放宽安全门实现
-- 改成员确定性分发的幂等口径 → "已处理"集合是 `attached` ∪ `omitted`（同消息作用域内 index→path 配对，`omitted: duplicate` 也算终态）；新增状态行类型必须在此显式决定是否终态，并保留"清单图全部已处理 → 直接返回 0"的早退，否则每轮模型调用都会做全量文本扫描
+- 改成员确定性分发的幂等口径 → "已处理"集合是 `attached` ∪ `omitted`（同消息作用域内 index→path 配对，`omitted: duplicate`、`omitted: compacted` 均为终态）；新增状态行类型必须在此显式决定是否终态，并保留"清单图全部已处理 → 直接返回 0"的早退，否则每轮模型调用都会做全量文本扫描
 - 改提及判定（分发兜底 / 成员确定性分发）→ 单源在 `image_reference` 的 `normalize_image_mention_text` / `normalized_text_mentions_image` / `text_mentions_image`：禁止恢复裸 `in` 子串匹配，"分隔符 + 大小写"归一与边界字符集 `[0-9A-Za-z_-]` 是契约；批量场景先按消息归一一次再逐图判定，不要逐 (图, 文本) 重复归一
 - 改 leader 分发提示 → 同步 `MultimodalImageRail` 策略段文案与 `dispatch_hint` 装配点；提示变了要重验"leader 用 send_message 转发引用行 → 团员出图"的端到端路径
 - 改分发兜底（`before_tool_call`）→ 保持"只补消息真正提到的图（文件名 / 路径）、只对具体成员单播生效、广播 / 回用户不改写"；新增改写必须同步 `augment_message_with_reference_lines` 纯函数测试与 rail 参数改写测试
