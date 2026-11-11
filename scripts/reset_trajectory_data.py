@@ -7,7 +7,8 @@ removes what a workspace holds of it:
 * the web trajectory session databases (``trajectory_ui.db_path``, by default
   ``<workspace>/.trace/sessions``), with their WAL sidecars;
 * the file exporter's ``traces-*.jsonl`` under the default ``<workspace>/.trace``
-  and under any ``agent_observability`` / ``team_observability`` ``traces_dir``.
+  and under the ``observability`` ``traces_dir`` (legacy ``agent_observability`` /
+  ``team_observability`` sections are read through the same migration).
 
 Evolution trajectory archives and RSI role trajectories live outside the
 workspace; pass them with ``--extra``. Langfuse data is never touched.
@@ -27,9 +28,6 @@ import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
-
-_OBSERVABILITY_SECTIONS = ("agent_observability", "team_observability")
-
 
 def _load_config() -> Mapping[str, Any]:
     try:
@@ -56,12 +54,12 @@ def _session_root(config: Mapping[str, Any], workspace: Path) -> Path:
 
 def _trace_dirs(config: Mapping[str, Any], workspace: Path) -> list[Path]:
     directories = [workspace / ".trace"]
-    for section_name in _OBSERVABILITY_SECTIONS:
-        section = config.get(section_name)
-        configured = str(section.get("traces_dir") or "").strip() if isinstance(section, Mapping) else ""
-        if configured:
-            path = Path(configured).expanduser()
-            directories.append(path if path.is_absolute() else workspace / path)
+    from jiuwenswarm.common.observability_config import resolve_observability_section
+
+    configured = str(resolve_observability_section(config).get("traces_dir") or "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        directories.append(path if path.is_absolute() else workspace / path)
     return list(dict.fromkeys(directories))
 
 
