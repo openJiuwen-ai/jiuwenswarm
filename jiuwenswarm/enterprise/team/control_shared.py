@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""MySQL 上的 TeamEntity / TeamMembership。方法语义与 SQLite 实现一致。"""
+"""主库上的 TeamEntity / TeamMembership。方法语义与 SQLite 实现一致。"""
 
 from __future__ import annotations
 
@@ -13,11 +13,12 @@ from typing import Any, Iterable
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from jiuwenswarm.infrastructure.db.team_mysql_actor import (
-    get_team_mysql_actor,
+from jiuwenswarm.infrastructure.db.team_store_actor import (
+    fetch_all,
+    fetch_one,
+    get_team_store_actor,
     is_unique_violation,
-    list_record_dicts,
-    record_to_dict,
+    json_value_expr,
     run_tx,
 )
 from jiuwenswarm.enterprise.team.control_store import (
@@ -93,19 +94,19 @@ def _membership_from_row(row: dict[str, Any]) -> TeamMembershipRecord:
     )
 
 
-class MysqlTeamControlStore:
-    """``TeamControlStore`` backed by the shared MySQL actor."""
+class SharedTeamControlStore:
+    """``TeamControlStore`` backed by the shared team store."""
 
     def __init__(self) -> None:
-        get_team_mysql_actor()
+        get_team_store_actor()
 
     @staticmethod
     def _handler() -> Any:
-        return get_team_mysql_actor().handler
+        return get_team_store_actor().handler
 
     @staticmethod
     def _run(coro_fn: Any) -> Any:
-        return get_team_mysql_actor().call(coro_fn)
+        return get_team_store_actor().call(coro_fn)
 
     def create_entity(
         self,
@@ -139,26 +140,41 @@ class MysqlTeamControlStore:
         )
 
         async def _op() -> None:
+            handler = self._handler()
             try:
-                await self._handler().create(
-                    "team_entity",
-                    {
-                        "team_id": record.team_id,
-                        "team_name": record.team_name,
-                        "owner_user_id": owner.user_id,
-                        "owner_group_id": owner.group_id,
-                        "owner_bot_id": owner.bot_id,
-                        "status": record.status,
-                        "runtime_mode": record.runtime_mode,
-                        "template_id": record.template_id,
-                        "team_session_id": record.team_session_id,
-                        "runtime_team_name": record.runtime_team_name,
-                        "agent_service_id": record.agent_service_id,
-                        "gateway_id": record.gateway_id,
-                        "created_at": record.created_at,
-                        "updated_at": record.updated_at,
-                        "extra": record.extra,
-                    },
+                await run_tx(
+                    handler,
+                    lambda conn: conn.execute(
+                        text(
+                            "INSERT INTO team_entity ("
+                            "team_id, team_name, owner_user_id, owner_group_id, owner_bot_id, "
+                            "status, runtime_mode, template_id, team_session_id, runtime_team_name, "
+                            "agent_service_id, gateway_id, created_at, updated_at, extra"
+                            ") VALUES ("
+                            ":team_id, :team_name, :owner_user_id, :owner_group_id, :owner_bot_id, "
+                            ":status, :runtime_mode, :template_id, :team_session_id, :runtime_team_name, "
+                            ":agent_service_id, :gateway_id, :created_at, :updated_at, "
+                            + json_value_expr("extra")
+                            + ")"
+                        ),
+                        {
+                            "team_id": record.team_id,
+                            "team_name": record.team_name,
+                            "owner_user_id": owner.user_id,
+                            "owner_group_id": owner.group_id,
+                            "owner_bot_id": owner.bot_id,
+                            "status": record.status,
+                            "runtime_mode": record.runtime_mode,
+                            "template_id": record.template_id,
+                            "team_session_id": record.team_session_id,
+                            "runtime_team_name": record.runtime_team_name,
+                            "agent_service_id": record.agent_service_id,
+                            "gateway_id": record.gateway_id,
+                            "created_at": record.created_at,
+                            "updated_at": record.updated_at,
+                            "extra": json.dumps(record.extra, ensure_ascii=False),
+                        },
+                    ),
                 )
             except IntegrityError as exc:
                 if is_unique_violation(exc):
@@ -176,8 +192,11 @@ class MysqlTeamControlStore:
             return None
 
         async def _op() -> dict[str, Any] | None:
-            record = await self._handler().get("team_entity", {"team_id": tid})
-            return record_to_dict(record) if record is not None else None
+            return await fetch_one(
+                self._handler(),
+                "SELECT * FROM team_entity WHERE team_id = :team_id",
+                {"team_id": tid},
+            )
 
         row = self._run(_op)
         return _entity_from_row(row) if row else None
@@ -188,8 +207,11 @@ class MysqlTeamControlStore:
             return None
 
         async def _op() -> dict[str, Any] | None:
-            record = await self._handler().get("team_entity", {"team_name": name})
-            return record_to_dict(record) if record is not None else None
+            return await fetch_one(
+                self._handler(),
+                "SELECT * FROM team_entity WHERE team_name = :team_name",
+                {"team_name": name},
+            )
 
         row = self._run(_op)
         return _entity_from_row(row) if row else None
@@ -200,14 +222,12 @@ class MysqlTeamControlStore:
             return None
 
         async def _op() -> dict[str, Any] | None:
-            rows = await list_record_dicts(
+            return await fetch_one(
                 self._handler(),
-                "team_entity",
-                filters={"team_session_id": sid},
-                order_by=[("updated_at", True)],
-                limit=1,
+                "SELECT * FROM team_entity WHERE team_session_id = :sid "
+                "ORDER BY updated_at DESC LIMIT 1",
+                {"sid": sid},
             )
-            return rows[0] if rows else None
 
         row = self._run(_op)
         return _entity_from_row(row) if row else None
@@ -218,20 +238,25 @@ class MysqlTeamControlStore:
         owner: OwnerIdentity | None = None,
         include_deleted: bool = False,
     ) -> list[TeamEntityRecord]:
-        filters: dict[str, Any] = {}
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
         if owner is not None:
-            filters["owner_user_id"] = owner.user_id
-            filters["owner_group_id"] = owner.group_id
-            filters["owner_bot_id"] = owner.bot_id
+            clauses.append(
+                "owner_user_id = :uid AND owner_group_id = :gid AND owner_bot_id = :bid"
+            )
+            params.update(
+                {"uid": owner.user_id, "gid": owner.group_id, "bid": owner.bot_id}
+            )
         if not include_deleted:
-            filters["status"] = sorted(TEAM_STATUSES - {TEAM_STATUS_DELETED})
+            clauses.append("status <> :deleted")
+            params["deleted"] = TEAM_STATUS_DELETED
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
         async def _op() -> list[dict[str, Any]]:
-            return await list_record_dicts(
+            return await fetch_all(
                 self._handler(),
-                "team_entity",
-                filters=filters or None,
-                order_by=[("updated_at", True)],
+                f"SELECT * FROM team_entity {where} ORDER BY updated_at DESC",
+                params,
             )
 
         return [_entity_from_row(row) for row in self._run(_op)]
@@ -250,28 +275,43 @@ class MysqlTeamControlStore:
         values: dict[str, Any] = {}
         for key, value in fields.items():
             if key == "extra":
-                values[key] = dict(value or {})
+                values[key] = json.dumps(dict(value or {}), ensure_ascii=False)
             else:
                 values[key] = _clean(value)
         values["updated_at"] = time.time()
+        assignments = []
+        params: dict[str, Any] = {"team_id": tid}
+        for key, value in values.items():
+            if key == "extra":
+                assignments.append(f"extra = {json_value_expr('extra')}")
+            else:
+                assignments.append(f"{key} = :{key}")
+            params[key] = value
 
-        async def _op() -> dict[str, Any] | None:
+        async def _op() -> int:
+            handler = self._handler()
             try:
-                updated = await self._handler().update(
-                    "team_entity",
-                    {"team_id": tid},
-                    values,
+                result = await run_tx(
+                    handler,
+                    lambda conn: conn.execute(
+                        text(
+                            f"UPDATE team_entity SET {', '.join(assignments)} "
+                            "WHERE team_id = :team_id"
+                        ),
+                        params,
+                    ),
                 )
+                return int(result.rowcount or 0)
             except IntegrityError as exc:
                 if is_unique_violation(exc):
                     raise TeamControlStoreError(
                         "team_name already exists", code="CONFLICT"
                     ) from exc
                 raise
-            return record_to_dict(updated) if updated is not None else None
 
-        row = self._run(_op)
-        return _entity_from_row(row) if row else None
+        if self._run(_op) == 0:
+            return None
+        return self.get_entity(tid)
 
     def set_status(self, team_id: str, status: str) -> TeamEntityRecord | None:
         return self.update_entity(team_id, status=status)
@@ -354,7 +394,8 @@ class MysqlTeamControlStore:
                         text(
                             "UPDATE team_membership SET group_id=:group_id, bot_id=:bot_id, "
                             "member_name=:member_name, member_type=:member_type, "
-                            "display_name=:display_name, permissions=CAST(:permissions AS json), "
+                            "display_name=:display_name, "
+                            f"permissions={json_value_expr('permissions')}, "
                             "status=:status, expires_at=:expires_at, updated_at=:updated_at "
                             "WHERE membership_id=:membership_id"
                         ),
@@ -393,8 +434,9 @@ class MysqlTeamControlStore:
                         "joined_at, updated_at"
                         ") VALUES ("
                         ":membership_id, :team_id, :user_id, :group_id, :bot_id, :member_name, "
-                        ":member_type, :display_name, CAST(:permissions AS json), :status, "
-                        ":expires_at, :joined_at, :updated_at)"
+                        ":member_type, :display_name, "
+                        + json_value_expr("permissions")
+                        + ", :status, :expires_at, :joined_at, :updated_at)"
                     ),
                     {
                         "membership_id": record.membership_id,
@@ -431,11 +473,11 @@ class MysqlTeamControlStore:
             return None
 
         async def _op() -> dict[str, Any] | None:
-            record = await self._handler().get(
-                "team_membership",
-                {"team_id": tid, "user_id": uid},
+            return await fetch_one(
+                self._handler(),
+                "SELECT * FROM team_membership WHERE team_id = :tid AND user_id = :uid",
+                {"tid": tid, "uid": uid},
             )
-            return record_to_dict(record) if record is not None else None
 
         row = self._run(_op)
         return _membership_from_row(row) if row else None
@@ -448,11 +490,11 @@ class MysqlTeamControlStore:
             return None
 
         async def _op() -> dict[str, Any] | None:
-            record = await self._handler().get(
-                "team_membership",
-                {"team_id": tid, "member_name": name},
+            return await fetch_one(
+                self._handler(),
+                "SELECT * FROM team_membership WHERE team_id = :tid AND member_name = :name",
+                {"tid": tid, "name": name},
             )
-            return record_to_dict(record) if record is not None else None
 
         row = self._run(_op)
         return _membership_from_row(row) if row else None
@@ -463,19 +505,24 @@ class MysqlTeamControlStore:
         tid = _clean(team_id)
         if not tid:
             return []
-        filters: dict[str, Any] = {"team_id": tid}
+        params: dict[str, Any] = {"tid": tid}
+        where = "team_id = :tid"
         if statuses is not None:
             wanted = [s for s in statuses if s]
             if not wanted:
                 return []
-            filters["status"] = wanted
+            keys = []
+            for index, status in enumerate(wanted):
+                key = f"s{index}"
+                keys.append(f":{key}")
+                params[key] = status
+            where += f" AND status IN ({', '.join(keys)})"
 
         async def _op() -> list[dict[str, Any]]:
-            return await list_record_dicts(
+            return await fetch_all(
                 self._handler(),
-                "team_membership",
-                filters=filters,
-                order_by=[("joined_at", False)],
+                f"SELECT * FROM team_membership WHERE {where} ORDER BY joined_at ASC",
+                params,
             )
 
         return [_membership_from_row(row) for row in self._run(_op)]
@@ -491,12 +538,24 @@ class MysqlTeamControlStore:
         now = time.time()
 
         async def _op() -> dict[str, Any] | None:
-            updated = await self._handler().update(
-                "team_membership",
-                {"membership_id": mid},
-                {"status": status, "updated_at": now},
-            )
-            return record_to_dict(updated) if updated is not None else None
+            async def _tx(conn: Any) -> dict[str, Any] | None:
+                result = await conn.execute(
+                    text(
+                        "UPDATE team_membership SET status = :status, updated_at = :now "
+                        "WHERE membership_id = :mid"
+                    ),
+                    {"status": status, "now": now, "mid": mid},
+                )
+                if int(result.rowcount or 0) == 0:
+                    return None
+                loaded = await conn.execute(
+                    text("SELECT * FROM team_membership WHERE membership_id = :mid"),
+                    {"mid": mid},
+                )
+                row = loaded.mappings().first()
+                return dict(row) if row is not None else None
+
+            return await run_tx(self._handler(), _tx)
 
         row = self._run(_op)
         return _membership_from_row(row) if row else None

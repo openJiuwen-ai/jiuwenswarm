@@ -3098,7 +3098,7 @@ class JiuWenSwarmDeepAdapter:
         if isinstance(v, str) and v != "":
             if not equipment.is_agent_template_installed(v):
                 return f"agent_template not installed: {v}"
-            from jiuwenswarm.enterprise.capabilities.experts.allowlist import allows
+            from jiuwenswarm.enterprise.capabilities.experts.request_packages import allows
 
             if not allows("agent_template", v):
                 return f"agent_template not allowed: {v}"

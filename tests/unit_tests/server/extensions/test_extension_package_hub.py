@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
-from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
     HubAssetDetail,
     HubAssetSummary,

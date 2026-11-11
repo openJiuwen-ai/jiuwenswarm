@@ -401,7 +401,7 @@ async def _handle_session_lifecycle_action(
                             purge_team_for_deleted_session,
                         )
 
-                        from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                        from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                         await run_team_store(purge_team_for_deleted_session, session_id=sid)
                     except Exception:

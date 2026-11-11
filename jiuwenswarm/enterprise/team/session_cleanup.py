@@ -61,11 +61,11 @@ def _purge_mysql(
     """Read and delete team rows in one MySQL call, then drop the local binding."""
     from sqlalchemy import text
 
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import get_team_mysql_actor, run_tx
+    from jiuwenswarm.infrastructure.db.team_store_actor import get_team_store_actor, run_tx
     from jiuwenswarm.enterprise.team.control_store import TEAM_STATUS_DELETED
     from jiuwenswarm.enterprise.team.quota import KIND_TEAM_CREATE, team_create_key
 
-    actor = get_team_mysql_actor()
+    actor = get_team_store_actor()
     key = team_create_key(session_id) if session_id else ""
 
     async def _op() -> tuple[bool, str | None]:
@@ -292,7 +292,7 @@ def purge_team_for_deleted_session(
     if not sid and not name:
         return None
 
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import use_team_mysql
+    from jiuwenswarm.infrastructure.db.team_store_actor import use_shared_team_store
     from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
     # Injected SQLite stores keep the original path. Production MySQL uses one call.
@@ -301,7 +301,7 @@ def purge_team_for_deleted_session(
         quota_on_mysql = bool(get_team_quota_service().use_mysql())
     except Exception:  # noqa: BLE001
         quota_on_mysql = False
-    if use_team_mysql() and quota_on_mysql:
+    if use_shared_team_store() and quota_on_mysql:
         return _purge_mysql(
             session_id=sid,
             team_name=name,
@@ -592,7 +592,7 @@ async def wait_for_startup_sweep() -> None:
 
 async def run_startup_sweep() -> int:
     """Sweep once. There is no repeating interval."""
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
     try:
         purged = await run_team_store(reconcile_teams_with_sessions)

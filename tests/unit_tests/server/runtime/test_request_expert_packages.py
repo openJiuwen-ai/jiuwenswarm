@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""专家包允许名单：个人版不读策略，企业版只放行用户包和请求名单命中的受控包。"""
+"""本次请求的专家包：个人版不读策略，企业版只放行用户包和请求里下发的受控包。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.common.schema.expert_packages import METADATA_KEY
-from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+from jiuwenswarm.enterprise.capabilities.experts.request_packages import (
     allows,
     bind_request_subject,
     hidden_from_enterprise,
@@ -48,7 +48,7 @@ def _mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _bind_allowlist(packages: list[dict], **identity):
+def _bind_packages(packages: list[dict], **identity):
     metadata = dict(identity)
     metadata[METADATA_KEY] = packages
     return bind_request_subject(metadata)
@@ -61,24 +61,24 @@ def test_personal_bind_does_not_read_metadata(monkeypatch: pytest.MonkeyPatch) -
         raise AssertionError("personal bind must not read metadata")
 
     monkeypatch.setattr(
-        "jiuwenswarm.enterprise.capabilities.experts.allowlist._packages_from_metadata",
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages._packages_from_metadata",
         _deny,
     )
-    with _bind_allowlist(
+    with _bind_packages(
         [{"kind": "agent_template", "id": "kept"}],
         user_id="alice",
     ):
         assert allows("agent_template", "kept") is True
 
 
-def test_personal_allows_without_reading_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_personal_allows_without_reading_request_packages(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
 
     def _deny_read() -> list[dict]:
-        raise AssertionError("personal edition must not read the allowlist")
+        raise AssertionError("personal edition must not read the request packages")
 
     monkeypatch.setattr(
-        "jiuwenswarm.enterprise.capabilities.experts.allowlist._request_packages",
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages._request_packages",
         _deny_read,
     )
     assert allows("agent_template", "hub-expert") is True
@@ -86,7 +86,7 @@ def test_personal_allows_without_reading_allowlist(monkeypatch: pytest.MonkeyPat
     assert hidden_from_enterprise("794db1bfe8884d6897d62d3584894a59") is False
 
 
-def test_enterprise_empty_allowlist_denies_controlled_and_allows_user_local(
+def test_enterprise_empty_packages_denies_controlled_and_allows_user_local(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -103,13 +103,13 @@ def test_enterprise_empty_allowlist_denies_controlled_and_allows_user_local(
     )
     _mkdir(tmp_path / "plugins" / "agent_templates" / "local" / "from-hub")
 
-    with _bind_allowlist([]):
+    with _bind_packages([]):
         assert allows("agent_template", "mine") is True
         assert allows("agent_template", "builtin-expert") is False
         assert allows("agent_template", "from-hub") is False
 
 
-def test_enterprise_allowlist_then_revoke(
+def test_enterprise_packages_then_revoke(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -117,9 +117,9 @@ def test_enterprise_allowlist_then_revoke(
     _bind_workspace(monkeypatch, tmp_path)
     _mkdir(tmp_path / "plugins" / "agent_templates" / "built_in" / "builtin-expert")
     granted = [{"kind": "agent_template", "id": "builtin-expert"}]
-    with _bind_allowlist(granted):
+    with _bind_packages(granted):
         assert allows("agent_template", "builtin-expert") is True
-    with _bind_allowlist([]):
+    with _bind_packages([]):
         assert allows("agent_template", "builtin-expert") is False
 
 
@@ -135,7 +135,7 @@ def test_allowed_install_still_checks_connectors(
     monkeypatch.setattr(equipment, "_equipment_definition_exists", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(equipment, "manifest_connector_names", lambda *_args, **_kwargs: ["mail"])
     monkeypatch.setattr(equipment, "unready_connectors", lambda names: list(names))
-    with _bind_allowlist(granted):
+    with _bind_packages(granted):
         ok, payload = asyncio.run(
             equipment.install_equipment_from_hub_gated("agent_templates", {"id": "hub-expert"})
         )
@@ -143,7 +143,7 @@ def test_allowed_install_still_checks_connectors(
     assert payload["pending_connectors"] == ["mail"]
 
 
-def test_empty_allowlist_rejects_hub_download(
+def test_empty_packages_rejects_hub_download(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -159,7 +159,7 @@ def test_empty_allowlist_rejects_hub_download(
 
     monkeypatch.setattr(equipment, "prepare_hub_equipment", _prepare)
     monkeypatch.setattr(equipment, "_equipment_definition_exists", lambda *_args, **_kwargs: False)
-    with _bind_allowlist([]):
+    with _bind_packages([]):
         ok, payload = asyncio.run(
             equipment.install_equipment_from_hub_gated("agent_templates", {"id": "hub-expert"})
         )
@@ -183,14 +183,14 @@ def test_revoked_template_fails_next_mount(
         lambda _name: True,
     )
     params = {"agent_template_name": "hub-expert", "plugin_names": []}
-    with _bind_allowlist(granted):
+    with _bind_packages(granted):
         assert interface_deep.JiuWenSwarmDeepAdapter._marketplace_equipment_gate(params) is None
-    with _bind_allowlist([]):
+    with _bind_packages([]):
         message = interface_deep.JiuWenSwarmDeepAdapter._marketplace_equipment_gate(params)
     assert message == "agent_template not allowed: hub-expert"
 
 
-def test_expert_group_catalog_and_launch_follow_allowlist(
+def test_expert_group_catalog_and_launch_follow_request_packages(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -219,12 +219,12 @@ def test_expert_group_catalog_and_launch_follow_allowlist(
     launcher = JiuwenExpertTeamLauncher()
 
     def _passed(self) -> None:
-        raise RuntimeError("allowlist passed")
+        raise RuntimeError("packages passed")
 
     monkeypatch.setattr(JiuwenExpertTeamLauncher, "ensure_turn_runner_installed", _passed)
-    with _bind_allowlist(granted):
+    with _bind_packages(granted):
         names = [item.agent_group_name for item in JiuwenExpertGroupCatalog.list()]
-        assert names == ["keep", "mine"]
+        assert names == ["keep"]
         with pytest.raises(ValueError, match="not allowed"):
             asyncio.run(
                 launcher.launch(
@@ -233,7 +233,7 @@ def test_expert_group_catalog_and_launch_follow_allowlist(
                     session_id="web_session",
                 )
             )
-        with pytest.raises(RuntimeError, match="allowlist passed"):
+        with pytest.raises(RuntimeError, match="packages passed"):
             asyncio.run(
                 launcher.launch(
                     organization_id="org",

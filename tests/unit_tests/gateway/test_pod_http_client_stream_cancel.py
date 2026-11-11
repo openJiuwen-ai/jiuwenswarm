@@ -140,7 +140,7 @@ async def test_steer_stream_does_not_supersede_parent_input_received(
             used_rpc_fallback=False,
         )
 
-    monkeypatch.setattr(pod_http, "_assemble_with_allowlist", _assemble)
+    monkeypatch.setattr(pod_http, "_assemble_with_expert_packages", _assemble)
     monkeypatch.setattr(
         client,
         "_request_headers",

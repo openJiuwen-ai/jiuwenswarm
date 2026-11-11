@@ -805,7 +805,7 @@ async def test_list_and_create_wait_for_startup_sweep_once(
 
     monkeypatch.setattr(team_control, "_server_global", _global)
     monkeypatch.setattr(
-        "jiuwenswarm.infrastructure.db.team_mysql_actor.run_team_store",
+        "jiuwenswarm.infrastructure.db.team_store_actor.run_team_store",
         _stop_after_wait,
     )
     monkeypatch.setattr(
@@ -1249,6 +1249,12 @@ def test_mysql_reserve_counts_extra_teams_before_the_actor_transaction(monkeypat
     import threading
 
     svc = TeamQuotaService()
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "mysql")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "127.0.0.1")
+    monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+    monkeypatch.setenv("GATEWAY_DB_USER", "team")
+    monkeypatch.setenv("GATEWAY_DB_PASSWORD", "team")
+    monkeypatch.setenv("GATEWAY_DB_NAME", "team")
     monkeypatch.setattr(svc, "_use_mysql", lambda: True)
     monkeypatch.setattr(svc, "list_policies", lambda: [])
 

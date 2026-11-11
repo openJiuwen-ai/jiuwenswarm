@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""企业版按本次请求的允许名单决定专家包能不能看、能装、能用。
+"""企业版按本次请求下发的专家包决定能不能看、能装、能用。
 
-个人版先看产品形态并放行，不读名单，不组装租户平面。
+个人版先看产品形态并放行，不读专家包，不组装租户平面。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from jiuwenswarm.common.schema.expert_packages import (
 logger = logging.getLogger(__name__)
 
 # 本次请求的 packages。None 表示还没有绑定。
-_ALLOWLIST: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+_REQUEST_PACKAGES: ContextVar[list[dict[str, Any]] | None] = ContextVar(
     "expert_packages", default=None
 )
 
@@ -58,34 +58,34 @@ def _packages_from_metadata(metadata: Mapping[str, Any] | None) -> list[dict[str
 
 @contextmanager
 def bind_request_subject(metadata: Mapping[str, Any] | None) -> Iterator[None]:
-    """把本次请求的名单绑定到允许判断。不写入业务 params。"""
+    """把本次请求的专家包绑定到允许判断。不写入业务 params。"""
     from jiuwenswarm.enterprise.edition import is_enterprise
 
     if not is_enterprise():
-        allowlist_token = _ALLOWLIST.set([])
+        token = _REQUEST_PACKAGES.set([])
         try:
             yield
         finally:
-            _ALLOWLIST.reset(allowlist_token)
+            _REQUEST_PACKAGES.reset(token)
         return
-    allowlist_token = _ALLOWLIST.set(
+    token = _REQUEST_PACKAGES.set(
         _packages_from_metadata(metadata if isinstance(metadata, Mapping) else None)
     )
     try:
         yield
     finally:
-        _ALLOWLIST.reset(allowlist_token)
+        _REQUEST_PACKAGES.reset(token)
 
 
 def _request_packages() -> list[dict[str, Any]]:
-    bound = _ALLOWLIST.get()
+    bound = _REQUEST_PACKAGES.get()
     if not bound:
         return []
     return bound
 
 
 def allows(kind: str, package_id: str) -> bool:
-    """个人版放行。企业版放行用户自己的包，以及名单里的受控包。"""
+    """个人版放行。企业版放行用户自己的包，以及本次请求下发的专家包。"""
     from jiuwenswarm.enterprise.edition import is_enterprise
 
     if not is_enterprise():
@@ -127,10 +127,14 @@ def _kind_dir(kind: str) -> str:
 
 def _hub_record(kind: str, package_id: str):
     from jiuwenswarm.server.runtime.extension_package_manager import (
+        AgentGroupPackageError,
         hub_install_state_store,
     )
 
-    store = hub_install_state_store(_kind_dir(kind))
+    try:
+        store = hub_install_state_store(_kind_dir(kind))
+    except AgentGroupPackageError:
+        return None
     return store.get(package_id) or store.get_by_package_id(package_id)
 
 
@@ -168,15 +172,24 @@ def _marketplace_source(kind: str, *package_ids: str) -> str | None:
 
 
 def _is_user_owned(kind: str, package_id: str) -> bool:
-    """用户 local 根下、且不是 Hub 安装的包。"""
+    """用户 local 根下、且不是 Hub 安装的包。
+
+    企业版专家团没有绑定租户时，安装目录不可读，当作不是用户自己的包。
+    """
+    from jiuwenswarm.server.runtime.extension_package_manager import (
+        AgentGroupPackageError,
+        get_local_root,
+    )
+
     record = _hub_record(kind, package_id)
     if record is not None:
         return False
     if _marketplace_source(kind, package_id) == "hub":
         return False
-    from jiuwenswarm.server.runtime.extension_package_manager import get_local_root
-
-    root = get_local_root(_kind_dir(kind)).resolve()
+    try:
+        root = get_local_root(_kind_dir(kind)).resolve()
+    except AgentGroupPackageError:
+        return False
     candidate = (root / package_id).resolve()
     if candidate.parent != root:
         return False
