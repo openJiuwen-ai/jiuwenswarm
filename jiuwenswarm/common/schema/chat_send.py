@@ -31,7 +31,7 @@ PLAN_ENTRY_SOURCES: frozenset[str] = frozenset(
 
 
 class ExecutionSettings(TypedDict, total=False):
-    """Initial team-session environment policy supplied by the host UI."""
+    """Team-session environment policy supplied by the host UI on ``chat.send``."""
 
     independent_git_identity: bool
     environment: dict[str, str | None]
@@ -219,10 +219,14 @@ class ChatSendParams(TypedDict, total=False):
     """Desired plugin package names for this turn ([] clears all)."""
 
     execution_settings: NotRequired[ExecutionSettings]
-    """Initial code-team execution policy; existing sessions use the settings RPC.
+    """Code-team execution policy for this turn.
 
     Supports independent_git_identity (bool) and environment (string/null values).
-    A later chat turn never overwrites an already committed settings record.
+    The first turn seeds the session record; a later turn merges only the
+    fields it carries into the committed record (compare-and-swap), so the
+    change applies to the members' next tool calls. Omit it to keep the
+    committed policy. The committed value is mirrored to session metadata
+    as ``execution_settings`` for clients to restore.
     """
 
     enable_swarmflow: NotRequired[bool]

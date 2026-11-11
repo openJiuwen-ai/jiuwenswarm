@@ -6,32 +6,32 @@
 
 Code 集群输入框「＋」菜单提供「独立 Git 身份」，默认关闭。它是 team 会话设置，
 同时作用于 leader、预定义成员和动态成员，不提供成员级开关。
-新会话草稿在首次 chat.send 携带；已有会话通过 session.execution_settings 读取和更新，
-确认成功才改变 UI 状态，失败明确提示。切换影响之后开始的工具调用，不修改在途命令或后台进程。
+开关状态随每次 team 模式的 chat.send 一起下发（`execution_settings`），下一条消息起生效，
+影响之后开始的工具调用，不修改在途命令或后台进程。设置不走独立 RPC：Web 请求经 agent-gateway
+转发，而 gateway 只转发白名单内的方法，chat.send 本来就在其中，因此无需改动 gateway。
 
 ## 数据与执行链路
 
-请求结构：
+chat.send 参数：
 
 ```json
 {
-  "session_id": "example",
-  "expected_version": 0,
-  "settings": {
+  "execution_settings": {
     "independent_git_identity": true,
     "environment": {"BUILD_PROFILE": "debug", "REMOVE_THIS": null}
   }
 }
 ```
 
-省略 settings 是读取。没有记录时返回 version=-1，不写入默认值，避免首次发送前的
-读取覆盖草稿。更新必须携带 expected_version，冲突时重新读取。environment 是可扩展的
+共享团队数据库的 team_session_settings 是权威值，metadata.execution_settings 是恢复镜像。
+会话的首条消息用请求值初始化记录；之后的消息只把请求里出现的字段合并进已提交的记录，
+以 version 做 CAS，并发冲突时基于最新值重试一次。不携带 execution_settings 则保持原值。
+前端打开会话时从会话元数据的 execution_settings 读回开关状态。environment 是可扩展的
 内部/API 配置，本次 UI 只显示 Git 身份开关。
 
-共享团队数据库的 team_session_settings 是权威值，metadata.execution_settings 是恢复镜像。
-首次执行前初始化设置，之后 chat.send 中的旧值不覆盖权威值。SwarmBuildContext 的
-execution_settings_managed 随 seed 跨进程传递；成员每次工具执行从自身 backend 的数据库
-读取当前设置，使用自己的 member_name 生成快照。读取失败时工具不执行。
+SwarmBuildContext 的 execution_settings_managed 随 seed 跨进程传递；成员每次工具执行从自身
+backend 的数据库读取当前设置，使用自己的 member_name 生成快照，因此运行中的团队在下一次工具
+调用就能看到更新。读取失败时工具不执行。
 
 开启时注入 GIT_AUTHOR_NAME / GIT_COMMITTER_NAME 为成员名，邮箱为
 `<member_name>@jiuwenswarm.com`；不适合邮箱前缀的名称使用稳定哈希前缀，显示作者名保持原值。
@@ -50,7 +50,7 @@ Core 的工具作用域提供隔离与清理，shell 合并环境；Swarm 的 mc
 ## 验证与边界
 
 定向测试覆盖真实 Git 提交的 author/committer、关闭恢复原身份、成员隔离、设置更新、
-冷恢复 seed、数据库 CAS、shell 普通/流式/后台路径和前端请求状态。
+冷恢复 seed、chat.send 合并更新与 CAS、shell 普通/流式/后台路径和前端开关状态恢复。
 Git amend、cherry-pick 等继续遵循 Git 的作者保留语义，不自动 reset-author。
 这不是防伪机制；外部独立 CLI、浏览器或 MCP 服务自行启动的命令不会自动被此作用域覆盖。
 跨机器成员必须连接同一持久化团队数据库；纯内存存储不支持会话设置，开关返回明确错误。
@@ -62,5 +62,8 @@ The Code team composer exposes an opt-in **Independent Git identity** switch.
 It is persisted per team session and affects new tool invocations for every native member.
 Each member signs new Git commits with its member name and an `@jiuwenswarm.com` email.
 Disabling the switch restores ordinary Git/environment behavior. Generic execution environment
-overlays support values and removals independently of Git. Session settings are versioned in
-the shared team database; concurrent stale updates fail, and in-flight commands keep their snapshot.
+overlays support values and removals independently of Git. The setting travels with every team
+`chat.send` (no separate RPC, so the Gateway needs no change): the first turn seeds the versioned
+record in the shared team database, later turns merge the carried fields with compare-and-swap,
+and clients restore the switch from the `execution_settings` session-metadata mirror.
+In-flight commands keep their snapshot.
