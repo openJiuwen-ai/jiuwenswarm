@@ -69,7 +69,7 @@ class PromptLimit:
 # Order: more specific first within each family.
 _REGISTRY: tuple[tuple[str, str, int, str, str], ...] = (
     # —— Image ——
-    ("image", r"(?i)\bimage-01\b|minimax.*image|image.*minimax", 1500, "chars", "MiniMax image-01 docs"),
+    ("image", r"(?i)minimax-h3-image|h3-image|minimax.*image|image.*minimax", 32000, "chars", "MiniMax H3-Image docs"),
     (
         "image",
         r"(?i)qwen-image-3\.0|qwen-image-max|qwen-image-plus|qwen-image-edit",

@@ -10,6 +10,7 @@ import {
   isEditableBaseVendor,
   isArkGenerationApiBase,
   isGenerationSlotConfigured,
+  generationModelOptions,
 } from '../node_modules/.cache/generation-models/generationModels.mjs';
 
 test('Ark generation accepts official regional addresses and rejects Coding Plan and proxy addresses', () => {
@@ -92,4 +93,24 @@ test('music generation offers OpenRouter and vLLM-Omni only; MiniMax stays for v
     catalogModels('music_gen', 'vllm-omni').some((entry) => entry.model === 'MiniMaxAI/MiniMax-Music3'),
     true,
   );
+});
+
+test('MiniMax image catalog suggests H3 models and still surfaces a custom saved name', () => {
+  assert.deepEqual(defaultGeneration('visual_gen', 'minimax'), {
+    protocol: 'minimax',
+    model: 'MiniMax-H3-Image',
+  });
+  assert.deepEqual(
+    catalogModels('visual_gen', 'minimax').map((entry) => entry.model),
+    ['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed'],
+  );
+  const options = generationModelOptions(
+    'visual_gen',
+    'minimax',
+    false,
+    'minimax',
+    'some-new-lab-image',
+  );
+  assert.equal(options[0], 'some-new-lab-image');
+  assert.ok(options.includes('MiniMax-H3-Image'));
 });
