@@ -122,6 +122,7 @@ class AgentRequest:
         repr=False,
         compare=False,
     )
+    traceparent: str | None = None
 
 
 @dataclass

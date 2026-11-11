@@ -67,4 +67,5 @@ def e2a_to_agent_request(env: E2AEnvelope) -> AgentRequest:
         # AgentServer-owned Heartbeat and Gateway-owned Cron enforce the same
         # ownership boundary after reconnect/restart.
         user_id=str(env.user_id or ""),
+        traceparent=env.traceparent,
     )

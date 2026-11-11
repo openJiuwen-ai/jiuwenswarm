@@ -493,7 +493,7 @@ def configure_gateway_telemetry(
     if not isinstance(settings, dict):
         logger.warning("Gateway tracing unavailable: telemetry must be a mapping")
         return runtime
-    enabled = os.environ.get("OTEL_ENABLED", settings.get("enabled", False))
+    enabled = config.get("trace_enabled", os.environ.get("OTEL_ENABLED", settings.get("enabled", False)))
     if isinstance(enabled, str):
         value = enabled.strip().lower()
         if value not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
@@ -519,7 +519,7 @@ def configure_gateway_telemetry(
             shutdown_on_exit=False,
         )
         runtime.owned = True
-        overrides = settings.get("traces")
+        overrides = {} if "trace_enabled" in config else settings.get("traces")
         if overrides is None:
             overrides = {}
         if not isinstance(overrides, dict):

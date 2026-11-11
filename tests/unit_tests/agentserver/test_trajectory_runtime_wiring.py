@@ -442,3 +442,25 @@ def test_team_trajectory_disabled_stops_sink(monkeypatch, tmp_path):
     assert runtime_settings[0][0].enabled is False
     assert runtime_settings[0][1] == {"demand": "team"}
     assert team_manager._observability_active is True
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_platform_trace_switch_controls_all_provider_demands(monkeypatch, tmp_path, enabled):
+    config = {
+        "trace_enabled": enabled,
+        "agent_observability": {"enabled": True, "exporter": "file"},
+        "team_observability": {"enabled": True, "exporter": "file"},
+        "trajectory_ui": {"enabled": True, "diagnosis_enabled": True, "db_path": str(tmp_path / "traces")},
+        "react": {"evolution": {"skill_evolution": True}, "ttse": {"enabled": True}},
+        "symphony": {"enabled": True, "evolution": {"enabled": True}},
+    }
+    monkeypatch.setattr(agent_observability, "get_config", lambda: config)
+    monkeypatch.setattr(team_manager, "get_config", lambda: config)
+    monkeypatch.setattr(agent_observability, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(team_manager, "get_user_workspace_dir", lambda: tmp_path)
+    agent_observability.sync_agent_observability(force=True)
+    team_manager.sync_team_observability()
+    assert agent_observability._agent_observability_active is enabled
+    assert team_manager._observability_active is enabled
+    settings = trajectory_runtime.load_trajectory_store_settings(config, workspace=tmp_path)
+    assert settings.enabled is enabled
