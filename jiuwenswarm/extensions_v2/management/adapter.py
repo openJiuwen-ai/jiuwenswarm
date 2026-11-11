@@ -70,6 +70,7 @@ class _Request:
     package_id: str = ""
     path: str = ""
     scope: str = "catalog"
+    refresh: bool = False
     enable: bool | None = None
     version: str = ""
 
@@ -141,15 +142,18 @@ async def _dispatch(manager: ExtensionManager, method: str, parsed: _Request) ->
             if parsed.scope == "catalog"
             else list_mine(examples_dir, state, domain=DOMAIN_AGENT_SERVER, install_dir=install_dir)
         )
+        cache = None
         if parsed.scope == "catalog":
             local_ids = {str(item.get("id")) for item in packages}
-            hub_packages = await list_hub_system_plugins(state, install_dir)
+            hub_packages, cache = await list_hub_system_plugins(
+                state, install_dir, refresh=parsed.refresh
+            )
             packages.extend(
                 item
                 for item in hub_packages
                 if item["id"] not in local_ids and item.get("packageName") not in local_ids
             )
-        return {"packages": packages}
+        return {"packages": packages, **({"cache": cache} if cache else {})}
     if method == ReqMethod.EXTENSIONS_V2_SHOW.value:
         state = await manager.query()
         install_dir = resolve_install_dir()
@@ -480,12 +484,15 @@ def _parse_request(method: object, params: object) -> _Request:
         raise ValueError("install requires paths or package_ids with an optional version")
 
     if method == ReqMethod.EXTENSIONS_V2_CATALOG.value:
-        if set(params) - {"scope"}:
-            raise ValueError("catalog accepts scope only")
+        if set(params) - {"scope", "refresh"}:
+            raise ValueError("catalog accepts scope and refresh only")
         scope = params.get("scope", "catalog")
         if scope not in {"catalog", "mine"}:
             raise ValueError("scope must be 'catalog' or 'mine'")
-        return _Request(scope=scope)
+        refresh = params.get("refresh", False)
+        if not isinstance(refresh, bool):
+            raise ValueError("refresh must be a boolean")
+        return _Request(scope=scope, refresh=refresh)
 
     if method == ReqMethod.EXTENSIONS_V2_SHOW.value:
         if set(params) - {"package_id", "version"} or "package_id" not in params:

@@ -106,7 +106,7 @@ interface PluginPackageState {
   busyId: string | null;
   installingIds: Record<string, boolean>;
 
-  loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean }) => Promise<void>;
+  loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean; refresh?: boolean }) => Promise<void>;
   // 返回是否成功，供详情页在加载失败时保留当前导航状态。
   loadDetail: (id: string) => Promise<boolean>;
   create: (params: {
@@ -178,7 +178,7 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
     const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const freshPackages = await pluginPackagesApi.list(filter);
+      const freshPackages = await pluginPackagesApi.list(filter, '', { refresh: options?.refresh === true });
       if (requestScope !== catalogScope()) return;
       scheduleCatalogRefresh('pluginPackageStore.ts:' + seqKey, freshPackages.cache, () => { void get().loadList(filter, { silent: true }); }, () => listRequestSeq[seqKey] === mySeq);
       if (listRequestSeq[seqKey] !== mySeq) return; // 已有更新的同桶调用发起过，这次结果作废

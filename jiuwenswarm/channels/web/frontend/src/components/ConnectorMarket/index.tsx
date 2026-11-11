@@ -216,6 +216,17 @@ export function ConnectorMarketPanel({
     }
   }, [activeKind, topTab, view.name, pluginKind, loadConnectorList, loadPluginList, loadSystemCatalog, loadSystemMine]);
 
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
+  // 主动刷新：Hub 目录由后端缓存（TTL 10min），refresh 只触发后台重拉并立刻返回旧快照，
+  // 前端沿用既有轮询收敛。
+  const handleRefresh = async () => {
+    setRefreshNonce((value) => value + 1);
+    if (activeKind === 'mcp') await loadConnectorList('builtin', { refresh: true });
+    else if (pluginKind === 'system') await loadSystemCatalog({ refresh: true });
+    else await loadPluginList('builtin+hub', { refresh: true });
+  };
+
   // "会话使用"按钮目前没有真实目的地——真正的会话内使用入口是 ChatPanel 输入框的"+"面板
   // （backend-requests.md 需求11/12），不在这次连接器市场的范围内，点击先给个明确提示，
   // 不要让按钮看起来像"点了没反应"的坏按钮。
@@ -248,6 +259,8 @@ export function ConnectorMarketPanel({
             setUploadModalOpen(true);
           }}
           onRegisterCustomMcp={() => setView({ name: 'register-mcp' })}
+          onRefresh={handleRefresh}
+          refreshNonce={refreshNonce}
         />
       )}
 

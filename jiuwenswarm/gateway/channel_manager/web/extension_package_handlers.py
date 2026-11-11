@@ -189,6 +189,7 @@ async def _handle_locally(
             packages = list_installed(examples_dir, state)
         else:
             packages = list_presets(examples_dir, state)
+        cache = None
         agent_client = resolve_client()
         if agent_client is not None:
             ok, payload = await fetch_agent_unary(
@@ -204,7 +205,12 @@ async def _handle_locally(
             remote = payload.get("packages") if ok else None
             if isinstance(remote, list):
                 packages = _merge_packages(packages, remote, state)
-        await _respond(channel, ws, req_id, ok=True, payload={"packages": packages})
+                cached = payload.get("cache")
+                cache = dict(cached) if ok and isinstance(cached, Mapping) else None
+        response: dict[str, Any] = {"packages": packages}
+        if cache is not None:
+            response["cache"] = cache
+        await _respond(channel, ws, req_id, ok=True, payload=response)
         return True
 
     if method is ReqMethod.EXTENSIONS_V2_SHOW:
