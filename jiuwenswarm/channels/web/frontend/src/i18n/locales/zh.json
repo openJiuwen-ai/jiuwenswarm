@@ -6201,6 +6201,7 @@
       "editResources": "编辑技能与连接器",
       "resourcesHint": "从本机已安装的技能和已连接的连接器中选择。保存并发布后，该员工之后的新任务才会使用这次选择。",
       "saveResources": "保存并发布",
+      "modelPublished": "模型已保存并发布。",
       "savingResources": "正在保存",
       "saveSettingsFailed": "配置保存或发布失败，请重试。",
       "modelEmptyHint": "请先在「设置 → 模型」中添加模型。",
