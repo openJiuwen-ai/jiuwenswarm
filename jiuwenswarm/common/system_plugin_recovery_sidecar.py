@@ -211,11 +211,14 @@ dialog p { margin-bottom: 20px; }
   .record-detail.is-open { grid-template-columns: 1fr; gap: 14px; }
   .record-detail > button { width: 100%; }
 }
+body.is-embedded main { padding-top: 0; }
+body.is-embedded .page-header { display: none; }
 """
 _PAGE_SCRIPT = """
 <script>
 const token = __TOKEN__;
 const endpoint = "__ENDPOINT__";
+const parentOrigin = __PARENT_ORIGIN__;
 const texts = __TEXTS__;
 const status = document.querySelector('#status');
 const records = document.querySelector('#records');
@@ -226,18 +229,48 @@ const confirmCancel = document.querySelector('#confirm-cancel');
 const confirmRestoreButton = document.querySelector('#confirm-restore');
 const restoreButton = document.querySelector('#restore');
 const page = document.querySelector('main');
+const RECOVERY_HEIGHT_MESSAGE = 'jiuwenswarm.system-plugin-recovery.height';
+const RECOVERY_SELECTED_RECORD_MESSAGE = 'jiuwenswarm.system-plugin-recovery.selected-record';
+const RECOVERY_OPEN_CONFIRM_COMMAND_MESSAGE = 'jiuwenswarm.system-plugin-recovery.open-confirm';
+const RECOVERY_DIALOG_OPENED_MESSAGE = 'jiuwenswarm.system-plugin-recovery.dialog-opened';
+const RECOVERY_DIALOG_CLOSED_MESSAGE = 'jiuwenswarm.system-plugin-recovery.dialog-closed';
+const RECOVERY_DIALOG_POSITION_MESSAGE = 'jiuwenswarm.system-plugin-recovery.dialog-position';
 let pendingRestore = null;
 let expandedRow = null;
 let previewRequestId = 0;
 let selectedRecordId = null;
+let restoring = false;
 let heightAnimationFrame = null;
+
+function postToParent(message) {
+  window.parent.postMessage(message, parentOrigin || '*');
+}
+
+function reportRecoveryState() {
+  postToParent({
+    type: RECOVERY_SELECTED_RECORD_MESSAGE,
+    recordId: selectedRecordId,
+    restoreLabel: texts.restore,
+    title: texts.title,
+    description: texts.description,
+    restoring: restoring,
+  });
+}
+
+function updateDialogPosition(centerY) {
+  if (!Number.isFinite(centerY) || centerY <= 0) return;
+  confirmDialog.style.top = `${Math.round(centerY)}px`;
+  confirmDialog.style.right = 'auto';
+  confirmDialog.style.bottom = 'auto';
+  confirmDialog.style.left = '50%';
+  confirmDialog.style.margin = '0';
+  confirmDialog.style.transform = 'translate(-50%, -50%)';
+}
 
 function reportContentHeight() {
   heightAnimationFrame = null;
   const height = Math.ceil(page.getBoundingClientRect().height);
-  if (height > 0) {
-    window.parent.postMessage({ type: 'jiuwenswarm.system-plugin-recovery.height', height }, '*');
-  }
+  if (height > 0) postToParent({ type: RECOVERY_HEIGHT_MESSAGE, height });
 }
 
 function scheduleContentHeight() {
@@ -269,7 +302,9 @@ async function load() {
   const data = await response.json();
   expandedRow = null;
   selectedRecordId = null;
+  restoring = false;
   restoreButton.disabled = true;
+  reportRecoveryState();
   records.replaceChildren(...data.records.map((record) => row(record)));
 }
 
@@ -324,6 +359,7 @@ function row(record) {
 function selectRecord(recordId) {
   selectedRecordId = recordId;
   restoreButton.disabled = false;
+  reportRecoveryState();
 }
 
 function closeDetail(entry) {
@@ -397,22 +433,50 @@ function renderPackageMessage(container, message) {
 }
 
 function confirmRestore(id, button) {
+  if (restoring || confirmDialog.open) return;
   pendingRestore = { id, button };
   confirmTitle.textContent = texts.restoreConfirmTitle;
   confirmDescription.textContent = texts.restoreConfirmDescription;
   confirmCancel.textContent = texts.cancel;
   confirmRestoreButton.textContent = texts.restoreAndRestart;
   confirmDialog.showModal();
+  postToParent({ type: RECOVERY_DIALOG_OPENED_MESSAGE });
 }
 
 restoreButton.textContent = texts.restore;
 restoreButton.disabled = true;
+if (parentOrigin) {
+  document.body.classList.add('is-embedded');
+  restoreButton.hidden = true;
+}
 restoreButton.onclick = () => {
   if (selectedRecordId) confirmRestore(selectedRecordId, restoreButton);
 };
 
+window.addEventListener('message', (event) => {
+  if (event.origin !== parentOrigin || event.source !== window.parent) return;
+  const message = event.data;
+  if (!message || typeof message !== 'object') return;
+  if (message.type === RECOVERY_DIALOG_POSITION_MESSAGE) {
+    updateDialogPosition(message.centerY);
+    return;
+  }
+  if (
+    message.type !== RECOVERY_OPEN_CONFIRM_COMMAND_MESSAGE ||
+    typeof selectedRecordId !== 'string' ||
+    message.recordId !== selectedRecordId
+  ) {
+    return;
+  }
+  confirmRestore(selectedRecordId, restoreButton);
+});
+
 confirmCancel.onclick = () => confirmDialog.close();
 confirmDialog.addEventListener('cancel', () => { pendingRestore = null; });
+confirmDialog.addEventListener('close', () => {
+  pendingRestore = null;
+  postToParent({ type: RECOVERY_DIALOG_CLOSED_MESSAGE });
+});
 confirmRestoreButton.onclick = () => {
   const request = pendingRestore;
   pendingRestore = null;
@@ -422,7 +486,8 @@ confirmRestoreButton.onclick = () => {
 
 async function restore(id, button) {
   button.disabled = true;
-  status.textContent = texts.restoring;
+  restoring = true;
+  reportRecoveryState();
   try {
     const query = encodeURIComponent(token);
     const response = await fetch(`${endpoint}/api/restore?token=${query}`, {
@@ -431,9 +496,10 @@ async function restore(id, button) {
       body: JSON.stringify({ record_id: id }),
     });
     if (!response.ok) throw new Error('restore failed');
-    status.textContent = texts.restored;
     await load();
   } catch {
+    restoring = false;
+    reportRecoveryState();
     status.textContent = texts.restoreFailed;
     button.disabled = false;
   }
@@ -465,7 +531,8 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
             return
         if path in {_PATH, f"{_PATH}/"}:
             locale = query.get("locale", [""])[0]
-            self._html(_page(self.server.token, locale))
+            parent_origin = _parent_origin(query.get("parent_origin", [""])[0])
+            self._html(_page(self.server.token, locale, parent_origin))
             return
         if path == f"{_PATH}/api/history":
             self._json({"records": self.server.recovery.records()})
@@ -582,10 +649,26 @@ def _request_target(value: str) -> tuple[str, dict[str, list[str]]]:
     return parsed.path, parse_qs(parsed.query, keep_blank_values=True)
 
 
-def _page(token: str, locale: str) -> str:
+def _parent_origin(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+        return ""
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    try:
+        parsed.port
+    except ValueError:
+        return ""
+    return value
+
+
+def _page(token: str, locale: str, parent_origin: str = "") -> str:
     texts = _texts(locale)
     script = _PAGE_SCRIPT.replace("__TOKEN__", json.dumps(token))
     script = script.replace("__ENDPOINT__", _PATH)
+    script = script.replace("__PARENT_ORIGIN__", json.dumps(parent_origin))
     script = script.replace("__TEXTS__", json.dumps(texts, ensure_ascii=False))
     return f"""<!doctype html>
 <html lang="{texts['locale']}">
@@ -640,8 +723,6 @@ def _texts(locale: str) -> dict[str, object]:
                 "background services. Tasks in progress will be interrupted."
             ),
             "restoreAndRestart": "Restore and restart",
-            "restoring": "Restoring…",
-            "restored": "Restored. Restarting background services.",
             "restoreFailed": "Restore failed.",
             "loadFailed": "Could not load recovery records.",
             "actions": {
@@ -671,8 +752,6 @@ def _texts(locale: str) -> dict[str, object]:
         "restoreConfirmTitle": "确认还原系统插件？",
         "restoreConfirmDescription": "还原将恢复此刻对应的系统插件启用状态，并重启后台，正在处理的任务将中断。",
         "restoreAndRestart": "还原并重启",
-        "restoring": "正在还原…",
-        "restored": "已还原，正在重启后台服务。",
         "restoreFailed": "还原失败。",
         "loadFailed": "无法读取还原记录。",
         "actions": {
