@@ -29,28 +29,44 @@ async function readPluginState(method: string, params: Record<string, unknown>):
   try {
     return await webRequest(method, params, { timeoutMs: READ_TIMEOUT_MS });
   } catch (error) {
-    if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'CONTEXT_CHANGED') {
+    if (errorCode(error) !== 'CONTEXT_CHANGED') {
       throw error;
     }
-    const host = browserClientCapabilities;
-    const ready = await new Promise<boolean>((resolve) => {
-      if (!host.isChanging()) {
-        resolve(!host.isUnavailable());
-        return;
-      }
-      const finish = (available: boolean) => {
-        window.clearTimeout(timeoutId);
-        unsubscribe();
-        resolve(available);
-      };
-      const unsubscribe = host.subscribe((change) => {
-        if (change.phase === 'ready' && !host.isChanging()) finish(!host.isUnavailable());
-      });
-      const timeoutId = window.setTimeout(() => finish(false), READ_TIMEOUT_MS);
-    });
-    if (!ready) throw error;
+    if (!(await waitForClientContext())) throw error;
     return webRequest(method, params, { timeoutMs: READ_TIMEOUT_MS });
   }
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+/**
+ * A declarations swap can reject a management call without the package state being
+ * wrong; callers resync instead of surfacing a failure. A missing login session is not
+ * transient: hiding it would show an empty list or report a rejected toggle as done.
+ */
+export function isTransientManagementError(error: unknown): boolean {
+  return errorCode(error) === 'CONTEXT_CHANGED';
+}
+
+/** Resolve once the browser has applied the current client declarations. */
+export async function waitForClientContext(): Promise<boolean> {
+  const host = browserClientCapabilities;
+  if (!host.isChanging()) return !host.isUnavailable();
+  return new Promise<boolean>((resolve) => {
+    const finish = (available: boolean) => {
+      window.clearTimeout(timeoutId);
+      unsubscribe();
+      resolve(available);
+    };
+    const unsubscribe = host.subscribe((change) => {
+      if (change.phase === 'ready' && !host.isChanging()) finish(!host.isUnavailable());
+    });
+    const timeoutId = window.setTimeout(() => finish(false), READ_TIMEOUT_MS);
+  });
 }
 
 function reportFailure(payload: SystemPluginReportPayload): string | null {
