@@ -22,6 +22,7 @@ import {
   isGoalCompletedContent,
 } from '../components/GoalBar/goalCompletedMessage';
 import { HistoryRecordReassembler } from './historyRecordReassembler';
+import { stripMentionAppendix } from './designer/designerMentions';
 import { expertTeamId } from './teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
 import { readAgentTemplateName } from './agentIdentity';
@@ -30,8 +31,6 @@ import {
   isTeamLeaderContextUsageSnapshot,
   parseContextUsageSnapshot,
 } from './contextUsage/contextUsageModel';
-import { isEnterprise } from '../edition';
-import { isTeamAgentMode } from './planMode/wireMode';
 
 export { HistoryRecordReassembler };
 
@@ -722,9 +721,7 @@ function safeTimestampMs(value: unknown): number {
 }
 
 function isTeamModeRecord(record: Record<string, unknown>): boolean {
-  const mode = typeof record.mode === 'string' ? record.mode.trim().toLowerCase() : '';
-  if (!isEnterprise()) return mode === 'team';
-  return isTeamAgentMode(mode);
+  return typeof record.mode === 'string' && record.mode.trim().toLowerCase() === 'team';
 }
 
 function isTeamTeammateMessageRecord(record: Record<string, unknown>): boolean {
@@ -1142,7 +1139,8 @@ function parseSessionHistoryTimelineEntry(
         id,
         role: 'user',
         outputOrder: readOutputOrder(record) ?? readOutputOrder(eventPayload),
-        content,
+        // A design "@" mention carries a leader-only appendix; show the user's own text.
+        content: stripMentionAppendix(content),
         timestamp: at,
         ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
@@ -1178,34 +1176,6 @@ function parseSessionHistoryTimelineEntry(
         ? 'subagent_activity'
         : 'subagent_message';
     return { kind, at: replay.at, payload: replay.payload };
-  }
-
-  if (eventType === 'chat.notice') {
-    const noticePayload = buildEventPayloadForRecord(record);
-    const noticeType = pickFirstString(noticePayload, ['notice_type', 'type'])
-      ?? pickFirstString(record, ['notice_type', 'type'])
-      ?? '';
-    if (
-      noticeType !== 'requested_team_size'
-      && noticeType !== 'team_quota'
-      && noticeType !== 'team_teammate_quota'
-    ) {
-      return null;
-    }
-    const noticeContent = pickFirstString(noticePayload, ['content', 'message', 'text'])
-      ?? (typeof record.content === 'string' ? record.content : '');
-    if (!noticeContent.trim()) return null;
-    const noticeId = pickFirstString(record, ['id', 'message_id'])
-      ?? `notice-${noticeType}-${sessionId}-${at}`;
-    return {
-      kind: 'message',
-      message: {
-        id: noticeId,
-        role: 'system',
-        content: noticeContent,
-        timestamp: at,
-      },
-    };
   }
 
   if (!ALLOWED_ASSISTANT_EVENT_TYPES.has(eventType)) {

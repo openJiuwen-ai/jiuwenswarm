@@ -7,8 +7,8 @@ import {
 } from './features/multiModelCollaboration/featureConfig';
 import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
-import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS, PERSONAL_HIDDEN_NAV_ITEMS } from './edition';
-import { isTeamSessionLive, retainBubblesArrivedDuringHistory } from './services/sessionLive';
+import { PluginReplacementDialog } from './components/ConnectorMarket/PluginReplacementDialog';
+import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS } from './edition';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 /**
@@ -27,7 +27,6 @@ import { reenterJiuwenMate } from './features/jiuwenmate/publicNav';
 import type { JiuwenMateExistingPage } from './features/jiuwenmate/types';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
-import { TeamPanel } from './components/TeamPanel';
 import { RsiPage } from './features/rsi/RsiPage';
 import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
 import { useRsiStore } from './features/rsi/rsiStore';
@@ -144,7 +143,6 @@ import {
   useCronStore,
   useSubagentStore,
   usePersonalContextStore,
-  useTeamSelectorStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import { chatRoutePath } from './multi-session/routing/route';
@@ -154,7 +152,6 @@ import {
   createConversationTitle,
   isConversationMissing,
   registerCreatedConversation,
-  forgetCreatedConversation,
   resolveNewConversationEntrySettings,
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
@@ -709,6 +706,11 @@ function AppContent({
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
+  // 断线重连后的首次元数据快照允许纠正运行态：断线期间终态事件可能已经丢失。
+  // 其余场景下快照只能把运行态拉起来，不能把正在跑的轮次压回空闲——worker 的
+  // 运行态快照会滞后于事件流，用滞后快照回落会让发送按钮和任务转圈闪回空闲
+  // （#6196 新建会话首条消息、#6154 code 模式首条消息空白、#6155 切回会话不转圈）。
+  const metadataDowngradeAllowedRef = useRef(new Set<string>());
   const sessionViewIdRef = useRef(generateUuidV4());
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
@@ -1183,7 +1185,7 @@ function AppContent({
   const hiddenNavItems = useMemo<MainNavKey[]>(() => {
     const base: MainNavKey[] = [
       ...getHiddenNavItemsForPlatform(frontendPlatform),
-      ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS),
+      ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : []),
     ];
     const rsiFiltered: MainNavKey[] = rsiFeatureEnabled
       ? base
@@ -1198,8 +1200,7 @@ function AppContent({
   }, [frontendPlatform, masterEnabled, rsiFeatureEnabled]);
 
   useEffect(() => {
-    const hidden = isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS;
-    if ((hidden as readonly string[]).includes(activeNav)) {
+    if (isEnterprise() && (ENTERPRISE_HIDDEN_NAV_ITEMS as readonly string[]).includes(activeNav)) {
       setActiveNav('chat');
     }
   }, [activeNav]);
@@ -2086,19 +2087,26 @@ function AppContent({
         const trackedLastRun = Object.values(useCronStore.getState().lastRunSessionId).includes(
           targetSessionId,
         );
-        if (!shouldKeepLocalCronProcessing(
-          targetSessionId,
-          session.is_processing,
-          localProcessing,
-          {
+        const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
+        const locallyBusy = Boolean(
+          useChatStore.getState().getRuntime(targetSessionId)?.foregroundIsProcessing,
+        );
+        // 快照只能把运行态拉起来，把运行态打回空闲只认终态事件
+        // （processing_status(false) / chat.final / interrupt），或断线重连后的首次
+        // 快照（断线期间终态事件可能丢失）。worker 运行态快照会滞后于事件流，
+        // 用它回落会让新建会话首条消息和切回会话的运行态闪回空闲。
+        const metadataMaySettleProcessing = session.is_processing || allowDowngrade || !locallyBusy;
+        if (
+          metadataMaySettleProcessing
+          && !shouldKeepLocalCronProcessing(targetSessionId, session.is_processing, localProcessing, {
             // 统一会话未必 cron_ 前缀，靠 cron_id / lastRun 放行
             hasCronMetadata: Boolean(session.cron_id) || trackedLastRun,
             // 组织负责人停止是权威空闲，不能被守卫吞掉
             authoritativeIdle:
               session.organization_owner_stopped === true
               || isOrganizationOwnerStopped(targetSessionId),
-          },
-        )) {
+          })
+        ) {
           setProcessing(targetSessionId, session.is_processing);
           if (!session.is_processing) {
             setThinking(targetSessionId, false);
@@ -2609,22 +2617,15 @@ function AppContent({
     }, 8000);
   }, [clearProactiveToastTimer, proactiveNotificationMessage, setProactiveNotification]);
 
-  const fetchConfigRef = useRef(fetchConfig);
-  fetchConfigRef.current = fetchConfig;
-
   useEffect(() => {
-    if (!isConnected) {
+    if (!isConnected || initialDataLoaded) {
       return;
     }
-    let cancelled = false;
     void (async () => {
-      await fetchConfigRef.current();
-      if (!cancelled) setInitialDataLoaded(true);
+      await fetchConfig();
+      setInitialDataLoaded(true);
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isConnected]);
+  }, [fetchConfig, initialDataLoaded, isConnected]);
 
   const initialProjectsLoadedRef = useRef(false);
 
@@ -2667,10 +2668,18 @@ function AppContent({
     };
   }, [initialDataLoaded, isConnected, loadProjects]);
 
+  // 记录连接状态跃迁：断线期间终态事件可能丢失，重连后允许用一次元数据快照
+  // 把残留的运行态纠正回空闲。
+  const prevConnectedRef = useRef(isConnected);
   useEffect(() => {
+    const reconnected = isConnected && prevConnectedRef.current === false;
+    prevConnectedRef.current = isConnected;
     if (!isConnected || !routeSessionId) {
       setMissingSessionId(null);
       return;
+    }
+    if (reconnected) {
+      metadataDowngradeAllowedRef.current.add(routeSessionId);
     }
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
@@ -2834,12 +2843,6 @@ function AppContent({
     };
 
     // 开始历史会话加载
-    const idsAtHistoryStart = isEnterprise()
-      ? new Set(
-          (useChatStore.getState().getRuntime(sessionId)?.messages ?? []).map((message) => message.id),
-        )
-      : null;
-
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
       requestNextBatch: (cursor) => request(HISTORY_GET_METHOD, {
@@ -2856,21 +2859,15 @@ function AppContent({
         // hooks/useWebSocket.ts 的 applyIncomingGoal/mergePersistedGoalCompletionMessages。
         // 同时给命中"曾经设置过目标"的 user 消息回填 isGoalObjectiveMessage 徽章标记，
         // 见 stampGoalObjectiveMessages。
-        const restored = stampGoalObjectiveMessages(
-          sessionId,
-          mergePersistedGoalCompletionMessages(
-            sessionId,
-            mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
-          ),
-        );
         replaceHistoryMessages(
           sessionId,
-          retainBubblesArrivedDuringHistory(
-            restored,
-            idsAtHistoryStart,
-            useChatStore.getState().getRuntime(sessionId)?.messages ?? [],
-            isTeamSessionLive(sessionId),
-          ),
+          stampGoalObjectiveMessages(
+            sessionId,
+            mergePersistedGoalCompletionMessages(
+              sessionId,
+              mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
+            ),
+          )
         );
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
@@ -2899,17 +2896,9 @@ function AppContent({
       onEmpty: (cursorMeta) => {
         const seed = pendingCronUserSeedsRef.current.get(sessionId);
         pendingCronUserSeedsRef.current.delete(sessionId);
-        replaceHistoryMessages(
-          sessionId,
-          retainBubblesArrivedDuringHistory(
-            mergePersistedGoalCompletionMessages(
-              sessionId, mergeCronRunUserSeed([], sessionId, seed),
-            ),
-            idsAtHistoryStart,
-            useChatStore.getState().getRuntime(sessionId)?.messages ?? [],
-            isTeamSessionLive(sessionId),
-          ),
-        );
+        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(
+          sessionId, mergeCronRunUserSeed([], sessionId, seed),
+        ));
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
           hasMore: cursorMeta.hasMore,
@@ -3934,7 +3923,7 @@ function AppContent({
 
   /**
    * 删除目标：active 时除了清目标，还要顺带结束当前会话输出——复用停止按钮同一套中断调用
-   * （个人版团队走 pause，企业版团队和其余模式走 cancel）。先清目标再补发中断，避免目标还没清掉那个空档被
+   * （team 走 pause、其余走 cancel）。先清目标再补发中断，避免目标还没清掉那个空档被
    * "ACTIVE 目标保持交互打开"的后端逻辑又续上一轮。非 active 状态下只清目标，不打断当前
    * 会话（如果还有一轮在自然跑完，让它继续）。
    */
@@ -3943,7 +3932,7 @@ function AppContent({
       const isGoalActive = useGoalStore.getState().runtimes[sessionId]?.goal?.status === 'active';
       void clearGoal(sessionId);
       if (!isGoalActive) return;
-      if (mode === 'team' && !isEnterprise()) {
+      if (mode === 'team') {
         void pause(sessionId);
       } else {
         void cancel(sessionId);
@@ -4319,27 +4308,6 @@ function AppContent({
       setToolPanelHidden,
     ],
   );
-
-  const handleTeamSessionsDeleted = useCallback(async (sessionIds: string[]) => {
-    const deleted = new Set(sessionIds.filter(Boolean));
-    for (const id of deleted) {
-      forgetCreatedConversation(id);
-      useSessionStore.getState().removeSession(id);
-      useSessionStore.getState().removeRuntime(id);
-      useTeamSelectorStore.getState().removeRuntime(id);
-      useChatStore.getState().removeRuntime(id);
-      useSubagentStore.getState().removeRuntime(id);
-      useTodoStore.getState().removeRuntime(id);
-      useHarnessStore.getState().removeRuntime(id);
-      useGoalStore.getState().removeRuntime(id);
-      usePlanStore.getState().removeRuntime(id);
-    }
-    useWorkspaceStore.getState().removeSessions([...deleted]);
-    if (routeSessionId && deleted.has(routeSessionId)) {
-      setMissingSessionId(routeSessionId);
-    }
-    await useWorkspaceStore.getState().refreshWorkspaceAndCron();
-  }, [routeSessionId]);
 
   const handleNavigate = useCallback(
     (nav: MainNavKey, peekTarget: SecondarySidebar | null = null): boolean => {
@@ -4854,22 +4822,25 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
 
   if (isJiuwenMate) {
     return (
-      <JiuwenMateApp
-        onExit={() => {
-          setIsJiuwenMate(false);
-          if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
-        }}
-        groupId={route.kind === 'group-chat' ? route.groupId : undefined}
-        onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
-        renderExistingPage={renderJiuwenMateExistingPage}
-        useInstalledExpertRef={openInstalledExpertRef}
-        confirmDiscardSettings={() => {
-          if (!settingsHasChangesRef.current) return true;
-          if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
-          setRequestedSettingsModuleId(null);
-          return true;
-        }}
-      />
+      <>
+        <JiuwenMateApp
+          onExit={() => {
+            setIsJiuwenMate(false);
+            if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
+          }}
+          groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+          onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
+          renderExistingPage={renderJiuwenMateExistingPage}
+          useInstalledExpertRef={openInstalledExpertRef}
+          confirmDiscardSettings={() => {
+            if (!settingsHasChangesRef.current) return true;
+            if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
+            setRequestedSettingsModuleId(null);
+            return true;
+          }}
+        />
+        <LoginDialog />
+      </>
     );
   }
 
@@ -5209,18 +5180,12 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             />
           </div>
         )}
-        {isEnterprise() && activeNav === 'teams' && (
-          <div className="app-section min-h-0">
-            <TeamPanel onSessionsDeleted={handleTeamSessionsDeleted} />
-          </div>
-        )}
         {activeNav === 'sessions' && (
           <div className="app-section">
             <SessionsPanel
                 currentSessionId={sessionId}
                 isConnected={isConnected}
                 isProcessing={isProcessing}
-                mode={mode}
                 onRestoreSession={handleRestoreSession}
             />
           </div>
@@ -5480,6 +5445,7 @@ function App({
         resolveSettingsRequest={resolveSettingsRequest}
       />
       <AssetPublishHost />
+      <PluginReplacementDialog />
     </ErrorBoundary>
   );
 }

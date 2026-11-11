@@ -27,7 +27,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from jiuwenswarm.common._build_config import DISPLAY_NAME
-from jiuwenswarm.common.utils import get_infra_data_dir
 
 
 logger = logging.getLogger(__name__)
@@ -239,8 +238,10 @@ def external_cli_site_packages(cli_agent: str) -> Path:
 
 def _runtime_site_packages(cli_agent: str) -> Path:
     if _is_frozen_windows():
+        from jiuwenswarm.common.utils import get_user_workspace_dir
+
         return (
-            get_infra_data_dir()
+            get_user_workspace_dir()
             / "runtime"
             / "external-cli"
             / cli_agent

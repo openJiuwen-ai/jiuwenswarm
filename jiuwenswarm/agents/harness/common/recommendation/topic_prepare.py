@@ -1103,7 +1103,7 @@ class TopicPrepareService:
         return self._start_seed("scheduled_cron")
 
     def schedule_successor(self) -> asyncio.Task[str]:
-        """Enqueue after ``record_v5_interaction`` accepts ``not_interested``."""
+        """Enqueue a lazy seed when a legacy prepare lane needs refill."""
 
         return self._start_seed("lazy_seed")
 

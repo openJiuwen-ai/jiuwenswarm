@@ -80,7 +80,7 @@ async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
     monkeypatch.setattr(catalog, "list_agent_groups", lambda _params=None: [
         {"id": "built-in-group", "source": "builtin", "installed": False}
     ])
-    monkeypatch.setattr(catalog, "_hub_install_state_store", lambda _kind: type(
+    monkeypatch.setattr(catalog, "hub_install_state_store", lambda _kind: type(
         "Store", (), {"get_by_package_id": lambda _self, _id: None}
     )())
 
@@ -125,7 +125,7 @@ async def test_hub_agent_group_installs_and_uninstalls_by_asset_id(extension_wor
     assert detail["id"] == "group-asset-id" and detail["installed"]
     assert detail["source"] == "hub"
     catalog.uninstall_agent_group({"id": "group-asset-id"})
-    assert catalog._hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
+    assert catalog.hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
 
 
 def _seed_valid_agent_group(
@@ -241,20 +241,20 @@ class TestPrepareWorkspaceAndMarketplace:
     def test_prepare_creates_dirs_without_seeding(self, tmp_path: Path) -> None:
         result = utils.prepare_workspace(overwrite=True, workspace_dir=tmp_path)
         assert result is not None
-        plugins = tmp_path / "domain" / "agent" / "workspace" / "plugins"
+        plugins = tmp_path / "agent" / "workspace" / "plugins"
         for kind in _KINDS:
             assert (plugins / kind / "built_in").is_dir()
             assert (plugins / kind / "local").is_dir()
             assert not (plugins / kind / "marketplace.json").exists()
             assert not any((plugins / kind / "built_in").iterdir())
             assert not any((plugins / kind / "local").iterdir())
-        groups = tmp_path / "domain" / ".agent_teams" / AGENT_GROUPS
+        groups = tmp_path / ".agent_teams" / AGENT_GROUPS
         assert (groups / "built_in").is_dir()
         assert (groups / "local").is_dir()
 
     def test_prepare_overwrite_true_resets_false_keeps_built_in(self, tmp_path: Path) -> None:
         utils.prepare_workspace(overwrite=True, workspace_dir=tmp_path)
-        kind_root = tmp_path / "domain" / "agent" / "workspace" / "plugins" / AGENT_TEMPLATES
+        kind_root = tmp_path / "agent" / "workspace" / "plugins" / AGENT_TEMPLATES
         built_in = kind_root / "built_in" / "kept"
         built_in.mkdir(parents=True)
         (built_in / "manifest.json").write_text(
@@ -2210,10 +2210,10 @@ def test_hub_package_id_resolver_reuses_record_and_skips_claimed_ids(
         HubInstallRecord,
     )
 
-    local_root = catalog._local_root(AGENT_TEMPLATES)
+    local_root = catalog.get_local_root(AGENT_TEMPLATES)
     (local_root / "sales-expert").mkdir(parents=True)
     (local_root / "sales-expert-2").mkdir(parents=True)
-    catalog._hub_install_state_store(AGENT_TEMPLATES).upsert(
+    catalog.hub_install_state_store(AGENT_TEMPLATES).upsert(
         HubInstallRecord(
             asset_id="asset-alpha",
             package_id="sales-expert-2",
@@ -2422,13 +2422,13 @@ async def test_hub_packages_sharing_a_package_name_install_as_siblings(
     for asset_id in ("asset-1.2.0", "asset-1.3.0", "asset-1.3.0"):
         await install(asset_id)
 
-    local_root = catalog._local_root(kind)
+    local_root = catalog.get_local_root(kind)
     assert (local_root / package_name).is_dir()
     assert (local_root / f"{package_name}-2").is_dir()
     assert not (local_root / f"{package_name}-3").exists()
     assert downloader.calls == 2
 
-    store = catalog._hub_install_state_store(kind)
+    store = catalog.hub_install_state_store(kind)
     assert store.get("asset-1.2.0").package_id == package_name
     assert store.get("asset-1.3.0").package_id == f"{package_name}-2"
 

@@ -10,9 +10,10 @@ import jsonschema
 import pytest
 from openjiuwen.core.foundation.tool import ToolExecution, ToolExposure
 
-from jiuwenswarm.office.contract import POWERPOINT_PACKAGE, ToolAnnotations, load_contract
+from jiuwenswarm.office.contract import ToolAnnotations, load_contract
 from jiuwenswarm.server.client_attachments import load_client_capabilities, registry
 from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, answer, request
+from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE
 
 DIRECT = {"read_presentation_context", "list_slide_shapes", "read_slide_image"}
 # What JiuwenSwarm ships, read before the ``isolated`` fixture replaces it.
@@ -43,7 +44,7 @@ def test_profile_json_is_the_identity_the_task_pane_build_reads() -> None:
 def test_each_contract_tool_is_a_client_tool_offered_as_its_annotations_say() -> None:
     tools = load_contract(POWERPOINT_PACKAGE)
     cards = [tool.card() for tool in tools]
-    assert len(cards) == 17
+    assert len(cards) == 18
     assert {card.name for card in cards if card.exposure is ToolExposure.DIRECT} == DIRECT
     assert all(card.execution is ToolExecution.CLIENT and not card.idempotent for card in cards)
     for tool, card in zip(tools, cards):
@@ -56,7 +57,6 @@ def test_each_contract_tool_is_a_client_tool_offered_as_its_annotations_say() ->
 
 def test_the_registry_knows_the_same_contract() -> None:
     app = registry.client_apps()[CLIENT_APP]
-    assert app.package_dir == POWERPOINT_PACKAGE
     assert app.tool_names == {tool.name for tool in load_contract(POWERPOINT_PACKAGE)}
 
 
@@ -73,7 +73,7 @@ def test_a_task_pane_attaches_its_conversation_and_keeps_what_its_powerpoint_run
     assert load_client_capabilities("session-1") == SUPPORTED
 
 
-@pytest.mark.parametrize("unknown", ["verify_slide_visual", "render_slide"])
+@pytest.mark.parametrize("unknown", ["delegate_slides", "render_slide"])
 def test_an_attach_declaring_tools_outside_the_contract_is_refused(shipped, unknown) -> None:
     refused = answer(request(capabilities={"supported_tools": ["read_presentation_context", unknown]}))
 

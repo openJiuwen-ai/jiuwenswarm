@@ -860,6 +860,7 @@ class JiuwenExpertTeamLauncher:
         shared_db: Any | None = None,
         enable_organization: bool | None = None,
         leader_tools: list[Any] | None = None,
+        leader_rails: list[Any] | None = None,
         leader_prompt_suffix: str = "",
         extra_capabilities: list[str] | None = None,
     ) -> Any:
@@ -916,6 +917,9 @@ class JiuwenExpertTeamLauncher:
         if leader_tools:
             leader_agent = spec.agents["leader"]
             leader_agent.tools = [*(leader_agent.tools or []), *leader_tools]
+        if leader_rails:
+            leader_agent = spec.agents["leader"]
+            leader_agent.rails = [*(leader_agent.rails or []), *leader_rails]
         if leader_prompt_suffix:
             spec.leader = spec.leader.model_copy(
                 update={
@@ -1089,6 +1093,7 @@ class JiuwenExpertTeamLauncher:
         team_id: str | None = None,
         enable_organization: bool | None = None,
         leader_tools: list[Any] | None = None,
+        leader_rails: list[Any] | None = None,
         leader_prompt_suffix: str = "",
         extra_capabilities: list[str] | None = None,
     ) -> LaunchedExpertTeam:
@@ -1099,7 +1104,7 @@ class JiuwenExpertTeamLauncher:
             raise ValueError("organization_id is required")
         if not str(session_id or "").strip():
             raise ValueError("session_id is required")
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import require_allowed
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import require_allowed
 
         require_allowed("agent_group", group_name)
         self.ensure_turn_runner_installed()
@@ -1144,6 +1149,7 @@ class JiuwenExpertTeamLauncher:
                 shared_db=shared_db,
                 enable_organization=enable_organization,
                 leader_tools=leader_tools,
+                leader_rails=leader_rails,
                 leader_prompt_suffix=leader_prompt_suffix,
                 extra_capabilities=extra_capabilities,
             )

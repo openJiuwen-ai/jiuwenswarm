@@ -20,6 +20,7 @@ dependencies = [
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
     "openjiuwen",
+    "openjiuwen-computeruse",
     "JiuwenMemory>=0.2.0",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
@@ -206,7 +207,8 @@ jiuwenswarm = [
     # styles markdown 与 index.json，运行期由 designer.skills_loader 读取
     "server/runtime/designer/skills/*",
     "server/runtime/designer/skills/**/*",
-    # Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json), read at runtime
+    # Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md),
+    # read at runtime
     "office/powerpoint/*",
     "office/powerpoint/**/*",
 ]
@@ -248,6 +250,7 @@ workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-sou
 # --- LOCAL SOURCE: all jiuwen-family packages resolved from local clones ---
 agent-gateway = { path = "../agent-gateway", editable = true }
 openjiuwen = { path = "../agent-core", editable = true }
+openjiuwen-computeruse = { path = "../computer-use", editable = true }
 openjiuwen-protocol = { path = "../agent-protocol/openjiuwen-protocol", editable = true }
 openjiuwen-runtime-foundation = { path = "../agent-runtime/foundation", editable = true }
 a4p = { path = "../agent-protocol/A4P", editable = true }

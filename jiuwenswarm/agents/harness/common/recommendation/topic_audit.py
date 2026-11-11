@@ -10,9 +10,6 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
-from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
-    current_background_generation_attempt_id,
-)
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
@@ -24,22 +21,11 @@ EXTERNAL_INVOCATION_ATTEMPT_SCHEMA_VERSION = (
     "topic-starter-v6-external-invocation-attempt-v2"
 )
 EXTERNAL_INVOCATION_ATTEMPT_EVENT_TYPE = "external_invocation_attempt"
-EXTERNAL_INVOCATION_AUDIT_SNAPSHOT_SCHEMA_VERSION = (
-    "topic-starter-v6-external-invocation-audit-snapshot-v1"
-)
-EXTERNAL_INVOCATION_AUDIT_SNAPSHOT_EVENT_TYPE = (
-    "external_invocation_audit_snapshot"
-)
 _OPERATIONS = ("search", "fetch", "extractor")
 _ATTEMPT_OPERATIONS = ("ark", *_OPERATIONS)
 _FAILURE_REASON_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}\Z")
 ExternalOperation = Literal["search", "fetch", "extractor"]
 ExternalAttemptOperation = Literal["ark", "search", "fetch", "extractor"]
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _nonempty(value: object) -> bool:
@@ -81,8 +67,6 @@ class ExternalInvocationAudit:
         self._input_snapshot_id = input_snapshot_id
         self._context_scope = context_scope
         self._visit_id = visit_id
-        self._generation_attempt_id = current_background_generation_attempt_id()
-        self._snapshot_sequence = 0
         self._attempts: dict[str, tuple[str, str, str | None]] = {}
         self._completed_operation_ids: set[str] = set()
         self._invocations: list[dict[str, Any]] = []
@@ -144,11 +128,6 @@ class ExternalInvocationAudit:
         if not recorded:
             raise RuntimeError(f"external operation already recorded: {operation_id}")
         self._attempts[operation_id] = (operation, request_id, candidate_id)
-        if self._snapshot_sequence == 0:
-            self._persist_snapshot(
-                operation_id=operation_id,
-                phase="attempt_started",
-            )
 
     def record_success(
         self,
@@ -250,45 +229,6 @@ class ExternalInvocationAudit:
                 "failure_reason": failure_reason,
             }
         )
-        self._persist_snapshot(
-            operation_id=operation_id,
-            phase="operation_completed",
-        )
-
-    def _persist_snapshot(self, *, operation_id: str, phase: str) -> None:
-        generation_attempt_id = self._generation_attempt_id
-        if generation_attempt_id is None:
-            return
-        self._snapshot_sequence += 1
-        recorded = self._store.record_event(
-            {
-                "session_id": self._visit_id,
-                "slate_id": f"{operation_id}:{phase}",
-                "event_type": EXTERNAL_INVOCATION_AUDIT_SNAPSHOT_EVENT_TYPE,
-                "topic_id": generation_attempt_id,
-                "policy_id": self._policy_id,
-                "selection_mode": "external_invocation_audit_snapshot",
-                "propensity_reason": "not_estimated",
-                "payload": {
-                    "schema_version": (
-                        EXTERNAL_INVOCATION_AUDIT_SNAPSHOT_SCHEMA_VERSION
-                    ),
-                    "generation_attempt_id": generation_attempt_id,
-                    "snapshot_sequence": self._snapshot_sequence,
-                    "phase": phase,
-                    "operation_id": operation_id,
-                    "visit_id": self._visit_id,
-                    "input_snapshot_id": self._input_snapshot_id,
-                    "context_scope": self._context_scope,
-                    "external_invocation_audit": self.as_manifest_receipt(),
-                },
-                "created_at": time.time(),
-            }
-        )
-        if not recorded:
-            raise RuntimeError(
-                f"external audit snapshot already recorded: {operation_id}:{phase}"
-            )
 
     def as_manifest_receipt(self) -> dict[str, Any]:
         return external_invocation_audit_receipt(
@@ -332,59 +272,3 @@ def external_invocation_audit_receipt(
         ],
         "counters": counters,
     }
-
-
-def load_external_invocation_audit_snapshot(
-    store: TopicStarterStore,
-    *,
-    policy_id: str,
-    generation_attempt_id: str,
-) -> dict[str, Any] | None:
-    """Load the latest durable safe audit for one exact coordinator attempt."""
-
-    if not isinstance(store, TopicStarterStore):
-        raise TypeError("store must be a TopicStarterStore")
-    if not all(_nonempty(value) for value in (policy_id, generation_attempt_id)):
-        raise ValueError("policy_id and generation_attempt_id must be non-empty")
-    snapshots: list[tuple[int, dict[str, Any]]] = []
-    for row in store.query_events(
-        event_type=EXTERNAL_INVOCATION_AUDIT_SNAPSHOT_EVENT_TYPE,
-        topic_id=generation_attempt_id,
-        policy_id=policy_id,
-        limit=1_000,
-    ):
-        payload = row.get("payload")
-        if not isinstance(payload, dict):
-            continue
-        sequence = payload.get("snapshot_sequence")
-        audit = payload.get("external_invocation_audit")
-        if (
-            payload.get("schema_version")
-            != EXTERNAL_INVOCATION_AUDIT_SNAPSHOT_SCHEMA_VERSION
-        ):
-            continue
-        if payload.get("generation_attempt_id") != generation_attempt_id:
-            continue
-        if not _plain_int(sequence):
-            continue
-        if sequence < 1:
-            continue
-        if not isinstance(audit, dict):
-            continue
-        if (
-            audit.get("schema_version")
-            != EXTERNAL_INVOCATION_AUDIT_SCHEMA_VERSION
-        ):
-            continue
-        if audit.get("input_snapshot_id") != payload.get("input_snapshot_id"):
-            continue
-        if audit.get("context_scope") != payload.get("context_scope"):
-            continue
-        if not isinstance(audit.get("invocations"), list):
-            continue
-        if not isinstance(audit.get("counters"), dict):
-            continue
-        snapshots.append((sequence, audit))
-    if not snapshots:
-        return None
-    return dict(max(snapshots, key=lambda item: item[0])[1])

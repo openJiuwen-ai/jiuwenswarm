@@ -36,7 +36,7 @@ def _settings(tmp_path: Path, *, enabled: bool) -> TrajectoryStoreSettings:
 
 @pytest.fixture
 def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr(paths, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path)
     return tmp_path
 
 

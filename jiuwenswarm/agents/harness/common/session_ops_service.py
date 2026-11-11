@@ -41,7 +41,7 @@ class SessionHistorySnapshot:
     session_id: str
     before_request_id: str
     generation: int
-    runtime_owner: tuple[int, float]
+    runtime_owner: tuple[int, float | int]
     path: Path
     file_identity: tuple[int, int, int, int, int]
     records: tuple[dict[str, Any], ...]
@@ -52,11 +52,16 @@ def _history_file_identity(path: Path) -> tuple[int, int, int, int, int]:
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
-def _history_runtime_owner(value: dict[str, Any]) -> tuple[int, float] | None:
+def _history_runtime_owner(value: dict[str, Any]) -> tuple[int, float | int] | None:
     owner = value.get("runtime_owner") or {}
-    if owner.get("pid") != os.getpid() or owner.get("started_at") is None:
+    if owner.get("pid") != os.getpid():
         return None
-    return (owner["pid"], owner["started_at"])
+    identity = owner.get("started_at")
+    if identity is None:
+        identity = owner.get("start_ticks")
+    if identity is None:
+        return None
+    return (owner["pid"], identity)
 
 
 def prefetch_session_history(

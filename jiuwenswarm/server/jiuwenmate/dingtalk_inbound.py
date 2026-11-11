@@ -193,9 +193,27 @@ class DingTalkInboundHandler:
         self._manager = agent_manager
         self._config_loader = config_loader
 
+    @property
+    def service(self) -> PersistentAgentService:
+        """Return the service used by the lifecycle handler."""
+        return self._service
+
+    @property
+    def manager(self) -> AgentManager:
+        """Return the shared employee runtime manager."""
+        return self._manager
+
+    @property
+    def config_loader(self) -> Callable[[], Mapping[str, Any]] | None:
+        """Return the configured loader for trusted application bindings."""
+        return self._config_loader
+
     def matches_connection(self, binding: DingTalkBinding) -> bool:
         connection = self._service.connection_of(binding.namespace_id, binding.agent_id)
-        return connection is not None and (connection.channel, connection.connection_key) == (
+        if connection is None:
+            self._service.get_config(binding.namespace_id, binding.agent_id)
+            return True
+        return (connection.channel, connection.connection_key) == (
             "dingtalk",
             binding.app_id,
         )
@@ -210,6 +228,11 @@ class DingTalkInboundHandler:
 
     async def handle(self, event: DingTalkInboundEvent) -> InboundDisposition:
         return await self._handle(event)
+
+    async def handle_group_change(self, event) -> InboundDisposition:
+        from jiuwenswarm.server.jiuwenmate.dingtalk_group_events import handle_group_change
+
+        return await handle_group_change(self, event)
 
     async def handle_history_message(
         self, binding: DingTalkBinding, message: Mapping[str, Any], *,
@@ -381,34 +404,23 @@ class DingTalkInboundHandler:
                         self._manager.group_chats.observe_access,
                         binding.namespace_id, binding.agent_id, group.group_chat_id, binding.app_id,
                         observed_at=received_at, source_ref=f"dingtalk:message:{event.message_id}",
+                        # Archive timestamps use host receipt time; platform time only proves fresh re-entry.
+                        visible_from=received_at,
+                        message_time=event.platform_created_at,
                     )
                     membership = await asyncio.to_thread(
                         self._manager.group_chats.access_for,
                         binding.namespace_id, binding.agent_id, group.group_chat_id,
                     )
                     if membership.status != "active":
-                        # Ingest time cannot prove freshness: retries may arrive after removal.
-                        proof = event.platform_created_at
-                        if proof is None or proof < received_at - timedelta(minutes=5):
-                            return InboundDisposition.HANDLED
-                        await asyncio.to_thread(
-                            self._manager.group_chats.update_membership,
-                            binding.namespace_id, binding.agent_id, group.group_chat_id, binding.app_id,
-                            status="active", observed_at=proof,
-                            source_ref=f"dingtalk:message:{event.message_id}",
-                        )
-                        membership = await asyncio.to_thread(
-                            self._manager.group_chats.access_for,
-                            binding.namespace_id, binding.agent_id, group.group_chat_id,
-                        )
-                        if membership.status != "active":
-                            return InboundDisposition.HANDLED
+                        return InboundDisposition.HANDLED
                 if event.group_name:
                     await asyncio.to_thread(
                         self._manager.group_chats.set_name,
                         binding.namespace_id,
                         group.group_chat_id,
                         event.group_name,
+                        observed_at=event.platform_created_at or event.received_at,
                     )
                 source = GroupMessage(
                     message_id=event.message_id,
