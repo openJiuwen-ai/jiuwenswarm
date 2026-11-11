@@ -8,10 +8,12 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.front.protocol import encode_response
 from jiuwenswarm.server.ipc.client import connect_with_retry, try_connect
@@ -23,6 +25,7 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_READINESS,
     KIND_REQUEST,
     KIND_REQUEST_DONE,
+    KIND_REQUEST_DETACH,
     KIND_SHUTDOWN,
     KIND_WIRE,
     PROTOCOL_VERSION,
@@ -295,14 +298,18 @@ class RuntimeSupervisor:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         request_id = str(request.request_id or "")
+        request_token = uuid.uuid4().hex
+        connection = self._conn
+        generation = self._peer_generation
         if request_id:
             self._pending[request_id] = future
             self._routes[request_id] = (ws, send_lock)
         try:
-            await self._conn.send(
+            await connection.send(
                 {
                     "kind": KIND_REQUEST,
-                    "generation": self._peer_generation,
+                    "generation": generation,
+                    "request_token": request_token,
                     "request_id": request_id,
                     "session_id": request.session_id or "",
                     "worker_id": worker_id,
@@ -318,8 +325,22 @@ class RuntimeSupervisor:
             )
             return
         finally:
-            self._pending.pop(request_id, None)
-            self._routes.pop(request_id, None)
+            # Only passive subscriptions are transport-owned. Accepted user
+            # turns and mutations keep their existing execution lifetime.
+            if (request.is_stream and request.req_method is ReqMethod.CHAT_SEND
+                    and isinstance(request.params, dict)
+                    and request.params.get("attach_only") is True):
+                try:
+                    await asyncio.wait_for(connection.send({
+                        "kind": KIND_REQUEST_DETACH,
+                        "generation": generation,
+                        "request_token": request_token,
+                    }), timeout=1.0)
+                except (OSError, RuntimeError, asyncio.TimeoutError):
+                    logger.info("[Supervisor] request detach skipped; worker ipc unavailable")
+            if self._pending.get(request_id) is future:
+                self._pending.pop(request_id, None)
+                self._routes.pop(request_id, None)
         if (
             request_id
             and not result.get("ok", False)
