@@ -1,4 +1,5 @@
 import { webRequest } from './webClient';
+import { withCatalogCache, type CatalogCacheMetadata, type CatalogItems } from '../features/catalogCache';
 import { browserClientCapabilities } from '../features/webui/client/browserClient';
 import type { SystemPluginDetail, SystemPluginSummary } from '../types/systemPlugin';
 import {
@@ -59,10 +60,13 @@ function reportFailure(payload: SystemPluginReportPayload): string | null {
 }
 
 export const systemPluginApi = {
-  async catalog(scope: 'catalog' | 'mine'): Promise<SystemPluginSummary[]> {
-    const result = await readPluginState('extensions.v2.catalog', { scope });
-    const packages = (result as { packages?: SystemPluginSummary[] } | null)?.packages;
-    return Array.isArray(packages) ? packages : [];
+  async catalog(scope: 'catalog' | 'mine', refresh = false): Promise<CatalogItems<SystemPluginSummary>> {
+    const result = await readPluginState('extensions.v2.catalog', {
+      scope,
+      ...(refresh ? { refresh: true } : {}),
+    });
+    const payload = result as { packages?: SystemPluginSummary[]; cache?: CatalogCacheMetadata } | null;
+    return withCatalogCache(Array.isArray(payload?.packages) ? payload.packages : [], payload?.cache);
   },
 
   async show(packageId: string, version?: string): Promise<SystemPluginDetail | null> {
