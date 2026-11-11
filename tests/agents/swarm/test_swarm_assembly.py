@@ -88,7 +88,7 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -723,6 +723,12 @@ def test_a4p_intent_authorization_provider_is_interactive_web_leader_only() -> N
             "request_a4p_intent_authorization"
         ]
         assert tools.build_a4p_intent_authorization({}, teammate) == []
+        context = AUTHORIZATION_EXECUTION_CONTEXTS.get("session-1")
+        context.metadata["cron"] = {"job_id": "job-1"}
+        assert tools.build_a4p_intent_authorization({}, enabled) == []
+        context.metadata.clear()
+        assert tools.build_a4p_intent_authorization({}, enabled)
+
     finally:
         AUTHORIZATION_EXECUTION_CONTEXTS.clear()
 
