@@ -67,22 +67,22 @@ function fakePowerPoint(deck: FakeDeck) {
     };
     const slides = deck.slides.map(slide => ({
       id: slide.id,
-      shapes: proxy({ items: (slide.shapes ?? []).map(shape) }, !supported(api, '1.4')),
+      shapes: proxy({ items: (slide.shapes ?? []).map(shape) }),
       getImageAsBase64: (options: PowerPoint.SlideGetImageOptions) => {
         calls.renders.push(options);
-        const image = proxy({ value: `data:image/png;base64,PNG-${slide.id}` }, !supported(api, '1.8'));
+        const image = proxy({ value: `data:image/png;base64,PNG-${slide.id}` });
         image.load();
         return image;
       },
     }));
     const selection = (ids: string[] = []) => proxy({ items: ids.map(id => ({ id })) },
-      !supported(api, '1.5') || !!deck.failing?.includes('selection'));
+      !!deck.failing?.includes('selection'));
     const presentation = {
       slides: proxy({ items: slides }),
       pageSetup: proxy({ slideWidth: deck.size?.width, slideHeight: deck.size?.height }, !supported(api, '1.10')),
       slideMasters: proxy({ items: (deck.masters ?? []).map(master => ({
         id: master.id, name: master.name, layouts: proxy({ items: master.layouts }) })) },
-      !supported(api, '1.3') || !!deck.failing?.includes('masters')),
+      !!deck.failing?.includes('masters')),
       getSelectedSlides: () => selection(deck.selectedSlides),
       getSelectedShapes: () => selection(deck.selectedShapes),
     };
@@ -97,7 +97,7 @@ function fakePowerPoint(deck: FakeDeck) {
   const runtime = powerPointReadRuntime({ run, host, documentName: async () => 'Quarterly.pptx',
     languages: { displayLanguage: 'zh-CN', contentLanguage: 'en-US' } });
   const execute = (toolName: PresentationToolName, input: JsonObject = {}) =>
-    runtime.execute({ toolName, input, downloads: {} });
+    runtime.execute({ callId: 'c1', toolName, input, downloads: {} });
   return { runtime, execute, calls };
 }
 
@@ -168,11 +168,18 @@ describe('read_presentation_context', () => {
       selected_slide_ids: [], selected_shape_ids: [], has_content: true });
   });
 
-  it('tells a default theme and a deck without text', async () => {
-    const blank = { ...DECK, slides: [{ id: '256#', shapes: [{ id: '2', type: 'Placeholder' }, { id: '3', type: 'Image' }] }],
+  it('tells a default theme and a deck with nothing but empty placeholders', async () => {
+    const blank = { ...DECK, slides: [{ id: '256#', shapes: [{ id: '2', type: 'Placeholder' }] }],
       masters: [{ id: 'm1', name: 'Office Theme', layouts: [] }] };
     expect(result(await fakePowerPoint(blank).execute('read_presentation_context')))
       .toMatchObject({ is_default_theme: true, has_content: false });
+  });
+
+  it('counts a picture or a table as content, text or not', async () => {
+    const pictures = { ...DECK, slides: [{ id: '256#', shapes: [
+      { id: '2', type: 'Placeholder' }, { id: '3', type: 'Image' }, { id: '4', type: 'Table' }] }],
+    masters: [{ id: 'm1', name: 'Office Theme', layouts: [] }] };
+    expect(result(await fakePowerPoint(pictures).execute('read_presentation_context')).has_content).toBe(true);
   });
 
   it('finds text behind a shape whose text frame cannot be read', async () => {
@@ -181,23 +188,27 @@ describe('read_presentation_context', () => {
     expect(result(await fakePowerPoint(deck).execute('read_presentation_context')).has_content).toBe(true);
   });
 
-  it('answers on an older PowerPoint with what its API offers', async () => {
-    const response = await fakePowerPoint({ ...DECK, api: '1.2' }).execute('read_presentation_context');
+  it('assumes a 16:9 slide on a PowerPoint that does not report the slide size', async () => {
+    const response = await fakePowerPoint({ ...DECK, api: '1.8' }).execute('read_presentation_context');
     expect(result(response)).toMatchObject({ slide_count: 2, slide_width_points: 960, slide_height_points: 540,
-      dimensions_assumed_warning: expect.any(String), masters: [], has_content: false, selected_slide_ids: [] });
+      dimensions_assumed_warning: expect.any(String), has_content: true });
   });
 });
 
 describe('list_slide_shapes', () => {
-  it('lists refs, names, types and positions of the slide', async () => {
+  it('lists refs, names, types, positions and text of the slide', async () => {
     const deck = { ...DECK, slides: [{ id: '256#1', shapes: [
-      { id: '2', name: 'Title 1', type: 'Placeholder', box: [36.04, 20, 648.26, 80.55] as const },
-      { id: '7', name: 'Logo', type: 'Image', box: [600, 470, 80, 40] as const }] }] };
+      { id: '2', name: 'Title 1', type: 'Placeholder', box: [36.04, 20, 648.26, 80.55] as const, text: '第三季度收入' },
+      { id: '7', name: 'Logo', type: 'Image', box: [600, 470, 80, 40] as const },
+      { id: '9', name: 'Body', type: 'TextBox', text: '长'.repeat(450) }] }] };
     const response = await fakePowerPoint(deck).execute('list_slide_shapes', { slide_id: '256#1' });
     expect(response).toMatchObject({ ok: true, result: [
-      { ref: '256#1:2', id: '2', name: 'Title 1', type: 'Placeholder', left: 36, top: 20, width: 648.3, height: 80.6 },
+      { ref: '256#1:2', id: '2', name: 'Title 1', type: 'Placeholder', left: 36, top: 20, width: 648.3, height: 80.6,
+        text: '第三季度收入' },
       { ref: '256#1:7', id: '7', name: 'Logo', type: 'Image', left: 600, top: 470, width: 80, height: 40 },
+      { ref: '256#1:9', text: `${'长'.repeat(400)}…` },
     ] });
+    expect(response.ok && (response.result as object[])[1]).not.toHaveProperty('text');
   });
 
   it('says when the slide is not in the deck or no slide is named', async () => {
@@ -309,5 +320,47 @@ describe('verify_slide_visual', () => {
     } } });
     expect(await execute('verify_slide_visual', { slide_id: '9#' })).toMatchObject(
       { ok: false, error: { code: 'INVALID_ARGUMENT' } });
+  });
+});
+
+describe('the read tools against their input_schema in tools.json', () => {
+  type Schema = Record<string, any>;
+  it('take what the schema allows and answer INVALID_ARGUMENT to the rest', async () => {
+    const { runtime, execute } = fakePowerPoint(DECK);
+    const slideId = DECK.slides[0].id;
+    const mismatches: string[] = [];
+    for (const tool of contractTools as Schema[]) {
+      if (!runtime.tools.has(tool.name)) continue;
+      const schema = tool.input_schema as Schema;
+      const base: JsonObject = Object.fromEntries((schema.required ?? []).map((name: string) => [name, slideId]));
+      const probes: [string, JsonObject, boolean][] = [];
+      for (const [name, field] of Object.entries(schema.properties ?? {}) as [string, Schema][]) {
+        const put = (value: unknown): JsonObject => ({ ...base, [name]: value as never });
+        if (field.type === 'integer') {
+          if (field.minimum !== undefined) probes.push([`${name}=min`, put(field.minimum), true], [`${name}=min-1`, put(field.minimum - 1), false]);
+          if (field.maximum !== undefined) probes.push([`${name}=max`, put(field.maximum), true], [`${name}=max+1`, put(field.maximum + 1), false]);
+          probes.push([`${name}=fraction`, put((field.minimum ?? 0) + 0.5), false], [`${name}="1"`, put('1'), false]);
+        }
+        if (field.type === 'string') {
+          probes.push([`${name}=123`, put(123), false]);
+          if (field.minLength) probes.push([`${name}=""`, put(''), false]);
+          if (field.maxLength) {
+            probes.push([`${name}=maxLength`, put('x'.repeat(field.maxLength)), true],
+              [`${name}=maxLength+1`, put('x'.repeat(field.maxLength + 1)), false]);
+          }
+        }
+      }
+      for (const name of schema.required ?? []) {
+        const { [name]: _gone, ...rest } = base;
+        probes.push([`without ${name}`, rest, false]);
+      }
+      if (schema.additionalProperties === false) probes.push(['unknown key', { ...base, zz_unknown: 1 }, false]);
+      for (const [label, input, accepted] of probes) {
+        const response = await execute(tool.name, input);
+        const refused = !response.ok && response.error.code === 'INVALID_ARGUMENT';
+        if (accepted ? !response.ok : !refused) mismatches.push(`${tool.name} ${label}: ${JSON.stringify(response).slice(0, 120)}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
   });
 });

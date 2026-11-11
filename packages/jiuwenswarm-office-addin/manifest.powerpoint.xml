@@ -20,8 +20,8 @@
     <Host Name="Presentation" />
   </Hosts>
   <Requirements>
-    <Sets DefaultMinVersion="1.2">
-      <Set Name="PowerPointApi" MinVersion="1.2" />
+    <Sets DefaultMinVersion="1.8">
+      <Set Name="PowerPointApi" MinVersion="1.8" />
     </Sets>
   </Requirements>
   <DefaultSettings>

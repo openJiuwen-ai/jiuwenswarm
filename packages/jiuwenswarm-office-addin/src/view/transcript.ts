@@ -1,30 +1,68 @@
-import type { Edit, Entry } from '../conversationModel';
-import { copy, toolLabel } from '../copy';
+import type { Entry } from '../conversationModel';
+import { copy } from '../copy';
+import type { UndoState } from '../paneController';
 import { activityGroup, running, StepClock, tickSeconds, type Step } from './activity';
 import { h, syncChildren } from './dom';
-import { icon } from './icons';
+import { writeClipboard } from './clipboard';
+import { icon, type IconName } from './icons';
 import { renderMarkdown } from './markdown';
 
 /** How close to the end a reader must be for the transcript to follow new text. */
 const FOLLOW_THRESHOLD_PX = 72;
 const BEE = '/assets/bee.png';
+/** How long Copy shows that it copied. */
+const COPIED_MS = 2000;
 
-/** A transcript item: one entry, or a run of steps shown as one timeline. */
-type Item = { id: string; entry: Exclude<Entry, Step> } | { id: string; steps: Step[] };
+/** What a finished turn offers under its reply: the reply to copy, and the turn's changes to undo. */
+interface TurnEnd { reply: string; changes?: string }
+
+/**
+ * A transcript item: one entry, a run of steps shown as one timeline, the
+ * actions under a finished turn, or the dots while the agent works unseen.
+ */
+type Item =
+  | { id: string; entry: Exclude<Entry, Step | { kind: 'changes' }> }
+  | { id: string; steps: Step[] }
+  | { id: string; end: TurnEnd }
+  | { id: string; thinking: true };
 
 function isStep(entry: Entry): entry is Step {
   return entry.kind === 'tool' || entry.kind === 'outgoing';
 }
 
-function items(entries: readonly Entry[]): Item[] {
+/** A turn starts at a message to the agent; it ends at the next one, or when the agent is done. */
+function items(entries: readonly Entry[], working: boolean, openReply: string | undefined): Item[] {
   const result: Item[] = [];
+  let turn = { id: 'start', end: { reply: '' } as TurnEnd };
+  const close = (): void => {
+    if (turn.end.reply || turn.end.changes) result.push({ id: `end:${turn.id}`, end: turn.end });
+  };
   for (const entry of entries) {
+    if (entry.kind === 'user' || entry.kind === 'incoming') {
+      close();
+      turn = { id: entry.id, end: { reply: '' } };
+    }
+    if (entry.kind === 'changes') {
+      turn.end.changes = entry.id;
+      continue;
+    }
+    if (entry.kind === 'assistant' && entry.text) {
+      turn.end.reply = turn.end.reply ? `${turn.end.reply}\n\n${entry.text}` : entry.text;
+    }
     const last = result.at(-1);
     if (!isStep(entry)) result.push({ id: entry.id, entry });
     else if (last && 'steps' in last) last.steps.push(entry);
     else result.push({ id: entry.id, steps: [entry] });
   }
+  if (!working) close();
+  else if (unseen(entries.at(-1), openReply)) result.push({ id: 'thinking', thinking: true });
   return result;
+}
+
+/** Nothing on screen moves while the agent works: no step runs and no reply streams. */
+function unseen(last: Entry | undefined, openReply: string | undefined): boolean {
+  if (last && isStep(last)) return !running(last);
+  return !(last?.kind === 'assistant' && last.id === openReply && last.text);
 }
 
 export interface TranscriptState {
@@ -32,9 +70,18 @@ export interface TranscriptState {
   documents: ReadonlyMap<string, string>;
   /** The reply that streams now. */
   openReply?: string;
+  /** The agent works on a turn and waits for no answer. */
+  working: boolean;
   loadingHistory: boolean;
   /** Whether a suggestion of the empty conversation can go to the composer. */
   canSuggest: boolean;
+  undo: UndoState;
+}
+
+/** The user's actions on a turn's undo. */
+export interface UndoActions {
+  undo: (card: string, overwrite?: boolean) => void;
+  cancelUndo: () => void;
 }
 
 /**
@@ -47,9 +94,12 @@ export class Transcript {
   readonly element = h('div', { class: 'transcript', role: 'region', 'aria-label': copy.transcript, tabindex: '0' });
   private readonly clock = new StepClock();
   private rendered = new Map<string, { signature: unknown[]; node: HTMLElement }>();
-  /** Groups the user opened or closed; the others are open while they run. */
+  /** Groups the user opened; the others stay one line. */
   private readonly groupOverride = new Map<string, boolean>();
   private openStep: string | undefined;
+  /** The turn whose reply was just copied. */
+  private copied: string | undefined;
+  private copiedTimer: ReturnType<typeof setTimeout> | undefined;
   private last: TranscriptState | undefined;
   private readonly loading = h('p', { class: 'transcript-loading' }, copy.loadingHistory);
   private readonly suggestions = copy.suggestions.map(text => h('button', {
@@ -61,7 +111,7 @@ export class Transcript {
     h('p', { class: 'welcome-body' }, copy.welcomeBody),
     h('div', { class: 'suggestions' }, ...this.suggestions));
 
-  constructor(private readonly suggest: (text: string) => void) {}
+  constructor(private readonly suggest: (text: string) => void, private readonly actions: UndoActions) {}
 
   update(state: TranscriptState): void {
     this.last = state;
@@ -70,7 +120,7 @@ export class Transcript {
     const focusKey = document.activeElement?.closest('[data-key]')?.getAttribute('data-key');
     this.clock.note(state.entries.filter(isStep), Date.now());
     const next = new Map<string, { signature: unknown[]; node: HTMLElement }>();
-    const nodes = items(state.entries).map(item => {
+    const nodes = items(state.entries, state.working, state.openReply).map(item => {
       const signature = this.signature(item, state);
       const before = this.rendered.get(item.id);
       const node = before && sameSignature(before.signature, signature) ? before.node : this.itemNode(item, state);
@@ -96,8 +146,13 @@ export class Transcript {
   }
 
   private signature(item: Item, state: TranscriptState): unknown[] {
-    if ('entry' in item) {
-      return [item.entry, state.openReply === item.id];
+    if ('entry' in item) return [item.entry, state.openReply === item.id];
+    if ('thinking' in item) return [];
+    if ('end' in item) {
+      const { reply, changes } = item.end;
+      const { offers, confirm } = state.undo;
+      return [reply, changes, changes !== undefined && offers.has(changes), changes !== undefined && confirm === changes,
+        this.copied === item.id];
     }
     return [...item.steps, state.documents, this.groupOverride.get(item.id),
       item.steps.some(step => step.id === this.openStep) ? this.openStep : null];
@@ -108,11 +163,10 @@ export class Transcript {
       return activityGroup(item.id, item.steps, {
         documents: state.documents,
         clock: this.clock,
-        expanded: this.groupOverride.get(item.id) ?? item.steps.some(running),
+        expanded: this.groupOverride.get(item.id) ?? false,
         openStep: this.openStep,
         toggleGroup: () => {
-          const expanded = this.groupOverride.get(item.id) ?? item.steps.some(running);
-          this.groupOverride.set(item.id, !expanded);
+          this.groupOverride.set(item.id, !this.groupOverride.get(item.id));
           this.rerender();
         },
         toggleStep: id => {
@@ -121,7 +175,26 @@ export class Transcript {
         },
       });
     }
+    if ('thinking' in item) {
+      return h('div', { class: 'entry thinking', role: 'img', 'aria-label': copy.thinking }, h('span'), h('span'), h('span'));
+    }
+    if ('end' in item) {
+      return turnActions(item.id, item.end, state.undo, this.copied === item.id, {
+        ...this.actions, copy: () => void this.copy(item.id, item.end.reply),
+      });
+    }
     return entryNode(item.entry, state.openReply === item.id);
+  }
+
+  private async copy(id: string, text: string): Promise<void> {
+    if (!await writeClipboard(text)) return;
+    clearTimeout(this.copiedTimer);
+    this.copied = id;
+    this.rerender();
+    this.copiedTimer = setTimeout(() => {
+      this.copied = undefined;
+      this.rerender();
+    }, COPIED_MS);
   }
 
   private welcome(canSuggest: boolean): HTMLElement {
@@ -136,8 +209,34 @@ function sameSignature(a: unknown[], b: unknown[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+/**
+ * The icons under a finished turn: copy its reply, and undo its changes while
+ * offered. Undo asks in one line first when it would overwrite later changes.
+ */
+function turnActions(
+  id: string, end: TurnEnd, undo: UndoState, copied: boolean, actions: UndoActions & { copy: () => void },
+): HTMLElement {
+  const { changes } = end;
+  if (changes !== undefined && undo.confirm === changes) {
+    return h('div', { class: 'entry turn-actions', role: 'alert' },
+      h('span', { class: 'undo-ask' }, copy.undoChanged),
+      h('button', { type: 'button', class: 'undo-button', 'data-key': `undo:${changes}`, onclick: actions.cancelUndo }, copy.cancel),
+      h('button', { type: 'button', class: 'undo-button', onclick: () => actions.undo(changes, true) }, copy.undoAnyway));
+  }
+  return h('div', { class: 'entry turn-actions' },
+    end.reply ? actionButton(copied ? 'check' : 'copy', copied ? copy.copied : copy.copyReply, `copy:${id}`, actions.copy) : null,
+    changes !== undefined && undo.offers.has(changes)
+      ? actionButton('undo', copy.undo, `undo:${changes}`, () => actions.undo(changes)) : null);
+}
+
+function actionButton(name: IconName, label: string, key: string, onclick: () => void): HTMLButtonElement {
+  return h('button', {
+    type: 'button', class: 'icon-button action-button', 'aria-label': label, title: label, 'data-key': key, onclick,
+  }, icon(name));
+}
+
 /** One transcript entry that is not a step. */
-function entryNode(entry: Exclude<Entry, Step>, streaming: boolean): HTMLElement {
+function entryNode(entry: Exclude<Entry, Step | { kind: 'changes' }>, streaming: boolean): HTMLElement {
   switch (entry.kind) {
     case 'user':
       return h('div', { class: 'entry entry-user' }, h('div', { class: 'bubble' }, entry.text));
@@ -153,25 +252,5 @@ function entryNode(entry: Exclude<Entry, Step>, streaming: boolean): HTMLElement
     case 'notice':
       return h('p', { class: `entry entry-notice tone-${entry.tone}` },
         entry.tone === 'error' ? icon('alert') : null, h('span', {}, entry.text));
-    case 'changes':
-      return h('section', { class: 'entry entry-changes', 'aria-label': copy.changesTitle },
-        h('h3', { class: 'changes-title' }, icon('pen'), copy.changesTitle),
-        h('ul', { class: 'changes-list' }, ...changeRows(entry.edits).map(({ name, failed, count }) => h('li', {
-          class: failed ? 'is-failed' : '',
-        }, icon(failed ? 'close' : 'check'), h('span', { class: 'changes-name' }, toolLabel(name)),
-        count > 1 ? h('span', { class: 'changes-count' }, copy.times(count)) : null,
-        failed ? h('span', { class: 'chip tone-danger' }, copy.changesFailed) : null))));
   }
-}
-
-/** The turn's edits, one row per tool and outcome, in the order they first ran. */
-function changeRows(edits: readonly Edit[]): { name: string; failed: boolean; count: number }[] {
-  const rows = new Map<string, { name: string; failed: boolean; count: number }>();
-  for (const { name, failed } of edits) {
-    const key = `${name}:${failed}`;
-    const row = rows.get(key) ?? { name, failed, count: 0 };
-    row.count += 1;
-    rows.set(key, row);
-  }
-  return [...rows.values()];
 }

@@ -89,10 +89,10 @@ export function incomingMessageStatus(payload: JsonObject): (IncomingMessage & {
   };
 }
 
-/** The text a ``chat.tool_result`` hands back. */
+/** The text a ``chat.tool_result`` hands back: what the model read (``rendered_result``), else the raw result. */
 export function toolResultText(payload: JsonObject): string {
   const result = isRecord(payload.tool_result) ? payload.tool_result : payload;
-  return text(result.result) || text(result.content) || text(result.error);
+  return text(result.rendered_result) || text(result.result) || text(result.content) || text(result.error);
 }
 
 /** Whether a ``chat.tool_result`` reports a failure. */

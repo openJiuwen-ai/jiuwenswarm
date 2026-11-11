@@ -26,10 +26,25 @@ export interface PresentationToolRuntime {
   /** The tools it implements; the pane declares no other. */
   readonly tools: ReadonlySet<PresentationToolName>;
   execute(call: {
+    /** The call's request id, which names the call to the turn's undo. */
+    callId: string;
     toolName: PresentationToolName;
     input: JsonObject;
     downloads: Readonly<Record<string, string>>;
   }): Promise<ClientToolResponse>;
+}
+
+/** One runtime of several, each running the tools it declares. */
+export function joinRuntimes(...runtimes: PresentationToolRuntime[]): PresentationToolRuntime {
+  const owners = new Map(runtimes.flatMap(runtime => [...runtime.tools].map(tool => [tool, runtime] as const)));
+  return {
+    tools: new Set(owners.keys()),
+    execute: call => {
+      const owner = owners.get(call.toolName);
+      if (!owner) throw new Error(`${call.toolName} is not a tool of this pane`);
+      return owner.execute(call);
+    },
+  };
 }
 
 /** How long a call took, for the answer's ``data``; the model never sees it. */
@@ -69,7 +84,8 @@ export class PowerPointToolDispatcher implements ClientToolExecutor {
       if (answered || generation !== this.generation) return notApplied('CLIENT_TOOL_CANCELLED', 'Tool call cancelled');
       hostStarted = true;
       try {
-        return await this.runtime.execute({ toolName, input: request.input, downloads: request.downloads });
+        return await this.runtime.execute(
+          { callId: request.requestId, toolName, input: request.input, downloads: request.downloads });
       } catch (error) {
         return { ok: false, error: {
           code: 'CLIENT_TOOL_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error),

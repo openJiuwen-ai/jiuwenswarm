@@ -28,6 +28,16 @@ const PERMISSION: JsonObject = {
 };
 
 describe('a live turn', () => {
+  it('shows a deferred tool once, under its own name, not the dispatch that ran it', () => {
+    const conversation = play([
+      ['chat.tool_call', { tool_call: { id: 'c1', name: 'tool_call', arguments: { name: 'verify_slides', args: {} } } }],
+      ['chat.tool_call', { tool_call: { id: 'c1:target', name: 'verify_slides', arguments: {} } }],
+      ['chat.tool_result', { tool_result: { tool_call_id: 'c1:target', status: 'success' } }],
+      ['chat.tool_result', { tool_result: { tool_call_id: 'c1', status: 'success' } }],
+    ]);
+    expect(shown(conversation)).toEqual([{ kind: 'tool', name: 'verify_slides', status: 'done' }]);
+  });
+
   it('shows a reply once when the backend repeats its final around a pause for a task pane tool', () => {
     const events: [string, JsonObject][] = [
       ['chat.delta', { content: '我先读取整体信息。' }],
@@ -92,6 +102,18 @@ describe('a live turn', () => {
     ]);
     expect(cancelled.turn).toBe('idle');
     expect(cancelled.prompt).toBeUndefined();
+  });
+
+  it('leaves no step running once the turn has ended, nor a task still sending', () => {
+    const conversation = play([
+      ['chat.processing_status', { is_processing: true }],
+      ['chat.tool_call', { tool_call: { id: 'c1', name: 'list_slide_shapes' } }],
+      ['chat.tool_call', { tool_call: { id: 'c9', name: 'session_send_message',
+        arguments: { target_session_id: 's9', message: '同步' } } }],
+      ['chat.error', { error: 'model overloaded' }],
+    ]);
+    expect(conversation.entries.flatMap(entry => (entry.kind === 'tool' || entry.kind === 'outgoing'
+      ? [entry.status] : []))).toEqual(['failed', 'failed']);
   });
 
   it('a new message from the user drops the question the turn asked', () => {
@@ -172,6 +194,12 @@ describe('messages between documents', () => {
     const failed = play([['chat.tool_result', { tool_result: { tool_call_id: 'c9', success: false } }]], sending);
     expect(shown(failed)[0]).toMatchObject({ status: 'failed' });
   });
+
+  it('shows a task sent once when the history and the live stream both carry its call', () => {
+    const call = { tool_call: { id: 'c9', name: 'session_send_message', arguments: JSON.stringify(
+      { target_session_id: 's9', message: '同步标题样式' }) } };
+    expect(shown(play([['chat.tool_call', call], ['chat.tool_call', call]]))).toHaveLength(1);
+  });
 });
 
 describe('a conversation\'s history', () => {
@@ -190,7 +218,7 @@ describe('a conversation\'s history', () => {
     ]);
     expect(shown(conversation)).toEqual([
       { kind: 'user', text: '把标题改短' },
-      { kind: 'tool', name: 'list_slide_shapes', status: 'running' },
+      { kind: 'tool', name: 'list_slide_shapes', status: 'failed' },
       { kind: 'notice', tone: 'info', text: '已询问：工具 `session_send_message` 需要授权才能执行' },
       { kind: 'notice', tone: 'info', text: '已回答：本次允许' },
       { kind: 'assistant', text: '改好了。' },
@@ -215,7 +243,7 @@ describe('what a turn did', () => {
       kind: 'tool', name: 'list_slide_shapes', status: 'running', goal: '找标题', args: { slide_id: '258' } }]);
   });
 
-  it('closes a turn that changed the presentation with what it changed, a failed edit marked', () => {
+  it('closes a turn that changed the presentation with the calls its undo takes back, a failed edit too', () => {
     const conversation = play([
       ['chat.processing_status', { is_processing: true }],
       ['chat.tool_call', { tool_call: { id: 'r1', name: 'read_presentation_context' } }],
@@ -224,8 +252,7 @@ describe('what a turn did', () => {
       ['chat.final', { content: '改好了。' }],
       ['chat.processing_status', { is_processing: false }],
     ]);
-    expect(shown(conversation).at(-1)).toEqual({ kind: 'changes', edits: [
-      { callId: 'e1', name: 'edit_slide_text', failed: false }, { callId: 'e2', name: 'edit_slide_text', failed: true }] });
+    expect(shown(conversation).at(-1)).toEqual({ kind: 'changes', callIds: ['e1', 'e2'] });
   });
 
   it('adds nothing after a turn that only read, and waits out a question before closing', () => {
@@ -245,20 +272,6 @@ describe('what a turn did', () => {
     const answered = play([
       ['chat.processing_status', { is_processing: true }], ...edit('e2'), ['chat.processing_status', { is_processing: false }],
     ], { ...asked, prompt: undefined });
-    expect(shown(answered).at(-1)).toMatchObject({ kind: 'changes', edits: [{ callId: 'e1' }, { callId: 'e2' }] });
-  });
-
-  it('reads the visual review\'s verdict and a call answered for a pane that had gone', () => {
-    const conversation = play([
-      ['chat.tool_call', { tool_call: { id: 'v1', name: 'verify_slide_visual' } }],
-      ['chat.tool_result', { tool_result: { tool_call_id: 'v1', result: '<verifier-result verdict="done" slide_id="1">' } }],
-      ['chat.tool_call', { tool_call: { id: 'v2', name: 'verify_slide_visual' } }],
-      ['chat.tool_result', { tool_result: { tool_call_id: 'v2', result: '<verifier-result slide_id="2">No verdict</verifier-result>' } }],
-      ['chat.tool_call', { tool_call: { id: 'g1', name: 'read_slide_image' } }],
-      ['chat.tool_result', { tool_result: { tool_call_id: 'g1', status: 'error',
-        result: "Client tool 'read_slide_image' could not finish: the client that runs it disconnected." } }],
-    ]);
-    expect(conversation.entries.map(entry => (entry.kind === 'tool' ? entry.outcome : undefined))).toEqual([
-      { kind: 'verdict', verdict: 'done' }, { kind: 'verdict', verdict: 'none' }, { kind: 'client_gone' }]);
+    expect(shown(answered).at(-1)).toEqual({ kind: 'changes', callIds: ['e1', 'e2'] });
   });
 });

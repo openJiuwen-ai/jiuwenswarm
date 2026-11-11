@@ -9,7 +9,7 @@ const ICONS = {
   send: '<path d="M12 19V5.5"/><path d="M6 11.5l6-6 6 6"/>',
   stop: '<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>',
   shield: '<path d="M12 3.5l7 2.8v5.2c0 4.3-3 7.6-7 9-4-1.4-7-4.7-7-9V6.3z"/><path d="M9 12l2.2 2.2L15.5 10"/>',
-  deck: '<rect x="3.5" y="4.5" width="17" height="11.5" rx="1.8"/><path d="M12 16v3.5M8.5 19.5h7"/>',
+  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>',
   check: '<path d="M5.5 12.5l4 4 9-9.5"/>',
   close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
   spinner: '<path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5"/>',
@@ -20,10 +20,8 @@ const ICONS = {
     + '<path d="M12 16v4.5"/>',
   outgoing: '<path d="M7 17L17 7"/><path d="M9 7h8v8"/>',
   incoming: '<path d="M17 7L7 17"/><path d="M15 17H7V9"/>',
-  question: '<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.5"/>'
-    + '<path d="M12 16.6v.2"/>',
-  eye: '<path d="M2.5 12s3.4-6.5 9.5-6.5S21.5 12 21.5 12s-3.4 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
-  pen: '<path d="M4.5 19.5h4l10-10-4-4-10 10z"/><path d="M13 7l4 4"/>',
+  download: '<path d="M12 4.5v10"/><path d="M7.5 10.5l4.5 4.5 4.5-4.5"/><path d="M5 19.5h14"/>',
+  undo: '<path d="M9 14L4.5 9.5 9 5"/><path d="M4.5 9.5H15a4.5 4.5 0 0 1 0 9h-3.5"/>',
 } as const;
 
 export type IconName = keyof typeof ICONS;
