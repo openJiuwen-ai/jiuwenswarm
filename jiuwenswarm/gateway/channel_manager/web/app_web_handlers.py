@@ -781,6 +781,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "mcp.server.add",
     "mcp.server.remove",
     "mcp.server.update",
+    "mcp.server.rescan",
     "mcp.server.list",
     "mcp.server.get",
     # Schedule task management
@@ -961,6 +962,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "mcp.server.add",
     "mcp.server.remove",
     "mcp.server.update",
+    "mcp.server.rescan",
     "mcp.server.list",
     "mcp.server.get",
     # RSI 优化平台（rsi.*；转发且不做本地 ack，AgentServer 侧统一分发）

@@ -1546,6 +1546,12 @@ class AgentWebSocketServer:
             # 只注销本连接的唯一订阅 id，保留其他仍存活 WS 的推送订阅。
             get_push_registry().unregister(push_subscriber_id)
             self._clear_ws_acp_client_capabilities(ws)
+            # Let a reconnecting client take over the system MCP entries it registered.
+            try:
+                from jiuwenswarm.common.mcp_server_registry import get_mcp_server_registry
+                get_mcp_server_registry().release_owner(self._ws_capabilities_key(ws))
+            except Exception:
+                logger.exception("[AgentWebSocketServer] MCP registry owner release failed")
             connection_tasks = list(tasks)
             for task in connection_tasks:
                 if not task.done():
