@@ -225,6 +225,9 @@ async def run(args):
 #   and workflow. Reviewer is a constructible type. AgentSession, HumanSession,
 #   VerifyResult, and VerifyVote are type-only imports; never construct them.
 #   fork is a session method, not an import: use await session.fork(...).
+# - build_reviewers is a business helper: import it explicitly with
+#   `from openjiuwen.agent_teams.workflow.review import build_reviewers`
+#   (the loader pre-binds only the swarmflow primitives listed above).
 # - Before generating verify/fork, confirm the runtime engine exposes them.
 # - Do not define variables, functions, parameters, or classes named like
 #   SwarmFlow operators. They shadow the imported runtime primitives.
@@ -376,6 +379,10 @@ async def run(args):
 #   Keep reviewer prompts inline. VerifyResult has verdict, votes, feedback,
 #   and passed. Branch on result.verdict: "pass", "fail", or None (undecided).
 #   result.passed is False for both fail and undecided.
+# - Vote fields: result.votes[i] is a dataclass with kind / decision / score /
+#   feedback / role (business role) / label (reviewer instance name; the event's
+#   verify_votes[].name is the same value). Votes have no `name`; a reviewer
+#   that did not vote still occupies a vote with decision/score None.
 # - Verify tally: a complete verdict pool has one-vote veto; a complete score
 #   pool must meet the threshold on average. A verdict fail wins before score-pool missing
 #   votes; missing votes never produce a pass. Reviewer.role is display-only.
