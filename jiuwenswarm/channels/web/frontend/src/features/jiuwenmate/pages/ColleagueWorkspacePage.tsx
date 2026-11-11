@@ -1147,10 +1147,7 @@ export function ColleagueWorkspacePage({
   };
 
   const renderWelcome = () => {
-    const prompts =
-      colleague.capabilities.starterPrompts.length > 0
-        ? colleague.capabilities.starterPrompts.slice(0, 3)
-        : [0, 1, 2].map((index) => t(`jiuwenmate.workspace.defaultPrompts.${index}`));
+    const prompts = colleague.capabilities.starterPrompts.slice(0, 3);
     return (
       <section className="jiuwenmate-chat-welcome" data-testid="jiuwenmate-chat-welcome">
         <header className="jiuwenmate-main-header jiuwenmate-chat-welcome__header">
@@ -1165,14 +1162,16 @@ export function ColleagueWorkspacePage({
             <h2>{colleague.name}</h2>
             <p>{colleague.description}</p>
           </div>
-          <div className="jiuwenmate-chat-welcome__suggestions">
-            {prompts.map((prompt, index) => (
-              <button type="button" key={`${prompt}-${index}`} onClick={() => setDraft(prompt)}>
-                <span>{prompt}</span>
-                <ChevronRight aria-hidden />
-              </button>
-            ))}
-          </div>
+          {prompts.length > 0 && (
+            <div className="jiuwenmate-chat-welcome__suggestions">
+              {prompts.map((prompt, index) => (
+                <button type="button" key={`${prompt}-${index}`} onClick={() => setDraft(prompt)}>
+                  <span>{prompt}</span>
+                  <ChevronRight aria-hidden />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <footer>
           {composer}
