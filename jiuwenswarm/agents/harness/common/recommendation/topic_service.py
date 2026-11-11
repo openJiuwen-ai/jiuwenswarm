@@ -1710,6 +1710,10 @@ class TopicService:
             }
 
         normalized_work_mode = normalize_topic_work_mode(work_mode)
+        try:
+            self.store.prune(now=self._now())
+        except Exception:  # noqa: BLE001 - serving must not fail on maintenance
+            logger.warning("[Topic] store prune failed", exc_info=True)
         _, feedback = self._scope_state(context_scope=context_scope, project_id=project_id)
         trigger_key = self._trigger_key(
             context_scope=context_scope,
