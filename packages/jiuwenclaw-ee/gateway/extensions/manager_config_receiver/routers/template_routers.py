@@ -43,7 +43,10 @@ from ..schemas.template_schemas import (
     SkillPrebuiltTemplateUpdateRequest,
 )
 from .deps import build_sync_context, sync_write_data
-from .runtime_notify import trigger_runtime_config_update
+from .runtime_notify import (
+    invalidate_local_enterprise_config_caches,
+    trigger_runtime_config_update,
+)
 
 templates_router = APIRouter()
 
@@ -108,6 +111,10 @@ def _add_template_crud(
             raise _http_exc(exc) from exc
         if notify_runtime:
             trigger_runtime_config_update()
+        else:
+            # 扩展配置：runtime 池子不消费其表，只失效本进程企业配置缓存
+            # （下次 loader 读库即新内容），不调度 config_refresh 换血。
+            invalidate_local_enterprise_config_caches()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, result)
         )
@@ -127,6 +134,10 @@ def _add_template_crud(
             raise _http_exc(exc) from exc
         if notify_runtime:
             trigger_runtime_config_update()
+        else:
+            # 扩展配置：runtime 池子不消费其表，只失效本进程企业配置缓存
+            # （下次 loader 读库即新内容），不调度 config_refresh 换血。
+            invalidate_local_enterprise_config_caches()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
         )
@@ -143,6 +154,10 @@ def _add_template_crud(
             raise _http_exc(exc) from exc
         if notify_runtime:
             trigger_runtime_config_update()
+        else:
+            # 扩展配置：runtime 池子不消费其表，只失效本进程企业配置缓存
+            # （下次 loader 读库即新内容），不调度 config_refresh 换血。
+            invalidate_local_enterprise_config_caches()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
         )
