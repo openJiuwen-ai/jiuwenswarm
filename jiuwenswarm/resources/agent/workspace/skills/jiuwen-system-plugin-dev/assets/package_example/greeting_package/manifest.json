@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "id": "example.greeting-panel",
+    "version": "1.0.0",
+    "domain": "agentserver"
+  },
+  "display": {
+    "name": {
+      "zh": "问候面板系统插件",
+      "en": "Greeting Panel System Plugin"
+    },
+    "description": {
+      "zh": "在会话输入区上方显示后端问候语。",
+      "en": "Displays a backend greeting above the conversation input."
+    },
+    "events": [
+      {
+        "name": "ui.ready",
+        "description": {
+          "zh": "输入区槽位挂载后渲染问候语",
+          "en": "Render the greeting after the input slot mounts"
+        }
+      }
+    ]
+  },
+  "extensions": [
+    {
+      "id": "greeting-panel",
+      "runtime": "backend",
+      "module": "greeting/extension.py"
+    }
+  ],
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "greeting-panel.main",
+        "slot": "conversation.input.above",
+        "order": 30,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      }
+    ]
+  }
+}
