@@ -409,6 +409,38 @@ async def test_a_new_connection_gets_declarations_while_a_release_is_pending(tmp
         await runtime.shutdown()
 
 
+async def test_declarations_wait_until_the_retired_view_is_cleared(tmp_path):
+    """A re-activated package must not be declared before its clear frame arrives (S_06)."""
+    runtime = await _runtime(tmp_path)
+    try:
+        ws = SimpleNamespace(closed=False)
+        await _ready(runtime, ws, "application.sidebar.footer")
+        await _click_params(runtime, ws, "application.sidebar.footer")
+        runtime.channel.events.clear()
+
+        # Replacing the running version releases the old activation first: its clear frame is
+        # still outstanding when the new generation becomes the active one.
+        runtime.publish(runtime.active_packages()[0])
+        await runtime.browser.connect(ws, "browser-one")
+
+        # Declaring the new generation now would make the retired clear unacceptable and
+        # leave the old view mounted, so the connection has to wait for the release.
+        assert [item for item in runtime.channel.events if item["event"] == "client.declarations"] == []
+
+        await runtime.browser.settle()
+
+        declarations = [item for item in runtime.channel.events if item["event"] == "client.declarations"]
+        clears = [item for item in runtime.channel.events if item["event"] == "webui.render.clear"]
+        assert declarations and clears, runtime.channel.events
+        assert runtime.channel.events.index(clears[0]) < runtime.channel.events.index(declarations[-1])
+        assert declarations[-1]["payload"]["packages"][0]["activationGeneration"] == (
+            runtime.browser.generations[PACKAGE]
+        )
+    finally:
+        await runtime.browser.settle()
+        await runtime.shutdown()
+
+
 async def test_notify_installed_publishes_declarations_before_asking_slots_to_render(tmp_path):
     """Re-enabling a package must refresh declarations before the slot renders again (S_06)."""
     runtime = await _runtime(tmp_path)

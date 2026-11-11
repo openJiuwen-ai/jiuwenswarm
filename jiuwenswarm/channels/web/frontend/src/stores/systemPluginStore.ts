@@ -102,7 +102,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       set(scope === 'catalog' ? { catalog: packages } : { mine: packages });
     } catch (error) {
       if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return;
-      if (!isTransientManagementError(error)) set({ error: messageOf(error) });
+      if (!silent && !isTransientManagementError(error)) set({ error: messageOf(error) });
     } finally {
       if (!silent) {
         pendingLoads -= 1;
@@ -130,7 +130,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
   const mutate = async (
     id: string,
     action: () => Promise<void>,
-    confirmed?: () => void,
+    options?: { tolerateTransient?: boolean; confirmed?: () => void },
   ): Promise<MutationResult> => {
     setBusy(id, true);
     try {
@@ -139,15 +139,16 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
         await action();
         handled = true;
       } catch (error) {
-        if (!isTransientManagementError(error)) throw error;
-        // The declarations swap or the login gate may reject the call after the package
-        // state already changed. Resync from the server instead of reporting a failure.
+        // Only the toggle can fall back to the state below: its result is re-read and no
+        // destructive UI action depends on it. Install/uninstall/reload must report failures,
+        // otherwise a denied call would close the detail page as if the package was removed.
+        if (!options?.tolerateTransient || !isTransientManagementError(error)) throw error;
         await waitForClientContext();
       }
-      if (handled) confirmed?.();
+      if (handled) options?.confirmed?.();
       await refresh();
       await syncDetail(id);
-      if (handled) confirmed?.();
+      if (handled) options?.confirmed?.();
       return { ok: true };
     } catch (error) {
       const message = messageOf(error);
@@ -201,6 +202,9 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
     uninstall: (id, version) => mutate(id, () => systemPluginApi.uninstall(id, version)),
     reload: (id) => mutate(id, () => systemPluginApi.reload(id)),
     setEnabled: (id, enable) =>
-      mutate(id, () => systemPluginApi.setEnabled(id, enable), () => applyEnabled(id, enable)),
+      mutate(id, () => systemPluginApi.setEnabled(id, enable), {
+        tolerateTransient: true,
+        confirmed: () => applyEnabled(id, enable),
+      }),
   };
 });

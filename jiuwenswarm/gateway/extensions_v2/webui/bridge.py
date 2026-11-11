@@ -122,7 +122,9 @@ class BrowserBridge:
         # Browser notifications started from synchronous package release.
         self._tasks: set[asyncio.Task] = set()
         # Releases that still owe some connection a clear frame with the retired generation.
-        self._releasing: set[str] = set()
+        # Counted per package: two overlapping releases of the same package must both finish
+        # before the declaration can be withdrawn.
+        self._releasing: dict[str, int] = {}
         self.splash_preferences = SplashPreferences(runtime.config.data_dir)
         self.transfers = TransferManager(runtime)
         self.presentations = PresentationControl(runtime)
@@ -408,7 +410,7 @@ class BrowserBridge:
             task = self.spawn(self._notify_release(package_id, clears, revokes, generation))
             if task is not None:
                 # The browsers still hold this package's declaration until its clears arrive.
-                self._releasing.add(package_id)
+                self._releasing[package_id] = self._releasing.get(package_id, 0) + 1
         for upload in self.transfers.release(package_id=package_id):
             self.transfers.discard_later(upload)
 
@@ -438,7 +440,11 @@ class BrowserBridge:
                         "package_id": package_id, "revision": revision, "appearance": None,
                     })
         finally:
-            self._releasing.discard(package_id)
+            pending = self._releasing.get(package_id, 0) - 1
+            if pending > 0:
+                self._releasing[package_id] = pending
+            else:
+                self._releasing.pop(package_id, None)
             # Every release withdraws its own package; connections that still owe another
             # pending release a clear frame are skipped by ``_declare`` on their own.
             await self.publish_declarations()
@@ -506,10 +512,11 @@ class BrowserBridge:
                      "requestBindings": activation.package.client["requestBindings"]}
                     for activation in self.runtime.current_activations() if activation.package.client]
         published = {entry["packageId"] for entry in packages}
-        if connection.declared_packages & (self._releasing - published):
-            # This browser still owes a clear frame carrying the retired generation; withdrawing
-            # the declaration first would make that clear unacceptable (S_06). Only the affected
-            # connection waits, and only until the release that owns the package finishes.
+        if connection.declared_packages & set(self._releasing):
+            # This browser still owes a clear frame for a package whose release is in flight.
+            # Delivering declarations first — even a fresh generation of that package — would
+            # make the clear unacceptable and leave the retired view mounted (S_06). Only the
+            # affected connections wait, and only until the release that owns them finishes.
             return
         signature = json.dumps(packages, sort_keys=True)
         if signature != connection.declaration_signature:
