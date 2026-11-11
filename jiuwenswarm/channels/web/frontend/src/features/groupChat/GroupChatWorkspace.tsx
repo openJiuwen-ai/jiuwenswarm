@@ -476,9 +476,12 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   }
   const timeline = groupTimeline(messages, executions);
 
-  const visibleMembers = group?.members.filter((member) => (member.display_name ?? '')
-    .toLocaleLowerCase().includes(memberQuery.trim().toLocaleLowerCase())) ?? [];
-  const showSelf = !memberQuery.trim() || t('groupChat.you').includes(memberQuery.trim());
+  const memberSearchTerm = memberQuery.trim().toLocaleLowerCase();
+  const selfLabel = t('groupChat.you');
+  const visibleMembers = (group?.members ?? [])
+    .map((member) => ({ member, label: member.display_name || member.member_name }))
+    .filter(({ label }) => label.toLocaleLowerCase().includes(memberSearchTerm));
+  const showSelf = selfLabel.toLocaleLowerCase().includes(memberSearchTerm);
   const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
   const agentCount = group?.members.length ?? 0;
 
@@ -706,9 +709,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
         <div className="group-chat-member-list" data-testid="group-chat-member-list">
           {showSelf && <div className="group-chat-member-row" data-testid="group-chat-self">
             <TeamMemberAvatar member="user" className="group-chat-member-avatar" alt="" />
-            <span>{t('groupChat.you')}</span>
+            <span>{selfLabel}</span>
           </div>}
-          {visibleMembers.map((member) => {
+          {visibleMembers.map(({ member, label }) => {
             const team = member.kind === 'agent_group' ? expertTeams.find((item) =>
               item.id === member.id || item.name === member.id) : undefined;
             const expertNames = team?.members.map((expert) => expert.displayName.trim()
@@ -722,7 +725,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
             disabled={sending} onClick={() => mention(member.member_name)} title={tooltip}
             data-testid="group-chat-member" data-variant={member.member_name}>
             <TeamMemberAvatar member={member.member_name} className="group-chat-member-avatar" alt="" />
-            <span>{member.display_name || member.member_name}</span>
+            <span>{label}</span>
             {member.cli_agent && <small className="group-chat-provider" data-testid="group-chat-member-provider">
               {member.cli_agent === 'claude' ? 'Claude Code' : 'Codex'}
             </small>}
