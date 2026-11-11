@@ -774,42 +774,6 @@ class RuntimePromptRail(DeepAgentRail):
                 optimize_desktop_workspace_prompt
                 and self._same_path(project_dir, runtime_cwd)
             )
-            # Windows native-CLI rules: injected only on Windows hosts, in the
-            # session language. Empty string on other platforms (no-op).
-            if sys.platform == "win32":
-                if is_cn:
-                    windows_cli_rules = (
-                        "## Windows 原生 CLI 调用规则\n\n"
-                        "1) 调用 python/gws/gh 等原生程序时，路径禁用裸 /tmp 与 ~ 形式："
-                        "一律用 workspace 相对路径；确需系统临时目录，用绝对 Windows 路径（C:/...）。\n"
-                        "2) 长 JSON/文本参数先用 write_file 写入 workspace 文件，确认内容后以 "
-                        "\"$(cat 文件)\" 传参，不要内联拼接。\n"
-                        "3) 需要 base64url 的场景（Gmail raw、JWT 等）：把标准 base64 结果中的 + 换成 -、"
-                        "/ 换成 _，并去掉末尾 =。\n"
-                        "4) 文件报占用/锁定错误时不要原样重试：先读文件确认状态，改用 write_file/edit_file "
-                        "或换传参方式。\n"
-                        "5) 不确定 API 请求形状时，先查 schema/help（如 gws schema <方法名>、gh api --help）"
-                        "再构造请求。\n\n"
-                    )
-                else:
-                    windows_cli_rules = (
-                        "## Windows Native CLI Rules\n\n"
-                        "1) When invoking native programs (python/gws/gh), never pass bare /tmp or ~ "
-                        "paths: use workspace-relative paths; if a system temp dir is truly needed, "
-                        "use an absolute Windows path (C:/...).\n"
-                        "2) For long JSON/text arguments, write them to a workspace file first "
-                        "(write_file), verify with cat, then pass via \"$(cat file)\" — never "
-                        "inline-assemble.\n"
-                        "3) Where base64url is required (Gmail raw, JWT): from standard base64, "
-                        "replace + with -, / with _, and strip trailing =.\n"
-                        "4) On file lock/occupancy errors, do not retry the same command blindly: "
-                        "read the file to confirm its state, then use write_file/edit_file or change "
-                        "the passing method.\n"
-                        "5) When unsure of an API request shape, check schema/help first "
-                        "(e.g., gws schema <method>, gh api --help) before constructing the request.\n\n"
-                    )
-            else:
-                windows_cli_rules = ""
 
             if is_cn:
                 working_directory_line = (
@@ -835,7 +799,6 @@ class RuntimePromptRail(DeepAgentRail):
                     "- 用户已经提供明确路径时直接使用，不要重复询问。\n"
                     "- 只有任务确实需要操作某个项目、且现有上下文无法确定项目位置时，才询问项目路径。\n"
                     "- 用户明确指定保存位置时，优先使用用户指定位置；否则，项目代码、测试、配置、构建文件、项目文档、报告、导出文件、图片和数据文件等放在当前工作目录的合理位置。\n\n"
-                    f"{windows_cli_rules}"
                     "## 小艺 work 内部数据目录\n\n"
                     f"小艺 work 使用独立的内部数据目录保存启动配置、Agent {internal_data_cn}。"
                     "这些内部数据目录不等于用户当前处理的项目目录，也不是用户任务中相对路径的默认含义。\n\n"
@@ -890,7 +853,6 @@ class RuntimePromptRail(DeepAgentRail):
                     "- Prefer a user-specified save location. Otherwise, place project code, tests, "
                     "configuration, build files, project documentation, reports, exports, images, and data "
                     "files in an appropriate location under the current working directory.\n\n"
-                    f"{windows_cli_rules}"
                     "## 小艺 work Internal Data Directories\n\n"
                     f"小艺 work keeps its startup configuration, Agent {internal_data_en} "
                     "in dedicated internal data directories. These are not the "

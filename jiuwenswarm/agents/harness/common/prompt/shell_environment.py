@@ -148,7 +148,7 @@ def _tool_routing_prompt(
             else "- 当前未检测到 PowerShell；Windows 原生命令使用可用的 `cmd`。"
         )
         return f"""工具与 Shell 选择：
-- 文件读取、搜索和编辑优先使用 `read_file`、`grep`、`glob`、`edit_file`、`write_file` 等专用工具，不要为了这些操作调用 Shell。
+- 文件读取、搜索、创建和编辑一律优先使用 `read_file`、`grep`、`glob`、`edit_file`、`write_file` 等专用工具，不要用 Shell 重定向或 heredoc 创建文件。
 {posix_rule}
 {windows_rule}
 - `mcp_exec_command` 仅在需要显式参数化 Shell 或 Shell 专用工具时使用；必须显式提供 `shell_type`，禁止使用 `auto`。
@@ -167,7 +167,7 @@ def _tool_routing_prompt(
         else "- PowerShell is unavailable; use the available `cmd` tool for Windows-native commands."
     )
     return f"""Tool and Shell selection:
-- Prefer dedicated tools such as `read_file`, `grep`, `glob`, `edit_file`, and `write_file` for file reads, searches, and edits instead of invoking a Shell.
+- Prefer dedicated tools such as `read_file`, `grep`, `glob`, `edit_file`, and `write_file` for file reads, searches, creation, and edits; never create files via shell redirection or heredocs.
 {posix_rule}
 {windows_rule}
 - Do not wrap PowerShell in Bash or mix Bash syntax into PowerShell."""
@@ -191,6 +191,8 @@ Shell 选择规则：
 - Windows 且 Git Bash 不可用、PATH bash 也不可用或只是 WSL stub 时，不要使用 POSIX 命令；优先使用 PowerShell 或 cmd。
 - PowerShell cmdlet 不要包在 bash 里执行，应直接使用 PowerShell。
 - 安装 Python 依赖时，使用 `python -m pip install` 而非 `pip install`，确保依赖安装到与执行脚本相同的 Python 环境中。
+- 给原生程序（python、gws、gh 等）传路径时禁用 POSIX 形式（/tmp、~）：Git Bash 的 /tmp 与原生程序不互通，一律用 workspace 相对路径或 Windows 绝对路径。
+- 文件报占用/锁定错误时不要原样重试：先读文件确认状态，再用 write_file/edit_file 覆写或换传参方式。
 {_tool_routing_prompt(language, bash_available=bool(git_bash or (path_bash and not _is_wsl_bash_path(path_bash))), powershell_available=bool(shutil.which("pwsh") or shutil.which("powershell")))}"""
         return f"""Shell capabilities:
 - PowerShell: {_status(language, powershell)}
@@ -202,6 +204,8 @@ Shell selection rules:
 - On Windows, when Git Bash is unavailable and PATH bash is unavailable or only a WSL stub, do not use POSIX commands; prefer PowerShell or cmd.
 - Do not wrap PowerShell cmdlets in bash; invoke PowerShell directly.
 - When installing Python dependencies, use `python -m pip install` instead of `pip install` to ensure packages are installed into the same Python environment that will execute the scripts.
+- When passing paths to native programs (python, gws, gh), never use POSIX forms (/tmp, ~): Git Bash's /tmp is not shared with native programs; use workspace-relative or absolute Windows paths.
+- On file lock/occupancy errors, do not retry the same command blindly: read the file to confirm its state first, then rewrite via write_file/edit_file or change the passing method.
 - Use command and path syntax that matches the current platform.
 
 {_tool_routing_prompt(language, bash_available=bool(git_bash or (path_bash and not _is_wsl_bash_path(path_bash))), powershell_available=bool(shutil.which("pwsh") or shutil.which("powershell")))}"""
