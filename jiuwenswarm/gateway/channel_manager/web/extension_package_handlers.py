@@ -48,7 +48,7 @@ from jiuwenswarm.gateway.extensions_v2.management.catalog import (
     package_detail,
     resolve_install_source,
 )
-from jiuwenswarm.gateway.extensions_v2.management.notifications import notify_installed
+from jiuwenswarm.gateway.extensions_v2.management.notifications import notify_disabled, notify_installed
 from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
 from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ExtensionInstallRecord,
@@ -440,6 +440,7 @@ async def _handle_locally(
                 payload["ui_notified"] = await notify_installed(runtime, [package_id])
             else:
                 store.mark(package_id, active=False, enabled=False)
+                await notify_disabled(runtime, [package_id])
         await _respond(channel, ws, req_id, ok=True, payload=payload)
         return True
     version = params.get("version")

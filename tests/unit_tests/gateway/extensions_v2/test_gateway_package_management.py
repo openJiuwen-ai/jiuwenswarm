@@ -384,6 +384,12 @@ async def test_installing_a_disabled_copy_releases_an_active_gateway_package(tmp
     )
     assert manifest["enable"] is False
 
+    # Enabling again has to activate the newer copy instead of reporting the running one.
+    enabled = await manager.set_enabled("demo.gateway", True)
+    assert enabled.status == "SUCCESS"
+    assert runtime.user_handler_count == 1
+    assert runtime.active_record("demo.gateway").version == "0.2.0"
+
 
 async def test_reload_of_a_disabled_gateway_package_succeeds_without_enabling_it(tmp_path):
     runtime = await _runtime(tmp_path)
