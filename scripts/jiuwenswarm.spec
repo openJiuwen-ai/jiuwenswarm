@@ -306,6 +306,8 @@ for lazy_package in (
 hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
     "jiuwenswarm.channels.cli.extension",  # Shared extension command in frozen subprocesses.
     "jiuwenswarm.common.extension_cli",
+    # Installed Gateway packages import WebUI ops outside the entry point graph.
+    "agent_gateway.extensions_v2.webui.ops",
     "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
     "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
     # Full-duplex Python sources load by path, outside the static import graph.
