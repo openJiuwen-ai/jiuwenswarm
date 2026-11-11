@@ -29,6 +29,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from openai import APITimeoutError
 from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
 
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
@@ -122,9 +123,10 @@ async def review_renders(checklist: str, session_model: Model | None, renders: l
         reasoning = minimal_reasoning(model.model_client_config.model_dump(mode="json"), model_name)
         review = await asyncio.wait_for(_first_answer(model, messages, reasoning, REVIEW_MAX_TOKENS),
                                         REVIEW_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError as exc:
-        raise ReviewFailed(f"{reviewer} did not answer within {REVIEW_TIMEOUT_SECONDS:.0f}s") from exc
     except Exception as exc:  # noqa: BLE001 - whatever the provider raises, the review has no verdict
+        timeout_errors = (TimeoutError, APITimeoutError)
+        if isinstance(exc, timeout_errors) or isinstance(exc.__cause__, timeout_errors):
+            raise ReviewFailed(f"{reviewer} did not answer within {REVIEW_TIMEOUT_SECONDS:.0f}s") from exc
         raise ReviewFailed(f"{reviewer} failed: {exc}") from exc
     if not review:
         raise ReviewFailed(f"{reviewer} answered nothing {REVIEW_ATTEMPTS} times")

@@ -170,7 +170,9 @@ class SSESink:
         if self._closed:
             return False
         await self._emit(chunk_to_dict(chunk, sequence=sequence))
-        if chunk.is_complete:
+        # Enterprise Runtime must finish its waiting-control bookkeeping before
+        # invoke_stream closes HTTP; an early EOF can cancel that pending owner.
+        if chunk.is_complete and not is_enterprise():
             await self.close()
         return True
 

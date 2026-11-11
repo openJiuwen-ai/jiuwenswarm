@@ -49,6 +49,7 @@ export function isSkillPackagePrompt(pq: AskUserQuestionPayload | null | undefin
 
 export function classifyPrompt(pq: AskUserQuestionPayload | null | undefined): PromptKind {
   if (!pq) return 'none';
+  if (pq.skill_approval_card?.kind === 'skill_approval') return 'legacy';
   if (isSkillPackagePrompt(pq)) return 'experience';
   if (pq.source === 'swarmflow_human') return 'interaction';
   // 技能演进审批（evolution_interrupt）协议已冻结为与 permission_interrupt 一致的
