@@ -7371,6 +7371,22 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
+    @staticmethod
+    def _organization_stream_key(request: AgentRequest) -> str:
+        params = request.params if isinstance(request.params, dict) else {}
+        # session_id 的取法三处原本不一致（`request.session_id or "default"` 与
+        # `str(request.session_id or "").strip()` 与 `request.session_id or params.get(...)`）：
+        # 取消请求只把 session_id 放在 params 里时，注册侧算出的 key 是 `<sid>::organization::<team>`，
+        # 取消侧算出的却是 `default::organization::<team>`，查表落空——专家流没被取消，
+        # 响应还可能报成功。这里统一成「请求字段优先、params 兜底」。
+        session_id = request.session_id or params.get("session_id") or "default"
+        team_id = str(params.get("target_team_id") or "").strip()
+        return (
+            f"{session_id}::organization::{team_id}"
+            if AgentWebSocketServer._is_targeted_expert_request(request) else session_id
+        )
+
+    @staticmethod
     async def _stop_organization_team(session_id: str, team_id: str) -> None:
         from openjiuwen.core.runner.runner import GLOBAL_RUNNER
 
