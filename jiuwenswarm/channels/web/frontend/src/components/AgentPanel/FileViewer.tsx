@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -100,6 +100,9 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
   const isPreviewable = isMarkdown || isJson;
   const fileNotFound = Boolean(error && error.includes('HTTP 404'));
   const [historyChatPreview, setHistoryChatPreview] = useState(true);
+  // Latest filePath, kept for handleSave: a save response that arrives after
+  // the user switched files must not render its draft under the new path.
+  const filePathRef = useRef(filePath);
 
   const jsonParseResult = useMemo(() => {
     if (!isJson || !content.trim()) {
@@ -158,6 +161,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
 
   useEffect(() => {
     if (!filePath) return;
+    filePathRef.current = filePath;
     if (!isPreviewable) {
       setLoading(false);
       setError(null);
@@ -239,6 +243,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
   };
 
   const handleSave = async () => {
+    const savedPath = filePath;
     setSaving(true);
     setSaveError(null);
     try {
@@ -248,7 +253,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          path: filePath,
+          path: savedPath,
           content: draftContent,
         }),
       });
@@ -258,10 +263,14 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
         throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 120)}`);
       }
 
+      // The user switched files while the save was in flight: the response is
+      // still bound to the old path, so its draft must not be rendered under
+      // the new file (where another edit+save would write it into the new path).
+      if (filePathRef.current !== savedPath) return;
       setContent(draftContent);
       setIsEditing(false);
     } catch (err) {
-      console.error('Failed to save file:', err);
+      if (filePathRef.current !== savedPath) return;
       setSaveError(err instanceof Error ? err.message : t('fileViewer.unknownError'));
     } finally {
       setSaving(false);
