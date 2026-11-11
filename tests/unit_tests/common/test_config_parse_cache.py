@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import ModuleType
+from unittest.mock import patch
 
 import pytest
+from agent_gateway.common import config as gateway_config
 
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.config import _read_with_retry
@@ -111,3 +114,18 @@ def test_distinct_paths_do_not_collide(tmp_path: Path) -> None:
     assert _read_with_retry(first) == {"which": "a"}
     assert _read_with_retry(second) == {"which": "b"}
     assert _read_with_retry(first) == {"which": "a"}
+
+
+@pytest.mark.parametrize("config", [config_module, gateway_config], ids=["swarm", "gateway"])
+def test_workspace_config_reuses_template_and_reads_edits(config: ModuleType) -> None:
+    """Both readers reuse pristine YAML and observe changes to their own file."""
+    with patch.object(config_module.yaml, "load", wraps=config_module.yaml.load) as parse:
+        config.get_config_raw()["react"]["fixture_probe"] = True
+        assert "fixture_probe" not in config.get_config_raw()["react"]
+        with config.CONFIG_YAML_PATH.open(encoding="utf-8") as stream:
+            assert "fixture_probe" not in config_module.yaml.safe_load(stream)["react"]
+        parse.assert_not_called()
+
+        config.CONFIG_YAML_PATH.write_text("fixture_probe: edited\n", encoding="utf-8")
+        assert config.get_config_raw() == {"fixture_probe": "edited"}
+        parse.assert_called_once()

@@ -77,6 +77,16 @@ uv run pytest tests/unit_tests/ --no-cov
 
 `pytest-xdist` 不在默认依赖中。未安装时，`-p` 回退为串行执行。
 
+### IPC 背压与 Worker 超时验收
+
+常规 UT 在 `test_ipc_backpressure.py` 中使用缩短的测试阈值，仍启动真实 Worker 子进程并通过真实 IPC 和 WebSocket 注入故障。验收默认生产阈值时，在 Linux 和 Windows 分别运行同一测试文件。测试会按平台选择适用的传输场景。
+
+```bash
+JIUWENSWARM_IPC_PRODUCTION_TIMINGS=1 uv run pytest tests/unit_tests/agentserver/test_ipc_backpressure.py
+```
+
+在 PowerShell 中，先运行 `$env:JIUWENSWARM_IPC_PRODUCTION_TIMINGS = "1"`，再运行 `uv run pytest tests/unit_tests/agentserver/test_ipc_backpressure.py`。验收结束后清除该环境变量即可恢复常规 UT 的测试阈值。
+
 ## 前端测试
 
 ```bash
@@ -108,6 +118,7 @@ npm run build
 - 已注册的标记为 `unit`、`integration`、`system`、`slow` 和 `async`。`--strict-markers` 已开启，新增标记必须先写入 `pytest.ini`。
 - `filterwarnings = error` 已开启。第三方告警必须在 `pytest.ini` 中按消息精确放行，不要全局关闭。
 - 共享 fixture 位于 `tests/conftest.py`：`temp_workspace`、`temp_config_file`、`mock_env_vars`、`sample_skill_md`、`sample_messages`。
+- 单元测试各自持有可写的 `config.yaml`。未修改的配置复用当前 pytest worker 的模板解析结果，每次返回独立副本。修改配置后仍从该用例自己的文件读取。
 
 ## 持续集成状态
 

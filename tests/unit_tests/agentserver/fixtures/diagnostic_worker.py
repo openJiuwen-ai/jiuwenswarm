@@ -62,8 +62,9 @@ class SlowShellProbe:
 
 
 class TrafficRuntime:
-    def __init__(self, mode: str) -> None:
+    def __init__(self, mode: str, *, timing_scale: float = 1.0) -> None:
         self.mode = mode
+        self.timing_scale = timing_scale
         self.release = threading.Event()
         self.pool = None
         if mode == "pool-pressure":
@@ -156,7 +157,8 @@ class TrafficRuntime:
             await ws.send(
                 json.dumps({"request_id": request.request_id, "phase": "freezing"})
             )
-            time.sleep(200 if self.mode == "freeze-long" else 60)  # Owned child fault injection.
+            freeze_seconds = 200 if self.mode == "freeze-long" else 60
+            time.sleep(freeze_seconds * self.timing_scale)  # Freeze the real child event loop.
             return
         frames = int(request.params.get("frames", 64))
         size = int(request.params.get("bytes", 8192))
@@ -183,9 +185,9 @@ class TrafficRuntime:
             "request_id": request.request_id, "phase": "logging_pending",
             "first_seconds": time.monotonic() - started, "log_thread": self.log_thread,
         }))
-        # Stay beyond the real 30s transport health contract. The log sink
-        # deliberately remains blocked through final Worker shutdown too.
-        await asyncio.sleep(36)
+        # Outlast the configured transport watchdog. Keep the sink blocked
+        # through final Worker shutdown.
+        await asyncio.sleep(36 * self.timing_scale)
         await ws.send(json.dumps({
             "request_id": request.request_id, "phase": "final",
             "blocked_seconds": time.monotonic() - started,
@@ -219,8 +221,8 @@ class TrafficRuntime:
             )
         )
         rounds = 1
-        while time.monotonic() - started < 36:
-            await asyncio.sleep(1)
+        while rounds < 30 or time.monotonic() - started < 36 * self.timing_scale:
+            await asyncio.sleep(self.timing_scale)
             unknown = await round_trip() and unknown
             rounds += 1
         await ws.send(
@@ -237,10 +239,12 @@ class TrafficRuntime:
         )
 
 
-def configure(mode: str) -> None:
-    """Inject traffic faults while retaining the production Worker entrypoint."""
+def configure(mode: str, *, timing_scale: float = 1.0) -> None:
+    """Inject faults and scale the native dump timer inside the test child."""
+    diagnostics._STALL_DUMP_TIMEOUT *= timing_scale
+
     async def load_runtime(host, port, signals, dispatcher, loaded):
-        runtime = TrafficRuntime(mode)
+        runtime = TrafficRuntime(mode, timing_scale=timing_scale)
         await dispatcher.bind_runtime(runtime)
         loaded["runtime"] = runtime
         signals.agent_ready()

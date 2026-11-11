@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Durable cumulative input/output token totals for a product Session."""
 
 from __future__ import annotations
@@ -6,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+from time import monotonic, sleep
 from typing import Any
 
 from jiuwenswarm.common.config import get_config
@@ -13,6 +16,7 @@ from jiuwenswarm.common.sqlite_config import normalize_journal_mode, workspace_s
 
 _MAX_TOKEN_COUNT = (1 << 53) - 1
 _CATEGORIES = ("main", "others")
+_SQLITE_TIMEOUT_SECONDS = 10
 
 
 def _token_count(value: Any) -> int | None:
@@ -57,17 +61,31 @@ class SessionTokenUsageLedger:
         self._journal_mode = normalize_journal_mode(journal_mode)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10, isolation_level=None)
+        connection = sqlite3.connect(self._path, timeout=_SQLITE_TIMEOUT_SECONDS, isolation_level=None)
         try:
-            connection.execute("PRAGMA busy_timeout = 10000")
             if self._journal_mode == "DELETE":
-                actual = connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+                actual = self._select_journal_mode(connection)
                 if actual.upper() != self._journal_mode:
                     raise sqlite3.OperationalError("could not select SQLite DELETE journal mode")
             return connection
         except Exception:
             connection.close()
             raise
+
+    def _select_journal_mode(self, connection: sqlite3.Connection) -> str:
+        """Retry transient lock contention while switching journal modes."""
+        deadline = monotonic() + _SQLITE_TIMEOUT_SECONDS
+        while True:
+            try:
+                return connection.execute(f"PRAGMA journal_mode={self._journal_mode}").fetchone()[0]
+            except sqlite3.OperationalError as error:
+                # SQLite can skip its busy handler when acquiring the mode-switch lock.
+                code = getattr(error, "sqlite_errorcode", None)
+                busy = str(error) == "database is locked" if code is None else (code & 0xFF) == sqlite3.SQLITE_BUSY
+                remaining = deadline - monotonic()
+                if not busy or remaining <= 0:
+                    raise
+                sleep(min(0.01, remaining))
 
     def record(
         self,
@@ -86,8 +104,8 @@ class SessionTokenUsageLedger:
         safe_output = _token_count(output_tokens)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
-            connection.execute("PRAGMA busy_timeout = 10000")
-            connection.execute(f"PRAGMA journal_mode = {self._journal_mode}")
+            if self._journal_mode == "WAL":
+                self._select_journal_mode(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS usage_events (
