@@ -1038,6 +1038,12 @@ class DesignerGraphToolkit:
         note_media_settings_gap(
             self.ctx, "image", f"designer_image_{self.ctx.run_id}_{self.ctx.node_id}"
         )
+        try:
+            from jiuwenswarm.server.runtime.designer.prompt_publish import emit_prompt_artifact
+
+            emit_prompt_artifact(self.ctx, text)
+        except Exception:  # noqa: BLE001
+            logger.debug("call_image_model early prompt publish failed", exc_info=True)
         beat = asyncio.create_task(
             _heartbeat_while(self.ctx, "call_image_model", "image model running")
         )
@@ -1276,11 +1282,12 @@ class DesignerGraphToolkit:
         )
         cfg["prompt"] = text
         want_audio, _model_override = resolve_video_audio_request(cfg, meta)
-        if callable(getattr(self.ctx, "on_prompt_artifact", None)):
-            try:
-                self.ctx.on_prompt_artifact(text)
-            except Exception:  # noqa: BLE001
-                logger.debug("call_video_model early prompt handoff failed", exc_info=True)
+        try:
+            from jiuwenswarm.server.runtime.designer.prompt_publish import emit_prompt_artifact
+
+            emit_prompt_artifact(self.ctx, text)
+        except Exception:  # noqa: BLE001
+            logger.debug("call_video_model early prompt handoff failed", exc_info=True)
         dur = video_duration_seconds(self.ctx, node)
         note_video_duration(self.ctx, node, dur)
         from jiuwenswarm.server.runtime.designer.audio_locks import video_gen_family_label

@@ -128,6 +128,13 @@ async def _require_image(
     # so its own error (which carries the same text) reaches the canvas.
     handler_io.note_media_settings_gap(ctx, "image", stem)
 
+    try:
+        from jiuwenswarm.server.runtime.designer.prompt_publish import emit_prompt_artifact
+
+        emit_prompt_artifact(ctx, prompt)
+    except Exception:  # noqa: BLE001
+        logger.debug("early image prompt publish failed", exc_info=True)
+
     save_dir = None
     if ctx is not None:
         save_dir = str(handler_io.canvas_output_dir(ctx.graph if isinstance(ctx.graph, dict) else None))
