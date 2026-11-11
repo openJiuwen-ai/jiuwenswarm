@@ -181,6 +181,7 @@ class TestLooksLikePosix:
             "chmod 755 script.sh",
             "ls && cat file.txt",
             "mkdir dir; ls",
+            "echo hello",
         ],
     )
     def test_detects_posix_commands(self, command: str) -> None:
@@ -189,7 +190,6 @@ class TestLooksLikePosix:
     @pytest.mark.parametrize(
         "command",
         [
-            "echo hello",
             "python script.py",
             "git status",
             "npm install",
@@ -245,7 +245,7 @@ class TestResolveExecutionPlanWindows:
         assert use_shell is False
 
     def test_non_posix_stays_on_cmd(self, _no_bash) -> None:
-        plan, use_shell, resolved_shell = _resolve_execution_plan("echo hello", "auto")
+        plan, use_shell, resolved_shell = _resolve_execution_plan("python script.py", "auto")
         assert resolved_shell == "cmd"
         assert use_shell is True
 
