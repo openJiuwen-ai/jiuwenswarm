@@ -18,7 +18,12 @@ ORG = bootstrap.organization_id_for_session(SESSION)
 
 
 @pytest.fixture(autouse=True)
-def _clear_bound_turns():
+def _clear_bound_turns(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.agents.swarm import group_route
+
+    monkeypatch.setattr(group_route, "_path", lambda _: tmp_path / "routes.json")
+    monkeypatch.setattr(group_route, "publish", AsyncMock())
     yield
     bootstrap._member_turns.clear()
     bootstrap._deferred_direct.clear()
@@ -26,6 +31,21 @@ def _clear_bound_turns():
     bootstrap._accepted_plans.clear()
     bootstrap._open_organization_turns.clear()
     bootstrap._organization_run_attempts.clear()
+
+
+async def _accept_organization_plan(session_id, group_input):
+    """Lifecycle tests below start after the Owner's task decision."""
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.agents.swarm import group_route
+
+    item = await group_route.record_candidate(session_id, mentions=group_input["mentions"],
+                                             body=group_input["body"], plan_id=group_input["client_message_id"])
+    if item is None:
+        return None
+    backend = SimpleNamespace(member_name=item["owner_member"],
+                              message_manager=SimpleNamespace(send_message=AsyncMock(return_value="wake")))
+    await group_route.activate(session_id, item["plan_id"], backend)
+    return item["plan_id"]
 
 
 MEMBERS = [
@@ -804,7 +824,7 @@ async def test_reused_instance_takes_the_current_owner_role():
     assert harness.system_prompt_builder.names == []
 
 
-def test_a_new_organization_drops_the_previous_member_list(monkeypatch):
+def test_a_new_organization_preserves_and_scopes_previous_members(monkeypatch):
     group = _MemoryGroup(
         monkeypatch,
         organization_id="gorg-old",
@@ -823,9 +843,10 @@ def test_a_new_organization_drops_the_previous_member_list(monkeypatch):
             "id": "business-planning",
         },
     )
-    assert [item["member_name"] for item in group.state["organization_teams"]] == [
+    assert [item["member_name"] for item in group_service.group_organization_teams(SESSION, "gorg-new")] == [
         "business"
     ]
+    assert {item["member_name"] for item in group_service.group_organization_teams(SESSION, "gorg-old")} == {"business", "insight"}
     assert group.state["organization_id"] == "gorg-new"
 
 
@@ -1354,7 +1375,7 @@ async def test_early_bind_failure_keeps_the_overlapping_plan_pending(monkeypatch
     monkeypatch.setattr(bootstrap, "_set_member_instance_silence", _quiet)
     monkeypatch.setattr(bootstrap, "_block_template_expert_creation", _quiet)
     monkeypatch.setattr(group_service, "upsert_group_organization_team", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(group_service, "group_organization_teams", lambda _session_id: [])
+    monkeypatch.setattr(group_service, "group_organization_teams", lambda _session_id, _organization_id=None: [])
 
     result = await bootstrap._run_organization_member_once(
         backend=SimpleNamespace(member_name="business"),
@@ -1717,15 +1738,63 @@ def _install_card_store(monkeypatch) -> _CardStore:
 
 
 @pytest.mark.asyncio
-async def test_early_card_only_for_multi_team_mentions(monkeypatch):
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+async def test_organization_card_title_progresses_with_its_root(monkeypatch):
+    from unittest.mock import AsyncMock
 
     _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    plan = _stale_plan()
+    plan["body"] = "@商业策划 @小红书 原始请求"
+    root = SimpleNamespace(
+        task_id=bootstrap._root_task_id(plan["plan_id"]),
+        title="Swarm group request", description="", parent_task_id=None,
+    )
+    foreign_root = SimpleNamespace(
+        task_id="another-root", title="其他请求的标题", parent_task_id=None,
+    )
+    pool = SimpleNamespace(list_tasks=AsyncMock(return_value=[foreign_root]))
+
+    async def publish(task_pool=None, status="running"):
+        await bootstrap.publish_organization_card(
+            session_id=SESSION, plan=plan, organization_id=ORG,
+            team_id="owner", task_pool=task_pool, status=status,
+        )
+        fields = store.calls[-1][1]
+        assert fields["task"] == plan["body"]
+        assert len(store.records) == 1
+        return fields["title"]
+
+    assert await publish() == plan["body"]
+    assert await publish(pool) == plan["body"]
+    pool.list_tasks.return_value = [root, foreign_root]
+    assert await publish(pool) == plan["body"]
+    root.description = "团队创建与招募方案\n交付要求"
+    assert await publish(pool) == root.description
+    root.title = "十人团队商业可行性评估"
+    assert await publish(pool) == root.title
+    # A missing snapshot during cleanup must not revert the resolved heading.
+    assert await publish() == root.title
+    pool.list_tasks.return_value = []
+    assert await publish(pool) == root.title
+    pool.list_tasks.return_value = [root]
+    root.output_abstract = "最终报告正文，不是任务标题"
+    assert await publish(pool, status="completed") == root.title
+
+
+@pytest.mark.asyncio
+async def test_early_card_only_after_multi_team_owner_acceptance(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+
+    group = _MemoryGroup(monkeypatch)
     store = _install_card_store(monkeypatch)
     for mentions in [["writer"], ["business"], ["writer", "business"], ["writer", "business", "insight"]]:
         await _record_group_organization_plan(SESSION, {"mentions": mentions, "body": "Task", "client_message_id": "ordinary"})
         assert not store.calls
-    await _record_group_organization_plan(SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "org"})
+    request = {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "org"}
+    await _record_group_organization_plan(SESSION, request)
+    assert not store.calls
+    assert not group.state.get("organization_plans")
+    await _accept_organization_plan(SESSION, request)
     assert len(store.calls) == 1
     assert store.calls[0][1]["organization_stage"] == "starting"
     assert store.calls[0][1]["only_if_missing"] is True
@@ -1733,7 +1802,7 @@ async def test_early_card_only_for_multi_team_mentions(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unstarted_round_closes_and_live_rounds_stay(monkeypatch):
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+    _record_group_organization_plan = _accept_organization_plan
 
     _MemoryGroup(monkeypatch)
     store = _install_card_store(monkeypatch)
@@ -1799,7 +1868,7 @@ async def test_unstarted_round_closes_and_live_rounds_stay(monkeypatch):
 @pytest.mark.asyncio
 async def test_failed_recording_round_closes_before_proxy_turns(monkeypatch):
     from jiuwenswarm.agents.swarm.group_org_bootstrap import fail_unstarted_organization_round
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+    _record_group_organization_plan = _accept_organization_plan
 
     _MemoryGroup(monkeypatch)
     store = _install_card_store(monkeypatch)
@@ -2791,7 +2860,7 @@ async def test_queued_plan_ensures_a_member_that_skipped_run_team(monkeypatch):
     monkeypatch.setattr(bootstrap, "_block_template_expert_creation", _block)
     monkeypatch.setattr(group_service, "upsert_group_organization_team", _upsert)
     monkeypatch.setattr(
-        group_service, "group_organization_teams", lambda _session_id: list(teams)
+        group_service, "group_organization_teams", lambda _session_id, _organization_id=None: list(teams)
     )
 
     await bootstrap._ensure_mentioned_member_instances(
@@ -4157,7 +4226,7 @@ async def test_organization_record_uses_a_short_name_and_reads_back(tmp_path):
 async def test_question_keeps_org_turn_until_answered(monkeypatch, attempted):
     from jiuwenswarm.agents.swarm import group_execution as policy
     from jiuwenswarm.server.runtime import group_questions
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+    _record_group_organization_plan = _accept_organization_plan
 
     group = _MemoryGroup(monkeypatch)
     store = _install_card_store(monkeypatch)
@@ -4190,7 +4259,7 @@ async def test_question_keeps_org_turn_until_answered(monkeypatch, attempted):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("members", [("business", "insight"), ("insight", "business")])
 async def test_failed_attempts_close_after_last_turn_without_stranded_bindings(monkeypatch, members):
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+    _record_group_organization_plan = _accept_organization_plan
 
     _MemoryGroup(monkeypatch)
     store = _install_card_store(monkeypatch)
@@ -4238,7 +4307,7 @@ async def test_cancel_during_initial_card_publish_cleans_only_unstarted_plan(mon
 
     async def record():
         nonlocal recorded
-        recorded = await team_helpers._record_group_organization_plan(
+        recorded = await _accept_organization_plan(
             SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "cancel"},
         )
 

@@ -40,6 +40,7 @@ from jiuwenswarm.runtime.symphony.skillpack_candidates import (
     annotate_member_types,
     candidate_members,
     candidate_request_id,
+    installed_candidate_structures,
     member_snapshot,
     trusted_session_user,
 )
@@ -1105,10 +1106,17 @@ class SwarmSymphonyService:
         scope_store = CandidateScopeStore(source.store.root)
         previews: list[dict[str, Any]] = []
         candidates = flow.list_candidates()
-        if automatic:
+        if automatic and candidates:
+            installed_structures = await asyncio.to_thread(
+                installed_candidate_structures, config.paths.skills_root,
+            )
+            installed_count = sum(tuple(sorted(item.structure)) in installed_structures for item in candidates)
+            if installed_count:
+                logger.info("SkillPack automatic discovery suppressed %s installed combinations", installed_count)
             candidates = tuple(
                 item for item in candidates
-                if not flow.store.is_candidate_acknowledged(item.recipe_id, item.version)
+                if tuple(sorted(item.structure)) not in installed_structures
+                and not flow.store.is_candidate_acknowledged(item.recipe_id, item.version)
                 and (item.recipe_id, item.version, candidate_request_id(
                     item.recipe_id, item.version, session_id, identity.key,
                 )) not in self._notified_candidates
@@ -1213,15 +1221,6 @@ class SwarmSymphonyService:
         source = self.runtime().flow_engine
         if source is None:
             return {"success": False, "reason": "flow_disabled"}
-        current_identity = CandidateEvidenceScope.resolve(
-            session_id, trusted_session_user(session_id), identity.scope,
-            list(identity.source_refs) if identity.source_refs is not None else None,
-            flow_root=source.store.root,
-        )
-        if identity.key != current_identity.key:
-            return {"success": False, "reason": "evidence_scope_changed_reconfirm"}
-        if not evolution_flow_enabled(load_symphony_config()):
-            return {"success": False, "reason": "skillpack_disabled"}
         recipe_id, recipe_version = preview["recipe_id"], preview["recipe_version"]
         flow = await self._skillpack_candidate_flow(source, load_symphony_config(), identity)
         # Review validates the current recipe version. Its grade can advance
@@ -1229,6 +1228,24 @@ class SwarmSymphonyService:
         candidate = flow.get_candidate(recipe_id)
         if candidate is None or candidate.version != recipe_version:
             return {"success": False, "reason": "candidate_not_available_in_session"}
+        if not force:
+            # Review awaited external work; a different session may have
+            # installed this combination meanwhile. Do not issue another card.
+            installed_structures = await asyncio.to_thread(
+                installed_candidate_structures, load_symphony_config().paths.skills_root,
+            )
+            if tuple(sorted(candidate.structure)) in installed_structures:
+                logger.info("SkillPack automatic offer suppressed after concurrent installation")
+                return {"success": True, "already_installed": True, "awaiting_user_confirmation": False}
+        # Check ownership after every await, including the inventory read,
+        # before persisting an approval or disclosing its preview to the UI.
+        current_identity = CandidateEvidenceScope.resolve(
+            session_id, trusted_session_user(session_id), identity.scope,
+            list(identity.source_refs) if identity.source_refs is not None else None,
+            flow_root=source.store.root,
+        )
+        if identity.key != current_identity.key:
+            return {"success": False, "reason": "evidence_scope_changed_reconfirm"}
         request_id = candidate_request_id(recipe_id, recipe_version, session_id, identity.key)
         if not force and (recipe_id, recipe_version, request_id) in self._notified_candidates:
             return {"success": True, "request_id": request_id, "awaiting_user_confirmation": True}

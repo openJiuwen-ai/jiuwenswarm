@@ -1365,7 +1365,14 @@ class AgentWebSocketServer:
         # Gateway user-business RPCs execute in the current AgentServer's
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
-        self._jiuwenmate_web = JiuwenMateWebAdapter(push=self.send_push)
+        self._jiuwenmate_web = JiuwenMateWebAdapter(
+            push=self.send_push,
+            inspect_feishu_group=self._inspect_feishu_group,
+            dingtalk_group_status=lambda ns, agent, app: (
+                self._dingtalk_group_poller.status(ns, agent, app) if self._dingtalk_group_poller is not None
+                else {'status': 'unavailable', 'group_count': 0}
+            ),
+        )
         self._adapter_registry = AdapterRegistry()
         for adapter in (
             VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
@@ -1831,6 +1838,10 @@ class AgentWebSocketServer:
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(30.0, retry_delay * 2)
                     continue
+                try:
+                    await self._jiuwenmate_web.start()
+                except Exception:
+                    logger.exception("[AgentWebSocketServer] JiuwenMate Web runtime startup failed")
                 try:
                     await self._ensure_persistent_group_fanout()
                 except Exception:
@@ -2908,6 +2919,17 @@ class AgentWebSocketServer:
             return False
         try:
             response = await adapter.handle(request)
+            if (request.req_method in {
+                ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS, ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL,
+                ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN,
+            } and response.ok and isinstance(response.payload, dict)):
+                auth = response.payload.get('dingtalk_auth') or response.payload.get('authorization')
+                if isinstance(auth, dict) and auth.get('status') == 'connected':
+                    try:
+                        # A first binding can be added after startup, before any bot callback exists.
+                        await self._ensure_persistent_group_fanout()
+                    except Exception as exc:
+                        logger.warning('DingTalk authorized group runtime startup failed (%s)', type(exc).__name__)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "[AgentWebSocketServer] Gateway adapter failed: request_id=%s method=%s",
@@ -3116,13 +3138,23 @@ class AgentWebSocketServer:
         disposition = InboundDisposition.REJECTED
         try:
             params = request.params if isinstance(request.params, dict) else {}
-            event = DingTalkInboundEvent.from_payload(params.get("event"))
+            raw_event = params.get("event")
+            lifecycle = isinstance(raw_event, dict) and raw_event.get("event_kind") == "group_lifecycle"
+            if lifecycle:
+                from jiuwenswarm.server.jiuwenmate.dingtalk_group_events import DingTalkGroupEvent
+
+                event = DingTalkGroupEvent.from_payload(raw_event)
+            else:
+                event = DingTalkInboundEvent.from_payload(raw_event)
             if not isinstance(event.expected_agent_id, str) or not event.expected_agent_id.strip():
                 disposition = InboundDisposition.REJECTED
             else:
                 fanout = await self._ensure_persistent_group_fanout()
                 if fanout is not None:
-                    disposition = await fanout.dingtalk_inbound.handle(event)
+                    if lifecycle:
+                        disposition = await fanout.dingtalk_inbound.handle_group_change(event)
+                    else:
+                        disposition = await fanout.dingtalk_inbound.handle(event)
         except Exception as exc:
             logger.warning(
                 "[AgentWebSocketServer] JM-21 inbound event rejected: error_type=%s",
@@ -5634,7 +5666,9 @@ class AgentWebSocketServer:
                         error_value
                         if error_value is not None
                         else "Runtime execution failed"
-                    )
+                    ),
+                    **({"code": event.payload["code"]}
+                       if isinstance(event.payload, dict) and isinstance(event.payload.get("code"), str) else {}),
                 },
                 agent_ref=event.agent_ref,
                 metadata=event.metadata,
@@ -5643,6 +5677,7 @@ class AgentWebSocketServer:
                 message,
                 response_id=event.request_id,
             )
+            wire["session_id"] = event.session_id
         elif streaming:
             payload = dict(event.payload) if event.payload is not None else None
             if not event.ok:

@@ -68,7 +68,7 @@ def test_frozen_backend_uses_external_resource_layout(tmp_path, monkeypatch, sys
     monkeypatch.setattr(cua_config.sys, "_MEIPASS", str(tmp_path), raising=False)
     monkeypatch.setattr(cua_config.platform, "mac_ver", lambda: ("14.0", (), ""))
     monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
-    assert not cua_config.is_cua_backend_available()
+    assert not cua_config.is_cua_repl_available()
     root = tmp_path / "computer_use/_resources/os_adapter"
     files = (["macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver"] if system == "darwin"
              else ["windows/.build/" + name for name in (
@@ -79,13 +79,32 @@ def test_frozen_backend_uses_external_resource_layout(tmp_path, monkeypatch, sys
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
         path.chmod(0o755)
-    assert cua_config.is_cua_backend_available()
+    assert cua_config.is_cua_repl_available()
+    monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: None if name == "computer_use_mcp" else object())
+    assert not cua_config.is_cua_repl_available()
+    monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
     path.unlink()
-    assert not cua_config.is_cua_backend_available()
+    assert not cua_config.is_cua_repl_available()
 
 
-def test_source_macos_hides_control_without_importing_the_external_sdk(monkeypatch):
+@pytest.mark.parametrize(("version", "installed", "available"), [
+    ("14.0", False, False), ("14.0", True, True), ("13.6", True, False),
+])
+def test_source_macos_reports_sdk_availability_without_building(monkeypatch, version, installed, available):
     monkeypatch.setattr(cua_config.sys, "platform", "darwin")
     monkeypatch.setattr(cua_config.sys, "frozen", False, raising=False)
-    monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: pytest.fail("unexpected import check"))
+    monkeypatch.setattr(cua_config.platform, "mac_ver", lambda: (version, (), ""))
+    monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object() if installed else None)
+    assert cua_config.is_cua_backend_available() is available
+
+
+def test_harmony_has_no_desktop_backend_even_with_sdk_and_legacy_dependencies(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PLATFORM", " Harmony ")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(cua_config.sys, "platform", "linux")
+    monkeypatch.setattr(cua_config.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
+
+    assert not cua_config.is_cua_repl_available()
+    assert not cua_config.is_legacy_cua_available()
     assert not cua_config.is_cua_backend_available()

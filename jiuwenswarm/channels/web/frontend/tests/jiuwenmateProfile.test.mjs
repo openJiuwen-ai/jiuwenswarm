@@ -3,18 +3,25 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import i18n from 'i18next';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { initReactI18next } from 'react-i18next';
 
-import { ColleagueProfilePage } from '../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js';
-import { ScheduleBoard } from '../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js';
-import { ColleagueDeleteDialog } from '../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js';
+// Initialize React DOM with a browser so textarea input events use the browser event path.
+const browser = new JSDOM('<!doctype html>', { url: 'http://localhost' });
+globalThis.window = browser.window;
+globalThis.document = browser.window.document;
+const { createRoot } = await import('react-dom/client');
+
+const { ColleagueProfilePage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js');
+const { ScheduleBoard } = await import('../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js');
+const { ColleagueDeleteDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js');
+const { ImAuthorizeDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ImAuthorizeDialog.js');
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
+const en = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
 const profileStyles = readFileSync(new URL('../src/features/jiuwenmate/jiuwenmate.css', import.meta.url), 'utf8');
-await i18n.use(initReactI18next).init({ lng: 'zh', resources: { zh: { translation: zh } }, interpolation: { escapeValue: false } });
+await i18n.use(initReactI18next).init({ lng: 'zh', resources: { zh: { translation: zh }, en: { translation: en } }, interpolation: { escapeValue: false } });
 
 const colleague = {
   id: 'agent-1',
@@ -79,6 +86,17 @@ async function mountProfile(extra) {
   globalThis.document = dom.window.document;
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const openedWindows = [];
+  dom.window.open = (url) => {
+    const popup = {
+      closed: false,
+      document: dom.window.document.implementation.createHTMLDocument(''),
+      location: { href: url },
+      close() { this.closed = true; },
+    };
+    openedWindows.push(popup);
+    return popup;
+  };
   const timers = new Map();
   let timerId = 0;
   dom.window.setInterval = (callback) => { timers.set(++timerId, callback); return timerId; };
@@ -104,6 +122,7 @@ async function mountProfile(extra) {
   const find = (id) => container.querySelector(`[data-testid="jiuwenmate-profile-${id}"]`);
   return {
     container,
+    openedWindows,
     find,
     async click(id) {
       assert.ok(find(id), `Missing profile ${id}`);
@@ -129,6 +148,71 @@ async function mountProfile(extra) {
     },
   };
 }
+
+test('management model save failures stay visible and a successful retry clears the error', async () => {
+  let fail = true;
+  const view = await mountProfile({
+    initialSection: 'model',
+    modelCatalog: { models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'OpenAI' },
+      { id: 'kimi#1', label: 'Kimi', provider: 'OpenAI' }], defaultModelId: '', defaultModelLabel: '' },
+    onSaveSettings: async () => { if (fail) throw new Error('Publication refused'); },
+  });
+  try {
+    const style = document.createElement('style');
+    style.textContent = profileStyles;
+    document.head.appendChild(style);
+    await act(async () => view.container.querySelector('input[value="kimi#1"]').click());
+    await act(async () => view.container.querySelector('.jiuwenmate-profile__save-button').click());
+    const error = view.find('settings-error');
+    assert.ok(error, 'A failed management save must show an error');
+    assert.equal(error.getAttribute('role'), 'alert');
+    assert.match(error.textContent, /Publication refused/);
+    assert.equal(window.getComputedStyle(error.parentElement).gridTemplateRows, 'auto minmax(0, 1fr)',
+      'The error must take its text height instead of the full content row');
+    assert.equal(view.container.querySelector('input[value="kimi#1"]').checked, true);
+    fail = false;
+    await act(async () => view.container.querySelector('.jiuwenmate-profile__save-button').click());
+    assert.equal(view.find('settings-error'), null);
+    assert.equal(window.getComputedStyle(view.find('detail').parentElement).gridTemplateRows, 'minmax(0, 1fr)');
+  } finally {
+    await view.close();
+  }
+});
+
+test('the persona save button stays mounted after saving and permits retry after failure', async () => {
+  let fail = false;
+  const saved = [];
+  const view = await mountProfile({ initialSection: 'persona', onSaveSettings: async (edit) => {
+    if (fail) throw new Error('Persona save failed');
+    saved.push(edit);
+  } });
+  const changePersona = async (value) => {
+    const input = view.container.querySelector('.jiuwenmate-profile__persona-editor textarea');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+  };
+  try {
+    const button = view.container.querySelector('.jiuwenmate-profile__save-button');
+    assert.ok(button, 'The persona save action must remain visible even without changes');
+    assert.equal(button.disabled, true);
+    await changePersona('更新后的人设');
+    assert.equal(button.disabled, false);
+    await act(async () => button.click());
+    assert.deepEqual(saved, [{ persona: '更新后的人设' }]);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), button);
+    assert.equal(button.disabled, true);
+    fail = true;
+    await changePersona('再次修改的人设');
+    await act(async () => button.click());
+    assert.equal(button.disabled, false);
+    assert.match(view.find('settings-error').textContent, /Persona save failed/);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__persona-editor textarea').value, '再次修改的人设');
+  } finally {
+    await view.close();
+  }
+});
 
 test('the overview keeps DingTalk setup until DingTalk is also configured', () => {
   const authorized = {
@@ -157,11 +241,24 @@ test('the overview keeps DingTalk setup until DingTalk is also configured', () =
   assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-quick-im"/);
 });
 
+test('a permission save without error details shows a fallback, rolls back and clears on section change', async () => {
+  const view = await mountProfile({ onSaveSettings: async () => { throw null; } });
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-profile-permission-option"][data-variant="automatic"]').click());
+    assert.match(view.find('settings-error').textContent, /配置保存或发布失败/);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-profile-permission-option"][data-variant="default"]').getAttribute('aria-pressed'), 'true');
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-profile-section"][data-variant="model"]').click());
+    assert.equal(view.find('settings-error'), null);
+  } finally {
+    await view.close();
+  }
+});
+
 test('the employee mail page gives a short connection note', () => {
   const markup = renderProfile({ initialSection: 'mail' });
   assert.match(markup, /data-variant="mail"/);
-  assert.match(markup, /腾讯 Agent Mail/);
-  assert.match(markup, /为该员工单独连接腾讯邮箱，授权后即可在新对话中使用。/);
+  assert.match(markup, /Agent Mail/);
+  assert.match(markup, /为该员工单独连接邮箱，授权后即可在新对话中使用。/);
   assert.doesNotMatch(markup, /OAuth/);
   assert.doesNotMatch(markup, /无需安装 Docker/);
   assert.doesNotMatch(markup, /运行镜像/);
@@ -185,6 +282,184 @@ function deferred() {
 const dingtalkConnection = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
 const dingtalkColleague = { ...colleague, connections: [...colleague.connections, dingtalkConnection] };
 const dingtalkAuthorizing = { status: 'authorizing', cli_version: '1', operation_id: 'ding-operation' };
+
+test('authorizing a newly bound DingTalk account opens the browser before waiting for the RPC', async () => {
+  const pending = deferred();
+  const authUrl = 'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=NEW-CODE';
+  const view = await mountProfile({
+    initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: () => pending.promise,
+  });
+  try {
+    await view.rerender({ colleague: dingtalkColleague });
+    const button = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]');
+    await act(async () => button.click());
+    assert.equal(view.openedWindows.length, 1);
+    assert.equal(view.openedWindows[0].location.href, 'about:blank');
+    assert.match(view.openedWindows[0].document.body.textContent, /正在发起授权/);
+    assert.equal(button.disabled, true);
+    await act(async () => pending.resolve({ ...dingtalkAuthorizing, auth_url: authUrl, user_code: 'NEW-CODE' }));
+    assert.equal(view.openedWindows[0].location.href, authUrl);
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-cancel"]'));
+  } finally { await view.close(); }
+});
+
+test('DingTalk account authorization refreshes and separately displays group monitoring', async () => {
+  let monitoring = { status: 'discovering', group_count: 0 };
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'connected', cli_version: '1', account: 'Test user', organization: 'Test org', group_monitor: monitoring }),
+  });
+  try {
+    const status = () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-group-monitor-status"]');
+    assert.match(status().textContent, /正在自动发现/);
+    assert.match(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-status"]').textContent, /已绑定/);
+    monitoring = { status: 'listening', group_count: 2 };
+    await view.tickIntervals();
+    assert.match(status().textContent, /2 个群/);
+    monitoring = { status: 'no_groups', group_count: 0 };
+    await view.tickIntervals();
+    assert.match(status().textContent, /未发现/);
+    monitoring = { status: 'error', group_count: 2 };
+    await view.tickIntervals();
+    assert.match(status().textContent, /重试/);
+    assert.match(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-status"]').textContent, /已绑定/);
+  } finally { await view.close(); }
+});
+
+test('DingTalk authorization closes its waiting page after an RPC failure and releases the button', async () => {
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: async () => { throw new Error('CLI preparation failed'); },
+  });
+  try {
+    const button = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]');
+    await act(async () => button.click());
+    assert.equal(view.openedWindows.length, 1);
+    assert.equal(view.openedWindows[0].closed, true);
+    assert.equal(button.disabled, false);
+    assert.match(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-error"]').textContent, /CLI preparation failed/);
+  } finally { await view.close(); }
+});
+
+for (const popupFailure of ['blocked', 'throws']) test(`DingTalk authorization offers a usable recovery link when the popup ${popupFailure}`, async () => {
+  let started = 0;
+  const authUrl = 'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=NEW-CODE';
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: async () => { started += 1; return { ...dingtalkAuthorizing, auth_url: authUrl }; },
+  });
+  try {
+    window.open = () => { if (popupFailure === 'throws') throw new Error('Browser bridge unavailable'); return null; };
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').click());
+    assert.equal(started, 1);
+    const link = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]');
+    assert.equal(link.href, authUrl);
+    assert.equal(link.closest('details').open, true);
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-cancel"]'));
+  } finally { await view.close(); }
+});
+
+for (const terminal of ['cancelled', 'connected', 'error']) test(`DingTalk closes its own authorization window when ${terminal}`, async () => {
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: async () => ({ ...dingtalkAuthorizing, auth_url: 'https://login.dingtalk.com/test' }),
+    onCancelDingTalkAuth: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onPollDingTalkAuth: async () => ({ status: terminal, cli_version: '1', ...(terminal === 'error' ? { error_code: 'authorization_failed' } : {}) }),
+  });
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').click());
+    if (terminal === 'cancelled') {
+      await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-cancel"]').click());
+    } else {
+      await view.tickIntervals();
+    }
+    assert.equal(view.openedWindows[0].closed, true);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]'), null);
+  } finally { await view.close(); }
+});
+
+for (const transition of ['removed', 'rebound', 'unmounted']) test(`a pending DingTalk begin cannot redirect its window after the connection is ${transition}`, async () => {
+  const pending = deferred();
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: () => pending.promise,
+  });
+  let closed = false;
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').click());
+    const popup = view.openedWindows[0];
+    if (transition === 'unmounted') {
+      await view.close(); closed = true;
+    } else {
+      await view.rerender({ colleague: transition === 'removed' ? colleague : {
+        ...dingtalkColleague, connections: [...colleague.connections, { ...dingtalkConnection, agentId: 'replacement-agent' }],
+      } });
+    }
+    await act(async () => pending.resolve({ ...dingtalkAuthorizing, auth_url: 'https://login.dingtalk.com/stale' }));
+    assert.equal(popup.closed, true);
+    assert.equal(popup.location.href, 'about:blank');
+  } finally { if (!closed) await view.close(); }
+});
+
+test('closing the waiting DingTalk popup leaves an expanded recovery link and does not start a second login', async () => {
+  const pending = deferred();
+  let starts = 0;
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: () => { starts += 1; return pending.promise; },
+  });
+  try {
+    const button = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]');
+    await act(async () => { button.click(); button.click(); });
+    view.openedWindows[0].close();
+    await act(async () => pending.resolve({ ...dingtalkAuthorizing, auth_url: 'https://login.dingtalk.com/recover' }));
+    assert.equal(starts, 1);
+    assert.equal(view.openedWindows.length, 1);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]').closest('details').open, true);
+  } finally { await view.close(); }
+});
+
+test('a connected DingTalk account can fill missing display names on focus without authorizing again', async () => {
+  let checks = 0;
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ++checks === 1
+      ? { status: 'connected', cli_version: '1' }
+      : { status: 'connected', cli_version: '1', account: 'Resolved account', organization: 'Resolved organization' },
+  });
+  try {
+    await act(async () => window.dispatchEvent(new window.Event('focus')));
+    assert.match(view.container.textContent, /Resolved account/);
+    assert.match(view.container.textContent, /Resolved organization/);
+    assert.equal(view.openedWindows.length, 0);
+  } finally { await view.close(); }
+});
+
+test('a failed DingTalk account status check stops showing loading and can recover through authorization', async () => {
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => { throw new Error('Status lookup failed'); },
+    onBeginDingTalkAuth: async () => ({ status: 'not_connected', cli_version: '1' }),
+  });
+  try {
+    const card = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth"]');
+    assert.match(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-status"]').textContent, /检查钉钉授权失败/);
+    assert.doesNotMatch(card.textContent, /正在检查授权状态/);
+    assert.match(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-error"]').textContent, /Status lookup failed/);
+    const button = card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]');
+    assert.equal(button.disabled, false);
+    await act(async () => button.click());
+    assert.match(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-status"]').textContent, /尚未绑定钉钉用户账号/);
+    assert.equal(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-error"]'), null);
+  } finally { await view.close(); }
+});
 
 test('DingTalk account authorization explains its scope and shows loading then the device link', async () => {
   const pending = deferred();
@@ -224,7 +499,7 @@ test('returning from DingTalk authorization immediately shows the account and or
   });
   try {
     const link = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]');
-    assert.equal(link.closest('details')?.open, false, 'The device link is a collapsed fallback, not a second step');
+    assert.equal(link.closest('details')?.open, true, 'A restored authorization offers recovery without starting a new operation');
     await act(async () => { window.dispatchEvent(new window.Event('focus')); });
     const card = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth"]');
     assert.match(card.textContent, /Test user/);
@@ -308,6 +583,26 @@ test('DingTalk begin remains authorizing when an older initial status completes'
   } finally {
     await view.close();
   }
+});
+
+test('a transient DingTalk status failure preserves the active authorization and keeps polling', async () => {
+  let checks = 0;
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: async () => ({ ...dingtalkAuthorizing, auth_url: 'https://login.dingtalk.com/pending' }),
+    onPollDingTalkAuth: async () => ++checks === 1 ? { status: 'error', cli_version: '1' }
+      : { status: 'connected', cli_version: '1', account: 'Verified account', organization: 'Verified organization' },
+  });
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').click());
+    await view.tickIntervals();
+    assert.equal(view.openedWindows[0].closed, false);
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-cancel"]'));
+    await view.tickIntervals();
+    assert.match(view.container.textContent, /Verified account/);
+    assert.equal(view.openedWindows[0].closed, true);
+  } finally { await view.close(); }
 });
 
 test('DingTalk terminal authorization failure removes the consumed code and explains organization access', async () => {
@@ -756,7 +1051,7 @@ test('closing the pending Agent Mail tab before the URL arrives never opens the 
       container.querySelector('[data-testid="jiuwenmate-profile-mail-start"]').click();
       await Promise.resolve();
     });
-    assert.match(popup.document.body.textContent, /正在准备腾讯邮箱授权/);
+    assert.match(popup.document.body.textContent, /正在准备邮箱授权/);
     popup.closed = true;
 
     await act(async () => {
@@ -821,6 +1116,16 @@ test('skills can be changed on the skills page without the pencil', () => {
   assert.doesNotMatch(markup, /AI 员工名称/);
 });
 
+test('unconfigured and configured employees show the same save controls', () => {
+  const unconfigured = { ...colleague, currentVersion: null,
+    capabilities: { ...colleague.capabilities, model: '' } };
+  const resources = renderProfile({ colleague: unconfigured, initialSection: 'skills' });
+  assert.match(resources, /data-testid="jiuwenmate-profile-resource-save"[^>]*>保存并发布</);
+  const overview = renderProfile({ colleague: unconfigured, initialSection: 'overview', initialEditing: true });
+  assert.match(overview, />保存并发布</);
+  assert.doesNotMatch(resources + overview, /保存草稿/);
+});
+
 test('configuration pages use the design-specific persona, model, and resource layouts', () => {
   const persona = renderProfile({ initialSection: 'persona' });
   assert.match(persona, /class="jiuwenmate-profile__persona-editor"/);
@@ -857,6 +1162,33 @@ test('configuration pages use the design-specific persona, model, and resource l
     colleague: { ...colleague, capabilities: { ...colleague.capabilities, knowledge: ['topics/description.md'] } },
   });
   assert.match(knowledgePopulated, /class="jiuwenmate-profile__knowledge-list"/);
+});
+
+test('an empty employee model page explains setup and opens model settings', async () => {
+  let opens = 0;
+  const view = await mountProfile({
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, model: '' } },
+    initialSection: 'model',
+    modelCatalog: { models: [], defaultModelId: '', defaultModelLabel: '' },
+    onOpenModelSettings: () => { opens += 1; },
+  });
+  try {
+    assert.ok(view.find('model-empty'));
+    assert.match(view.find('model-empty').textContent, /尚未配置模型/);
+    assert.match(view.find('model-empty').textContent, /设置.*模型/);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), null);
+    await view.click('model-add');
+    assert.equal(opens, 1);
+    await view.rerender({ modelCatalog: {
+      models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'DeepSeek' }],
+      defaultModelId: 'deepseek#0', defaultModelLabel: 'DeepSeek',
+    } });
+    assert.equal(view.find('model-empty'), null);
+    assert.ok(view.container.querySelector('input[value="deepseek#0"]'));
+    assert.ok(view.container.querySelector('.jiuwenmate-profile__save-button'));
+  } finally {
+    await view.close();
+  }
 });
 
 test('schedules can be created on the schedules page', () => {
@@ -1024,7 +1356,7 @@ test('an empty knowledge catalog tells the user to publish a page first', () => 
   });
   assert.match(markup, /添加知识/);
   assert.match(markup, /没有可装载的已发布知识页面/);
-  assert.match(markup, /左侧「知识」/);
+  assert.match(markup, /左侧「资产」/);
 });
 
 test('channel reply mode renders a compact selected state and disables changes while saving', () => {
@@ -1094,6 +1426,99 @@ test('deleting a colleague offers to keep its data or delete everything, keeping
     else globalThis.document = previous.document;
     if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
     else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
+});
+
+async function mountImAuthorize(extra) {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(React.createElement(ImAuthorizeDialog, { onSkip: noop, created: false, ...extra }));
+  });
+  const find = (id) => container.querySelector(`[data-testid="jiuwenmate-im-${id}"]`);
+  return {
+    find,
+    async fill(id, value) {
+      await act(async () => {
+        const input = find(id);
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value);
+        input.dispatchEvent(new window.Event('input', { bubbles: true }));
+      });
+    },
+    async confirm() { await act(async () => find('confirm').click()); },
+    async close() {
+      await act(async () => root.unmount());
+      dom.window.close();
+      globalThis.window = previous.window;
+      globalThis.document = previous.document;
+      if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+      else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+    },
+  };
+}
+
+for (const [language, platform, message] of [
+  ['zh', 'feishu', '该渠道已绑定其他员工，请先解除原绑定。'],
+  ['en', 'dingtalk', 'This channel is already bound to another employee. Remove the existing binding first.'],
+]) {
+  test(`IM binding conflicts show a ${language} message and preserve ${platform} credentials for retry`, async () => {
+    await i18n.changeLanguage(language);
+    const submissions = [];
+    const view = await mountImAuthorize({
+      initialPlatform: platform,
+      onConfirm: async (credentials) => {
+        submissions.push(credentials);
+        if (submissions.length === 1) {
+          throw Object.assign(new Error('Internal binding conflict'), { code: 'CHANNEL_ALREADY_BOUND' });
+        }
+      },
+    });
+    try {
+      await view.fill('app-id', ' shared-id ');
+      await view.fill('secret', 'retry-secret');
+      if (platform === 'dingtalk') await view.fill('robot-code', ' robot-code ');
+      await view.confirm();
+      assert.equal(view.find('error').getAttribute('role'), 'alert');
+      assert.equal(view.find('error').textContent, message);
+      assert.equal(view.find('app-id').value, ' shared-id ');
+      assert.equal(view.find('secret').value, 'retry-secret');
+      assert.equal(view.find('platform-select').value, platform);
+      if (platform === 'dingtalk') assert.equal(view.find('robot-code').value, ' robot-code ');
+      assert.equal(view.find('confirm').disabled, false);
+      await view.confirm();
+      assert.equal(view.find('error'), null);
+      const credentials = { platform, appId: 'shared-id', appSecret: 'retry-secret', robotCode: platform === 'dingtalk' ? 'robot-code' : '' };
+      assert.deepEqual(submissions, [credentials, credentials]);
+    } finally {
+      await view.close();
+      await i18n.changeLanguage('zh');
+    }
+  });
+}
+
+test('IM authorization keeps the original handling for unrelated errors', async () => {
+  for (const [cause, message] of [
+    [Object.assign(new Error('Credentials rejected'), { code: 'INVALID_CREDENTIALS' }), 'Credentials rejected'],
+    ['Service unavailable', 'Service unavailable'],
+    [null, 'null'],
+  ]) {
+    const view = await mountImAuthorize({ onConfirm: async () => { throw cause; } });
+    try {
+      await view.fill('app-id', 'cli-app');
+      await view.fill('secret', 'secret');
+      await view.confirm();
+      assert.equal(view.find('error').textContent, message);
+      assert.equal(view.find('confirm').disabled, false);
+    } finally { await view.close(); }
   }
 });
 
@@ -1191,4 +1616,60 @@ test('WeLink mail reports load and disconnect errors without hiding the connecte
     assert.match(connected.find('welink-mail-account').textContent, /employee/);
     assert.equal(connected.find('welink-mail-disconnect').disabled, false);
   } finally { await connected.close(); }
+});
+
+
+test('clicking the selected reply mode does not save it again', async () => {
+  const edits = [];
+  const view = await mountProfile({ initialSection: 'channels', onSaveSettings: async (edit) => edits.push(edit) });
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-profile-group-reply-option"][data-variant="adaptive"]').click());
+    assert.deepEqual(edits, []);
+  } finally { await view.close(); }
+});
+
+test('reply mode errors roll back the selection and automatically clear', async () => {
+  const view = await mountProfile({ initialSection: 'channels', onSaveSettings: async () => { throw new Error('Temporary connection failure'); } });
+  const timeout = window.setTimeout;
+  let dismiss;
+  window.setTimeout = (callback, delay, ...args) => {
+    if (delay === 5000) { dismiss = callback; return 5000; }
+    return timeout(callback, delay, ...args);
+  };
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-profile-group-reply-option"][data-variant="passive"]').click());
+    assert.match(view.find('settings-error').textContent, /Temporary connection failure/);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-profile-group-reply-option"][data-variant="adaptive"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(typeof dismiss, 'function');
+    await act(async () => dismiss());
+    assert.equal(view.find('settings-error'), null);
+  } finally { window.setTimeout = timeout; await view.close(); }
+});
+
+
+test('removing an employee model drops the stale option and requires a valid replacement', async () => {
+  const available = { id: 'kimi#1', label: 'Kimi', provider: 'OpenAI' };
+  const view = await mountProfile({ initialSection: 'model', modelCatalog: {
+    models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'OpenAI' }, available],
+    defaultModelId: 'deepseek#0', defaultModelLabel: 'DeepSeek',
+  } });
+  try {
+    assert.ok(view.container.querySelector('input[value="deepseek#0"]:checked'));
+    await view.rerender({ modelCatalog: { models: [available], defaultModelId: 'kimi#1', defaultModelLabel: 'Kimi' } });
+    assert.ok(!view.container.querySelector('input[value="deepseek#0"]'));
+    assert.doesNotMatch(view.container.textContent, /deepseek#0/);
+    assert.ok(view.find('model-unavailable'));
+    assert.equal(view.container.querySelector('input:checked'), null);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button').disabled, true);
+    const notice = view.find('model-unavailable');
+    await act(async () => view.container.querySelector('input[value="kimi#1"]').click());
+    assert.ok(view.find('model-unavailable') === notice, 'Keep the notice and its layout space until the selection is saved');
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button').disabled, false);
+    await view.rerender({ colleague: { ...colleague, capabilities: { ...colleague.capabilities, model: 'kimi#1' } } });
+    assert.ok(!view.find('model-unavailable'));
+    await view.rerender({ modelCatalog: { models: [], defaultModelId: '', defaultModelLabel: '' } });
+    assert.ok(view.find('model-empty'));
+    assert.equal(view.container.querySelector('input[name="jiuwenmate-profile-model"]'), null);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), null);
+  } finally { await view.close(); }
 });

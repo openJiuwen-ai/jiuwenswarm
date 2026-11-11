@@ -5544,7 +5544,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   disabled={
                     isProcessing || composerDisabled || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)
                   }
-                  allowModelGroups={!isDesignLanding}
+                  includeModelGroups={!isDesignLanding}
                 />}
 
                 {taskAsrEnabled && <button

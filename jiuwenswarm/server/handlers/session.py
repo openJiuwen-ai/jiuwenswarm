@@ -110,6 +110,25 @@ async def _send_chunk(ctx: RequestContext, chunk: AgentResponseChunk, sequence: 
 
 async def handle_history_get(ctx: RequestContext) -> None:
     """读取历史。流式请求一片一片回，普通请求整页回。"""
+    params = ctx.request.params if isinstance(ctx.request.params, dict) else {}
+    if "artifact_sha256" in params:
+        from jiuwenswarm.server.runtime.session.history_artifacts import read_artifact_chunk
+
+        session_id = params.get("session_id") or ctx.request.session_id
+        try:
+            if ctx.request.is_stream or not is_valid_session_id(session_id):
+                raise ValueError("Artifact retrieval requires a valid session and unary request")
+            payload = await run_history_io(
+                read_artifact_chunk, session_id, params["artifact_sha256"],
+                offset=params.get("offset", 0), max_bytes=params.get("max_bytes", 65536),
+            )
+            response = AgentResponse(request_id=ctx.request.request_id, channel_id=ctx.request.channel_id,
+                                     ok=True, payload=payload)
+        except (OSError, ValueError, TypeError) as exc:
+            response = AgentResponse(request_id=ctx.request.request_id, channel_id=ctx.request.channel_id,
+                                     ok=False, payload={"code": "HISTORY_ARTIFACT_FAILED", "error": str(exc)})
+        await ctx.sink.send_response(response)
+        return
     if ctx.request.is_stream:
         await handle_history_get_stream(ctx)
     else:

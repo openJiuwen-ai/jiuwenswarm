@@ -1,6 +1,6 @@
 import { resolveAgentGroupSelectionId } from '../agentManagement/port';
 import type { AgentCatalogItem, AgentGroupCatalogItem } from '../agentManagement/types';
-import type { GroupExecution, GroupMember, GroupMessage } from './client';
+import type { GroupRoute, GroupExecution, GroupMember, GroupMessage } from './client';
 
 // Keep pending-reply eligibility across workspace remounts, scoped to this page lifetime.
 const sessionSentIdsByGroup = new Map<string, Set<string>>();
@@ -117,13 +117,25 @@ export function splitMentionParts(content: string, members: GroupMember[]): Grou
 /** @成员占位气泡的执行阶段（由成员当前执行快照推导，组件层再转 i18n 文案）。 */
 export type MentionExecutionPhase =
   | { key: 'dispatching' }
+  | { key: 'organizationReceived' | 'organizationSummarizing' | 'organizationPending' | 'organizationClarification' | 'organizationFailed' }
   | { key: 'planning' }
   | { key: 'generating' }
   | { key: 'executing'; completed: number | null; total: number | null }
   | { key: 'reviewing' }
   | { key: 'processing' };
 
-export function mentionExecutionPhase(execution: GroupExecution | undefined): MentionExecutionPhase {
+export function mentionExecutionPhase(execution: GroupExecution | undefined, organization = false, route?: GroupRoute): MentionExecutionPhase {
+  if (route?.status === 'failed') return { key: 'organizationFailed' };
+  if (route?.status === 'clarification') return { key: 'organizationClarification' };
+  if (route && ['pending', 'chat'].includes(route.status)) return { key: 'organizationPending' };
+  if (organization) {
+    if (!execution) return { key: route?.status === 'task' ? 'organizationReceived' : 'organizationPending' };
+    if (execution.organization_stage === 'summarizing') return { key: 'organizationSummarizing' };
+    const counts = taskCounts(execution.tasks ?? {});
+    const progress = execution.progress ?? counts;
+    if (progress.total) return { key: 'executing', completed: progress.completed, total: progress.total };
+    return { key: 'organizationReceived' };
+  }
   if (!execution) return { key: 'dispatching' };
   const status = execution.status;
   if (status === 'planning') return { key: 'planning' };
@@ -145,6 +157,8 @@ export const FINISHED_EXECUTIONS = new Set(['completed', 'failed', 'cancelled', 
 export interface PendingMentionReply {
   memberName: string;
   execution: GroupExecution | undefined;
+  organization?: boolean;
+  route?: GroupRoute;
 }
 
 /**
@@ -160,6 +174,7 @@ export function pendingMentionReplies(
   executions: GroupExecution[],
   members: GroupMember[],
   sentIds: Set<string>,
+  routes: GroupRoute[] = [],
 ): Map<string, PendingMentionReply[]> {
   const asks = messages.filter((message) => message.sender === 'user' && !message.pending).map((message) => ({
     message,
@@ -174,7 +189,26 @@ export function pendingMentionReplies(
   const pending = new Map<string, PendingMentionReply[]>();
   for (const { message, mentioned } of asks) {
     const sentHere = sentIds.has(message.client_message_id);
-    const waiting = mentioned.flatMap((memberName) => {
+    // Bind organization progress to its request, not to a member's latest run.
+    const organization = executions.find((item) => item.execution_kind === 'organization'
+      && Boolean(message.client_message_id) && item.organization_plan_id === message.client_message_id);
+    const names = [...new Set(mentioned)];
+    const organizationMentions = names.length >= 2
+      && names.every((name) => members.find((member) => member.member_name === name)?.kind === 'agent_group');
+    const route = routes.find((item) => item.plan_id === message.client_message_id);
+    if (organization || organizationMentions || route) {
+      if (route?.status === 'completed') continue;
+      if (organization && FINISHED_EXECUTIONS.has(organization.status)) continue;
+      if (!organization && !sentHere && !route) continue;
+      const memberName = organization?.owner_member || route?.owner_member || names[0];
+      if (!memberName) continue;
+      const hasResult = organization && messages.some((item) => item.sender === memberName
+        && (item.execution_id === organization.execution_id
+          || (Boolean(organization.message_id) && item.message_id === organization.message_id)));
+      if (!hasResult) pending.set(message.message_id, [{ memberName, execution: organization, organization: true, route }]);
+      continue;
+    }
+    const waiting = mentioned.flatMap<PendingMentionReply>((memberName) => {
       // executions 已按 created_at 升序（mergeExecutions），pop 取该成员消息之后最新一次执行。
       const execution = executions.filter((item) =>
         (item.member_name === memberName || item.owner_member === memberName
@@ -279,14 +313,23 @@ export function formatFileSize(bytes: number): string {
 }
 
 /** Apply a confirmed file rename or delete to attachments already loaded on the client. */
+export function renameAttachment(file: Record<string, unknown>, name: string, path: string): Record<string, unknown> {
+  const renamed: Record<string, unknown> = { ...file, name, path };
+  if (path !== file.path) {
+    for (const key of ['url', 'download_url', 'download_token']) delete renamed[key];
+    if ('file_path' in renamed) renamed.file_path = path;
+  }
+  return renamed;
+}
+
 export function updateAttachments<T extends { attachments?: Record<string, unknown>[] }>(
-  records: T[], path: string, name: string | null,
+  records: T[], path: string, name: string | null, newPath: string = path,
 ): T[] {
   return records.map((record) => {
     if (!record.attachments?.some((file) => file.path === path)) return record;
     const attachments = name === null
       ? record.attachments.filter((file) => file.path !== path)
-      : record.attachments.map((file) => file.path === path ? { ...file, name } : file);
+      : record.attachments.map((file) => file.path === path ? renameAttachment(file, name, newPath) : file);
     return { ...record, attachments };
   });
 }

@@ -20,16 +20,21 @@ from jiuwenswarm.agents.harness.common.tools.cua_runtime import ReplRuntime
 
 LOGGER = logging.getLogger(__name__)
 PROBE = """
+import asyncio
 import json
 from computer_use.native.connection import Connection
 from computer_use.paths import native_driver
-connection = Connection(lambda *args: None)
-try:
-    hello = await connection.connect()
-    print(json.dumps({'platform': hello['platform'], 'driver': native_driver()['command']}))
-finally:
-    connection.close()
-    await connection.wait_closed()
+
+async def probe_driver():
+    connection = Connection(lambda *args: None)
+    try:
+        hello = await connection.connect()
+        print(json.dumps({'platform': hello['platform'], 'driver': native_driver()['command']}))
+    finally:
+        connection.close()
+        await connection.wait_closed()
+
+asyncio.run(probe_driver())
 packaged_value = 41
 """
 
@@ -41,7 +46,7 @@ async def verify_computer_use_bundle() -> None:
     if sys.version_info < (3, 11):
         raise RuntimeError("The installed cua_repl requires a bundled Python 3.11+ runtime")
     spec = build_cua_agent_config(None, card=build_cua_agent_card())
-    if not any(isinstance(rail, CuaExtensionRail) for rail in spec.rails or []):
+    if spec is None or not any(isinstance(rail, CuaExtensionRail) for rail in spec.rails or []):
         raise RuntimeError("The desktop installer did not enable its bundled CUA extension")
     executable = Path(native_driver()["command"])
     if not executable.is_file():

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from multiprocessing.connection import Pipe
 from pathlib import Path
@@ -186,9 +187,14 @@ def test_degraded_without_execution_readiness_does_not_clear_failure():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["pipe", "stream"])
-async def test_exhausted_receive_failure_closes_transport_and_cancels_watchers(monkeypatch, transport):
+@pytest.mark.parametrize("crash_circuit_open", [False, True])
+async def test_exhausted_receive_failure_closes_transport_and_cancels_watchers(
+    monkeypatch, transport, crash_circuit_open,
+):
     readiness = Readiness()
     supervisor = RuntimeSupervisor(readiness, max_restarts=0)
+    if crash_circuit_open:
+        supervisor._crash_retry_at = time.monotonic() + 60
     waiting = asyncio.create_task(asyncio.Event().wait())
     await asyncio.sleep(0)
     pending = asyncio.get_running_loop().create_future()
@@ -208,6 +214,7 @@ async def test_exhausted_receive_failure_closes_transport_and_cancels_watchers(m
             await asyncio.wait_for(supervisor._supervise(), 2)
             assert readiness.state is ReadinessState.FAILED
             assert pending.done() and not pending.result()["ok"]
+            assert pending.result()["code"] == ("WORKER_UNSTABLE" if crash_circuit_open else "WORKER_CLOSED")
             assert receiver._closed
             assert waiting.cancelled() and supervisor._side_tasks == []
             with pytest.raises(ConnectionError):
@@ -216,6 +223,22 @@ async def test_exhausted_receive_failure_closes_transport_and_cancels_watchers(m
             waiting.cancel()
             await asyncio.gather(waiting, return_exceptions=True)
             await supervisor.stop()
+
+
+@pytest.mark.asyncio
+async def test_degraded_readiness_keeps_the_confirmed_process_crash_budget():
+    supervisor = RuntimeSupervisor(Readiness())
+    try:
+        for index in range(3):
+            supervisor._apply_readiness({"state": "DEGRADED", "agent_ready": True})
+            assert supervisor._restart_count == 0
+            supervisor._record_post_ready_exit("confirmed process exit")
+            assert supervisor._fatal is (index == 2)
+        assert len(supervisor._post_ready_crashes) == 3
+        assert supervisor._crash_retry_at > time.monotonic()
+        assert supervisor._readiness.state is ReadinessState.FAILED
+    finally:
+        await supervisor.stop()
 
 
 @pytest.mark.asyncio

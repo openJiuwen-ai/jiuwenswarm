@@ -7,12 +7,14 @@ import hashlib
 import html
 import io
 import json
+import logging
 import os
 import re
 import signal
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import threading
 import uuid
@@ -29,13 +31,19 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     dingtalk_apps,
 )
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope, valid_document_search
+from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import (
+    DingTalkCliScope,
+    valid_document_search,
+    valid_group_conversation_id,
+)
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 
+logger = logging.getLogger(__name__)
 _CLI_VERSION = "1.0.65"
 _CLI_PACKAGE = f"dingtalk-workspace-cli@{_CLI_VERSION}"
 _MAX_OUTPUT_BYTES = 240 * 1024
 _CLI_REQUEST_TIMEOUT_SECONDS = 30
+_DINGTALK_CLI_PREPARE_TIMEOUT_SECONDS = 75
 _MAX_GROUP_FILE_SIZE = 100 * 1024 * 1024
 _NPM_CACHE_LOCK_TIMEOUT_SECONDS = 5
 _GROUP_MEMBER_PAGE_SIZE = 200
@@ -201,6 +209,7 @@ class LocalDingTalkCliRuntime:
         self,
         *,
         root: Path,
+        cache_root: Path | None = None,
         workspace_root: Path | None = None,
         config_loader: Callable[[], Mapping[str, Any]] | None = None,
         dws_path: Path | None = None,
@@ -209,6 +218,7 @@ class LocalDingTalkCliRuntime:
         signed_upload: Callable[[str, Mapping[str, str], bytes], Awaitable[None]] | None = None,
     ) -> None:
         self._root = Path(root).resolve()
+        self._cache_root = Path(cache_root).resolve() if cache_root is not None else self._root
         if workspace_root is None:
             from jiuwenswarm.server.jiuwenmate.service import default_data_dir
 
@@ -826,11 +836,12 @@ class LocalDingTalkCliRuntime:
         calendar_write = argv[:3] == ["calendar", "event", "create"] or calendar_update
         roster_read = argv[:3] == ["chat", "group", "members"]
         bots_read = argv[:3] == ["chat", "group", "bots"]
+        groups_read = argv[:3] == ["chat", "group", "list-all"]
         history_read = argv[:3] == ["chat", "message", "list"]
         document = tuple(argv[:2]) in {("doc", "create"), ("drive", "info")}
-        if not (calendar_write or calendar_read or roster_read or bots_read or history_read or document):
+        if not (calendar_write or calendar_read or roster_read or bots_read or groups_read or history_read or document):
             raise ValueError("unsupported employee OAuth command")
-        if history_read or bots_read:
+        if history_read or bots_read or groups_read:
             code = "DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE"
             message = "当前员工的钉钉授权账号无法读取群消息；读取进度未前移"
         elif roster_read:
@@ -855,7 +866,7 @@ class LocalDingTalkCliRuntime:
             command.extend(["--profile", profile])
         try:
             result = await asyncio.to_thread(
-                self._run_cli, command, env=self._oauth_environment(scope), cwd=self._oauth_root(scope),
+                self._locked_oauth_operation, scope, self._run_oauth_cli, command,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise PersistentAgentError(message, code=code) from exc
@@ -871,8 +882,55 @@ class LocalDingTalkCliRuntime:
                 and not payload.get('failedCount') and not payload.get('decryptFailedCount')
             )
         if result.returncode != 0 or not valid_response:
+            if history_read or bots_read or groups_read:
+                reason = payload.get('errorCode') if isinstance(payload, dict) else 'invalid_json'
+                if not isinstance(reason, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', reason):
+                    reason = 'unconfirmed_response'
+                logger.warning('DingTalk group read CLI failed: operation=%s exit=%s reason=%s',
+                               ' '.join(argv[:3]), result.returncode, reason)
             raise PersistentAgentError(message, code=code)
         return payload
+
+    async def inspect_group_membership(self, scope: DingTalkCliScope, *, conversation_id: str) -> dict[str, str]:
+        """Read Bot codes using this employee's private OAuth profile, never group messages."""
+        if not isinstance(conversation_id, str) or not conversation_id or len(conversation_id) > 512:
+            return {"status": "unknown"}
+        if any(char.isspace() or ord(char) < 32 for char in conversation_id):
+            return {"status": "unknown"}
+        config = self._config()
+        channels = config.get("channels", {}) if isinstance(config, Mapping) else {}
+        apps = []
+        for app in dingtalk_apps(channels.get("dingtalk")):
+            if not app["enabled"] or app["persistent_agent_id"] != scope.agent_id:
+                continue
+            if scope.app_id in (None, app["client_id"]):
+                apps.append(app)
+        if len(apps) != 1:
+            return {"status": "unknown"}
+        if self._dws_path is None and self._cached_dws_binary() is None:
+            # Background discovery must not install packages or contend for the npx cache.
+            return {"status": "unknown"}
+        auth = await self.dingtalk_auth_status(scope)
+        profile = auth.get("_profile")
+        if auth.get("status") != "connected" or not isinstance(profile, str) or not profile:
+            return {"status": "unknown"}
+        response = await self._execute_oauth_command(
+            scope, ["chat", "group", "bots", "--group", conversation_id], profile,
+        )
+        result = response.get("result")
+        bots = result.get("bots") if isinstance(result, dict) else None
+        if not isinstance(bots, list) or result.get("hasMore") is True:
+            return {"status": "unknown"}
+        codes = []
+        for bot in bots:
+            code = bot.get("robotCode") if isinstance(bot, dict) else None
+            if not isinstance(code, str) or not code or len(code) > 512:
+                return {"status": "unknown"}
+            if any(char.isspace() or ord(char) < 32 for char in code):
+                return {"status": "unknown"}
+            codes.append(code)
+        robot_code = apps[0]["robot_code"] or apps[0]["client_id"]
+        return {"status": "active" if robot_code in codes else "left"}
 
     async def group_history_identity(self, scope: DingTalkCliScope) -> str | None:
         """Identify the isolated authorized reader without exposing its profile."""
@@ -888,6 +946,89 @@ class LocalDingTalkCliRuntime:
         if missing_profile or len(profile) > 512 or any(ord(char) < 32 for char in profile):
             return None
         return hashlib.sha256(profile.encode("utf-8")).hexdigest()
+
+    async def discover_groups(self, scope: DingTalkCliScope, *, cursor: int | None = None) -> dict[str, Any]:
+        """Discover a bounded page without reading messages from unrelated groups."""
+        if cursor is not None:
+            if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+                raise PersistentAgentError("Invalid group discovery cursor", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
+        if not self.is_available(scope):
+            raise PersistentAgentError("DingTalk app is unavailable", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
+        auth = await self.dingtalk_auth_status(scope)
+        if auth.get('status') == 'error':
+            raise PersistentAgentError(
+                "DingTalk authorization check failed", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE",
+            )
+        profile = auth.get('_profile')
+        if auth.get('status') != 'connected' or not isinstance(profile, str) or not profile.strip():
+            raise PersistentAgentError(
+                "Employee DingTalk authorization is required", code="DINGTALK_CLI_USER_AUTH_REQUIRED",
+            )
+        config = self._config()
+        channels = config.get('channels') if isinstance(config, Mapping) else None
+        raw = channels.get('dingtalk') if isinstance(channels, Mapping) else None
+        apps = []
+        for app in dingtalk_apps(raw):
+            if not app['enabled'] or app['persistent_agent_id'] != scope.agent_id:
+                continue
+            if scope.app_id is None or app['client_id'] == scope.app_id:
+                apps.append(app)
+        if len(apps) != 1:
+            raise PersistentAgentError(
+                "Employee DingTalk bot binding is unavailable", code="DINGTALK_CLI_GROUP_BOT_NOT_PRESENT",
+            )
+        robot_code = apps[0]['robot_code'] or apps[0]['client_id']
+        command = ['chat', 'group', 'list-all', '--limit', '5']
+        if cursor is not None:
+            command.extend(['--cursor', str(cursor)])
+        response = await self._execute_oauth_command(scope, command, profile)
+        page = response.get('result')
+        groups = page.get('groups') if isinstance(page, dict) else None
+        has_more = page.get('hasMore') if isinstance(page, dict) else None
+        next_cursor = page.get('nextCursor') if isinstance(page, dict) else None
+        invalid_page = not isinstance(groups, list) or len(groups) > 5 or not isinstance(has_more, bool)
+        if not invalid_page and has_more:
+            invalid_page = (
+                isinstance(next_cursor, bool) or not isinstance(next_cursor, int) or next_cursor <= (cursor or 0)
+            )
+        if not invalid_page:
+            for group in groups:
+                if not valid_group_conversation_id(group, 'openConversationId'):
+                    invalid_page = True
+                    break
+        if invalid_page:
+            raise PersistentAgentError(
+                "Invalid DingTalk group discovery page", code="DINGTALK_CLI_GROUP_HISTORY_INVALID",
+            )
+        verified = []
+        failed = False
+        seen = set()
+        for group in groups:
+            conversation_id = group['openConversationId']
+            if conversation_id in seen:
+                continue
+            seen.add(conversation_id)
+            try:
+                response = await self._execute_oauth_command(
+                    scope, ['chat', 'group', 'bots', '--group', conversation_id], profile,
+                )
+                result = response.get('result')
+                bots = result.get('bots') if isinstance(result, dict) else None
+                if (not isinstance(bots, list) or any(
+                    not isinstance(bot, dict) or not isinstance(bot.get('robotCode'), str)
+                    or not bot['robotCode'] or len(bot['robotCode']) > 512
+                    or any(char.isspace() or ord(char) < 32 for char in bot['robotCode']) for bot in bots
+                )):
+                    raise PersistentAgentError("Invalid DingTalk bot list", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
+                if sum(bot['robotCode'] == robot_code for bot in bots) == 1:
+                    name = group.get('title')
+                    verified.append({'conversation_id': conversation_id,
+                                     'name': name.strip() if isinstance(name, str) and len(name) <= 512 else ''})
+            except PersistentAgentError:
+                # One inaccessible group must not prevent discovering other groups.
+                failed = True
+        return {'readerKey': hashlib.sha256(profile.encode('utf-8')).hexdigest(), 'groups': verified,
+                'hasMore': has_more, 'nextCursor': next_cursor if has_more else None, 'failed': failed}
 
     async def read_group_history(
         self, scope: DingTalkCliScope, *, conversation_id: str, since: str,
@@ -994,7 +1135,11 @@ class LocalDingTalkCliRuntime:
                 or message.get("openMessageId", message_id) != message_id
             ):
                 raise PersistentAgentError("Group history identity mismatch", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
-            safe_messages.append({key: message[key] for key in fields if key in message})
+            safe_message = {key: message[key] for key in fields if key in message}
+            if message.get('senderOpenDingTalkId') in bot_senders.values():
+                # Bot welcome messages can be labelled "user" by the history API.
+                safe_message['sendType'] = 'robot'
+            safe_messages.append(safe_message)
         result = payload.get('result')
         cursor = result.get('nextCursor') if isinstance(result, dict) else None
         valid_cursor = isinstance(cursor, int) and not isinstance(cursor, bool) and cursor >= 0
@@ -1053,10 +1198,9 @@ class LocalDingTalkCliRuntime:
             raise ValueError('unsupported online document command')
         try:
             arguments = [*command, '--profile', profile, '--format', 'json']
-            options = {'env': self._oauth_environment(scope), 'cwd': self._oauth_root(scope)}
-            if input_text is not None:
-                options['input_text'] = input_text
-            result = await asyncio.to_thread(self._run_cli, arguments, **options)
+            result = await asyncio.to_thread(
+                self._locked_oauth_operation, scope, self._run_oauth_cli, arguments, input_text,
+            )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise PersistentAgentError('钉钉在线文档操作未确认成功，请勿重复写入', code=error_code) from exc
         stdout = result.stdout if isinstance(result.stdout, str) else ''
@@ -1795,7 +1939,7 @@ class LocalDingTalkCliRuntime:
         return path
 
     def _npm_cache_dir(self) -> Path:
-        return self._root / "npm-cache" / _CLI_VERSION
+        return self._cache_root / "npm-cache" / _CLI_VERSION
 
     def _repair_npx_package_cache(self) -> None:
         cache_root = self._npm_cache_dir().resolve()
@@ -1818,22 +1962,53 @@ class LocalDingTalkCliRuntime:
     def _cached_dws_binary(self) -> Path | None:
         binary_name = "dws.exe" if os.name == "nt" else "dws"
         matches: list[Path] = []
-        for manifest in self._root.rglob("package.json"):
-            if manifest.parent.name != "dingtalk-workspace-cli":
-                continue
-            try:
-                package = json.loads(manifest.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(package, dict) or package.get("version") != _CLI_VERSION:
-                continue
-            binary = manifest.parent / "vendor" / binary_name
-            if not binary.is_file() or not binary.resolve().is_relative_to(self._root):
-                continue
-            if os.name != "nt" and not os.access(binary, os.X_OK):
-                continue
-            matches.append(binary)
-        return max(matches, key=lambda item: item.stat().st_mtime) if matches else None
+        for root in dict.fromkeys((self._cache_root, self._root)):
+            for manifest in root.rglob("package.json"):
+                if manifest.parent.name != "dingtalk-workspace-cli":
+                    continue
+                try:
+                    package = json.loads(manifest.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(package, dict) or package.get("version") != _CLI_VERSION:
+                    continue
+                binary = manifest.parent / "vendor" / binary_name
+                if not binary.is_file() or not binary.resolve().is_relative_to(root):
+                    continue
+                if os.name != "nt" and not os.access(binary, os.X_OK):
+                    continue
+                matches.append(binary)
+        if not matches:
+            return None
+        binary = max(matches, key=lambda item: item.stat().st_mtime)
+        if self._cache_root == self._root or binary.is_relative_to(self._cache_root):
+            return binary
+        # Migrate only the pinned program, never employee profiles or OAuth stores.
+        package = self._cache_root / "managed" / _CLI_VERSION / "dingtalk-workspace-cli"
+        target = package / "vendor" / binary_name
+        if not target.parent.resolve().is_relative_to(self._cache_root):
+            return binary
+        temporary = target.with_name(f".{binary_name}.{uuid.uuid4().hex}.tmp")
+        manifest = package / f".package.{uuid.uuid4().hex}.tmp"
+        try:
+            private_dir(target.parent)
+            shutil.copyfile(binary, temporary)
+            os.chmod(temporary, 0o700)
+            os.replace(temporary, target)
+            manifest.write_text(
+                json.dumps({"name": "dingtalk-workspace-cli", "version": _CLI_VERSION}), encoding="utf-8",
+            )
+            os.chmod(manifest, 0o600)
+            os.replace(manifest, package / "package.json")
+            return target
+        except OSError:
+            return binary
+        finally:
+            for path in (temporary, manifest):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _profile_root(self, scope: DingTalkCliScope, binding: tuple[str, str]) -> Path:
         revision = hashlib.sha256(f"{binding[0]}\0{binding[1]}".encode()).hexdigest()[:16]
@@ -1895,7 +2070,7 @@ class LocalDingTalkCliRuntime:
         return url, code
 
     async def dingtalk_auth_status(self, scope: DingTalkCliScope) -> dict[str, Any]:
-        return await asyncio.to_thread(self._dingtalk_auth_status, scope)
+        return await asyncio.to_thread(self._locked_oauth_operation, scope, self._dingtalk_auth_status)
 
     @staticmethod
     def _oauth_process_running(pid_path: Path) -> bool:
@@ -1913,9 +2088,14 @@ class LocalDingTalkCliRuntime:
 
     def _dingtalk_auth_status(self, scope: DingTalkCliScope, *, recheck_finished: bool = True) -> dict[str, Any]:
         root = self._oauth_root(scope)
+        # An untouched private profile cannot be logged in; status must not install the CLI.
+        if self._dws_path is None and self._cached_dws_binary() is None:
+            if not any(path.is_file() for path in root.rglob("*")):
+                return {"status": "not_connected", "cli_version": _CLI_VERSION}
         try:
             result = self._run_cli(
                 ["auth", "status", "--format", "json"], env=self._oauth_environment(scope), cwd=root,
+                timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired):
             return {"status": "error", "cli_version": _CLI_VERSION}
@@ -1931,6 +2111,7 @@ class LocalDingTalkCliRuntime:
             try:
                 profile_result = self._run_cli(
                     ["profile", "list", "--format", "json"], env=self._oauth_environment(scope), cwd=root,
+                    timeout=5,
                 )
             except (OSError, subprocess.TimeoutExpired):
                 return {"status": "error", "cli_version": _CLI_VERSION}
@@ -1961,7 +2142,7 @@ class LocalDingTalkCliRuntime:
                 profile = selected.get("profile")
                 if isinstance(profile, str) and profile and len(profile) <= 512:
                     status["_profile"] = profile
-                account = selected.get("userName") or selected.get("username") or selected.get("userId")
+                account = selected.get("userName") or selected.get("username")
                 organization = selected.get("corpName") or selected.get("corp_name")
                 if isinstance(account, str) and len(account) <= 200:
                     status["account"] = account
@@ -1973,8 +2154,8 @@ class LocalDingTalkCliRuntime:
                 try:
                     identity_result = self._run_cli(
                         ['--profile', status['_profile'], 'contact', '+me', '--format', 'json',
-                         '--fields', 'name,userId,org', '--timeout', '5'],
-                        env=self._oauth_environment(scope), cwd=root,
+                         '--fields', 'name,userId,org', '--timeout', '3'],
+                        env=self._oauth_environment(scope), cwd=root, timeout=4,
                     )
                     identity_payload = self._json_response(identity_result.stdout)
                     identity = identity_payload.get('data') if isinstance(identity_payload, dict) else None
@@ -2000,10 +2181,13 @@ class LocalDingTalkCliRuntime:
                 operation_id = self._oauth_current(scope).read_text(encoding="utf-8").strip()
             except OSError:
                 operation_id = ""
-            if _DINGTALK_AUTH_OPERATION.fullmatch(operation_id) and operation_id.startswith(
-                f"{self._scope_digest(scope)}."
+            if (
+                _DINGTALK_AUTH_OPERATION.fullmatch(operation_id)
+                and operation_id.startswith(f"{self._scope_digest(scope)}.")
             ):
-                self._clear_dingtalk_auth(scope, operation_id)
+                _, pid_path, _ = self._oauth_paths(scope, operation_id)
+                if not self._oauth_process_running(pid_path):
+                    self._clear_dingtalk_auth(scope, operation_id)
             return status
         current_path = self._oauth_current(scope)
         try:
@@ -2053,7 +2237,26 @@ class LocalDingTalkCliRuntime:
     async def dingtalk_auth_begin(self, scope: DingTalkCliScope) -> dict[str, Any]:
         return await asyncio.to_thread(self._locked_oauth_operation, scope, self._dingtalk_auth_begin)
 
+    def _prepare_oauth_cli(self, scope: DingTalkCliScope) -> None:
+        """Finish the managed installation before the device-code deadline starts."""
+        if self._dws_path is not None or self._cached_dws_binary() is not None:
+            return
+        try:
+            result = self._run_cli(
+                ["--version"], env=self._oauth_environment(scope), cwd=self._oauth_root(scope),
+                timeout=_DINGTALK_CLI_PREPARE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise PersistentAgentError(
+                "准备钉钉 CLI 超时或失败，请稍后重新发起授权。", code="DINGTALK_CLI_PREPARE_FAILED",
+            ) from exc
+        if result.returncode != 0:
+            raise PersistentAgentError(
+                "准备钉钉 CLI 失败，请稍后重新发起授权。", code="DINGTALK_CLI_PREPARE_FAILED",
+            )
+
     def _dingtalk_auth_begin(self, scope: DingTalkCliScope) -> dict[str, Any]:
+        self._prepare_oauth_cli(scope)
         status = self._dingtalk_auth_status(scope)
         if status["status"] == "connected":
             return status
@@ -2065,7 +2268,7 @@ class LocalDingTalkCliRuntime:
             previous = ''
         if (_DINGTALK_AUTH_OPERATION.fullmatch(previous)
                 and previous.startswith(f'{self._scope_digest(scope)}.')):
-            self._clear_dingtalk_auth(scope, previous)
+            self._cancel_dingtalk_auth(scope, previous)
         digest = self._scope_digest(scope)
         operation_id = f"{digest}.{uuid.uuid4().hex}"
         log_path, pid_path, exit_path = self._oauth_paths(scope, operation_id)
@@ -2074,7 +2277,7 @@ class LocalDingTalkCliRuntime:
         with log_path.open("wb") as log:
             try:
                 process = subprocess.Popen(
-                    self._oauth_command("auth", "login", "--device"), stdin=subprocess.DEVNULL,
+                    self._oauth_command("auth", "login", "--device", "--no-browser"), stdin=subprocess.DEVNULL,
                     stdout=log, stderr=subprocess.STDOUT, env=self._oauth_environment(scope),
                     cwd=str(self._oauth_root(scope)), start_new_session=True,
                 )
@@ -2119,13 +2322,30 @@ class LocalDingTalkCliRuntime:
         ):
             raise PersistentAgentError("invalid DingTalk authorization operation", code="BAD_REQUEST")
         log_path, pid_path, exit_path = self._oauth_paths(scope, operation_id)
-        try:
-            if self._oauth_process_running(pid_path):
-                pid = int(pid_path.read_text(encoding="utf-8"))
-                os.kill(pid, signal.SIGTERM)
-        except (OSError, ValueError):
-            pass
+        self._stop_oauth_process(pid_path)
         self._clear_dingtalk_auth(scope, operation_id)
+
+    def _stop_oauth_process(self, pid_path: Path) -> None:
+        """Wait for the device flow to stop before removing its credential directory."""
+        import psutil
+
+        try:
+            if not self._oauth_process_running(pid_path):
+                return
+            pid = int(pid_path.read_text(encoding="utf-8"))
+            os.kill(pid, signal.SIGTERM)
+            process = psutil.Process(pid)
+            try:
+                process.wait(timeout=3)
+            except psutil.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+        except (ProcessLookupError, ValueError, psutil.NoSuchProcess):
+            pass
+        except (OSError, psutil.Error) as exc:
+            raise PersistentAgentError(
+                "Failed to stop DingTalk user authorization; try again", code="DINGTALK_CLI_AUTH_CLEANUP_FAILED",
+            ) from exc
 
     def _clear_dingtalk_auth(self, scope: DingTalkCliScope, operation_id: str) -> None:
         log_path, pid_path, exit_path = self._oauth_paths(scope, operation_id)
@@ -2142,21 +2362,56 @@ class LocalDingTalkCliRuntime:
             pass
 
     def _locked_oauth_operation(self, scope: DingTalkCliScope, operation: Callable, *args: Any) -> Any:
+        from filelock import FileLock, Timeout
+
+        deadline = time.monotonic() + 15
         lock = self._oauth_locks.setdefault(self._scope_digest(scope), threading.RLock())
-        with lock:
-            return operation(scope, *args)
+        if not lock.acquire(timeout=15):
+            raise PersistentAgentError("DingTalk user authorization is busy; try again", code="DINGTALK_CLI_AUTH_BUSY")
+        try:
+            root = self._scope_root(scope)
+            private_dir(root)
+            with FileLock(str(root / ".oauth.lock"), timeout=max(0, deadline - time.monotonic())):
+                return operation(scope, *args)
+        except Timeout as exc:
+            raise PersistentAgentError(
+                "DingTalk user authorization is busy; try again", code="DINGTALK_CLI_AUTH_BUSY",
+            ) from exc
+        finally:
+            lock.release()
+
+    def _run_oauth_cli(
+        self, scope: DingTalkCliScope, command: list[str], input_text: str | None = None,
+    ) -> subprocess.CompletedProcess:
+        """Resolve credentials only after taking the lock shared with disconnect."""
+        return self._run_cli(
+            command, env=self._oauth_environment(scope), cwd=self._oauth_root(scope), input_text=input_text,
+        )
 
     def _dingtalk_auth_disconnect(self, scope: DingTalkCliScope) -> dict[str, Any]:
-        root = self._oauth_root(scope)
+        # One current DingTalk application per employee; revoke all credential revisions.
+        root = self._scope_root(scope) / "user-oauth"
         try:
-            operation_id = self._oauth_current(scope).read_text(encoding="utf-8").strip()
-        except OSError:
-            operation_id = ""
-        if _DINGTALK_AUTH_OPERATION.fullmatch(operation_id) and operation_id.startswith(
-            f"{self._scope_digest(scope)}."
-        ):
-            self._cancel_dingtalk_auth(scope, operation_id)
-        shutil.rmtree(root, ignore_errors=True)
+            for pid_path in root.glob("*/auth/*.pid"):
+                operation_id = pid_path.stem
+                if (_DINGTALK_AUTH_OPERATION.fullmatch(operation_id)
+                        and operation_id.startswith(f"{self._scope_digest(scope)}.")
+                        and pid_path.resolve().is_relative_to(root.resolve())):
+                    self._stop_oauth_process(pid_path)
+            shutil.rmtree(root)
+        except FileNotFoundError as exc:
+            if root.exists():
+                raise PersistentAgentError(
+                    "Failed to clear DingTalk user authorization; try again", code="DINGTALK_CLI_AUTH_CLEANUP_FAILED",
+                ) from exc
+        except OSError as exc:
+            raise PersistentAgentError(
+                "Failed to clear DingTalk user authorization; try again", code="DINGTALK_CLI_AUTH_CLEANUP_FAILED",
+            ) from exc
+        if root.exists():
+            raise PersistentAgentError(
+                "Failed to clear DingTalk user authorization; try again", code="DINGTALK_CLI_AUTH_CLEANUP_FAILED",
+            )
         return {"status": "not_connected", "cli_version": _CLI_VERSION}
 
     async def dingtalk_auth_disconnect(self, scope: DingTalkCliScope) -> dict[str, Any]:
@@ -2259,14 +2514,19 @@ class LocalDingTalkCliRuntime:
 
     def _run_cli(
         self, argv: list[str], *, env: dict[str, str], cwd: Path, input_text: str | None = None,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess:
         cached_binary = self._cached_dws_binary() if self._dws_path is None else None
         uses_npx = self._dws_path is None and cached_binary is None
+        deadline = None if timeout is None else time.monotonic() + timeout
 
         def run(command: list[str]) -> subprocess.CompletedProcess:
+            remaining = _CLI_REQUEST_TIMEOUT_SECONDS if deadline is None else deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
             return self._runner(
                 command, env=env, input_text=input_text,
-                timeout=_CLI_REQUEST_TIMEOUT_SECONDS, cwd=str(cwd)
+                timeout=remaining, cwd=str(cwd)
             )
 
         if uses_npx:
@@ -2527,10 +2787,20 @@ class LocalDingTalkCliRuntime:
 
 
 def create_provider() -> LocalDingTalkCliRuntime:
-    """Load the channel config and prepare a private DWS cache under JiuwenMate's data root."""
+    """Keep employee OAuth private while program caches survive workspace initialization."""
+    from jiuwenswarm.common.utils import get_user_home
     from jiuwenswarm.server.jiuwenmate.service import default_data_dir
 
     configured_dws = os.environ.get("JIUWENMATE_DWS_BIN", "").strip()
     dws_path = Path(configured_dws).expanduser() if configured_dws else None
     root = Path(os.environ.get("JIUWENMATE_DINGTALK_CLI_HOME") or default_data_dir() / "dingtalk_cli")
-    return LocalDingTalkCliRuntime(root=root, dws_path=dws_path)
+    home = get_user_home()
+    if sys.platform == "darwin":
+        cache_root = home / "Library" / "Caches" / "WorkSwarm" / "dingtalk-cli"
+    elif sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        cache_root = local / "WorkSwarm" / "Cache" / "dingtalk-cli"
+    else:
+        cache = Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache")
+        cache_root = cache / "workswarm" / "dingtalk-cli"
+    return LocalDingTalkCliRuntime(root=root, cache_root=cache_root, dws_path=dws_path)
