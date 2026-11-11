@@ -4,6 +4,7 @@ import { catalogCacheOf } from '../../features/catalogCache';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { RefreshCw } from 'lucide-react';
 // 深引入而非 ../ui barrel：本组件经 esbuild 独立打包进测试
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { useConnectorStore } from '../../stores/connectorStore';
@@ -59,6 +60,10 @@ interface MarketplacePageProps {
   onCreateWithSkill: () => void;
   onCreateWithUpload: () => void;
   onRegisterCustomMcp: () => void;
+  /** 主动刷新当前列表；Hub 目录走后端后台刷新，不阻塞 UI。 */
+  onRefresh: () => Promise<void>;
+  /** 点击刷新时递增，用于重跑带搜索词的直连查询。 */
+  refreshNonce: number;
 }
 
 // MCP 分类是后端下发的自由字符串；按当前已加载的连接器统计前 N 个分类，其余归入“其他”。
@@ -85,6 +90,8 @@ export function MarketplacePage({
   onCreateWithSkill,
   onCreateWithUpload,
   onRegisterCustomMcp,
+  onRefresh,
+  refreshNonce,
 }: MarketplacePageProps) {
   const { t, i18n } = useTranslation();
 
@@ -118,6 +125,7 @@ export function MarketplacePage({
   const [marketSearchLoading, setMarketSearchLoading] = useState(false);
   const marketSearchRevisionRef = useRef(0);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
   useClickOutside(createMenuRef, () => setCreateMenuOpen(false));
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -215,7 +223,17 @@ export function MarketplacePage({
         });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [query, topTab]);
+  }, [query, topTab, refreshNonce]);
+
+  const handleRefreshClick = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   // 派生 MCP 卡片态（见 mcpState.ts）。busy 用 busyMap[name]。这份 map 供下方 MCP 卡片渲染 +
   // statusFilter 共用，避免每个渲染点各自内联判断。
@@ -544,6 +562,19 @@ export function MarketplacePage({
               onClear={() => setQuery('')}
               placeholder={topTab === 'my' ? t('common.searchName') : t(`connectorMarket.search.${topTab}`)}
             />
+            {topTab !== 'my' && (
+              <button
+                type="button"
+                onClick={() => { void handleRefreshClick(); }}
+                disabled={refreshing}
+                data-testid="connector-market-refresh"
+                title={t(refreshing ? 'common.refreshing' : 'common.refresh')}
+                aria-label={t(refreshing ? 'common.refreshing' : 'common.refresh')}
+                className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[16px] text-text-muted hover:bg-secondary/40 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw className={`h-4 w-4${refreshing ? ' animate-spin' : ''}`} aria-hidden="true" />
+              </button>
+            )}
 
             {topTab === 'my' && (
               <div className="relative" ref={createMenuRef}>

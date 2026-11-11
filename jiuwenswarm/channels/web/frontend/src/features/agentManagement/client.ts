@@ -137,7 +137,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
             ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
             ...(options.query ? { query: options.query } : {}),
           },
-          !options.query,
+          { preferCache: !options.query },
         );
 
         const items = (payload.templates || []).map((item) =>

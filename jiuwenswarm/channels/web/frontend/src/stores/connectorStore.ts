@@ -81,7 +81,7 @@ interface ConnectorState {
   // 2026-08-17：'delete' 取值随 deleteConnector action 一并删除，不再有"删除中"这个分支。
   busyMap: Record<string, McpBusyKind | undefined>;
 
-  loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean }) => Promise<void>;
+  loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean; refresh?: boolean }) => Promise<void>;
   loadDetail: (name: string, options?: { refresh?: boolean }) => Promise<void>;
   installPackage: (assetId: string) => Promise<ConnectorInstallResponse | null>;
   uninstallPackage: (identifier: string) => Promise<boolean>;
@@ -263,7 +263,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
     const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const response = await connectorApi.list(filter);
+      const response = await connectorApi.list(filter, '', { refresh: options?.refresh === true });
       if (requestScope !== catalogScope()) return;
       scheduleCatalogRefresh(
         'connectorStore.ts:' + filter,
