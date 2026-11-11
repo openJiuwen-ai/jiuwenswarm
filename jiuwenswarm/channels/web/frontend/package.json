@@ -63,6 +63,7 @@
     "test:i18n-locales": "node --test tests/i18nLocales.test.mjs",
     "test:auth-store": "node --test tests/authStore.test.mjs",
     "test:workspace-store": "node --test tests/workspaceStore.test.mjs",
+    "test:front-query-responses": "node --test --test-concurrency=1 tests/workspaceStore.test.mjs tests/sessionsPanelQueries.test.mjs",
     "test:chat-error": "node --test tests/chatError.test.mjs",
     "test:quota-reset": "node --test tests/quotaReset.test.mjs",
     "test:frontend-platform": "tsc src/utils/frontendPlatform.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/frontend-platform --skipLibCheck --noEmitOnError && node --test tests/frontendPlatform.test.mjs",
