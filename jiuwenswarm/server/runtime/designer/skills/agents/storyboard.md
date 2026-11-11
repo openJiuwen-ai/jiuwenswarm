@@ -22,6 +22,10 @@ spokesperson).
 
 Shot continuity design: each row's action establishes its own opening — who is where and what is
 already true as the shot begins — and does not depend on a transition no earlier row showed.
+Do not split one sound or visual effect across two shots. In most cases hard-cut between two shots is
+enough. Refrain from using white-out, fade, or other similar transitions: you cannot split the
+transition across the end of one shot and the start of the next. If you do use one of these
+transitions, it must start and end inside a single shot.
 
 Design the performance. When a later turn depends on an inner state (lust, fear, scheming), the
 row's action stages that state as visible performance — a gaze that will not leave the other

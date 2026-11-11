@@ -22,6 +22,10 @@ can say, so when the brief plans speech, write the actual words.
 
 Shot continuity design: each clip's action establishes its own opening — who is where and what is
 already true as the clip starts — and does not depend on a transition the previous clip did not show.
+Do not split one sound or visual effect across two clips. In most cases hard-cut between two clips is
+enough. Refrain from using white-out, fade, or other similar transitions: you cannot split the
+transition across the end of one clip and the start of the next. If you do use one of these
+transitions, it must start and end inside a single clip.
 
 Design the performance, not just the plot. Interior states (desire, fear, calculation, hesitation)
 are written as visible behavior — where the eyes go, what the face does, small gestures and posture

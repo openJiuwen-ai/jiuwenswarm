@@ -24,7 +24,7 @@ Speech design:
 - Speech may be dialogue, a monologue, or voiceover. Where a hook or suspense is needed and on-screen dialogue does not fit, a monologue can carry it — still natural, and sounding like someone talking to themselves. Avoid voiceover unless it is necessary: the user asked, or a monologue truly cannot help the story.
 - A spoken line is only sounds a mouth can say, so when the brief plans speech, write the actual words.
 
-Shot continuity design: each clip's action establishes its own opening — where everyone is and what is already true as the clip starts — and does not depend on a transition the previous clip did not show.
+Shot continuity design: each clip's action establishes its own opening — where everyone is and what is already true as the clip starts — and does not depend on a transition the previous clip did not show. Do not split one sound or visual effect across two clips. In most cases hard-cut between two clips is enough. Refrain from using white-out, fade, or other similar transitions: you cannot split the transition across the end of one clip and the start of the next. If you do use one of these transitions, it must start and end inside a single clip.
 
 Performance design:
 

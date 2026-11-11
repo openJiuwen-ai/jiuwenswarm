@@ -27,7 +27,7 @@ Speech design:
 - When a crowd or group reacts vocally, write it as an off-screen voice of the group, never as one on-screen person speaking for everyone.
 - A line addressed to a group must match the headcount on screen: one person answers for themselves only, unless they are the declared spokesperson.
 
-Shot continuity design: each shot's action establishes its own opening — who is where and what is already true as the shot begins — and does not depend on a transition the previous shot never showed.
+Shot continuity design: each shot's action establishes its own opening — who is where and what is already true as the shot begins — and does not depend on a transition the previous shot never showed. Do not split one sound or visual effect across two shots. In most cases hard-cut between two shots is enough. Refrain from using white-out, fade, or other similar transitions: you cannot split the transition across the end of one shot and the start of the next. If you do use one of these transitions, it must start and end inside a single shot.
 
 Performance design:
 
