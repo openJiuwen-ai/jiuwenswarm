@@ -231,6 +231,41 @@ async def test_other_package_ui_keeps_the_existing_forward_path(tmp_path):
         await runtime.shutdown()
 
 
+async def test_shared_footer_ready_initializes_gateway_and_keeps_agentserver_forward_path(tmp_path):
+    observed = []
+    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path))
+    await runtime.start()
+
+    async def ready(event, ops, next_handler):
+        del ops, next_handler
+        observed.append(event.event_input.target.package_id)
+        return UiActionOutput(accepted=True, status="ready")
+
+    runtime.publish(LoadedPackage(
+        package_id=PACKAGE,
+        version="1.0.0",
+        root=tmp_path,
+        handlers=(HandlerDeclaration("ui.ready", ready, {}, "ready"),),
+        client={},
+        ui={"apiVersion": 1, "items": [
+            {"type": "web.slot.contribution", "slot": "application.sidebar.footer"},
+        ]},
+    ))
+    try:
+        params = {
+            "event": "ui.ready",
+            "target": {"scope": "application", "slot_id": "application.sidebar.footer", "package_id": ""},
+            "payload": {},
+        }
+        visited, returned = await runtime.intercept(SimpleNamespace(closed=False), "shared", "webui.dispatch", params)
+        assert visited is False
+        assert returned == params
+        assert observed == [PACKAGE]
+        assert runtime.channel.responses == []
+    finally:
+        await runtime.shutdown()
+
+
 @pytest.mark.parametrize("mode", ["no-policy", "continue", "forward"])
 async def test_http_default_forward_keeps_the_native_route(tmp_path, mode):
     async def policy(event, ops, next_handler):

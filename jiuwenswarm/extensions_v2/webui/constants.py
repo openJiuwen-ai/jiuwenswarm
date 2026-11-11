@@ -78,7 +78,7 @@ def _slot(capacity: str, scope: SlotScope = SlotScope.SESSION, *, additional_sco
 SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
     {
         "application.entry": _slot("single", SlotScope.APPLICATION),
-        "application.sidebar.footer": _slot("single", SlotScope.APPLICATION),
+        "application.sidebar.footer": _slot("list", SlotScope.APPLICATION),
         "conversation.input.above": _slot("list"),
         "conversation.input.below": _slot("single"),
         "conversation.panel.right": _slot("list"),

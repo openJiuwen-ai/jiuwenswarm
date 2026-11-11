@@ -35,7 +35,7 @@ test('catalog contains the supported components', () => {
   });
   assert.deepEqual(componentCatalog.getSlot('application.sidebar.footer'), {
     id: 'application.sidebar.footer',
-    display: 'single',
+    display: 'list',
     scope: 'application',
   });
   assert.deepEqual(componentCatalog.getSlot('application.background'), {

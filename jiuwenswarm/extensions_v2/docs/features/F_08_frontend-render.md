@@ -204,7 +204,7 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 
 当前应用范围有 `application.entry`、`application.sidebar.footer`、`task.function` 与 `task.function.main`。首次访问入口由 `WebUIEntryHost` 在首次访问时挂载并发送
 `{"reason": "first_visit"}`，ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。
-侧栏底部由 `WebUIHost` 挂载，ready 使用空 payload。`readyOnce` 避免同一挂载消费者重复就绪。
+侧栏底部由 `WebUIHost` 作为 list 槽位挂载，多个实例纵向排列；ready 使用空 payload。`readyOnce` 避免同一挂载消费者重复就绪。
 任务入口由 `WebUINavigationHost` 挂载，对应页面由 `WebUIPageHost` 挂载，均不要求 session；
 切换会话时保持已有实例和页面。示例任务入口只处理导航，不读写会话工作台状态。
 `App` 在查看聊天期间保留当前应用范围页面的挂载，仅隐藏容器；返回同一任务入口继续使用原 iframe。

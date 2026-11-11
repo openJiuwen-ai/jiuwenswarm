@@ -45,6 +45,7 @@ PLATFORM_SLOTS = frozenset({"application.background", SPLASH_SLOT})
 SPLASH_PROVIDERS_METHOD = "webui.splash.providers"
 SPLASH_READY_FIELDS = frozenset({"launch_id", "first_visit", "reduced_motion", "preview"})
 CLOSE_REASONS = frozenset({"complete", "skip", "timeout", "error", "disabled", "removed"})
+SHARED_AGENTSERVER_READY_SLOTS = frozenset({"application.sidebar.footer"})
 MIN_SPLASH_MS = 1_000
 MAX_SPLASH_MS = 60_000
 #: Package handlers answering a platform frame get the same budget as gateway.request.
@@ -56,6 +57,19 @@ ASSET_SOURCES = frozenset({"package", "data"})
 HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~\da-z-]+$", re.IGNORECASE | re.ASCII)
 FORBIDDEN = frozenset({"__proto__", "prototype", "constructor"})
 logger = logging.getLogger(__name__)
+
+
+def _forwards_shared_agentserver_ready(request: GatewayRequestInput) -> bool:
+    """Keep unqualified ready delivery for application slots shared with AgentServer."""
+
+    target = request.params.get("target")
+    return (
+        request.params.get("event") == WebUIEvent.READY.value
+        and isinstance(target, Mapping)
+        and target.get("scope") == "application"
+        and target.get("slot_id") in SHARED_AGENTSERVER_READY_SLOTS
+        and target.get("package_id", "") == ""
+    )
 
 
 def json_copy(value: Any, *, maximum: int = 96 * 1024, depth: int = 16) -> Any:
@@ -557,7 +571,7 @@ class BrowserBridge:
                     or request.transport != "websocket" or request.method != WEBUI_DISPATCH_METHOD):
                 return await next_handler(event)
             receipt = await self.dispatch(request, ops.session_context)
-            if receipt is None:
+            if receipt is None or _forwards_shared_agentserver_ready(request):
                 return await next_handler(event)
             response = {"accepted": receipt.accepted, "status": receipt.status}
             if receipt.code:
