@@ -47,6 +47,7 @@ _PHRASES: dict[str, dict[str, str]] = {
             "Sound: {cues} only; no music, no score, no underscore, no ambient music bed."
         ),
         "sound_silent": "Sound: silent — no dialogue, no effects, no music.",
+        "sound_no_speech": "No one speaks: no dialogue, no monologue, no voiceover.",
         "dialogue_language": "Spoken dialogue is in {name}.",
         "tod_with_lighting": "It is {label}; {lighting}.",
         "tod": "It is {label}.",
@@ -86,6 +87,7 @@ _PHRASES: dict[str, dict[str, str]] = {
         "sound_diegetic_only": "声音：仅本镜头的现场音（动作声与环境底噪）；不要配乐、不要背景音乐、不要氛围音床。",
         "sound_cues_only": "声音：仅{cues}；不要配乐、不要背景音乐、不要氛围音床。",
         "sound_silent": "声音：静音，无对白、无音效、无音乐。",
+        "sound_no_speech": "人物没有台词、对白或独白。",
         "dialogue_language": "对白使用{name}。",
         "tod_with_lighting": "时间是{label}；{lighting}。",
         "tod": "时间是{label}。",
@@ -315,6 +317,14 @@ def _music_line(cfg: dict[str, Any], lang: str = "en", graph: dict[str, Any] | N
     return ""
 
 
+def _has_authored_speech(cfg: dict[str, Any]) -> bool:
+    """True when this shot carries words someone is meant to say."""
+    by_char = cfg.get("speech_by_character") if isinstance(cfg.get("speech_by_character"), dict) else {}
+    if any(str(value or "").strip().strip('"“”') for value in by_char.values()):
+        return True
+    return bool(str(cfg.get("speech_line") or "").strip().strip('"“”'))
+
+
 def _sound_line(cfg: dict[str, Any], lang: str = "en") -> str:
     """The one audio direction every clip gets: diegetic sound, never a score.
 
@@ -323,6 +333,8 @@ def _sound_line(cfg: dict[str, Any], lang: str = "en") -> str:
     sound ends up scoring itself. When the film's music node then fails, that
     improvised bed is the only music in the cut and reads as BGM that leaked
     into the clips. Naming the negative explicitly keeps the track diegetic.
+    The same model also invents dialogue when a shot has no authored lines, so
+    a non-silent shot with no speech says so outright.
     """
     if str(cfg.get("audio_policy") or "") == "silent":
         return phrase(_PHRASES, lang, "sound_silent")
@@ -332,8 +344,12 @@ def _sound_line(cfg: dict[str, Any], lang: str = "en") -> str:
         if str(c).strip() and not _BAD_DIRECTIVE.search(str(c))
     ][:3]
     if cues:
-        return phrase(_PHRASES, lang, "sound_cues_only", cues=list_separator(lang).join(cues))
-    return phrase(_PHRASES, lang, "sound_diegetic_only")
+        line = phrase(_PHRASES, lang, "sound_cues_only", cues=list_separator(lang).join(cues))
+    else:
+        line = phrase(_PHRASES, lang, "sound_diegetic_only")
+    if not _has_authored_speech(cfg):
+        line = f"{line} {phrase(_PHRASES, lang, 'sound_no_speech')}"
+    return line
 
 
 def exited_ids(cfg: dict[str, Any] | None) -> list[str]:
