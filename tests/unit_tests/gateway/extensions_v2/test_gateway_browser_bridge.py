@@ -2,6 +2,7 @@
 
 """Exercise browser routing with generic packages, without a login example."""
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -373,6 +374,38 @@ async def test_release_clears_the_retired_generation_before_withdrawing_declarat
         assert declarations and declarations[-1]["payload"]["packages"] == []
         assert events.index(clears[0]) < events.index(declarations[-1])
     finally:
+        await runtime.shutdown()
+
+
+async def test_a_new_connection_gets_declarations_while_a_release_is_pending(tmp_path):
+    """A release under way must not withhold declarations from another browser (S_06)."""
+    runtime = await _runtime(tmp_path)
+    release_cleared, release_may_finish = asyncio.Event(), asyncio.Event()
+    try:
+        ws = SimpleNamespace(closed=False)
+        await _ready(runtime, ws, "application.sidebar.footer")
+        await _click_params(runtime, ws, "application.sidebar.footer")
+        original_send = runtime.channel.send_event
+
+        async def send_event(target, event, payload):
+            if event == "webui.render.clear":
+                release_cleared.set()
+                await release_may_finish.wait()
+            await original_send(target, event, payload)
+
+        runtime.channel.send_event = send_event
+        runtime.channel.events.clear()
+        runtime.unpublish(PACKAGE)
+        await release_cleared.wait()
+
+        await runtime.browser.connect(SimpleNamespace(closed=False), "browser-2")
+
+        declarations = [item for item in runtime.channel.events if item["event"] == "client.declarations"]
+        assert declarations, runtime.channel.events
+        assert declarations[-1]["payload"]["packages"] == []
+    finally:
+        release_may_finish.set()
+        await runtime.browser.settle()
         await runtime.shutdown()
 
 
