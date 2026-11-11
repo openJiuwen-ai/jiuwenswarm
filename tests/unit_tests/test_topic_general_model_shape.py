@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
@@ -217,4 +219,45 @@ async def test_shape_repair_retries_once_then_succeeds() -> None:
     assert len(calls) == 2
     assert "validation_error" in calls[1]
     assert '"request_id": "repair-req-1"' in calls[1] or '"request_id":"repair-req-1"' in calls[1]
+    assert result["scores"][0]["candidate_id"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_shape_repair_retries_on_json_decode_error() -> None:
+    calls: list[str] = []
+
+    async def invoke(stage: str, system: str, payload: str) -> dict:
+        calls.append(payload)
+        if len(calls) == 1:
+            raise json.JSONDecodeError("Expecting value", "{garbage", 1)
+        return {
+            "scores": [
+                {
+                    "candidate_id": "c1",
+                    "question_focus": "修好了",
+                    "assertion_spans": [],
+                    "given_conditions": [],
+                    "click_score_nullable": 0.1,
+                    "depth_score_nullable": 0.1,
+                    "combined_utility_nullable": 0.1,
+                    "admitted": True,
+                    "reason": "none; repaired after parse failure",
+                }
+            ]
+        }
+
+    def validate(raw: object) -> None:
+        utility_scores_by_id(raw, ["c1"])
+
+    result = await invoke_stage_with_shape_repair(
+        invoke,
+        "v6_utility_scorer",
+        "system",
+        '{"request_id":"repair-json-1"}',
+        coerce=coerce_utility_scorer_payload,
+        validate=validate,
+    )
+    assert len(calls) == 2
+    assert "JSON parse failed" in calls[1]
+    assert '"request_id": "repair-json-1"' in calls[1] or '"request_id":"repair-json-1"' in calls[1]
     assert result["scores"][0]["candidate_id"] == "c1"

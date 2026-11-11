@@ -57,8 +57,9 @@ _ALWAYS_THINK_DISABLE_MARKERS = (
 
 # One repair round after business validation fails: same shape as Eternal call_json.
 _SHAPE_REPAIR_CHECKLIST = """
-Previous output failed host validation. Return ONE corrected JSON value only —
-no markdown fence, no prose. Keep every required id exactly as in the request.
+Previous output failed host validation (invalid JSON or wrong shape). Return ONE
+corrected JSON value only — no markdown fence, no prose, no thinking text.
+Keep every required id exactly as in the request.
 Do not invent candidates, pairs, or mappings that were not requested.
 Fix only the structural problem named in validation_error.
 """
@@ -591,7 +592,17 @@ def build_ark_stage_invoker(
                     "[Topic] stage=%s finish_reason=length; attempting JSON parse",
                     stage,
                 )
-            result = _parse_stage_json(_content_text(content))
+            content_text = _content_text(content)
+            try:
+                result = _parse_stage_json(content_text)
+            except json.JSONDecodeError:
+                preview = content_text if len(content_text) <= 800 else f"{content_text[:800]}..."
+                logger.warning(
+                    "[Topic] stage=%s JSON parse failed preview=%r",
+                    stage,
+                    preview,
+                )
+                raise
             status = "lineage_failed"
             lineage = (
                 invocation_lineage_for_stage(stage, payload, result)
@@ -716,10 +727,11 @@ async def invoke_stage_with_shape_repair(
     validate: Callable[[Any], Any],
     max_repairs: int = 1,
 ) -> Any:
-    """Coerce, validate, then one Eternal-style repair retry on ``ValueError``.
+    """Coerce, validate, then one Eternal-style repair retry.
 
-    Keeps business fail-closed after the last attempt. Used by utility / diversity
-    (and similar exact-key stages) so general models can fix shape drift once.
+    Retries once on ``ValueError`` (shape) or ``json.JSONDecodeError`` (unparseable
+    model text). Keeps business fail-closed after the last attempt. Used by
+    utility / diversity so general models can fix parse/shape drift once.
     """
 
     def _shape_preview(value: Any) -> str:
@@ -731,40 +743,29 @@ async def invoke_stage_with_shape_repair(
             return f"{text[:800]}..."
         return text
 
-    raw = await invoke_stage(stage, system_prompt, payload)
-    if coerce is not None:
-        raw = coerce(raw)
-    try:
-        with provider_validation(invoke_stage, raw):
-            validate(raw)
-        return raw
-    except ValueError as exc:
-        if max_repairs <= 0:
-            raise
-        logger.warning(
-            "[Topic] stage=%s shape validation failed; repairing once: %s preview=%s",
-            stage,
-            exc,
-            _shape_preview(raw),
-        )
-        try:
-            original_request: Any = json.loads(payload)
-        except json.JSONDecodeError:
-            original_request = payload
+    def _repair_request_id(original_request: Any) -> str:
         # Host audit (_audited_ark_stage_invoker) requires top-level request_id.
-        request_id = (
-            str(original_request.get("request_id") or "").strip()
-            if isinstance(original_request, dict)
-            else ""
-        )
+        if isinstance(original_request, dict):
+            return str(original_request.get("request_id") or "").strip()
+        return ""
+
+    def _original_request() -> Any:
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            return payload
+
+    async def _repair_once(*, validation_error: str, previous_output: Any) -> Any:
+        original_request = _original_request()
         repair_body: dict[str, Any] = {
-            "validation_error": str(exc),
-            "previous_output": raw,
+            "validation_error": validation_error,
+            "previous_output": previous_output,
             "original_request": original_request,
         }
+        request_id = _repair_request_id(original_request)
         if request_id:
             repair_body["request_id"] = request_id
-        repair_payload = json.dumps(repair_body, ensure_ascii=False)
+        repair_payload = json.dumps(repair_body, ensure_ascii=False, default=str)
         repaired = await invoke_stage(
             stage,
             f"{system_prompt.rstrip()}\n{_SHAPE_REPAIR_CHECKLIST}",
@@ -783,3 +784,40 @@ async def invoke_stage_with_shape_repair(
             )
             raise
         return repaired
+
+    try:
+        raw = await invoke_stage(stage, system_prompt, payload)
+    except json.JSONDecodeError as exc:
+        if max_repairs <= 0:
+            raise
+        previous = (exc.doc or "")[:800]
+        logger.warning(
+            "[Topic] stage=%s JSON parse failed; repairing once: %s preview=%r",
+            stage,
+            exc,
+            previous,
+        )
+        return await _repair_once(
+            validation_error=f"JSON parse failed: {exc}",
+            previous_output=previous or str(exc),
+        )
+
+    if coerce is not None:
+        raw = coerce(raw)
+    try:
+        with provider_validation(invoke_stage, raw):
+            validate(raw)
+        return raw
+    except ValueError as exc:
+        if max_repairs <= 0:
+            raise
+        logger.warning(
+            "[Topic] stage=%s shape validation failed; repairing once: %s preview=%s",
+            stage,
+            exc,
+            _shape_preview(raw),
+        )
+        return await _repair_once(
+            validation_error=str(exc),
+            previous_output=raw,
+        )
