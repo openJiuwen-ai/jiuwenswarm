@@ -199,6 +199,7 @@ def _initial_stored_config(*, collection_enabled: bool) -> dict[str, object]:
         "collection_enabled": collection_enabled,
         "agent_use_enabled": False,
         "strategy_profile": strategy_profile,
+        "max_context_size_mb": 50,
         "max_pages_per_directory": max_pages,
         "max_subdirectories_per_directory": max_subdirectories,
         "fetch_services": [],
@@ -217,6 +218,7 @@ def _unconfigured_projection() -> dict[str, object]:
         "collection_enabled": False,
         "agent_use_enabled": False,
         "strategy_profile": strategy_profile,
+        "max_context_size_mb": 50,
         "max_pages_per_directory": max_pages,
         "max_subdirectories_per_directory": max_subdirectories,
         "model_index": model_index,
@@ -765,7 +767,7 @@ class PersonalContextHostAPI:
         self._config: PersonalContext.Config | None = None
         self._stored_config: dict[str, object] | None = None
         self._operation_lock = asyncio.Lock()
-        self._fetch_run_stop_lock = asyncio.Lock()
+        self._fetch_run_stop_tasks: dict[str, asyncio.Task[None]] = {}
         self._refresh_error_language()
 
     @property
@@ -863,6 +865,16 @@ class PersonalContextHostAPI:
             _publish_yaml(self._config_path, payload)
             self._stored_config = deepcopy(stored)
             return
+
+        if previous is not None and previous.max_context_size_mb != candidate.max_context_size_mb:
+            capacity_update = previous.model_copy(update={"max_context_size_mb": candidate.max_context_size_mb})
+            if _configs_equivalent(capacity_update, candidate):
+                await self._apply_live_update_locked(
+                    capacity_update, stored, payload,
+                    apply=lambda: self._personal_context.set_configuration(capacity_update),
+                    rollback=lambda: self._personal_context.set_configuration(previous),
+                )
+                return
 
         temporary: Path | None = _stage_yaml(self._config_path, payload)
         disabling = (
@@ -1072,30 +1084,25 @@ class PersonalContextHostAPI:
             _cleanup_temporary(temporary)
 
     async def get_overview(self) -> dict[str, object]:
-        """Return one consistent copy of the full configuration and Core status."""
+        """Read the last committed configuration without queueing behind a writer."""
 
-        async with self._operation_lock:
-            config = (
-                _project_stored_config(self._stored_config)
-                if self._stored_config is not None
-                else None
-            )
-            status = await self._personal_context.snapshot()
-            return {
-                "configured": self._stored_config is not None,
-                "config": config,
-                "status": localize_payload(
-                    status.model_dump(mode="json"), self._error_language
-                ),
-            }
+        status = await self._personal_context.snapshot()
+        stored = self._stored_config
+        return {
+            "configured": stored is not None,
+            "config": _project_stored_config(stored) if stored is not None else None,
+            "status": localize_payload(
+                status.model_dump(mode="json"), self._error_language
+            ),
+        }
 
     async def get_runtime_config(self) -> dict[str, object]:
         """Return the complete persistent PersonalContext configuration."""
 
-        async with self._operation_lock:
-            if self._stored_config is None:
-                return _unconfigured_projection()
-            return _project_stored_config(self._stored_config)
+        stored = self._stored_config
+        if stored is None:
+            return _unconfigured_projection()
+        return _project_stored_config(stored)
 
     async def patch_runtime_config(
         self,
@@ -1109,6 +1116,7 @@ class PersonalContextHostAPI:
             "collection_enabled",
             "agent_use_enabled",
             "strategy_profile",
+            "max_context_size_mb",
         }
         if unknown:
             _raise_host_error(
@@ -1301,13 +1309,11 @@ class PersonalContextHostAPI:
     async def list_fetch_services(self) -> list[dict[str, object]]:
         """Return every fixed fetch service configuration."""
 
-        async with self._operation_lock:
-            if self._stored_config is None:
-                return []
-            services = cast(
-                list[dict[str, object]], self._stored_config["fetch_services"]
-            )
-            return [_project_service(service) for service in services]
+        stored = self._stored_config
+        if stored is None:
+            return []
+        services = cast(list[dict[str, object]], stored["fetch_services"])
+        return [_project_service(service) for service in services]
 
     async def create_fetch_service(
         self,
@@ -1315,16 +1321,35 @@ class PersonalContextHostAPI:
     ) -> dict[str, object]:
         """Validate, persist, and apply one new fixed-provider fetch service."""
 
+        if not isinstance(service, dict):
+            _raise_host_error(
+                "service must be an object", reason="parameter_invalid"
+            )
+        _validate_service_integers(service)
+        provider = service.get("provider")
+        normalized_provider = (
+            provider.strip().casefold() if isinstance(provider, str) else None
+        )
+        validated_credentials: dict[str, str] | None = None
+        if normalized_provider in _REPOSITORY_PAT_FIELDS and "credentials" not in service:
+            provider_credentials = cast(
+                dict[str, dict[str, str]],
+                (self._stored_config or {}).get("provider_credentials", {}),
+            )
+            current = provider_credentials.get(normalized_provider)
+            if current is not None:
+                validated_credentials = dict(current)
+                # Remote validation must not own the configuration write lock.
+                await _validate_repository_pat_for_write(
+                    normalized_provider,
+                    validated_credentials[_REPOSITORY_PAT_FIELDS[normalized_provider]],
+                )
+
         async with self._operation_lock:
             if self._stored_config is None:
                 _raise_host_error(
                     "PersonalContext is not configured", reason="not_configured"
                 )
-            if not isinstance(service, dict):
-                _raise_host_error(
-                    "service must be an object", reason="parameter_invalid"
-                )
-            _validate_service_integers(service)
             stored = deepcopy(self._stored_config)
             services = cast(list[dict[str, object]], stored["fetch_services"])
             service_id = service.get("service_id")
@@ -1335,10 +1360,6 @@ class PersonalContextHostAPI:
                     "PersonalContext fetch service already exists",
                     reason="duplicate_service",
                 )
-            provider = service.get("provider")
-            normalized_provider = (
-                provider.strip().casefold() if isinstance(provider, str) else None
-            )
             if normalized_provider is not None:
                 provider_count = sum(
                     item.get("provider") == normalized_provider for item in services
@@ -1366,18 +1387,15 @@ class PersonalContextHostAPI:
                         f"{normalized_provider} must be authorized before creating a fetch service",
                         reason="authorization_required",
                     )
+                if current != validated_credentials:
+                    _raise_host_error(
+                        "Repository credentials changed during validation; retry creating the service",
+                        reason="timeout",
+                        status_name="CONTEXT_PROACTIVE_RUNTIME_TIMEOUT",
+                    )
                 internal_service["credentials"] = {field: current[field]}
             services.append(internal_service)
             stored, candidate = _prepare_stored_config(stored)
-            if normalized_provider in _REPOSITORY_PAT_FIELDS:
-                current_credentials = cast(
-                    dict[str, dict[str, str]],
-                    stored["provider_credentials"],
-                )[normalized_provider]
-                await _validate_repository_pat_for_write(
-                    normalized_provider,
-                    current_credentials[_REPOSITORY_PAT_FIELDS[normalized_provider]],
-                )
             created_config = next(
                 item
                 for item in candidate.fetch_services
@@ -1699,10 +1717,25 @@ class PersonalContextHostAPI:
                 "service_id must be a non-empty string", reason="parameter_invalid"
             )
         normalized_id = service_id.strip()
-        # stop_fetch_run 不修改 Host 配置。它改用独立锁，避免一次 Core 收尾
-        # 阻塞 create/patch/delete；Core 内部仍由 _fetch_lock 保护运行任务。
-        async with self._fetch_run_stop_lock:
-            await self._personal_context.stop_fetch_run(normalized_id)
+        # Register without yielding. Only duplicate stops for the same service
+        # share work; one slow service must not hold a lock for other services.
+        task = self._fetch_run_stop_tasks.get(normalized_id)
+        if task is None or task.done():
+            task = asyncio.create_task(
+                self._personal_context.stop_fetch_run(normalized_id),
+                name=f"personal-context-host-stop-{normalized_id}",
+            )
+            self._fetch_run_stop_tasks[normalized_id] = task
+
+            def settled(completed: asyncio.Task[None]) -> None:
+                if self._fetch_run_stop_tasks.get(normalized_id) is completed:
+                    self._fetch_run_stop_tasks.pop(normalized_id, None)
+                # A disconnected caller must not leave an unobserved task error.
+                if not completed.cancelled():
+                    completed.exception()
+
+            task.add_done_callback(settled)
+        await asyncio.shield(task)
         return {"ok": True}
 
     async def get_graph(
@@ -1831,30 +1864,32 @@ class PersonalContextHostAPI:
             _raise_host_error(
                 "reauthorize must be a boolean", reason="parameter_invalid"
             )
-        async with self._operation_lock:
-            if not isinstance(provider, str) or not provider.strip():
+        if not isinstance(provider, str) or not provider.strip():
+            _raise_host_error(
+                "provider must be a non-empty string", reason="parameter_invalid"
+            )
+        normalized_provider = provider.strip().casefold()
+        if normalized_provider in _REPOSITORY_PAT_FIELDS:
+            field = _REPOSITORY_PAT_FIELDS[normalized_provider]
+            if not isinstance(credentials, dict) or set(credentials) != {field}:
                 _raise_host_error(
-                    "provider must be a non-empty string", reason="parameter_invalid"
+                    f"{normalized_provider} credentials must contain only {field}",
+                    reason="credentials_invalid",
                 )
-            normalized_provider = provider.strip().casefold()
-            if normalized_provider in _REPOSITORY_PAT_FIELDS:
-                field = _REPOSITORY_PAT_FIELDS[normalized_provider]
-                if not isinstance(credentials, dict) or set(credentials) != {field}:
-                    _raise_host_error(
-                        f"{normalized_provider} credentials must contain only {field}",
-                        reason="credentials_invalid",
-                    )
-                secret = credentials[field]
-                if not isinstance(secret, str) or not secret.strip():
-                    _raise_host_error(
-                        f"{normalized_provider} credential must be a non-empty string",
-                        reason="credentials_invalid",
-                    )
-                normalized_secret = secret.strip()
-                account = await _validate_repository_pat_for_write(
-                    normalized_provider,
-                    normalized_secret,
+            secret = credentials[field]
+            if not isinstance(secret, str) or not secret.strip():
+                _raise_host_error(
+                    f"{normalized_provider} credential must be a non-empty string",
+                    reason="credentials_invalid",
                 )
+            normalized_secret = secret.strip()
+            # Validate remotely before taking the configuration lock. Merge
+            # into the latest snapshot only after validation has succeeded.
+            account = await _validate_repository_pat_for_write(
+                normalized_provider,
+                normalized_secret,
+            )
+            async with self._operation_lock:
                 stored = (
                     deepcopy(self._stored_config)
                     if self._stored_config is not None
@@ -1924,37 +1959,40 @@ class PersonalContextHostAPI:
                     "authorized",
                     account=account,
                 )
-            if normalized_provider != "feishu":
-                _raise_host_error(
-                    "provider does not support authorization",
-                    reason="authorization_unsupported",
-                )
-            if credentials is not None:
-                _raise_host_error(
-                    "feishu authorization does not accept credentials",
-                    reason="credentials_invalid",
-                )
+        if normalized_provider != "feishu":
+            _raise_host_error(
+                "provider does not support authorization",
+                reason="authorization_unsupported",
+            )
+        if credentials is not None:
+            _raise_host_error(
+                "feishu authorization does not accept credentials",
+                reason="credentials_invalid",
+            )
+        async with self._operation_lock:
             if self._config is None:
                 _raise_host_error(
                     "PersonalContext configuration must be set before provider authorization",
                     reason="not_configured",
                 )
-            try:
-                result = await self._personal_context.authorize_provider(
-                    normalized_provider,
-                    reauthorize=reauthorize,
-                )
-                return cast(
-                    dict[str, object], localize_payload(result, self._error_language)
-                )
-            except asyncio.CancelledError:
-                raise
-            except BaseException as exc:
-                raise _as_host_error(
-                    exc,
-                    "PersonalContext provider authorization failed",
-                    reason="authorization_failed",
-                ) from None
+        # Core owns authorization task coordination and checks its snapshot.
+        # The CLI handshake must not block unrelated Host configuration writes.
+        try:
+            result = await self._personal_context.authorize_provider(
+                normalized_provider,
+                reauthorize=reauthorize,
+            )
+            return cast(
+                dict[str, object], localize_payload(result, self._error_language)
+            )
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            raise _as_host_error(
+                exc,
+                "PersonalContext provider authorization failed",
+                reason="authorization_failed",
+            ) from None
 
     async def start(self) -> None:
         """Load the file once when needed and start the configured Core."""
@@ -1994,9 +2032,8 @@ class PersonalContextHostAPI:
     async def is_runtime_enabled(self) -> bool:
         """Return the loaded Agent-use switch without reading or parsing YAML."""
 
-        async with self._operation_lock:
-            config = self._config
-            return bool(config is not None and config.agent_use_enabled)
+        config = self._config
+        return bool(config is not None and config.agent_use_enabled)
 
     async def get_status(self) -> PersonalContext.Status:
         """Return the Core's bounded, credential-free status snapshot."""
