@@ -22,6 +22,7 @@ from jiuwenswarm.server.handlers._shared import (
     _background_session_kvc_tasks,
     _sessions_dir_for_request,
     _is_team_metadata_mode,
+    _uses_tenant_pool,
     _log_background_session_kvc_failure,
     _plan_active_sessions,
     _plan_exited_sessions,
@@ -71,14 +72,15 @@ def _coerce_int(value: object, default: int) -> int:
 
 async def _todo_snapshot_for_history(ctx: RequestContext, session_id: str) -> FrontendTodos | None:
     """所属后端不可用时不回退宿主旧副本；历史消息仍可正常返回。"""
-    manager = getattr(ctx.services, "agent_manager", None)
-    if manager is None:
-        return None
     try:
-        from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+        if _uses_tenant_pool(ctx.request):
+            from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
-        if isinstance(manager, TenantAgentPool):
-            manager = await manager.get_agent_manager(*TenantAgentPool.extract_ids(ctx.request))
+            manager = await ctx.services.tenant_pool().get_agent_manager(*TenantAgentPool.extract_ids(ctx.request))
+        else:
+            manager = getattr(ctx.services, "agent_manager", None)
+        if manager is None:
+            return None
         channel = ctx.request.channel_id or "default"
         agent = manager.get_agent_for_session_nowait(channel_id=channel, session_id=session_id)
         if agent is None:

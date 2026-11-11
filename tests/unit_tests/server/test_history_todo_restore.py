@@ -9,7 +9,7 @@ import pytest_asyncio
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.todo_snapshot import TODO_SNAPSHOT_MODE
-from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.context import AgentServerServices, RequestContext
 from jiuwenswarm.server.handlers import session as session_handlers
 
 
@@ -326,18 +326,58 @@ async def test_history_generation_comes_from_the_same_owner(mode, _history):
 
 
 @pytest.mark.asyncio
-async def test_history_selects_the_request_tenant_manager(_history):
-    from unittest.mock import AsyncMock
+@pytest.mark.parametrize("channel,agent_id,service_id,uses_pool", [
+    ("officeclaw", "office", "default", True),
+    ("web", "office", "default", True),
+    ("web", "default", "other", True),
+    ("web", "default", "default", False),
+])
+async def test_history_selects_the_request_manager(_history, channel, agent_id, service_id, uses_pool):
+    from unittest.mock import AsyncMock, Mock
     from openjiuwen.harness.tools.todo_store import decode_snapshot
     from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
     ctx, sink = _context(1)
-    ctx = _with_reader(ctx, sink, AsyncMock(return_value=(
-        decode_snapshot({"plan_id": "P", "revision": 1, "todos": []}), None,
+    ctx.request.channel_id, ctx.request.agent_id, ctx.request.service_id = channel, agent_id, service_id
+    owner = object()
+    native_lookup, tenant_lookup = Mock(return_value=owner), Mock(return_value=owner)
+    pool = SimpleNamespace(get_agent_manager=AsyncMock(return_value=SimpleNamespace(
+        get_agent_for_session_nowait=tenant_lookup,
     )))
-    pool = object.__new__(TenantAgentPool)
-    pool.get_agent_manager = AsyncMock(return_value=ctx.services.agent_manager)
-    ctx.services.agent_manager = pool
+    pool_accessor = Mock(return_value=pool)
+    reader = AsyncMock(return_value=(
+        decode_snapshot({"plan_id": "P", "revision": 1, "todos": []}), None,
+    ))
+    services = AgentServerServices(SimpleNamespace(
+        _agent_manager=SimpleNamespace(get_agent_for_session_nowait=native_lookup),
+        _tenant_pool=pool_accessor,
+        _resolve_adapter=lambda agent: SimpleNamespace(read_todo_snapshot=reader) if agent is owner else None,
+    ))
+    ctx = RequestContext(ctx.request, sink, "test", services)
     await session_handlers.handle_history_get_stream(ctx)
-    pool.get_agent_manager.assert_awaited_once_with(*TenantAgentPool.extract_ids(ctx.request))
+    selected, unused = (tenant_lookup, native_lookup) if uses_pool else (native_lookup, tenant_lookup)
+    selected.assert_called_once_with(channel_id=channel, session_id="web_todo_1")
+    unused.assert_not_called()
+    if uses_pool:
+        pool_accessor.assert_called_once_with()
+        pool.get_agent_manager.assert_awaited_once_with(*TenantAgentPool.extract_ids(ctx.request))
+    else:
+        pool_accessor.assert_not_called()
+    reader.assert_awaited_once_with("web_todo_1", request=ctx.request)
     assert any(frame["payload"]["event_type"] == "todo.updated" for frame in sink.sent)
+
+
+@pytest.mark.asyncio
+async def test_history_tenant_failure_keeps_messages_without_using_default_manager(_history):
+    from unittest.mock import AsyncMock, Mock
+
+    ctx, sink = _context(1)
+    ctx.request.channel_id = "officeclaw"
+    native_lookup = Mock()
+    services = AgentServerServices(SimpleNamespace(
+        _agent_manager=SimpleNamespace(get_agent_for_session_nowait=native_lookup),
+        _tenant_pool=lambda: SimpleNamespace(get_agent_manager=AsyncMock(side_effect=OSError("tenant unavailable"))),
+    ))
+    await session_handlers.handle_history_get_stream(RequestContext(ctx.request, sink, "test", services))
+    native_lookup.assert_not_called()
+    assert sink.sent and all(frame["payload"]["event_type"] == "history.message" for frame in sink.sent)
