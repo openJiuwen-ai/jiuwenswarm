@@ -167,8 +167,13 @@ def _range_chunks(source: BinaryIO, start: int, end: int) -> Iterator[bytes]:
 def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int | None = None,
                       metadata_only: bool = False, max_field_bytes: int = 4 * 1024 * 1024,
                       max_scan_bytes: int = 8 * 1024 * 1024 * 1024,
-                      max_seconds: float = 120) -> Iterator[HistoryRow]:
-    """Project one semantic row at a time; large tool values become explicit artifacts."""
+                      max_seconds: float = 120,
+                      include_record: Callable[[dict[str, Any]], bool] | None = None) -> Iterator[HistoryRow]:
+    """Project semantic rows with a scan-time budget that excludes consumer waits.
+
+    Consumers may await native compression between pages. That wait must not
+    exhaust the scanner's time budget while no history bytes are being parsed.
+    """
     end = path.stat().st_size if end is None else end
     if end < start or end - start > max_scan_bytes:
         raise HistoryReplayError("Legacy history exceeds the migration disk budget", code="HISTORY_RESTORE_LIMIT")
@@ -214,7 +219,8 @@ def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int |
             row_end = reader.position
             record = {key: _read_value(values, span, max_bytes=65536)
                       for key, span in spans.items() if key in _METADATA_FIELDS}
-            if not metadata_only and is_context_record(record):
+            selected = include_record(record) if include_record is not None else is_context_record(record)
+            if not metadata_only and selected:
                 retained = 0
                 for key, span in spans.items():
                     if key in record or key in _OMIT_FIELDS:
@@ -252,7 +258,11 @@ def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int |
                     reader.advance()
                 row_end = reader.position
                 reader.white()
-            yield HistoryRow(record, row_start, row_end, value_end)
+            paused_at = time.monotonic()
+            try:
+                yield HistoryRow(record, row_start, row_end, value_end)
+            finally:
+                reader.deadline += time.monotonic() - paused_at
         if legacy:
             reader.expect(93)
             reader.white()
