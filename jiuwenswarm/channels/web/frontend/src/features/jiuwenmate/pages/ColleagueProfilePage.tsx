@@ -792,7 +792,9 @@ export function ColleagueProfilePage({
                   onTagsChange={setTags}
                   onSave={() => saveSettings({ name: name.trim(), description: description.trim(), tags: [...tags] })}
                 />
-              ) : null}
+              ) : (
+                <p className="jiuwenmate-profile__description">{colleague.description}</p>
+              )}
               <ProfileOverview
                 colleague={colleague}
                 activity={activity}
@@ -1040,7 +1042,6 @@ function ProfileOverview({
 
   return (
     <>
-      <p className="jiuwenmate-profile__description">{colleague.description}</p>
       <p className="jiuwenmate-profile__joined">
         {t('jiuwenmate.profile.joinedAt', { time: formatJoinedAt(colleague.joinedAt) })}
       </p>
