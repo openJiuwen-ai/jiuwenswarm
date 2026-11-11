@@ -149,6 +149,28 @@ vim .env.custom
 ./deploy.sh restart --hosts 192.168.1.1
 ```
 
+### 刷新单个用户配置
+
+`refresh-user-config.sh` 用于把某个逻辑用户的配置刷新为 root 模板，同时保留该用户的
+`models.agentos`。
+
+实际实现为同目录的 `refresh_user_config.py`，`refresh-user-config.sh` 只是入口包装。
+
+```
+# 预览将要执行的动作（不写文件、不发请求）
+./refresh-user-config.sh user_68 --dry-run
+
+# 刷新该用户配置
+./refresh-user-config.sh user_68 -y
+
+# 批量：刷新所有已初始化用户
+./refresh-user-config.sh --all -y
+```
+
+可选参数：`--home-base`（默认 `/home/agentos/users`）、`--template`
+（默认 `/root/.jiuwenswarm/config/config.yaml`）、`--all`。
+脚本必须以 root 运行，目标用户需先由 `agentos.sh create-user` 初始化。
+
 ## 参数解析
 
 命令格式：
