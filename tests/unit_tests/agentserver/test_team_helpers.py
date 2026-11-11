@@ -6500,22 +6500,42 @@ async def test_consume_stream_with_query_deduplicates_ask_user_questions(monkeyp
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_forwards_the_leader_pause_with_its_interrupt_id(monkeypatch):
+@pytest.mark.parametrize("kind", ["ask_user", "confirm"])
+async def test_consume_stream_with_query_forwards_the_leader_pause_with_its_interrupt_id(monkeypatch, kind):
     from openjiuwen.core.single_agent.interrupt.response import ToolCallInterruptRequest
 
     broadcasted: list[dict] = []
-    request = ToolCallInterruptRequest(
-        tool_call_id="tool-ask-1",
-        tool_name="ask_user",
-        tool_args='{"query": "Which colour?"}',
-        interrupt_id="intr_ask_1",
-        interrupt_kind="ask_user",
-    )
+    if kind == "ask_user":
+        request = ToolCallInterruptRequest(
+            tool_call_id="tool-ask-1",
+            tool_name="ask_user",
+            tool_args='{"query": "Which colour?"}',
+            interrupt_id="intr_ask_1",
+            interrupt_kind="ask_user",
+        )
+        source, question = "ask_user_interrupt", "Which colour?"
+    else:
+        source, question = "confirm_interrupt", "Review the public GitCode issue draft."
+        issue_report = {
+            "title": "[Bug]: The composer freezes",
+            "body": "### Reproduction steps\n\n1. Select a model.",
+            "labels": ["bug"],
+            "tracker_url": "https://gitcode.com/openJiuwen/jiuwenswarm/issues",
+        }
+        request = ToolCallInterruptRequest(
+            tool_call_id="tool-report-1",
+            tool_name="report_issue",
+            message=question,
+            interrupt_id="intr_report_1",
+            interrupt_kind="confirm",
+            ui_options=[{"value": "allow_once", "label": "Allow once"}, {"value": "reject", "label": "Reject"}],
+            metadata={"issue_report": issue_report},
+        )
 
     async def _fake_stream(**kwargs):
         yield SimpleNamespace(
             type="__interaction__",
-            payload=SimpleNamespace(id="tool-ask-1", value=request),
+            payload=SimpleNamespace(id=request.tool_call_id, value=request),
             role=TeamRole.LEADER,
         )
 
@@ -6553,9 +6573,13 @@ async def test_consume_stream_with_query_forwards_the_leader_pause_with_its_inte
         if event.get("event_type") == "chat.ask_user_question"
     ]
     assert [(event["request_id"], event["interrupt_id"], event["kind"]) for event in ask_events] == [
-        ("tool-ask-1", "intr_ask_1", "ask_user"),
+        (request.tool_call_id, request.interrupt_id, kind),
     ]
-    assert ask_events[0]["questions"][0]["question"] == "Which colour?"
+    assert ask_events[0]["source"] == source
+    assert ask_events[0]["questions"][0]["question"] == question
+    if kind == "confirm":
+        assert [option["value"] for option in ask_events[0]["questions"][0]["options"]] == ["allow_once", "reject"]
+        assert ask_events[0]["questions"][0]["issue_report"] == issue_report
 
 def test_extract_query_directives_ignores_non_prefix():
     cleaned, hide_dm, debug = _TeamHelpersTestApi.extract_query_directives(

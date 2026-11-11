@@ -46,6 +46,7 @@ const {
   canApplyAuthorizationAction,
   classifyAuthOption,
   classifyPrompt,
+  getIssueReviewDraft,
   normalizeAuthOption,
   resolveAuthorizationActions,
 } = await import(
@@ -142,6 +143,33 @@ test('a sibling option never stands in for the option the user clicked', () => {
 
   const unrecognised = [question([option('第一条'), option('第二条')])];
   assert.deepEqual(selected(unrecognised, pickAction(unrecognised, '第二条')), ['第二条']);
+});
+
+test('issue review uses the addressed confirmation and its exact public draft', () => {
+  const draft = {
+    title: '[Bug]: The composer freezes',
+    body: '### Reproduction steps\n\n1. Select a model.',
+    labels: ['bug'],
+    tracker_url: 'https://gitcode.com/openJiuwen/jiuwenswarm/issues',
+  };
+  const card = {
+    source: 'confirm_interrupt',
+    request_id: 'report-call',
+    interruptId: 'report-confirmation',
+    questions: [question(
+      [option('Allow once', 'allow_once'), option('Reject', 'reject')],
+      { issue_report: draft },
+    )],
+  };
+  assert.equal(classifyPrompt(card), 'issue-review');
+  assert.deepEqual(getIssueReviewDraft(card), draft);
+  assert.deepEqual(selected(card.questions, pickAction(card.questions, 'Allow once')), ['allow_once']);
+  assert.deepEqual(selected(card.questions, pickAction(card.questions, 'Reject')), ['reject']);
+  assert.equal(classifyPrompt({ ...card, interruptId: undefined }), 'authorization');
+  assert.equal(classifyPrompt({
+    ...card,
+    questions: [{ ...card.questions[0], issue_report: { ...draft, tracker_url: 'https://example.org/issues' } }],
+  }), 'authorization');
 });
 
 test('hyphenated four-option card keeps the canonical button order', () => {
