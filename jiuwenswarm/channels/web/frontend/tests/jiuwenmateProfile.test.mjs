@@ -1386,6 +1386,15 @@ test('the pencil edits the current page and stays there', () => {
   assert.match(model, /type="radio"/);
 });
 
+test('the overview hides the saved capability intro while the identity editor is open', () => {
+  const editing = renderProfile({ initialSection: 'overview', initialEditing: true });
+  assert.match(editing, /data-testid="jiuwenmate-profile-identity-editor"/);
+  assert.doesNotMatch(editing, /jiuwenmate-profile__description/);
+
+  const saved = renderProfile({ initialSection: 'overview' });
+  assert.match(saved, /class="jiuwenmate-profile__description">通用办公助理</);
+});
+
 test('knowledge uses the compact page list without exposing the office directory', () => {
   const markup = renderProfile({
     initialSection: 'knowledge',
