@@ -57,13 +57,71 @@ def _build_row_from_template(
     }
 
 
+# agent 模板的变更要不要通知 runtime 重建，取决于变更内容：
+# extension_config 槽的引用变化不需要——agentserver 读取该表带缓存过期，
+# 稍后自然读到新值；其余槽位引用、启停、data 内容变化会影响新建 agent 的
+# 配置，需要通知。
+_EXTENSION_CONFIG_SLOT = "extension_config"
+# 展示用元数据，不影响 agent 配置，变化无需通知。
+_METADATA_FIELDS = frozenset({"template_name", "description", "agent_tags"})
+
+
+def _sorted_refs(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted(str(item) for item in value)
+
+
+def _slot_refs_differ(old_refs: Any, new_refs: Any) -> bool:
+    """比较各槽位引用的差异，跳过 extension_config 槽（列表顺序无关）。"""
+    old = old_refs if isinstance(old_refs, dict) else {}
+    new = new_refs if isinstance(new_refs, dict) else {}
+    for slot in set(old) | set(new):
+        if slot == _EXTENSION_CONFIG_SLOT:
+            continue
+        if _sorted_refs(old.get(slot)) != _sorted_refs(new.get(slot)):
+            return True
+    return False
+
+
+def _runtime_relevant_change_for_upsert(
+    existing: dict[str, Any] | None,
+    template: dict[str, Any],
+) -> bool:
+    """整行写入是否影响 runtime 配置：新建、其他槽位引用或内容变化 → True。"""
+    if existing is None:
+        return True
+    new_row = _build_row_from_template(template, now=None)
+    if _slot_refs_differ(existing.get("template_ref"), new_row.get("template_ref")):
+        return True
+    return any(new_row.get(key) != existing.get(key) for key in ("enabled", "data"))
+
+
+def _runtime_relevant_change_for_update(
+    existing: dict[str, Any],
+    updates: dict[str, Any],
+) -> bool:
+    """PATCH 是否影响 runtime 配置：只改 extension_config 引用或元数据 → False。"""
+    for key, new_value in updates.items():
+        if key in _METADATA_FIELDS or key in ("created_at", "updated_at"):
+            continue
+        if key == "template_ref":
+            if _slot_refs_differ(existing.get("template_ref"), new_value):
+                return True
+            continue
+        if new_value != existing.get(key):
+            return True
+    return False
+
+
 async def _upsert_agent_template_from_sync(
     repo: EnterpriseRecordRepository,
-    template: dict[str, Any]
+    template: dict[str, Any],
+    *,
+    existing: dict[str, Any] | None,
 ) -> None:
     now = utc_now()
     tid = _normalize_template_id(template.get("template_id"))
-    existing = await _get_row_for_instance(repo, tid)
     row_data = _build_row_from_template(template, now=now)
     if existing is None:
         await repo.create(row_data)
@@ -87,11 +145,12 @@ async def update_agent_template(
     request: AgentTemplateUpdateRequest,
     *,
     existing: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
+) -> tuple[bool, dict[str, Any] | None]:
+    """写入模板并返回 (变更是否影响 runtime 配置, 业务结果行)。"""
     tid = _normalize_template_id(template_id)
     row = existing if existing is not None else await _get_row_for_instance(repo, tid)
     if row is None:
-        return None
+        return False, None
 
     updates = request.model_dump(exclude_unset=True)
     if "template_name" in updates and updates["template_name"] is not None:
@@ -101,11 +160,12 @@ async def update_agent_template(
     if not updates:
         raise ValueError("请求未包含任何可更新的业务字段")
 
+    runtime_relevant = _runtime_relevant_change_for_update(row, updates)
     updates["updated_at"] = utc_now()
     updated = await repo.update({"template_id": tid}, updates)
     if updated is None:
-        return None
-    return {"template_id": str(updated.get("template_id", tid))}
+        return False, None
+    return runtime_relevant, {"template_id": str(updated.get("template_id", tid))}
 
 
 async def delete_agent_template(
@@ -124,25 +184,31 @@ class AgentTemplateService:
     async def create(
         self,
         template: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], bool]:
+        """写入模板并返回 (业务结果, 变更是否影响 runtime 配置)。"""
         if not isinstance(template, dict):
             raise ValueError("agent_templates.create requires template object")
         repo = require_enterprise_repository(_TABLE)
+        tid = _normalize_template_id(template.get("template_id"))
+        existing = await _get_row_for_instance(repo, tid)
+        runtime_relevant = _runtime_relevant_change_for_upsert(existing, template)
         await _upsert_agent_template_from_sync(
-            repo, template
+            repo, template, existing=existing
         )
-        result = {"template_id": _normalize_template_id(template.get("template_id"))}
+        result = {"template_id": tid}
         logger.info(
-            "[ManagerConfigReceiver] agent_templates create template_id=%s",
-            result["template_id"],
+            "[ManagerConfigReceiver] agent_templates create template_id=%s runtime_relevant=%s",
+            tid,
+            runtime_relevant,
         )
-        return result
+        return result, runtime_relevant
 
     async def update(
         self,
         template_id: str,
         updates: dict[str, Any],
-    ) -> None:
+    ) -> bool:
+        """写入模板并返回变更是否影响 runtime 配置。"""
         if template_id is None:
             raise ValueError("agent_templates.update requires template_id")
         if not isinstance(updates, dict) or not updates:
@@ -150,13 +216,15 @@ class AgentTemplateService:
         req = AgentTemplateUpdateRequest.model_validate(updates)
         tid = _normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
-        row = await update_agent_template(repo, tid, req)
+        runtime_relevant, row = await update_agent_template(repo, tid, req)
         if row is None:
             raise ValueError(f"agent template template_id={tid!r} not found")
         logger.info(
-            "[ManagerConfigReceiver] agent_templates update template_id=%s",
+            "[ManagerConfigReceiver] agent_templates update template_id=%s runtime_relevant=%s",
             tid,
+            runtime_relevant,
         )
+        return runtime_relevant
 
     async def delete(self, template_id: str) -> None:
         if template_id is None:

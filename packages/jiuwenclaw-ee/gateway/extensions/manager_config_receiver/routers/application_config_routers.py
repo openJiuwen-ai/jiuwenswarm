@@ -1,5 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""应用配置同步 API（对齐 Manager application_config_routers：显式 Body schema）。"""
+"""应用配置同步 API（对齐 Manager application_config_routers：显式 Body schema）。
+
+写后不通知 runtime：这些配置表不影响 AgentServer 的创建与运行。
+"""
 
 from __future__ import annotations
 
@@ -30,7 +33,6 @@ from .deps import (
     sync_write_data,
     verify_sync,
 )
-from .runtime_notify import trigger_runtime_config_update
 
 application_config_router = APIRouter()
 
@@ -55,7 +57,6 @@ async def upsert_logging(
         result = await LoggingConfigService().upsert(**sync.business)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
 
 
@@ -67,7 +68,6 @@ async def delete_logging(
         await LoggingConfigService().delete()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
 
 
@@ -79,7 +79,6 @@ async def upsert_task_memory(
         result = await TaskMemoryConfigService().upsert(sync.business)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
 
 
@@ -91,7 +90,6 @@ async def delete_task_memory(
         await TaskMemoryConfigService().delete()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
 
 
@@ -103,7 +101,6 @@ async def upsert_memory(
         result = await MemoryConfigService().upsert(**sync.business)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
 
 
@@ -115,7 +112,6 @@ async def delete_memory(
         await MemoryConfigService().delete()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
 
 
@@ -149,7 +145,6 @@ async def upsert_audit_log(
         result = await AuditLogConfigService().upsert(**sync.business)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
 
 
@@ -161,7 +156,6 @@ async def delete_audit_log(
         await AuditLogConfigService().delete()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
 
 
@@ -173,7 +167,6 @@ async def create_log_masking_rule(
         result = await LogMaskingRuleService().create(sync.business)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
 
 
@@ -190,7 +183,6 @@ async def patch_log_masking_rule(
         detail = str(exc)
         status = 404 if "not found" in detail else 400
         raise HTTPException(status_code=status, detail=detail) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
 
 
@@ -207,5 +199,4 @@ async def delete_log_masking_rule(
         detail = str(exc)
         status = 404 if "not found" in detail else 400
         raise HTTPException(status_code=status, detail=detail) from exc
-    trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
