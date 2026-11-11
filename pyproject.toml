@@ -27,7 +27,7 @@ dependencies = [
     "filelock>=3.25.0,<4",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@cbbadde9101db6e3d75e4ef2b9bdb6029fd92088#subdirectory=openjiuwen-protocol",
     # Gateway 传输层已拆分为独立仓 agent-gateway
-    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@22d016af3783f9b88e95b4879c1c0dcc31163c9d",
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@850e8fc22ebf1d424e385245b295b301109873be",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -241,7 +241,7 @@ override-dependencies = [
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "22d016af3783f9b88e95b4879c1c0dcc31163c9d" }
+agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "850e8fc22ebf1d424e385245b295b301109873be" }
 openjiuwen-computeruse = { git = "https://gitcode.com/openJiuwen/computer-use.git", rev = "dd2cd5317bbe4cfaaa3bdfb2c3ba91c083136790" }
 openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "cbbadde9101db6e3d75e4ef2b9bdb6029fd92088", subdirectory = "openjiuwen-protocol" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
