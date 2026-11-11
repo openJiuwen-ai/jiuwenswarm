@@ -1,5 +1,6 @@
 import { Ellipsis, type LucideIcon } from 'lucide-react';
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { computeMenuPosition, type MenuAlign } from './menuPosition';
 
 export interface JiuwenMateMenuItem {
   key: string;
@@ -17,7 +18,7 @@ interface ActionMenuProps {
   emptyLabel?: string;
   trigger?: ReactNode;
   className?: string;
-  align?: 'start' | 'end';
+  align?: MenuAlign;
   testId?: string;
   /** Anchor the list to the viewport so a scrolling container cannot clip it. */
   floating?: boolean;
@@ -34,9 +35,41 @@ export function ActionMenu({
   floating = false,
 }: ActionMenuProps) {
   const [open, setOpen] = useState(false);
-  const [listStyle, setListStyle] = useState<CSSProperties>();
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open || !floating) {
+      setPosition(null);
+      return undefined;
+    }
+    const place = () => {
+      const anchor = triggerRef.current?.getBoundingClientRect();
+      const list = listRef.current;
+      if (!anchor || !list) return;
+      const next = computeMenuPosition(
+        anchor,
+        { width: list.offsetWidth, height: list.offsetHeight },
+        { width: window.innerWidth, height: window.innerHeight },
+        align,
+      );
+      setPosition((current) =>
+        current && current.left === next.left && current.top === next.top
+          ? current
+          : { left: next.left, top: next.top },
+      );
+    };
+    // Measure the hidden panel first, including its viewport height limit.
+    place();
+    const observer =
+      typeof ResizeObserver === 'undefined' || !triggerRef.current
+        ? null
+        : new ResizeObserver(place);
+    observer?.observe(triggerRef.current as HTMLButtonElement);
+    return () => observer?.disconnect();
+  }, [open, floating, align]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -70,20 +103,6 @@ export function ActionMenu({
     };
   }, [open, floating]);
 
-  const toggle = () => {
-    if (!open && floating && triggerRef.current) {
-      const rect = triggerRef.current.getBoundingClientRect();
-      setListStyle({
-        position: 'fixed',
-        top: rect.bottom + 4,
-        ...(align === 'start'
-          ? { left: rect.left, right: 'auto' }
-          : { left: 'auto', right: window.innerWidth - rect.right }),
-      });
-    }
-    setOpen((current) => !current);
-  };
-
   return (
     <div
       ref={rootRef}
@@ -99,14 +118,26 @@ export function ActionMenu({
         aria-expanded={open}
         onClick={(event) => {
           event.stopPropagation();
-          toggle();
+          setOpen((current) => !current);
         }}
         data-testid={testId}
       >
         {trigger ?? <Ellipsis aria-hidden />}
       </button>
       {open ? (
-        <div className="jiuwenmate-menu__list" role="menu" style={floating ? listStyle : undefined}>
+        <div
+          ref={listRef}
+          className="jiuwenmate-menu__list"
+          role="menu"
+          style={floating ? {
+            position: 'fixed',
+            right: 'auto',
+            left: position?.left ?? 0,
+            top: position?.top ?? 0,
+            visibility: position ? undefined : 'hidden',
+          } : undefined}
+          data-testid="jiuwenmate-menu-list"
+        >
           {items.length === 0 ? <p className="jiuwenmate-menu__empty">{emptyLabel}</p> : null}
           {items.map((item) => {
             const Icon = item.icon;
