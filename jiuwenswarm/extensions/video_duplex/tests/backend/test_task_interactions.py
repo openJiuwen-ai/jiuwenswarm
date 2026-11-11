@@ -206,10 +206,12 @@ async def test_answer_resumes_same_task_and_waiting_releases_only_settled_capaci
     assert final["request_id"] != trip["request_id"]
     assert len(service.snapshot("user", "voice")[0]) == 2
     assert len(executor.calls) == 3
-    with pytest.raises(ValueError):
-        await service.answer(
-            "user", "voice", trip["id"], "late", token(service, trip), answers=reply()
-        )
+    repeated = await service.answer(
+        "user", "voice", trip["id"], "late", token(service, trip), answers=reply()
+    )
+    assert repeated["state"] == "already_answered"
+    assert repeated["applied"] is False
+    assert len(executor.calls) == 3
 
 
 async def test_questions_do_not_cross_tasks_and_cancel_prevents_resume(system):
