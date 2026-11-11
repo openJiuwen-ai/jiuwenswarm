@@ -196,13 +196,13 @@ _RID_THRESHOLD_VERSION = "icebreaker-api-proxy-threshold-v1"
 _RID_NOTHING_TO_JUDGE = "no_rid_input"
 GLOBAL_INTEREST_PROMPT_VERSION = "topic-starter-v6-global-interest-v26"
 PROJECT_CONTINUATION_PROMPT_VERSION = "topic-starter-v6-project-continuation-v15"
-MEMORY_INCREMENTAL_PROMPT_VERSION = "topic-starter-v6-memory-incremental-v8"
+MEMORY_INCREMENTAL_PROMPT_VERSION = "topic-starter-v6-memory-incremental-v10"
 RECENT_PLANNER_PROMPT_VERSION = "topic-starter-v6-recent-planner-v5"
 RECENT_FINALIZER_PROMPT_VERSION = "topic-starter-v6-recent-finalizer-v2"
 PROJECT_DOMAIN_PROMPT_VERSION = "topic-starter-v6-project-domain-v3"
 HOT_NEWS_MATCHER_PROMPT_VERSION = "topic-starter-v6-hot-news-matcher-v6"
 BEHAVIOR_MAPPING_PROMPT_VERSION = "topic-starter-v6-behavior-mapping-v2"
-MEMORY_INIT_PROMPT_VERSION = "topic-starter-v6-memory-init-v1"
+MEMORY_INIT_PROMPT_VERSION = "topic-starter-v6-memory-init-v3"
 UTILITY_CONFIG_VERSION = "topic-starter-v6-utility-api-v41"
 DIVERSITY_CONFIG_VERSION = "topic-starter-v6-diversity-api-v12"
 # Diversity answers each pair in turn: smaller batches sent together finish sooner.
@@ -499,12 +499,16 @@ _V6_MEMORY_INIT_SYSTEM_PROMPT = (
     "你是 Topic Starter v6 的 RecGPT-v3 长期画像压缩器。只输出 JSON "
     "{\"units\":[...]}。每个 unit 必须包含且仅包含 behavior_pattern、"
     "preference_summary、representative_behavior_indices、preferred_entities、"
-    "temporal_activity。behavior_pattern 必须逐字复制该 unit 所引用行为已有的同一个"
-    " tag，禁止添加 taxonomy:: 前缀、层级后缀或自造复合标签；同一 unit 只能引用"
-    " tag 相同的行为。representative_behavior_indices 只能使用输入 index，unit 内"
-    "不得重复、unit 之间不得重叠。只压缩用户自有证据，不生成 timestamp。"
+    "temporal_activity。"
+    "behavior_pattern 不是中文兴趣名：必须逐字等于该 unit 所引用行为的同一个输入 "
+    "tag（taxonomy id 或 provisional:<slug>），禁止 taxonomy:: 前缀、层级后缀、"
+    "中文名或自造复合标签。同一 unit 只能引用 tag 相同的行为。"
+    "representative_behavior_indices 只能使用输入 index，unit 内不得重复、"
+    "unit 之间不得重叠。只压缩用户自有证据，不生成 timestamp。"
     "单次今天/明天的安排只描述当次计划，不能归纳成长期习惯；代问不等于"
     "本人兴趣。明确区分稳定偏好、临时目标、已完成事项与暂时暂停。"
+    "对照（非本轮事实）：行为 1、2 的 tag 都是 tech-ai-ml、内容谈 AI 测试 → "
+    "unit.behavior_pattern 必须是 \"tech-ai-ml\"，不能写「人工智能」或「AI测试」。"
 )
 _V6_MEMORY_INCREMENTAL_SYSTEM_PROMPT = (
     "Topic Starter v6 长期画像增量整理。快速决定，只输出 JSON "
@@ -513,13 +517,22 @@ _V6_MEMORY_INCREMENTAL_SYSTEM_PROMPT = (
     "updated_units 覆盖每个旧 unit_id 恰好一次：无关 {unit_id,operation:\"retain\"}；"
     "相关 {unit_id,operation:\"update\",core}。core/new_units 仅含 "
     "behavior_pattern、preference_summary、representative_behavior_indices、"
-    "preferred_entities、temporal_activity；behavior_pattern 逐字用输入 tag，"
-    "禁止 taxonomy::/后缀/复合标签。每个新 index 只能归属一个 update、新 unit 或 "
-    "unmatched；保留旧支撑 index；不生成 timestamp；不能全 retain 后省略 delta。"
+    "preferred_entities、temporal_activity。"
+    "behavior_pattern 不是中文兴趣名：必须逐字等于所引用行为的同一个输入 tag，"
+    "禁止 taxonomy::/后缀/中文名/复合标签；update 时优先沿用该 unit 原有 "
+    "behavior_pattern。"
+    "每个新 index 只能归属一个 update、新 unit 或 unmatched；保留旧支撑 index；"
+    "不生成 timestamp。若本轮 delta 与某 unit 无关，对该 unit 写 retain，"
+    "不要输出空 update。"
     "update 用相关原文刷新目标/纠正/任务状态；单次安排与暂时限制不是永久偏好；"
     "已完成不作待办。暂停/恢复/纠正/完成更新原单元，不另建。只有用户原文进 core；"
     "助手建议/解释/样例进 unmatched。update 支撑=旧支撑∪新引用 index。"
-    "new_units：同 tag 可凭明确目标/纠正单条建单元；其他单条或无关提问进 unmatched。"
+    "new_units 仅用于同 tag 的新兴趣；其他零散行为进 unmatched_behavior_indices。"
+    "对照（非本轮事实）：旧 unit A pattern=tech-ai-ml 支撑 [1,2]；delta 3=用户"
+    "「这两周先不练」、4=助手举例、5=用户明确「想学变魔术」(另一 tag)、6=零散提问。"
+    "正确：A 用 3 update 且 pattern 仍为 tech-ai-ml、支撑 [1,2,3]；5 进 new_units"
+    "且 pattern=该输入 tag；4 与 6 进 unmatched。错误：pattern 写「人工智能」、"
+    "空 update 不带 delta、为助手举例建 unit。"
 )
 _V6_TAG_SCHEMA = {
     "anyOf": [
@@ -9140,17 +9153,39 @@ class TopicPipeline:
             ))
         return _Scoring(tuple(plans), tuple(projected), utility_receipt, utility, diversity)
 
-    def _latest_scope_manifest_id(self, context_scope: str) -> str | None:
+    def _latest_scope_manifest_id(
+        self,
+        context_scope: str,
+        *,
+        work_mode: Any = DEFAULT_TOPIC_WORK_MODE,
+    ) -> str | None:
+        """Newest global/project pool for this scope × work_mode slot.
+
+        Serve already isolates pools by work_mode via serving_compatibility_key.
+        Short-delta supersedes must follow the same slot; otherwise a design
+        cold-start can become the predecessor of a work personalized write (or
+        the reverse) and novelty / lineage attach to the wrong first screen.
+        Legacy manifests without work_mode count as the default work slot only.
+        """
+
+        normalized = normalize_topic_work_mode(work_mode)
         rows = self.store.query_events(
             event_type="starter_slate_manifest",
             policy_id=POLICY_ID,
             payload_equals={"context_scope": context_scope},
-            limit=1,
+            limit=32,
             newest_first=True,
         )
-        if rows:
-            payload = rows[0].get("payload")
-            if isinstance(payload, dict) and payload.get("manifest_id"):
+        for row in rows:
+            payload = row.get("payload")
+            if not isinstance(payload, dict) or not payload.get("manifest_id"):
+                continue
+            raw_mode = payload.get("work_mode")
+            if raw_mode in (None, ""):
+                matched = normalized == DEFAULT_TOPIC_WORK_MODE
+            else:
+                matched = normalize_topic_work_mode(raw_mode) == normalized
+            if matched:
                 return str(payload["manifest_id"])
         return None
 
@@ -9369,7 +9404,8 @@ class TopicPipeline:
             ],
             "generation_config_version": trigger_key["generation_config_version"],
             "supersedes_manifest_id": self._latest_scope_manifest_id(
-                snapshot.context_scope
+                snapshot.context_scope,
+                work_mode=trigger_key.get("work_mode"),
             ),
             "rid_result": rid.as_downstream_payload(),
             "session_summary_artifacts": [
