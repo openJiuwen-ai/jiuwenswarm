@@ -66,8 +66,8 @@ _PLACEHOLDER_FINISH_REASONS = frozenset({"", "null", "none"})
 def _structured_error_code(source: Any) -> str | None:
     """Derive the structured error code to forward on a ``chat.error`` frame.
 
-    relay-claw reads ``payload.code`` and feeds it to ``classifyError``; without
-    it, a failure falls through to ``unknown`` / OA.05000090. Precedence: explicit
+    Downstream consumers read ``payload.code`` to classify the failure; without
+    it, a failure may fall through to ``unknown`` / OA.05000090. Precedence: explicit
     ``code`` > ``error_code`` > ``finish_reason`` (placeholder values such as
     ``"null"`` are ignored) > legacy ``soft_stop_recovery_exhausted`` flag.
     """
@@ -90,9 +90,9 @@ def build_chat_error_event(source: Any, message: Any) -> dict[str, Any]:
     """Assemble a ``chat.error`` event, forwarding structured error metadata.
 
     Upstream error chunks carry the human-readable message plus structured fields
-    (``code`` / ``error_code`` / ``finish_reason``). Those fields are what the
-    downstream classifier (relay-claw) reads as ``payload.code`` to map a failure
-    to a precise error kind; dropping them — e.g. ``finish_reason="max_iterations"``
+    (``code`` / ``error_code`` / ``finish_reason``). Those fields are forwarded as
+    ``payload.code`` so downstream classifiers can map a failure to a precise
+    error kind; dropping them — e.g. ``finish_reason="max_iterations"``
     from ``last_iteration_finalize_rail`` — makes the failure fall through to
     ``unknown`` / OA.05000090 instead of a proper max-iterations message.
     """

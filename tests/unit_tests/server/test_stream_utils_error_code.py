@@ -3,7 +3,7 @@
 """Structured error code passthrough on ``chat.error`` frames from stream_utils.
 
 ``finish_reason`` / ``error_code`` / ``code`` on an upstream error chunk must be
-forwarded as ``code`` so downstream classifiers (relay-claw) can map the failure
+forwarded as ``code`` so downstream classifiers can map the failure
 to a precise error kind instead of falling through to ``unknown`` / OA.05000090.
 """
 

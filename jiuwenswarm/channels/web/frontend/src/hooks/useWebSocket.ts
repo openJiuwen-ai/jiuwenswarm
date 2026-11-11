@@ -4053,9 +4053,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
         useChatStore.getState().setThinking(sessionId, false);
-        // chat.error 可能携带 max_iterations_reached 前缀（relay-claw 文本归类的过渡
-        // 标记），非 relay-claw 通道展示时剥离、避免英文技术标记暴露给终端用户；
-        // relay-claw 侧仍拿到原始 error/code 归类，此处剥离不影响下游。
+        // chat.error 可能携带 max_iterations_reached 前缀（给下游按文本归类的过渡标记）。
+        // 展示时剥离，避免英文技术标记暴露给终端用户；原始 error/code 仍随事件保留，不影响下游分类。
         const rawError =
           typeof payload.error === 'string'
             ? payload.error.replace(/^max_iterations_reached[:：]?\s*/i, '')
