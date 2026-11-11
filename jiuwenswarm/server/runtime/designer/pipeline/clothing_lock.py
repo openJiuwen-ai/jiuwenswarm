@@ -230,6 +230,12 @@ def detailed_costume_lock_for_character(ch: dict[str, Any] | None) -> str:
     if not isinstance(ch, dict):
         return ""
     name = str(ch.get("name") or ch.get("id") or "character").strip()
+    # A costume read straight off the identity plate keeps the exact garments;
+    # the slot extractor condenses them to "deep sweater" and would lose the
+    # colour and fabric the plate just declared.
+    clause = str(ch.get("costume_clause") or "").strip()
+    if clause:
+        return f"{name}: {clause}"[:480]
     existing_parts = normalize_clothing_parts(ch.get("clothing_parts"))
     blob = " ".join(
         str(ch.get(k) or "")
@@ -309,6 +315,125 @@ def clothing_lock_clause(
         f"CLOTHING LOCK ({where}): {text[:720]}\n"
         + clothing_hold_rule()
     )
+
+
+_COSTUME_CLAUSE_RE = re.compile(
+    r"costume\s*(?:\([^)]*\))?\s*[:\uff1a]\s*(?P<body>.+?)"
+    r"(?=(?:\.\s|\.$|\n)|photoreal|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Props ride along after the garments ("...; a brass lantern in his hand"); the
+# wardrobe lock never carries them, so the clause is cut at the first semicolon.
+_COSTUME_PROP_SPLIT_RE = re.compile(r"[;\uff1b]")
+
+
+def costume_clause_from_spec_prompt(prompt: str) -> str:
+    """Garment clause a character spec prompt declares, or "".
+
+    A character identity plate carries the authoritative wardrobe as
+    ``Costume (locked, exact): <garments>.`` When the user edits that plate's
+    prompt, this is the text downstream nodes must wear.
+    """
+    text = re.sub(r"\s+", " ", str(prompt or "")).strip()
+    if not text:
+        return ""
+    match = _COSTUME_CLAUSE_RE.search(text)
+    if not match:
+        return ""
+    body = _COSTUME_PROP_SPLIT_RE.split(match.group("body").strip())[0]
+    body = body.strip(" .,;:\uff1b")
+    return re.sub(r"\s+", " ", body)[:280]
+
+
+def _spec_prompt_for(node: dict[str, Any]) -> str:
+    cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+    for key in ("last_wan_prompt", "last_still_prompt", "prompt"):
+        text = str(cfg.get(key) or "").strip()
+        if text:
+            return text
+    gen = cfg.get("generate") if isinstance(cfg.get("generate"), dict) else {}
+    return str(gen.get("prompt") or "").strip()
+
+
+def sync_costume_from_specs(graph: dict[str, Any] | None) -> set[str]:
+    """Copy each character spec node's current wardrobe into the analysis cast.
+
+    The identity plate is the source of truth for costume. Its prompt can be
+    edited and re-rendered on its own, while the stamped ``script_analysis``
+    copy stayed behind, so dependent clips kept the wardrobe they were built
+    with. Returns the character ids whose spec declares a costume.
+    """
+    if not isinstance(graph, dict):
+        return set()
+    meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
+    analysis = meta.get("script_analysis") if isinstance(meta.get("script_analysis"), dict) else {}
+    characters = analysis.get("characters") if isinstance(analysis.get("characters"), list) else []
+    if not characters:
+        return set()
+    by_id = {
+        str(ch.get("id")): ch
+        for ch in characters
+        if isinstance(ch, dict) and str(ch.get("id") or "").strip()
+    }
+    synced: set[str] = set()
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        if not _is_character_spec(cfg, node):
+            continue
+        clause = costume_clause_from_spec_prompt(_spec_prompt_for(node))
+        if not clause:
+            continue
+        for cid in _character_ids_for_spec(cfg):
+            ch = by_id.get(cid)
+            if not isinstance(ch, dict):
+                continue
+            if str(ch.get("costume_lock") or "").strip() != clause:
+                ch["costume_clause"] = clause
+                ch["costume_lock"] = clause
+                ch["clothing_parts"] = extract_clothing_parts(clause)
+                attrs = ch.get("identity_attrs") if isinstance(ch.get("identity_attrs"), dict) else {}
+                attrs = dict(attrs)
+                attrs["wardrobe"] = clause[:280]
+                ch["identity_attrs"] = attrs
+            synced.add(cid)
+    return synced
+
+
+def _is_character_spec(cfg: dict[str, Any], node: dict[str, Any]) -> bool:
+    pipeline = str(cfg.get("pipeline") or cfg.get("role") or "").strip().lower()
+    if pipeline in {"character", "character_spec"}:
+        return True
+    return str(node.get("id") or "").startswith("n_character")
+
+
+def _character_ids_for_spec(cfg: dict[str, Any]) -> list[str]:
+    ids = [str(x).strip() for x in (cfg.get("character_ids") or []) if str(x).strip()]
+    if ids:
+        return ids
+    single = str(cfg.get("character_id") or "").strip()
+    return [single] if single else []
+
+
+def spec_costume_by_character(graph: dict[str, Any] | None) -> dict[str, str]:
+    """character id -> wardrobe clause declared by its identity plate node."""
+    out: dict[str, str] = {}
+    if not isinstance(graph, dict):
+        return out
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        if not _is_character_spec(cfg, node):
+            continue
+        clause = costume_clause_from_spec_prompt(_spec_prompt_for(node))
+        if not clause:
+            continue
+        for cid in _character_ids_for_spec(cfg):
+            out[cid] = clause
+    return out
 
 
 def ensure_cfg_clothing_lock(

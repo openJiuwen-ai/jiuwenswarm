@@ -725,6 +725,14 @@ def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None,
     by_id = cfg.get("costume_by_id") if isinstance(cfg.get("costume_by_id"), dict) else {}
     raw = str(by_id.get(token) or by_id.get(name) or "").strip()
     if not raw:
+        # The identity plate is the source of truth: a costume edited on the
+        # character node outranks the lock stamped when the graph was authored.
+        from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
+            spec_costume_by_character,
+        )
+
+        raw = str(spec_costume_by_character(graph).get(token) or "").strip()
+    if not raw:
         lock = str(cfg.get("costume_lock") or "").strip()
         # "Mother: dusty rose…; Young Child: pale yellow…"
         for chunk in re.split(r"[;；\n]+", lock):

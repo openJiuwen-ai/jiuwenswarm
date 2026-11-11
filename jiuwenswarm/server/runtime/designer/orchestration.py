@@ -4597,8 +4597,13 @@ def _identity_consistency_patch(graph: DesignerExecutionGraph) -> list[str]:
         from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
             costume_lock_for_ids,
             enrich_character_clothing,
+            sync_costume_from_specs,
         )
 
+        # The identity plate owns the wardrobe: pick up a costume edited on the
+        # character node before this clip is stamped, or the clip keeps the
+        # garments it was authored with.
+        spec_costume_ids = sync_costume_from_specs(graph)
         analysis_chars = list(
             ((graph.get("metadata") or {}).get("script_analysis") or {}).get("characters")
             or []
@@ -4609,10 +4614,21 @@ def _identity_consistency_patch(graph: DesignerExecutionGraph) -> list[str]:
         costume_lock = str(cfg.get("costume_lock") or "").strip()
         detailed = costume_lock_for_ids(analysis_chars, cids) if cids else ""
         has_slots = any(key in costume_lock for key in ("top=", "bottom=", "outfit="))
-        if detailed and (not costume_lock or not has_slots):
+        spec_supplied = bool(spec_costume_ids.intersection(cids))
+        if detailed and (not costume_lock or not has_slots or (spec_supplied and detailed != costume_lock)):
+            refreshed = bool(costume_lock) and detailed != costume_lock
             costume_lock = detailed
             cfg["costume_lock"] = costume_lock
-            notes.append(f"{node.get('id')}: clothing costume_lock stamped")
+            identity = cfg.get("identity_refs") if isinstance(cfg.get("identity_refs"), dict) else {}
+            if identity:
+                identity = dict(identity)
+                identity["costume_lock"] = costume_lock
+                cfg["identity_refs"] = identity
+            notes.append(
+                f"{node.get('id')}: costume_lock refreshed from the character spec"
+                if refreshed
+                else f"{node.get('id')}: clothing costume_lock stamped"
+            )
         elif not costume_lock and cids:
             costume_lock = "; ".join(
                 f"{id_to_name.get(cid, cid)}: {costume_by_cid.get(cid, '')[:120]}".strip(": ")
