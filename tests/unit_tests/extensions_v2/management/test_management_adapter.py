@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openjiuwen.core.events import Event
-from openjiuwen.core.extension import ActivePackageRecord
+from openjiuwen.core.extension import ActivationReport, ActivePackageRecord
 
 from jiuwenswarm.common.e2a import E2AEnvelope, e2a_to_agent_request
 from jiuwenswarm.common.schema.agent import AgentRef, AgentRequest, AgentResponse
@@ -23,6 +23,10 @@ from jiuwenswarm.extensions_v2.management import catalog as catalog_module
 from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
 from jiuwenswarm.extensions_v2.management.registry import ExtensionManager
 from jiuwenswarm.gateway.channel_manager.web import extension_package_handlers as proxy_module
+from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
+    ExtensionInstallRecord,
+    ExtensionInstallState,
+)
 
 from .support import METADATA_EXTENSION, archive_package, make_bus, write_package
 
@@ -100,6 +104,35 @@ async def test_request_set_enabled_keeps_the_installed_package(
     assert (manager.install_dir / "test.pkg" / "1.0.0").is_dir()
 
 
+async def test_install_switches_to_a_new_version_and_rejects_the_same_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    adapter = PackageManagementAdapter()
+    first = archive_package(write_package(tmp_path / "v1", version="1.0.0"))
+    second = archive_package(write_package(tmp_path / "v2", version="1.1.0"))
+
+    installed = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(first)]})
+    )
+    upgraded = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(second)]})
+    )
+
+    assert installed.payload["reports"][0]["status"] == "SUCCESS"
+    assert upgraded.payload["reports"][0]["status"] == "SUCCESS"
+    assert (manager.install_dir / "test.pkg" / "1.0.0").is_dir()
+    assert (manager.install_dir / "test.pkg" / "1.1.0").is_dir()
+    assert [record.version for record in (await manager.query()).active] == ["1.1.0"]
+
+    duplicate = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(second)]})
+    )
+
+    assert duplicate.payload["reports"][0]["status"] == "FAILED"
+    assert duplicate.payload["reports"][0]["error"]["code"] == "EXTENSION_PACKAGE_EXISTS"
+
+
 async def test_catalog_lists_disabled_installed_agentserver_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -117,11 +150,17 @@ async def test_catalog_lists_disabled_installed_agentserver_package(
     assert response.payload["packages"] == [
         {
             "id": "test.pkg",
+            "packageId": "test.pkg",
+            "assetId": "",
             "version": "1.0.0",
+            "installedVersion": "1.0.0",
+            "versions": ["1.0.0"],
             "displayName": {"zh": "test.pkg", "en": "test.pkg"},
             "displayDescription": {"zh": "", "en": ""},
             "tags": [],
             "avatar": None,
+            "source": "local",
+            "origin": "user",
             "installed": True,
             "active": False,
             "enabled": False,
@@ -166,6 +205,9 @@ async def test_failed_reload_returns_report_and_preserves_old_handler(
         (ReqMethod.EXTENSIONS_V2_QUERY, []),
         (ReqMethod.EXTENSIONS_V2_UNINSTALL, {}),
         (ReqMethod.EXTENSIONS_V2_RELOAD, {"package_id": 42}),
+        (ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": "asset-1", "version": 1}),
+        (ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": "asset-1", "version": "1 0"}),
+        (ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": ["asset-1"], "version": "1/0"}),
         (ReqMethod.WEBUI_DISPATCH, {}),
     ],
 )
@@ -640,3 +682,253 @@ async def test_file_preview_resolves_an_installed_package_outside_examples(
 
     assert response.ok
     assert {node["path"] for node in response.payload["tree"]} == {"manifest.json", "extension.py"}
+
+
+async def test_hub_installed_package_previews_its_local_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    installed = manager.install_dir / "webui.demo" / "1.0.1"
+    installed.mkdir(parents=True)
+    (installed / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": "extension",
+                "schemaVersion": 1,
+                "package": {"id": "webui.demo", "version": "1.0.1", "domain": "agentserver"},
+                "extensions": [{"id": "main", "runtime": "backend", "module": "extension.py"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (installed / "extension.py").write_text("def create_extension():\n    return None\n", encoding="utf-8")
+    ExtensionInstallState.for_install_dir(manager.install_dir).activate(
+        ExtensionInstallRecord(
+            package_id="webui.demo",
+            version="1.0.1",
+            origin="hub",
+            asset_id="8c64541f99f540949a70d9d69ec08c92",
+            install_path=str(installed),
+        )
+    )
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: manager.install_dir)
+    hub_tree = AsyncMock(return_value=[])
+    monkeypatch.setattr(adapter_module, "hub_file_tree", hub_tree)
+
+    response = await PackageManagementAdapter().handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_FILE_LIST,
+            {"package_id": "webui.demo", "version": "1.0.1"},
+        )
+    )
+
+    assert response.ok
+    assert {node["path"] for node in response.payload["tree"]} == {"manifest.json", "extension.py"}
+    hub_tree.assert_not_awaited()
+
+
+async def test_file_preview_falls_back_to_hub_for_uninstalled_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _manager(tmp_path, monkeypatch)
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: tmp_path / "installed")
+    tree_mock = AsyncMock(return_value=[
+        {"path": "manifest.json", "type": "file", "size": 2, "previewable": True},
+    ])
+    content_mock = AsyncMock(return_value={"path": "manifest.json", "content": "{}"})
+    monkeypatch.setattr(adapter_module, "hub_file_tree", tree_mock)
+    monkeypatch.setattr(adapter_module, "hub_file_content", content_mock)
+    asset_id = "8c64541f99f540949a70d9d69ec08c92"
+    adapter = PackageManagementAdapter()
+
+    tree = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_FILE_LIST, {"package_id": asset_id}))
+    content = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_FILE_READ, {"package_id": asset_id, "path": "manifest.json"})
+    )
+
+    assert tree.ok and tree.payload["tree"][0]["path"] == "manifest.json"
+    assert content.ok and content.payload["content"] == "{}"
+    tree_mock.assert_awaited_once_with(asset_id, version="")
+    content_mock.assert_awaited_once_with(asset_id, "manifest.json", version="")
+
+
+async def test_hub_file_preview_degrades_to_an_empty_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _manager(tmp_path, monkeypatch)
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+    monkeypatch.setattr(adapter_module, "hub_file_tree", AsyncMock(side_effect=RuntimeError("offline")))
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_FILE_LIST, {"package_id": "8c64541f99f540949a70d9d69ec08c92"})
+    )
+
+    assert response.ok and response.payload == {"tree": []}
+
+
+async def test_show_forwards_requested_version_to_hub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _manager(tmp_path, monkeypatch)
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: tmp_path / "installed")
+    detail = SimpleNamespace(asset_id="asset-1")
+    query = AsyncMock(return_value=detail)
+    monkeypatch.setattr(adapter_module, "get_hub_system_plugin", query)
+    monkeypatch.setattr(
+        adapter_module, "hub_detail", lambda item, state, store=None: {"id": item.asset_id}
+    )
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": "asset-1", "version": "0.9.0"})
+    )
+
+    assert response.ok and response.payload["package"] == {"id": "asset-1"}
+    query.assert_awaited_once_with("asset-1", "0.9.0")
+
+
+async def test_install_forwards_requested_version_to_hub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: tmp_path / "installed")
+    detail = SimpleNamespace(asset_id="asset-1", package_name="webui.demo", version="0.9.0")
+    monkeypatch.setattr(adapter_module, "get_hub_system_plugin", AsyncMock(return_value=detail))
+    monkeypatch.setattr(adapter_module, "download_system_plugin_archive", AsyncMock())
+    enable = AsyncMock(return_value=ActivationReport(
+        plan_id="", package_id="webui.demo", operation="install", status="SUCCESS",
+        previous_generation=None, current_generation=None,
+    ))
+    monkeypatch.setattr(manager, "enable_version", enable)
+
+    response = await PackageManagementAdapter().handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_INSTALL,
+            {"package_ids": ["asset-1"], "version": "0.9.0"},
+        )
+    )
+
+    assert response.ok
+    enable.assert_awaited_once()
+    package_id, version = enable.await_args.args
+    assert (package_id, version) == ("webui.demo", "0.9.0")
+    assert enable.await_args.kwargs["source"].name == "webui.demo-0.9.0.zip"
+
+
+async def test_switch_version_of_an_installed_hub_package_uses_its_asset_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mine tab addresses packages by directory name, not by Hub asset id."""
+
+    manager = await _manager(tmp_path, monkeypatch)
+    await manager.install([write_package(tmp_path / "source-1", package_id="webui.demo", version="1.0.0")])
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    installed = manager.install_dir
+    older = write_package(tmp_path / "source-09", package_id="webui.demo", version="0.9.0")
+    copytree(older, installed / "webui.demo" / "0.9.0")
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: installed)
+    store = ExtensionInstallState.for_install_dir(installed)
+    store.upsert(
+        ExtensionInstallRecord(
+            package_id="webui.demo", version="1.0.0", origin="hub", asset_id="asset-1",
+        )
+    )
+    query = AsyncMock()
+    monkeypatch.setattr(adapter_module, "get_hub_system_plugin", query)
+
+    response = await PackageManagementAdapter().handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_INSTALL,
+            {"package_ids": ["webui.demo"], "version": "0.9.0"},
+        )
+    )
+
+    assert response.ok
+    query.assert_not_awaited()
+    assert [record.version for record in (await manager.query()).active] == ["0.9.0"]
+    assert (installed / "webui.demo" / "0.9.0").is_dir()
+    assert (installed / "webui.demo" / "1.0.0").is_dir()
+    assert store.get("webui.demo", "0.9.0").active is True
+    assert store.get("webui.demo", "1.0.0").active is False
+
+    switched_back = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": ["webui.demo"], "version": "1.0.0"})
+    )
+
+    assert switched_back.ok
+    assert [record.version for record in (await manager.query()).active] == ["1.0.0"]
+    assert (installed / "webui.demo" / "0.9.0").is_dir()
+
+
+async def test_uninstall_removes_every_stored_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    await manager.install([write_package(tmp_path / "source-1", package_id="webui.demo", version="1.0.0")])
+    older = write_package(tmp_path / "source-09", package_id="webui.demo", version="0.9.0")
+    copytree(older, manager.install_dir / "webui.demo" / "0.9.0")
+
+    removed = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_UNINSTALL, {"package_id": "webui.demo"})
+    )
+
+    assert removed.ok
+    assert not (manager.install_dir / "webui.demo").exists()
+
+
+async def test_uninstall_one_version_keeps_the_other_stored_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    await manager.install([write_package(tmp_path / "source-1", package_id="webui.demo", version="1.0.0")])
+    older = write_package(tmp_path / "source-09", package_id="webui.demo", version="0.9.0")
+    copytree(older, manager.install_dir / "webui.demo" / "0.9.0")
+
+    removed = await PackageManagementAdapter().handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_UNINSTALL,
+            {"package_id": "webui.demo", "version": "1.0.0"},
+        )
+    )
+
+    assert removed.ok
+    assert removed.payload["reports"][0]["status"] == "SUCCESS"
+    assert not (manager.install_dir / "webui.demo" / "1.0.0").exists()
+    assert (manager.install_dir / "webui.demo" / "0.9.0").is_dir()
+    assert (await manager.query()).active == ()
+
+
+async def test_uninstall_a_stored_version_keeps_the_active_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    await manager.install([write_package(tmp_path / "source-1", package_id="webui.demo", version="1.0.0")])
+    older = write_package(tmp_path / "source-09", package_id="webui.demo", version="0.9.0")
+    copytree(older, manager.install_dir / "webui.demo" / "0.9.0")
+
+    removed = await PackageManagementAdapter().handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_UNINSTALL,
+            {"package_id": "webui.demo", "version": "0.9.0"},
+        )
+    )
+
+    assert removed.ok
+    assert removed.payload["reports"][0]["status"] == "SUCCESS"
+    assert not (manager.install_dir / "webui.demo" / "0.9.0").exists()
+    assert [record.version for record in (await manager.query()).active] == ["1.0.0"]

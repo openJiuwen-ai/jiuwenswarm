@@ -71,9 +71,7 @@ export interface PluginPackageDetail extends PluginPackageSummary {
    */
   pendingConnectors?: string[];
   /**
-   * 2026-08-21 后端新增：manifest 里的 quick_inputs（双语示例问法），仅 show 有——跟 MCP 侧
-   * ConnectorDetail.examples 是同一个"详情页试试这样用"概念，但插件这边沿用包文案的双语对象
-   * 惯例（同 displayName/tags），不是 MCP 那边的纯字符串数组，渲染时要过 localizedText()。
+   * 本地 manifest 为双语对象，Hub profile 为纯字符串；渲染时统一过 localizedText()。
    */
-  quickInputs?: LocalizedText[];
+  quickInputs?: Array<LocalizedText | string>;
 }

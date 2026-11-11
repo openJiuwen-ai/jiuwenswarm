@@ -93,7 +93,7 @@
 - **独立验证条件：** 覆盖合法、依赖、冲突与入口逃逸的样例包；不需要总线与前端。
 - **验收标准：**
   1. EXTV2-02-V-01：非法 manifest（`schemaVersion`、包标识、版本、入口逃逸、`runtime` 非 `backend`）整包拒绝，不产生安装副本。
-  2. EXTV2-02-V-02：同批重复包标识整批失败，已生效同标识返回 `PACKAGE_EXISTS`，依赖缺失或成环分别返回 `DEPENDENCY_NOT_MET`、`DEPENDENCY_CYCLE`，均不部分安装。
+  2. EXTV2-02-V-02：同批重复包标识整批失败；同标识的新版本切换生效并保留旧版本，已存在的同版本返回 `PACKAGE_EXISTS`；依赖缺失或成环分别返回 `DEPENDENCY_NOT_MET`、`DEPENDENCY_CYCLE`，均不部分安装。
   3. EXTV2-02-V-03：安装副本写入 `<install_dir>/<package.id>/<version>/`，已存在的版本目录拒绝覆盖；卸载判断覆盖被依赖（`PACKAGE_IN_USE`）与存在在途调用（`PACKAGE_BUSY`）两种拒绝。
 - **来源验证点与共享场景：** agent-core [包加载规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_01_package-loading.md) 第 3、4 节；架构第 4.1.2 节；主责 EXTV2-02，参与 EXTV2-M1。
 - **前端独立验证：** 不适用。

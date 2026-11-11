@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-09 |
+| 最近修订 | 2026-11-10 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md)、[F_35](../features/F_35_system-plugin-recovery.md) |
 
@@ -19,14 +19,15 @@
 | --- | --- | --- |
 | `extensions.v2.query` | 可选 `package_id: str` | 查询全部或一个包 |
 | `extensions.v2.catalog` | `scope: "catalog" \| "mine"` | 列出预设包或已生效包 |
-| `extensions.v2.show` | `package_id: str` | 返回一个包的详情投影 |
-| `extensions.v2.install` | `paths: list[str]`，非空，每项为现有 ZIP 文件的绝对路径 | 安装 ZIP 扩展包，拒绝目录 |
+| `extensions.v2.show` | `package_id: str`，可选 `version: str` | 返回一个包的详情投影；指定版本时优先返回该版本的 Hub 详情 |
+| `extensions.v2.install` | `paths: list[str]`，非空，每项为现有 ZIP 文件的绝对路径 | 安装 ZIP 扩展包，拒绝目录；同标识的新版本保留旧版本并切换生效，已存在的同版本返回 `PACKAGE_EXISTS` |
+| `extensions.v2.install` | `package_ids: list[str]`，可选 `version: str` | 按包 ID 从本地预设或 Hub 安装；目标版本已生效时幂等，换版本时保留旧副本并切换生效 |
 | `extensions.v2.import` | `path: str`，现有目录或归档的绝对路径 | 按 `package.domain` 分流安装（Gateway 入口） |
-| `extensions.v2.uninstall` | `package_id: str` | 卸载包或未生效副本 |
+| `extensions.v2.uninstall` | `package_id: str`，可选 `version: str` | 不带 `version` 时卸载所有版本；带 `version` 时只删除该版本副本，其他版本保留 |
 | `extensions.v2.reload` | `package_id: str` | 从安装副本热重载，不先卸载 |
 | `extensions.v2.set_enabled` | `package_id: str`、`enable: bool` | 保留安装副本，启用或禁用系统插件 |
-| `extensions.v2.file.list` | `package_id: str` | 列出包内可预览文件树 |
-| `extensions.v2.file.read` | `package_id: str`、`path: str` | 读取一个可预览文件 |
+| `extensions.v2.file.list` | `package_id: str`，可选 `version: str` | 列出包内可预览文件树；已安装版本读本地副本 |
+| `extensions.v2.file.read` | `package_id: str`、`path: str`，可选 `version: str` | 读取一个可预览文件；已安装版本读本地副本 |
 
 包标识沿用 Core 约束：1～128 个字符，首位为英文字母或数字，其余可包含英文字母、数字、点、
 下划线和连字符；不含空格与 `..`，不以点结尾，也不使用 Windows 保留名。未知参数拒绝，不接受自建
@@ -43,12 +44,13 @@ Plan 或修改安装目录的参数。
 
 展示信息统一取 manifest 的 `display`，见 1.3。`readme` 分别取包根 `README.md` 与 `README_EN.md`；
 两者都编码为 `{zh, en}`，单一语言缺失时回落到另一语言。
-`preview` 取包内固定的 `assets/preview.png`，文件缺失或超过 10 MB 时为 `null`；
+`preview` 取包内固定的 `assets/preview.png`，文件缺失或超过 5 MB 时为 `null`；
 `display.events` 每项为 `{name, description: {zh, en}}`，只用于详情页展示，不参与加载校验。
 
 文件树和文件读取复用 AgentServer 的包预览能力：只列非隐藏文件和目录，`previewable` 覆盖
 `.md`、`.mdx`、`.json`、`.py`、`.pdf`，单文件上限 1 MB，拒绝绝对路径、`..`、隐藏段和符号链接。
 Gateway 不实现本地读取，`files` 与 `file.read` 始终转发给 AgentServer，两域共用同一包源解析入口。
+已安装副本（含 Gateway 域）优先于 Hub 预览；只有未安装的版本才回落到 Hub 资源。
 
 ### 1.2 manifest 字段
 
@@ -143,6 +145,27 @@ generation 保留为内部校验字段，不出现在命令结果中。目录和
 还原不回滚插件已经执行过的外部副作用。恢复进程不导入插件模块，只读写受管 `manifest.json`，并且只监听
 `127.0.0.1`。恢复完成后会写入一次性重启请求；父启动器消费请求后自动重启 AgentServer 和 Gateway，使新的
 插件状态生效，正在处理的任务会中断。
+
+### 2.2 安装来源与版本
+
+安装来源记录在安装目录同级的 `extension/system_plugin_install_state.json`（默认 `~/.jiuwenswarm/extension/`），
+与安装目录分离存放，不写入包内。
+每条记录包含 `package_id`、`version`、`origin`（`hub` / `user` / `preset`）、`asset_id`、`install_path`、
+`active`、`enabled`；Gateway 与 AgentServer 共用同一文件。
+
+目录卡片与详情页字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `packageId` | 落地后的包目录名，卸载、启用、禁用均使用该值 |
+| `assetId` | Hub 资源 ID；本地上传与预设为空 |
+| `installedVersion` | 当前安装版本；未安装为空 |
+| `versions` | Hub 已发布版本；本地包只有自身版本 |
+| `origin` / `source` | 安装来源，`source` 为界面使用的 `hub` / `local` 二分 |
+
+按包 ID 安装时：目标版本已生效直接返回成功；目标版本尚未安装时从 Hub 下载或使用本地副本，
+先停用当前版本再启用目标版本，旧版本文件保留在工作区。用户上传与预设包记录 `origin=user` / `origin=preset`，
+Hub 下载记录 `origin=hub` 与 `asset_id`。用户上传的包可在详情页发布，发布类型为 `system_plugin`。
 
 ## 3. Web 命令
 
