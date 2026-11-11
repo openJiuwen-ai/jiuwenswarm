@@ -81,83 +81,65 @@ async def initialize_settings(
     return current
 
 
+async def apply_requested_settings(
+    session_id: str, database: TeamDatabase, requested: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge the fields a ``chat.send`` carried into the committed settings.
+
+    The Web client sends the toggle with every team turn, so the latest turn
+    is the update path: only the fields present in *requested* change, the
+    rest (e.g. ``environment`` set by another host) are kept. The write is a
+    compare-and-swap; a concurrent writer gets one retry on fresh data.
+
+    Args:
+        session_id: Team session whose settings change.
+        database: Team database shared with the session's members.
+        requested: Partial settings from the request, or None to only seed.
+
+    Returns:
+        The committed ``{"settings", "version"}`` record.
+    """
+    current = await initialize_settings(session_id, database, requested)
+    if not requested:
+        return current
+    validate_settings(requested)
+    for _ in range(2):
+        merged = validate_settings({**current["settings"], **requested})
+        if merged == validate_settings(current["settings"]):
+            return current
+        try:
+            version = await database.session_settings.replace(
+                session_id, merged, expected_version=current["version"],
+            )
+            return {"settings": merged, "version": version}
+        except ValueError:
+            current = await database.session_settings.get(session_id) or current
+    raise ValueError("Execution settings changed concurrently; retry the request")
+
+
 async def prepare_session_execution(
-    session_id: str, spec: "TeamAgentSpec", initial: dict[str, Any] | None,
+    session_id: str, spec: "TeamAgentSpec", requested: dict[str, Any] | None,
 ) -> None:
-    """Initialize authoritative policy before starting or recovering members."""
+    """Commit the turn's policy before starting or recovering members.
+
+    Members resolve the policy from the team database at every tool call, so
+    an update committed here applies to new tool calls of a running team too.
+    """
     metadata = get_session_metadata(session_id) or {}
     if metadata.get("work_mode") != "code":
-        if initial and initial.get("independent_git_identity"):
+        if requested and requested.get("independent_git_identity"):
             raise ValueError("Independent Git identity requires a code team session")
         return
     database = TeamDatabase(spec.resolve_db_config())
     if database.config.connection_string == ":memory:":
-        requested = validate_settings(initial or metadata.get("execution_settings", {}))
-        if requested["independent_git_identity"] or requested["environment"]:
+        effective = validate_settings(requested or metadata.get("execution_settings", {}))
+        if effective["independent_git_identity"] or effective["environment"]:
             raise ValueError("Session execution settings require persistent team storage")
         return
     try:
-        current = await initialize_settings(session_id, database, initial)
+        current = await apply_requested_settings(session_id, database, requested)
     finally:
         await database.close()
     persist_settings_mirror(session_id, current["settings"])
     spec.build_context.execution_settings_managed = True
     spec.build_context_seed = spec.build_context.to_seed()
-
-
-async def session_settings_request(
-    session_id: str, params: dict[str, Any], channel_id: str | None,
-) -> dict[str, Any]:
-    """Read or CAS-update settings in the same database used by team members."""
-    from jiuwenswarm.agents.harness.team.team_manager import get_team_manager
-
-    metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False)
-    if not metadata:
-        raise ValueError("Session not found")
-    mode = str(metadata.get("mode") or "")
-    if not metadata.get("message_count") and params.get("mode") == "team":
-        mode = "team"
-    if metadata.get("work_mode") != "code" or not mode.startswith("team"):
-        raise ValueError("Execution settings require a code team session")
-    manager = get_team_manager(channel_id)
-    agent = manager.get_team_agent(session_id)
-    if agent is not None and agent.team_backend is not None:
-        database = agent.team_backend.db
-    else:
-        spec, _ = manager._load_session_team_spec(session_id)
-        database = TeamDatabase(spec.resolve_db_config())
-    owns_database = agent is None or agent.team_backend is None
-    if database.config.connection_string == ":memory:":
-        raise ValueError("Session execution settings require persistent team storage")
-    try:
-        return await _request_with_database(session_id, database, params)
-    finally:
-        if owns_database:
-            await database.close()
-
-
-async def _request_with_database(
-    session_id: str, database: TeamDatabase, params: dict[str, Any],
-) -> dict[str, Any]:
-    """Apply the request using an owned or borrowed database connection."""
-    await database.initialize()
-    current = await database.session_settings.get(session_id)
-    if current is None:
-        metadata = get_session_metadata(session_id) or {}
-        current = {"settings": validate_settings(metadata.get("execution_settings", {})), "version": -1}
-    if "settings" in params:
-        settings = validate_settings(params["settings"])
-        version = params.get("expected_version")
-        if type(version) is not int or version < -1:
-            raise ValueError("expected_version is required")
-        if version != current["version"]:
-            raise ValueError("Execution settings changed; refresh and retry")
-        if version == -1:
-            await database.session_settings.initialize(session_id, current["settings"])
-            version = 0
-        version = await database.session_settings.replace(
-            session_id, settings, expected_version=version,
-        )
-        current = {"settings": settings, "version": version}
-        persist_settings_mirror(session_id, settings)
-    return current
