@@ -1088,8 +1088,7 @@ class CronSchedulerService:
         pending_manual_events = [
             (at_ts, seq, ev)
             for at_ts, seq, ev in self._events
-            if ev.kind in ("wake", "push")
-            and self._is_unfinished_manual_run(ev.run_id, new_job_ids)
+            if ev.kind in ("wake", "push") and self._is_unfinished_manual_run(ev.run_id, new_job_ids)
         ]
         self._events.clear()
         # 不重置 _seq：保留的 push_update 事件携带原始 seq 值，
