@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { useChatStore, useSessionStore } from '../../stores';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { localizedText } from '../../types/pluginPackage';
 import type { ConnectorConnectResponse } from '../../types/connector';
 import { getSkillAvatar } from '../../utils/skillAvatar';
@@ -16,8 +17,8 @@ import { CliAuthModal } from '../ConnectorMarket/CliAuthModal';
 import { requestManageView } from '../ConnectorMarket';
 import { usePendingConnectorFlow, PendingConnectorModals } from '../ConnectorMarket/usePendingConnectorFlow';
 import { Switch } from '../Switch';
-import { Tabs } from '../ui';
-import { resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
+import { Tabs, toast } from '../ui';
+import { isPluginBlockedInWorkMode, resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
 import { pruneEnabledExtensions } from '../../utils/enabledExtensions';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
 import { PickerSearchInput } from './PickerSearchInput';
@@ -46,6 +47,7 @@ interface ExtensionPickerPanelProps {
 export function ExtensionPickerPanel({ onClose, panelRef, direction }: ExtensionPickerPanelProps) {
   const { t, i18n } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const workMode = useWorkspaceStore((s) => s.workMode);
   const enabledPlugins = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enabledPlugins ?? []);
   const enabledMcps = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enabledMcps ?? []);
   const [tab, setTab] = useState<'plugin' | 'mcp'>('plugin');
@@ -84,7 +86,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
       const id = connectingPluginIdRef.current;
       connectingPluginIdRef.current = null;
       if (id) {
-        clearInstallPending(id);
+        clearInstallPending(id, true);
         void installPlugin(id);
       }
     },
@@ -138,7 +140,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   useEffect(() => {
     if (!activeSessionId) return;
     pruneEnabledExtensions(activeSessionId);
-  }, [activeSessionId, installedMap, pluginConnectionStateMap, myConnectors]);
+  }, [activeSessionId, installedMap, pluginConnectionStateMap, myConnectors, workMode, enabledPlugins]);
 
   useEffect(() => {
     // 授权/连接弹窗（ConnectTokenModal/CliAuthModal，含 pluginInstallFlow/pluginReconnectFlow
@@ -180,6 +182,24 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
     const store = useSessionStore.getState();
+    if (isPluginBlockedInWorkMode(id, useWorkspaceStore.getState().workMode)) {
+      store.removeEnabledPlugin(sid, id);
+      toast.open({
+        id: 'ttse-work-mode-notice',
+        content: (
+          <Trans
+            i18nKey="chat.ttseWorkModeNotice"
+            components={{ strong: <strong data-testid="chat-panel-ttse-work-mode-setting" /> }}
+          />
+        ),
+        variant: 'info',
+        duration: 6,
+        wide: true,
+        closable: true,
+        testId: 'chat-panel-ttse-work-mode-notice',
+      });
+      return;
+    }
     if (enabledPlugins.includes(id)) store.removeEnabledPlugin(sid, id);
     else store.addEnabledPlugin(sid, id);
   }
@@ -295,7 +315,8 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
             const avatar = getSkillAvatar(label);
             const installed = installedMap[marketplaceId];
             const linked = (pluginConnectionStateMap[marketplaceId] ?? 'disconnected') === 'connected';
-            const isEnabled = enabledPlugins.includes(sessionPluginName);
+            const isEnabled = !isPluginBlockedInWorkMode(sessionPluginName, workMode)
+              && enabledPlugins.includes(sessionPluginName);
             const isConnectingThis =
               connectingPluginIdRef.current === marketplaceId &&
               (pluginInstallFlow.active || pluginReconnectFlow.active);

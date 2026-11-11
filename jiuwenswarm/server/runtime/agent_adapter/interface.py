@@ -3116,7 +3116,10 @@ class JiuWenSwarm:
                     )
             elif method == ReqMethod.PLUGIN_PACKAGES_INSTALL:
                 ok, payload = await asyncio.wait_for(
-                    package_manager.install_equipment_from_hub_gated("plugin_packages", params),
+                    package_manager.install_equipment_from_hub_gated(
+                        "plugin_packages", params,
+                        before_replace=self._prepare_live_plugin_replacement,
+                    ),
                     timeout=120,
                 )
                 if not ok:
@@ -6099,6 +6102,14 @@ class JiuWenSwarm:
         if unload is None:
             return
         await unload(kind, package_id)
+
+    async def _prepare_live_plugin_replacement(self, package_id: str) -> Any:
+        """Detach idle plugins and retain a rollback for all live selections."""
+        adapter = getattr(self, "_adapter", None)
+        prepare = getattr(adapter, "prepare_plugin_replacement", None)
+        if prepare is not None:
+            return await prepare(package_id)
+        return None
 
     async def compress_context(
             self,

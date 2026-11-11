@@ -21,7 +21,7 @@ import threading
 import time
 import weakref
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
@@ -730,6 +730,7 @@ from jiuwenswarm.common.runtime_workspace import (
     resolve_runtime_workspace_paths,
 )
 from jiuwenswarm.common.mcp_dynamic_token_patch import (
+    SSL_VERIFY_ENTRY_KEY,
     _registry_token_url,
     apply_mcp_dynamic_token_patch,
     mark_dynamic_token_server,
@@ -3178,6 +3179,70 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is not None:
             await self._instance.unload_extension(current[1])
         self._loaded_agent_template = None
+
+    def assert_plugin_replacement_idle(self, package_id: str) -> None:
+        """Check every session before replacement starts detaching resources."""
+        from jiuwenswarm.server.runtime.plugin_package_lifecycle import PluginPackageBusy
+
+        manager = getattr(self, "_plugin_runtime_manager", None)
+        if manager is not None:
+            slot = manager.slots.get(package_id)
+            if manager.transition_lock.locked() or (slot is not None and slot.recovery is not None):
+                raise PluginPackageBusy("Plugin is executing or closing; retry when idle")
+        for adapter in list(getattr(self, "_session_adapters", {}).values()):
+            if adapter is not self:
+                adapter.assert_plugin_replacement_idle(package_id)
+
+    def plugin_replacement_rollback(self, package_id: str) -> Callable[[], Awaitable[None]] | None:
+        """Capture this adapter's selection for restoring a failed replacement."""
+        names = self._current_plugin_names()
+        if package_id not in names:
+            return None
+
+        async def restore() -> None:
+            manager = getattr(self, "_plugin_runtime_manager", None)
+            params = {"plugin_names": names}
+            if manager is None:
+                await self._load_plugins_for_request(params)
+            else:
+                session_id = getattr(self, "_parent_session_id", None) or "default"
+                async with manager.transition(params, session_id):
+                    await self._load_plugins_for_request(params)
+
+        return restore
+
+    async def prepare_plugin_replacement(self, package_id: str) -> Callable[[], Awaitable[None]]:
+        """Detach idle live plugins and return a rollback for their selections."""
+        self.assert_plugin_replacement_idle(package_id)
+        rollbacks = []
+        pending = [self]
+        visited = set()
+        while pending:
+            adapter = pending.pop()
+            if id(adapter) in visited:
+                continue
+            visited.add(id(adapter))
+            rollback = adapter.plugin_replacement_rollback(package_id)
+            if rollback is not None:
+                rollbacks.append(rollback)
+            pending.extend(getattr(adapter, "_session_adapters", {}).values())
+
+        async def restore() -> None:
+            errors = []
+            for rollback in rollbacks:
+                try:
+                    await rollback()
+                except Exception as exc:
+                    errors.append(exc)
+            if errors:
+                raise ExceptionGroup("Failed to restore live plugins after replacement", errors)
+
+        try:
+            await self.unload_equipment_if_loaded("plugin_packages", package_id)
+        except BaseException:
+            await restore()
+            raise
+        return restore
 
     async def unload_equipment_if_loaded(self, kind: str, package_id: str) -> None:
         """Unload ``package_id`` from this adapter and live sessions.
@@ -6109,7 +6174,23 @@ class JiuWenSwarmDeepAdapter:
         # 失败出口由 finally 统一 unmark。条目未携带 dynamic_token_url 或
         # 实例凭据未下发时 mark 是 no-op（该网关保持静态头）。
         server_id = str(getattr(cfg, "server_id", "") or "").strip()
-        marked = mark_dynamic_token_server(server_id, dynamic_token_url)
+        # 条目级 ssl_verify：build_mcp_server_config 只在「dynamic_token_url +
+        # 显式 false」时写入 params；随 mark 登记，取 token 客户端按 server_id
+        # 现读（见 DynamicTokenAuthStrategy / preflight）。
+        ssl_verify = (getattr(cfg, "params", None) or {}).get(
+            SSL_VERIFY_ENTRY_KEY
+        ) is not False
+        marked = mark_dynamic_token_server(
+            server_id, dynamic_token_url, ssl_verify=ssl_verify
+        )
+        logger.debug(
+            "[JiuWenSwarmDeepAdapter] dynamic-token gateway marked: name=%s "
+            "server_id=%s marked=%s ssl_verify=%s dynamic_token_url=set",
+            cfg.server_name,
+            server_id,
+            marked,
+            ssl_verify,
+        )
         ok_registered = False
         try:
             # stdio: command 必须可执行（npx/uvx/node 等），否则 SDK 启动子进程会
@@ -18563,6 +18644,14 @@ class JiuWenSwarmDeepAdapter:
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AgentResponse:
         """Bind trusted host identity and command execution for one request."""
+        from jiuwenswarm.server.runtime.plugin_package_lifecycle import use_plugins
+
+        with use_plugins(self._plugin_turn_packages(request)):
+            return await self._process_message_with_plugin_reservation(request, inputs)
+
+    async def _process_message_with_plugin_reservation(
+        self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> AgentResponse:
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
             from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
@@ -19353,6 +19442,31 @@ class JiuWenSwarmDeepAdapter:
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AsyncIterator[AgentResponseChunk]:
         """Bind trusted host identity and command execution for one stream."""
+        from jiuwenswarm.server.runtime.plugin_package_lifecycle import use_plugins
+
+        stream = self._process_stream_with_plugin_reservation(request, inputs)
+        with use_plugins(self._plugin_turn_packages(request), on_owner_done=stream.aclose):
+            async with aclosing(stream):
+                async for chunk in stream:
+                    yield chunk
+
+    def _plugin_turn_packages(self, request: AgentRequest) -> list[str]:
+        """Include saved selections before a root adapter delegates the turn."""
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
+
+        params = request.params if isinstance(request.params, dict) else {}
+        saved = get_session_equipment(request.session_id, cache_bust=True) if request.session_id else {}
+        names = [*self._current_plugin_names(), *saved.get("plugin_names", [])]
+        selected = params.get("plugin_names", [])
+        if isinstance(selected, list):
+            names.extend(name for name in selected if isinstance(name, str))
+        return list(dict.fromkeys(
+            equipment.resolve_equipment_runtime_id("plugin_packages", name) for name in names
+        ))
+
+    async def _process_stream_with_plugin_reservation(
+        self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> AsyncIterator[AgentResponseChunk]:
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
             from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution

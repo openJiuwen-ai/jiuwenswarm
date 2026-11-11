@@ -112,6 +112,23 @@ describe('GatewayClient', () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
+  it('tells when the connection is down, which attempt comes next and when, and when it is open again', async () => {
+    const { client, socket } = await connected();
+    const states = vi.fn();
+    client.onConnectionChange(states);
+    socket.close();
+    expect(states).toHaveBeenLastCalledWith({ kind: 'down', attempt: 1, retryAt: Date.now() + 1000 });
+    await vi.advanceTimersByTimeAsync(1000);
+    FakeWebSocket.instances[1].close();
+    await Promise.resolve();
+    expect(states).toHaveBeenLastCalledWith({ kind: 'down', attempt: 2, retryAt: Date.now() + 2000 });
+    await vi.advanceTimersByTimeAsync(2000);
+    FakeWebSocket.instances[2].open();
+    await Promise.resolve();
+    expect(states).toHaveBeenLastCalledWith({ kind: 'open' });
+    client.disconnect();
+  });
+
   it('reports the recovery when the very first connection attempt failed', async () => {
     const client = new GatewayClient('office_powerpoint');
     const reconnected = vi.fn();
