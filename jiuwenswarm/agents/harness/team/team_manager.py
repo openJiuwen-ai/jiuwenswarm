@@ -567,10 +567,19 @@ class TeamManager:
         return bool(self._pending_waiters.get(session_id))
 
     def has_interactive_waiter(self, session_id: str) -> bool:
-        """Return whether a non-automation consumer owns the persistent stream."""
+        """Return whether a non-automation consumer owns the persistent stream.
+
+        Attach-only subscriptions are pure observers: they never own the
+        Team stream, so their presence must not count as an interactive
+        consumer. Counting them left rounds after an interrupt (which tears
+        down the owning stream while the gateway-side attach relay dies)
+        with no waiter of their own: every broadcast was routed into the
+        dead attach queue and never reached the frontend.
+        """
         exclusive_request_id = self._exclusive_waiters.get(session_id)
+        attach_ids = self._attach_waiter_ids.get(session_id, set())
         return any(
-            request_id != exclusive_request_id
+            request_id != exclusive_request_id and request_id not in attach_ids
             for request_id, _queue in self._pending_waiters.get(session_id, ())
         )
 

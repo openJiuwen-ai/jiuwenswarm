@@ -873,7 +873,7 @@ async def test_group_policy_replaces_core_message_schema_and_allows_explicit_fin
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("member_name", ["advisor", "host"])
-async def test_group_policy_requires_archived_history_on_every_query(service, member_name):
+async def test_group_policy_reads_archived_history_only_when_needed(service, member_name):
     from jiuwenswarm.agents.swarm.group_execution import GroupTaskPolicyRail
 
     group = await make_group(service)
@@ -884,10 +884,11 @@ async def test_group_policy_requires_archived_history_on_every_query(service, me
         await rail.before_invoke(ctx)
         content = builder.add_section.call_args.args[0].content
         assert content["en"] == content["cn"]
-        assert "first use read_file to read the archived history.jsonl" in content["en"]
-        assert "at the file path supplied in that query" in content["en"]
-        assert "even to greetings and brief follow-ups" in content["en"]
-        assert "continue reading until the archived history is complete" in content["en"]
+        assert "first use read_file" not in content["en"]
+        assert "without reading any file" in content["en"]
+        assert "archived history.jsonl at the file path supplied in that query only when" in content["en"]
+        assert "refers to something you cannot see" in content["en"]
+        assert "Never guess at an earlier discussion" in content["en"]
         assert '"active_execution_id"' not in content["en"]
     assert builder.remove_section.call_count == 2
 
@@ -1088,3 +1089,48 @@ def test_member_error_text_keeps_the_cause_short():
     assert ge.member_error_text(None) == "执行失败，请稍后重试。"
     assert ge.member_error_text(" line one\n line two ") == "执行失败：line one line two"
     assert len(ge.member_error_text("x" * 2000)) == len("执行失败：") + 500
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["group_send_message", "send_file_to_user"])
+async def test_proxy_cannot_post_an_acknowledgement_after_delegating(service, tool_name):
+    import json
+    from openjiuwen.core.foundation.llm import ToolCall
+    from openjiuwen.core.foundation.tool import ToolOutput
+    from jiuwenswarm.agents.swarm.group_execution import GroupTaskPolicyRail
+
+    group = await make_group(service)
+    rail = GroupTaskPolicyRail(SimpleNamespace(session_id=group["group_id"], member_name="advisor"))
+    builder = Mock()
+    invoke = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder))
+
+    def call(name, arguments, result=None):
+        return SimpleNamespace(extra={}, inputs=SimpleNamespace(
+            tool_name=name, tool_result=result,
+            tool_call=ToolCall(id=name, type="function", name=name, arguments=json.dumps(arguments)),
+        ))
+
+    await rail.before_invoke(invoke)
+    await rail.after_tool_call(call("run_team", {"action": "start"}, ToolOutput(
+        success=True, data={"execution_id": "e1", "accepted": True, "posted_to_group": False},
+    )))
+    ack = call(tool_name, {"content": "收到，已派给团队"})
+    await rail.before_tool_call(ack)
+    assert ack.extra["_skip_tool"]
+    assert "Do not post an acknowledgement" in ack.inputs.tool_result["error"]
+
+    final = call(tool_name, {"content": "Result", "execution_id": "e1"})
+    await rail.before_tool_call(final)
+    assert not final.extra
+
+    # A new turn (another message) may reply normally again.
+    await rail.before_invoke(invoke)
+    chat = call(tool_name, {"content": "Hello"})
+    await rail.before_tool_call(chat)
+    assert not chat.extra
+
+    # A rejected run_team does not silence the proxy.
+    await rail.after_tool_call(call("run_team", {"action": "start"}, ToolOutput(success=False, error="bad")))
+    retry = call(tool_name, {"content": "Sorry, that failed"})
+    await rail.before_tool_call(retry)
+    assert not retry.extra

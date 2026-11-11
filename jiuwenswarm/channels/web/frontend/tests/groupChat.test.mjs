@@ -272,8 +272,11 @@ test('file rename and delete call the group file APIs with the attachment path',
 test('confirmed file changes update loaded messages and keep untouched records identical', () => {
   const kept = { id: 'kept', attachments: [{ name: 'b.md', path: '/b.md' }] };
   const records = [{ id: 'one', attachments: [{ name: 'a.md', path: '/a.md' }, { name: 'b.md', path: '/b.md' }] }, kept];
-  const renamed = updateAttachments(records, '/a.md', 'final.md');
+  records[0].attachments[0].download_url = '/old-download';
+  const renamed = updateAttachments(records, '/a.md', 'final.md', '/final.md');
   assert.deepEqual(renamed[0].attachments.map((file) => file.name), ['final.md', 'b.md']);
+  assert.equal(renamed[0].attachments[0].path, '/final.md');
+  assert.equal(renamed[0].attachments[0].download_url, undefined);
   assert.equal(renamed[1], kept);
   const removed = updateAttachments(records, '/b.md', null);
   assert.deepEqual(removed.map((record) => record.attachments.length), [1, 0]);
@@ -472,17 +475,31 @@ test('pending mention bubbles recover from unfinished executions after a refresh
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice', 'bob'])], [run('e1', 'alice', 2, 'running')], members, fresh,
   )), { m1: ['alice:e1'] });
-  // A finished execution or a member reply clears it; an old ask with no execution never reappears.
+  // A finished execution clears it; an old ask with no execution never reappears.
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice'])], [run('e1', 'alice', 2, 'completed')], members, fresh,
   )), {});
+  // The bubble follows the execution: a message the member posts while it runs does not clear it.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }],
+    [run('e1', 'alice', 2, 'running')], members, new Set(['client-m1']),
+  )), { m1: ['alice:e1'] });
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }],
     [run('e1', 'alice', 2, 'running')], members, fresh,
+  )), { m1: ['alice:e1'] });
+  // Without an execution the member answered directly, so its reply clears the bubble.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }], [], members, new Set(['client-m1']),
   )), {});
   // One execution belongs only to the latest ask before it, so older asks do not duplicate the bubble.
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice']), ask('m2', 5000, ['alice'])], [run('e1', 'alice', 6, 'running')], members, fresh,
+  )), { m2: ['alice:e1'] });
+  // A newer execution must not revive an answered ask sent from the same page.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }, ask('m2', 5000, ['alice'])],
+    [run('e1', 'alice', 6, 'running')], members, new Set(['client-m1', 'client-m2']),
   )), { m2: ['alice:e1'] });
   // A message sent from this page waits even before its execution exists.
   assert.deepEqual(waiting(pendingMentionReplies(
