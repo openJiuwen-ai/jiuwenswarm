@@ -59,10 +59,18 @@ async def _resource(operation, params):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("existing_default, referenced", [(False, False), (True, False), (False, True)])
-async def test_add_model_removes_unreferenced_placeholder(config_file, monkeypatch, existing_default, referenced):
-    monkeypatch.setenv("MODEL_NAME", "your-model-name")
-    monkeypatch.setenv("API_BASE", "https://example.com/compatible-mode/v1")
-    monkeypatch.setenv("API_KEY", "sk-xxxxxxxxx")
+@pytest.mark.parametrize("missing_credentials", [False, True])
+async def test_add_model_removes_unreferenced_placeholder(
+    config_file, monkeypatch, existing_default, referenced, missing_credentials,
+):
+    if missing_credentials:
+        monkeypatch.setenv("MODEL_NAME", " your-model-name ")
+        monkeypatch.delenv("API_BASE", raising=False)
+        monkeypatch.delenv("API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("MODEL_NAME", "your-model-name")
+        monkeypatch.setenv("API_BASE", "https://example.com/compatible-mode/v1")
+        monkeypatch.setenv("API_KEY", "sk-xxxxxxxxx")
     placeholder = {
         "model_id": "mdl_default_primary",
         "is_default": not existing_default,
@@ -99,8 +107,9 @@ async def test_add_model_removes_unreferenced_placeholder(config_file, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_add_model_preserves_initial_entry_configured_via_env(config_file, monkeypatch):
-    monkeypatch.setenv("MODEL_NAME", "configured-in-env")
+@pytest.mark.parametrize("model_name", ["configured-in-env", "your-model-name"])
+async def test_add_model_preserves_initial_entry_configured_via_env(config_file, monkeypatch, model_name):
+    monkeypatch.setenv("MODEL_NAME", model_name)
     monkeypatch.setenv("API_BASE", "https://model.test/v1")
     monkeypatch.setenv("API_KEY", "test-secret")
     existing = _model("mdl_default_primary", "${MODEL_NAME}")
@@ -108,7 +117,7 @@ async def test_add_model_preserves_initial_entry_configured_via_env(config_file,
     config_file.write_text(yaml.safe_dump({"models": {"defaults": [existing]}}), encoding="utf-8")
 
     assert (await _resource("models.upsert", {"model": _model("mdl_glm", "GLM-5.3")}))["ok"]
-    assert [row["model_name"] for row in await _list_models()] == ["configured-in-env", "GLM-5.3"]
+    assert [row["model_name"] for row in await _list_models()] == [model_name, "GLM-5.3"]
 
 
 @pytest.mark.asyncio
