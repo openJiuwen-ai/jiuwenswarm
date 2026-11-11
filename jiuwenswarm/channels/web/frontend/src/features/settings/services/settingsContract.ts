@@ -216,8 +216,6 @@ export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
   'locale.set_conf',
   'models.list',
   'models.replace_all',
-  'vendors.list',
-  'vendors.fetch_models',
   'path.get',
   'path.set',
   'permissions.tools.get',

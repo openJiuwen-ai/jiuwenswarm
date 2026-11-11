@@ -57,6 +57,8 @@
 
 ## 快速开始
 
+切换分支后，先同步依赖并运行 `npm run build`，再使用 `jiuwenswarm-start` 的静态前端。`dist/` 是本地构建产物，不随 Git 分支更新；混用其它分支的产物会导致页面请求当前后端未实现的接口（例如模型编辑弹窗报 `unknown method: vendors.list`）。当前分支使用内置模型协议选项，不调用 `vendors.*`。如果 `~/.jiuwenswarm/channels/web/frontend/dist/` 存在，静态服务会优先使用该目录，部署时也需同步更新。构建完成后强制刷新浏览器以加载新资源。
+
 ### 环境要求
 
 - Node.js 18+

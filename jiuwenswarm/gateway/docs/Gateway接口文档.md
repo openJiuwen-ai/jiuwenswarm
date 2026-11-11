@@ -33,6 +33,13 @@ flowchart TB
 
 ### A1 Web 协议（`/ws`）
 
+#### RSI 实验接口转发
+
+`ReqMethod` 中的全部 `rsi.*` 方法（包括 `rsi.capabilities`、`rsi.task.list` 和训练、产物、Harness 管理接口）经 Web 入站统一转发至 AgentServer，由其返回最终响应；Gateway 不发送本地 ACK，也不将这些请求落入本地未知方法分支。两份转发名单均从该协议枚举提取 RSI 方法，新增方法时无需重复维护字符串清单。
+
+AgentServer 始终响应 `rsi.capabilities`。`rsi.enabled` 默认为 `false`，此时其它 RSI 请求返回 `RSI_DISABLED`；需在实例 `config/config.yaml` 中显式配置 `rsi.enabled: true` 后使用实验功能。该开关与 `METHOD_NOT_FOUND` 是不同的错误边界。
+
+
 
 | 项目       | 说明                                                                                  |
 | -------- | ----------------------------------------------------------------------------------- |

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Drop newer SDK kwargs when the installed openjiuwen package is older."""
+"""Bridge supported rail behavior across openjiuwen SDK versions."""
 
 from __future__ import annotations
 
@@ -52,8 +52,30 @@ def _wrap_init_for_extra_kwargs(cls: type) -> None:
     cls.__init__ = _compat  # type: ignore[method-assign]
 
 
+def _install_model_continue_compat(context_cls: type) -> None:
+    """Use the older ReAct loop's steering continuation gate, without replacing it."""
+    if callable(getattr(context_cls, "request_model_continue", None)):
+        return
+
+    def request_model_continue(self) -> None:
+        # The stable ReAct loop already continues while steering is pending.
+        # Retain the rail's specific reminder; only synthesize one if absent.
+        queue = self.steering_queue
+        # 旧 SDK 在公开队列上绑定 steering_inbox；不调用其私有窗口检查方法。
+        inbox = getattr(queue, "steering_inbox", None)
+        if queue is None or (inbox is not None and not inbox.current):
+            raise RuntimeError("Model continuation requires an active steering queue on this SDK")
+        if not self.has_pending_steering():
+            self.push_steering("Continue the current task and provide the corrected final answer.")
+
+    context_cls.request_model_continue = request_model_continue
+
+
 def install_evolution_rail_kwargs_compat() -> None:
-    """Older rails may lack signal_trigger / trajectory_span_processor parameters."""
+    """Install legacy rail constructor and steering-backed continuation bridges."""
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+
+    _install_model_continue_compat(AgentCallbackContext)
     try:
         from openjiuwen.harness.rails import (
             SkillCreateRail,

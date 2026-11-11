@@ -434,12 +434,6 @@
 .rsi-detail__actions .rsi-btn--ghost {
   background: var(--color-rsi-surface-43);
 }
-
-.rsi-detail__actions .rsi-btn--primary {
-  background: var(--color-rsi-surface-6);
-  color: var(--color-rsi-surface-43);
-}
-
 .rsi-detail__actions .rsi-detail__action--delete {
   background: transparent;
   border-color: transparent;

@@ -1,7 +1,7 @@
-# Harness RSI on dev-stable
+# Harness and Artifact RSI on dev-stable
 
-This service runs single-Harness experiments with the paired agent-core RSI
-engine. It does not register AutoHarness or Paper/Program optimization engines.
+This service runs single-Harness, paper, and program optimization with the
+paired agent-core RSI engines. It does not register AutoHarness.
 
 Enable the experiment entry through the workspace configuration, then restart
 the service or reconnect the Web client:
@@ -12,9 +12,11 @@ rsi:
 ```
 
 The default is disabled. `rsi.capabilities` returns the effective switch;
-disabled requests cannot start experiments. Web creation exposes Harness only.
-Runtime pause is unavailable, queued tasks can pause, and running tasks stop
-through cancellation. The service recovers task metadata and engine snapshots
+disabled requests cannot start experiments. Web creation exposes Harness and
+Artifact Optimization; Artifact tasks select Paper or Program. Harness runtime
+pause is unavailable; artifact control follows the selected Provider's support.
+Queued tasks can pause, and running Harness tasks stop through cancellation.
+The service recovers task metadata and engine snapshots
 after restart without silently restarting paid model work.
 
 Orderly AgentServer shutdown cancels and awaits the worker's owned tasks.
@@ -30,8 +32,10 @@ unload APIs; newly created agents restore the active version. Loading errors
 must preserve or restore the previous version.
 
 RSI versions are independent of the newer Plugin catalog. The production
-factory registers only the HARNESS adapter. Unsupported artifact scenarios and
-package declarations fail explicitly.
+factory registers HARNESS, ARTIFACT:PAPER, and ARTIFACT:PROGRAM. Program tasks
+retain the upstream threshold-stop behavior. Artifact requests resolve the
+selected optimizer to a process-local Model; Harness keeps its task-local model
+files. Invalid artifact subtypes and unsupported package declarations fail explicitly.
 
 Agent chats can select an installed RSI Harness version for the current
 session. The next chat turn applies and saves the selection. Subsequent

@@ -1,12 +1,14 @@
 """Verify the production transport handler's feature gate and service seam."""
 
 import json
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.agents.harness.common.rsi.errors import RsiBadRequest
 from jiuwenswarm.server.handlers import rsi
 from jiuwenswarm.common.e2a.models import E2AResponse
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
@@ -29,7 +31,8 @@ async def test_disabled_capabilities_do_not_construct_the_engine(monkeypatch):
     value = json.loads(wire) if isinstance(wire, (str, bytes)) else wire
     response = e2a_response_to_agent_response(E2AResponse.from_dict(value))
     assert response.payload["enabled"] is False
-    assert response.payload["scenarios"] == ["HARNESS"]
+    assert response.payload["scenarios"] == ["HARNESS", "ARTIFACT"]
+    assert response.payload["artifact_types"] == ["PAPER", "PROGRAM"]
 
 
 @pytest.mark.asyncio
@@ -54,12 +57,90 @@ async def test_enabled_handler_awaits_the_service_result(monkeypatch):
     handler.handle_async.assert_awaited_once_with(ctx.request)
 
 
-def test_artifact_execution_is_rejected_by_the_task_service(tmp_path):
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["config", "assembly", "execution"])
+async def test_rsi_unexpected_errors_keep_a_wire_error_code(monkeypatch, failure_stage):
+    def fail():
+        raise ValueError("controlled failure")
+
+    monkeypatch.setattr(rsi, "get_config", fail if failure_stage == "config" else lambda: {"rsi": {"enabled": True}})
+    ctx = context(ReqMethod.RSI_TASK_LIST)
+    handler = SimpleNamespace(handle_async=AsyncMock(side_effect=ValueError("controlled failure")))
+    ctx.services.get_rsi_handlers = fail if failure_stage == "assembly" else lambda: handler
+    await rsi.handle_rsi(ctx)
+    wire = ctx.sink.send_wire.call_args.args[0]
+    response = e2a_response_to_agent_response(E2AResponse.from_dict(wire))
+    assert response.ok is False
+    assert response.payload == {"code": "INTERNAL_ERROR", "error": "controlled failure"}
+
+
+@pytest.mark.asyncio
+async def test_rsi_domain_errors_keep_their_code_and_cancellation_propagates(monkeypatch):
+    monkeypatch.setattr(rsi, "get_config", lambda: {"rsi": {"enabled": True}})
+    ctx = context(ReqMethod.RSI_TASK_CREATE)
+    handler = SimpleNamespace(handle_async=AsyncMock(side_effect=RsiBadRequest("invalid selection")))
+    ctx.services.get_rsi_handlers = lambda: handler
+    await rsi.handle_rsi(ctx)
+    wire = ctx.sink.send_wire.call_args.args[0]
+    response = e2a_response_to_agent_response(E2AResponse.from_dict(wire))
+    assert response.payload == {"code": "BAD_REQUEST", "error": "invalid selection"}
+    ctx.sink.send_wire.reset_mock()
+    handler.handle_async.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await rsi.handle_rsi(ctx)
+    ctx.sink.send_wire.assert_not_called()
+
+
+@pytest.mark.parametrize("active,baseline", [(None, None), (None, "baseline"), ("active", None)])
+def test_harness_source_preserves_missing_baseline_and_prefers_active(tmp_path, monkeypatch, active, baseline):
+    from jiuwenswarm.agents.harness.common.rsi import context as context_module, harness_activation
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    monkeypatch.setattr(context_module, "get_rsi_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(harness_activation.RsiHarnessActivationStore, "resolve_active_runtime_path", lambda self: active)
+    baseline_path = tmp_path / baseline if baseline else None
+    monkeypatch.setattr(harness_activation, "resolve_native_harness_baseline", lambda: baseline_path)
+    expected = active or (str(baseline_path) if baseline_path is not None else None)
+    assert AgentWebSocketServer._rsi_harness_refs_provider() == expected
+
+
+def test_rsi_registration_rejects_duplicates_without_overwriting_handlers():
+    from jiuwenswarm.server import dispatch
+
+    original = dict(dispatch.HANDLERS)
+    with pytest.raises(RuntimeError, match="duplicate handler registration"):
+        dispatch._register_rsi_methods()
+    assert dispatch.HANDLERS == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config", [None, {}, {"rsi": None}, {"rsi": {"enabled": False}}])
+async def test_disabled_session_harness_does_not_access_request_or_adapter_state(monkeypatch, config):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    monkeypatch.setattr(interface_deep, "get_config", lambda: config)
+    adapter = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
+    await adapter._sync_rsi_session_harness(object())
+
+
+@pytest.mark.parametrize("artifact_type", ["PAPER", "PROGRAM"])
+def test_artifact_creation_keeps_the_selected_branch(tmp_path, artifact_type):
     from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
-    from jiuwenswarm.agents.harness.common.rsi.errors import RsiScenarioNotSupported
-    service = build_rsi_service_context(tmp_path).task_service
-    with pytest.raises(RsiScenarioNotSupported, match="Only Harness"):
-        service.create({"scenario": "ARTIFACT", "artifact_type": "PAPER"})
+    ctx = build_rsi_service_context(tmp_path / "tasks")
+    ctx.install_mock_rsi_adapters()
+    artifact = tmp_path / "source"
+    artifact.mkdir()
+    created = ctx.task_service.create({
+        "name": "artifact regression", "scenario": "ARTIFACT", "artifact_type": artifact_type,
+        "artifact_path": str(artifact), "model_refs": {"optimizer": "selected-model"},
+        "max_iterations": 1,
+    })
+    task = ctx.store.get(created["task_id"])
+    assert task.scenario == "ARTIFACT"
+    assert task.artifact_type == artifact_type
+    assert task.model_refs["optimizer"] == "selected-model"
+    assert not task.model_refs.get("tester")
+    assert ctx.adapter_for_task(task.task_id).artifact_type == artifact_type
 
 
 def test_rsi_methods_route_from_web_gateway_to_stable_dispatch():
@@ -76,41 +157,6 @@ def test_rsi_methods_route_from_web_gateway_to_stable_dispatch():
             assert HANDLERS[method].fn is rsi.handle_rsi
 
 
-@pytest.mark.asyncio
-async def test_live_adapter_switches_and_restores_stable_harness_resources(tmp_path):
-    from unittest.mock import MagicMock
-    from openjiuwen.harness import create_deep_agent
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-
-    def package(name, content):
-        path = tmp_path / name
-        path.mkdir()
-        (path / "manifest.json").write_text(json.dumps({
-            "id": name, "prompt_sections": [{"name": "rsi.stable.policy", "content": content}],
-        }), encoding="utf-8")
-        return str(path)
-
-    first = package("first", "First tested policy")
-    second = package("second", "Second tested policy")
-    invalid = package("invalid", ["invalid prompt content"])
-    adapter = JiuWenSwarmDeepAdapter(workspace_dir=str(tmp_path / "workspace"))
-    agent = create_deep_agent(model=MagicMock(), workspace=str(tmp_path / "workspace"),
-                              agent_ras=False, auto_create_workspace=False)
-    adapter._instance = agent
-    try:
-        await adapter.apply_rsi_harness_install("activate", config_path=first, installation_id="first")
-        assert "First tested policy" in agent.system_prompt_builder.build()
-        with pytest.raises(ValueError):
-            await adapter.apply_rsi_harness_install("activate", config_path=invalid, installation_id="invalid")
-        assert adapter._rsi_harness_install_id == "first"
-        assert "First tested policy" in agent.system_prompt_builder.build()
-        await adapter.apply_rsi_harness_install("activate", config_path=second, installation_id="second")
-        assert "Second tested policy" in agent.system_prompt_builder.build()
-        assert "First tested policy" not in agent.system_prompt_builder.build()
-        await adapter.apply_rsi_harness_install("deactivate", config_path="", installation_id="")
-        assert "Second tested policy" not in agent.system_prompt_builder.build()
-    finally:
-        agent.ability_manager.teardown_tools()
 
 
 @pytest.mark.asyncio

@@ -2032,11 +2032,18 @@ class AgentWebSocketServer:
         return self._rsi_handlers
 
     @staticmethod
-    def _rsi_harness_refs_provider(params=None):
-        from jiuwenswarm.agents.harness.common.rsi.harness_activation import RsiHarnessActivationStore, resolve_native_harness_baseline
+    def _rsi_harness_refs_provider(params: dict[str, Any] | None = None) -> str | None:
+        from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
+            RsiHarnessActivationStore,
+            resolve_native_harness_baseline,
+        )
         from jiuwenswarm.agents.harness.common.rsi.context import get_rsi_workspace_root
         if params and (params.get("package_id") or params.get("harness_id")):
             raise ValueError("This stable build selects the active RSI Harness")
         store = RsiHarnessActivationStore(get_rsi_workspace_root() / "tasks")
-        return store.resolve_active_runtime_path() or str(resolve_native_harness_baseline())
+        active_path = store.resolve_active_runtime_path()
+        if active_path:
+            return active_path
+        baseline = resolve_native_harness_baseline()
+        return str(baseline) if baseline is not None else None
 

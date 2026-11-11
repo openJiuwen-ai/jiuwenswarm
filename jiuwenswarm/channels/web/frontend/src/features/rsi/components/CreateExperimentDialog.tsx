@@ -367,6 +367,11 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
               onClick={() => switchScenario('HARNESS')}
               label={t('rsi.createDialog.typeHarness')}
             />
+            <BranchButton
+              active={isArtifact}
+              onClick={() => switchScenario('ARTIFACT')}
+              label={t('rsi.createDialog.typeArtifact')}
+            />
           </div>
         </Field>
 
@@ -736,7 +741,7 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
   const { t } = useTranslation();
   const availableModels = useSessionStore((s) => s.availableModels);
 
-  const isFree = (m: ModelEntry) => m.is_free === true;
+  const isFree = (m: ModelEntry) => 'is_free' in m && m.is_free === true;
   // 免费模型由网关按会话注入凭据，RSI 实验配置无法持久化保存，这里不展示。
   const configuredModels = availableModels.filter((m) => !isFree(m));
 

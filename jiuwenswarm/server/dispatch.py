@@ -225,7 +225,19 @@ def _register_permissions_methods() -> None:
         HANDLERS[method] = spec
 
 
+def _register_rsi_methods() -> None:
+    """所有 RSI 方法共用 handler，注册时拒绝覆盖已有方法。"""
+    spec = HandlerSpec(fn=rsi_handlers.handle_rsi)
+    for method in ReqMethod:
+        if not method.value.startswith("rsi."):
+            continue
+        if method in HANDLERS:
+            raise RuntimeError(f"duplicate handler registration for {method}")
+        HANDLERS[method] = spec
+
+
 _register_permissions_methods()
+_register_rsi_methods()
 
 
 def supported_methods() -> frozenset[ReqMethod]:
@@ -281,6 +293,3 @@ def _default_context(server: Any, ws: Any, send_lock: Any, request: Any) -> Any:
         services=AgentServerServices(server),
     )
 
-for _method in ReqMethod:
-    if _method.value.startswith("rsi."):
-        HANDLERS[_method] = HandlerSpec(fn=rsi_handlers.handle_rsi)

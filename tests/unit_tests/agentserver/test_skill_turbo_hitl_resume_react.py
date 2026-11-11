@@ -92,6 +92,11 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
     adapter._is_session_scoped_adapter = True
     adapter._instance = SimpleNamespace()
     adapter._deepresearch_rewrite_tx_uncertain = False
+    # 直接经过关闭的 RSI 钩子，保持本用例只检验模型身份写回。
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.get_config",
+        lambda: {"rsi": {"enabled": False}},
+    )
     adapter._active_session_ids = defaultdict(int)
     adapter._session_agent_tasks = {}
     adapter._stream_event_rail = None

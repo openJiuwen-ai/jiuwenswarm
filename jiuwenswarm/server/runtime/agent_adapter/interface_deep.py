@@ -901,8 +901,6 @@ from jiuwenswarm.server.runtime.agent_adapter.interrupt_state_machine import (
 from jiuwenswarm.gateway.cron import CronTargetChannel
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.agents.harness.common.rsi.errors import RsiError
-from openjiuwen.core.common.exception.errors import AgentError
 from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
     SkillPrebuiltSynchronizer,
     is_skill_prebuilt_tenant,
@@ -991,6 +989,8 @@ class JiuWenSwarmDeepAdapter:
     # auto_harness / agent_ws_server 通过 getattr(类, ...) 查找，拆分后需挂回类属性。
     _parse_stream_chunk = staticmethod(_parse_stream_chunk)
     _build_model_from_entry = staticmethod(_build_model_from_entry)
+    # 跨模块调用使用公开入口；保留旧名称以兼容既有宿主装配。
+    build_model_from_entry = staticmethod(_build_model_from_entry)
     shutdown_context_session_memory = staticmethod(shutdown_context_session_memory)
     _build_model_routing = staticmethod(_build_model_routing)
     _build_disabled_tools_rail = staticmethod(_build_disabled_tools_rail)
@@ -1296,6 +1296,10 @@ class JiuWenSwarmDeepAdapter:
         # each create a distinct lock and double-init the checkpointer.
         self._checkpoint_init_lock = asyncio.Lock()
         self._rsi_harness_lock = asyncio.Lock()
+        self._rsi_session_harness_id: str = ""
+        self._rsi_harness_install_id: str | None = None
+        self._rsi_harness_config_path: str | None = None
+        self._rsi_harness_load_record: Any | None = None
         # Root-adapter-only: its own DeepAgent is built on demand (see
         # ``ensure_instance``), so the chat path does not pay for an instance it
         # never runs on.
@@ -15733,7 +15737,8 @@ class JiuWenSwarmDeepAdapter:
 
         try:
             await self._sync_rsi_session_harness(request)
-        except (ValueError, RuntimeError, OSError, AgentError, RsiError) as exc:
+        except Exception as exc:
+            logger.exception("RSI Harness 会话同步失败，返回聊天错误响应")
             return AgentResponse(
                 request_id=request.request_id, channel_id=request.channel_id, ok=False,
                 payload={"error_code": "rsi_harness_selection_failed", "error": str(exc)},
@@ -16573,7 +16578,8 @@ class JiuWenSwarmDeepAdapter:
 
         try:
             await self._sync_rsi_session_harness(request)
-        except (ValueError, RuntimeError, OSError, AgentError, RsiError) as exc:
+        except Exception as exc:
+            logger.exception("RSI Harness 会话同步失败，返回聊天错误帧")
             yield AgentResponseChunk(
                 request_id=request.request_id, channel_id=request.channel_id, is_complete=True,
                 payload={"event_type": "chat.error", "error_code": "rsi_harness_selection_failed", "error": str(exc)},
@@ -20142,7 +20148,6 @@ class JiuWenSwarmDeepAdapter:
         self._rsi_harness_install_id = None
         self._rsi_harness_config_path = None
         self._rsi_harness_load_record = None
-        from jiuwenswarm.common.utils import get_user_workspace_dir
         if not (get_user_workspace_dir() / "rsi" / "tasks" / "activation.json").is_file():
             return
         from jiuwenswarm.agents.harness.common.rsi.harness_activation import RsiHarnessActivationStore
@@ -20164,6 +20169,9 @@ class JiuWenSwarmDeepAdapter:
 
     async def _sync_rsi_session_harness(self, request):
         """Restore or change the installed Harness selected for this chat."""
+        # 关闭时不访问请求/适配器状态，也不导入可选 Harness 实现。
+        if ((get_config() or {}).get("rsi") or {}).get("enabled") is not True:
+            return
         if not self._is_session_scoped_adapter or not request.session_id:
             return
         if request.req_method != ReqMethod.CHAT_SEND:
@@ -20177,15 +20185,15 @@ class JiuWenSwarmDeepAdapter:
         mode = str(params.get("mode", "agent")).partition(".")[0]
         if params.get("answers") or params.get("input_mode") == "steer" or mode != "agent":
             return
-        if (get_config().get("rsi") or {}).get("enabled") is not True:
-            return
-        field = "rsi_harness_installation_id"
-        changed = field in params
+        field_name = "rsi_harness_installation_id"
+        changed = field_name in params
         agent_id, service_id, workspace_key = TenantAgentPool.extract_ids(request)
         root = resolve_tenant_sessions_dir(workspace_key, service_id=service_id, agent_id=agent_id)
         async with self._rsi_harness_lock:
-            saved = get_session_metadata(request.session_id, enable_writeback=False, sessions_root=root).get(field, "")
-            desired = params[field] if changed else saved
+            saved = get_session_metadata(
+                request.session_id, enable_writeback=False, sessions_root=root,
+            ).get(field_name, "")
+            desired = params[field_name] if changed else saved
             if not isinstance(desired, str):
                 raise ValueError("RSI Harness 版本必须是字符串，空字符串表示恢复默认")
             current = getattr(self, "_rsi_session_harness_id", "")
@@ -20194,7 +20202,10 @@ class JiuWenSwarmDeepAdapter:
                 selected = store.get_version(desired) if desired else store.get_active()
                 if desired and selected is None:
                     raise ValueError("所选 RSI Harness 版本已不可用")
-                runtime = store.validate_runtime_path(selected.get("runtime_path"), require_exists=True) if selected else None
+                runtime = (
+                    store.validate_runtime_path(selected.get("runtime_path"), require_exists=True)
+                    if selected else None
+                )
                 if desired and runtime is None:
                     raise ValueError("所选 RSI Harness 版本文件不存在")
                 installation_id = selected["installation_id"] if runtime else ""

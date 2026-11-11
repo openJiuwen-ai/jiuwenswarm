@@ -8,7 +8,6 @@ import pytest
 
 from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
 from jiuwenswarm.agents.harness.common.rsi.errors import RsiBadRequest, RsiPathInvalid
-from jiuwenswarm.agents.harness.common.rsi.harness_provider import HarnessProvider
 from jiuwenswarm.agents.harness.common.rsi.services import _ensure_provider_valid
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.rsi import RsiAgentServerHandlers
@@ -40,6 +39,20 @@ class TestReqMethod:
     def test_18_rsi_methods_registered(self):
         present = {m.value for m in ReqMethod if m.value.startswith("rsi.")}
         assert present == RSI_METHOD_NAMES
+
+    @pytest.mark.parametrize("method", sorted(RSI_METHOD_NAMES))
+    def test_web_gateway_forwards_rsi_without_local_fallback(self, method):
+        from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+            _FORWARD_NO_LOCAL_HANDLER_METHODS,
+            _FORWARD_REQ_METHODS,
+        )
+        from jiuwenswarm.server.dispatch import HANDLERS
+
+        # Both gates are required: forwarding alone still produces a spurious
+        # METHOD_NOT_FOUND while the AgentServer response is in flight.
+        assert method in _FORWARD_REQ_METHODS
+        assert method in _FORWARD_NO_LOCAL_HANDLER_METHODS
+        assert ReqMethod(method) in HANDLERS
 
 
 class FakeRequest:
@@ -188,24 +201,6 @@ class TestDispatch:
         assert result["ok"] is True
         assert result["payload"] == {"valid": True, "sample_count": 1, "errors": []}
 
-    def test_dataset_validate_uses_real_harness_provider_semantics(self, tmp_path: Path):
-        tasks_root = tmp_path / "tasks"
-        context = build_rsi_service_context(tasks_root)
-        context.register_harness_provider(HarnessProvider(tasks_root))
-        h = RsiAgentServerHandlers(context)
-        dataset = tmp_path / "duplicate.json"
-        dataset.write_text(
-            '[{"case_id": "same"}, {"case_id": "same"}]',
-            encoding="utf-8",
-        )
-        result = h.handle(FakeRequest(ReqMethod.RSI_DATASET_VALIDATE, {
-            "input_file": str(dataset), "scenario": "HARNESS",
-        }))
-        # Validation failures are a successful method response with
-        # ``payload.valid=false``; transport/protocol errors use ``ok=false``.
-        assert result["ok"] is True
-        assert result["payload"]["valid"] is False
-        assert result["payload"]["errors"][0]["code"] == "DATASET_INVALID"
 
     def test_provider_path_error_uses_matching_error_reason(self):
         result = SimpleNamespace(

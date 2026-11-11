@@ -1,4 +1,7 @@
-"""Keep RSI installation tests out of the user's extension catalog."""
+"""隔离 RSI 测试的插件目录，并保留同步测试使用的事件循环。"""
+
+import asyncio
+import inspect
 
 import pytest
 
@@ -16,13 +19,6 @@ def rsi_catalog_workspace(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog, "get_agent_workspace_dir", lambda: workspace)
     monkeypatch.setattr(catalog, "get_equipment_resources_plugin_packages_dir", lambda: None)
     return workspace
-
-
-"""RSI tests use task-local workspaces and the stable Harness runtime."""
-
-import asyncio
-import inspect
-import pytest
 
 
 @pytest.fixture(autouse=True)

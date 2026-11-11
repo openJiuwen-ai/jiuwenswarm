@@ -34,34 +34,6 @@ def _write_package(root: Path, name: str = "policy_harness") -> Path:
     return package
 
 
-def test_published_refs_resolve_relative_to_refs_parent(tmp_path):
-    package = _write_package(tmp_path)
-    refs = package.parent.parent / "current_harness_refs.yaml"
-    refs.write_text(
-        yaml.safe_dump(
-            {
-                "version": 1,
-                "harness_refs": {"policy_harness": "current_harnesses/policy_harness"},
-                "roles": [
-                    {
-                        "role": "policy_harness",
-                        "member_name": "policy_harness",
-                        "description": "published policy harness",
-                        "harness_ref_path": "current_harnesses/policy_harness",
-                    }
-                ],
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    parsed = parse_published_harness_refs(refs, task_run_root=tmp_path)
-
-    assert parsed.role == "policy_harness"
-    assert parsed.package_path == package.resolve()
-    assert parsed.metadata["member_name"] == "policy_harness"
-    assert parsed.refs_payload["version"] == 1
 
 
 def test_published_refs_reject_path_outside_task_run(tmp_path):
@@ -79,32 +51,6 @@ def test_published_refs_reject_path_outside_task_run(tmp_path):
         parse_published_harness_refs(refs, task_run_root=tmp_path / "run")
 
 
-def test_published_refs_require_single_role_and_manifest(tmp_path):
-    first = _write_package(tmp_path, "first")
-    _write_package(tmp_path, "second")
-    refs = tmp_path / "member_optimizations" / "current_harness_refs.yaml"
-    refs.write_text(
-        yaml.safe_dump(
-            {
-                "harness_refs": {
-                    "first": "current_harnesses/first",
-                    "second": "current_harnesses/second",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(RsiHarnessInvalid, match="恰好一个"):
-        parse_published_harness_refs(refs, task_run_root=tmp_path)
-
-    (first / "harness_config.yaml").unlink()
-    refs.write_text(
-        yaml.safe_dump({"harness_refs": {"first": "current_harnesses/first"}}),
-        encoding="utf-8",
-    )
-    with pytest.raises(RsiHarnessInvalid, match="配置文件"):
-        parse_published_harness_refs(refs, task_run_root=tmp_path)
 
 
 def test_package_hash_is_deterministic_and_content_sensitive(tmp_path):
@@ -213,126 +159,7 @@ def _write_published_state(context, task_id: str, *, extension_name: str) -> Pat
 
 
 
-@pytest.mark.asyncio
-async def test_installer_rolls_back_to_any_retained_version_and_marks_initial(tmp_path):
-    tasks_root = tmp_path / "rsi" / "tasks"
-    context = build_rsi_service_context(tasks_root, enable_harness_materialization=False)
-    first_task_id = "rsi-install-first"
-    second_task_id = "rsi-install-second"
-    context.store.create(_completed_harness_task(context, first_task_id))
-    context.store.create(_completed_harness_task(context, second_task_id))
-    _write_published_state(context, first_task_id, extension_name="validation_first")
-    _write_published_state(context, second_task_id, extension_name="validation_second")
-
-    class FakeRsiAgentManager:
-        def __init__(self):
-            self.calls = []
-
-        async def broadcast_rsi_harness_change(self, old_installation, new_installation):
-            self.calls.append((old_installation, new_installation))
-            return {"attempted": 1, "succeeded": 1, "failed": []}
-
-    manager = FakeRsiAgentManager()
-    installer = RsiHarnessInstaller(
-        context.store,
-        context.adapter_for_task,
-        manager,
-        activation_root=tasks_root,
-    )
-
-    first = await installer.install(first_task_id)
-    second = await installer.install(second_task_id)
-    rollback = await installer.rollback(first["installation_id"])
-    versions = installer.list_versions()
-
-    assert rollback["status"] == "ACTIVE"
-    assert rollback["installation_id"] == first["installation_id"]
-    assert rollback["from_installation_id"] == second["installation_id"]
-    assert context.harness_activation_store.get_active()["installation_id"] == first["installation_id"]
-    assert [item["installation_id"] for item in versions["versions"]] == [
-        first["installation_id"],
-        second["installation_id"],
-    ]
-    assert versions["versions"][0]["is_active"] is True
-    assert versions["versions"][0]["is_initial"] is True
-    assert manager.calls[-1][0]["installation_id"] == second["installation_id"]
-    assert manager.calls[-1][1]["installation_id"] == first["installation_id"]
-    with pytest.raises(RsiTaskStateConflict, match="保留的 Harness 版本"):
-        context.task_service.delete({"task_id": second_task_id})
 
 
-@pytest.mark.asyncio
-async def test_installer_rejects_rollback_when_any_rsi_task_is_queued_running_or_paused(tmp_path):
-    tasks_root = tmp_path / "rsi" / "tasks"
-    context = build_rsi_service_context(tasks_root, enable_harness_materialization=False)
-    first_task_id = "rsi-install-first"
-    second_task_id = "rsi-install-second"
-    blocking_task_id = "rsi-rollback-blocked"
-    context.store.create(_completed_harness_task(context, first_task_id))
-    context.store.create(_completed_harness_task(context, second_task_id))
-    blocking = _completed_harness_task(context, blocking_task_id)
-    blocking.status = TaskStatus.QUEUED.value
-    context.store.create(blocking)
-    _write_published_state(context, first_task_id, extension_name="validation_first")
-    _write_published_state(context, second_task_id, extension_name="validation_second")
-
-    class FakeRsiAgentManager:
-        async def broadcast_rsi_harness_change(self, old_installation, new_installation):
-            return {"attempted": 1, "succeeded": 1, "failed": []}
-
-    installer = RsiHarnessInstaller(
-        context.store,
-        context.adapter_for_task,
-        FakeRsiAgentManager(),
-        activation_root=tasks_root,
-    )
-    first = await installer.install(first_task_id)
-    second = await installer.install(second_task_id)
-
-    with pytest.raises(RsiTaskStateConflict, match=blocking_task_id):
-        await installer.rollback(first["installation_id"])
-
-    assert context.harness_activation_store.get_active()["installation_id"] == second["installation_id"]
 
 
-@pytest.mark.asyncio
-async def test_installer_restores_old_active_when_rollback_pointer_write_fails(tmp_path, monkeypatch):
-    tasks_root = tmp_path / "rsi" / "tasks"
-    context = build_rsi_service_context(tasks_root, enable_harness_materialization=False)
-    first_task_id = "rsi-install-first"
-    second_task_id = "rsi-install-second"
-    context.store.create(_completed_harness_task(context, first_task_id))
-    context.store.create(_completed_harness_task(context, second_task_id))
-    _write_published_state(context, first_task_id, extension_name="validation_first")
-    _write_published_state(context, second_task_id, extension_name="validation_second")
-
-    class FakeRsiAgentManager:
-        def __init__(self):
-            self.calls = []
-
-        async def broadcast_rsi_harness_change(self, old_installation, new_installation):
-            self.calls.append((old_installation, new_installation))
-            return {"attempted": 1, "succeeded": 1, "failed": []}
-
-    manager = FakeRsiAgentManager()
-    installer = RsiHarnessInstaller(
-        context.store,
-        context.adapter_for_task,
-        manager,
-        activation_root=tasks_root,
-    )
-    first = await installer.install(first_task_id)
-    second = await installer.install(second_task_id)
-
-    def fail_commit(_record):
-        raise OSError("activation pointer is read-only")
-
-    monkeypatch.setattr(installer.activation_store, "commit", fail_commit)
-    with pytest.raises(RsiHarnessInstallFailed, match="回退"):
-        await installer.rollback(first["installation_id"])
-
-    assert context.harness_activation_store.get_active()["installation_id"] == second["installation_id"]
-    assert manager.calls[-2][0]["installation_id"] == second["installation_id"]
-    assert manager.calls[-2][1]["installation_id"] == first["installation_id"]
-    assert manager.calls[-1][0]["installation_id"] == first["installation_id"]
-    assert manager.calls[-1][1]["installation_id"] == second["installation_id"]

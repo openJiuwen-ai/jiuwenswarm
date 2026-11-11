@@ -132,7 +132,6 @@ const mainNavItems: NavItem[] = [
   { key: 'digitalavatar', labelKey: 'nav.digitalAvatar', icon: digitalAvatarNavIcon },
   { key: 'agents', labelKey: 'nav.workspace', icon: workspaceNavIcon },
   { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },
-  { key: 'experiments', labelKey: 'nav.experiments', icon: workspaceNavIcon },
   { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },
   { key: 'experiments', labelKey: 'nav.experiments', icon: experimentsNavIcon },
 ];

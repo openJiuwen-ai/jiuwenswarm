@@ -4,6 +4,7 @@ import json
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -15,6 +16,21 @@ from jiuwenswarm.agents.harness.common.rsi.artifact_adapter import (
     provider_report_to_web,
 )
 from jiuwenswarm.agents.harness.common.rsi.errors import RsiArtifactNotFound, RsiBadRequest, RsiPathInvalid
+
+
+@pytest.mark.parametrize("user_id", ["", "tenant user&other=1"])
+def test_download_fields_use_real_token_builder_and_encode_user_route(tmp_path, user_id):
+    from jiuwenswarm.agents.harness.common.rsi.services import _download_fields
+    from jiuwenswarm.agents.harness.common.tools.web_file_download import validate_file_download_token
+
+    artifact = tmp_path / "result.zip"
+    artifact.write_bytes(b"artifact")
+    fields = _download_fields(str(artifact), {"session_id": "rsi-session", "_download_user_id": user_id})
+    query = parse_qs(urlparse(fields["download_url"]).query)
+    assert query["token"] == [fields["download_token"]]
+    assert query.get("user_id", []) == ([user_id] if user_id else [])
+    assert "other" not in query
+    assert validate_file_download_token(fields["download_token"]) is not None
 
 
 @pytest.mark.parametrize("artifact_id", ["AROOT", "Aepoch-001"])
