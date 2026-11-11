@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.runtime.agent_warm_pool import AgentWarmPool
+from jiuwenswarm.server.runtime.agent_warm_pool import AgentWarmPool, WarmSlot
 
 
 class _FakeRootAgent:
@@ -67,6 +67,14 @@ class _FakeManager:
 
     async def cleanup_session_runtime(self, *, channel_id: str, session_id: str) -> bool:
         self.cleanup_calls.append((channel_id, session_id, self.pins))
+        return True
+
+
+class _FailingCleanupManager(_FakeManager):
+    async def cleanup_session_runtime(self, *, channel_id: str, session_id: str) -> bool:
+        await super().cleanup_session_runtime(channel_id=channel_id, session_id=session_id)
+        if session_id == "warm-a":
+            raise RuntimeError("session runtime is still in use")
         return True
 
 
@@ -430,6 +438,34 @@ async def test_config_revision_replaces_unclaimed_slots(isolated_pool) -> None:
     )
     assert old_ids.issubset(set(agent.cleaned))
     await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_close_disposes_remaining_slots_when_manager_cleanup_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_warm_pool.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
+    agent = _FakeRootAgent()
+    manager = _FailingCleanupManager(agent)
+    pool = AgentWarmPool(manager, enabled=True, max_ready_slots=2)
+    for session_id, work_mode in (("warm-a", "work"), ("warm-b", "code")):
+        key = pool.make_key(
+            channel_id="web", project_id="default", project_dir="", work_mode=work_mode
+        )
+        pool._slots[key] = WarmSlot(key, session_id, pool._revision, agent, 0.0)
+        pool._write_marker(session_id, key)
+        manager.pin_agent(agent)
+
+    await pool.close()
+
+    assert agent.cleaned == ["warm-a", "warm-b"]
+    assert manager.cleanup_calls == [("web", "warm-a", 1), ("web", "warm-b", 0)]
+    assert manager.pins == 0
+    assert not pool._marker_path("warm-a").exists()
+    assert not pool._marker_path("warm-b").exists()
 
 
 @pytest.mark.asyncio

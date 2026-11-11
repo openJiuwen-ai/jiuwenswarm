@@ -759,6 +759,13 @@ class AgentWarmPool:
                 await self._manager.cleanup_session_runtime(
                     channel_id=channel_id, session_id=session_id
                 )
+            except Exception:
+                logger.warning(
+                    "Warm pool session cleanup failed: channel_id=%s session_id=%s",
+                    channel_id,
+                    session_id,
+                    exc_info=True,
+                )
             finally:
                 self.clear_marker(session_id)
 
