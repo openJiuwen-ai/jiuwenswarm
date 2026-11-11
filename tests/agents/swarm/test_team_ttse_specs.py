@@ -56,7 +56,7 @@ def _baked_params(
 def test_ttse_specs_are_added_beside_skill_rails() -> None:
     config = {
         "react": {
-            "ttse": {"enabled": True},
+            "ttse": {"enabled": False, "team_enabled": True},
             "evolution": {"skill_evolution": False},
         }
     }
@@ -66,6 +66,19 @@ def test_ttse_specs_are_added_beside_skill_rails() -> None:
     assert registry.TEAM_SKILL_EVOLUTION in leader
     assert registry.MEMBER_TTSE in teammate
     assert registry.MEMBER_SKILL_EVOLUTION in teammate
+
+
+def test_single_agent_ttse_switch_does_not_mount_team_rails() -> None:
+    config = {
+        "react": {
+            "ttse": {"enabled": True},
+            "evolution": {"skill_evolution": False},
+        }
+    }
+    leader = [rail.type for rail in _role_evolution_rails(config, "leader")]
+    teammate = [rail.type for rail in _role_evolution_rails(config, "teammate")]
+    assert registry.TEAM_TTSE not in leader
+    assert registry.MEMBER_TTSE not in teammate
 
 
 def test_ttse_off_adds_no_ttse_rail() -> None:

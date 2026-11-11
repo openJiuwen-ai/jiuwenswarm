@@ -636,12 +636,22 @@ def _get_ttse_config(config: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
-    """Return whether TTSE (FACT/TIP) rail should be mounted.
+    """Return whether the single-agent TTSE (FACT/TIP) rail should be mounted.
 
     Opt-in: missing / unset ``enabled`` is False (shipped template and docs 2.7).
     Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
+    Expert-team mounting uses :func:`get_team_ttse_enabled` instead.
     """
     return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
+
+
+def get_team_ttse_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether expert-team TTSE rails should be mounted.
+
+    Independent of :func:`get_ttse_enabled`. Missing ``react.ttse.team_enabled``
+    is False, including when the single-agent switch is on.
+    """
+    return coerce_config_bool(_get_ttse_config(config).get("team_enabled"), False)
 
 
 def shared_ttse_bank_path(workspace: Path | str) -> Path:

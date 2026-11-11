@@ -867,10 +867,11 @@ react:
       model_tier: ""            # 可选，lite | pro，对应 models.defaults[].tier；model_name 优先
       gate_mode: "on"           # on = 候选须在验证任务上得分高于原版才采纳；off = 应用成功的修改直接采纳（不比分）
   # TTSE（Two-Track Self-Evolution）FACT/TIP 双轨自演进；与 skill 演进独立
-  # 默认开启；agent 模式挂载 TTSERail，并由代码把 ttse_consult 插入首轮
-  # eager schema（不必写进上方 eager_tools）。
+  # 单 Agent 默认开启：agent 模式挂载 TTSERail，并由代码把 ttse_consult 插入首轮
+  # eager schema（不必写进上方 eager_tools）。专家团看 team_enabled，默认关闭。
   ttse:
-    enabled: true           # 默认开启；true 才挂载 TTSERail（仅 agent 模式）
+    enabled: true           # 单 Agent；true 才挂载 TTSERail（仅 agent 模式）
+    team_enabled: false     # 专家团；与 enabled 独立，默认关闭
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
