@@ -275,9 +275,9 @@ def _summary(
         versions.append(entry.version)
     versions = sort_versions(versions)
     active = active_record is not None
-    enabled = active_record is not None or (
-        origin_record.enabled if origin_record is not None else _enabled(entry, managed_root)
-    )
+    # Recovery updates managed manifests independently of installation provenance.
+    # Keep persisted enablement separate from the runtime activation state.
+    enabled = _enabled(entry, managed_root)
     return {
         "id": entry.package_id,
         "packageId": entry.package_id,

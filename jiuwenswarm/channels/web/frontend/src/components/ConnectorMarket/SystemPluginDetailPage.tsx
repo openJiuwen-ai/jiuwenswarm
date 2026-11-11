@@ -13,7 +13,7 @@ import { localizedText } from '../../types/localized';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
-import { Switch } from '../Switch';
+import { SystemPluginSwitch } from './SystemPluginSwitch';
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import './ConnectorMarket.css';
 
@@ -391,10 +391,11 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
                   data-testid="connector-market-system-plugin-detail-enabled"
                   title={t(detail.enabled ? 'connectorMarket.systemPlugin.disable' : 'connectorMarket.systemPlugin.enable')}
                 >
-                  <Switch
+                  <SystemPluginSwitch
+                    packageId={packageId}
                     checked={detail.enabled}
                     disabled={busyBlocked}
-                    onChange={(enable) => { void handleEnabledChange(enable); }}
+                    onChange={handleEnabledChange}
                   />
                 </span>
               )}
