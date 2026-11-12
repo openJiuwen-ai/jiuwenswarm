@@ -92,14 +92,7 @@ def _add_template_crud(
     update_body: type,
     *,
     notify_runtime: bool = True,
-    gated_service: bool = False,
 ) -> None:
-    """注册模板 CRUD 三端点。
-
-    notify_runtime：写完后是否通知 runtime 重建（delete 固定按此值）。
-    gated_service：要不要通知由 service 按变更内容判断——create 额外返回
-    (业务结果, 是否通知)，update 的返回值即是否通知（用于 agent 模板）。
-    """
     create_sync = make_sync_body(f"{tag.title().replace('_', '')}TemplateCreateSyncBody", create_body)
     update_sync = make_sync_body(f"{tag.title().replace('_', '')}TemplateUpdateSyncBody", update_body)
 
@@ -115,14 +108,11 @@ def _add_template_crud(
             )
         except ValueError as exc:
             raise _http_exc(exc) from exc
-        notify = notify_runtime
-        if gated_service:
-            # create 返回 (业务结果, 是否需要通知 runtime)
-            result, notify = result
-        if notify:
+        if notify_runtime:
             trigger_runtime_config_update()
         else:
-            # 不通知 runtime 重建，只清掉本进程的企业配置缓存。
+            # 扩展配置：不调度 runtime 刷新（理由见注册处注释），只失效本进程
+            # 企业配置缓存（web 渠道经同一 loader 模块级缓存读企业配置）。
             invalidate_local_enterprise_config_caches()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, result)
@@ -136,19 +126,16 @@ def _add_template_crud(
         sync = await build_sync_context(body, request.method)
         await _require_secure_a2a_credential_transport(request, tag, sync.business)
         try:
-            update_result = await svc_factory().update(
+            await svc_factory().update(
                 template_id, sync.business
             )
         except ValueError as exc:
             raise _http_exc(exc) from exc
-        notify = notify_runtime
-        if gated_service:
-            # update 的返回值即是否需要通知
-            notify = bool(update_result)
-        if notify:
+        if notify_runtime:
             trigger_runtime_config_update()
         else:
-            # 不通知 runtime 重建，只清掉本进程的企业配置缓存。
+            # 扩展配置：不调度 runtime 刷新（理由见注册处注释），只失效本进程
+            # 企业配置缓存（web 渠道经同一 loader 模块级缓存读企业配置）。
             invalidate_local_enterprise_config_caches()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
@@ -167,7 +154,8 @@ def _add_template_crud(
         if notify_runtime:
             trigger_runtime_config_update()
         else:
-            # 不通知 runtime 重建，只清掉本进程的企业配置缓存。
+            # 扩展配置：不调度 runtime 刷新（理由见注册处注释），只失效本进程
+            # 企业配置缓存（web 渠道经同一 loader 模块级缓存读企业配置）。
             invalidate_local_enterprise_config_caches()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
@@ -196,12 +184,6 @@ def _add_template_crud(
     )
 
 
-# 模板写完后要不要通知 runtime 重建，按模板类型区分：
-# - 扩展配置模板：不通知。agentserver 读取该表自带缓存过期，写入端点
-#   只需清掉本进程的缓存。
-# - agent 模板：按变更内容判断（gated_service）。只改 extension_config
-#   引用或名称等元数据时不通知；其余槽位引用、启停、data 变化时通知。
-# - 其余模板：写入即通知。
 _add_template_crud(
     "/a2a-outbound-templates",
     A2AOutboundTemplateService,
@@ -230,7 +212,15 @@ _add_template_crud(
     EmbeddingTemplateCreateRequest,
     EmbeddingTemplateUpdateRequest,
 )
-# 扩展配置模板：写后不通知 runtime（理由见上方注释块）。
+# 扩展配置写后不戳 config_refresh（create/update/delete 同）：
+# - runtime 池子只消费 service_config_template/service_config_container/routing_scope
+#   三张表（P0 报告 D2），写扩展配置对池子配置零数据效果；
+# - config_refresh 是无载荷的全池无条件日落（每轮成功=代次+1+候选集全量软摘），
+#   客户 11-10 实测 3.1 万条扩展配置写/天被放大成 930 轮换血（409 风暴）——P0；
+# - 扩展配置的真实消费方：①客户 agentserver 运行时直读 gateway 库（热生效）；
+#   ②平台标准形态经 loader 槽位在 AS Pod 进程内消费（TTL 3600s/600s），存量温 Pod
+#   最长约 1h 后生效——精确失效通道（loader 按表 TTL 覆盖或 CONFIG_CACHE_CLEAR 扩展
+#   +gateway 广播）交平台研发跟进，见 P0 报告"B1′ v2"节。
 _add_template_crud(
     "/extension-config-templates",
     ExtensionConfigTemplateService,
@@ -260,13 +250,10 @@ _add_template_crud(
     McpTemplateCreateRequest,
     McpTemplateUpdateRequest,
 )
-# agent 模板：是否通知由变更内容决定（见上方注释块）；delete 无新旧内容
-# 可比对，固定按 notify_runtime 通知。
 _add_template_crud(
     "/agent-templates",
     AgentTemplateService,
     "agent",
     AgentTemplateCreateRequest,
     AgentTemplateUpdateRequest,
-    gated_service=True,
 )

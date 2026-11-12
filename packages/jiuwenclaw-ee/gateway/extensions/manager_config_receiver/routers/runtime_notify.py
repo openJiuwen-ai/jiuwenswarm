@@ -18,18 +18,19 @@ from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 
 logger = logging.getLogger(__name__)
 
-# 连续多次写入时只通知一次，减少 runtime 短时间内反复重建 AgentServer 的概率。
-_DEBOUNCE_SECONDS = 10.0
+_DEBOUNCE_SECONDS = 2.0
 _config_update_handle: asyncio.TimerHandle | None = None
 
 
 def invalidate_local_enterprise_config_caches() -> None:
-    """只清掉本进程（gateway）的企业配置缓存，不通知 runtime。
+    """只失效本进程（gateway）的企业配置缓存，不调度 runtime 刷新。
 
-    供不需要通知 runtime 的模板写入调用（扩展配置模板，以及 agent 模板
-    只改 extension_config 引用或元数据的分支）。清掉后本进程下次读取会
-    重新查库拿到新内容；AgentServer Pod 各自的缓存不受影响，到期后自行
-    刷新。清缓存失败只记告警，不影响写入端点本身。
+    供扩展配置模板写端点调用（研发评审："只做缓存失效，不调度 config_refresh"）。
+    gateway 进程自身经同一 loader 模块级缓存读企业配置（web 渠道
+    app_web_handlers 的模型列表等槽位），失效后下次调用即重读库看到新内容；
+    AgentServer Pod 的进程内 loader 缓存独立于本进程、收不到该失效（温 Pod
+    滞留上限=TTL），精确失效通道交平台研发跟进。
+    失败仅告警，不影响写端点本身。
     """
     try:
         from jiuwenswarm.server.runtime.enterprise_config import (
