@@ -860,7 +860,7 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     class FakeSymphonyToolkit:
         def get_tools(self, config_base=None):
             seen_configs.append(config_base)
-            return tools
+            return [SimpleNamespace(card=SimpleNamespace(id=tool.card.id, name=tool.card.name)) for tool in tools]
 
     monkeypatch.setattr(interface_module.Runner, "resource_mgr", fake_resource)
     monkeypatch.setattr(interface_module, "SymphonyToolkit", FakeSymphonyToolkit)
@@ -880,12 +880,14 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
         "symphony_compose_graph",
     ]
     assert fake_instance.ability_manager.added == fake_resource.added
+    registered_tools = list(adapter._symphony_tools)
 
-    # Re-applying the same enabled snapshot is idempotent. Code cold start and
-    # reload both use this path, so neither cards nor registrations may grow.
+    # Reload re-evaluates the desired group because discovery can change while
+    # Symphony stays enabled. Existing objects and registrations remain stable.
     adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": True}})
 
-    assert len(seen_configs) == 1
+    assert seen_configs == [{"symphony": {"enabled": True}}, {"symphony": {"enabled": True}}]
+    assert all(current is previous for current, previous in zip(adapter._symphony_tools, registered_tools))
     assert len(adapter._tool_cards) == 3
     assert fake_resource.added == [
         "symphony_read_graph",
