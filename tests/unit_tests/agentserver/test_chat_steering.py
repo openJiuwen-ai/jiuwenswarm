@@ -871,6 +871,44 @@ async def test_steer_files_ambiguous_delivery_compensates_on_confirmed_receipt()
     assert len(current_multimodal_image_files_from_agent(agent)) == 1
 
 
+@pytest.mark.asyncio
+async def test_steer_files_metadata_channel_failure_warns_only_for_team_runtime():
+    """metadata 通道判返回值：team 写失败告警；单代理无 harness 的 no-op 不误报。"""
+    from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
+        MultimodalImageRail,
+    )
+
+    # team 形态：harness 存在但 build_context 缺 request_metadata → bind 返回
+    # False 且非 no-op，应告警。
+    control, _, agent, _ = session(mode="team")
+    rail = MultimodalImageRail(image_files=[])
+    agent.harness = SimpleNamespace(
+        build_context=None,
+        find_rails=lambda rail_type: [rail] if rail_type is MultimodalImageRail else [],
+    )
+    handler = _ListLogHandler()
+    logging.getLogger("jiuwenswarm").addHandler(handler)
+    try:
+        result = await control.handle(control_request(files=_steer_files()), query=False)
+    finally:
+        logging.getLogger("jiuwenswarm").removeHandler(handler)
+    assert result["status"] == "accepted"
+    warnings = [r.getMessage() for r in handler.records if r.levelno >= logging.WARNING]
+    assert any("request_metadata write failed" in message for message in warnings)
+
+    # 单代理形态：无 harness，bind 返回 False 属 no-op，不得误报告警。
+    control2, _, agent2, _ = session()
+    handler2 = _ListLogHandler()
+    logging.getLogger("jiuwenswarm").addHandler(handler2)
+    try:
+        result2 = await control2.handle(control_request(files=_steer_files()), query=False)
+    finally:
+        logging.getLogger("jiuwenswarm").removeHandler(handler2)
+    assert result2["status"] == "accepted"
+    warnings2 = [r.getMessage() for r in handler2.records if r.levelno >= logging.WARNING]
+    assert not any("request_metadata write failed" in message for message in warnings2)
+
+
 class _ListLogHandler(logging.Handler):
     """jiuwenswarm 根 logger propagate=False，caplog 收不到，手动挂 handler。"""
 

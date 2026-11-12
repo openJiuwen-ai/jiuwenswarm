@@ -253,14 +253,17 @@ def _commit_steer_image_files(
             [str(image.get("path") or "") for image in pending],
             exc_info=True,
         )
-    try:
-        _bind_round_image_files_to_agent(runtime, merged)
-    except Exception:
+    # _bind_round_image_files_to_agent 从不向调用方抛异常（team_helpers 内部
+    # 全路径捕获、仅 DEBUG 级日志），失败以 False 返回；False 同时混同「无
+    # harness 的单代理 no-op（正常）」与「team 权威通道写失败」，仅对有
+    # harness 的 runtime（team 形态）告警，单专家路径保持静默。
+    if not _bind_round_image_files_to_agent(runtime, merged) and (
+        getattr(runtime, "harness", None) is not None
+    ):
         logger.warning(
             "[steer-files] request_metadata write failed: input_id=%s pending=%s",
             input_id,
             [str(image.get("path") or "") for image in pending],
-            exc_info=True,
         )
     _refresh_live_rail_bound_manifests(runtime, input_id, pending)
 
