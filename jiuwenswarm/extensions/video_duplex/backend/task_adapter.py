@@ -196,8 +196,21 @@ class AgentTaskExecutor:
 
     async def wait_settled(self, task):
         """Retain ownership until Core confirms settlement, including suspended turns."""
+        from .tasks.service import RECONCILE_INTERVAL
+
+        next_probe = time.monotonic() + RECONCILE_INTERVAL
         while not self.store.read(task["id"])["execution_settled"]:
             await asyncio.sleep(0.05)
+            if time.monotonic() < next_probe:
+                continue
+            try:
+                if await self.reconciliation_ready():
+                    # A lost push must not strand the queue. Probe only; never stop or replay work.
+                    await self.cancel(task, probe=True)
+            except Exception:
+                logger.warning("Settlement probe failed for %s; retaining execution ownership", task["id"],
+                               exc_info=True)
+            next_probe = time.monotonic() + RECONCILE_INTERVAL
 
     @staticmethod
     def answer_input(task):
@@ -395,8 +408,7 @@ class AgentTaskExecutor:
             return True
         if probe:
             return False
-        while not self.store.read(task["id"])["execution_settled"]:
-            await asyncio.sleep(0.2)
+        await self.wait_settled(task)
         trace_task("cancel_settled", task=task_state(self.store.read(task["id"])))
         return False
 

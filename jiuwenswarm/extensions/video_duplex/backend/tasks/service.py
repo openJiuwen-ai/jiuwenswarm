@@ -264,12 +264,7 @@ class TaskService:
         with self.store.transaction() as db:
             tasks = self.store.rows(db)
         self._prune_reconciliation(tasks)
-        active = []
-        for task in tasks:
-            if (task["owner"], task["session"]) not in self.active_scopes:
-                continue
-            if task["status"] in {"running", "cancelling", "unknown", "waiting_user"} or task["id"] in self.workers:
-                active.append(task)
+        active = self._active_tasks(tasks)
         # Capacity covers executions owned by this service. Unknown executions
         # still constrain dependencies/resources; their activity is not inferred.
         for task in sorted(tasks, key=lambda t: t["position"]):
@@ -290,8 +285,24 @@ class TaskService:
                 lambda done, key=task["id"]: self._worker_done(key, done)
             )
 
+    def _active_tasks(self, tasks, *, admitting=None):
+        """Include unresolved resources from every scope and earlier dispatch reservations."""
+        active = []
+        for task in tasks:
+            if admitting is not None:
+                if task["id"] == admitting["id"]:
+                    continue
+                if task["status"] == "queued" and task["position"] > admitting["position"]:
+                    continue
+            if (task["status"] in {"running", "cancelling", "unknown", "waiting_user"}
+                    or task["id"] in self.workers):
+                active.append(task)
+        return active
+
     def _holds_capacity(self, t):
-        # An uncertain execution still owned by our worker keeps its capacity.
+        # Only opened scopes consume capacity; unresolved resources remain global.
+        if (t["owner"], t["session"]) not in self.active_scopes:
+            return False
         return (t["status"] != "unknown" or t["id"] in self.workers) and not (
             t["status"] == "waiting_user" and t.get("execution_settled")
         )
@@ -642,6 +653,12 @@ class TaskService:
                     t.update(error=message) if t["status"] == "cancelling" else None
                 ),
             ))
+        wait_settled = getattr(self.executor, "wait_settled", None)
+        if wait_settled is not None:
+            await wait_settled(task)
+        else:
+            while not self.store.read(task["id"])["execution_settled"]:
+                await asyncio.sleep(0.05)
         current = self.store.read(task["id"])
         if current.get("execution_cancelled") and current["execution_settled"]:
             observer = self.workers.get(task["id"])
@@ -650,9 +667,6 @@ class TaskService:
                 await asyncio.gather(observer, return_exceptions=True)
         # Without a worker (e.g. after restart) nothing else closes the output.
         while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
-            await asyncio.sleep(0.05)
-        # Wait for the execution's settle ack, which arrives even after a rejected stop.
-        while not self.store.read(task["id"])["execution_settled"]:
             await asyncio.sleep(0.05)
         task = self.store.update(
             task["id"],
@@ -863,12 +877,7 @@ class TaskService:
 
     def _waiting_on(self, task, all_tasks):
         """Name the tasks a waiting task is held behind, using kick()'s rules."""
-        active = []
-        for task_entry in all_tasks:
-            if task_entry["status"] in {"running", "cancelling", "unknown", "waiting_user"}:
-                active.append(task_entry)
-            elif task_entry["id"] in self.workers:
-                active.append(task_entry)
+        active = self._active_tasks(all_tasks)
         blockers = self._blockers(task, all_tasks, active)
         if not blockers:
             counted = [t for t in active if self._holds_capacity(t)]
@@ -951,12 +960,7 @@ class TaskService:
         with self.store.transaction() as db:
             task = self.store.get(db, task_id)
             tasks = self.store.rows(db)
-            active = []
-            for other in tasks:
-                if other["id"] == task_id:
-                    continue
-                if other["status"] in {"running", "cancelling", "unknown", "waiting_user"}:
-                    active.append(other)
+            active = self._active_tasks(tasks, admitting=task)
             if task["status"] != "queued" or not self._ready(task, tasks, active):
                 return
             if any(
