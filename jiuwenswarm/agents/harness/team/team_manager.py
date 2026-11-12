@@ -87,6 +87,11 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
+from jiuwenswarm.common.observability_config import (
+    is_observability_scope_enabled,
+    observability_export_settings,
+    resolve_observability_section,
+)
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.observability.config import load_trajectory_store_settings
 from jiuwenswarm.observability.runtime import (
@@ -143,7 +148,7 @@ def sync_team_observability() -> None:
     """Synchronize observability state with current config.
 
     Called before each ``Runner.run_agent_team_streaming`` so that
-    hot-reloading the ``team_observability.enabled`` flag takes
+    hot-reloading the ``observability.team.enabled`` flag takes
     effect immediately:
 
     * disabled → enabled : ``init_observability()``
@@ -159,7 +164,8 @@ def sync_team_observability() -> None:
     """
     global _observability_active
     config = get_config()
-    cfg = config.get("team_observability", {}) or {}
+    section = resolve_observability_section(config)
+    cfg = observability_export_settings(section)
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = get_skill_evolution_enabled(
         config
@@ -169,7 +175,7 @@ def sync_team_observability() -> None:
     # the SQLite sink. ``trajectory_ui.enabled`` therefore also pulls the
     # provider up, mirroring ``sync_agent_observability``.
     want_enabled = (
-        bool(cfg.get("enabled", False))
+        is_observability_scope_enabled(section, "team")
         or trajectory_settings.enabled
         or evolution_requested
     )
