@@ -8,6 +8,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -24,6 +25,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     write_history_records,
     _write_records_to_path,
 )
+from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
 
 if TYPE_CHECKING:
     from openjiuwen.harness import DeepAgent
@@ -439,6 +441,58 @@ def fork_session(
         "project_dir": source_meta.get("project_dir", ""),
     }
     metadata["moa_enabled"] = source_meta.get("moa_enabled") is True
+    for field in ("execution_profile", "role_instructions", "work_mode"):
+        if field in source_meta:
+            metadata[field] = source_meta[field]
+    # NPC 主从 fork：leader 会话透传 roster 定义，并为 fork 级联
+    # 创建全新 member 会话（空历史，成员历史属于原会话资产）；member 被单独
+    # fork 时剥离从属标记，成为独立的单 NPC 会话。运行时绑定不随 fork 复制。
+    from jiuwenswarm.runtime.app_role import APP_ROLE_PROFILE, is_app_role_team
+
+    if source_meta.get("execution_profile") == APP_ROLE_PROFILE:
+        raw_team = source_meta.get("npc_team")
+        npc_team = raw_team if isinstance(raw_team, dict) else None
+        is_member_session = isinstance(source_meta.get("npc_member"), dict)
+        if is_app_role_team(source_meta):
+            metadata["npc_team"] = copy.deepcopy(npc_team)
+        elif not is_member_session and npc_team:
+            metadata["npc_team"] = copy.deepcopy(npc_team)
+            channel_key = str(channel_id or "web").strip() or "web"
+            member_sessions = {
+                str(member.get("name") or ""): (
+                    f"{channel_key}_{int(time.time() * 1000):x}_{uuid.uuid4().hex[:12]}"
+                )
+                for member in npc_team.get("members", [])
+                if isinstance(member, dict) and member.get("name")
+            }
+            metadata["npc_member_sessions"] = member_sessions
+            for member in npc_team.get("members", []):
+                member_name = str(member.get("name") or "")
+                member_sid = member_sessions.get(member_name)
+                if not member_sid:
+                    continue
+                member_title = member.get("title") or " · ".join(
+                    part for part in (str(final_title or "").strip(), member_name) if part
+                )
+                init_session_metadata(
+                    session_id=member_sid,
+                    channel_id=channel_id,
+                    user_id=str(source_meta.get("user_id") or ""),
+                    title=member_title,
+                    mode=str(source_mode or "agent"),
+                    project_dir=str(source_meta.get("project_dir") or ""),
+                    project_id=str(source_meta.get("project_id") or ""),
+                    persist_session=False,
+                    work_mode=str(source_meta.get("work_mode") or ""),
+                    model=str(source_meta.get("model") or ""),
+                    moa_enabled=False,
+                    execution_profile=APP_ROLE_PROFILE,
+                    role_instructions=str(member.get("role_instructions") or ""),
+                    npc_member={
+                        "leader_session_id": target_session_id,
+                        "name": member_name,
+                    },
+                )
     if "model_selection" in source_meta:
         metadata["model_selection"] = copy.deepcopy(source_meta["model_selection"])
     if "model" in source_meta:

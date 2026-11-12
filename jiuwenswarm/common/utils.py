@@ -737,150 +737,53 @@ def _install_default_builtin_skills(
     overwrite: bool,
     cumulative_diff: CopyDiffResult,
 ) -> None:
-    """安装默认的内置技能到用户技能目录.
+    """Install the single catalog and migrate unchanged legacy builtin copies."""
+    from jiuwenswarm.common.builtin_skills import BUILTIN_CATALOG_NAME, migrate_builtin_catalog
 
-    默认安装的技能：
-    - skill-creator: 所有 Skill Creator 的统一入口（创建/修改路由）
-    - skill-creator-normal: 单体技能创建助手（由 skill-creator 路由选中）
-    - swarmskill-creator: Swarm技能创建助手（由 skill-creator 路由选中）
-    - skill-omni-creation: 链接/网页/视频技能创建助手（由 skill-creator 路由选中）
-    - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
-    - rsi-program-dataset-creator: 程序演进任务设计与评测编排
-    - agent-creator: Agent 模板包创建助手
-    - agent-group-creator: 专家团包创建助手
-    - plugin-creator: 插件能力扩展包创建助手
-    - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
-    - docx-pro: Word 富格式文档生成/Markdown 互转/目录水印
-    - local-doc-ocr: 本地离线 OCR（扫描件 PDF/图片提取文字）
-    - xlsx: 电子表格创建/读取/分析/编辑/修复（零格式损失，中文/CJK 友好）
-    - pdf-extraction: PDF 文本/表格/元数据提取
-    - pptx-generator: PowerPoint 演示文稿生成与编辑
-
-    Args:
-        builtin_dir: 内置技能目录路径
-        user_skills_dir: 用户技能目录路径
-        overwrite: 是否覆盖已存在的技能
-        cumulative_diff: 累积的文件变更追踪结果
-    """
-    # 定义默认安装的技能列表
-    default_skills = [
-        "skill-creator",
-        "skill-creator-normal",
-        "swarmskill-creator",
-        "skill-omni-creation",
-        "huawei-cloud-maas-setup",
-        "rsi-program-dataset-creator",
-        "agent-creator",
-        "agent-group-creator",
-        "plugin-creator",
-        "baoyu-image-gen",
-        "docx-pro",
-        "local-doc-ocr",
-        "xlsx",
-        "pdf-extraction",
-        "pptx-generator",
-    ]
-
-    if not builtin_dir.exists() or not builtin_dir.is_dir():
-        logger.warning(f"内置技能目录不存在，跳过默认技能安装: {builtin_dir}")
+    source = builtin_dir / BUILTIN_CATALOG_NAME
+    target = user_skills_dir / BUILTIN_CATALOG_NAME
+    if not source.is_dir():
+        logger.warning("Builtin catalog not found: %s", source)
         return
-
     user_skills_dir.mkdir(parents=True, exist_ok=True)
-    _migrate_skill_creator_router_rename(user_skills_dir)
-
-    # 记录成功安装的技能，用于后续更新状态文件
-    installed_skills = []
-
-    for skill_name in default_skills:
-        builtin_skill_path = builtin_dir / skill_name
-        user_skill_path = user_skills_dir / skill_name
-
-        # 检查内置技能是否存在
-        if not builtin_skill_path.exists() or not builtin_skill_path.is_dir():
-            logger.warning(f"内置技能不存在，跳过安装: {skill_name}")
-            continue
-
-        # 如果用户目录已存在该技能且不是覆盖模式，则跳过
-        if user_skill_path.exists() and not overwrite:
-            logger.info(f"技能已存在，跳过安装: {skill_name}")
-            continue
-
-        # 复制技能到用户目录
+    with portalocker.Lock(str(user_skills_dir / ".builtin-catalog.lock"), timeout=30):
+        installed = False
         try:
-            with TrackCopyDiff(
-                dest=user_skill_path,
-                cumulative=cumulative_diff,
-                overwrite=overwrite,
-            ):
-                if user_skill_path.exists() and overwrite:
-                    shutil.rmtree(user_skill_path)
-                shutil.copytree(builtin_skill_path, user_skill_path)
-            logger.info(f"已安装默认技能: {skill_name}")
-            installed_skills.append(skill_name)
-        except Exception as e:
-            logger.error(f"安装默认技能失败 {skill_name}: {e}")
-
-    # 更新 skills_state.json，记录已安装的技能
-    if installed_skills:
-        _update_skills_state_for_builtin(user_skills_dir, installed_skills)
+            with TrackCopyDiff(dest=target, cumulative=cumulative_diff, overwrite=overwrite):
+                if not target.exists():
+                    import tempfile
+                    with tempfile.TemporaryDirectory(prefix=".builtin-install-", dir=user_skills_dir) as directory:
+                        staged = Path(directory) / BUILTIN_CATALOG_NAME
+                        shutil.copytree(source, staged)
+                        staged.rename(target)
+                    installed = True
+                elif overwrite:
+                    # Preserve migration archives and preferences outside seed files.
+                    shutil.copytree(source, target, dirs_exist_ok=True)
+                    installed = True
+            if installed:
+                _update_skills_state_for_builtin(user_skills_dir, [BUILTIN_CATALOG_NAME])
+            state_file = user_skills_dir / "skills_state.json"
+            state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.is_file() else {}
+            owned = any(
+                isinstance(item, dict) and item.get("name") == BUILTIN_CATALOG_NAME
+                and item.get("source", item.get("marketplace")) == "builtin"
+                for item in state.get("installed_plugins", [])
+            )
+            if owned:
+                migrate_builtin_catalog(builtin_dir, user_skills_dir)
+        except (OSError, ValueError) as exc:
+            logger.error("Builtin catalog installation/migration failed: %s", exc)
 
 
 def ensure_default_builtin_skills() -> None:
-    """确保所有默认内置技能已安装到用户技能目录（幂等）。
-
-    与 ``prepare_workspace`` 不同，本函数设计为每次启动都可安全调用：
-    仅复制用户目录中尚不存在的默认技能，已存在的技能不会被覆盖或修改，
-    从而让新增的默认技能在老用户工作区中也能自动补齐。
-    """
-    builtin_dir = get_builtin_skills_dir()
-    user_skills_dir = get_agent_skills_dir()
-
-    if not builtin_dir.exists() or not builtin_dir.is_dir():
-        logger.warning(f"内置技能目录不存在，跳过默认技能补齐: {builtin_dir}")
-        return
-
-    default_skills = [
-        "skill-creator",
-        "skill-creator-normal",
-        "swarmskill-creator",
-        "skill-omni-creation",
-        "huawei-cloud-maas-setup",
-        "rsi-program-dataset-creator",
-        "agent-creator",
-        "agent-group-creator",
-        "plugin-creator",
-        "baoyu-image-gen",
-        "docx-pro",
-        "local-doc-ocr",
-        "xlsx",
-        "pdf-extraction",
-        "pptx-generator",
-    ]
-
-    user_skills_dir.mkdir(parents=True, exist_ok=True)
-    _migrate_skill_creator_router_rename(user_skills_dir)
-
-    installed_skills = []
-    for skill_name in default_skills:
-        builtin_skill_path = builtin_dir / skill_name
-        user_skill_path = user_skills_dir / skill_name
-
-        if not builtin_skill_path.exists() or not builtin_skill_path.is_dir():
-            logger.warning(f"内置技能不存在，跳过补齐: {skill_name}")
-            continue
-
-        if user_skill_path.exists():
-            continue
-
-        try:
-            shutil.copytree(builtin_skill_path, user_skill_path)
-            logger.info(f"已补齐默认技能: {skill_name}")
-            installed_skills.append(skill_name)
-        except Exception as e:
-            logger.error(f"补齐默认技能失败 {skill_name}: {e}")
-
-    if installed_skills:
-        _update_skills_state_for_builtin(user_skills_dir, installed_skills)
+    """Install the builtin catalog on startup without replacing user edits."""
+    _install_default_builtin_skills(
+        builtin_dir=get_builtin_skills_dir(),
+        user_skills_dir=get_agent_skills_dir(),
+        overwrite=False,
+        cumulative_diff=CopyDiffResult([], [], []),
+    )
 
 
 def ensure_config_migrated_from_template(

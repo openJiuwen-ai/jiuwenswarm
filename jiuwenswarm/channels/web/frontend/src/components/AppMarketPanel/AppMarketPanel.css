@@ -1,0 +1,101 @@
+.app-market-card {
+  height: auto;
+  min-height: 160px;
+}
+
+.app-market-card .entity-header {
+  flex-wrap: wrap;
+  row-gap: 12px;
+}
+
+.app-market-card .entity-header__identity {
+  flex-basis: 100%;
+}
+
+.app-market-card .entity-header__actions {
+  width: 100%;
+}
+.app-market-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  gap: 16px;
+}
+
+.app-market-list {
+  min-width: 360px;
+}
+
+.app-market-layout:has(.app-market-browser-pane) .app-market-list {
+  flex: 0 0 380px;
+}
+
+.app-market-layout-expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+
+.app-market-layout-expanded .app-market-list {
+  display: none;
+}
+
+.app-market-layout-expanded .app-market-browser-pane {
+  border: 0;
+  border-radius: 0;
+}
+
+.app-market-browser-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--color-surface-card);
+}
+
+.app-market-browser-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-height: 48px;
+  padding: 8px;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.app-market-browser-viewport {
+  flex: 1;
+  min-height: 0;
+}
+
+
+.app-market-resources {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.app-market-resources-note {
+  display: block;
+  font-size: 11px;
+}
+
+
+.app-market-resources-warning {
+  display: block;
+  color: var(--color-feedback-warning);
+  white-space: normal;
+}
+
+.app-market-usage-low { color: var(--color-feedback-success); }
+.app-market-usage-medium { color: var(--color-feedback-warning); }
+.app-market-usage-high { color: var(--color-feedback-danger); }
+.app-market-usage-unknown { color: var(--color-text-muted); }

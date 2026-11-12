@@ -659,6 +659,21 @@ def _write_metadata_unfenced(
         # External Harness runtime selection is a first-binding field. Preserve
         # the authoritative on-disk value against stale queued snapshots and
         # later attempts to switch the session to another runtime.
+        if current is not None and current.get("execution_profile") == "app_role":
+            to_write = to_write.copy()
+            to_write["execution_profile"] = current["execution_profile"]
+            to_write["role_instructions"] = current["role_instructions"]
+            from jiuwenswarm.runtime.app_role import is_app_role_team
+
+            if is_app_role_team(current):
+                to_write["mode"] = current["mode"]
+            # The npc roster, its tool whitelist, and the member bindings are
+            # fixed at creation exactly like the profile itself.
+            for pinned in ("npc_team", "npc_member", "npc_member_sessions"):
+                if pinned in current:
+                    to_write[pinned] = current[pinned]
+                else:
+                    to_write.pop(pinned, None)
         if current is not None and isinstance(
             current.get("session_runtime_binding"),
             dict,
@@ -991,6 +1006,11 @@ def init_session_metadata(
     work_mode: str = "",
     channel_metadata: dict[str, Any] | None = None,
     agent_group_name: str = "",
+    execution_profile: str = "default",
+    role_instructions: str = "",
+    npc_team: dict[str, Any] | None = None,
+    npc_member: dict[str, Any] | None = None,
+    npc_member_sessions: dict[str, str] | None = None,
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
@@ -998,6 +1018,8 @@ def init_session_metadata(
     ``cwd``/``project_dir``，供 ``/resume`` current-dir 过滤（见 Issue #2503）。
     ``agent_group_name``：AgentGroup 会话在创建时绑定组名（team.design 的
     designer 会话即用此通道），首条 chat.send 的组解析直接读它。
+    ``npc_team``/``npc_member``：app_role 的主从配置，
+    均为创建时固定字段（member 会话只带 ``npc_member`` 回指）。
     """
     # work_mode：未传时按 channel_id 推断默认值（tui→code，其他→work）
     resolved_work_mode = (
@@ -1031,6 +1053,21 @@ def init_session_metadata(
     }
     if agent_group_name:
         metadata["agent_group_name"] = agent_group_name
+    from jiuwenswarm.runtime.app_role import normalize_execution_profile, normalize_npc_team
+
+    execution_profile, role_instructions = normalize_execution_profile(execution_profile, role_instructions)
+    if execution_profile != "default":
+        metadata["execution_profile"] = execution_profile
+        metadata["role_instructions"] = role_instructions
+        normalized_team = normalize_npc_team(npc_team)
+        if normalized_team is not None:
+            metadata["npc_team"] = normalized_team
+        if isinstance(npc_member, dict) and npc_member:
+            metadata["npc_member"] = dict(npc_member)
+        if isinstance(npc_member_sessions, dict) and npc_member_sessions:
+            metadata["npc_member_sessions"] = {
+                str(name): str(sid) for name, sid in npc_member_sessions.items()
+            }
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
     _write_metadata_sync(session_id, metadata)

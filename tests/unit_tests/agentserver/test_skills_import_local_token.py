@@ -264,7 +264,7 @@ def test_chat_send_schema_documents_skill_scene_fields() -> None:
 def test_skill_creator_router_resource_exists() -> None:
     from jiuwenswarm.common.utils import get_builtin_skills_dir
 
-    router = get_builtin_skills_dir() / "skill-creator" / "SKILL.md"
+    router = (get_builtin_skills_dir() / "workswarm-builtin" / "references" / "capabilities") / "skill-creator" / "SKILL.md"
     assert router.is_file()
     text = router.read_text(encoding="utf-8")
     assert "skill-creator-normal" in text
@@ -275,7 +275,7 @@ def test_skill_creator_router_resource_exists() -> None:
     assert "统一入口" in text
     assert "分发器" not in text
 
-    normal = get_builtin_skills_dir() / "skill-creator-normal" / "SKILL.md"
+    normal = (get_builtin_skills_dir() / "workswarm-builtin" / "references" / "capabilities") / "skill-creator-normal" / "SKILL.md"
     assert normal.is_file()
     normal_text = normal.read_text(encoding="utf-8")
     assert "name: skill-creator-normal" in normal_text
@@ -283,7 +283,7 @@ def test_skill_creator_router_resource_exists() -> None:
     assert "workspace/skills" in normal_text
     assert "Forced delivery rules" in normal_text
 
-    swarm = get_builtin_skills_dir() / "swarmskill-creator" / "SKILL.md"
+    swarm = (get_builtin_skills_dir() / "workswarm-builtin" / "references" / "capabilities") / "swarmskill-creator" / "SKILL.md"
     assert swarm.is_file()
     swarm_text = swarm.read_text(encoding="utf-8")
     assert "send_file_to_user" in swarm_text

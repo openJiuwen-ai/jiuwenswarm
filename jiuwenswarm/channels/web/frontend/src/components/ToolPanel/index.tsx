@@ -45,6 +45,7 @@ import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
 import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
 import { useMinWidth } from '../../hooks/useResponsive';
 import { DesktopBrowserPane } from '../DesktopBrowserPane';
+import { AppMarketPreviewReload, AppMarketSessionPreview } from '../AppMarketPanel/AppMarketSessionPreview';
 import './ToolPanel.css';
 import { SessionAssetList } from '../../features/sessionAssets/SessionAssetList';
 import { selectSessionAssets, useSessionAssetsStore } from '../../features/sessionAssets/sessionAssets';
@@ -155,6 +156,7 @@ export function ToolPanel({
   const conversationId = useOrganizationConversationKey(activeSessionId);
   const mode = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const resolvedSessionId = sessionId ?? activeSessionId ?? '';
+  const appMarketPreview = useSessionStore(s => s.runtimes[resolvedSessionId]?.appMarketPreview);
   const teamMembers = useSessionStore(s => s.runtimes[conversationId]?.teamMembers ?? []);
   const teamConnectionPresentation = useSessionStore((s) =>
     s.runtimes[activeSessionId ?? '']?.mode === 'team'
@@ -351,6 +353,7 @@ export function ToolPanel({
     (hasBrowserAgentActivity || desktopBrowserTabFlags.requested);
   const handleTabClose = (tab: string) => {
     if (tab === 'browser') closeDesktopBrowserTab();
+    if (tab === 'app') useSessionStore.getState().setAppMarketPreview(resolvedSessionId, undefined);
   };
 
   useEffect(() => {
@@ -519,6 +522,12 @@ export function ToolPanel({
             }
             showMiddleTab={isTeam ? true : subagentCount > 0}
             showBrowserTab={showBrowserTab}
+            additionalTab={appMarketPreview ? {
+              key: 'app', label: appMarketPreview.name, closable: true, closeLabel: t('appMarket.hidePane'),
+              actions: <AppMarketPreviewReload preview={appMarketPreview} />,
+              content: <AppMarketSessionPreview key={`${resolvedSessionId}:${appMarketPreview.instanceId}`}
+                sessionId={resolvedSessionId} preview={appMarketPreview} />,
+            } : undefined}
             resolveActiveTab={(tab, count, review) => {
               if (tab === 'artifacts' && count > 0) return 'artifacts';
               if (tab === 'browser') return showBrowserTab ? 'browser' : 'planning';

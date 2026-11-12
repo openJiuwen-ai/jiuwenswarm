@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote, urlparse
 import yaml
+import portalocker
 import urllib3
 import httpx
 import requests
@@ -318,16 +319,7 @@ _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-ski
 _SINGLE_SKILL_PLUGIN_TYPES = {"skill"}
 
 _SKILL_DISPLAY_FILENAME = "skill_display.md"
-_BUILTIN_SKILL_UI_WHITELIST = frozenset(
-    {
-        "advanced-daily-report",
-        "gitcode-api",
-        "financial-document-parser",
-        "skill-gen-4-enterprise-doc",
-        "skill-creator",
-        "swarmskill-creator",
-    }
-)
+_BUILTIN_SKILL_UI_WHITELIST = frozenset({"workswarm-builtin"})
 _SKILL_DISPLAY_KEYS = (
     "display_name_zh",
     "description_zh",
@@ -941,6 +933,20 @@ class SkillManager:
         refresh_marketplaces = bool(params.get("refresh_marketplaces", False))
         if refresh_marketplaces:
             await self._sync_marketplace_repos()
+        # Startup migration may have been followed by a stale manager write or
+        # a legacy installer. Reconcile against disk before projecting the UI.
+        from jiuwenswarm.common.builtin_skills import BUILTIN_CATALOG_NAME, migrate_builtin_catalog
+
+        if (self._skills_dir / BUILTIN_CATALOG_NAME / "SKILL.md").is_file():
+            self.reload_state()
+            if any(p.get("name") == BUILTIN_CATALOG_NAME and p.get("source") == "builtin"
+                   for p in self._get_installed_plugins()):
+                try:
+                    with portalocker.Lock(str(self._skills_dir / ".builtin-catalog.lock"), timeout=30):
+                        migrate_builtin_catalog(get_builtin_skills_dir(), self._skills_dir)
+                except (OSError, ValueError, portalocker.exceptions.LockException) as exc:
+                    logger.warning("Builtin catalog reconciliation failed; preserving skills: %s", exc)
+                self.reload_state()
         # 每次列举前，把手动拷入 skills 目录、尚未登记的本地技能补登记为 local，
         # 使其无需重启 server、刷新"我的技能"即可显示（与导入本地技能一致）。
         self._register_unmanaged_local_skills()
@@ -5053,10 +5059,11 @@ class SkillManager:
             }
 
         output_dir = Path(tempfile.mkdtemp(prefix="jiuwenswarm_skill_from_knowledge_"))
-        skills = ["skill-omni-creation"] if has_link else ["skill-creator-router"]
+        skills = ["workswarm-builtin"]
         prompt_parts = [
             "请根据以下知识来源生成一个完整、可安装的 Skill，并写入指定输出目录。",
             f"输出目录（必须在此目录内生成含 SKILL.md 的 Skill 根目录）: {output_dir}",
+            "请先读取内置能力目录，再读取 skill-creator；链接来源按该入口选择 skill-omni-creation。",
             "要求：",
             "1. SKILL.md 必须含有效 YAML front matter，name 与 description 均为非空字符串；",
             "2. 不得创建根级 .archive/；",

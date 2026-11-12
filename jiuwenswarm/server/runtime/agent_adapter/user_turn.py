@@ -217,12 +217,15 @@ class UserTurn:
         """
         if self._prompt_channel() == "agent_session":
             return []
+        from jiuwenswarm.common.builtin_skills import with_builtin_catalog
+        from jiuwenswarm.common.utils import get_agent_skills_dir
+
         if self.skills:
-            return list(self.skills)
+            return with_builtin_catalog(list(self.skills), get_agent_skills_dir())
         if not isinstance(content, str):
             return []
         parsed_skills, _stripped = _handle_skills_use_slash_command(content)
-        return parsed_skills
+        return with_builtin_catalog(parsed_skills, get_agent_skills_dir())
 
     def _sender_fields(self) -> dict[str, str]:
         """Return sender / chat_type fields when the channel reports them."""

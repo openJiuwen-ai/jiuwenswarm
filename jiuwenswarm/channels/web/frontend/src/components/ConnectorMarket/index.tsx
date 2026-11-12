@@ -180,7 +180,7 @@ export function ConnectorMarketPanel({
   // 之前那样挂载时无脑把两份列表都拉一遍——两边数据量都可能不小，没必要为了看不见的那一页
   // 多打一次请求。activeKind 是"当前实际展示的是哪种列表"：topTab 直接是 'plugin'/'mcp' 时
   // 就是它本身，topTab 是 'my'（我的扩展）时看 myKind 子筛选。
-  const activeKind: MarketKind = topTab === 'my' ? myKind : topTab;
+  const activeKind: MarketKind = topTab === 'my' ? myKind : topTab === 'mcp' ? 'mcp' : 'plugin';
 
   // 进入市场或切换插件/连接器范围时，直接请求当前列表。
   useEffect(() => {

@@ -1885,9 +1885,12 @@ class TeamManager:
             assembly is fully declarative, no imperative post-processing).
         """
         from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
+        from jiuwenswarm.runtime.app_role import is_app_role_team
 
         config_base = get_config()
-        self._team_evolution_enabled[session_id] = get_skill_evolution_enabled(config_base)
+        metadata = get_session_metadata(session_id, enable_writeback=False)
+        npc_team = is_app_role_team(metadata)
+        self._team_evolution_enabled[session_id] = not npc_team and get_skill_evolution_enabled(config_base)
         await self._ensure_postgresql_for_leader(config_base)
         spec, has_binding = self._load_session_team_spec(
             session_id,
@@ -1897,6 +1900,10 @@ class TeamManager:
         )
         if not has_binding:
             self._apply_session_scoped_team_name(spec, session_id=session_id)
+        if npc_team:
+            from jiuwenswarm.agents.swarm.assembly import build_app_role_team_spec
+
+            return build_app_role_team_spec(spec, metadata)
         self.apply_team_plan_mode(spec, request_metadata=request_metadata)
         enrich_team_spec_for_swarm(
             spec,

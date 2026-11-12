@@ -18,6 +18,7 @@ export interface PanelTabItem {
   count?: string | number;
   /** 页签文字右侧渲染关闭按钮（当前仅 browser 页签使用） */
   closable?: boolean;
+  closeLabel?: string;
 }
 
 export function useExpandedPanelTabs({
@@ -82,6 +83,7 @@ export function ExpandedPanelTabs({
   isFullscreen,
   testIdPrefix = 'tool-panel',
   tabListLabel,
+  actions,
 }: {
   tabs: PanelTabItem[];
   activeTab: string;
@@ -92,6 +94,7 @@ export function ExpandedPanelTabs({
   isFullscreen?: boolean;
   testIdPrefix?: string;
   tabListLabel?: string;
+  actions?: ReactNode;
 }) {
   const { t } = useTranslation();
   const tabPanelId = useId();
@@ -140,8 +143,8 @@ export function ExpandedPanelTabs({
                   <CloseButton
                     size={16}
                     testId={`${testIdPrefix}-tab-close`}
-                    ariaLabel={t('browser.pane.closeTab')}
-                    title={t('browser.pane.closeTab')}
+                    ariaLabel={tab.closeLabel ?? t('browser.pane.closeTab')}
+                    title={tab.closeLabel ?? t('browser.pane.closeTab')}
                     onClick={() => onTabClose(tab.key)}
                   />
                 </span>
@@ -152,6 +155,7 @@ export function ExpandedPanelTabs({
       </div>
 
       <div className="flex items-center gap-2">
+        {actions}
         {onToggleFullscreen && (
           <button
             onClick={onToggleFullscreen}

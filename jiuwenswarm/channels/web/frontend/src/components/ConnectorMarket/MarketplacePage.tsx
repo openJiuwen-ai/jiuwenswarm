@@ -27,6 +27,7 @@ import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingCon
 import { PageToolbarSearch, PageHeader, CategoryTabs, Tabs, EmptyState } from '../ui';
 
 export type MarketKind = 'plugin' | 'mcp';
+// 应用市场（原 'app' tab）已提升为侧边栏一级入口（AppMarketPage），扩展页不再承载。
 export type TopTab = MarketKind | 'my';
 // 状态筛选：'pending' 对应不可用态（插件未安装或MCP未连接/绑定MCP未连接），'available' 对应
 // 可用态。2026-08-15 去除全局启用/禁用后不再有第三个"disabled"筛选项，见
@@ -601,6 +602,7 @@ export function MarketplacePage({
         </div>
       )}
 
+      {/* 应用市场（原 'app' tab）入口见侧边栏 AppMarketPage；这里只渲染插件/MCP 列表 */}
           <CatalogCacheNotice cache={catalogCacheOf(topTab === 'my' ? (myKind === 'mcp' ? myConnectors : localPackages) : topTab === 'mcp' ? builtinConnectors : packages)} />
           <div ref={scrollRef} className="page-scroll min-h-0 flex-1 overflow-y-auto" onScroll={handleListScroll}>
             <div className="card-grid-auto" data-testid="connector-market-card-list">

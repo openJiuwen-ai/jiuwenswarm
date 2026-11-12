@@ -22,6 +22,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeAlias, TypeVar
 from weakref import WeakValueDictionary
 
+from jiuwenswarm.runtime.app_role import APP_ROLE_PROFILE, app_role_team_mode
 from jiuwenswarm.runtime.session_delete import (
     TEAM_DELETION_GATE,
     SessionDeleteResult,
@@ -139,6 +140,10 @@ class SessionCreateInput:
     model_selection: dict[str, Any] | None = None
     moa_enabled: bool | None = None
     cron_id: str = ""
+    execution_profile: str = "default"
+    role_instructions: str = ""
+    npc_team: dict[str, Any] | None = None
+    role_tools: list[str] | None = None
 
     def __post_init__(self) -> None:
         _require_bool("persist_session", self.persist_session)
@@ -198,6 +203,7 @@ class SessionCreateResult:
     canonical_mode: str
     explicit_id_compatibility: bool = False
     moa_enabled: bool = False
+    execution_profile: str = "default"
 
     def __post_init__(self) -> None:
         _require_bool("persist_session", self.persist_session)
@@ -602,6 +608,25 @@ class RuntimeSessionProvisioner:
         external_lock_acquired = False
         claimed_session_id: str | None = None
         try:
+            from jiuwenswarm.runtime.app_role import normalize_execution_profile, normalize_npc_team
+
+            try:
+                execution_profile, role_instructions = normalize_execution_profile(
+                    provision_input.execution_profile, provision_input.role_instructions,
+                )
+                npc_team: dict[str, Any] | None = None
+                if provision_input.role_tools:
+                    raise ValueError("tools are not supported by app_role sessions")
+                if execution_profile == "app_role":
+                    npc_team = normalize_npc_team(provision_input.npc_team)
+                elif provision_input.npc_team is not None:
+                    raise ValueError("npc_team requires execution_profile='app_role'")
+            except ValueError as exc:
+                raise SessionProvisionError(str(exc), code="BAD_REQUEST") from exc
+            if execution_profile == "app_role" and (
+                provision_input.persist_session or provision_input.cron_id or provision_input.moa_enabled is True
+            ):
+                raise SessionProvisionError("app_role does not support persistent memory, cron or enhanced agent execution")
             from jiuwenswarm.server.runtime.session.session_history import (
                 is_valid_session_id,
             )
@@ -753,6 +778,8 @@ class RuntimeSessionProvisioner:
                     "work_mode": final_work_mode,
                 }
             )
+            if npc_team is not None and params["mode"] == "team":
+                params["mode"] = app_role_team_mode(final_work_mode)
             resolved = resolve_request_mode(
                 params,
                 resolve_agent_request_mode,
@@ -760,6 +787,14 @@ class RuntimeSessionProvisioner:
             )
             canonical_mode = resolved.canonical_mode
             is_swarm = provision_input.is_swarm or resolved.is_team
+            if execution_profile == APP_ROLE_PROFILE and is_swarm:
+                from jiuwenswarm.common.mode_matrix import NEW_TEAM_CODE_NORMAL, NEW_TEAM_WORK_NORMAL
+                from openjiuwen.agent_teams.constants import RESERVED_MEMBER_NAMES
+
+                if npc_team is None or canonical_mode not in {NEW_TEAM_WORK_NORMAL, NEW_TEAM_CODE_NORMAL}:
+                    raise SessionProvisionError("app_role Team requires a roster and normal Team mode", code="BAD_REQUEST")
+                if any(member["name"] in RESERVED_MEMBER_NAMES | {"leader"} for member in npc_team["members"]):
+                    raise SessionProvisionError("NPC Team member name is reserved", code="BAD_REQUEST")
             from jiuwenswarm.common.config import get_config
             from jiuwenswarm.common.model_selection import ModelSelection
             from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
@@ -776,12 +811,15 @@ class RuntimeSessionProvisioner:
                     config_snapshot, selection, mode=canonical_mode,
                     is_cron=bool(provision_input.cron_id),
                 )
+                if execution_profile == "app_role":
+                    moa_enabled = False
                 if moa_enabled:
                     resolve_moa_settings(config_snapshot, selection)
             except (ValueError, RuntimeError) as exc:
                 raise SessionProvisionError(str(exc), code=getattr(exc, "code", "BAD_REQUEST")) from exc
             prewarm_eligible = (
                 not is_swarm
+                and execution_profile != "app_role"
                 and not moa_enabled
                 and canonical_mode
                 in {
@@ -811,6 +849,9 @@ class RuntimeSessionProvisioner:
                     persist_session=persist_session,
                     prewarm_eligible=prewarm_eligible,
                     create_token=create_token,
+                    execution_profile=execution_profile,
+                    role_instructions=role_instructions,
+                    npc_team=npc_team,
                     **({"moa_enabled": True} if moa_enabled else {}),
                 )
                 session_id = claim.session_id
@@ -823,9 +864,23 @@ class RuntimeSessionProvisioner:
             metadata_exists = (
                 get_agent_sessions_dir() / session_id / "metadata.json"
             ).is_file()
+            if metadata_exists and explicit_tui_session:
+                stored_profile = get_session_metadata(session_id)
+                if (
+                    stored_profile.get("execution_profile", "default") != execution_profile
+                    or stored_profile.get("role_instructions", "") != role_instructions
+                    or normalize_npc_team(stored_profile.get("npc_team")) != npc_team
+                ):
+                    raise SessionProvisionError("session execution profile cannot change")
             if metadata_exists and not explicit_tui_session:
                 self._agent_manager.activate_session_prewarm(session_id)
                 stored = get_session_metadata(session_id)
+                if (
+                    stored.get("execution_profile", "default") != execution_profile
+                    or stored.get("role_instructions", "") != role_instructions
+                    or normalize_npc_team(stored.get("npc_team")) != npc_team
+                ):
+                    raise SessionProvisionError("create_token conflicts with the session execution profile")
                 result = SessionCreateResult(
                     channel_id=channel_id,
                     session_id=session_id,
@@ -838,6 +893,7 @@ class RuntimeSessionProvisioner:
                     created=False,
                     canonical_mode=canonical_mode,
                     moa_enabled=stored.get("moa_enabled") is True,
+                    execution_profile=execution_profile,
                 )
                 return self._stage_create_result(
                     result,
@@ -858,21 +914,73 @@ class RuntimeSessionProvisioner:
                             "cwd": workspace,
                             "project_dir": project_dir or workspace,
                         }
-                init_session_metadata(
-                    session_id=session_id,
-                    channel_id=channel_id,
-                    user_id=str(provision_input.user_id or "").strip(),
-                    title=provision_input.title,
-                    mode=canonical_mode,
-                    project_dir=project_dir,
-                    project_id=project_id,
-                    persist_session=persist_session,
-                    work_mode=final_work_mode,
-                    model=str(provision_input.model_name or "").strip(),
-                    moa_enabled=moa_enabled,
-                    cron_id=str(provision_input.cron_id or "").strip(),
-                    channel_metadata=channel_metadata,
-                )
+                # NPC member sessions are created inside the leader's creation
+                # transaction: ids are claimed first, the leader metadata is
+                # written once with the bindings, then each member metadata is
+                # initialized. A failure removes everything written so far so a
+                # retry cannot hit orphan member sessions.
+                member_sessions: dict[str, str] = {}
+                written_member_sessions: list[str] = []
+                if npc_team is not None and not is_swarm:
+                    for member in npc_team["members"]:
+                        member_sessions[member["name"]] = (
+                            await self._agent_manager.create_session(
+                                channel_id=channel_id,
+                                session_id=None,
+                            )
+                        )
+                try:
+                    init_session_metadata(
+                        session_id=session_id,
+                        channel_id=channel_id,
+                        user_id=str(provision_input.user_id or "").strip(),
+                        title=provision_input.title,
+                        mode=canonical_mode,
+                        project_dir=project_dir,
+                        project_id=project_id,
+                        persist_session=persist_session,
+                        work_mode=final_work_mode,
+                        model=str(provision_input.model_name or "").strip(),
+                        moa_enabled=moa_enabled,
+                        cron_id=str(provision_input.cron_id or "").strip(),
+                        channel_metadata=channel_metadata,
+                        execution_profile=execution_profile,
+                        role_instructions=role_instructions,
+                        npc_team=npc_team,
+                        npc_member_sessions=member_sessions,
+                    )
+                    if member_sessions:
+                        leader_user_id = str(provision_input.user_id or "").strip()
+                        leader_model = str(provision_input.model_name or "").strip()
+                        for member in npc_team["members"]:
+                            member_title = member["title"] or " · ".join(
+                                part for part in (provision_input.title.strip(), member["name"]) if part
+                            )
+                            init_session_metadata(
+                                session_id=member_sessions[member["name"]],
+                                channel_id=channel_id,
+                                user_id=leader_user_id,
+                                title=member_title,
+                                mode=canonical_mode,
+                                project_dir=project_dir,
+                                project_id=project_id,
+                                persist_session=False,
+                                work_mode=final_work_mode,
+                                model=leader_model,
+                                moa_enabled=False,
+                                execution_profile=APP_ROLE_PROFILE,
+                                role_instructions=member["role_instructions"],
+                                npc_member={
+                                    "leader_session_id": session_id,
+                                    "name": member["name"],
+                                },
+                            )
+                            written_member_sessions.append(member_sessions[member["name"]])
+                except BaseException:
+                    self._remove_created_session_dirs(
+                        [session_id, *written_member_sessions, *member_sessions.values()]
+                    )
+                    raise
                 if not explicit_tui_session:
                     self._agent_manager.activate_session_prewarm(session_id)
 
@@ -899,6 +1007,7 @@ class RuntimeSessionProvisioner:
                 canonical_mode=canonical_mode,
                 explicit_id_compatibility=explicit_tui_session,
                 moa_enabled=moa_enabled,
+                execution_profile=execution_profile,
             )
             return self._stage_create_result(
                 result,
@@ -984,6 +1093,51 @@ class RuntimeSessionProvisioner:
             abort_hook=release_resources,
             commit_attempt_is_terminal=True,
         )
+
+    async def _delete_npc_member_sessions(
+        self,
+        member_sessions: dict[str, str],
+        *,
+        channel_id: str,
+        quiesce_session: Callable[..., Awaitable[None]],
+        dispose_session: Callable[..., Awaitable[None]],
+    ) -> None:
+        """Cascade-delete NPC member sessions after their leader was deleted.
+
+        Failures never fail the leader's delete; the member sessions remain
+        ordinary sessions that a later delete can still remove.
+        """
+        for member_name, member_sid in member_sessions.items():
+            try:
+                await self.delete_session(
+                    channel_id=channel_id,
+                    session_id=str(member_sid or "").strip(),
+                    quiesce_session=quiesce_session,
+                    dispose_session=dispose_session,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "NPC member cascade delete failed (member=%s sid=%s): %s",
+                    member_name,
+                    member_sid,
+                    exc,
+                )
+
+    @staticmethod
+    def _remove_created_session_dirs(session_ids: list[str]) -> None:
+        """Best-effort removal of half-written session dirs after a failed create."""
+        import shutil
+
+        from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+        root = get_agent_sessions_dir()
+        for sid in dict.fromkeys(session_ids):
+            if not sid:
+                continue
+            try:
+                shutil.rmtree(root / sid, ignore_errors=True)
+            except OSError:
+                logger.warning("Failed to remove half-created session dir: %s", sid)
 
     @staticmethod
     def _log_create_kvc_failure(task: asyncio.Task[None]) -> None:
@@ -1640,6 +1794,13 @@ class RuntimeSessionProvisioner:
                 deleted = True
             if deleted and session_dir.exists():
                 shutil.rmtree(session_dir)
+            if deleted and isinstance(metadata.get("npc_member_sessions"), dict):
+                await self._delete_npc_member_sessions(
+                    metadata["npc_member_sessions"],
+                    channel_id=result.channel_id or "",
+                    quiesce_session=quiesce_session,
+                    dispose_session=dispose_session,
+                )
             if deleted and recovering_delete:
                 lifecycle_update("session", target, phase="cleanup")
         except BaseException as exc:

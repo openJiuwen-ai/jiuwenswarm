@@ -1,0 +1,9 @@
+id: app_market
+name: App Market
+version: 0.1.0
+description: Local app market for launching and managing applications
+author: jiuwenswarm
+package_type: application
+dependencies: {}
+config_schema:
+  type: object

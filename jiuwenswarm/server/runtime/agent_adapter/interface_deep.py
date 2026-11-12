@@ -3931,6 +3931,7 @@ class JiuWenSwarmDeepAdapter:
         model_selection: Any = None,
         moa_can_access: Callable[[str, str], bool] | None = None,
         retain_moa_snapshot: bool = False,
+        required_app_role_member: dict[str, str] | None = None,
     ) -> "JiuWenSwarmDeepAdapter":
         """Return the session-owned adapter, creating and initializing it once."""
         if moa_enabled is not None and not isinstance(moa_enabled, bool):
@@ -3945,6 +3946,47 @@ class JiuWenSwarmDeepAdapter:
         )
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
+            from jiuwenswarm.runtime.app_role import app_role_instructions, is_app_role_team, validate_app_role_member
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+            role_metadata = get_session_metadata(
+                sid, cache_bust=required_app_role_member is not None, enable_writeback=False,
+            )
+            if required_app_role_member is not None:
+                from jiuwenswarm.server.runtime.session.lifecycle import guard
+
+                validate_app_role_member(role_metadata, required_app_role_member)
+                guard(sid, str(role_metadata.get("project_id") or ""))
+            if app_role_instructions(role_metadata) is not None and not is_app_role_team(role_metadata):
+                from jiuwenswarm.server.runtime.agent_adapter.interface_app_role import AppRoleAdapter
+
+                adapter = self._session_adapters.get(sid)
+                if adapter is not None and not isinstance(adapter, AppRoleAdapter):
+                    raise ValueError("session execution profile cannot change")
+                if adapter is None:
+                    adapter = AppRoleAdapter()
+                    adapter.mark_as_session_scoped(sid)
+                    adapter._model_selection_can_access = getattr(self, "_model_selection_can_access", None)
+                    await adapter.create_instance(
+                        {"channel_id": role_metadata.get("channel_id", "web")},
+                        mode=role_metadata.get("mode", "agent"),
+                    )
+                    # Lead sessions consult members through the channel-level
+                    # facade so each member keeps its own session-scoped
+                    # AppRoleAdapter and history. Member sessions simply never
+                    # expose ask_<name> tools, so the binding stays inert.
+                    from jiuwenswarm.server.runtime.agent_adapter.interface_app_role import (
+                        AppRoleMemberExecutor,
+                    )
+
+                    adapter.bind_member_executor(
+                        AppRoleMemberExecutor(self, sid) if not self._is_session_scoped_adapter else None
+                    )
+                    self._session_adapters[sid] = adapter
+                self._touch_session_adapter(sid)
+                if reserve_activity:
+                    adapter._register_session_agent_task(sid)
+                return adapter
             existing = self._session_adapters.get(sid)
             if external_harness_binding is None and existing is None:
                 external_harness_binding = load_persisted_external_harness_binding(sid)
@@ -6018,6 +6060,15 @@ class JiuWenSwarmDeepAdapter:
         params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Resolve the root request's runtime before MCP session reconciliation."""
+        from jiuwenswarm.runtime.app_role import app_role_instructions, is_app_role_team, validate_app_role_request
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+        metadata = get_session_metadata(self._session_adapter_key(session_id), enable_writeback=False)
+        validate_app_role_request(metadata, params or {})
+        if is_app_role_team(metadata):
+            return {"kind": "deep_agent", "app_role_team": True}
+        if app_role_instructions(metadata) is not None:
+            return {"kind": "app_role"}
         return resolve_external_harness_binding(
             self._session_adapter_key(session_id),
             params,
@@ -6051,7 +6102,10 @@ class JiuWenSwarmDeepAdapter:
         """
         if (
             runtime_binding is not None
-            and runtime_binding.get("kind") == "external_harness"
+            and (
+                runtime_binding.get("kind") in {"external_harness", "app_role"}
+                or runtime_binding.get("app_role_team")
+            )
         ):
             return
         needed_set = {str(n).strip() for n in (needed or []) if isinstance(n, str) and str(n).strip()}
@@ -18096,6 +18150,7 @@ class JiuWenSwarmDeepAdapter:
                         is_complete=True,
                     )
                     return
+                request.trusted_runtime_binding = runtime_binding
             try:
                 session_adapter = await self._get_session_adapter_for_request(
                     request,

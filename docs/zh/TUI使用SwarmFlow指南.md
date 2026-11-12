@@ -279,17 +279,17 @@ Leader Agent 会：
 
 当某个工作流编排需要反复使用时，可借助内置的 **`swarmskill-creator`** Skill 把它固化为可复用的 Swarm Skill（含 `workflow.py` 脚本），之后会话中直接让 Leader 调用该 Skill 即可，不必每次重新生成脚本。
 
-`swarmskill-creator` 为内置技能，默认已安装；若环境中缺失，先安装：
+`swarmskill-creator` 已收录在默认安装的 `workswarm-builtin` 总目录中；模型先读取 Skill Creator 再加载该能力。若总目录缺失，先安装：
 
 ```
-/skills search swarmskill-creator
-/skills install swarmskill-creator
+/skills search workswarm-builtin
+/skills install workswarm-builtin
 ```
 
 随后在 Team 会话中直接召唤该 Skill，并描述要沉淀的工作流（支持 CREATE 从零创建、CONVERT 把单 Agent Skill 转为 Swarm Skill、MODIFY 修改已有 Swarm Skill 三种模式）：
 
 ```
-/swarmskill-creator 帮我把「调研→分析→撰写→审校」这套工作流做成可复用的 Swarm Skill
+/skills use workswarm-builtin 帮我把「调研→分析→撰写→审校」这套工作流做成可复用的 Swarm Skill
 ```
 
 创建出的 Swarm Skill 可本地复用，或发布到 Skills Hub 供其他团队安装。详见 `docs/zh/SwarmSkills.md`。

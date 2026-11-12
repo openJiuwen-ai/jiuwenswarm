@@ -612,6 +612,8 @@ Write-Host "  Copying Electron desktop shell..." -ForegroundColor Gray
 Copy-Item -Path (Join-Path $DesktopDir "main.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "cdp_port.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_panels.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "app_market_windows.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "app_market_resources.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_downloads.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "share_image_export.cjs") -Destination $AppDir -Force
