@@ -654,15 +654,35 @@ async def _minimax_generate_image(
     return _minimax_save_image_items(payload, save_dir)
 
 
-def _minimax_video_resolution(resolution: str, model: str) -> str:
-    """Map the requested resolution to a tier the selected MiniMax model supports."""
-    text = (resolution or "").strip().upper()
+# Official V2 video resolutions (video-generation-v2-create):
+# MiniMax-H3: 768P / 2K; MiniMax-H3-Highspeed / Lite / Max: 480P / 768P (no 2K).
+_MINIMAX_H3_VIDEO_RESOLUTIONS = ("768P", "2K")
+_MINIMAX_H3_VARIANT_VIDEO_RESOLUTIONS = ("480P", "768P")
+
+
+def _minimax_h3_video_resolutions(model: str) -> tuple[str, ...]:
     if minimax_h3_variant(model) is not None:
-        return "480P" if text == "480P" else "768P"
+        return _MINIMAX_H3_VARIANT_VIDEO_RESOLUTIONS
+    return _MINIMAX_H3_VIDEO_RESOLUTIONS
+
+
+def _minimax_video_resolution(resolution: str, model: str = "") -> str:
+    """Map a requested resolution onto a tier this MiniMax video model accepts."""
+    allowed = {item.upper(): item for item in _minimax_h3_video_resolutions(model)}
+    text = (resolution or "").strip().upper().replace(" ", "")
+    if text in allowed:
+        return allowed[text]
     if text == "2K":
-        return "2K"
+        return allowed.get("2K") or "768P"
     digits = re.sub(r"\D", "", text)
-    return "768P" if not digits or int(digits) <= 768 else "2K"
+    if not digits:
+        return "768P"
+    pixels = int(digits)
+    if "480P" in allowed and pixels <= 480:
+        return "480P"
+    if "768P" in allowed and pixels <= 768:
+        return "768P"
+    return allowed.get("2K") or "768P"
 
 
 async def _minimax_submit_video(target: GenerationTarget, request: VideoRequest, save_dir: str | None) -> str:

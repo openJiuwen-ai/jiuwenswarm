@@ -23,10 +23,10 @@ test('Ark generation accepts official regional addresses and rejects Coding Plan
   assert.equal(isArkGenerationApiBase('http://ark.cn-beijing.volces.com/api/v3'), false);
 });
 
-test('MiniMax video offers the H3, Highspeed and Lite presets', () => {
+test('MiniMax video offers the H3, Highspeed, Lite and Max presets', () => {
   assert.deepEqual(
     catalogModels('video_gen', 'minimax').map((entry) => entry.model),
-    ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite'],
+    ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite', 'MiniMax-H3-Max'],
   );
 });
 
@@ -113,4 +113,26 @@ test('MiniMax image catalog suggests H3 models and still surfaces a custom saved
   );
   assert.equal(options[0], 'some-new-lab-image');
   assert.ok(options.includes('MiniMax-H3-Image'));
+});
+
+test('MiniMax video catalog suggests the official H3 models and still surfaces a custom saved name', () => {
+  assert.deepEqual(defaultGeneration('video_gen', 'minimax'), {
+    protocol: 'minimax',
+    model: 'MiniMax-H3',
+  });
+  assert.deepEqual(
+    catalogModels('video_gen', 'minimax').map((entry) => entry.model),
+    ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite', 'MiniMax-H3-Max'],
+  );
+  const options = generationModelOptions(
+    'video_gen',
+    'minimax',
+    false,
+    'minimax',
+    'some-new-lab-video',
+  );
+  assert.equal(options[0], 'some-new-lab-video');
+  assert.ok(options.includes('MiniMax-H3-Highspeed'));
+  assert.ok(options.includes('MiniMax-H3-Lite'));
+  assert.ok(options.includes('MiniMax-H3-Max'));
 });

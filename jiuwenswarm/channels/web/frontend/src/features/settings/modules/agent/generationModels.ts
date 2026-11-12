@@ -84,7 +84,7 @@ const OPENROUTER_MODELS: Record<GenerationSlot, readonly string[]> = {
 };
 
 const MINIMAX_MODELS: Record<GenerationSlot, readonly string[]> = {
-  video_gen: ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite'],
+  video_gen: ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite', 'MiniMax-H3-Max'],
   visual_gen: ['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed'],
   music_gen: [],
 };

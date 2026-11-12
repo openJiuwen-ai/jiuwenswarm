@@ -259,6 +259,49 @@ async def test_minimax_video_submit_poll_download(monkeypatch, tmp_path, model, 
     assert "authorization" not in seen[-1].headers  # the pre-signed download must not carry the key
 
 
+@pytest.mark.parametrize(
+    "model,requested,expected",
+    [
+        ("MiniMax-H3", "480P", "768P"),
+        ("MiniMax-H3", "480p", "768P"),
+        ("MiniMax-H3", "720P", "768P"),
+        ("MiniMax-H3", "1080p", "2K"),
+        ("MiniMax-H3", "2K", "2K"),
+        ("MiniMax-H3", "", "768P"),
+        ("MiniMax-H3-Highspeed", "480P", "480P"),
+        ("MiniMax-H3-Highspeed", "480p", "480P"),
+        ("MiniMax-H3-Highspeed", "720P", "768P"),
+        ("MiniMax-H3-Highspeed", "2K", "768P"),
+        ("MiniMax-H3-Lite", "480P", "480P"),
+        ("MiniMax-H3-Lite", "2K", "768P"),
+        ("MiniMax-H3-Max", "480P", "480P"),
+        ("MiniMax-H3-Max", "1080p", "768P"),
+        ("MiniMax-H3-Max", "2K", "768P"),
+    ],
+)
+def test_minimax_video_resolution_follows_the_configured_model(model, requested, expected):
+    assert gt._minimax_video_resolution(requested, model) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,requested,expected",
+    [
+        ("MiniMax-H3", "480P", "768P"),
+        ("MiniMax-H3-Highspeed", "480P", "480P"),
+        ("MiniMax-H3-Lite", "480P", "480P"),
+        ("MiniMax-H3-Max", "480P", "480P"),
+    ],
+)
+async def test_minimax_video_submit_keeps_supported_480p(monkeypatch, tmp_path, model, requested, expected):
+    seen = _patch_client(monkeypatch, _mm_video_handler(["succeeded"]))
+    result = await _submit(
+        "minimax", "k", _MM_GLOBAL, model, "fox", "16:9", requested, 5, False, None, str(tmp_path),
+    )
+    assert result.startswith("Video generated successfully!")
+    assert _body(seen[0])["resolution"] == expected
+
+
 @pytest.mark.asyncio
 async def test_minimax_video_pending_and_failed(monkeypatch, tmp_path):
     _patch_client(monkeypatch, _mm_video_handler(["running"]))

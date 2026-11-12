@@ -1,10 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Duration, resolution, and reference limits for the configured video model.
 
-Figures follow the vendor docs as of 2026-09 (Wan 3.0, Seedance 2.5, MiniMax-H3,
-MiniMax-H3-Max). Canvas video settings are snapped onto the active entry, and
-the Design toolbar only offers its values. Whichever video model is configured
-with an API key is the one that applies.
+Figures follow the vendor docs as of 2026-11 (Wan 3.0, Seedance 2.5, MiniMax-H3,
+MiniMax-H3-Highspeed, MiniMax-H3-Lite, MiniMax-H3-Max). Canvas video settings
+are snapped onto the active entry, and the Design toolbar only offers its
+values. Whichever video model is configured with an API key is the one that applies.
 """
 
 from __future__ import annotations
@@ -97,7 +97,8 @@ _SEEDANCE_20_FAST = VideoModelCapacity(
     supports_reference_images=True,
 )
 
-# MiniMax-H3: 4–15s, 768P/2K, up to 9 reference images.
+# MiniMax-H3: 4–15s, 768P/2K (no 480P), up to 9 reference images.
+# https://platform.minimax.cn/docs/api-reference/video-generation-v2-create
 _H3 = VideoModelCapacity(
     model_id="MiniMax-H3",
     provider="minimax",
@@ -110,11 +111,12 @@ _H3 = VideoModelCapacity(
     supports_reference_images=True,
 )
 
+# MiniMax-H3-Highspeed / Lite: 4–15s, 480P/768P (no 2K).
 _H3_HIGHSPEED = replace(_H3, model_id="MiniMax-H3-Highspeed", resolutions=("480P", "768P"))
 _H3_LITE = replace(_H3_HIGHSPEED, model_id="MiniMax-H3-Lite")
 
 
-# MiniMax-H3-Max: 5–15s, 480P/768P. Reference images are rejected by the API.
+# MiniMax-H3-Max: 5–15s, 480P/768P (no 2K). Reference images are rejected by the API.
 _H3_MAX = VideoModelCapacity(
     model_id="MiniMax-H3-Max",
     provider="minimax",
@@ -139,6 +141,8 @@ _CATALOG: tuple[VideoModelCapacity, ...] = (
     _SEEDANCE_20,
     _SEEDANCE_20_FAST,
     _H3,
+    _H3_HIGHSPEED,
+    _H3_LITE,
     _H3_MAX,
 )
 

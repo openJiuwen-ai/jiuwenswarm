@@ -490,6 +490,8 @@ async def test_generate_video_forwards_references_to_native_backend(monkeypatch:
         ("minimax", "MiniMax-H3", 99, 15),
         ("minimax", "MiniMax-H3", 1, 4),
         ("minimax", "MiniMax-H3-Max", 4, 5),
+        ("minimax", "MiniMax-H3-Highspeed", 4, 4),
+        ("minimax", "MiniMax-H3-Lite", 4, 4),
         ("modelark", "doubao-seedance-2-5-260628", 25, 15),
         ("vllm-omni", "MiniMax-H3", 2, 2),
     ],
