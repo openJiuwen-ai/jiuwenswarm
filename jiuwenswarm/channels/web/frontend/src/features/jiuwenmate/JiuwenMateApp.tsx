@@ -170,6 +170,12 @@ export function JiuwenMateApp({
   const [employeeExists, setEmployeeExists] = useState(false);
   const [publicLabel, setPublicLabel] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [imNotice, setImNotice] = useState<{ platform: 'feishu' | 'dingtalk' | 'welink'; text: string } | null>(null);
+  useEffect(() => {
+    if (!imNotice) return undefined;
+    const timer = window.setTimeout(() => setImNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [imNotice]);
   const [workspaceIntent, setWorkspaceIntent] = useState<{ nonce: number; intent: JiuwenMateWorkspaceIntent | null }>({
     nonce: 0,
     intent: null,
@@ -617,8 +623,12 @@ export function JiuwenMateApp({
     if (pendingConfirm.kind === 'unbind') {
       setActionError('');
       try {
+        const platform = pendingConfirm.connection.channel;
         await api.unbindConnection(pendingConfirm.connection);
         await refreshColleague(pendingConfirm.colleague.id);
+        if (platform === 'feishu' || platform === 'dingtalk') {
+          setImNotice({ platform, text: t('jiuwenmate.profile.removeConnectionSuccess') });
+        }
       } catch (error) {
         setActionError(errorMessage(error));
       }
@@ -949,6 +959,7 @@ export function JiuwenMateApp({
               setAuthorizeConnection(null);
               setState((current) => openColleagueAuthorization(current, selectedColleague.id, 'welink'));
             }}
+            imNotice={imNotice}
             onRevokeChannel={(platform) => {
               const method = platform === 'welink' ? 'channel.welink.revoke' : 'channel.feishu.revoke';
               return webRequest(method, {
@@ -957,15 +968,22 @@ export function JiuwenMateApp({
               })
                 .then(() => {
                   setState((current) => revokeColleagueAuthorization(current, selectedColleague.id, platform));
+                  setImNotice({
+                    platform,
+                    text: t(platform === 'welink'
+                      ? 'jiuwenmate.profile.cancelAuthorizationSuccess'
+                      : 'jiuwenmate.profile.removeConnectionSuccess'),
+                  });
                 })
                 .catch((error: unknown) => {
                   setActionError(errorMessage(error));
                   throw error;
                 });
             }}
-            onRemoveConnection={(connection) =>
-              setPendingConfirm({ kind: 'unbind', colleague: selectedColleague, connection })
-            }
+            onRemoveConnection={(connection) => {
+              setImNotice(null);
+              setPendingConfirm({ kind: 'unbind', colleague: selectedColleague, connection });
+            }}
             onToggleDisabled={() => requestToggleDisabled(selectedColleague.id)}
             onDelete={() => requestDelete(selectedColleague.id)}
           />

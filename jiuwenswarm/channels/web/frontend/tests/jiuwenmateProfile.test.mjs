@@ -235,6 +235,16 @@ test('the overview keeps DingTalk setup until DingTalk is also configured', () =
   assert.match(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="welink"/);
   assert.match(channels, />取消授权</);
 
+  const withNotice = renderProfile({
+    initialSection: 'channels',
+    colleague: authorized,
+    imNotice: { platform: 'feishu', text: '解除连接成功' },
+  });
+  assert.match(
+    withNotice,
+    /data-testid="jiuwenmate-profile-im-notice"[^>]*data-variant="feishu"[^>]*>解除连接成功<\/small>\s*<button[^>]*data-testid="jiuwenmate-profile-im-authorize"/,
+  );
+
   const pendingDingTalk = renderProfile({ colleague: authorized });
   assert.match(pendingDingTalk, /data-testid="jiuwenmate-profile-quick-im"/);
   assert.match(pendingDingTalk, /钉钉/);

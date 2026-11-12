@@ -4784,6 +4784,12 @@
   gap: 8px;
 }
 
+.jiuwenmate-profile__im-notice {
+  color: var(--jm-success);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .jiuwenmate-profile__im-row strong {
   font-size: 13px;
   font-weight: 600;
