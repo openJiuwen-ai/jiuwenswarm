@@ -20,7 +20,7 @@ symphony:
 
   fingerprint:
     scan:
-      max_depth:
+      max_depth: 1
     extraction:
       workers: 4
       batch_size: 2
@@ -321,21 +321,32 @@ telemetry:
     headers: {}                     # metrics headers，默认回退到 telemetry.headers
 
 # ============================================================
-# Team 可观测性配置（OTel + Langfuse）
+# 可观测性配置（OTel；Team 与单 Agent / Coding Agent 共用）
 # ============================================================
-# 与 telemetry 不同，team_observability 专门用于 TeamAgent 的
-# 可观测性追踪，包括 team/member/task/message 级别的 span。
-# 启用后会自动将 OtelTeamMonitorHandler 注册到 TeamAgent，
-# 将事件转为 OTel span 导出到 Langfuse / OTLP Collector。
+# 与 telemetry 不同，本段专门用于 Agent 运行轨迹的 OTel span 采集：
+#   - team.enabled  ：TeamAgent 路径，产生 team/member/task/message 级 span
+#                     （自动注册 OtelTeamMonitorHandler）
+#   - agent.enabled ：非 team 路径（Runner.run_agent / run_agent_streaming，
+#                     即 agent.* 与 code.* 模式），为 LLM 调用与工具调用生成 span
+# 其余字段是两条路径共用的导出配置。OTel 一个进程只允许一个全局
+# TracerProvider，所以导出配置只有一份；两个开关各自登记 demand，
+# 一方关闭不会拆掉另一方仍在使用的 provider。
 #
-# 前置条件：
-#   1. 启动 OTel Collector + Langfuse
-#   2. 在用户配置中设置 team_observability.enabled: true
+# 旧版的 team_observability / agent_observability 两段会在升级时自动迁移到
+# 本段（各自的 enabled 迁到 team.enabled / agent.enabled）。
+#
+# 前置条件（otlp 模式）：启动 OTLP 后端（OTel Collector + Langfuse，或
+# 直接使用 Jaeger 等原生支持 OTLP 的后端）。
+# skill_evolution / symphony evolution / react.ttse.enabled 任一开启时，
+# 即使 agent.enabled 为 false，也会自动 acquire 以采集演进所需轨迹 span。
 # ============================================================
-team_observability:
-  enabled: false                    # Team observability 总开关
-  exporter: file                    # otlp_grpc / otlp_http / file
-  endpoint: http://localhost:4317   # OTLP gRPC endpoint（file 模式不需要）
+observability:
+  team:
+    enabled: false                  # Team 可观测性开关
+  agent:
+    enabled: false                  # 单 Agent / Coding Agent 可观测性开关
+  exporter: file                    # otlp_grpc / otlp_http / langfuse / console / file
+  endpoint: http://localhost:4317   # OTLP endpoint（file 模式不需要）
   service_name: jiuwenswarm         # 服务名称（OTel resource service.name）
   sample_rate: 1.0                  # 采样率 (0.0-1.0)
   redact_prompts: false             # 是否脱敏 prompt 内容
@@ -984,7 +995,7 @@ updater:
   # Windows / macOS installers are selected by their unique .exe / .dmg suffix.
   asset_name_pattern_linux: "JiuwenSwarm-{version}.tar.gz"
   timeout_seconds: 20
-  pypi_mirror: "https://mirrors.aliyun.com/pypi"
+  pypi_mirror: "https://mirrors.aliyun.com/pypi/simple/"
 
 extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：

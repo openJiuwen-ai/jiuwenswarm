@@ -265,7 +265,7 @@ def test_recent_rid_summaries_cap_and_keep_required() -> None:
     assert capped[-1].session_summary_id == "summary-011"
 
 
-def test_store_prune_drops_aged_types_and_superseded_summaries(tmp_path) -> None:
+def test_store_prune_keeps_newest_counts_and_drops_training(tmp_path) -> None:
     from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
         TopicStarterStore,
     )
@@ -289,7 +289,8 @@ def test_store_prune_drops_aged_types_and_superseded_summaries(tmp_path) -> None
 
     event("dynamic_exposure", "old-exposure", now - 31 * day)
     event("dynamic_exposure", "new-exposure", now - day)
-    event("pa_training_example", "kept", now - 365 * day)
+    event("pa_training_example", "drop-me", now - day)
+    event("training_exclusion", "drop-me-too", now - day)
     event("topic_click", "opened", now - 400 * day)
     event("session_bound", "bound", now - 400 * day)
     event("not_interested", "dismissed", now - 400 * day)
@@ -301,14 +302,20 @@ def test_store_prune_drops_aged_types_and_superseded_summaries(tmp_path) -> None
             now - offset * day,
             {"session_id": "session-a"},
         )
+    for index in range(45):
+        event("provider_invocation", f"call-{index}", now - index)
 
     removed = store.prune(now=now)
 
     remaining = {(row["event_type"], row["topic_id"]) for row in store.list_events()}
-    assert removed.get("dynamic_exposure") == 1
+    assert removed.get("pa_training_example") == 1
+    assert removed.get("training_exclusion") == 1
+    assert removed.get("provider_invocation") == 5
     assert removed.get("session_summary_superseded") == 1
-    assert ("pa_training_example", "kept") in remaining
+    assert ("pa_training_example", "drop-me") not in remaining
+    assert ("training_exclusion", "drop-me-too") not in remaining
     assert ("dynamic_exposure", "new-exposure") in remaining
+    assert ("dynamic_exposure", "old-exposure") in remaining
     assert ("session_summary", "summary-2") not in remaining
     assert ("session_summary", "summary-0") in remaining
     assert ("session_summary", "summary-1") in remaining
@@ -316,7 +323,10 @@ def test_store_prune_drops_aged_types_and_superseded_summaries(tmp_path) -> None
     assert ("session_bound", "bound") in remaining
     assert ("not_interested", "dismissed") in remaining
     assert ("session_summary", "old-summary") in remaining
-    # The interval marker skips a second pass on the same day.
+    assert len([
+        row for row in store.list_events() if row["event_type"] == "provider_invocation"
+    ]) == 40
+    # The interval marker skips a second pass within an hour.
     assert store.prune(now=now) == {}
 
 
@@ -611,3 +621,26 @@ async def test_summarize_sessions_reuses_content_matched_summary_after_model_cha
     assert batch_b.generated_summary_ids == ()
     assert batch_b.artifacts[0].summary_text == "qing summary"
     assert batch_b.artifacts[0].session_summary_id == stored["session_summary_id"]
+    # Pool write must accept reused provenance under the new run's coverage stamp.
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        _valid_session_summary_coverage_receipt,
+        _valid_session_summary_materialization_receipt,
+    )
+
+    reused = batch_b.artifacts[0]
+    assert reused.summary_config_version != batch_b.summary_config_version
+    materialization = pipeline._session_summary_materialization_receipt(
+        snapshot=snapshot,
+        summaries=batch_b.artifacts,
+        generated_summary_ids=batch_b.generated_summary_ids,
+        summary_config_version=batch_b.summary_config_version,
+    )
+    manifest = {
+        "generation_input_snapshot_id": snapshot.input_snapshot_id,
+        "context_scope": snapshot.context_scope,
+        "session_summary_artifacts": [summary.as_payload() for summary in batch_b.artifacts],
+        "session_summary_coverage_receipt": dict(batch_b.coverage_receipt),
+        "session_summary_materialization_receipt": materialization,
+    }
+    assert _valid_session_summary_coverage_receipt(manifest) is True
+    assert _valid_session_summary_materialization_receipt(manifest) is True

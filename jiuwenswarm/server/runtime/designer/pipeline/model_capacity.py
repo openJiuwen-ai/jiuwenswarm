@@ -10,8 +10,10 @@ with an API key is the one that applies.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
+
+from jiuwenswarm.common.minimax_video_models import MiniMaxH3Variant, minimax_h3_variant
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,10 @@ _H3 = VideoModelCapacity(
     supports_reference_images=True,
 )
 
+_H3_HIGHSPEED = replace(_H3, model_id="MiniMax-H3-Highspeed", resolutions=("480P", "768P"))
+_H3_LITE = replace(_H3_HIGHSPEED, model_id="MiniMax-H3-Lite")
+
+
 # MiniMax-H3-Max: 5–15s, 480P/768P. Reference images are rejected by the API.
 _H3_MAX = VideoModelCapacity(
     model_id="MiniMax-H3-Max",
@@ -120,6 +126,12 @@ _H3_MAX = VideoModelCapacity(
     max_reference_images=0,
     supports_reference_images=False,
 )
+
+_MINIMAX_H3_CAPACITY = {
+    MiniMaxH3Variant.MAX: _H3_MAX,
+    MiniMaxH3Variant.HIGHSPEED: _H3_HIGHSPEED,
+    MiniMaxH3Variant.LITE: _H3_LITE,
+}
 
 _CATALOG: tuple[VideoModelCapacity, ...] = (
     _WAN3,
@@ -140,8 +152,9 @@ def capacity_for_model(model_id: str) -> VideoModelCapacity:
     key = _norm(model_id)
     if not key:
         return _WAN3
-    if "h3max" in key or ("minimax" in key and key.endswith("max")):
-        return _H3_MAX
+    variant = minimax_h3_variant(model_id)
+    if variant is not None:
+        return _MINIMAX_H3_CAPACITY[variant]
     if "minimaxh3" in key or key in {"h3", "minimaxh3"}:
         return _H3
     if "seedance" in key and ("25" in key or "260628" in key):

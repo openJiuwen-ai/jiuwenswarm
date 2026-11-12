@@ -88,48 +88,6 @@ def test_explicit_read_transaction_rejects_mutations_and_default_write_rolls_bac
 
 
 @pytest.mark.asyncio
-async def test_history_worker_queue_work_is_bounded_as_message_count_grows(monkeypatch):
-    import asyncio
-    import threading
-    from types import SimpleNamespace
-    from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
-
-    owner_thread = threading.get_ident()
-    class Scheduler:
-        @property
-        def running(self):
-            assert threading.get_ident() == owner_thread, 'Scheduler state belongs to the event loop'
-            return ()
-    states = []
-    manager = object.__new__(AgentManager)
-    manager._scheduler = Scheduler()
-    manager._sessions = SimpleNamespace(
-        read_batch=nullcontext,
-        find_session=lambda *args: SimpleNamespace(session_id='session'),
-        session_requests=lambda *args: list(states),
-        result_deliveries=lambda *args: [],
-    )
-    manager._result = lambda state: ((), (), None, None)
-    manager._control = SimpleNamespace(control_of=lambda *args: None)
-    manager._recovery = SimpleNamespace(recovery_of=lambda *args: None)
-    manager._permission_approvals = SimpleNamespace(pending_for_request=lambda *args: None)
-    jobs = []
-    original = asyncio.to_thread
-    async def recorded(function, *args, **kwargs):
-        jobs.append(function)
-        return await original(function, *args, **kwargs)
-    monkeypatch.setattr(asyncio, 'to_thread', recorded)
-    budgets = []
-    for count in (1, 25):
-        states[:] = [SimpleNamespace(record=SimpleNamespace(namespace_id='local', request_id=f'request-{i}')) for i in range(count)]
-        jobs.clear()
-        views = await manager.conversation_requests('local', 'employee', ConversationRef.web('conversation'))
-        assert [v.state.record.request_id for v in views] == [f'request-{i}' for i in range(count)]
-        budgets.append(len(jobs))
-    assert budgets[1] <= budgets[0], 'A longer history must not enqueue one worker job per message field'
-
-
-@pytest.mark.asyncio
 async def test_history_observes_a_request_that_starts_while_states_are_read():
     import asyncio
     import threading

@@ -1,4 +1,5 @@
 import type { ModelPlan, VendorPresetMap } from '../../../../types';
+import type { ModelValidationPayload } from '../../services/settingsContract';
 import { normalizeContextWindowTokens, resolveDraftContextWindowTokens } from '../models/contextWindow';
 import {
   CUSTOM_VENDOR_SELECTION,
@@ -86,4 +87,50 @@ export function buildMediaModelConfigUpdates(
     [`${modality}_context_window_tokens`]: String(resolveDraftContextWindowTokens(draft.context_window_tokens)),
     ...(enableOnSave ? { [`${modality}_enabled`]: 'true' } : {}),
   };
+}
+
+/** Same probe shape as chat model settings; topic reuses ``config.validate_model``. */
+export function buildMediaModelValidationPayload(
+  draft: MediaModelDraft,
+  catalog: VendorPresetMap,
+  options: { apiKeyFallback?: string } = {},
+): ModelValidationPayload {
+  const preset = findVendorPreset(catalog, draft.vendor_selection);
+  const endpointProfile = (
+    preset ? (preset.endpoint_profile ?? '') : draft.endpoint_profile
+  ).trim();
+  const vendorKey = (preset?.vendor_key ?? '').trim();
+  const payload: ModelValidationPayload = {
+    api_base: (preset?.api_base ?? draft.api_base).trim(),
+    api_key: draft.api_key.trim() || String(options.apiKeyFallback ?? '').trim(),
+    model: draft.model_name.trim(),
+    model_provider: ((preset?.client_provider ?? draft.provider.trim()) || 'OpenAI').trim(),
+    reasoning_level: '',
+  };
+  if (endpointProfile) payload.endpoint_profile = endpointProfile;
+  if (vendorKey) payload.vendor_key = vendorKey;
+  return payload;
+}
+
+/** Card-level probe for a saved topic connection (key already loaded). */
+export function buildSavedTopicModelValidationPayload(
+  config: Readonly<Record<string, unknown>>,
+): ModelValidationPayload | null {
+  const apiBase = String(config.api_base ?? '').trim();
+  const apiKey = String(config.api_key ?? '').trim();
+  const model = String(config.model ?? '').trim();
+  const modelProvider = (String(config.provider ?? '').trim() || 'OpenAI');
+  if (!apiBase || !apiKey || !model) return null;
+  const payload: ModelValidationPayload = {
+    api_base: apiBase,
+    api_key: apiKey,
+    model,
+    model_provider: modelProvider,
+    reasoning_level: '',
+  };
+  const endpointProfile = String(config.endpoint_profile ?? '').trim();
+  const vendorKey = String(config.vendor_key ?? '').trim();
+  if (endpointProfile) payload.endpoint_profile = endpointProfile;
+  if (vendorKey) payload.vendor_key = vendorKey;
+  return payload;
 }

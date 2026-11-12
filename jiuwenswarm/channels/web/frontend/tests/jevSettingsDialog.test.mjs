@@ -55,7 +55,7 @@ await build({
           : path.endsWith('assets/providers')
             ? `export const getModelLogoUrl = ({ vendor_key }) => 'provider-' + vendor_key + '.svg';`
           : path === './ExperimentalSettings'
-            ? ['A2UISetting', 'ExternalCliCustomAgentsItem', 'ProactiveLimitsSetting', 'RSISetting', 'TaskAsrSetting', 'TaskFullDuplexSetting', 'TrajectoryDiagnosisSetting', 'TrajectoryUiSetting']
+            ? ['A2UISetting', 'ExternalCliCustomAgentsItem', 'RSISetting', 'TaskAsrSetting', 'TaskFullDuplexSetting', 'TrajectoryDiagnosisSetting', 'TrajectoryUiSetting']
               .map(name => `export const ${name} = () => null;`).join('\n')
           : path === './A4PSettings' ? 'export const A4PSettings = () => null;'
           : path.endsWith('SettingsServicesProvider')

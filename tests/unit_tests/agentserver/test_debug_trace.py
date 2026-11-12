@@ -95,18 +95,18 @@ class TestStripDebugDirective:
 # ── paths ──────────────────────────────────────────────────────────────────
 class TestPaths:
     def test_agent_modes_use_agent_dir(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(paths_mod, "get_infra_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths_mod, "get_user_workspace_dir", lambda: tmp_path)
         assert paths_mod.debug_trace_dir("agent.plan") == tmp_path / ".agent" / "traces"
         assert paths_mod.debug_trace_dir("agent.fast") == tmp_path / ".agent" / "traces"
 
     def test_code_mode_uses_code_dir(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(paths_mod, "get_infra_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths_mod, "get_user_workspace_dir", lambda: tmp_path)
         assert paths_mod.debug_trace_dir("code.normal") == tmp_path / ".code" / "traces"
 
     def test_original_agent_plan_keeps_agent_dir_after_code_profile_resolution(
         self, monkeypatch, tmp_path
     ):
-        monkeypatch.setattr(paths_mod, "get_infra_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths_mod, "get_user_workspace_dir", lambda: tmp_path)
         mode = paths_mod.resolve_debug_trace_mode("code.plan", "agent.plan")
 
         assert paths_mod.debug_trace_file(mode, "sess") == (
@@ -133,12 +133,12 @@ class TestPaths:
         assert resolve_debug_trace_settings(mode=mode, request_debug=False).enabled is True
 
     def test_file_names(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(paths_mod, "get_infra_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths_mod, "get_user_workspace_dir", lambda: tmp_path)
         assert paths_mod.debug_trace_file("agent.plan", "sess").name == "dump-agent-sess.txt"
         assert paths_mod.debug_trace_file("code.normal", "sess").name == "dump-code-sess.txt"
 
     def test_session_id_sanitised(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(paths_mod, "get_infra_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths_mod, "get_user_workspace_dir", lambda: tmp_path)
         # Slashes / dots stripped so the segment can't escape the traces dir.
         f = paths_mod.debug_trace_file("agent.plan", "../evil")
         assert f.parent == tmp_path / ".agent" / "traces"
@@ -648,7 +648,7 @@ class TestAgentObservabilityForce:
             calls["init"] += 1
             return False
 
-        monkeypatch.setattr(ao, "get_config", lambda: {"agent_observability": {"enabled": False}})
+        monkeypatch.setattr(ao, "get_config", lambda: {"observability": {"agent": {"enabled": False}}})
         monkeypatch.setattr(ao, "acquire_observability", fake_acquire)
         monkeypatch.setattr(
             ao, "shutdown_agent_observability",
@@ -671,7 +671,7 @@ class TestAgentObservabilityForce:
         # simulate a config-gated active provider (force never used)
         ao._agent_observability_active = True
         ao._force_ever_enabled = False
-        monkeypatch.setattr(ao, "get_config", lambda: {"agent_observability": {"enabled": False}})
+        monkeypatch.setattr(ao, "get_config", lambda: {"observability": {"agent": {"enabled": False}}})
         monkeypatch.setattr(
             ao, "shutdown_agent_observability",
             lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1),

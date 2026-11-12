@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+
+logger = logging.getLogger(__name__)
 
 from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
     apply_negative_preferences,
@@ -379,8 +382,6 @@ def classify_starter_slate(cards: list[dict[str, Any]]) -> dict[str, Any]:
         mode = "static"
     elif personalized == 0:
         mode = "generic_dynamic"
-    elif personalized / total < 0.75:
-        mode = "mixed_dynamic"
     else:
         mode = "personalized_dynamic"
     return {
@@ -577,7 +578,6 @@ _GENERATION_ATTEMPT_ID: ContextVar[str | None] = ContextVar(
     "topic_starter_background_generation_attempt_id",
     default=None,
 )
-TerminalExternalAuditLoader = Callable[[str], dict[str, Any] | None]
 
 
 def current_background_generation_attempt_id() -> str | None:
@@ -611,13 +611,11 @@ class BackgroundGenerationCoordinator:
         deadline_seconds: float = BACKGROUND_GENERATION_DEADLINE_SECONDS,
         pool_writer: Callable[..., Any] = write_starter_pool,
         policy_id: str = POLICY_ID,
-        terminal_external_audit_loader: TerminalExternalAuditLoader | None = None,
     ) -> None:
         self.store = store
         self.deadline_seconds = deadline_seconds
         self._pool_writer = pool_writer
         self._policy_id = policy_id
-        self._terminal_external_audit_loader = terminal_external_audit_loader
         self._inflight: dict[str, asyncio.Task[str]] = {}
 
     @property
@@ -648,15 +646,6 @@ class BackgroundGenerationCoordinator:
         if payload.get("cold_start") is True:
             return False
         return payload.get("generation_trigger_key") == trigger_key
-
-    def terminal_external_audit(
-        self,
-        generation_attempt_id: str,
-    ) -> dict[str, Any] | None:
-        if self._terminal_external_audit_loader is None:
-            return None
-        audit = self._terminal_external_audit_loader(generation_attempt_id)
-        return audit if isinstance(audit, dict) else None
 
     def record_generation_event(
         self,
@@ -783,9 +772,6 @@ class BackgroundGenerationCoordinator:
                     "background_generation_deadline",
                     trigger_key,
                     generation_attempt_id=generation_attempt_id,
-                    external_invocation_audit=self.terminal_external_audit(
-                        generation_attempt_id
-                    ),
                 )
                 return "background_generation_deadline"
             try:
@@ -795,9 +781,6 @@ class BackgroundGenerationCoordinator:
                     "background_generation_failed",
                     trigger_key,
                     generation_attempt_id=generation_attempt_id,
-                    external_invocation_audit=self.terminal_external_audit(
-                        generation_attempt_id
-                    ),
                 )
                 return "background_generation_failed"
             grounding_decision_receipt = (
@@ -822,10 +805,6 @@ class BackgroundGenerationCoordinator:
                 and isinstance(result.manifest.get("external_invocation_audit"), dict)
                 else None
             )
-            if external_invocation_audit is None:
-                external_invocation_audit = self.terminal_external_audit(
-                    generation_attempt_id
-                )
             if result.failure_reason == "background_model_unavailable":
                 self.record_generation_event(
                     "background_model_unavailable",
@@ -891,13 +870,21 @@ class BackgroundGenerationCoordinator:
             )
             if not write_result:
                 writer_reason = str(getattr(write_result, "reason", "") or "")
+                reject_reason = result.failure_reason or writer_reason
+                # Events alone are easy to miss in full.log when diagnosing
+                # "homepage stuck on cold corpus" — surface the write gate too.
+                logger.warning(
+                    "[Topic] background pool write rejected attempt=%s reason=%s",
+                    generation_attempt_id,
+                    reject_reason or "unknown",
+                )
                 # With no pool written, what RID let through is recorded here.
                 rid_result = result.manifest.get("rid_result")
                 self.record_generation_event(
                     "background_generation_rejected",
                     trigger_key,
                     generation_attempt_id=generation_attempt_id,
-                    reason=result.failure_reason or writer_reason,
+                    reason=reject_reason,
                     grounding_decision_receipt=grounding_decision_receipt,
                     grounding_evidence_receipt=grounding_evidence_receipt,
                     external_invocation_audit=external_invocation_audit,
@@ -918,9 +905,6 @@ class BackgroundGenerationCoordinator:
                 "background_generation_cancelled",
                 trigger_key,
                 generation_attempt_id=generation_attempt_id,
-                external_invocation_audit=self.terminal_external_audit(
-                    generation_attempt_id
-                ),
             )
             raise
         finally:

@@ -103,7 +103,13 @@ export const designerGraphClient = {
   mediaCapabilities: (graphId?: string) =>
     webRequest<DesignerMediaCapabilities>('designer.media.capabilities', graphId ? { graph_id: graphId } : {}),
 
-  startRun: (params: { graphId?: string; runId?: string; nodeId?: string; cascade?: boolean }) =>
+  startRun: (params: {
+    graphId?: string;
+    runId?: string;
+    nodeId?: string;
+    cascade?: boolean;
+    sessionId?: string;
+  }) =>
     webRequest<{
       run: DesignerExecutionRun;
       warning?: string | null;
@@ -113,6 +119,9 @@ export const designerGraphClient = {
       ...(params.runId ? { run_id: params.runId } : {}),
       ...(params.nodeId ? { node_id: params.nodeId } : {}),
       ...(params.cascade ? { cascade: true } : {}),
+      // The graph owns a session; sending it routes run pushes to that session
+      // instead of whichever session the RPC envelope happened to carry.
+      ...(params.sessionId ? { session_id: params.sessionId } : {}),
     }),
 
   getRun: (params: { runId?: string; graphId?: string }) =>

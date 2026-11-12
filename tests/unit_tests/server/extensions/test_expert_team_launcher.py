@@ -747,6 +747,34 @@ async def test_build_preserves_bootstrap_capabilities_after_swarm_enrichment(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("group_policy", [False, True])
+async def test_group_lifecycle_rail_is_an_opt_in_leader_spec(monkeypatch, group_policy):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.agents.swarm import assembly
+    from jiuwenswarm.agents.swarm.group_org_lifecycle import organization_lifecycle_spec, POLICY
+    from openjiuwen.harness.schema.deep_agent_spec import RailSpec
+
+    monkeypatch.setattr(TeamManager, "load_default_team_spec", lambda _: _FakeSpec("default"))
+
+    def _enrich(spec, **_kwargs):
+        spec.agents = {
+            "leader": SimpleNamespace(rails=[RailSpec(type="existing-leader")]),
+            "worker": SimpleNamespace(rails=[RailSpec(type="existing-worker")]),
+        }
+
+    monkeypatch.setattr(assembly, "enrich_team_spec_for_swarm", _enrich)
+    spec = await JiuwenExpertTeamLauncher()._build_enriched_spec(
+        team_id="finance", session_id="group", agent_group_name="finance-group",
+        agent_group_package=SimpleNamespace(capabilities=["finance"]), display_name=None,
+        leader_rails=[organization_lifecycle_spec("finance")] if group_policy else None,
+    )
+    assert [rail.type for rail in spec.agents["leader"].rails] == (
+        ["existing-leader", POLICY] if group_policy else ["existing-leader"]
+    )
+    assert [rail.type for rail in spec.agents["worker"].rails] == ["existing-worker"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("is_expert", [False, True])
 async def test_organization_turn_routes_root_team_to_core_runtime(is_expert: bool) -> None:
     """An installed expert runner executes both ordinary and expert Root Team follow-ups."""

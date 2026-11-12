@@ -518,16 +518,6 @@ def get_panel() -> dict[str, Any]:
         if not payload.get("free_search_bing_enabled"):
             payload["free_search_bing_enabled"] = "false"
         payload.update(_flatten_modes_team(raw))
-        proactive_cfg = raw.get("proactive_recommendation") or {}
-        payload["proactive_recommendation_enabled"] = _bool_text(
-            proactive_cfg.get("enabled"), False
-        )
-        payload["proactive_recommendation_max_recommend_per_day"] = str(
-            proactive_cfg.get("max_recommend_per_day", 10)
-        )
-        payload["proactive_recommendation_max_rounds_per_tick"] = str(
-            proactive_cfg.get("max_rounds_per_tick", 20)
-        )
         models_cfg = raw.get("models") or {}
         payload["enable_free_models"] = _bool_text(
             models_cfg.get("enable_free_models", True), True
@@ -559,11 +549,8 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("team_member_subtasks_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
-        payload.setdefault("proactive_recommendation_enabled", "false")
         payload.setdefault("topic_recommendation_enabled", "false")
         payload.setdefault("prompt_suggestion_enabled", "false")
-        payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
-        payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "true")
     return payload
 

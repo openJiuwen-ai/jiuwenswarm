@@ -37,6 +37,8 @@ _PIPE_PENDING_MESSAGES = 256
 _PIPE_PENDING_BYTES = 2 * MAX_FRAME_BYTES
 _STREAM_PENDING_MESSAGES = 256
 _STREAM_PENDING_BYTES = 2 * MAX_FRAME_BYTES
+# Let an active consumer drain a burst without removing the overload bound.
+_RECEIVE_BACKLOG_TIMEOUT = 0.5
 
 
 def endpoint_address(path: str) -> str:
@@ -135,6 +137,7 @@ class StreamConnection(IpcConnection):
         self._pending: deque[tuple[dict[str, Any], int]] = deque()
         self._pending_bytes = 0
         self._pending_ready = asyncio.Event()
+        self._pending_space = asyncio.Event()
         self._receive_lock = asyncio.Lock()
         self._reader_task: asyncio.Task | None = None
         self._reader_error: Exception | None = None
@@ -183,6 +186,7 @@ class StreamConnection(IpcConnection):
                     if self._pending:
                         result, size = self._pending.popleft()
                         self._pending_bytes -= size
+                        self._pending_space.set()
                         return result
                     if self._reader_error is not None:
                         raise self._reader_error
@@ -204,14 +208,9 @@ class StreamConnection(IpcConnection):
                 size = self._last_frame_bytes
                 if (len(self._pending) >= _STREAM_PENDING_MESSAGES
                         or self._pending_bytes + size > _STREAM_PENDING_BYTES):
-                    logger.warning(
-                        "[IPC] business receive backlog exceeded; transport=stream "
-                        "pending_messages=%s pending_bytes=%s incoming_bytes=%s "
-                        "limit_messages=%s limit_bytes=%s",
-                        len(self._pending), self._pending_bytes, size,
-                        _STREAM_PENDING_MESSAGES, _STREAM_PENDING_BYTES,
-                    )
-                    raise IpcError("ipc business receive backlog exceeded")
+                    await self._wait_for_receive_space(size, message)
+                if self._closed:
+                    return
                 self._pending.append((message, size))
                 self._pending_bytes += size
                 self._pending_ready.set()
@@ -219,6 +218,25 @@ class StreamConnection(IpcConnection):
             self._reader_error = exc
         finally:
             self._pending_ready.set()
+
+    async def _wait_for_receive_space(self, size: int, message: dict[str, Any]) -> None:
+        try:
+            async with asyncio.timeout(_RECEIVE_BACKLOG_TIMEOUT):
+                while not self._closed and (
+                    len(self._pending) >= _STREAM_PENDING_MESSAGES
+                    or self._pending_bytes + size > _STREAM_PENDING_BYTES
+                ):
+                    self._pending_space.clear()
+                    await self._pending_space.wait()
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[IPC] business receive backlog exceeded; transport=stream "
+                "pending_messages=%s pending_bytes=%s incoming_bytes=%s incoming_kind=%s "
+                "limit_messages=%s limit_bytes=%s",
+                len(self._pending), self._pending_bytes, size, message.get("kind"),
+                _STREAM_PENDING_MESSAGES, _STREAM_PENDING_BYTES,
+            )
+            raise IpcError("ipc business receive backlog exceeded") from None
 
     def diagnostics(self) -> dict[str, Any]:
         snapshot = super().diagnostics()
@@ -251,6 +269,7 @@ class StreamConnection(IpcConnection):
         self._pending.clear()
         self._pending_bytes = 0
         self._pending_ready.set()
+        self._pending_space.set()
         self._writer.close()
         task = self._reader_task
         if task is not None:
@@ -285,6 +304,7 @@ class PipeConnection(IpcConnection):
         )
         self._receive_lock = asyncio.Lock()
         self._receive_mutex = threading.Lock()
+        self._receive_space = threading.Condition(self._receive_mutex)
         self._pending: deque[tuple[dict[str, Any], int]] = deque()
         self._pending_bytes = 0
         self._reader_started = False
@@ -344,11 +364,24 @@ class PipeConnection(IpcConnection):
                 if responder is not None and message.get("kind") == KIND_HEARTBEAT:
                     responder(message)
                     continue
-                with self._receive_mutex:
+                with self._receive_space:
+                    available = self._receive_space.wait_for(
+                        lambda: self._closed or (
+                            len(self._pending) < _PIPE_PENDING_MESSAGES
+                            and self._pending_bytes + len(frame) <= _PIPE_PENDING_BYTES
+                        ),
+                        timeout=_RECEIVE_BACKLOG_TIMEOUT,
+                    )
                     if self._closed:
                         return
-                    if (len(self._pending) >= _PIPE_PENDING_MESSAGES
-                            or self._pending_bytes + len(frame) > _PIPE_PENDING_BYTES):
+                    if not available:
+                        logger.warning(
+                            "[IPC] business receive backlog exceeded; transport=pipe "
+                            "pending_messages=%s pending_bytes=%s incoming_bytes=%s incoming_kind=%s "
+                            "limit_messages=%s limit_bytes=%s",
+                            len(self._pending), self._pending_bytes, len(frame), message.get("kind"),
+                            _PIPE_PENDING_MESSAGES, _PIPE_PENDING_BYTES,
+                        )
                         raise IpcError("ipc business receive backlog exceeded")
                     self._pending.append((message, len(frame)))
                     self._pending_bytes += len(frame)
@@ -385,12 +418,13 @@ class PipeConnection(IpcConnection):
             self._reader_started = True
             self._reader_pool.submit(self._read_loop)
         while True:
-            with self._receive_mutex:
+            with self._receive_space:
                 if self._closed:
                     raise ConnectionError("ipc connection is closed")
                 if self._pending:
                     message, size = self._pending.popleft()
                     self._pending_bytes -= size
+                    self._receive_space.notify()
                     return message
                 if self._reader_error is not None:
                     raise self._reader_error
@@ -446,9 +480,10 @@ class PipeConnection(IpcConnection):
     async def close(self) -> None:
         if self._close_task is None:
             self._closed = True
-            with self._receive_mutex:
+            with self._receive_space:
                 self._pending.clear()
                 self._pending_bytes = 0
+                self._receive_space.notify_all()
             self._notify_reader()
             self._close_task = asyncio.create_task(self._close_native_pipe())
         # A cancelled caller must not abandon the native handle. Retrying close

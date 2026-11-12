@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.common.runtime_platform import is_harmony_runtime
+
 DEFAULT_CUA_AGENT_ENABLED = False
 
 
@@ -18,33 +20,45 @@ def is_cua_agent_enabled(subagent_config: Any) -> bool:
     return DEFAULT_CUA_AGENT_ENABLED if value is None else value is True
 
 
-def is_cua_backend_available() -> bool:
-    """Check installation prerequisites without loading or starting a desktop backend.
+def _is_harmony_desktop() -> bool:
+    return (
+        os.getenv("JIUWENSWARM_RUNTIME_PLATFORM", "").strip().lower() == "harmony"
+        or is_harmony_runtime()
+    )
 
-    Availability is independent of user preferences and OS permission grants.
-    Windows keeps Core's PyAutoGUI/Pillow single-step backend, including in
-    desktop installers; its bundled native runtime serves cua_repl. macOS
-    installers use the external native backend for cua_repl. Unknown or incomplete
-    installs hide the setting without changing its persisted value.
-    """
+
+def is_cua_repl_available() -> bool:
+    """Detect the SDK or bundled driver without preparing the native backend."""
     try:
-        if os.getenv("JIUWENSWARM_RUNTIME_PLATFORM", "").strip().lower() == "harmony":
+        if _is_harmony_desktop() or sys.platform not in ("darwin", "win32", "linux"):
             return False
-        if getattr(sys, "frozen", False) and sys.platform in ("darwin", "win32"):
-            bundle = getattr(sys, "_MEIPASS", None)
-            if not bundle:
-                return False
-            root = Path(bundle) / "computer_use/_resources/os_adapter"
-            if sys.platform == "darwin":
-                driver = root / "macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver"
-                version = platform.mac_ver()[0].split(".")[0]
-                return int(version) >= 14 and driver.is_file() and os.access(driver, os.X_OK)
-            directory = root / "windows/.build"
-            files = (
-                "computer-use-driver.exe", "computer-use-capture.exe", "Interop.NativeUIA.dll",
-            )
-            if not all((directory / name).is_file() for name in files):
-                return False
+        if sys.platform == "darwin" and int(platform.mac_ver()[0].split(".")[0]) < 14:
+            return False
+        if any(importlib.util.find_spec(name) is None for name in ("computer_use", "computer_use_mcp")):
+            return False
+        if not getattr(sys, "frozen", False):
+            return importlib.util.find_spec("computer_use_native_tools") is not None
+        bundle = getattr(sys, "_MEIPASS", None)
+        if not bundle or sys.platform == "linux":
+            return False
+        root = Path(bundle) / "computer_use/_resources/os_adapter"
+        if sys.platform == "darwin":
+            driver = root / "macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver"
+            return driver.is_file() and os.access(driver, os.X_OK)
+        directory = root / "windows/.build"
+        files = (
+            "computer-use-driver.exe", "computer-use-capture.exe", "Interop.NativeUIA.dll",
+        )
+        return all((directory / name).is_file() for name in files)
+    except (ImportError, OSError, ValueError):
+        return False
+
+
+def is_legacy_cua_available() -> bool:
+    """Check the prerequisites of agent-core's single-step desktop tools."""
+    try:
+        if _is_harmony_desktop():
+            return False
         modules = ("pyautogui", "PIL")
         if sys.platform.startswith("linux"):
             if not os.getenv("DISPLAY"):
@@ -55,3 +69,8 @@ def is_cua_backend_available() -> bool:
         return all(importlib.util.find_spec(name) is not None for name in modules)
     except (ImportError, OSError, ValueError):
         return False
+
+
+def is_cua_backend_available() -> bool:
+    """Report installation capability independently of permissions and preferences."""
+    return is_cua_repl_available() or is_legacy_cua_available()

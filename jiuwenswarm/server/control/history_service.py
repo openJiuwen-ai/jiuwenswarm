@@ -20,7 +20,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
 )
 from jiuwenswarm.server.wire_truncate import (
     _HISTORY_PAGE_SIZE,
-    history_assistant_event_is_restorable,
+    _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
     _sanitize_history_record_for_wire,
     split_history_record_for_stream,
 )
@@ -55,7 +55,7 @@ def _is_restorable_history_record(record: Any) -> bool:
     event_type = record.get("event_type")
     if not event_type:
         return has_content
-    return history_assistant_event_is_restorable(record)
+    return event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
 
 
 def load_history_page(

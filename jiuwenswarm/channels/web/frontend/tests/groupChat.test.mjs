@@ -272,8 +272,11 @@ test('file rename and delete call the group file APIs with the attachment path',
 test('confirmed file changes update loaded messages and keep untouched records identical', () => {
   const kept = { id: 'kept', attachments: [{ name: 'b.md', path: '/b.md' }] };
   const records = [{ id: 'one', attachments: [{ name: 'a.md', path: '/a.md' }, { name: 'b.md', path: '/b.md' }] }, kept];
-  const renamed = updateAttachments(records, '/a.md', 'final.md');
+  records[0].attachments[0].download_url = '/old-download';
+  const renamed = updateAttachments(records, '/a.md', 'final.md', '/final.md');
   assert.deepEqual(renamed[0].attachments.map((file) => file.name), ['final.md', 'b.md']);
+  assert.equal(renamed[0].attachments[0].path, '/final.md');
+  assert.equal(renamed[0].attachments[0].download_url, undefined);
   assert.equal(renamed[1], kept);
   const removed = updateAttachments(records, '/b.md', null);
   assert.deepEqual(removed.map((record) => record.attachments.length), [1, 0]);
@@ -353,8 +356,9 @@ test('no child data does not create fake subtasks or show raw task text', () => 
   const html = renderToStaticMarkup(createElement(ExecutionCard, { execution: {
     ...execution('one', 1), task: '简短标题。PRIVATE_TASK_CONTENT', tasks: {},
   } }));
-  assert.match(html, /groupChat.noSubtasks/);
-  assert.doesNotMatch(html, /PRIVATE_TASK_CONTENT|data-testid="group-chat-subtask"/);
+  assert.match(html, /data-testid="group-chat-execution-summary"/);
+  assert.match(html, /data-testid="group-chat-execution-task" title="简短标题">简短标题</);
+  assert.doesNotMatch(html, /PRIVATE_TASK_CONTENT|data-testid="group-chat-subtask"|groupChat.noSubtasks/);
 });
 
 
@@ -390,18 +394,41 @@ test('single expert cards show execution status without subtask statistics', () 
   }
 });
 
-test('team and organization cards preserve subtask statistics and empty state', () => {
-  for (const execution_kind of ['team', 'organization']) {
-    const record = { ...execution('team', 1), execution_kind };
-    const empty = renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
-    assert.match(empty, /group-chat-task-counts/);
-    assert.match(empty, /groupChat.noSubtasks/);
-    const populated = renderToStaticMarkup(createElement(ExecutionCard, {
-      execution: { ...record, tasks: { research: 'completed' }, task_details: { research: { title: 'Research' } } },
-    }));
-    assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
-    assert.doesNotMatch(populated, /groupChat.noSubtasks/);
+test('a team without subtasks uses the single-row layout until its first subtask arrives', () => {
+  const brief = '杭州有哪些合适年轻人玩的地方。这是一个简单问答场景，不需要完整旅行规划链路';
+  const render = (status, tasks = {}) => renderToStaticMarkup(createElement(ExecutionCard, {
+    execution: { ...execution('team', 1, status), execution_kind: 'team', display_name: '旅行规划专家团',
+      task: brief, tasks, task_details: { research: { title: 'Research' } } },
+    result: status === 'completed' ? { message_id: 'final' } : undefined,
+  }));
+  for (const status of ['queued', 'running', 'completed', 'failed', 'cancelled']) {
+    const empty = render(status);
+    assert.match(empty, /data-testid="group-chat-execution-summary"/);
+    assert.match(empty, /旅行规划专家团/);
+    assert.match(empty, new RegExp(`data-testid="group-chat-execution-status" data-variant="${status}"`));
+    assert.doesNotMatch(empty, /group-chat-task-counts|group-chat-no-subtasks|groupChat.noSubtasks|groupChat.generatingTasks/);
+    // The delegation brief after the first sentence stays hidden, including on hover.
+    assert.doesNotMatch(empty, /简单问答场景/);
   }
+  assert.match(render('completed'), /href="#group-chat-message-final"/);
+  const populated = render('running', { research: 'in_progress' });
+  assert.match(populated, /group-chat-task-counts/);
+  assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
+  assert.doesNotMatch(populated, /group-chat-execution-summary|groupChat.noSubtasks/);
+});
+
+test('organization cards keep subtask statistics and their empty state', () => {
+  const record = { ...execution('org', 1), execution_kind: 'organization' };
+  const empty = renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
+  assert.match(empty, /group-chat-task-counts/);
+  assert.match(empty, /groupChat.noSubtasks/);
+  assert.match(empty, /groupChat.generatingTasks/);
+  assert.doesNotMatch(empty, /group-chat-execution-summary/);
+  const populated = renderToStaticMarkup(createElement(ExecutionCard, {
+    execution: { ...record, tasks: { research: 'completed' }, task_details: { research: { title: 'Research' } } },
+  }));
+  assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
+  assert.doesNotMatch(populated, /groupChat.noSubtasks/);
 });
 
 
@@ -418,16 +445,17 @@ test('pasted mentions resolve unique experts and teams without a picker selectio
 });
 
 
-test('new team cards show task generation and expose the full parent task name on hover', () => {
+test('new team cards expose the full parent task name on hover while waiting for subtasks', () => {
   const title = '按照已冻结的需求开发完整的房屋搭建装修小游戏';
   const render = (status, tasks = {}) => renderToStaticMarkup(createElement(ExecutionCard, {
     execution: { ...execution('new-team', 1, status), execution_kind: 'team', title, tasks },
   }));
   const initial = render('running');
-  assert.match(initial, /groupChat.generatingTasks/);
   assert.ok(initial.includes(`data-testid="group-chat-execution-title" title="${title}"`));
-  assert.doesNotMatch(render('completed'), /groupChat.generatingTasks/);
-  assert.doesNotMatch(render('failed'), /groupChat.generatingTasks/);
+  assert.match(initial, /data-testid="group-chat-execution-status" data-variant="running"/);
+  for (const status of ['running', 'completed', 'failed']) {
+    assert.doesNotMatch(render(status), /groupChat.generatingTasks/);
+  }
   assert.doesNotMatch(render('running', { child: 'in_progress' }), /groupChat.generatingTasks/);
 });
 
@@ -472,17 +500,31 @@ test('pending mention bubbles recover from unfinished executions after a refresh
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice', 'bob'])], [run('e1', 'alice', 2, 'running')], members, fresh,
   )), { m1: ['alice:e1'] });
-  // A finished execution or a member reply clears it; an old ask with no execution never reappears.
+  // A finished execution clears it; an old ask with no execution never reappears.
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice'])], [run('e1', 'alice', 2, 'completed')], members, fresh,
   )), {});
+  // The bubble follows the execution: a message the member posts while it runs does not clear it.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }],
+    [run('e1', 'alice', 2, 'running')], members, new Set(['client-m1']),
+  )), { m1: ['alice:e1'] });
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }],
     [run('e1', 'alice', 2, 'running')], members, fresh,
+  )), { m1: ['alice:e1'] });
+  // Without an execution the member answered directly, so its reply clears the bubble.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }], [], members, new Set(['client-m1']),
   )), {});
   // One execution belongs only to the latest ask before it, so older asks do not duplicate the bubble.
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice']), ask('m2', 5000, ['alice'])], [run('e1', 'alice', 6, 'running')], members, fresh,
+  )), { m2: ['alice:e1'] });
+  // A newer execution must not revive an answered ask sent from the same page.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }, ask('m2', 5000, ['alice'])],
+    [run('e1', 'alice', 6, 'running')], members, new Set(['client-m1', 'client-m2']),
   )), { m2: ['alice:e1'] });
   // A message sent from this page waits even before its execution exists.
   assert.deepEqual(waiting(pendingMentionReplies(

@@ -126,6 +126,9 @@ export function validateSettingsI18n(definition: SettingsPageDefinition, hasKey:
       if (item.component === 'select' && typeof item.options !== 'function') {
         keys.push(...item.options.flatMap((option) => option.labelKey ? [option.labelKey] : []));
       }
+      if (item.component === 'switch' && item.availableWhen) {
+        keys.push(settingItemI18nKey(item, 'unavailableDescription'));
+      }
     }
   }
   for (const key of keys) {

@@ -71,7 +71,7 @@ async def test_cancelled_caller_keeps_shared_recovery_running():
 
 
 @pytest.mark.asyncio
-async def test_background_recovery_candidates_reach_first_successful_submission(monkeypatch):
+async def test_background_recovery_does_not_offer_unowned_candidates(monkeypatch):
     service, flow = SwarmSymphonyService(), Flow()
     runtime = service._runtime = runtime_for(flow)
     config = SimpleNamespace(enabled=True, evolution=SimpleNamespace(flow=SimpleNamespace(enabled=True)))
@@ -87,7 +87,7 @@ async def test_background_recovery_candidates_reach_first_successful_submission(
     flow.release.set()
     await asyncio.gather(recovery, submission)
     assert flow.calls == 1
-    notify.assert_awaited_once_with(flow.candidate, session_id="original-session", channel_id="web")
+    notify.assert_not_awaited()
     assert service._recovered_candidates == ()
     await service.close()
 

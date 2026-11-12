@@ -10,7 +10,6 @@ export const JIUWENMATE_PUBLIC_PAGES: readonly JiuwenMatePublicNavItem[] = [
   { nav: 'personalContext', labelKey: 'jiuwenmate.nav.assets' },
   { nav: 'skills', labelKey: 'jiuwenmate.nav.skills' },
   { nav: 'connectorMarket', labelKey: 'jiuwenmate.nav.extensions' },
-  { nav: 'personalContext', labelKey: 'jiuwenmate.nav.knowledge' },
   { nav: 'settings', labelKey: 'jiuwenmate.nav.settings' },
 ];
 

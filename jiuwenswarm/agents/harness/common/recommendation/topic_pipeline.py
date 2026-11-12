@@ -29,6 +29,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_audit import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
     ArkBackgroundConfig,
     build_ark_stage_invoker,
+    invoke_stage_with_shape_repair,
     persist_provider_invocation,
     provider_validation,
     record_provider_validation,
@@ -59,12 +60,15 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_prepare import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     COMPONENT_INVOCATION_RECEIPT_VERSION,
+    DEFAULT_TOPIC_WORK_MODE,
+    TOPIC_WORK_MODES,
     GLOBAL_NEW_CHAT_SCOPE,
     GLOBAL_PROJECT_BUCKETS,
     GROUNDING_DECISION_RECEIPT_VERSION,
     GROUNDING_EVIDENCE_RECEIPT_VERSION,
     HOT_LIST_ENTRY_RECEIPT_VERSION,
     HOT_LIST_SOURCE_KIND,
+    LIST_SEARCH_VERSION,
     NEWS_ONLY_SUCCESSOR,
     PAYLOAD_VERSION,
     POLICY_ID,
@@ -79,9 +83,12 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     build_serving_compatibility_key,
     build_terminal_card,
     card_copy_rejection_reason,
+    card_is_news,
+    is_cold_start_card,
     load_exact_global_pool,
     memory_evidence_id,
     news_lead_card_id,
+    normalize_topic_work_mode,
     project_id_for_scope,
     provider_receipt_applies_to_card,
     retainable_pool,
@@ -107,11 +114,13 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_retrieval import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
     OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID,
+    UNCONFIGURED_SEARCH_PROVIDER_ID,
     OpenJiuwenNativeSearchContractError,
     OpenJiuwenNativeSearchProviderError,
     OpenJiuwenNativeSearchResult,
     build_topic_search_provider,
     selected_topic_search_provider_id,
+    topic_web_search_engines_enabled,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_selection import (
     DIVERSITY_COMPONENT_ID,
@@ -121,8 +130,9 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_selection import (
     DiversityScoringResult,
     ListSearchConstraints,
     SelectionCandidate,
+    coerce_diversity_scorer_payload,
+    coerce_utility_scorer_payload,
     hybrid_list_search,
-    mine_hierarchical_pairs,
     news_only_search_result,
     score_diversity,
     score_interaction_utility,
@@ -182,21 +192,21 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     get_all_sessions_metadata,
 )
 
-SESSION_SUMMARY_CONFIG_VERSION = "topic-starter-v6-session-summary-api-v9"
+SESSION_SUMMARY_CONFIG_VERSION = "topic-starter-v6-session-summary-api-v10"
 RID_ABSTENTION_RECEIPT_VERSION = "topic-starter-v6-rid-abstention-v1"
 RID_DECISION_EVENT_TYPE = "rid_decision"
 _RID_THRESHOLD_VERSION = "icebreaker-api-proxy-threshold-v1"
 # The fallback reason of an RID receipt whose round left it nothing to judge.
 _RID_NOTHING_TO_JUDGE = "no_rid_input"
-GLOBAL_INTEREST_PROMPT_VERSION = "topic-starter-v6-global-interest-v25"
+GLOBAL_INTEREST_PROMPT_VERSION = "topic-starter-v6-global-interest-v26"
 PROJECT_CONTINUATION_PROMPT_VERSION = "topic-starter-v6-project-continuation-v15"
-MEMORY_INCREMENTAL_PROMPT_VERSION = "topic-starter-v6-memory-incremental-v7"
+MEMORY_INCREMENTAL_PROMPT_VERSION = "topic-starter-v6-memory-incremental-v10"
 RECENT_PLANNER_PROMPT_VERSION = "topic-starter-v6-recent-planner-v5"
 RECENT_FINALIZER_PROMPT_VERSION = "topic-starter-v6-recent-finalizer-v2"
 PROJECT_DOMAIN_PROMPT_VERSION = "topic-starter-v6-project-domain-v3"
-HOT_NEWS_MATCHER_PROMPT_VERSION = "topic-starter-v6-hot-news-matcher-v5"
+HOT_NEWS_MATCHER_PROMPT_VERSION = "topic-starter-v6-hot-news-matcher-v6"
 BEHAVIOR_MAPPING_PROMPT_VERSION = "topic-starter-v6-behavior-mapping-v2"
-MEMORY_INIT_PROMPT_VERSION = "topic-starter-v6-memory-init-v1"
+MEMORY_INIT_PROMPT_VERSION = "topic-starter-v6-memory-init-v3"
 UTILITY_CONFIG_VERSION = "topic-starter-v6-utility-api-v41"
 DIVERSITY_CONFIG_VERSION = "topic-starter-v6-diversity-api-v12"
 # Diversity answers each pair in turn: smaller batches sent together finish sooner.
@@ -383,7 +393,7 @@ StageInvoker = Callable[[str, str, str], Awaitable[Any]]
 StageInvokerFactory = Callable[[ArkBackgroundConfig], StageInvoker]
 WebSearchFn = Callable[[str, int, int], Awaitable[Any]]
 WebSearchProviderFactory = Callable[[ArkBackgroundConfig], WebSearchFn]
-ContextLoader = Callable[[str], "V6ContextSnapshot"]
+ContextLoader = Callable[[str, str], "V6ContextSnapshot"]
 RecordsLoader = Callable[[], dict[str, list[dict[str, Any]]]]
 
 
@@ -493,47 +503,40 @@ _V6_MEMORY_INIT_SYSTEM_PROMPT = (
     "你是 Topic Starter v6 的 RecGPT-v3 长期画像压缩器。只输出 JSON "
     "{\"units\":[...]}。每个 unit 必须包含且仅包含 behavior_pattern、"
     "preference_summary、representative_behavior_indices、preferred_entities、"
-    "temporal_activity。behavior_pattern 必须逐字复制该 unit 所引用行为已有的同一个"
-    " tag，禁止添加 taxonomy:: 前缀、层级后缀或自造复合标签；同一 unit 只能引用"
-    " tag 相同的行为。representative_behavior_indices 只能使用输入 index，unit 内"
-    "不得重复、unit 之间不得重叠。只压缩用户自有证据，不生成 timestamp。"
+    "temporal_activity。"
+    "behavior_pattern 不是中文兴趣名：必须逐字等于该 unit 所引用行为的同一个输入 "
+    "tag（taxonomy id 或 provisional:<slug>），禁止 taxonomy:: 前缀、层级后缀、"
+    "中文名或自造复合标签。同一 unit 只能引用 tag 相同的行为。"
+    "representative_behavior_indices 只能使用输入 index，unit 内不得重复、"
+    "unit 之间不得重叠。只压缩用户自有证据，不生成 timestamp。"
     "单次今天/明天的安排只描述当次计划，不能归纳成长期习惯；代问不等于"
     "本人兴趣。明确区分稳定偏好、临时目标、已完成事项与暂时暂停。"
+    "对照（非本轮事实）：行为 1、2 的 tag 都是 tech-ai-ml、内容谈 AI 测试 → "
+    "unit.behavior_pattern 必须是 \"tech-ai-ml\"，不能写「人工智能」或「AI测试」。"
 )
 _V6_MEMORY_INCREMENTAL_SYSTEM_PROMPT = (
-    "你是 Topic Starter v6 的 RecGPT-v3 长期画像增量整理器。只输出 JSON "
+    "Topic Starter v6 长期画像增量整理。快速决定，只输出 JSON "
     "{\"updated_units\":[...],\"new_units\":[...],"
-    "\"unmatched_behavior_indices\":[...]}。updated_units 必须逐个覆盖输入的每个"
-    " unit_id 且仅一次：无关时只输出 {unit_id,operation:\"retain\"}；相关时输出"
-    " {unit_id,operation:\"update\",core}。core 与 new_units 每项必须包含且仅包含"
-    " behavior_pattern、preference_summary、representative_behavior_indices、"
-    "preferred_entities、temporal_activity；behavior_pattern 必须逐字复制输入已有"
-    " tag，禁止 taxonomy:: 前缀、层级后缀或复合标签。新行为 index 只能被一个"
-    " update、新 unit 或 unmatched 使用一次；不得删除旧 unit 的已有支撑 index，"
-    "不得生成 timestamp。memory_delta 的每个 behavior_index 必须恰好有一个归属："
-    "被 update.core 或 new_units 的 representative_behavior_indices 引用，或列入"
-    " unmatched_behavior_indices。retain 不消费任何新行为；不能全部 retain 后"
-    "省略 delta。无法有依据地综合的行为也必须保留在 unmatched 中，不能静默丢弃。"
-    "update 应根据旧单元和相关新增原文更新当前目标、纠正和任务状态；"
-    "单次安排与暂时限制不能改写成永久偏好，已完成事项不能仍写成待办。"
-    "对已有单元的暂停、恢复、纠正和完成，更新那个单元，不另建新单元。"
-    "对照例（仅演示判断，不是本轮用户事实）：旧单元 A“学国际象棋残局”支撑 [1,2]，"
-    "旧单元 B“学日语发音”支撑 [3]；delta 中 4 是用户说“这两周没空下棋，残局先放一放”，"
-    "5 是助手举的一个残局例子，6 是用户说“想开始学变魔术”，7 是用户问“打印机卡纸怎么办”。"
-    "A 用 4 更新为“仍想学残局，近两周暂停”，支撑 [1,2,4]；B retain；6 与 A、B 都无关，"
-    "凭这一条新建单元，只记“想开始学变魔术”，支撑 [6]；7 只是一次提问、不是目标，"
-    "与 5 一起列入 unmatched。为暂停另建一个单元、把 A 改写成不再感兴趣、"
-    "因为只说了一次就不更新 A、把 6 并进 A、B，或为 7 新建单元，都是错的。"
-    "只有用户自己的表达进入 core：助手的建议、事实解释和演示样例既不是用户偏好，"
-    "也不是用户的自然行为，助手讲过不等于用户已掌握或认可；这类行为留在 unmatched。"
-    "例如旧 unit 的支撑为 [1,2]，delta 为 [3,4]：若用 3 更新该 unit，"
-    "其完整支撑必须是 [1,2,3]；若 4 未被其他单元使用，unmatched 必须是 [4]。"
-    "不能返回支撑 [3]，也不能同时将 3 放入 unmatched。更新后的摘要应保留"
-    "仍然成立的旧事实，并明确区分长期偏好和最新任务状态。new_units 的"
-    "每个新单元只能引用同一 tag 的 delta，该 tag 必须与 behavior_pattern 完全"
-    "一致；不同 tag 的行为不要合并为一个新单元。与已有单元无关的明确目标或用户纠正可以凭"
-    "单条原文建立新单元，只记录其明确内容；其他单条行为"
-    "不足以建立新模式，应留在 unmatched，或用于有语义关联的旧单元更新。"
+    "\"unmatched_behavior_indices\":[...]}。"
+    "updated_units 覆盖每个旧 unit_id 恰好一次：无关 {unit_id,operation:\"retain\"}；"
+    "相关 {unit_id,operation:\"update\",core}。core/new_units 仅含 "
+    "behavior_pattern、preference_summary、representative_behavior_indices、"
+    "preferred_entities、temporal_activity。"
+    "behavior_pattern 不是中文兴趣名：必须逐字等于所引用行为的同一个输入 tag，"
+    "禁止 taxonomy::/后缀/中文名/复合标签；update 时优先沿用该 unit 原有 "
+    "behavior_pattern。"
+    "每个新 index 只能归属一个 update、新 unit 或 unmatched；保留旧支撑 index；"
+    "不生成 timestamp。若本轮 delta 与某 unit 无关，对该 unit 写 retain，"
+    "不要输出空 update。"
+    "update 用相关原文刷新目标/纠正/任务状态；单次安排与暂时限制不是永久偏好；"
+    "已完成不作待办。暂停/恢复/纠正/完成更新原单元，不另建。只有用户原文进 core；"
+    "助手建议/解释/样例进 unmatched。update 支撑=旧支撑∪新引用 index。"
+    "new_units 仅用于同 tag 的新兴趣；其他零散行为进 unmatched_behavior_indices。"
+    "对照（非本轮事实）：旧 unit A pattern=tech-ai-ml 支撑 [1,2]；delta 3=用户"
+    "「这两周先不练」、4=助手举例、5=用户明确「想学变魔术」(另一 tag)、6=零散提问。"
+    "正确：A 用 3 update 且 pattern 仍为 tech-ai-ml、支撑 [1,2,3]；5 进 new_units"
+    "且 pattern=该输入 tag；4 与 6 进 unmatched。错误：pattern 写「人工智能」、"
+    "空 update 不带 delta、为助手举例建 unit。"
 )
 _V6_TAG_SCHEMA = {
     "anyOf": [
@@ -872,13 +875,29 @@ def _v6_system_prompt(stage: str, supplied_prompt: str) -> str:
 
 
 def _v6_max_tokens(stage: str) -> int | None:
-    """Cap the one answer that grows with its input, a scope's summaries, above provider defaults.
+    """Cap stages whose answers grow with input or batch size above provider defaults.
 
-    Doubao's default 4,096 answer tokens cut a global summary off; every other
-    stage answers well within any default and keeps it.
+    Doubao's default 4,096 answer tokens cut summaries and multi-candidate scorer
+    batches off; truncated JSON then fails closed into cold corpus.
     """
 
-    return 16384 if stage == "v6_session_summarizer" else None
+    if stage == "v6_session_summarizer":
+        return 16384
+    if stage in {
+        "v6_utility_scorer",
+        "v6_diversity_scorer",
+        "v6_global_interest_generator",
+        "v6_recent_candidate_generator",
+        "v6_project_continuation_generator",
+        "v6_project_domain_candidate_generator",
+        "v6_recent_finalizer",
+        "behavior_map_batch",
+        "memory_init",
+        "memory_incremental",
+        "rid_interest_distiller",
+    }:
+        return 8192
+    return None
 
 
 _V6_PROMPT_VERSIONS = {
@@ -1037,10 +1056,12 @@ def build_v6_ark_stage_invoker(
     client_factory: Callable[..., Any] | None = None,
     receipt_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> StageInvoker:
-    """Use strict JSON Schema and require immutable provider metadata."""
+    """Prompt-json stage invoker with lineage receipts and provider metadata checks."""
 
     kwargs: dict[str, Any] = {
         "receipt_sink": receipt_sink,
+        # Schema hook kept for call-site compatibility; invoker does not send
+        # API response_format (general models / Flash / DeepSeek).
         "response_schema_for_stage": _v6_response_schema,
         "require_response_metadata": True,
         "max_tokens_for_stage": _v6_max_tokens,
@@ -1573,57 +1594,24 @@ def default_v6_source_classifier(url: str, _content: str) -> SourceAssessment:
 
 
 _SESSION_SUMMARY_PROMPT = """\
-Summarize every supplied completed session once. Echo session_id exactly and
-return only {"summaries":[{"session_id":"...","summary":"..."}]}. For a
-global request, preserve the specific interest subject expressed in the supplied
-messages and their language, but omit project names, paths, task names, locators, and artifact
-identifiers. For a project request, summarize only supplied messages. Do not
-replace a specific topic with a broad category and do not add or drop sessions.
-Preserve these distinctions in a concise summary: USER interests and lasting
-constraints; ASSISTANT-covered explanations or methods; remaining user questions;
-unknown outcomes. When the user asks to pause, stop or narrow what gets
-recommended, keep what is held back as the user scoped it: topics about a
-subject stay topics about that subject, not a shortened "subject recommendations"
-that reads as suggesting items of that kind. Example, not facts about this user:
-"吉他的话题先停到下个月" -> "用户要求吉他相关的话题停到下个月再推荐", not "用户暂停吉他推荐到下个月".
-assistant_answer is the visible response to that request, not
-evidence of the user's preferences, agreement, understanding or completed work. When the user
-says they still do not understand something or names what they find hard, keep
-that difficulty in the user's own words and say whether it is resolved is unknown,
-since explaining it again does not resolve it, unless a later user message says so.
-Mark unknown only what the user left open this way or an answer that is missing; do
-not add unknowns about satisfaction or whether a suggestion was taken. An assistant
-promise about what will happen next, such as resuming on its own, is the assistant's
-statement, not a choice the user made. Example, not facts about this user: "转调之后我就数不清拍子了"
-answered by counting one passage aloud -> "用户说转调后数不清拍子；助手带着数了一段，能否数清未知",
-not "助手讲解了转调后的数拍方法，用户已掌握".
-A null answer means unknown coverage: say the question was asked and its answer
-is missing; do not call the question still open and do not add a follow-up.
-Write each summary in the language of that session's user messages.
-Example, not facts about this user: the user asked "国际象棋快棋里加秒和延时有什么不同？"
-and assistant_answer is null -> "用户问国际象棋快棋里加秒和延时的区别；回答缺失，覆盖未知。"
-Not "…尚未得到回答，问题仍然存在", not "…后续可补充对比", and not an English summary.
-Keep the concrete subject and the substance of what was explained so later
-questions can offer something new. For assisted input, describe discussion
-coverage only; do not infer a new user interest.
+Summarize each supplied completed session once. Decide quickly; JSON only:
+{"summaries":[{"session_id":"...","summary":"..."}]}. Echo session_id exactly;
+do not add or drop sessions.
+
+Global: keep the specific subject and language of the user messages; omit
+project names, paths, task names, locators and artifact ids. Project: only the
+supplied messages. Keep concise distinctions: USER interests and lasting
+constraints; ASSISTANT explanations; remaining user questions; unknown outcomes.
+Pause/stop/narrow recommendation: preserve the user's scoped subject wording.
+assistant_answer is not proof of preference, agreement or mastery. Unresolved
+user difficulty stays in their words with resolution unknown. Null answer =
+question asked, answer missing — do not call it still open or invent follow-ups.
+Assistant promises about next steps are not user choices. Assisted input:
+coverage only, no new inferred interest. Write each summary in the session's
+user language; keep the concrete subject so later cards can ask something new.
 """
-_PA_PROMPT = """\
-Return zero to eight highest-compatible fixed starter hits for the supplied
-ranked interests. Use at most one hit for each unique starter ID and do not
-force a full interest-by-category matrix. When viable, cover both
-adjacent_explanation and broad_timely_practical across the returned set.
-Match the user's current goal and explicit constraints in each interest summary.
-Reject a starter that requires an activity the user has paused or ruled out now;
-historical topical similarity alone is insufficient. Read discussion_coverage:
-choose a question that adds an explanation, comparison or useful application beyond
-what was already answered. An assistant suggestion does not establish an interest.
-For example, after a camera exposure explanation, a relevant question about motion
-blur may add a new practical distinction; a second exposure definition does not.
-Select only suitable supplied IDs; return fewer hits when the corpus lacks one.
-Return only
-{"hits":[{"starter_id":"...","interest_summary_id":"..."}]}. Use input IDs
-only and do not return or rewrite starter text.
-"""
+# Legacy PA fixed-retriever prompt removed: generate never called that stage.
+# Receipt / lineage identities for older pools remain in topic_product.
 _RECENT_PROMPT = """\
 Plan zero to four searches for recent progress related to the supplied interests,
 with at most one candidate per interest. Return fewer or no candidates when
@@ -1811,37 +1799,20 @@ async def _invoke_v6_ark_evidence_selector(
 
 
 _HOT_NEWS_MATCHER_PROMPT = """\
-为全局新建页的资讯卡，从 hot_list 里选恰好一条热搜。
+为全局新建页从 hot_list 选恰好一条热搜。快速决定，只返回 JSON。
 
-按顺序判断：
-1. 先核对 interests 中的当前意愿和范围。用户明确暂停、停止推荐或要求条件满足后再推荐的主题，
-   在输入没有恢复依据时，与该主题相关的热搜在 matched 和 closest 中都不能选。
-   长期兴趣仍在或 interest_summary_id 为 null，都不解除这项限制。
-   只暂停活动但明确允许讨论时，按允许范围选择；同一来源摘要中的其他兴趣仍可选择。
-   例如「买邮票先停，发行资讯可以聊」允许选择新邮发行热搜；「集邮话题先不推」则不选它，
-   不得改标 closest 来绕过暂停，应从其余主题中选择。
-2. interests 是用户画像里的兴趣。逐条读 hot_list 的 title（有 summary 时一并读），
-   找讲的正是某条兴趣所关心的具体事物的热搜：有这条兴趣的用户点开它，读到的是与自己关心的事直接相关的新情况。
-   只是字面沾边、同属一个大类，或要绕几步才联系得上的，都不算。
-3. 有这样的热搜时，选其中与兴趣联系最直接的一条：match 为 matched，interest_summary_id 写那条兴趣。
-4. 一条都没有时，选与这些兴趣关系最近的一条：match 为 closest，interest_summary_id 为 null。
-   hot_list 按热度排列，排在前面不等于更相关；热度不是选择理由。
-5. news_query 用来在新闻搜索里找这件事的报道：两到五个词，用热搜的语言写出事件的主体和事情本身，
-   不加日期、版本号、引号、运算符或站点限定，也不写用户的兴趣或任何个人信息。
-6. matched 的 direction 写用户本来关心的具体方向，不按热搜事件或卡片的新知识点命名。
-   同一兴趣摘要可能含多个方向，interest_summary_id 是来源，不表示这些方向全部相同。
-   同一方向有 direction_feedback 标签时逐字复用；其中 hidden 或 permanent 的方向不能 matched，reduced 可以。
-   closest 的 direction 为 null，不能给最接近的兴趣计入一次方向反馈。
+1. 用户明确暂停/停止推荐或条件未满足前勿推的主题，matched 与 closest 都不能选相关热搜；
+   长期兴趣仍在或 interest_summary_id 为 null 也不解除。只暂停活动但允许讨论时，按允许范围选。
+2. 读 interests 与 hot_list 的 title/summary，找直接讲某条兴趣所关心事物的热搜；
+   字面沾边、同大类或需绕几步关联都不算 matched。
+3. 有则选联系最直接的一条：match=matched，interest_summary_id=该兴趣。
+4. 否则选关系最近的一条：match=closest，interest_summary_id=null。热度排序不是理由。
+5. news_query：2–5 词，写事件主体与事情，不加日期/引号/运算符/站点/个人信息。
+6. matched 的 direction 用用户原方向名（有 direction_feedback 则逐字复用）；
+   hidden/permanent 不可 matched；closest 的 direction 为 null。
 
-对照示例（仅演示判断，不是本轮用户事实）：
-- 兴趣“收集各地的老邮票”。热搜有“某综艺定档”（排在最前）和“新版生肖邮票今日发行”：
-  后者 matched 这条兴趣，检索词“生肖邮票 发行”。
-- 兴趣“学拉坯做陶艺”“养热带鱼”。热搜有“某综艺定档”（排在最前）、“春运火车票今日开售”、“博物馆新展宋代瓷器”：
-  没有一条讲的是拉坯或养鱼本身，都不算 matched；“博物馆新展宋代瓷器”离陶艺最近，选它，closest、兴趣为 null，
-  检索词“宋代瓷器 新展”。只因排在最前就选“某综艺定档”，或把瓷器展说成 matched，都是错的。
-
-只返回 {"hot_entry_id":"...","interest_summary_id":"..." 或 null,"match":"matched|closest","news_query":"...","direction":"..." 或 null}。
-hot_entry_id、interest_summary_id 只能逐字取自输入。
+只返回 {"hot_entry_id":"...","interest_summary_id":"..." 或 null,"match":"matched|closest",
+"news_query":"...","direction":"..." 或 null}。ID 只能逐字取自输入。
 """
 _UTILITY_PROMPT = """\
 Judge optional questions on the user's new-conversation page. Clicking sends the
@@ -2047,7 +2018,10 @@ Return only {"scores":[{"candidate_id":"...",
 "given_conditions":[{"card_quote":"...","condition":"...","source":"user","source_quote":"..."}],
 "reason":"premise support and specific justification","admitted":true,
 "click_score_nullable":0.0,"depth_score_nullable":0.0,"combined_utility_nullable":0.0}]}.
-Cover every input ID exactly once with finite numbers in [0,1].
+Cover every input ID exactly once. Each score object uses exactly those keys —
+no extras, no markdown fence. admitted must be a JSON boolean (true/false), not a
+string. Score fields must be finite numbers in [0,1] or null. Empty
+assertion_spans / given_conditions are [] when the card asserts nothing.
 
 Keep question_focus within 40 Chinese characters. Keep reason within 140 Chinese
 characters (or 100 English words). Preserve the required closest-question
@@ -2060,7 +2034,9 @@ Estimate uncalibrated semantic diversity only for requested_pairs and
 requested_marginal_candidate_ids. Return only {"pairwise_scores":[{
 "left_candidate_id":"...","right_candidate_id":"...",
 "reason":"the core explanation each answer rests on","compatible":true,"diversity_score_nullable":0.0}],"marginal_scores":[{"candidate_id":"...",
-"marginal_diversity_nullable":0.0}]}. Echo every requested unordered pair and
+"marginal_diversity_nullable":0.0}]}. Use exactly those keys — no extras, no
+markdown fence. compatible must be a JSON boolean; score fields number or null.
+Echo every requested unordered pair and
 marginal ID exactly once, return no unrequested IDs, and return an empty output
 array when its corresponding requested input array is empty.
 For each pair, write reason before compatible: state the core explanation the left
@@ -2182,102 +2158,33 @@ candidate_slots 里每个 slot_id 恰好出现一次；decision 为 write 时 so
 
 
 _GLOBAL_INTEREST_PROMPT = """\
-为全局新建页生成用户愿意主动点开的问题，candidate_slots 里每个槽至多一条。
+为全局新建页生成用户愿意点开的问题；每个 candidate_slot 至多一条。快速决定，只返回 JSON。
 
-direction 只写用户自身兴趣的具体主题，取用户原兴趣里的简短对象名称，不写本题新增的知识点、收益或进度。
-一条摘要可能同时含几种兴趣：不同兴趣分别命名，同一兴趣的不同知识点原样复用同一个 direction。
-direction_feedback 记着已有方向：主题相同时原样复用其 direction，不另起同义名称。
-negative_preferences 只否定其中的具体方向，source_id/source_event_ids 是来源，不否定同一来源中的其他兴趣。
-direction_feedback 的 hidden/permanent 方向不出题；reduced 方向沿下面的降频规则选新角度。
+direction：用户原兴趣里的短对象名，不写新知识点/收益/进度。不同兴趣分别命名；同兴趣复用同名。
+direction_feedback 主题相同时逐字复用。negative_preferences 只否其 direction_anchor。
+hidden/permanent 方向不出题；reduced 仅在明显不同角度时出。
 
-按顺序完成：
-1. 从 ranked_interests 读出用户真正关心的具体事物。interest_summary 是长期画像里的一条兴趣或一次已完成会话的摘要，
-   不是本轮对话；discussion_coverage 说明这些兴趣下已经聊过什么。
-   用户原话确定关注对象、已表达的目标、真实条件和限制，不是可推荐知识点的穷举清单。
-   可以围绕同一对象提出用户未提过的属性、结构、过程或判断技巧，只要它直接帮助理解该对象或实现已表达的目标。
-   具体条件只在确实影响本题时使用，不要求每题重复这些条件。
-   用户当时要求的回复篇幅或比较形式，不自动成为后续推荐的固定题型；只有明确持续的限制才沿用。
-   原兴趣涉及多个对象时，可以独立介绍其中一个对象的知识，不要求每题重复同一比较。
-   不得为了关联新知识而虚构用户的新目标、新观察或已采取的行动；与旧题重复的判断保持不变。
-   例如用户想了解陶瓷杯的材料特性，已经聊过杯壁厚度与保温：
-   “陶瓷杯的釉面和坯体各起什么作用？”直接解释同一对象的材料结构，可以推荐；
-   “开咖啡店该采购多少陶瓷杯？”凭空增加经营和采购需求，不推荐。
-   兴趣分两类：想把一件事做成的，和只是想弄懂一个现象的。两类都要出题，做事类不优先。
-   兴趣里记着“等用户先定下A，再讨论B”时，A 是用户自己要先完成的事，B 要等 A 完成才谈：两者都不替用户出题，
-   除非用户请助手帮忙做 A；同一句里没有条件的事项照常可以出题。已经完成或不再需要的事不写成进行中。
-2. 为这条兴趣找出尚未讲清的知识、机制、判断方法或取舍。
-   从相同目标的互补知识、现象背后的机制、有意义的比较、方法迁移中选一个自然联系。
-   discussion_coverage 里助手给过的做法和说法未经验证：可以问它在什么条件下成立、与别的做法怎么取舍，
-   不问它“为什么/如何起效”。
-   intent 前半句只写兴趣里用户提到的对象，不写用户的进度、状态或想法；
-   后半句写点开后能学会、分辨或改善什么，新角度只写在这里。
-   只想弄懂现象的兴趣，收获就是理解本身，不要转写成任务、计划或工具推荐。
-   准备、执行、记录、整理属于同一操作流程，换到下一步本身不算新的话题价值。
-   already_offered 与 dismissed_questions 里的题只作去重背景，不作为用户事实或兴趣来源。
-   比较旧题完整作答会包含什么：其中必需的机制、条件、后果或子问题已被旧题覆盖。
-   把旧题拆小、点名解释因素、把“权衡”改成“影响机制”，或重述用户原条件，都不是新角度。
-   new_angle 要指出解决旧题所必需的主解释之外的新知识，不能只说问法或范围不同。
-   能找到最接近的旧题，不代表新题重复：相同对象、条件、共同背景或可选拓展本身不算覆盖。
-   只有旧题的必需核心答案已经回答了拟问的问题才跳过；不要把旧题可能顺带展开的一切都算作已问。
-   already_offered 是这条兴趣已经在推荐里、用户还没点开的题；换个说法问同一件事不算新话题，
-   换一个确实不同的角度，或者跳过这条兴趣。
-   每个槽先写 direction（这条兴趣里用户自己的具体主题，与 direction_feedback 主题相同时逐字复用其名称），
-   再写 blocked_by：在 direction_feedback 里找同名方向，状态为 hidden 或 permanent 时照抄“方向名：状态”；
-   该角度与 negative_preferences 里被否定的题是同一个问题，或是 discussion_coverage 里用户要求暂停、之后没有恢复的事项时，照抄那条记录的要点；
-   都不是时写“无”。blocked_by 不是“无”时，decision 写 skip，不改写成同一方向的别的问法。
-   reduced 方向不算阻止，但只有与常见问法明显不同的角度才写。
-   先写 new_angle：从用户原始兴趣重新选一个尚未涉及的独立知识点，说明点开能学到什么，最多60字。
-   不把上一道推荐题当成待续写的对话，也不先选旧题再围绕它找新措辞。
-   旧题涉及的主解释已很多时，跨到同一对象尚未涉及的属性、现象、判断技巧或有意义的比较；仍须与用户兴趣直接相关。
-   new_angle 选定前先排除 discussion_coverage、already_offered、dismissed_questions 已经问过的核心问题；
-   换措辞、问法、例子或版本名不算新角度。之后的评分会逐题核对这些集合，这里不逐项写出最接近的旧题，
-   也不因为能找到相近的旧题就跳过：写下这个独立知识点后直接写 write。
-   只有 blocked_by 不是“无”，或这条兴趣确实想不出任何独立知识点时才 skip。
-   位置不够时，先给 already_offered 里没有的兴趣的槽写题。
-   例如兴趣“学变魔术”，已答过扑克牌假洗的手法：“假洗怎么练得更自然？”与它是同一件事，不选这个角度；
-   “表演时怎样把观众的视线从另一只手上引开？”的 new_angle 写“视线引导的原理，前面没讲到”，write。
-   feedback_status 为 reduced 的兴趣，用户不久前对它的题点过“不感兴趣”：只在能换一个与常见问法明显不同的角度时出题，
-   想不出就跳过它。例如兴趣“学变魔术”为 reduced：“新手先练哪个扑克牌魔术？”仍是常见问法，不出；
-   “魔术师怎样把观众的视线从另一只手上引开？”换到视线如何被引开的原理，可以出。
-3. 写出无需历史也能读懂的完整问题：明确具体对象，说清要理解的现象或区别。
-   title 是用户向助手提出的问题，不是助手问用户“想不想让我帮你”。
-   各条题的收获彼此不同。同一兴趣有多个槽时，分别选不同且尚未回答的机制、条件、比较或取舍，
-   不把同一个问题拆成几条或换说法；想不出新收获时跳过该槽，不改写成别的兴趣的题。
-   page_demand 说明这一批最多备几张（首屏只展示一部分，用户点开或不感兴趣后由其余的依次补上）、
-   上一轮带回来的卡占了几个位置、还空着几个位置。先按上面的标准逐条判断能不能出题，
-   再看还空几个位置：位置空着是可接受的结果，不是放宽标准的理由，
-   也不要为了填满而把两条兴趣写成相近的题。
-   位置不够给每条能出题的兴趣时，先给 already_offered 里没有的兴趣出题。
-
-对照示例（仅演示判断，不是本轮用户事实）：
-- 兴趣是“看国际象棋顶级比赛”，已聊过开局为什么常走同一套变化。
-  “怎么安排下次观赛？”把理解型兴趣转成任务；“如何整理观赛笔记？”只是流程延伸；
-  “人工智能会怎样改变整个棋界？”跳出用户实际看到的对象，跳跃过远。
-  “为什么顶尖棋手之间的对局平局特别多？”仍落在这条兴趣的对象上，给出能直接读懂的机制。
-- 兴趣是“自己给自行车换内胎”，已经学会换内胎的步骤。
-  “怎么换内胎？”重复已答；“换完胎怎么收纳工具？”只延续操作；
-  “职业车队怎么挑比赛轮组？”跳到用户没有的需求，跳跃过远。
-  “补胎和直接换内胎各适合什么情况？”比较两种做法的代价，有判断价值。
-- 兴趣是“自学吉他”，助手说过“每天练十分钟指法就够了”。
-  “为什么每天十分钟指法练习就够？”把助手的说法当成事实；“练习时长和练习方式各怎样影响指法进步？”问条件，有判断价值。
-- 兴趣是“练书法”，用户说换不换毛笔得看最后临哪本帖，眼下只想知道写字时手腕为什么老是抖。
-  “手腕发抖时，握笔高低和悬腕方式各有什么影响？”回应没有条件的事项；
-  “欧体和颜体字帖各适合什么人？”替用户调查他要自己先定的事；“入门毛笔怎么挑？”条件还没成立。
-- 兴趣是“学日语发音”，用户说仍听不出长音和短音：用几组成对的词做一次听辨帮助理解，重复规则无益。
-  若用户暂停整个主题，则不推荐；只暂停某项操作，不扩大成否定整个兴趣。
-
-这些卡生成时没有取证核实，需要近期事实的问题由近期进展另行生成：
-不要写需要最新版本、近期发布、当前价格、今日天气这类外部事实才能回答的问题。
-不确定现象是否成立时，问影响因素或成立条件，不把猜测写成既定事实。
-“为什么”仍在断言现象存在：没有观察记录，不得假定某地每年都发生同一规律。
-保留原话的持续约束：不买设备、不改文件、等待批准、明确暂停等。
-按用户原话的语言写，每题最多60字符；中文问句以“？”结尾，技术名称可保留英文。
+1. 从 ranked_interests 读用户真正关心的具体事物（画像或已完成会话摘要，不是本轮对话）。
+   discussion_coverage 是已聊内容。可围绕同一对象问未提过的属性/机制/判断技巧，直接服务该对象或已表达目标。
+   不虚构新目标/观察/行动。做事类与理解类都出题，做事不优先。
+   “先定 A 再谈 B”：除非用户请助手做 A，否则 A/B 都不替用户出题；无条件事项照常可出。
+2. 找尚未讲清的知识/机制/判断/取舍。助手说法未经验证：可问成立条件或取舍，不问“为何起效”。
+   intent：前半用户对象，后半点开能学会/分辨/改善什么。理解型兴趣不要改成任务/工具推荐。
+   同流程下一步不算新话题。already_offered / dismissed_questions 只去重。
+   旧题必需核心答案已覆盖则 skip；换措辞/拆小/改问法不算新角度。
+   每槽写 direction，再写 blocked_by（hidden/permanent/暂停/负反馈要点，否则“无”）。
+   blocked_by≠“无”则 skip。否则写 new_angle（≤60字独立知识点）后 write。
+   想不出知识点才 skip。位置不够时先给 already_offered 没有的兴趣写题。
+   reduced：仅明显不同于常见问法时出，否则 skip。
+3. title：无需历史也能读懂的用户向助手提问（非“要不要我帮你”），≤60字符，用户语言，中文以“？”结尾。
+   同兴趣多槽须不同收获；空位可留，不为填满放宽标准。
+不要写需最新版本/价格/今日天气等外部事实的题；不确定时问条件，不把猜测当事。
+保留用户持续约束（暂停、不买设备等）。
 
 只返回 {"candidates":[{"slot_id":"...","interest_summary_id":"...","positions_left":1,
-"direction":"...","blocked_by":"无","new_angle":"...",
-"decision":"write","intent":"...","title":"..."}]}。
-candidate_slots 里每个 slot_id 恰好出现一次，interest_summary_id 必须是该 slot_id 对应的兴趣。
-decision 为 write 的槽数不超过 page_demand 里还空着的位置数；decision 为 skip 时 direction、intent、title 写空字符串。
+"direction":"...","blocked_by":"无","new_angle":"...","decision":"write","intent":"...","title":"..."}]}。
+每个 slot_id 恰好一次；interest_summary_id 须对应该槽兴趣。
+write 数≤page_demand 空位；skip 时 direction/intent/title 为空字符串。
 """
 
 
@@ -2304,6 +2211,7 @@ def _validate_diversity_api_batch(
     requested_pairs: Sequence[tuple[str, str]],
     requested_marginal_ids: Sequence[str],
 ) -> dict[str, list[dict[str, Any]]]:
+    raw = coerce_diversity_scorer_payload(raw)
     _rejected2 = (
         not isinstance(raw, dict)
         or set(raw) != {"pairwise_scores", "marginal_scores"}
@@ -2430,33 +2338,44 @@ async def _invoke_batched_diversity_proxy(
         requested_marginal_ids = (
             marginal_batches[index] if index < len(marginal_batches) else []
         )
-        raw = await invoke_stage(
+        request_payload = json.dumps(
+            {
+                "input_snapshot_id": payload.get("input_snapshot_id"),
+                "discussion_coverage": payload.get("discussion_coverage", []),
+                "candidates": candidates,
+                "requested_pairs": [
+                    {
+                        "left_candidate_id": left,
+                        "right_candidate_id": right,
+                    }
+                    for left, right in requested_pairs
+                ],
+                "requested_marginal_candidate_ids": requested_marginal_ids,
+                "request_id": payload.get("request_id"),
+            },
+            ensure_ascii=False,
+        )
+
+        validated: list[dict[str, list[dict[str, Any]]]] = []
+
+        def validate(raw: Any) -> None:
+            validated.append(
+                _validate_diversity_api_batch(
+                    raw,
+                    requested_pairs=requested_pairs,
+                    requested_marginal_ids=requested_marginal_ids,
+                )
+            )
+
+        await invoke_stage_with_shape_repair(
+            invoke_stage,
             "v6_diversity_scorer",
             _DIVERSITY_PROMPT,
-            json.dumps(
-                {
-                    "input_snapshot_id": payload.get("input_snapshot_id"),
-                    "discussion_coverage": payload.get("discussion_coverage", []),
-                    "candidates": candidates,
-                    "requested_pairs": [
-                        {
-                            "left_candidate_id": left,
-                            "right_candidate_id": right,
-                        }
-                        for left, right in requested_pairs
-                    ],
-                    "requested_marginal_candidate_ids": requested_marginal_ids,
-                    "request_id": payload.get("request_id"),
-                },
-                ensure_ascii=False,
-            ),
+            request_payload,
+            coerce=coerce_diversity_scorer_payload,
+            validate=validate,
         )
-        with provider_validation(invoke_stage, raw):
-            return _validate_diversity_api_batch(
-                raw,
-                requested_pairs=requested_pairs,
-                requested_marginal_ids=requested_marginal_ids,
-            )
+        return validated[-1]
 
     batch_tasks = tuple(
         asyncio.create_task(invoke_batch(index)) for index in range(batch_count)
@@ -2503,6 +2422,7 @@ class V6ContextSnapshot:
     state: dict[str, Any]
     context_scope: str
     project_id: str | None
+    work_mode: str
     messages: tuple[V6SourceMessage, ...]
     delta_event_ids: tuple[str, ...]
     short_intent_state: ShortIntentState
@@ -2813,6 +2733,12 @@ def _scope_matches(project_id: str | None, context_scope: str) -> bool:
     if context_scope == GLOBAL_NEW_CHAT_SCOPE:
         return str(project_id or "") in GLOBAL_PROJECT_BUCKETS
     return str(project_id or "") == context_scope.removeprefix("project:")
+
+
+def _work_mode_matches(session_work_mode: Any, work_mode: str) -> bool:
+    return normalize_topic_work_mode(session_work_mode) == normalize_topic_work_mode(
+        work_mode
+    )
 
 
 def _short_trigger_evidence_event_ids(
@@ -3991,10 +3917,12 @@ def _default_context_snapshot(
     store: TopicStarterStore,
     context_scope: str,
     *,
+    work_mode: str = DEFAULT_TOPIC_WORK_MODE,
     now: float,
     records_loader: RecordsLoader,
 ) -> V6ContextSnapshot:
     project_id = project_id_for_scope(context_scope)
+    normalized_work_mode = normalize_topic_work_mode(work_mode)
     records = records_loader()
     completed_prefix_by_session = {}
     for session_id, session_records in records.items():
@@ -4036,6 +3964,13 @@ def _default_context_snapshot(
     metadata, _ = get_all_sessions_metadata(limit=1_000_000, offset=0)
     project_by_session = {
         str(item.get("session_id") or ""): (str(item.get("project_id") or "") or None)
+        for item in metadata
+        if str(item.get("session_id") or "")
+    }
+    work_mode_by_session = {
+        str(item.get("session_id") or ""): normalize_topic_work_mode(
+            item.get("work_mode")
+        )
         for item in metadata
         if str(item.get("session_id") or "")
     }
@@ -4084,6 +4019,11 @@ def _default_context_snapshot(
         session_project_id = project_by_session.get(behavior.session_id)
         if not _scope_matches(session_project_id, context_scope):
             continue
+        if not _work_mode_matches(
+            work_mode_by_session.get(behavior.session_id),
+            normalized_work_mode,
+        ):
+            continue
         completed_prefix = completed_prefix_by_session.get(behavior.session_id)
         if (
             completed_prefix is None
@@ -4115,6 +4055,11 @@ def _default_context_snapshot(
     for session_id, completed_prefix in completed_prefix_by_session.items():
         session_project_id = project_by_session.get(session_id)
         if not _scope_matches(session_project_id, context_scope):
+            continue
+        if not _work_mode_matches(
+            work_mode_by_session.get(session_id),
+            normalized_work_mode,
+        ):
             continue
         session_records = records.get(session_id) or []
         for ordinal in completed_prefix.completed_user_ordinals:
@@ -4256,6 +4201,11 @@ def _default_context_snapshot(
             continue
         if not _scope_matches(project_by_session.get(item.session_id), context_scope):
             continue
+        if not _work_mode_matches(
+            work_mode_by_session.get(item.session_id),
+            normalized_work_mode,
+        ):
+            continue
         long_delta_event_ids.add(
             str(item.record_id or f"behavior:{item.behavior_index}")
         )
@@ -4280,16 +4230,27 @@ def _default_context_snapshot(
         if context_scope == GLOBAL_NEW_CHAT_SCOPE
         else ()
     )
+    completed_session_prefixes: list[CompletedSessionPrefix] = []
+    for session_id in sorted(completed_prefix_by_session):
+        if not _scope_matches(project_by_session.get(session_id), context_scope):
+            continue
+        if not _work_mode_matches(
+            work_mode_by_session.get(session_id), normalized_work_mode
+        ):
+            continue
+        completed_session_prefixes.append(completed_prefix_by_session[session_id])
     return V6ContextSnapshot(
         state=scoped_state,
         context_scope=context_scope,
         project_id=project_id,
+        work_mode=normalized_work_mode,
         messages=tuple(messages),
         delta_event_ids=delta_event_ids,
         short_intent_state=short_state,
         pending_short_intent_trigger_lineage=pending_lineage,
         input_snapshot_id=(
-            f"v6-input:{context_scope}:{profile_semantic_version}:"
+            f"v6-input:{context_scope}:{normalized_work_mode}:"
+            f"{profile_semantic_version}:"
             f"{short_state.short_intent_version}:{active_version}"
         ),
         profile_projection={
@@ -4326,11 +4287,7 @@ def _default_context_snapshot(
                 project_by_session=project_by_session,
             )
         ),
-        completed_session_prefixes=tuple(
-            completed_prefix_by_session[session_id]
-            for session_id in sorted(completed_prefix_by_session)
-            if _scope_matches(project_by_session.get(session_id), context_scope)
-        ),
+        completed_session_prefixes=tuple(completed_session_prefixes),
         state_maintenance_receipt=dict(state_receipt),
     )
 
@@ -4348,27 +4305,37 @@ def _news_only_successor(
     config: ArkBackgroundConfig,
     now: float,
 ) -> BackgroundGenerationResult:
-    """The predecessor pool with its news card replaced and every other card kept as written.
+    """Put the news card first; keep non-preset peers, drop presets and old news.
 
-    What served only the replaced news candidates (the report and the hot-list
-    fallback its match named) leaves with them: their grounding decisions,
-    evidence entries, external operations, component invocations and model
-    receipts and exclusive documents. Documents used by other candidates
-    stay in the snapshot. The new card's records take their place.
+    With a prior news lead, that card is replaced. Without one, the news card is
+    inserted at rank 1. Packaged cold-start cards never travel into the
+    successor: a preset-only predecessor becomes this one news card alone.
     """
 
     lead_id = news_lead_card_id(predecessor)
-    replaced = {lead_id}
-    for receipt in predecessor["ark_invocation_receipts"]:
-        if receipt["stage"] != "v6_hot_news_matcher":
+    replaced: set[str | None] = {lead_id} if lead_id else set()
+    for card in predecessor_cards:
+        if is_cold_start_card(card) or card_is_news(card):
+            replaced.add(str(card["card_id"]))
+    for receipt in predecessor.get("ark_invocation_receipts") or ():
+        if receipt.get("stage") != "v6_hot_news_matcher":
             continue
-        for candidate_id in receipt["lineage"]["candidate_ids"]:
+        for candidate_id in (receipt.get("lineage") or {}).get("candidate_ids") or ():
             replaced.add(str(candidate_id))
+
+    replaced_ids = {str(item) for item in replaced if item is not None}
 
     def kept(candidate_ids: Iterable[Any]) -> bool:
         ids = {str(value) for value in candidate_ids}
-        return not ids or not ids <= replaced
+        return not ids or not ids <= replaced_ids
 
+    kept_predecessor: list[Mapping[str, Any]] = []
+    for card in predecessor_cards:
+        if str(card["card_id"]) in replaced_ids:
+            continue
+        if is_cold_start_card(card) or card_is_news(card):
+            continue
+        kept_predecessor.append(card)
     news_id = str(news["candidate_id"])
     trigger_key = predecessor["generation_trigger_key"]
     evidence_receipt = news.get("evidence_receipt")
@@ -4376,18 +4343,19 @@ def _news_only_successor(
         RID_COMPONENT_ID: predecessor["component_receipts"][RID_COMPONENT_ID],
         UTILITY_COMPONENT_ID: utility_receipt.as_payload(),
     }
-    # A pool that was its news card alone used its utility judgment for that card
-    # only; the regular candidates it also judged never became cards.
-    news_only_predecessor = all(card["card_id"] == lead_id for card in predecessor_cards)
-    predecessor_utility_request_id = predecessor["component_receipts"][UTILITY_COMPONENT_ID]["request_id"]
+    # A pool that keeps no ordinary card used its utility judgment for news only.
+    news_only_predecessor = not kept_predecessor
+    predecessor_utility_request_id = (
+        (predecessor.get("component_receipts") or {}).get(UTILITY_COMPONENT_ID) or {}
+    ).get("request_id")
     invocations: list[dict[str, Any]] = []
-    for item in predecessor["component_invocation_receipts"]:
-        if not kept(item["candidate_ids"]):
+    for item in predecessor.get("component_invocation_receipts") or ():
+        if not kept(item.get("candidate_ids") or ()):
             continue
         news_only_utility = (
             news_only_predecessor
-            and item["component_id"] == UTILITY_COMPONENT_ID
-            and item["request_id"] == predecessor_utility_request_id
+            and item.get("component_id") == UTILITY_COMPONENT_ID
+            and item.get("request_id") == predecessor_utility_request_id
         )
         if news_only_utility:
             continue
@@ -4402,8 +4370,8 @@ def _news_only_successor(
         )
     ark_receipts = [
         dict(receipt)
-        for receipt in predecessor["ark_invocation_receipts"]
-        if kept(receipt["lineage"]["candidate_ids"])
+        for receipt in predecessor.get("ark_invocation_receipts") or ()
+        if kept((receipt.get("lineage") or {}).get("candidate_ids") or ())
     ] + [dict(receipt) for receipt in provider_receipts]
 
     batch_id = f"v6-batch-{uuid.uuid4().hex}"
@@ -4416,7 +4384,9 @@ def _news_only_successor(
         input_snapshot_id=str(predecessor["generation_input_snapshot_id"]),
         trigger_key=trigger_key,
         component_receipts=news_receipts,
-        list_search_version=str(predecessor["list_search"]["search_version"]),
+        list_search_version=str(
+            (predecessor.get("list_search") or {}).get("search_version") or LIST_SEARCH_VERSION
+        ),
         state_maintenance_receipt=predecessor.get("state_maintenance_receipt"),
         now=now,
     )
@@ -4433,9 +4403,9 @@ def _news_only_successor(
                 **deepcopy(dict(card)),
                 "card_revision_id": f"v6-revision-{uuid.uuid4().hex}",
                 "generation_batch_id": batch_id,
+                "selector_rank": rank,
             }
-            for card in predecessor_cards
-            if card["card_id"] != lead_id
+            for rank, card in enumerate(kept_predecessor, start=2)
         ),
     ]
     component_receipts = {
@@ -4457,32 +4427,38 @@ def _news_only_successor(
     if first_evidence is not None:
         component_receipts[EVIDENCE_COMPONENT_ID] = first_evidence
 
+    replaced_ids = {str(item) for item in replaced if item is not None}
+    prior_decision = predecessor.get("grounding_decision_receipt") or {}
+    prior_evidence = predecessor.get("grounding_evidence_receipt") or {}
     decisions = [
         dict(decision)
-        for decision in predecessor["grounding_decision_receipt"]["candidate_decisions"]
-        if decision["candidate_id"] not in replaced
+        for decision in prior_decision.get("candidate_decisions") or ()
+        if str(decision.get("candidate_id")) not in replaced_ids
     ] + [dict(decision) for decision in grounding.decision_receipt["candidate_decisions"]]
     admitted = sum(decision["decision"] == "admit" for decision in decisions)
     kept_candidates = [
         dict(candidate)
-        for candidate in predecessor["grounding_evidence_receipt"]["candidates"]
-        if candidate["candidate_id"] not in replaced
+        for candidate in prior_evidence.get("candidates") or ()
+        if str(candidate.get("candidate_id")) not in replaced_ids
     ]
     referenced_documents = set()
     for candidate in kept_candidates:
-        for fetch in candidate["fetches"]:
-            if fetch["document_revision_id"] is not None:
+        for fetch in candidate.get("fetches") or ():
+            if fetch.get("document_revision_id") is not None:
                 referenced_documents.add(fetch["document_revision_id"])
     for candidate in kept_candidates:
-        if candidate["extractor"] is None:
+        if candidate.get("extractor") is None:
             continue
         referenced_documents.update(
-            candidate["extractor"]["input_document_revision_ids"]
+            candidate["extractor"].get("input_document_revision_ids") or ()
         )
-    previous_documents = predecessor["grounding_evidence_receipt"]["document_snapshot"]
+    previous_documents = prior_evidence.get("document_snapshot") or {
+        "documents": [],
+        "document_revision_ids": [],
+    }
     added_documents = grounding.evidence_receipt["document_snapshot"]
     documents = [
-        document for document in previous_documents["documents"]
+        document for document in previous_documents.get("documents") or ()
         if document["document_revision_id"] in referenced_documents
     ] + list(added_documents["documents"])
     document_snapshot = {
@@ -4490,6 +4466,8 @@ def _news_only_successor(
         "document_revision_ids": [document["document_revision_id"] for document in documents],
         "documents": documents,
     }
+    prior_audit = predecessor.get("external_invocation_audit") or {"invocations": []}
+    prior_interest = predecessor.get("rid_interest_selection") or {}
     manifest = {
         **deepcopy(dict(predecessor)),
         "manifest_id": f"v6-manifest-{uuid.uuid4().hex}",
@@ -4504,14 +4482,14 @@ def _news_only_successor(
         "component_invocation_receipts": invocations,
         "ark_invocation_receipts": ark_receipts,
         "grounding_decision_receipt": {
-            **predecessor["grounding_decision_receipt"],
+            **prior_decision,
             "decision": (
                 "admit" if admitted == len(decisions) else ("abstain" if admitted == 0 else "partial")
             ),
             "candidate_decisions": decisions,
         },
         "grounding_evidence_receipt": {
-            **predecessor["grounding_evidence_receipt"],
+            **prior_evidence,
             "document_snapshot": document_snapshot,
             "candidates": [
                 *kept_candidates,
@@ -4525,8 +4503,8 @@ def _news_only_successor(
             invocations=[
                 *(
                     invocation
-                    for invocation in predecessor["external_invocation_audit"]["invocations"]
-                    if invocation["candidate_id"] not in replaced
+                    for invocation in prior_audit.get("invocations") or ()
+                    if str(invocation.get("candidate_id")) not in replaced_ids
                 ),
                 *external_audit["invocations"],
             ],
@@ -4535,7 +4513,7 @@ def _news_only_successor(
         "rid_interest_selection": {
             # A predecessor stored before restatements were recorded left none out.
             "restated_offered_candidates": [],
-            **predecessor["rid_interest_selection"],
+            **prior_interest,
             "short_trigger_delta_event_ids": [],
         },
         "provider_provenance": config.safe_provenance(),
@@ -4712,9 +4690,10 @@ class TopicPipeline:
         self._records_loader = records_loader or history.load_all_session_records
         self.completed_records_loader = self._load_completed_records
         self._context_loader = context_loader or (
-            lambda scope: _default_context_snapshot(
+            lambda scope, mode: _default_context_snapshot(
                 store,
                 scope,
+                work_mode=mode,
                 now=self._now(),
                 records_loader=self.completed_records_loader,
             )
@@ -4733,7 +4712,7 @@ class TopicPipeline:
         self._state_refresh_lock = asyncio.Lock()
         # A scope's summaries are written by its generation and by state preparation.
         self._summary_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-        self.on_candidates_ready: Callable[[str], None] | None = None
+        self.on_candidates_ready: Callable[[str, str], None] | None = None
         self._state_pipeline = TopicPreparePipeline(
             store,
             records_loader=self.completed_records_loader,
@@ -4778,7 +4757,11 @@ class TopicPipeline:
             await self._summarize_completed_sessions(config)
         return reason
 
-    def scope_has_pending_request(self, context_scope: str) -> bool:
+    def scope_has_pending_request(
+        self,
+        context_scope: str,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
+    ) -> bool:
         """A source session of the scope has a request the host is still running.
 
         The history projection marks a request without its completion row as
@@ -4787,6 +4770,7 @@ class TopicPipeline:
         """
 
         project_id_for_scope(context_scope)
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
         live = set(self._active_request_ids_loader())
         if not live:
             return False
@@ -4794,6 +4778,13 @@ class TopicPipeline:
         metadata, _ = get_all_sessions_metadata(limit=1_000_000, offset=0)
         project_by_session = {
             str(item.get("session_id") or ""): (str(item.get("project_id") or "") or None)
+            for item in metadata
+            if str(item.get("session_id") or "")
+        }
+        work_mode_by_session = {
+            str(item.get("session_id") or ""): normalize_topic_work_mode(
+                item.get("work_mode")
+            )
             for item in metadata
             if str(item.get("session_id") or "")
         }
@@ -4805,6 +4796,11 @@ class TopicPipeline:
                     context_scope == GLOBAL_NEW_CHAT_SCOPE
                     and str(session_project_id or "") not in GLOBAL_PROJECT_BUCKETS
                 )
+            ):
+                continue
+            if not _work_mode_matches(
+                work_mode_by_session.get(session_id),
+                normalized_work_mode,
             ):
                 continue
             trailing: dict[str, Any] | None = None
@@ -4824,10 +4820,15 @@ class TopicPipeline:
                 return True
         return False
 
-    def scope_input_revision(self, context_scope: str) -> tuple[object, ...]:
+    def scope_input_revision(
+        self,
+        context_scope: str,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
+    ) -> tuple[object, ...]:
         """Detect changes to natural interests and scoped discussion coverage."""
 
         project_id_for_scope(context_scope)
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
         records = self.completed_records_loader()
         metadata, _ = get_all_sessions_metadata(limit=1_000_000, offset=0)
         project_by_session = {
@@ -4837,9 +4838,21 @@ class TopicPipeline:
             for item in metadata
             if str(item.get("session_id") or "")
         }
+        work_mode_by_session = {
+            str(item.get("session_id") or ""): normalize_topic_work_mode(
+                item.get("work_mode")
+            )
+            for item in metadata
+            if str(item.get("session_id") or "")
+        }
         revision: list[object] = []
         deprojected_project_revisions: list[str] = []
         for session_id in sorted(records):
+            if not _work_mode_matches(
+                work_mode_by_session.get(session_id),
+                normalized_work_mode,
+            ):
+                continue
             session_project_id = project_by_session.get(session_id)
             scope_matches = _scope_matches(session_project_id, context_scope)
             contributes_to_global_profile = bool(
@@ -5117,10 +5130,13 @@ class TopicPipeline:
     ) -> BackgroundGenerationResult:
         trigger_key = trigger.key
         trigger_origin = trigger.origin
+        work_mode = normalize_topic_work_mode(trigger_key.get("work_mode"))
         try:
             if project_id_for_scope(context_scope) != project_id:
                 raise TerminalGenerationRejection("scope_mismatch")
-            snapshot = await asyncio.to_thread(self._context_loader, context_scope)
+            snapshot = await asyncio.to_thread(
+                self._context_loader, context_scope, work_mode
+            )
         except TerminalGenerationRejection as exc:
             return _empty_result(
                 trigger_key,
@@ -5150,6 +5166,13 @@ class TopicPipeline:
                 input_snapshot_id=snapshot.input_snapshot_id,
             )
         if snapshot.project_id != project_id:
+            return _empty_result(
+                trigger_key,
+                trigger_origin,
+                "generation_input_version_mismatch",
+                input_snapshot_id=snapshot.input_snapshot_id,
+            )
+        if snapshot.work_mode != work_mode:
             return _empty_result(
                 trigger_key,
                 trigger_origin,
@@ -5262,32 +5285,43 @@ class TopicPipeline:
                 owned_stage_invoker,
                 external_audit,
             )
-            if self._search_override is None:
-                owned_search_provider = self._web_search_provider_factory(config)
-                search_provider = owned_search_provider
-            else:
+            expected_search_provider_id = str(
+                trigger_key.get("search_provider_id")
+                or self._search_provider_id
+                or ""
+            )
+            if expected_search_provider_id == UNCONFIGURED_SEARCH_PROVIDER_ID:
+                # Web search is optional enrichment. Host-evidence and hot-list
+                # candidates still ground without a search lane.
                 search_provider = self._search_override
-            actual_search_provider_id = str(
-                getattr(
-                    search_provider,
-                    "provider_id",
-                    self._search_provider_id
-                    or _INJECTED_SEARCH_AUDIT_PROVIDER_ID,
+            else:
+                if self._search_override is None:
+                    owned_search_provider = self._web_search_provider_factory(
+                        config
+                    )
+                    search_provider = owned_search_provider
+                else:
+                    search_provider = self._search_override
+                actual_search_provider_id = str(
+                    getattr(
+                        search_provider,
+                        "provider_id",
+                        self._search_provider_id
+                        or _INJECTED_SEARCH_AUDIT_PROVIDER_ID,
+                    )
                 )
-            )
-            expected_search_provider_id = (
-                self._search_provider_id or actual_search_provider_id
-            )
-            if (
-                actual_search_provider_id
-                != OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
-                or actual_search_provider_id != expected_search_provider_id
-                or trigger_key.get("search_provider_id")
-                != expected_search_provider_id
-            ):
-                raise TerminalGenerationRejection(
-                    "search_provider_version_mismatch"
+                configured_expected = (
+                    self._search_provider_id or actual_search_provider_id
                 )
+                if (
+                    actual_search_provider_id
+                    != OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
+                    or actual_search_provider_id != configured_expected
+                    or expected_search_provider_id != configured_expected
+                ):
+                    raise TerminalGenerationRejection(
+                        "search_provider_version_mismatch"
+                    )
             async with self._summary_locks[snapshot.context_scope]:
                 latest_summary_batch = await self._summarize_sessions(
                     snapshot,
@@ -5433,11 +5467,20 @@ class TopicPipeline:
                 ]
             return result
         except TerminalGenerationRejection as exc:
-            logger.info(
-                "Topic Starter v6 terminal generation rejected: %s",
-                exc.reason,
-            )
-            return failed_result(
+            cause = exc.__cause__
+            if cause is not None:
+                logger.info(
+                    "Topic Starter v6 terminal generation rejected: %s cause=%s:%s",
+                    exc.reason,
+                    type(cause).__name__,
+                    cause,
+                )
+            else:
+                logger.info(
+                    "Topic Starter v6 terminal generation rejected: %s",
+                    exc.reason,
+                )
+            result = failed_result(
                 exc.reason,
                 grounding_decision_receipt=(
                     exc.grounding_decision_receipt or latest_grounding_receipt
@@ -5448,15 +5491,29 @@ class TopicPipeline:
                 ),
                 rid_result=exc.rid_result,
             )
-        except Exception:  # noqa: BLE001 - no partial cards leave this boundary
-            logger.warning("Topic Starter v6 terminal generation failed", exc_info=True)
-            return failed_result(
+            if cause is not None:
+                result.manifest["failure_cause"] = {
+                    "exc_type": type(cause).__name__,
+                    "message": str(cause)[:500],
+                }
+            return result
+        except Exception as exc:  # noqa: BLE001 - no partial cards leave this boundary
+            logger.warning(
+                "Topic Starter v6 terminal generation failed",
+                exc_info=True,
+            )
+            result = failed_result(
                 "terminal_generation_failed",
                 grounding_decision_receipt=latest_grounding_receipt,
                 grounding_evidence_receipt=(
                     latest_grounding_evidence_receipt
                 ),
             )
+            result.manifest["failure_cause"] = {
+                "exc_type": type(exc).__name__,
+                "message": str(exc)[:500],
+            }
+            return result
         finally:
             if owned_search_provider is not None:
                 close = getattr(owned_search_provider, "aclose", None)
@@ -5473,14 +5530,11 @@ class TopicPipeline:
         manifest_id: str,
         visit_id: str,
     ) -> BackgroundGenerationResult:
-        """Replace one global pool's news card with the hot list's current match (D11, D22).
+        """Inject or replace the global pool's news card from the current hot list.
 
-        The other cards stay exactly as the pool wrote them: no retrieval, no
-        scores, the same expiry. The new card answers the pool's own generation
-        input: it is matched against the same profile version, judged on the
-        pool's discussion coverage and bound to the pool's input snapshot; only
-        the hot list moved. One match, the report's question and evidence (or
-        the hot-list card), and utility on the news card alone.
+        Non-preset cards stay as written (news moves to rank 1). A pool of only
+        presets, or with no news lead yet, becomes this one news card (or news
+        plus its non-preset peers). No full pool regeneration.
         """
 
         loaded = load_exact_global_pool(self.store, manifest_id=manifest_id)
@@ -5491,11 +5545,16 @@ class TopicPipeline:
                 cards=[], manifest={"generation_trigger_key": trigger_key}, failure_reason=reason,
             )
 
-        if loaded is None or news_lead_card_id(loaded[0]) is None:
+        if loaded is None:
             return failed("no_news_card_to_replace")
         predecessor, predecessor_cards = loaded
+        work_mode = normalize_topic_work_mode(
+            trigger_key.get("work_mode") if isinstance(trigger_key, Mapping) else None
+        )
         try:
-            snapshot = await asyncio.to_thread(self._context_loader, GLOBAL_NEW_CHAT_SCOPE)
+            snapshot = await asyncio.to_thread(
+                self._context_loader, GLOBAL_NEW_CHAT_SCOPE, work_mode
+            )
         except StateUnavailableError:
             return failed("state_unavailable")
         except Exception:  # noqa: BLE001 - generation input is fail closed
@@ -5511,7 +5570,8 @@ class TopicPipeline:
             self.store, snapshot.state, context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=self._now(),
         )
         summaries = [
-            SessionSummaryArtifact.from_payload(item) for item in predecessor["session_summary_artifacts"]
+            SessionSummaryArtifact.from_payload(item)
+            for item in predecessor.get("session_summary_artifacts") or ()
         ]
         external_audit = ExternalInvocationAudit(
             store=self.store,
@@ -5532,6 +5592,11 @@ class TopicPipeline:
             news["discussion_coverage"] = _discussion_coverage(
                 summaries, snapshot.other_scope_discussion_coverage
             )
+            prior_documents = (
+                ((predecessor.get("grounding_evidence_receipt") or {}).get("document_snapshot") or {})
+                .get("documents")
+                or ()
+            )
             grounding = await self._ground_plans(
                 [news],
                 snapshot=snapshot,
@@ -5541,9 +5606,7 @@ class TopicPipeline:
                 external_audit=external_audit,
                 search_provider=self._search_override or _unconfigured_v6_search,
                 # The pool's documents keep their numbers; the new ones follow them.
-                first_document_number=len(
-                    predecessor["grounding_evidence_receipt"]["document_snapshot"]["documents"]
-                ) + 1,
+                first_document_number=len(prior_documents) + 1,
             )
             [grounded] = grounding.plans
             if not feedback.still_wanted(grounded):
@@ -6065,21 +6128,40 @@ class TopicPipeline:
             logger.warning("Topic Starter v6 summary preparation failed", exc_info=True)
             return
         scopes = sorted(pending_by_scope)
+        jobs = [
+            (scope, work_mode)
+            for scope in scopes
+            for work_mode in TOPIC_WORK_MODES
+        ]
         reasons = await asyncio.gather(*(
-            self._summarize_scope_sessions(config, scope, pending_by_scope[scope]) for scope in scopes
+            self._summarize_scope_sessions(
+                config, scope, pending_by_scope[scope], work_mode=work_mode,
+            )
+            for scope, work_mode in jobs
         ))
-        for scope, reason in zip(scopes, reasons):
+        for (scope, work_mode), reason in zip(jobs, reasons):
             if reason:
-                logger.info("Topic Starter v6 session summaries not written for %s: %s", scope, reason)
+                logger.info(
+                    "Topic Starter v6 session summaries not written for %s work_mode=%s: %s",
+                    scope,
+                    work_mode,
+                    reason,
+                )
 
     async def _summarize_scope_sessions(
         self,
         config: ArkBackgroundConfig,
         context_scope: str,
         session_ids: set[str],
+        *,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
     ) -> str:
         try:
-            snapshot = await asyncio.to_thread(self._context_loader, context_scope)
+            snapshot = await asyncio.to_thread(
+                self._context_loader,
+                context_scope,
+                normalize_topic_work_mode(work_mode),
+            )
         except TerminalGenerationRejection as exc:
             return exc.reason
         except StateUnavailableError:
@@ -6681,6 +6763,7 @@ class TopicPipeline:
         carried_over: int,
         offered_questions: Sequence[dict[str, Any]] | None = None,
         news_lead: bool = False,
+        enable_recent_web: bool = True,
         lanes: _OptionalLanes | None = None,
         on_recent_plans: Callable[[Sequence[dict[str, Any]]], None] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -6811,28 +6894,30 @@ class TopicPipeline:
                 on_recent_plans([plan for plan in plans if feedback.still_wanted(plan)])
             return plans
 
-        recent_task = asyncio.ensure_future(recent_plans(invoke_stage(
-            "v6_recent_candidate_generator",
-            _RECENT_PROMPT,
-            json.dumps(
-                {
-                    "input_snapshot_id": snapshot.input_snapshot_id,
-                    "local_date": time.strftime(
-                        "%Y-%m-%d", time.localtime(self._now())
-                    ),
-                    "profile_projection": snapshot.profile_projection,
-                    "ranked_interests": [asdict(item) for item in ranked],
-                    "required_category": "profile_recent_progress",
-                    "previously_offered": search_offered_questions,
-                    "discussion_coverage": _discussion_coverage(summaries),
-                    "negative_preferences": feedback.model_payloads(),
-                    "direction_feedback": feedback.direction_payloads(),
-                    "candidate_slots": recent_candidate_slots,
-                    "request_id": f"v6-recent-{uuid.uuid4().hex}",
-                },
-                ensure_ascii=False,
-            ),
-        )))
+        recent_task: asyncio.Future[list[dict[str, Any]]] | None = None
+        if enable_recent_web:
+            recent_task = asyncio.ensure_future(recent_plans(invoke_stage(
+                "v6_recent_candidate_generator",
+                _RECENT_PROMPT,
+                json.dumps(
+                    {
+                        "input_snapshot_id": snapshot.input_snapshot_id,
+                        "local_date": time.strftime(
+                            "%Y-%m-%d", time.localtime(self._now())
+                        ),
+                        "profile_projection": snapshot.profile_projection,
+                        "ranked_interests": [asdict(item) for item in ranked],
+                        "required_category": "profile_recent_progress",
+                        "previously_offered": search_offered_questions,
+                        "discussion_coverage": _discussion_coverage(summaries),
+                        "negative_preferences": feedback.model_payloads(),
+                        "direction_feedback": feedback.direction_payloads(),
+                        "candidate_slots": recent_candidate_slots,
+                        "request_id": f"v6-recent-{uuid.uuid4().hex}",
+                    },
+                    ensure_ascii=False,
+                ),
+            )))
         # A direction back from a dismissal reaches the generator as "reduced"; the host
         # keeps its count and days, and ranks its cards after the others.
         interest_lineage = {
@@ -6900,27 +6985,29 @@ class TopicPipeline:
                     now=self._now(),
                 )
             lanes.mandatory_ready()
-            recent = []
-            try:
-                if await lanes.finish(GLOBAL_RECENT_LANE, recent_task):
-                    recent = recent_task.result()
-            except Exception as exc:
-                logger.warning(
-                    "Topic Starter v6 optional global recent generation failed; "
-                    "retaining interest candidates",
-                    exc_info=True,
-                )
-                lanes.failed[GLOBAL_RECENT_LANE] = (
-                    exc.reason if isinstance(exc, TerminalGenerationRejection)
-                    else "provider_invocation_failed"
-                )
+            recent: list[dict[str, Any]] = []
+            if recent_task is not None:
+                try:
+                    if await lanes.finish(GLOBAL_RECENT_LANE, recent_task):
+                        recent = recent_task.result()
+                except Exception as exc:
+                    logger.warning(
+                        "Topic Starter v6 optional global recent generation failed; "
+                        "retaining interest candidates",
+                        exc_info=True,
+                    )
+                    lanes.failed[GLOBAL_RECENT_LANE] = (
+                        exc.reason if isinstance(exc, TerminalGenerationRejection)
+                        else "provider_invocation_failed"
+                    )
         finally:
-            for task in (recent_task, interest_task):
+            pending = [
+                task for task in (recent_task, interest_task) if task is not None
+            ]
+            for task in pending:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(
-                recent_task, interest_task, return_exceptions=True
-            )
+            await asyncio.gather(*pending, return_exceptions=True)
         # A plan the pool reader would drop for a dismissal in force is left out
         # before grounding and scoring.
         wanted, withheld = [], []
@@ -7162,11 +7249,22 @@ class TopicPipeline:
     ) -> list[dict[str, Any]]:
         if (
             not isinstance(response, dict)
-            or set(response) != {"candidates"}
+            or "candidates" not in response
             or not isinstance(response["candidates"], list)
         ):
             raise TerminalGenerationRejection("global_interest_contract_failed")
         required = set(_GLOBAL_INTEREST_CANDIDATE_ITEM_SCHEMA)
+        # Drop top-level and per-row extras general models often append.
+        response = {
+            "candidates": [
+                (
+                    {key: item[key] for key in required if key in item}
+                    if isinstance(item, dict)
+                    else item
+                )
+                for item in response["candidates"]
+            ]
+        }
         slot_interest_by_id = {
             str(item.get("slot_id") or ""): str(item.get("interest_summary_id") or "")
             for item in candidate_slots
@@ -7246,7 +7344,7 @@ class TopicPipeline:
     ) -> list[dict[str, Any]]:
         if (
             not isinstance(response, dict)
-            or set(response) != {"candidates"}
+            or "candidates" not in response
             or not isinstance(response["candidates"], list)
         ):
             raise TerminalGenerationRejection("recent_candidate_contract_failed")
@@ -7263,6 +7361,16 @@ class TopicPipeline:
         directional = context_scope == GLOBAL_NEW_CHAT_SCOPE and category == "profile_recent_progress"
         if directional:
             required.add("direction")
+        response = {
+            "candidates": [
+                (
+                    {key: item[key] for key in required if key in item}
+                    if isinstance(item, dict)
+                    else item
+                )
+                for item in response["candidates"]
+            ]
+        }
         slot_interest_by_id = {
             str(item.get("slot_id") or ""): str(
                 item.get("interest_summary_id") or ""
@@ -7985,8 +8093,30 @@ class TopicPipeline:
         lanes = lanes if lanes is not None else _OptionalLanes()
         web_plans = [plan for plan in plans if _host_evidence(plan) is None]
         snapshot_date = str(trigger_key["local_date"])
-        if (search_provider or self._search_override) is None:
-            raise TerminalGenerationRejection("web_search_provider_unavailable")
+        active_search = search_provider or self._search_override
+        if not web_plans:
+            return _FrozenEvidenceBatch(None, {}, {}, {}, {}, {})
+        if active_search is None:
+            # Keep host-evidence grounding; drop web candidates without a search lane.
+            rejections = {
+                str(plan["candidate_id"]): (
+                    "search",
+                    "web_search_provider_unavailable",
+                )
+                for plan in web_plans
+            }
+            evidence_by_candidate = {
+                str(plan["candidate_id"]): {
+                    "candidate_id": str(plan["candidate_id"]),
+                    "search": None,
+                    "fetches": [],
+                    "extractor": None,
+                }
+                for plan in web_plans
+            }
+            return _FrozenEvidenceBatch(
+                None, {}, {}, rejections, {}, evidence_by_candidate,
+            )
         # A candidate whose evidence started early is joined, not searched again.
         started = early_evidence or {}
         owns_fetches = fetch_tasks is None
@@ -8384,7 +8514,7 @@ class TopicPipeline:
         config: ArkBackgroundConfig,
         invoke_stage: StageInvoker,
         external_audit: ExternalInvocationAudit,
-        search_provider: WebSearchFn,
+        search_provider: WebSearchFn | None,
         first_document_number: int = 1,
         lanes: _OptionalLanes | None = None,
         on_regular_ready: Callable[[Sequence[dict[str, Any]]], None] | None = None,
@@ -8891,18 +9021,30 @@ class TopicPipeline:
             batches = [candidates[sum(sizes[:index]):sum(sizes[:index + 1])] for index in range(count)]
 
             async def invoke_batch(batch: list[dict[str, Any]]) -> list[Any]:
-                raw = await invoke_stage(
-                    "v6_utility_scorer",
-                    _UTILITY_PROMPT,
-                    json.dumps({
+                candidate_ids = [
+                    str(candidate["candidate_id"]) for candidate in batch
+                ]
+                request_payload = json.dumps(
+                    {
                         **shared,
                         "candidates": batch,
                         "current_time_utc": current_time,
                         "request_id": payload["request_id"],
-                    }, ensure_ascii=False),
+                    },
+                    ensure_ascii=False,
                 )
-                with provider_validation(invoke_stage, raw):
-                    utility_scores_by_id(raw, [str(candidate["candidate_id"]) for candidate in batch])
+
+                def validate(raw: Any) -> None:
+                    utility_scores_by_id(raw, candidate_ids)
+
+                raw = await invoke_stage_with_shape_repair(
+                    invoke_stage,
+                    "v6_utility_scorer",
+                    _UTILITY_PROMPT,
+                    request_payload,
+                    coerce=coerce_utility_scorer_payload,
+                    validate=validate,
+                )
                 return raw["scores"]
 
             batch_tasks = tuple(asyncio.create_task(invoke_batch(batch)) for batch in batches)
@@ -9130,17 +9272,39 @@ class TopicPipeline:
             ))
         return _Scoring(tuple(plans), tuple(projected), utility_receipt, utility, diversity)
 
-    def _latest_scope_manifest_id(self, context_scope: str) -> str | None:
+    def _latest_scope_manifest_id(
+        self,
+        context_scope: str,
+        *,
+        work_mode: Any = DEFAULT_TOPIC_WORK_MODE,
+    ) -> str | None:
+        """Newest global/project pool for this scope × work_mode slot.
+
+        Serve already isolates pools by work_mode via serving_compatibility_key.
+        Short-delta supersedes must follow the same slot; otherwise a design
+        cold-start can become the predecessor of a work personalized write (or
+        the reverse) and novelty / lineage attach to the wrong first screen.
+        Legacy manifests without work_mode count as the default work slot only.
+        """
+
+        normalized = normalize_topic_work_mode(work_mode)
         rows = self.store.query_events(
             event_type="starter_slate_manifest",
             policy_id=POLICY_ID,
             payload_equals={"context_scope": context_scope},
-            limit=1,
+            limit=32,
             newest_first=True,
         )
-        if rows:
-            payload = rows[0].get("payload")
-            if isinstance(payload, dict) and payload.get("manifest_id"):
+        for row in rows:
+            payload = row.get("payload")
+            if not isinstance(payload, dict) or not payload.get("manifest_id"):
+                continue
+            raw_mode = payload.get("work_mode")
+            if raw_mode in (None, ""):
+                matched = normalized == DEFAULT_TOPIC_WORK_MODE
+            else:
+                matched = normalize_topic_work_mode(raw_mode) == normalized
+            if matched:
                 return str(payload["manifest_id"])
         return None
 
@@ -9324,7 +9488,8 @@ class TopicPipeline:
                 if component_invocation_applies_to_card(invocation, card)
             ]
         manifest_id = f"v6-manifest-{uuid.uuid4().hex}"
-        preference_pairs = mine_hierarchical_pairs(selection.bounded_beam_trace)
+        # Thin list-search receipt: keep preferred ids / bounds, drop beam entries
+        # and preference-pair replay. Document snapshot stays under grounding only.
         manifest = {
             "manifest_id": manifest_id,
             "generation_batch_id": batch_id,
@@ -9333,13 +9498,13 @@ class TopicPipeline:
             "local_date": trigger_key["local_date"],
             "context_scope": snapshot.context_scope,
             "project_id": snapshot.project_id,
+            "work_mode": normalize_topic_work_mode(trigger_key.get("work_mode")),
             "generation_trigger_key": trigger_key,
             "generation_input_snapshot_id": snapshot.input_snapshot_id,
             "serving_compatibility_key": build_serving_compatibility_key(trigger_key),
             "profile_semantic_version": trigger_key["profile_semantic_version"],
             "short_intent_version": trigger_key["short_intent_version"],
             "negative_preference_version": trigger_key["negative_preference_version"],
-            "document_snapshot": document_snapshot,
             "search_provider_id": trigger_key["search_provider_id"],
             "search_receipts": {
                 str(plan["candidate_id"]): (
@@ -9358,7 +9523,8 @@ class TopicPipeline:
             ],
             "generation_config_version": trigger_key["generation_config_version"],
             "supersedes_manifest_id": self._latest_scope_manifest_id(
-                snapshot.context_scope
+                snapshot.context_scope,
+                work_mode=trigger_key.get("work_mode"),
             ),
             "rid_result": rid.as_downstream_payload(),
             "session_summary_artifacts": [
@@ -9395,20 +9561,13 @@ class TopicPipeline:
                 ],
                 "bounded_beam_trace": {
                     **asdict(selection.bounded_beam_trace),
-                    "entries": [
-                        {
-                            **asdict(entry),
-                            "candidate_ids": list(entry.candidate_ids),
-                            "failure_reasons": list(entry.failure_reasons),
-                        }
-                        for entry in selection.bounded_beam_trace.entries
-                    ],
+                    "entries": [],
                     "preferred_candidate_ids": list(
                         selection.bounded_beam_trace.preferred_candidate_ids
                     ),
                 },
             },
-            "preference_pairs": [item.as_payload() for item in preference_pairs],
+            "preference_pairs": [],
             **({"news_slot": dict(news_slot)} if news_slot is not None else {}),
             # Optional lanes whose calls were cut when their grace ended.
             **(
@@ -9451,7 +9610,7 @@ class TopicPipeline:
         config: ArkBackgroundConfig,
         invoke_stage: StageInvoker,
         external_audit: ExternalInvocationAudit,
-        search_provider: WebSearchFn,
+        search_provider: WebSearchFn | None,
         summary_batch: _SessionSummaryBatch | None = None,
     ) -> BackgroundGenerationResult:
         if summary_batch is None:
@@ -9513,7 +9672,7 @@ class TopicPipeline:
         config: ArkBackgroundConfig,
         invoke_stage: StageInvoker,
         external_audit: ExternalInvocationAudit,
-        search_provider: WebSearchFn,
+        search_provider: WebSearchFn | None,
         early_evidence: dict[str, asyncio.Future[_CandidateEvidence]],
         fetch_tasks: _FetchTasks,
     ) -> BackgroundGenerationResult | None:
@@ -9603,7 +9762,7 @@ class TopicPipeline:
         config: ArkBackgroundConfig,
         invoke_stage: StageInvoker,
         external_audit: ExternalInvocationAudit,
-        search_provider: WebSearchFn,
+        search_provider: WebSearchFn | None,
         summary_batch: _SessionSummaryBatch,
         hot_list_pull: HotListPull | None,
         news_task: asyncio.Future[tuple[dict[str, Any] | None, str | None]] | None,
@@ -9611,7 +9770,7 @@ class TopicPipeline:
         fetch_tasks: _FetchTasks,
     ) -> BackgroundGenerationResult:
         if self.on_candidates_ready:
-            self.on_candidates_ready(snapshot.context_scope)
+            self.on_candidates_ready(snapshot.context_scope, snapshot.work_mode)
         summaries = summary_batch.artifacts
         decision_time = self._now()
         rid = await self._distill_interests(
@@ -9747,6 +9906,10 @@ class TopicPipeline:
                 carried_over=len(retained),
                 offered_questions=offered_questions,
                 news_lead=hot_list_pull is not None,
+                enable_recent_web=(
+                    (search_provider or self._search_override) is not None
+                    and topic_web_search_engines_enabled()
+                ),
                 lanes=lanes,
                 on_recent_plans=start_recent_evidence,
             )
@@ -9963,6 +10126,12 @@ class TopicPipeline:
                     grounding_evidence_receipt=grounding_batch.evidence_receipt,
                 ) from exc
             except Exception as exc:
+                logger.warning(
+                    "Topic Starter v6 terminal stage failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
                 raise TerminalGenerationRejection(
                     "terminal_generation_failed",
                     grounding_decision_receipt=grounding_batch.decision_receipt,

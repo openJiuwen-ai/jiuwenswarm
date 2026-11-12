@@ -12,7 +12,6 @@ import {
   buildDynamicTopicStarterSlate,
   buildDirectInputEvent,
   buildExposureEvent,
-  buildNotInterestedEvent,
   buildPageLeftEvent,
   buildSessionBoundEvent,
   buildTopicClickEvent,
@@ -46,10 +45,11 @@ function response(overrides = {}) {
     policy_id: 'topic-starter-mvp-v6',
     context_scope: 'global_new_chat',
     project_id: null,
+    work_mode: 'work',
     short_intent_version: 2,
     pool_card_count: 7,
     exposure_slice_id: 'slice-a',
-    selection_mode: 'mixed_dynamic',
+    selection_mode: 'personalized_dynamic',
     topics: [topic(1), topic(2)],
     ...overrides,
   };
@@ -65,9 +65,10 @@ const dynamicSlate = {
   policyId: 'topic-starter-mvp-v6',
   contextScope: 'global_new_chat',
   projectId: null,
+  workMode: 'work',
   shortIntentVersion: 2,
   exposureSliceId: 'slice-a',
-  selectionMode: 'mixed_dynamic',
+  selectionMode: 'personalized_dynamic',
   topics: [topic(1), topic(2)],
 };
 
@@ -86,7 +87,7 @@ test('collapses homepage recommendation status into two copy jobs', () => {
   assert.equal(topicStarterStatusMessageKey('disabled', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('missing_configuration', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('provider_unavailable', false), 'chat.topicStarter.statusNeedsSettings');
-  assert.equal(topicStarterShowsSettingsAction('disabled'), true);
+  assert.equal(topicStarterShowsSettingsAction('disabled'), false);
   assert.equal(topicStarterShowsSettingsAction('failed'), false);
   assert.equal(topicStarterShowsProviderRefusal('provider_unavailable'), true);
   assert.equal(topicStarterShowsProviderRefusal('failed'), false);
@@ -98,12 +99,14 @@ test('builds isolated global and project new-chat requests', () => {
     policy_id: 'topic-starter-mvp-v6',
     context_scope: 'global_new_chat',
     project_id: null,
+    work_mode: 'work',
   });
   assert.deepEqual(buildTopicStarterRequest('session-b', 'project-7'), {
     session_id: 'session-b',
     policy_id: 'topic-starter-mvp-v6',
     context_scope: 'project:project-7',
     project_id: 'project-7',
+    work_mode: 'work',
   });
 });
 
@@ -122,34 +125,26 @@ test('rejects stale or malformed pool responses', () => {
   }
 });
 
-test('click and explicit dislike carry exact ids and no client-authored card content', () => {
+test('click carries exact ids and no client-authored card content', () => {
   const click = buildTopicClickEvent(dynamicSlate, 'revision-2');
-  const dislike = buildNotInterestedEvent(dynamicSlate, 'revision-1');
-  const exactFirst = {
-    manifest_id: 'manifest-a',
-    card_revision_id: 'revision-1',
-    generation_batch_id: 'batch-a',
-    context_scope: 'global_new_chat',
-    project_id: null,
-    short_intent_version: 2,
-    exposure_slice_id: 'slice-a',
-  };
   assert.equal(click.event_type, 'topic_click');
   assert.equal(click.position, 1);
   assert.deepEqual(click.payload, {
-    ...exactFirst,
+    manifest_id: 'manifest-a',
     card_revision_id: 'revision-2',
+    generation_batch_id: 'batch-a',
+    context_scope: 'global_new_chat',
+    project_id: null,
+    work_mode: 'work',
+    short_intent_version: 2,
+    exposure_slice_id: 'slice-a',
   });
-  assert.equal(dislike.event_type, 'not_interested');
-  assert.equal(dislike.position, 0);
-  assert.deepEqual(dislike.payload, exactFirst);
   for (const key of ['title', 'prompt', 'intent', 'evidence']) {
     assert.equal(Object.hasOwn(click.payload, key), false);
-    assert.equal(Object.hasOwn(dislike.payload, key), false);
   }
 });
 
-test('keeps the exposure position after another card is dismissed', () => {
+test('keeps the exposure position after the slate is filtered', () => {
   const filteredSlate = {
     ...dynamicSlate,
     topics: [{ ...dynamicSlate.topics[1], position: 1 }],
@@ -362,10 +357,11 @@ function dynamicSlateResponse(sessionId, tag, count = 4, projectId = null) {
     policy_id: 'topic-starter-mvp-v6',
     context_scope: contextScope,
     project_id: projectId,
+    work_mode: 'work',
     short_intent_version: 2,
     pool_card_count: projectId ? 4 : 7,
     exposure_slice_id: `slice-${tag}`,
-    selection_mode: count < 3 ? 'mixed_dynamic' : 'personalized_dynamic',
+    selection_mode: 'personalized_dynamic',
     topics: Array.from({ length: count }, (_, index) => ({
       id: `${tag}-revision-${index}`,
       card_revision_id: `${tag}-revision-${index}`,
@@ -440,11 +436,38 @@ async function setPageVisibility(state) {
 
 
 function scopeParams(request) {
-  const { visit_id, manual_retry, ...scope } = request.params;
+  const { visit_id, ...scope } = request.params;
   assert.match(visit_id, /^topic-visit-/);
-  assert.equal(manual_retry, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(request.params, 'manual_retry'), false);
   return scope;
 }
+
+test('enterprise skips topic UI, reads, subscriptions and foreground checks', async () => {
+  const previousEdition = window.__JIUWENSWARM_EDITION__;
+  const originalOn = webClient.on;
+  const subscriptions = [];
+  window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  webClient.on = function (event, handler) {
+    subscriptions.push(event);
+    return originalOn.call(this, event, handler);
+  };
+  let panel;
+  try {
+    panel = await mountWelcome('enterprise-topic-disabled', { holdResponses: true });
+    await panel.rerender({ isConnected: false });
+    await panel.rerender({ isConnected: true });
+    await setPageVisibility('hidden');
+    await setPageVisibility('visible');
+    assert.equal(document.querySelector('[data-testid="chat-panel-welcome-suggestions"]'), null);
+    assert.deepEqual(subscriptions.filter((event) => event.startsWith('topic_starters.')), []);
+    assert.deepEqual(sent.filter((frame) => frame.method.startsWith('topic_starters.')), []);
+  } finally {
+    if (panel) await panel.unmount();
+    webClient.on = originalOn;
+    if (previousEdition === undefined) delete window.__JIUWENSWARM_EDITION__;
+    else window.__JIUWENSWARM_EDITION__ = previousEdition;
+  }
+});
 
 test('a pool that answers at once is shown without a static entrance first', async () => {
   const panel = await mountWelcome('sess-no-flash', { holdResponses: true });
@@ -485,6 +508,7 @@ test('General renders and persists the topic switch through config while keeping
       model_config: params?.include_api_key ? { ...modelConfig, api_key: 'saved-topic-key' } : modelConfig,
     };
     if (method === 'vendors.list') return { vendors: { reasoning, token_plan: [], coding_plan: [], custom_api: [] } };
+    if (method === 'config.validate_model') return { ok: true, model_provider: 'OpenAI' };
     if (method === 'topic_starters.select_model') {
       if (params.configuration) modelConfig = { ...params.configuration, has_api_key: true };
       else { modelConfig = {}; storedValue = 'false'; }
@@ -545,6 +569,19 @@ test('General renders and persists the topic switch through config while keeping
     await react.act(settle);
     assert.equal(storedValue, 'true', 'reenabling a saved model must save the switch directly');
     assert.equal(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'), null);
+    const testBtn = document.querySelector('[data-testid="settings-topic-model-test-btn"]');
+    assert.ok(testBtn, 'saved topic model card must expose a test-connection button like chat models');
+    const validateBeforeCardTest = requests.filter(request => request.method === 'config.validate_model').length;
+    await react.act(async () => testBtn.click());
+    await react.act(settle);
+    const cardProbe = requests.findLast(request => request.method === 'config.validate_model');
+    assert.ok(cardProbe, 'card test must call config.validate_model');
+    assert.ok(requests.filter(request => request.method === 'config.validate_model').length > validateBeforeCardTest);
+    assert.equal(cardProbe.params.model, 'topic-chat');
+    assert.equal(cardProbe.params.api_key, 'saved-topic-key');
+    assert.equal(cardProbe.params.api_base, 'https://example.test/v1');
+    assert.ok(requests.some(request => request.method === 'topic_starters.status' && request.params?.include_api_key === true));
+    assert.ok(document.querySelector('[data-testid="settings-topic-model-toast"][data-variant="success"]'));
     await react.act(async () => document.querySelector('[data-testid="settings-topic-model-edit"]').click());
     await react.act(settle);
     assert.ok(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'));
@@ -555,6 +592,10 @@ test('General renders and persists the topic switch through config while keeping
     assert.ok(requests.some(request => request.method === 'topic_starters.status' && request.params?.include_api_key === true));
     await react.act(async () => document.querySelector('[data-testid="settings-agent-media-config-dialog-save-btn"]').click());
     await react.act(settle);
+    const probed = requests.findLast(request => request.method === 'config.validate_model');
+    assert.ok(probed, 'topic save must probe with config.validate_model like chat models');
+    assert.equal(probed.params.model, 'topic-chat');
+    assert.equal(probed.params.api_key, 'saved-topic-key');
     const savedModel = requests.findLast(request => request.method === 'topic_starters.select_model');
     assert.equal(savedModel.params.configuration.api_key, 'saved-topic-key');
     assert.equal(savedModel.params.configuration.model, 'topic-chat');
@@ -666,11 +707,10 @@ test('disabled homepage keeps preset cards and links to General; enabling refres
   }
 });
 
-test('enabled recommendations show a shared unavailable hint with settings recovery', async () => {
+test('enabled recommendations show a shared unavailable hint without settings CTA', async () => {
   for (const state of ['missing_configuration', 'provider_unavailable']) {
-    let settingsOpens = 0;
     const panel = await mountWelcome(`sess-enabled-${state}`, {
-      holdResponses: true, onOpenGeneralSettings: () => { settingsOpens += 1; },
+      holdResponses: true, onOpenGeneralSettings: () => { throw new Error('settings CTA removed'); },
     });
     try {
       await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, {
@@ -682,10 +722,8 @@ test('enabled recommendations show a shared unavailable hint with settings recov
       assert.ok(status);
       assert.ok(status.textContent.includes('unavailable'));
       assert.ok(status.classList.contains('chat-suggestions__title'));
-      const settingsButton = document.querySelector('[data-testid="chat-panel-topic-settings"]');
-      assert.ok(settingsButton);
-      await react.act(async () => settingsButton.click());
-      assert.equal(settingsOpens, 1);
+      assert.equal(document.querySelector('[data-testid="chat-panel-topic-settings"]'), null);
+      assert.equal(status.textContent.includes('Check settings'), false);
       assert.equal(document.querySelector('[data-testid="chat-panel-topic-general-settings"]'), null);
       assert.equal(document.body.textContent.includes('For topics that understand you better'), false);
     } finally {
@@ -706,6 +744,7 @@ test('project new-chat requests and accepts only its selected project pool', asy
       policy_id: 'topic-starter-mvp-v6',
       context_scope: 'project:project-7',
       project_id: 'project-7',
+      work_mode: 'work',
     });
     await react.act(async () => {
       liveSocket.reply(request.id, dynamicSlateResponse('sess-project', 'PROJECT', 4, 'project-7'));
