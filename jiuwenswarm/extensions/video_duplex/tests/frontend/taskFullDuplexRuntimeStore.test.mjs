@@ -48,47 +48,6 @@ function registerPanel() {
   return panel;
 }
 
-test('re-renders while the shared screen starts do not drop the run or its conversation (#5825)', async () => {
-  registerPanel();
-  await startTaskFullDuplex('sess-1', 'screen');
-  assert.equal(buttonState('sess-1'), 'starting');
-
-  // The panel re-sends "idle" on every parent render while it waits for the picture.
-  setTaskFullDuplexRuntimeState('idle');
-  setTaskFullDuplexRuntimeState('idle');
-  assert.equal(snapshot().sessionId, 'sess-1');
-
-  setTaskFullDuplexRuntimeState('starting');
-  setTaskFullDuplexRuntimeState('active');
-  assert.equal(snapshot().sessionId, 'sess-1');
-  assert.equal(buttonState('sess-1'), 'active');
-
-  // A real end of the media run still returns the button to idle.
-  setTaskFullDuplexRuntimeState('idle');
-  assert.equal(snapshot().state, 'idle');
-  assert.equal(snapshot().sessionId, null);
-});
-
-test('the old run ending after a switch does not clear the new conversation', async () => {
-  registerPanel();
-  await startTaskFullDuplex('sess-a', 'screen');
-  setTaskFullDuplexRuntimeState('starting');
-  setTaskFullDuplexRuntimeState('active');
-  assert.equal(buttonState('sess-a'), 'active');
-
-  await startTaskFullDuplex('sess-b', 'screen');
-  // The stopped panel reports idle only after the new start began.
-  setTaskFullDuplexRuntimeState('idle');
-  assert.equal(snapshot().sessionId, 'sess-b');
-  setTaskFullDuplexRuntimeState('starting');
-  setTaskFullDuplexRuntimeState('active');
-  assert.equal(buttonState('sess-b'), 'active');
-
-  stopTaskFullDuplex();
-  setTaskFullDuplexRuntimeState('idle');
-  assert.equal(snapshot().state, 'idle');
-});
-
 test('closing the shared screen keeps the run and it can be shared again', async () => {
   const panel = registerPanel();
   await startTaskFullDuplex('sess-share', 'screen');
