@@ -232,8 +232,8 @@ const compactCommand: SlashCommand = {
       } else if (res.result === 'compressed') {
         const before = res.stats?.raw_total_tokens ?? 0;
         const after = res.stats?.total_tokens ?? 0;
-        const rate = before > 0 ? Math.round(((before - after) / before) * 100) : 0;
-        const fmt = (n: number) => Math.max(1, Math.round(n / 1000));
+        const rate = (before > 0 ? ((before - after) / before) * 100 : 0).toFixed(1);
+        const fmt = (n: number) => (n / 1000).toFixed(1);
         output = `✓ 上下文已压缩：${fmt(after)}K / ${fmt(before)}K tokens（节省 ${rate}%）`;
       } else {
         output = '压缩未完成，请稍后再试。';
