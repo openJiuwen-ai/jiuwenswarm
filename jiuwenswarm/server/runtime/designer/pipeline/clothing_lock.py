@@ -88,18 +88,62 @@ CLOTHING_PARTS_RULE = (
     "color, written in content_language; leave a slot empty when it does not apply. "
     "description locks face, age, hair, and body; clothing_parts is the wardrobe authority. "
 )
-_SLOT_LABEL_RE = re.compile(
-    r"(?i)\b(?:top|bottom|outfit|foot\s*wear|outer\s*wear|under\s*wear|accessor(?:y|ies))"
-    r"\s*(?:=|:|：)\s*",
+_SLOT_LABELS = (
+    "outer wear",
+    "foot wear",
+    "under wear",
+    "outerwear",
+    "footwear",
+    "underwear",
+    "accessories",
+    "accessory",
+    "outfit",
+    "bottom",
+    "top",
 )
+
+
+def _strip_slot_labels(text: str) -> str:
+    """Drop slot labels ("outerwear=", "Outer wear:", "footwear:") and keep the garment."""
+    out = str(text or "")
+    changed = True
+    while changed:
+        changed = False
+        low = out.casefold()
+        for label in _SLOT_LABELS:
+            at = low.find(label)
+            while at >= 0:
+                if at and (low[at - 1].isalnum() or low[at - 1] == "_"):
+                    at = low.find(label, at + 1)
+                    continue
+                rest = out[at + len(label) :].lstrip(" \t")
+                if rest[:1] in ("=", ":", "\uff1a"):
+                    out = out[:at] + rest[1:].lstrip(" \t")
+                    changed = True
+                break
+            if changed:
+                break
+    return out
 
 
 def _has_clothing_slots(text: str) -> bool:
     return any(key in text for key in _SLOT_KEYS)
 
 
-_EDGE_JUNK_RE = re.compile(r"^[\s,;\u3001\u3002\uff0c\uff1b]+|[\s,;\u3001\u3002\uff0c\uff1b]+$")
-_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff][^()]{0,40}")
+def _cjk_run(text: str, limit: int = 41) -> str:
+    """First Chinese run of a phrase, stopping at a parenthesis."""
+    start = next((i for i, ch in enumerate(text) if "\u4e00" <= ch <= "\u9fff"), -1)
+    if start < 0:
+        return ""
+    out: list[str] = []
+    for ch in text[start : start + limit]:
+        if ch in "()\uff08\uff09":
+            break
+        out.append(ch)
+    return "".join(out)
+
+
+_EDGE_JUNK = " \t\r\n,;\u3001\u3002\uff0c\uff1b"
 
 
 def condense_garment(text: str, *, limit: int = 160) -> str:
@@ -110,17 +154,16 @@ def condense_garment(text: str, *, limit: int = 160) -> str:
     Keep the head garment plus its first translation so the clause is stable
     when it is read again.
     """
-    value = re.sub(r"\s+", " ", str(text or ""))
-    value = _EDGE_JUNK_RE.sub("", value)
+    value = " ".join(str(text or "").split()).strip(_EDGE_JUNK)
     if not value:
         return ""
-    head = _EDGE_JUNK_RE.sub("", re.split(r"\s*\(", value, maxsplit=1)[0])
+    head = value.split("(", 1)[0].strip(_EDGE_JUNK)
     repeated = bool(head) and len(head) >= 8 and value.casefold().count(head.casefold()) > 1
     if not repeated and len(value) <= limit:
         return value
-    zh = _CJK_RUN_RE.search(value)
+    zh = _cjk_run(value)
     if zh and head:
-        return f"{head} ({zh.group(0).strip()})"[:limit]
+        return f"{head} ({zh})"[:limit]
     return (head or value)[:limit]
 
 
@@ -132,12 +175,12 @@ def normalize_clothing_parts(raw: Any) -> dict[str, str]:
     for slot in CLOTHING_SLOTS:
         value = raw.get(slot)
         if isinstance(value, (list, tuple)):
-            items = [re.sub(r"\s+", " ", str(v)).strip() for v in value]
+            items = [" ".join(str(v).split()) for v in value]
             text = ", ".join(item for item in items if item)
         else:
-            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            text = " ".join(str(value or "").split())
         # Slot values are joined with ";" / "=" in costume_lock.
-        text = text.replace("=", " ").replace(";", ",").strip(" ,，;；.。")
+        text = text.replace("=", " ").replace(";", ",").strip(" ,\uff0c;\uff1b.\u3002")
         if text:
             parts[slot] = condense_garment(text)
     return parts
@@ -149,12 +192,18 @@ def wearable_phrase(text: str, *, name: str = "", lang: str = "en") -> str:
         clause_separator,
     )
 
-    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    raw = " ".join(str(text or "").split()).strip()
     if name:
-        raw = re.sub(rf"(?i)^{re.escape(name.strip())}\s*[:：]\s*", "", raw).strip()
-    raw = _SLOT_LABEL_RE.sub("", raw)
-    raw = re.sub(r"\s*[;；]\s*", clause_separator(lang), raw)
+        head, sep, rest = raw.partition(":")
+        if not sep:
+            head, sep, rest = raw.partition("\uff1a")
+        if sep and head.strip().casefold() == name.strip().casefold():
+            raw = rest.strip()
+    raw = _strip_slot_labels(raw)
+    clauses = [part.strip() for part in raw.replace("\uff1b", ";").split(";") if part.strip()]
+    raw = clause_separator(lang).join(clauses)
     return condense_garment(raw)
+
 
 
 def extract_clothing_parts(text: str) -> dict[str, str]:
@@ -346,29 +395,41 @@ def clothing_lock_clause(
     )
 
 
-_COSTUME_CLAUSE_RE = re.compile(
-    r"(?:costume|wardrobe|outfit|clothing)\s*(?:\([^)]*\))?\s*[:\uff1a]\s*(?P<body>.+?)"
-    r"(?=(?:\.\s|\.$|\n)|photoreal|framing|background|purpose|$)",
-    re.IGNORECASE | re.DOTALL,
+_COSTUME_LABELS = ("costume", "wardrobe", "outfit", "clothing")
+_COSTUME_STOPS = ("photoreal", "framing", "background", "purpose")
+
+# A plate separates garments with ";" and may end the clause with a prop
+# ("…; a brass lantern in his hand"), so a segment only belongs to the
+# wardrobe when it names a garment.
+_GARMENT_NOUNS = frozenset(
+    """
+    sweater sweaters pullover pullovers jumper jumpers cardigan cardigans shirt shirts blouse blouses
+    tee tees tshirt tshirts top tops vest vests waistcoat waistcoats jacket jackets coat coats parka
+    parkas anorak anoraks trench blazer blazers suit suits dress dresses gown gowns skirt skirts
+    trousers pants jeans shorts leggings tights boot boots shoe shoes sneaker sneakers sandal sandals
+    loafer loafers sock socks glove gloves scarf scarfs scarves shawl shawls hat hats cap caps beanie
+    beanies helmet helmets mask masks apron aprons robe robes uniform uniforms belt belts tie ties
+    cloak cloaks cape capes poncho ponchos overalls dungarees turban veil glasses sunglasses
+    """.split()
 )
 
-# Garment nouns decide what belongs to the wardrobe. A plate may separate
-# garments with semicolons ("sweater …; trousers …; boots …") or commas, and a
-# prop can follow the same way ("…; a brass lantern in his hand"), so the
-# semicolon alone is not a boundary.
-_GARMENT_NOUN_RE = re.compile(
-    r"(?i)\b(sweaters?|pullovers?|jumpers?|cardigans?|shirts?|blouses?|tee|t-shirt|tops?|"
-    r"vests?|waistcoats?|jackets?|coats?|parkas?|anoraks?|trench|blazers?|suits?|dress(?:es)?|"
-    r"gowns?|skirts?|trousers?|pants?|jeans|shorts|leggings?|tights|boots?|shoes?|sneakers?|"
-    r"sandals?|loafers?|socks?|gloves?|scarfs?|scarves|shawls?|hats?|caps?|beanies?|helmets?|"
-    r"masks?|aprons?|robes?|uniforms?|belts?|ties?|cloaks?|capes?|ponchos?|overalls?|dungarees|"
-    r"turban|veil|glasses|sunglasses|uniform)\b"
-)
-_COSTUME_SPLIT_RE = re.compile(r"[;\uff1b]")
+
+def _words(text: str) -> list[str]:
+    out: list[str] = []
+    current: list[str] = []
+    for char in str(text or "").casefold():
+        if char.isalnum() or char in "'-":
+            current.append(char)
+        elif current:
+            out.append("".join(current))
+            current = []
+    if current:
+        out.append("".join(current))
+    return out
 
 
 def _is_wardrobe_segment(text: str) -> bool:
-    return bool(_GARMENT_NOUN_RE.search(text))
+    return any(word in _GARMENT_NOUNS for word in _words(text))
 
 
 def costume_clause_from_spec_prompt(prompt: str) -> str:
@@ -379,18 +440,42 @@ def costume_clause_from_spec_prompt(prompt: str) -> str:
     ``Wardrobe``). When the user edits that plate's prompt, this is the text
     downstream nodes must wear.
     """
-    text = re.sub(r"\s+", " ", str(prompt or "")).strip()
+    text = " ".join(str(prompt or "").split())
     if not text:
         return ""
-    match = _COSTUME_CLAUSE_RE.search(text)
-    if not match:
+    low = text.casefold()
+    body = ""
+    for label in _COSTUME_LABELS:
+        at = low.find(label)
+        if at < 0:
+            continue
+        rest = text[at + len(label) :].lstrip(" \t")
+        if rest.startswith("("):
+            close = rest.find(")")
+            rest = rest[close + 1 :].lstrip(" \t") if close >= 0 else rest
+        if rest[:1] not in (":", "\uff1a"):
+            continue
+        body = rest[1:]
+        break
+    if not body:
         return ""
-    segments = [seg.strip(" .,;:\uff1b") for seg in _COSTUME_SPLIT_RE.split(match.group("body"))]
+    stops = [len(body)]
+    for marker in (". ", "\u3002"):
+        at = body.find(marker)
+        if at >= 0:
+            stops.append(at)
+    low_body = body.casefold()
+    for marker in _COSTUME_STOPS:
+        at = low_body.find(marker)
+        if at >= 0:
+            stops.append(at)
+    body = body[: min(stops)]
+    segments = [seg.strip(" .,;:\uff1b") for seg in body.replace("\uff1b", ";").split(";")]
     garments = [seg for seg in segments if seg and _is_wardrobe_segment(seg)]
     if not garments:
         garments = [segments[0]] if segments and segments[0] else []
-    body = "; ".join(garments).strip(" .,;:\uff1b")
-    return re.sub(r"\s+", " ", body)[:480]
+    return " ".join("; ".join(garments).strip(" .,;:\uff1b").split())[:480]
+
 
 
 def _spec_prompt_for(node: dict[str, Any]) -> str:
@@ -465,9 +550,13 @@ def refresh_dependent_costumes(graph: dict[str, Any] | None) -> list[str]:
             # Structured locks ("top=cream cable-knit sweater") are quoted into
             # prompts by their slot values too, so refresh those as well; a prose
             # lock is quoted by its garment segments.
-            stale_garments = list(_LOCK_SLOT_RE.findall(old))
+            stale_garments = _slot_values(old)
             if not stale_garments:
-                stale_garments = re.split(r"[,\uff0c;\uff1b]", old)
+                stale_garments = [
+                    part
+                    for part in old.replace("\uff0c", ";").replace(",", ";").replace("\uff1b", ";").split(";")
+                    if part.strip()
+                ]
             for garment in stale_garments:
                 garment = garment.strip()
                 if len(garment) >= 8 and garment not in clause:
@@ -514,10 +603,22 @@ _WARDROBE_PROMPT_FIELDS = (
     "director_task",
 )
 
-_LOCK_SLOT_RE = re.compile(
-    r"(?:outfit|top|bottom|outerwear|footwear|accessories)\s*=\s*([^;\uff1b]+)",
-    re.IGNORECASE,
+_SLOT_KEY_SET = frozenset(
+    {"outfit", "top", "bottom", "outerwear", "outer wear", "footwear", "foot wear", "accessories"}
 )
+
+
+def _slot_values(lock: str) -> list[str]:
+    """Values of a structured lock ("top=…; bottom=…"); a prose lock yields none."""
+    values: list[str] = []
+    for chunk in str(lock or "").replace("\uff1b", ";").replace("\n", ";").split(";"):
+        head, sep, value = chunk.partition("=")
+        if not sep or " ".join(head.split()).casefold() not in _SLOT_KEY_SET:
+            continue
+        value = value.strip()
+        if value:
+            values.append(value)
+    return values
 
 
 def sync_costume_from_specs(graph: dict[str, Any] | None) -> set[str]:

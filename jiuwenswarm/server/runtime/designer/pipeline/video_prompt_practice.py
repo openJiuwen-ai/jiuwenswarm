@@ -475,12 +475,30 @@ def _language_sentence(cfg: dict[str, Any], content_lang: str = "en") -> str:
     return phrase(_PHRASES, content_lang, "dialogue_language", name=name)
 
 
+_PLANNER_NOTE_MARKERS = (
+    "do not",
+    "don't",
+    "never",
+    "forbid",
+    "across same-setting shots",
+    "across same setting shots",
+    "no relight mid-scene",
+)
+
+
 def _visual_only(text: str) -> str:
     """Drop planner instructions from a lighting phrase; keep the light an image can show."""
-    body = re.split(r"(?i)\b(?:do not|don't|never|forbid)\b", str(text or ""), maxsplit=1)[0]
-    body = re.sub(r"(?i)\s*;?\s*keep\s+[\w /+-]+\s+across\s+same-setting\s+shots", "", body)
-    body = re.sub(r"(?i)\s*;?\s*no relight mid-scene", "", body)
-    return body.strip(" ,;.—-")
+    kept: list[str] = []
+    for clause in str(text or "").replace("；", ";").split(";"):
+        low = clause.casefold()
+        cuts = [low.find(marker) for marker in _PLANNER_NOTE_MARKERS if low.find(marker) >= 0]
+        if cuts:
+            head = clause[: min(cuts)].strip(" ,.")
+            if head:
+                kept.append(head)
+            continue
+        kept.append(clause.strip())
+    return "; ".join(part for part in kept if part).strip(" ,;.—-")
 
 
 def _time_of_day_payload(cfg: dict[str, Any]) -> dict[str, str]:
@@ -780,9 +798,15 @@ def _costume_for_setting(token: str, name: str, cfg: dict[str, Any]) -> str:
     return str(entry.get(token) or entry.get(name) or "").strip()
 
 
-_GARMENT_SLOT_CHUNK = re.compile(
-    r"(?i)^(?:top|bottom|outfit|foot\s*wear|outer\s*wear|under\s*wear|accessor(?:y|ies))\s*="
+_SLOT_HEADS = frozenset(
+    {"top", "bottom", "outfit", "footwear", "foot wear", "outerwear", "outer wear", "underwear", "under wear", "accessory", "accessories"}
 )
+
+
+def _is_slot_chunk(chunk: str) -> bool:
+    """True for a garment slot chunk such as ``bottom=navy trousers``."""
+    head, sep, _ = str(chunk or "").partition("=")
+    return bool(sep) and " ".join(head.split()).casefold() in _SLOT_HEADS
 
 
 def _costume_blocks(lock: str) -> list[tuple[str, str]]:
@@ -795,14 +819,18 @@ def _costume_blocks(lock: str) -> list[tuple[str, str]]:
     is kept under the empty name so it can never be read as their wardrobe.
     """
     blocks: list[tuple[str, list[str]]] = []
-    for chunk in re.split(r"[;；\n]+", str(lock or "")):
+    chunks = str(lock or "").replace("\uff1b", ";").replace("\n", ";").split(";")
+    for chunk in chunks:
         chunk = chunk.strip()
         if not chunk:
             continue
-        head = re.match(r"^([^:：=]{1,40})[:：]\s*(.*)$", chunk)
-        if head:
-            blocks.append((head.group(1).strip(), [head.group(2).strip()]))
-        elif blocks and _GARMENT_SLOT_CHUNK.match(chunk):
+        colons = [at for at in (chunk.find(":"), chunk.find("\uff1a")) if at >= 0]
+        colon = min(colons) if colons else -1
+        equals = chunk.find("=")
+        names_a_character = 0 < colon <= 40 and (equals < 0 or colon < equals)
+        if names_a_character:
+            blocks.append((chunk[:colon].strip(), [chunk[colon + 1 :].strip()]))
+        elif blocks and _is_slot_chunk(chunk):
             blocks[-1][1].append(chunk)
         elif blocks:
             blocks.append(("", [chunk]))
@@ -885,8 +913,8 @@ _WARDROBE_LIMIT = 220
 
 def _fit_wardrobe(text: str, limit: int = _WARDROBE_LIMIT) -> str:
     """Trim a garment phrase at a clause boundary instead of mid-word."""
-    value = re.sub(r"\s*,\s*(?:,\s*)+", ", ", str(text or ""))
-    value = value.strip(" ,，;；")
+    value = ", ".join(part.strip() for part in str(text or "").split(",") if part.strip())
+    value = value.strip(" ,\uff0c;\uff1b")
     if len(value) <= limit:
         return value
     cut = value[:limit]

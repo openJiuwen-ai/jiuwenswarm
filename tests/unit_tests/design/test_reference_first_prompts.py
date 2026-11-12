@@ -336,8 +336,16 @@ def test_six_cast_without_binding_never_cites_an_unattached_image() -> None:
 
     prompt = compose_practice_prompt(cfg=cfg, graph=None, action="They sit down.")
 
-    cited = sorted({int(m) for m in re.findall(r"Image (\d+)", prompt)})
-    assert cited == [1, 2, 3, 4, 5], cited
+    cited: set[int] = set()
+    for chunk in prompt.split("Image ")[1:]:
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        if digits:
+            cited.add(int(digits))
+    assert sorted(cited) == [1, 2, 3, 4, 5], sorted(cited)
     assert "Image 6" not in prompt
     assert "Image 7" not in prompt
 
