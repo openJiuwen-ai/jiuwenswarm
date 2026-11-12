@@ -39,6 +39,7 @@ import {
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
 import { watchCronExecutionSessions, watchCronRunUpdates } from './features/cron/cronSessionLive';
+import { maySnapshotRelightProcessing } from './features/interruptSettleGuard';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -2073,7 +2074,15 @@ function AppContent({
       if (typeof session.is_processing === 'boolean') {
         const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
         const locallyBusy = useChatStore.getState().getRuntime(targetSessionId)?.foregroundIsProcessing === true;
-        if (session.is_processing || allowDowngrade || !locallyBusy) {
+        // A pause/cancel ack just settled this turn; a lagging worker snapshot
+        // must not relight processing until a new round starts (user send or a
+        // real processing_status(true) wire frame clears the marker).
+        const interruptSettled = useChatStore.getState()
+          .getRuntime(targetSessionId)?.interruptSettledEpoch != null;
+        if (
+          (session.is_processing || allowDowngrade || !locallyBusy)
+          && maySnapshotRelightProcessing(session.is_processing, interruptSettled, allowDowngrade)
+        ) {
           setProcessing(targetSessionId, session.is_processing);
           if (!session.is_processing) {
             setThinking(targetSessionId, false);
