@@ -303,7 +303,10 @@ def _uses_explicit_officeclaw_mode(request: AgentRequest) -> bool:
     """OfficeClaw 前台入口由 Relay 显式选型，后台与其它渠道保留旧策略。"""
     if str(getattr(request, "channel_id", "") or "").strip().lower() != "officeclaw":
         return False
-    if getattr(request, "req_method", None) not in _CODE_MODE_SYNC_METHODS | {ReqMethod.SESSION_CREATE}:
+    if getattr(request, "req_method", None) not in _CODE_MODE_SYNC_METHODS | {
+        ReqMethod.SESSION_CREATE,
+        ReqMethod.SESSION_PREPARE,
+    }:
         return False
     metadata = getattr(request, "metadata", None)
     metadata = metadata if isinstance(metadata, dict) else {}

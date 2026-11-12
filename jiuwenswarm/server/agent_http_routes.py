@@ -98,6 +98,7 @@ ROUTES: list[RouteSpec] = [
     RouteSpec("PATCH", "/sessions/{session_id}", ReqMethod.SESSION_RENAME.value),
     RouteSpec("DELETE", "/sessions/{session_id}", ReqMethod.SESSION_DELETE.value),
     RouteSpec("POST", "/sessions/{session_id}/actions/switch", ReqMethod.SESSION_SWITCH.value),
+    RouteSpec("POST", "/sessions/{session_id}/actions/prepare", ReqMethod.SESSION_PREPARE.value),
     RouteSpec("POST", "/sessions/{session_id}/actions/fork", ReqMethod.SESSION_FORK.value, 201),
     RouteSpec("POST", "/sessions/{session_id}/actions/rewind", ReqMethod.SESSION_REWIND.value),
     RouteSpec(

@@ -69,6 +69,7 @@ class ReqMethod(Enum):
 
     SESSION_LIST = "session.list"
     SESSION_CREATE = "session.create"
+    SESSION_PREPARE = "session.prepare"
     SESSION_SWITCH = "session.switch"
     SESSION_DELETE = "session.delete"
     SESSION_RENAME = "session.rename"
