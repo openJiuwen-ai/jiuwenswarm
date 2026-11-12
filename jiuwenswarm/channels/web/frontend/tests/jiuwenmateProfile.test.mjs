@@ -1806,3 +1806,17 @@ test('the task center runs the scheduled task whose menu was opened', async () =
     assert.deepEqual(runs, ['plan-weekly']);
   } finally { await view.close(); }
 });
+
+test('a floating schedule menu closes on resize without treating Window as a Node', async () => {
+  const view = await mountDashboard();
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+    const row = [...view.container.querySelectorAll('tr')].find((item) => item.textContent.includes('周报'));
+    await view.click(row.querySelector('.jiuwenmate-menu__trigger'));
+    assert.ok(view.find('[role="menu"]'));
+    await act(async () => {
+      window.dispatchEvent(new window.Event('resize'));
+    });
+    assert.equal(view.find('[role="menu"]'), null);
+  } finally { await view.close(); }
+});

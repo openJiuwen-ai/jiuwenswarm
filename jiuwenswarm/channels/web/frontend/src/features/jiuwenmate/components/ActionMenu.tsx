@@ -40,27 +40,33 @@ export function ActionMenu({
 
   useEffect(() => {
     if (!open) return undefined;
-    const close = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    // resize targets Window (no nodeType); close unless the event is from inside the menu.
+    const close = (event: Event) => {
+      const target = event.target;
+      if (
+        target != null
+        && typeof (target as Node).nodeType === 'number'
+        && rootRef.current?.contains(target as Node)
+      ) {
+        return;
+      }
+      setOpen(false);
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
     };
-    // A viewport-anchored list would drift away from its trigger once anything scrolls or resizes.
-    const dismiss = (event: Event) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', escape);
+    // A viewport-anchored list would drift away from its trigger once anything scrolls or resizes.
     if (floating) {
-      window.addEventListener('scroll', dismiss, true);
-      window.addEventListener('resize', dismiss);
+      window.addEventListener('scroll', close, true);
+      window.addEventListener('resize', close);
     }
     return () => {
       document.removeEventListener('mousedown', close);
       document.removeEventListener('keydown', escape);
-      window.removeEventListener('scroll', dismiss, true);
-      window.removeEventListener('resize', dismiss);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
     };
   }, [open, floating]);
 
