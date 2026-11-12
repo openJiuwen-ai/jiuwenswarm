@@ -187,3 +187,73 @@ async def test_front_normal_history_paging_still_works(stored):
             assert reply.ok and reply.payload["messages"][0]["content"] == "ordinary conversation"
     finally:
         await front.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_front_cursor_transport_reads_original_and_isolates_artifact_errors(stored, stream):
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from jiuwenswarm.server.runtime.session.history_artifacts import ARTIFACT_CURSOR_PREFIX
+
+    stored.write([user("normal", "ordinary conversation survives artifact reads")])
+    history_before = stored.path.read_bytes()
+    original = ("x" * 8191 + "中文🙂\n\"\\" * 3000).encode()
+    reference = put_text(stored.sid, original.decode())
+    front = AgentServerFront(port=0)
+    await front.start()
+    try:
+        port = front._server.sockets[0].getsockname()[1]
+        async with websockets.connect(f"ws://127.0.0.1:{port}") as socket:
+            await socket.recv()
+            offset = 0
+            restored = bytearray()
+            while offset < len(original):
+                cursor = f"{ARTIFACT_CURSOR_PREFIX}{reference['sha256']}:{offset}"
+                params = {"session_id": stored.sid, "cursor": cursor, "limit": 1}
+                if stream:
+                    rid = uuid4().hex
+                    await socket.send(json.dumps({
+                        "protocol_version": "1.0", "request_id": rid, "channel": "web",
+                        "session_id": stored.sid, "user_id": "artifact-test-owner", "identity_origin": "user",
+                        "method": "history.get", "is_stream": True,
+                        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(), "params": params,
+                    }))
+                    chunks = []
+                    async with asyncio.timeout(10):
+                        while True:
+                            raw = json.loads(await socket.recv())
+                            if raw.get("request_id") != rid:
+                                continue
+                            reply = parse_agent_server_wire_chunk(raw)
+                            assert reply.payload["cursor"] == cursor
+                            assert reply.payload["session_id"] == stored.sid
+                            assert not reply.payload.get("error"), reply.payload
+                            if "message" in reply.payload:
+                                chunks.append(reply.payload["message"])
+                            if reply.is_complete:
+                                assert reply.payload["status"] == "done"
+                                break
+                else:
+                    reply = await _request(socket, stored.sid, params)
+                    assert reply.ok, reply.payload
+                    chunks = reply.payload["messages"]
+                assert len(chunks) == 1 and chunks[0]["event_type"] == "history.artifact"
+                chunk = chunks[0]
+                encoded = chunk["content"].encode()
+                assert 0 < len(encoded) <= 8192
+                assert chunk["offset"] == offset and chunk["next_offset"] == offset + len(encoded)
+                restored.extend(encoded)
+                offset = chunk["next_offset"]
+                assert chunk["eof"] == (offset == len(original))
+            assert bytes(restored) == original
+            for other_session, digest in [(stored.sid, "f" * 64), ("other-session", reference["sha256"])]:
+                reply = await _request(socket, other_session, {
+                    "session_id": other_session,
+                    "cursor": f"{ARTIFACT_CURSOR_PREFIX}{digest}:0", "limit": 1,
+                })
+                assert not reply.ok and reply.payload["code"] == "HISTORY_ARTIFACT_FAILED"
+            reply = await _request(socket, stored.sid, {"session_id": stored.sid, "page_idx": 1})
+            assert reply.ok and reply.payload["messages"][0]["content"].startswith("ordinary conversation")
+    finally:
+        await front.stop()
+    assert stored.path.read_bytes() == history_before
