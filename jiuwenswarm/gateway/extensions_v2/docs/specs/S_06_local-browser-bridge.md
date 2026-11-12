@@ -24,7 +24,9 @@ Gateway 包可声明 `ui.items` 及 `client.requestBindings`。两类能力分�
 除显示型槽位的生命周期帧外（[S_09 第 3 节](S_09_startup-splash.md)：`webui.splash.providers` 以及 `application.background`、`application.splash` 的 `ui.ready` / `ui.closed`），所有主 WebSocket 请求先触发 `gateway.request`，包括 `webui.dispatch`。USER 插件先处理请求策略：
 返回 `deny` 或 `consume` 时按原路由契约应答；调用 `next_handler(event)` 时，客户端能力包的
 entry/footer 交互进入 BUILTIN 浏览器分派器，再触发对应 `ui.*` 事件并返回通用回执。
-不属于本 Gateway 应用级 UI 包的目标继续已有请求链。
+不属于本 Gateway 应用级 UI 包的目标继续已有请求链。未指定 `package_id` 的
+`application.sidebar.footer` `ui.ready` 先分派给 Gateway 声明的页脚贡献，再继续已有请求链，
+使共享该槽位的 AgentServer 包也能初始化。
 
 匿名交互是否允许由插件决定。宿主不根据字段名、按钮标识或页面内容识别登录行为。
 鉴权职责由 [运行时规约](S_01_gateway-extension-runtime.md#6-扩展鉴权职责) 约束，由 USER 请求策略负责；CORE 默认行为和 WebSocket 异常处理策略保持原有契约。

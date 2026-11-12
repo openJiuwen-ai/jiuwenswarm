@@ -52,6 +52,7 @@ class ActiveRenderRegistry:
 
     def __init__(self, max_instances_per_session: int = MAX_INSTANCES_PER_SESSION) -> None:
         self._instances: dict[str, RenderInstance] = {}
+        self._revisions: dict[str, tuple[RenderTarget, int]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._lock_users: dict[str, int] = {}
         self._max_per_session = max_instances_per_session
@@ -65,6 +66,15 @@ class ActiveRenderRegistry:
     def snapshot(self) -> tuple[RenderInstance, ...]:
         return tuple(self._instances.values())
 
+    def clear(self) -> None:
+        """Release active instances and revision history when the runtime stops."""
+
+        self._instances.clear()
+        self._revisions.clear()
+        for key in list(self._locks):
+            if self._lock_users.get(key, 0) == 0:
+                self._locks.pop(key, None)
+
     @asynccontextmanager
     async def claim(self, target: RenderTarget) -> AsyncIterator[RenderClaim]:
         """Claim one instance exclusively; independent instances may run concurrently."""
@@ -74,7 +84,8 @@ class ActiveRenderRegistry:
             instance = self._instances.get(target.key)
             created = instance is None
             if instance is None:
-                instance = RenderInstance(target=target)
+                revision = self._revisions.get(target.key, (target, 0))[1] if _retains_revision(target) else 0
+                instance = RenderInstance(target=target, revision=revision)
                 self._instances[target.key] = instance
             instance.updated_at = time.monotonic()
             yield RenderClaim(instance=instance, evicted=evicted, created=created)
@@ -83,6 +94,8 @@ class ActiveRenderRegistry:
         """Commit a delivered update and return its next revision frame."""
 
         instance.revision += 1
+        if _retains_revision(instance.target):
+            self._revisions[instance.target.key] = (instance.target, instance.revision)
         instance.mode = request.mode
         instance.root = _snapshot_content(request.root) if request.mode is RenderMode.REPLACE else None
         instance.visible_when = _snapshot_content(request.visible_when)
@@ -99,6 +112,8 @@ class ActiveRenderRegistry:
         """Restore the previous state after a failed delivery without skipping revisions."""
 
         instance.revision = previous.revision
+        if _retains_revision(instance.target):
+            self._revisions[instance.target.key] = (instance.target, instance.revision)
         instance.mode = previous.mode
         instance.root = previous.root
         instance.visible_when = previous.visible_when
@@ -112,10 +127,14 @@ class ActiveRenderRegistry:
             current = self._instances.get(expected.target.key)
             yield current is expected and current.revision == expected.revision
 
-    def drop_instance(self, target: RenderTarget) -> bool:
+    def drop_instance(self, target: RenderTarget, *, retired_revision: int | None = None) -> bool:
         """Remove one instance from the active registry."""
 
-        removed = self._instances.pop(target.key, None) is not None
+        instance = self._instances.pop(target.key, None)
+        removed = instance is not None
+        if instance is not None and _retains_revision(instance.target):
+            revision = instance.revision if retired_revision is None else retired_revision
+            self._revisions[target.key] = (instance.target, revision)
         if removed and self._lock_users.get(target.key, 0) == 0:
             self._locks.pop(target.key, None)
         return removed
@@ -126,7 +145,8 @@ class ActiveRenderRegistry:
         return self._drop_matching(
             lambda target: (
                 target.resolved_scope != SlotScope.APPLICATION.value and target.session_id == session_id
-            )
+            ),
+            forget_revisions=True,
         )
 
     def drop_package(self, package_id: str) -> tuple[RenderInstance, ...]:
@@ -140,7 +160,8 @@ class ActiveRenderRegistry:
             lambda target: (
                 target.resolved_scope == SlotScope.APPLICATION.value
                 and target.connection_id == connection_id
-            )
+            ),
+            forget_revisions=True,
         )
 
     @asynccontextmanager
@@ -164,7 +185,11 @@ class ActiveRenderRegistry:
                 if key not in self._instances and self._locks.get(key) is lock:
                     self._locks.pop(key, None)
 
-    def _drop_matching(self, predicate) -> tuple[RenderInstance, ...]:
+    def _drop_matching(self, predicate, *, forget_revisions: bool = False) -> tuple[RenderInstance, ...]:
+        if forget_revisions:
+            for key, (target, _) in list(self._revisions.items()):
+                if predicate(target):
+                    self._revisions.pop(key, None)
         dropped: list[RenderInstance] = []
         for key, instance in list(self._instances.items()):
             if not predicate(instance.target):
@@ -204,6 +229,12 @@ def _same_capacity_group(left: RenderTarget, right: RenderTarget) -> bool:
         left.resolved_scope != SlotScope.APPLICATION.value
         and left.session_id == right.session_id
     )
+
+
+def _retains_revision(target: RenderTarget) -> bool:
+    """Keep application revisions until their browser connection closes."""
+
+    return target.resolved_scope == SlotScope.APPLICATION.value
 
 
 def log_eviction(instance: RenderInstance) -> None:

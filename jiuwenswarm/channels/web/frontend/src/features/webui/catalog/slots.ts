@@ -11,7 +11,7 @@ export const webUISlots: readonly WebUISlotRule[] = [
   { id: 'task.function.main', display: 'single', scope: 'application', rootComponents: ['Iframe'] },
   { id: 'application.settings', display: 'list', additionalScopes: ['application'] },
   { id: 'application.entry', display: 'single', scope: 'application' },
-  { id: 'application.sidebar.footer', display: 'single', scope: 'application' },
+  { id: 'application.sidebar.footer', display: 'list', scope: 'application' },
   { id: 'application.presentation', display: 'list', scope: 'application',
     rootComponents: ['ApplicationSurface'], strictRoot: true, rerender: 'keep-mounted' },
   // Gateway-only full-window layer below the workspace.

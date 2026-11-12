@@ -2309,13 +2309,13 @@ test('Dropdown renders plugin-composed labels and native popup width without ini
   } finally { await app.close(); }
 });
 
-test('application footer mounts without a session and follows the published single-slot semantics', async () => {
+test('application footer mounts multiple contributions without a session', async () => {
   const scope = { scope: 'application', slot_id: 'application.sidebar.footer', package_id: 'pkg.one', instance_key: 'main' };
   const app = await setup({ component: 'Text', props: { value: 'First' } }, scope);
   try {
     await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Second' } }, 1,
       { ...scope, package_id: 'pkg.two' })));
-    assert.doesNotMatch(app.container.textContent, /First/);
+    assert.match(app.container.textContent, /First/);
     assert.match(app.container.textContent, /Second/);
     assert.equal(app.transport.dispatches[0].target.scope, 'application');
     assert.equal(app.transport.dispatches[0].target.sessionId, '');

@@ -96,7 +96,7 @@ flowchart LR
 | `conversation.turn.footer.actions` | `list` | 单轮回复 meta 行，横向排列 |
 | `message.assistant.meta` | `list` | 助手消息 meta 行，按 `instance_key=requestId` 对应单轮实例 |
 | `application.entry` | `single` | 应用范围的首次访问入口 |
-| `application.sidebar.footer` | `single` | 左侧图标栏底部的应用范围入口区 |
+| `application.sidebar.footer` | `list` | 左侧图标栏底部的应用范围入口区；多个实例纵向排列 |
 | `application.settings` | `list` | 设置页内容区 |
 | `application.menu` | `list` | 左侧导航栏，点击进入 `application.menu.main` |
 | `application.menu.main` | `single` | 应用菜单主页面 |
@@ -105,7 +105,7 @@ flowchart LR
 
 槽位是平台预定义位置，插件只能选择，不能新增。前端在没有实例时不渲染容器。
 `application.entry` 为应用范围的 single 入口，由 `WebUIEntryHost` 在浏览器首次访问时挂载；ready 被接受后写入访问标记，后续刷新跳过挂载，clear 或失败关闭入口。
-`application.sidebar.footer` 同为应用范围的 single 槽位，由 `WebUIHost` 在左侧图标栏底部挂载，不要求聊天会话；没有实例时不渲染容器。
+`application.sidebar.footer` 同为应用范围的 list 槽位，由 `WebUIHost` 在左侧图标栏底部挂载，不要求聊天会话；多个实例纵向排列，没有实例时不渲染容器。
 `task.function` 与 `task.function.main` 同为应用范围，复用当前 Web 连接的实例身份，不要求聊天会话；
 入口与页面共享包和实例标识。切换会话不重新挂载入口，也不因 session 变化关闭任务页面。
 离开任务页面查看聊天时，宿主保留已打开的应用范围页面及其 iframe，仅隐藏页面容器；

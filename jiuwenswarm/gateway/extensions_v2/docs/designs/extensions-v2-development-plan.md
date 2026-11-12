@@ -146,4 +146,4 @@ flowchart LR
 - Gateway 与 AgentServer 的同名事件语义不同（`ui.click` 在两侧各自注册）；一个包只能归属一侧（`package.domain`），需要两侧能力时拆成两个包。
 - 前端协议桩浏览器验证与真实 Gateway/示例接入分别记录在前端 F_02 和本模块 F_07，不将 Mock 验证解释为真实身份服务验收。
 - 开发阶段（基线 `f38242f`）`uv.lock` 锁定的 agent-core `86990bd` 缺少当前代码导入的 `openjiuwen.core.events.ops_impl.store` 与 `openjiuwen.core.extension.data`，开发环境使用 agent-core `31fee3a` 验证。`releases/0.2.9.beta3` 锁定 `release/v0.1.20.post3`（2026-11-07 起为 `c48b5bb`），合入时未按该锁文件安装验证；依赖新版 agent-core 的 13 项用例在 `31fee3a` 环境中失败，其中 12 项在未修改的目标分支上同样失败，见第 5 节 2026-11-06 记录。
-- `application.sidebar.footer` 的容量在本模块为 `list`，在前端槽位表与 AgentServer 常量中为 `single`，三处待统一；GW-07 不改变该槽位。
+- `application.sidebar.footer` 在 Gateway、前端槽位表与 AgentServer 常量中均为 `list`；未指定包的 ready 会先分派 Gateway 页脚贡献，再继续 AgentServer 请求链。

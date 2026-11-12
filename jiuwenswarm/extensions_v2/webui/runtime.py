@@ -212,10 +212,11 @@ class WebUIRuntime:
             async with self.registry.evict(instance) as current:
                 if not current:
                     continue
-                delivered = await self.transport.send_clear(clear_frame(instance, reason="package_unloaded"))
+                frame = clear_frame(instance, reason="package_unloaded")
+                delivered = await self.transport.send_clear(frame)
                 if not delivered:
                     raise RuntimeError(f"Could not clear package view: {instance.target.key}")
-                self.registry.drop_instance(instance.target)
+                self.registry.drop_instance(instance.target, retired_revision=frame.revision)
         await self.resources.drop(package_id=package_id)
 
     async def drop_session(self, session_id: str) -> None:
@@ -238,6 +239,7 @@ class WebUIRuntime:
         for instance in self.registry.snapshot():
             await self.transport.send_clear(clear_frame(instance, reason="shutdown"))
             self.registry.drop_instance(instance.target)
+        self.registry.clear()
 
 
 def _as_session_context(session_context: SessionContext | str | None) -> SessionContext | None:
