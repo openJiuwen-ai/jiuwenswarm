@@ -51,14 +51,15 @@ READ_ONLY_BASH_COMMANDS = (
     "echo",
     "wc",
     "stat",
-    "file",
 )
 
 # Shell syntax that turns an otherwise read-only command into a writer: a
 # separator chains a second command, and the redirect/substitution tokens let
-# the shell itself create or overwrite files.
+# the shell itself create or overwrite files. A bare ``$`` is rejected as well:
+# ``shlex.split`` performs no expansion, so ``${IFS}`` survives as a single word
+# and the shell would split it into a write flag after this check passed.
 _SHELL_SEGMENT_SEPARATOR_RE = re.compile(r"\|\||&&|\||;")
-_SHELL_UNSAFE_TOKENS = (">", "<", "`", "$(", "&", "\n", "\r")
+_SHELL_UNSAFE_TOKENS = (">", "<", "`", "$", "&", "\n", "\r")
 # `find` is read-only by name but not by flag: these turn it into a writer.
 _FIND_WRITE_ARGS = frozenset(
     {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
