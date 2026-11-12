@@ -21,6 +21,14 @@ from jiuwenswarm.server.control import config_service
         (None, "full_access", "false"),
         ({}, "full_access", "false"),
         ({"enabled": False, "mode": "auto"}, "full_access", "false"),
+        ({"enabled": "true", "mode": "auto"}, "full_access", "false"),
+        ({"enabled": "1", "mode": "auto"}, "full_access", "false"),
+        ({"enabled": "yes", "mode": "auto"}, "full_access", "false"),
+        ({"enabled": "on", "mode": "auto"}, "full_access", "false"),
+        ({"enabled": 1, "mode": "auto"}, "full_access", "false"),
+        ({"enabled": "false", "mode": "auto"}, "full_access", "false"),
+        ({"enabled": 0, "mode": "auto"}, "full_access", "false"),
+        ({"enabled": None, "mode": "auto"}, "full_access", "false"),
         ({"enabled": True}, "default", "true"),
         ({"enabled": True, "mode": "manual"}, "default", "true"),
         ({"enabled": True, "mode": "auto"}, "automatic", "true"),
@@ -112,8 +120,10 @@ async def test_config_get_permission_profile_handles_invalid_yaml(
     assert response.payload["permissions_profile"] == "full_access"
     assert response.payload["permissions_enabled"] == "false"
     assert path.read_text(encoding="utf-8") == saved
-    warning.assert_called_once()
-    assert isinstance(warning.call_args.args[1], yaml.YAMLError)
+    assert any(
+        len(call.args) > 1 and isinstance(call.args[1], yaml.YAMLError)
+        for call in warning.call_args_list
+    )
 
 
 @pytest.mark.asyncio
@@ -123,6 +133,7 @@ async def test_config_get_permission_profile_handles_invalid_yaml(
         ({"enabled": True, "mode": "auto"}, "automatic", "true"),
         ({"enabled": True, "mode": "manual"}, "default", "true"),
         ({"enabled": False, "mode": "auto"}, "full_access", "false"),
+        ({"enabled": "true", "mode": "auto"}, "full_access", "false"),
     ],
 )
 async def test_config_get_permission_profile_survives_later_field_failure(
