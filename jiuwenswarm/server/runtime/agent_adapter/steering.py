@@ -272,6 +272,9 @@ class _Input:
     runtime: Any
     runtime_request_id: str
     receipt: dict[str, Any] | None = None
+    # 投递尚未确认落地（异常路径）的补充图片；回执确认 accepted/consumed 后
+    # 由 _compensate_ambiguous_delivery 补落地并清除，见其 docstring。
+    pending_files: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -352,6 +355,29 @@ class SteeringSession:
         except Exception:
             return {"input_id": input_id, "status": "unknown"}
 
+    def _compensate_ambiguous_delivery(
+        self, input_id: str, item: _Input, receipt: dict[str, Any]
+    ) -> None:
+        """模糊投递窗口的补偿落地（清单后移落地的第三条腿）。
+
+        steer_active 抛异常时按「未确认不落地」放弃清单写入；但异常 ≠ 未送达
+        ——若引用行实际已进模型流（模糊失败），修复前该场景清单已落地、图
+        可见，后移落地使其退化为「成功回执 + 该图零物化」且客户端无重发
+        信号。本方法在回执路径（重放 / 状态查询，query 与否同分支）确认
+        status ∈ {accepted, consumed} 且 runtime 仍在世时补一次
+        ``_commit_steer_image_files``：commit 按当前清单重新去重、幂等，
+        重复落地无风险；先清 pending 再落地，状态轮询不会重复触发。
+        finish_request 快照路径不补：轮已结束（runtime 即将释放），下一轮
+        chat.send 覆盖清单，补进死轮无意义。
+        """
+        pending = item.pending_files
+        if not pending or item.runtime is None:
+            return
+        if receipt.get("status") not in ("accepted", "consumed"):
+            return
+        item.pending_files = None
+        _commit_steer_image_files(item.runtime, input_id, pending)
+
     async def handle(self, request: AgentRequest, *, query: bool) -> dict[str, Any]:
         params = request.params or {}
         input_id = str(params.get("input_id") or "")
@@ -381,7 +407,9 @@ class SteeringSession:
                         or params["client_message_id"] != item.client_message_id
                     ):
                         return rejected("IDEMPOTENCY_CONFLICT", input_id=input_id)
-                return await self._receipt(input_id, item)
+                receipt = await self._receipt(input_id, item)
+                self._compensate_ambiguous_delivery(input_id, item, receipt)
+                return receipt
             if query and not capability:
                 return {"input_id": input_id, "status": "unknown"}
             if not binding.active or self._active is not binding:
@@ -447,23 +475,15 @@ class SteeringSession:
             client_id = params["client_message_id"]
             if client_id in binding.client_ids:
                 return rejected("IDEMPOTENCY_CONFLICT", input_id=input_id)
-            item = _Input(
-                digest=_steer_request_digest(params),
-                client_message_id=client_id,
-                runtime=runtime,
-                runtime_request_id=runtime_id,
-            )
-            # Register before awaiting: an ambiguous transport failure keeps the
-            # same input ID queryable, instead of encouraging a duplicate send.
-            binding.inputs[input_id] = item
-            binding.client_ids[client_id] = input_id
             # 幂等摘要按 wire 原文 content + 补充图片 path 集合计算
             # （_steer_request_digest）；引用行拼接不影响摘要，同 input_id
             # 原样重试不产生二次投递。
             # 引用行先随 content 投递，清单在投递确认（accepted / consumed）后
             # 才落地：steer_active 失败（异常 / not_applied / unknown）时若清单
             # 已写，本轮去重会把同一张图的重试吞掉（fresh 恒空 → 引用行不再
-            # 追加），直到下一轮 chat.send 覆盖清单才自愈。
+            # 追加），直到下一轮 chat.send 覆盖清单才自愈。异常（模糊失败，
+            # 投递可能实际已成功）时 fresh_images 暂存在 item 上，回执路径
+            # 确认送达后由 _compensate_ambiguous_delivery 补落地。
             content = params["content"]
             steer_images = _extract_steer_image_files(params.get("files"))
             fresh_images: list[dict[str, Any]] = []
@@ -471,6 +491,18 @@ class SteeringSession:
                 content, fresh_images = _plan_steer_image_files(
                     runtime, content, steer_images
                 )
+            item = _Input(
+                digest=_steer_request_digest(params),
+                client_message_id=client_id,
+                runtime=runtime,
+                runtime_request_id=runtime_id,
+                # 投递确认前暂存：异常（模糊失败）路径靠它事后补落地。
+                pending_files=fresh_images or None,
+            )
+            # Register before awaiting: an ambiguous transport failure keeps the
+            # same input ID queryable, instead of encouraging a duplicate send.
+            binding.inputs[input_id] = item
+            binding.client_ids[client_id] = input_id
             try:
                 result = normalize_result(
                     await runtime.steer_active(
@@ -480,19 +512,19 @@ class SteeringSession:
                     )
                 )
             except Exception:
-                # 模糊投递窗口的已知取舍：异常 ≠ 未送达。若 input 实际已进模型流
-                # （重放/状态查询可查到 accepted / consumed），则引用行已投、
-                # 清单未落地，该图本轮零物化（N12 拒死引用，read_file 兜底依赖
-                # 模型主动调用）。按协议同 input_id 重试只查回执、不重放 commit，
-                # 需换新 input_id 重发同图或等下一轮 chat.send 覆盖清单恢复。
-                # 不为该窗口在状态轮询热路径上增加补偿式落地（需 pending 状态
-                # 暂存与清理、runtime 存活判定）；窗口需「异常 + 实际送达 +
-                # 同 input_id 重试」三重叠加、触发后影响有界，线上出现真实
-                # 案例再跟进补偿实现。
+                # 异常 ≠ 未送达（模糊投递窗口）：引用行可能已实际进入模型流。
+                # fresh_images 留在 item.pending_files 上，重放 / 状态查询路径
+                # 经回执确认 accepted / consumed 后由
+                # _compensate_ambiguous_delivery 补落地，闭环 CR-1 后移落地
+                # 遗漏的异步确认分支。
                 return {"input_id": input_id, "status": "unknown"}
             if result.get("status") == "not_applied":
                 item.receipt = result
                 return result
-            if fresh_images and result.get("status") in ("accepted", "consumed"):
-                _commit_steer_image_files(runtime, input_id, fresh_images)
+            if result.get("status") in ("accepted", "consumed"):
+                if fresh_images:
+                    _commit_steer_image_files(runtime, input_id, fresh_images)
+                # 确认送达即清暂存；unknown（异常或 runtime 返回）保留 pending，
+                # 交给回执路径补偿。
+                item.pending_files = None
             return result

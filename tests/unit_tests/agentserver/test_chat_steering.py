@@ -845,6 +845,32 @@ async def test_steer_files_next_round_does_not_inherit_previous_round_mirror():
     assert [image["path"] for image in team_request_image_files(metadata)] == ["/tmp/b.png"]
 
 
+@pytest.mark.asyncio
+async def test_steer_files_ambiguous_delivery_compensates_on_confirmed_receipt():
+    """模糊投递窗口：异常但实际已送达 → 同 input_id 查询回执 consumed 时补落地。"""
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    control, _, agent, _ = session()
+    # 首次投递抛异常（模糊失败）——引用行已投、按规则不落地清单。
+    agent.steer_active = AsyncMock(side_effect=RuntimeError("ambiguous transport failure"))
+    first = await control.handle(control_request(files=_steer_files()), query=False)
+    assert first["status"] == "unknown"
+    assert not current_multimodal_image_files_from_agent(agent)
+    # runtime 侧回执显示该 input 实际已消费（模拟「其实送到了」）。
+    agent.receipts["input-1"] = {"input_id": "input-1", "status": "consumed"}
+    # 客户端按协议同 input_id 状态查询：回执 consumed，且清单被补落地。
+    retry = await control.handle(control_request(query=True), query=True)
+    assert retry["status"] == "consumed"
+    manifest = current_multimodal_image_files_from_agent(agent)
+    assert manifest and manifest[0]["path"] == "/tmp/new.png"
+    # 补偿一次即清：再次查询不重复落地（manifest 仍单条）。
+    again = await control.handle(control_request(query=True), query=True)
+    assert again["status"] == "consumed"
+    assert len(current_multimodal_image_files_from_agent(agent)) == 1
+
+
 class _ListLogHandler(logging.Handler):
     """jiuwenswarm 根 logger propagate=False，caplog 收不到，手动挂 handler。"""
 
