@@ -6,7 +6,7 @@ description: Generate one reference-to-video shot from locked character and scen
 Generate one shot video from the on-screen character plates and the empty scene plate.
 
 - Bind character1, character2, and the rest in attach order.
-- Take face and wardrobe only from the character plates.
+- Take face and clothing only from the character plates.
 - Attach the scene plate last. It stays empty of cast.
 - Keep the shot short.
 - When the shot continues a setting, start from the previous shot's end state.

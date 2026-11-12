@@ -107,7 +107,7 @@ _CROWD_RULE = (
     "If the agent reported the first clip spec of this setting shows a crowd/extras/"
     "congregation, EVERY later same-setting clip spec must keep that same group "
     "(count, placement, wardrobe vibe) unless the storyboard says they exit/disperse. "
-    "NEVER invent a new crowd mid-setting; NEVER erase a locked crowd without an exit beat."
+    "NEVER invent a new crowd mid-setting; NEVER erase a locked crowd without showing them leave."
 )
 
 
@@ -144,21 +144,39 @@ def _crowd_lock_for_setting(
     is_first_of_set: bool,
     prev_crowd: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Carry the crowd decision the storyboard agent already made for this shot.
+    """Resolve this shot's crowd lock as SETTING state, not per-shot state.
 
-    Crowd presence is a semantic, language-dependent judgement, so it is decided
-    by the agent that authored the shot — never by scanning the prose here. This
-    function only normalizes that decision, and preserves the tri-state: when the
-    agent declares nothing, ``present`` stays ``None`` so downstream emits no
-    crowd sentence at all instead of asserting the setting is empty.
+    The storyboard declares crowd_spec on the first shot of a setting to
+    establish that setting's crowd; later shots omit it and inherit the
+    setting's lock unchanged. A fresh declaration mid-setting is a story
+    event (crowd gathers/leaves/returns) and replaces the setting state.
+    Crowd presence is a semantic, language-dependent judgement, so only the
+    agent's declaration decides it — never prose scanning here — and the
+    tri-state is preserved: when nothing was ever declared for the setting,
+    ``present`` stays ``None`` so downstream emits no crowd sentence at all.
 
-    ``is_first_of_set`` is retained for call-site compatibility; the agent now
-    decides each shot explicitly, so no first-of-setting guessing remains.
+    ``is_first_of_set`` is retained for call-site compatibility.
     """
     prev = prev_crowd if isinstance(prev_crowd, dict) else {}
     declared = shot.get("crowd_spec") if isinstance(shot.get("crowd_spec"), dict) else {}
     if not declared and isinstance(shot.get("crowd_lock"), dict):
         declared = shot["crowd_lock"]
+
+    if not declared and prev:
+        # Undecided shot inside a decided setting: inherit the setting state.
+        inherited: dict[str, Any] = {
+            "present": _tri_state(prev.get("present")),
+            "density": str(prev.get("density") or "").strip(),
+            "disposition": str(prev.get("disposition") or "").strip(),
+            "rule": _CROWD_RULE,
+        }
+        hold = str(prev.get("hold") or "").strip()
+        if hold:
+            inherited["hold"] = hold[:240]
+        note = str(prev.get("note") or "").strip()
+        if note:
+            inherited["note"] = note[:240]
+        return inherited
 
     present = _tri_state(declared.get("present"))
     density = str(declared.get("density") or "").strip()
@@ -172,15 +190,6 @@ def _crowd_lock_for_setting(
         disposition = _PLACEMENT_DISPOSITION[placement]
     if present is None and disposition:
         present = disposition not in {"empty", "exited", "unspecified"}
-
-    continues = _tri_state(declared.get("continue")) is True
-    if continues and prev:
-        if present is None:
-            present = prev.get("present")
-        if not density:
-            density = str(prev.get("density") or "")
-        if not disposition:
-            disposition = str(prev.get("disposition") or "")
 
     lock: dict[str, Any] = {
         "present": present,
@@ -372,7 +381,7 @@ def apply_compose_character_specs_setting_policy(analysis: dict[str, Any]) -> di
             featured=featured,
             limit=None,
         )
-        _expand_blocking_to_visible(shot, by_id, visible, actions)
+        _expand_blocking_to_visible(shot, visible, actions)
 
         crowd = _crowd_lock_for_setting(
             shot,
@@ -399,10 +408,8 @@ def apply_compose_character_specs_setting_policy(analysis: dict[str, Any]) -> di
             shot["clip_strategy"] = "compose_from_character_specs"
             shot["same_setting_prior_edit"] = False
             shot["ensemble_master"] = False
-            shot["compose_setting_master"] = True
             shot["is_scene_master"] = True
             compose_actions_by_set[sid] = dict(actions)
-            shot["scene_compose_authority"] = True
             other_sets = [s for s in setting_place if s != sid]
             distinct = (
                 f"NEW SCENE `{sid}` — different scene from {', '.join(other_sets)}. "
@@ -421,9 +428,7 @@ def apply_compose_character_specs_setting_policy(analysis: dict[str, Any]) -> di
             shot["clip_strategy"] = "compose_from_character_specs"
             shot["same_setting_prior_edit"] = False
             shot["ensemble_master"] = False
-            shot["compose_setting_master"] = False
             shot["is_scene_master"] = False
-            shot["scene_compose_authority"] = False
             prior_actions = compose_actions_by_set.get(sid) or {}
             shot["setting_lock"] = {
                 "setting_id": sid,
@@ -609,61 +614,48 @@ def build_scene_specs_for_setting(
 
 def _expand_blocking_to_visible(
     shot: dict[str, Any],
-    by_id: dict[str, dict[str, Any]],
     visible: list[str],
     actions: dict[str, str],
 ) -> None:
-    """Blocking for visible cast only (not offscreen / not other-scene cast)."""
+    """Declared blocking for visible cast only — geometry is never invented.
+
+    Positions the director declared survive for this shot's visible cast
+    (pose refreshed from cast_actions). Cast without declared geometry
+    gets no fabricated zone/facing, and when nothing was declared the key
+    is dropped instead of writing a default landmark.
+    """
     blocking = shot.get("blocking") if isinstance(shot.get("blocking"), dict) else {}
-    positions = list(blocking.get("positions") or []) if isinstance(blocking, dict) else []
-    have = {
-        str((p or {}).get("character_id") or "")
-        for p in positions
-        if isinstance(p, dict)
-    }
-    zones = ("center", "left", "right", "foreground", "background")
-    for i, cid in enumerate(visible):
-        if cid in have:
-            # Refresh pose from cast_actions when provided.
-            for p in positions:
-                if isinstance(p, dict) and str(p.get("character_id") or "") == cid:
-                    if actions.get(cid):
-                        p["pose"] = actions[cid][:160]
-                    break
+    positions = [p for p in (blocking.get("positions") or []) if isinstance(p, dict)]
+    visible_set = {str(x) for x in visible if str(x)}
+    kept: list[dict[str, Any]] = []
+    for pos in positions:
+        cid = str(pos.get("character_id") or "")
+        if cid not in visible_set:
             continue
-        ch = by_id.get(cid) or {}
-        positions.append(
-            {
-                "character_id": cid,
-                "name": str(ch.get("name") or cid),
-                "zone": zones[i % len(zones)],
-                "pose": actions.get(cid) or "present_in_frame_clearly_visible",
-                "facing": "toward_primary_action_focus",
-            }
-        )
-    # Drop blocking entries for people not visible this shot.
-    positions = [
-        p
-        for p in positions
-        if isinstance(p, dict) and str(p.get("character_id") or "") in set(visible)
-    ]
-    landmark = str((blocking or {}).get("landmark") or "primary_set_landmark")
-    shot["blocking"] = {
-        "landmark": landmark,
-        "positions": positions,
+        if actions.get(cid):
+            pos = {**pos, "pose": actions[cid][:160]}
+        kept.append(pos)
+    if not kept:
+        shot.pop("blocking", None)
+        return
+    out: dict[str, Any] = {
+        "positions": kept,
         "rule": (
             "Place ONLY on_screen / visible cast. Offscreen characters must not appear. "
             "Pose = cast_actions / doing for this shot. Same-scene edits keep landmark "
             "and seats unless storyboard moves someone."
         ),
     }
+    landmark = str(blocking.get("landmark") or "").strip()
+    if landmark:
+        out["landmark"] = landmark
+    shot["blocking"] = out
 
 
 def _expand_blocking_to_ensemble(
     shot: dict[str, Any],
-    by_id: dict[str, dict[str, Any]],
     ensemble: list[str],
 ) -> None:
     """Legacy helper — prefer visible-only blocking."""
     actions = _cast_actions_map(shot)
-    _expand_blocking_to_visible(shot, by_id, ensemble, actions)
+    _expand_blocking_to_visible(shot, ensemble, actions)

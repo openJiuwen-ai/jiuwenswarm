@@ -410,13 +410,14 @@ async def test_a_visual_review_without_the_requested_slide_s_capture_fails_unrev
     assert vision.requests == []
 
 
-@pytest.mark.parametrize(("replies", "reason"), [
-    ([(200, NO_ISSUES_SENTINEL, 2.0)], "did not answer within"),
-    ([(500, "", 0.0)], "the vision model (vision-test) failed"),
-    ([(200, "", 0.0), (200, "  ", 0.0)], "answered nothing 2 times"),
-])
+@pytest.mark.parametrize(("replies", "reasons"), [
+    # Either the review deadline or the provider's read timeout can fire first.
+    ([(200, NO_ISSUES_SENTINEL, 2.0)], ("did not answer within", "APITimeoutError: Request timed out")),
+    ([(500, "", 0.0)], ("the vision model (vision-test) failed",)),
+    ([(200, "", 0.0), (200, "  ", 0.0)], ("answered nothing 2 times",)),
+], ids=["timeout", "provider-error", "empty-replies"])
 async def test_a_review_that_fails_returns_the_render_without_a_verdict(
-        conversation, attach_pane, vision, monkeypatch, replies, reason):
+        conversation, attach_pane, vision, monkeypatch, replies, reasons):
     attach_pane("deck-a", REVIEWING)
     monkeypatch.setattr(review, "REVIEW_TIMEOUT_SECONDS", 0.5)
     vision.replies = list(replies)
@@ -426,7 +427,8 @@ async def test_a_review_that_fails_returns_the_render_without_a_verdict(
         await pane.answer((request, _capture()))
         result = pane.model.tool_results()["verify-1"]
 
-    assert result.startswith('<verifier-result slide_id="256#1">No verdict: ') and reason in result
+    assert result.startswith('<verifier-result slide_id="256#1">No verdict: ')
+    assert any(reason in result for reason in reasons)
     assert "visual_attachment.path: " in result
     assert len(vision.requests) == len(replies)
 

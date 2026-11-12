@@ -27,15 +27,14 @@ class VisibleStreams:
 def _diagnostic_path() -> Path:
     data_dir = os.getenv("JIUWENSWARM_DATA_DIR")
     if data_dir:
-        root = Path(data_dir).expanduser() / "infra"
+        root = Path(data_dir).expanduser()
     else:
         home = Path(os.getenv("JIUWENSWARM_HOME") or Path.home()).expanduser()
-        root = home / ".jiuwenswarm" / "infra"
+        root = home / ".jiuwenswarm"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     name = f"{stamp}-{os.getpid()}-{uuid.uuid4().hex[:8]}.log"
-    # CLI diagnostics are per-run, host-local dumps grouped under the
-    # system log zone; business logs stay in infra/logs/agent.
-    return root.resolve() / "logs" / "process_cli" / name
+    # Do not create agent/.logs before common.utils migrates a legacy .logs.
+    return root.resolve() / "agent" / "process_cli_logs" / name
 
 
 def _fileno(stream: TextIO) -> int | None:

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable, Protocol
 
 from agent_gateway.enterprise.team.quota_policy import OwnerIdentity
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 # ---------------------------------------------------------------------------
 # Status vocab (kept as plain strings so wire payloads need no mapping)
@@ -408,7 +408,7 @@ class SqliteTeamControlStore:
     """Default ``TeamControlStore`` backed by a single SQLite file."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or get_infra_data_dir() / "agent" / "teams" / "team_control.db"
+        self._path = path or get_user_workspace_dir() / "agent" / "teams" / "team_control.db"
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
 

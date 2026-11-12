@@ -27,8 +27,6 @@ _QUERY_DEFAULT_LIMIT = 20
 _QUERY_MAX_LIMIT = 50
 _JOB_ID_MAX_CHARS = 128
 _PREVIEW_COUNT = 5
-_PROTECTED_MODE = "proactive.tick"
-
 # Only fields whose change needs no project or credential re-resolution are
 # writable here. project_id/work_mode/user_id stay with the Web handler, which
 # resolves them inside the owning AgentServer directory.
@@ -248,7 +246,6 @@ def _next_push(job: dict[str, Any]) -> str | None:
 
 def _compact(job: dict[str, Any], runs: list[Any] | None = None) -> dict[str, Any]:
     data = {key: job[key] for key in _LISTED_FIELDS if key in job}
-    data["protected"] = str(job.get("mode") or "").strip().lower() == _PROTECTED_MODE
     data["next_push_at"] = _next_push(job)
     if runs is not None:
         data["next_runs"] = list(runs)
@@ -265,20 +262,6 @@ def _not_found(operation: str, job_id: str) -> dict[str, Any]:
         "message": (
             "No scheduled job with this id belongs to this user. Query jiuwen_cron_query again "
             "and copy an existing job_id."
-        ),
-    }
-
-
-def _protected(operation: str, job_id: str) -> dict[str, Any]:
-    return {
-        "operation": operation,
-        "applied": False,
-        "state": "rejected",
-        "code": "CRON_JOB_PROTECTED",
-        "job_id": job_id,
-        "message": (
-            "This job is driven by a settings switch and cannot be changed by voice. "
-            "Ask the user to change that setting instead."
         ),
     }
 
@@ -391,8 +374,6 @@ class CronControl:
         job = await controller.get_job(job_id, user_id=self.user_id, project_id=None)
         if not self._owned(job, write=True):
             return _not_found(CRON_UPDATE_TOOL, job_id)
-        if _compact(job or {})["protected"]:
-            return _protected(CRON_UPDATE_TOOL, job_id)
         patch = dict(arguments["patch"])
         updated = await controller.update_job(job_id, patch, user_id=self.user_id)
         if not isinstance(updated, dict) or updated.get("id") != job_id:
@@ -412,8 +393,6 @@ class CronControl:
         job = await controller.get_job(job_id, user_id=self.user_id, project_id=None)
         if not self._owned(job, write=True):
             return _not_found(CRON_DELETE_TOOL, job_id)
-        if _compact(job or {})["protected"]:
-            return _protected(CRON_DELETE_TOOL, job_id)
         deleted = await controller.delete_job(job_id, user_id=self.user_id)
         if not deleted:
             return _not_found(CRON_DELETE_TOOL, job_id)

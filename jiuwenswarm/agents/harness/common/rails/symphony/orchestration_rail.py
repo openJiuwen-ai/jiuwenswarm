@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from copy import copy
@@ -34,6 +35,8 @@ from jiuwenswarm.runtime.symphony.llm import (
     reset_request_llm_config,
 )
 from .skillpack_route import COMPOSE_CHOICE, PackRoute, SkillPackRouter, direct_route_mode
+
+logger = logging.getLogger(__name__)
 
 _ConfigBaseProvider = dict[str, Any] | Callable[[], dict[str, Any] | None] | None
 _SHORTLIST_EXTRA_KEY = "symphony_candidate_skill_ids"
@@ -73,6 +76,24 @@ _GRAPH_PREPARING_CONTENT = {
 
 _INVOKE_ROUTE_KEY = "_symphony_orchestration_route"
 _PACK_RESUME_GUARD_KEY = "_skillpack_direct_route_pending"
+_PACK_DECLINE_ANSWERS = frozenset({
+    COMPOSE_CHOICE,
+    # InteractionPrompt's existing internal protocol markers, not UI labels.
+    "用户已跳过此题，未选择任何选项。",
+    "用户已取消本次问答，未作答。",
+})
+_PACK_CHOICE_QUESTIONS = frozenset({
+    "本地 SkillPack 可以完成该任务，请选择使用方式。",
+    "本地 SkillPack 可以完成该任务，请确认是否使用。",
+    "SkillPack 或成员状态已变化，请重新选择。",
+})
+_NO_PENDING_PACK_GUIDANCE = (
+    "No SkillPack confirmation is pending for this request. Historical Pack selections, "
+    "confirmation questions and state-change messages belong to earlier requests, not this one. "
+    "Do not repeat a SkillPack reuse or reselection question. Continue the current ordinary task; "
+    "ask only genuine task clarifications when needed. A read-only Pack summary is not execution "
+    "authority. The user may explicitly select a Pack in a new message."
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +127,7 @@ class _SymphonyInvokeState:
     valid: bool = True
     route_token: str = ""
     pack_route_checked: bool = False
+    pack_route_declined: bool = False
     pack_route: PackRoute | None = None
 
 
@@ -120,10 +142,12 @@ class SymphonyOrchestrationRail(DeepAgentRail):
     def __init__(
         self, *, config_base: _ConfigBaseProvider = None,
         skillpack_router: SkillPackRouter | None = None,
+        automatic_skillpack_enabled: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__()
         self._config_base = config_base
         self._skillpack_router = skillpack_router
+        self._automatic_skillpack_enabled = automatic_skillpack_enabled
         self.system_prompt_builder = None
         self._paused_states: dict[_PausedInvokeKey, _SymphonyInvokeState] = {}
         self._active_states: dict[_InvokeScope, _SymphonyInvokeState] = {}
@@ -178,6 +202,8 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             resumed.awaiting_input = False
             if resumed.pack_route is not None:
                 await self._resume_pack_choice(resumed, answers_by_call)
+                if resumed.pack_route_declined:
+                    self._save_pack_resume_guard(ctx, scope, pending=False)
                 return
             resumed.pending_recompose = True
             self._remember_resume_answers(resumed, answers_by_call)
@@ -295,9 +321,13 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         )) if isinstance(raw_selected, list) else []
         state.pack_route = await router.choose(
             state.original_query, selected,
-            mode=direct_route_mode(self._resolve_config_base()),
+            mode=self._direct_route_mode(),
             model_reference=self._request_model_reference(ctx),
         )
+        if (state.pack_route is not None
+                and state.pack_route.source == "confirmed_query_match"
+                and self._direct_route_mode() == "off"):
+            state.pack_route = None
         if state.pack_route is not None:
             self._save_pack_resume_guard(ctx, state.scope, pending=True)
 
@@ -322,10 +352,9 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         stored = read(_PACK_RESUME_GUARD_KEY)
         guards = dict(stored) if isinstance(stored, dict) else {}
         key = cls._pack_guard_scope(scope)
-        if pending:
-            guards[key] = True
-        else:
-            guards.pop(key, None)
+        # Core Session recursively merges nested dictionaries. Omitting a key
+        # from a copied map would retain its old True value after completion.
+        guards[key] = pending
         # Persist only a rejection marker, never an authorization token. The
         # outer agent saves Session state after after_invoke, including pauses.
         write({_PACK_RESUME_GUARD_KEY: guards})
@@ -343,25 +372,46 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         answers = payload.get("answers") if isinstance(payload, Mapping) else None
         answer = answers.get(route.question) if isinstance(answers, Mapping) else None
         answer = answer.strip() if isinstance(answer, str) else answer
-        if answer == COMPOSE_CHOICE:
+        if isinstance(answer, str) and answer in _PACK_DECLINE_ANSWERS:
             route.declined = True
+            state.pack_route_declined = True
             state.pack_route = None
+            return
+        self._block_disabled_automatic_route(route)
+        if route.blocked:
             return
         for candidate in route.candidates:
             if answer == f"使用 {candidate['id']}":
                 try:
-                    await router.confirm(route, candidate["id"], source="confirmed_query_match")
+                    await router.confirm(route, candidate["id"], source=route.source)
                 except Exception:
                     route.blocked = True
                 return
         # An unrelated or free-form response cannot accidentally confirm a Pack.
         route.confirmation_call_id = ""
 
+    def _direct_route_mode(self) -> str:
+        if self._automatic_skillpack_enabled is None:
+            return direct_route_mode(self._resolve_config_base())
+        try:
+            return "confirm" if self._automatic_skillpack_enabled() is True else "off"
+        except Exception:
+            # A settings read failure disables new automatic offers only.
+            return "off"
+
+    def _block_disabled_automatic_route(self, route: PackRoute) -> None:
+        if (route.token is None and route.source == "confirmed_query_match"
+                and self._direct_route_mode() == "off"):
+            # A stale automatic offer must not execute or silently recompose.
+            # Existing confirmed tokens and explicit selection remain usable.
+            route.blocked = True
+
     def _sync_pack_route(self, ctx: AgentCallbackContext) -> bool:
         state = self._active_state_for_ctx(ctx)
         route = state.pack_route if state is not None else None
         if route is None:
             return False
+        self._block_disabled_automatic_route(route)
         token = route.token
         if token is None:
             guidance = (
@@ -386,6 +436,16 @@ class SymphonyOrchestrationRail(DeepAgentRail):
                 "to reselect it in a new message. Do not call tools, execute or recompose."
             )
             allowed_tools = set()
+            # This is a deterministic safety outcome, not another model task.
+            # A tool-less model turn with old tool history can emit textual
+            # pseudo-calls (e.g. DSML) instead of reporting the stop correctly.
+            ctx.request_force_finish({
+                "output": (
+                    "技能包状态已变化或校验失败，本次执行已停止（skillpack_state_changed）。"
+                    "请检查技能包及成员状态，并在新消息中重新选择。"
+                ),
+                "result_type": "answer",
+            })
         if isinstance(ctx.inputs, ModelCallInputs) and ctx.inputs.tools:
             filtered_tools = []
             for tool in ctx.inputs.tools:
@@ -409,7 +469,10 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         state = self._active_state_for_ctx(ctx)
         route = state.pack_route if state is not None else None
         if route is None:
-            return False
+            if self._guard_stale_pack_choice(ctx, state):
+                return True
+            return await self._guard_unconfirmed_pack_read(ctx, state)
+        self._block_disabled_automatic_route(route)
         name = self._tool_name(ctx.inputs)
         reason = ""
         if route.blocked:
@@ -432,7 +495,12 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             except Exception:
                 current = False
                 route.blocked = True
-            if not current:
+                logger.warning(
+                    "skillpack.route inventory_validation_failed pack=%s", route.token.pack_id, exc_info=True,
+                )
+            # Another parallel validation can stop this request while our
+            # inventory check is awaiting I/O. Its later success cannot reopen it.
+            if not current or route.blocked:
                 reason = "skillpack_state_changed"
             elif name == "skill_tool":
                 args = self._tool_args(ctx.inputs)
@@ -453,6 +521,69 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             })
             return True
         return False
+
+    def _guard_stale_pack_choice(
+        self, ctx: AgentCallbackContext, state: _SymphonyInvokeState | None,
+    ) -> bool:
+        """Old model-visible questions cannot create a new server-owned choice."""
+        if state is None or state.scope.capture_mode != "agent":
+            return False
+        if not state.pack_route_checked or self._tool_name(ctx.inputs) != "ask_user":
+            return False
+        args = self._tool_args(ctx.inputs)
+        questions = args.get("questions")
+        if questions:
+            if (not isinstance(questions, list) or len(questions) != 1
+                    or not isinstance(questions[0], Mapping)):
+                return False
+            question = questions[0].get("question")
+        else:
+            question = args.get("query")
+        if not isinstance(question, str):
+            return False
+        # The standard choice allows free text when there are many Pack options.
+        question = question.partition("\n请输入一个选项：")[0]
+        if question not in _PACK_CHOICE_QUESTIONS:
+            return False
+        self._skip_tool(ctx, {
+            "success": False, "reason": "skillpack_no_pending_choice", "retryable": False,
+            "detail": _NO_PENDING_PACK_GUIDANCE,
+        })
+        return True
+
+    async def _guard_unconfirmed_pack_read(
+        self, ctx: AgentCallbackContext, state: _SymphonyInvokeState | None,
+    ) -> bool:
+        """A model retrieving a Pack is not a user's choice to execute it."""
+        router = self._skillpack_router
+        if state is None or state.scope.capture_mode != "agent":
+            return False
+        if router is None or self._tool_name(ctx.inputs) != "skill_tool":
+            return False
+        args = self._tool_args(ctx.inputs)
+        identifier = str(args.get("skill_name") or args.get("skillName") or "").strip()
+        if not identifier:
+            return False
+        try:
+            summary = await router.unconfirmed_pack_summary(identifier, session=ctx.session)
+        except Exception:
+            logger.warning(
+                "skillpack.read_guard summary_unavailable skill=%s", identifier, exc_info=True,
+            )
+            summary = {
+                "success": False, "reason": "skillpack_inventory_unavailable", "retryable": False,
+                "detail": "Cannot verify the Skill type. Do not bypass this check through other file tools.",
+            }
+        if summary is None:
+            return False
+        if state.pack_route_declined:
+            summary["detail"] = (
+                "The user declined whole-Pack reuse in this request. This is a read-only summary. "
+                "Do not ask the same confirmation again or load the Pack files through other tools. "
+                "Continue ordinary planning with the individual member Skills, not this Pack as a Skill."
+            )
+        self._skip_tool(ctx, summary)
+        return True
 
     def _remember_pack_root(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(ctx.inputs, ToolCallInputs) or self._tool_name(ctx.inputs) != "skill_tool":
@@ -1019,7 +1150,16 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         builder = self.system_prompt_builder
         if builder is None:
             return
-        if not self._has_compose_tool(ctx) or not self._orchestration_enabled():
+        guidance = []
+        state = self._active_state_for_ctx(ctx)
+        if state is not None and state.scope.capture_mode == "agent":
+            # Only a declined offer needs proactive guidance. Stale model
+            # questions receive this detail when the tool guard rejects them.
+            if state.pack_route_declined and state.pack_route is None:
+                guidance.append(_NO_PENDING_PACK_GUIDANCE)
+        if self._has_compose_tool(ctx) and self._orchestration_enabled():
+            guidance.append(self._build_orchestration_guidance(resumed=self._resume_is_pending(ctx)))
+        if not guidance:
             builder.remove_section(self.SECTION_NAME)
             return
 
@@ -1027,11 +1167,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         builder.add_section(
             PromptSection(
                 name=self.SECTION_NAME,
-                content={
-                    language: self._build_orchestration_guidance(
-                        resumed=self._resume_is_pending(ctx)
-                    )
-                },
+                content={language: "\n\n".join(guidance)},
                 priority=self.SECTION_PRIORITY,
             )
         )
@@ -1228,6 +1364,10 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         if ctx.exception is not None:
             return
         if self._tool_result_failed(ctx.inputs.tool_result):
+            return
+        if (isinstance(ctx.inputs.tool_result, Mapping)
+                and ctx.inputs.tool_result.get("skill_type") == "skillpack"):
+            # An inspection summary is not an ordinary executable Skill.
             return
 
         args = self._tool_args(ctx.inputs)

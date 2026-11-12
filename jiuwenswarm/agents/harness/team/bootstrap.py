@@ -4,17 +4,14 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.common.utils import get_domain_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 
 def configure_agent_teams_home() -> None:
-    """Point openjiuwen.agent_teams at the domain-zone root.
-
-    团队名册/任务/工作区为跨会话业务数据，随 domain 区（共享卷）持久化。
-    """
+    """Point openjiuwen.agent_teams at JiuwenSwarm's user workspace root."""
     from openjiuwen.agent_teams.paths import configure_openjiuwen_home
 
-    configure_openjiuwen_home(get_domain_data_dir())
+    configure_openjiuwen_home(get_user_workspace_dir())
     # Register installer only; Catalog/Launcher stay lazy until first org tool use.
     from jiuwenswarm.agents.harness.team.expert_org.wiring import (
         register_expert_adapter_installer,

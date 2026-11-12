@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
+from time import monotonic
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -16,14 +17,14 @@ ROUTING_SECTIONS = (
     "when_to_use", "do_not_use", "required_inputs", "side_effects", "final_output",
 )
 COMPOSE_CHOICE = "继续智能编排"
+MATCH_TIMEOUT_SECONDS = 60
 
 
 def direct_route_mode(config: dict[str, Any] | None) -> str:
-    """Resolve the opt-in mode; invalid configuration disables routing."""
-    options = (config or {}).get("skillpack", {})
-    configured = options.get("direct_route_mode", "off") if isinstance(options, dict) else "off"
-    mode = os.getenv("SKILLPACK_DIRECT_ROUTE_MODE", str(configured)).strip().lower()
-    return mode if mode in {"off", "shadow", "confirm"} else "off"
+    """Enable automatic confirmed reuse through the persisted discovery switch."""
+    from jiuwenswarm.common.config import get_symphony_evolution_enabled
+
+    return "confirm" if get_symphony_evolution_enabled(config) else "off"
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,8 @@ class PackRoute:
     blocked: bool = False
     question: str = ""
     confirmation_call_id: str = ""
+    source: str = "confirmed_query_match"
+    validation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False, compare=False)
 
     def ask_args(self) -> dict[str, Any]:
         """Build the exact existing ask_user contract for this selection."""
@@ -85,15 +88,55 @@ class SkillPackRouter:
         manager: Callable[[], Any],
         toolkit: Callable[[], Any],
         model: Callable[[], Any],
+        *,
+        skills_for_session: Callable[[Any], list[Any]] | None = None,
     ) -> None:
         self.manager = manager
         self.toolkit = toolkit
         self.model = model
+        self.skills_for_session = skills_for_session
 
     async def snapshot(self) -> dict[str, Any]:
         # Keep the inventory lock and full content scan in the same worker.
         # A TTL/stat cache would miss changes made outside SkillManager.
         return await asyncio.to_thread(self.manager().skillpack_inventory_snapshot, lock_timeout=5)
+
+    async def unconfirmed_pack_summary(
+        self, identifier: str, *, session: Any = None,
+    ) -> dict[str, Any] | None:
+        """Allow inspection without loading a Pack's executable instructions."""
+        if self.skills_for_session is None:
+            raise RuntimeError("The SkillTool session view is unavailable")
+        # Match SkillTool's actual session view, including restored directories
+        # and external Skills. Inventory membership is not an execution identity.
+        skills = self.skills_for_session(session) or []
+        skill = {item.name: item for item in skills}.get(identifier)
+        if skill is None:
+            return None  # SkillTool itself rejects names absent from this view.
+        return await asyncio.to_thread(self._read_pack_summary, identifier, Path(skill.directory))
+
+    @staticmethod
+    def _read_pack_summary(identifier: str, directory: Path) -> dict[str, Any] | None:
+        from jiuwenswarm.server.runtime.skill.skillpack import load_skillpack, read_skill_kind
+
+        # A fresh target-only read avoids unrelated inventory failures and stale
+        # type caches. Read/parse failures must never imply an ordinary Skill.
+        if read_skill_kind(directory, strict=True) != "skillpack":
+            return None
+        definition = load_skillpack(directory, expected_name=directory.name)
+        return {
+            "success": True, "read_only": True, "skill_type": "skillpack",
+            "skill_name": identifier, "description": definition.description,
+            "members": list(definition.members),
+            "reason": "skillpack_confirmation_required",
+            "detail": (
+                "This is a read-only SkillPack summary, not execution instructions or authorization. "
+                "Do not execute the whole Pack or read its files through another tool to bypass confirmation. "
+                "To run this Pack, ask the user to select it in the Skills picker in a new message. "
+                "Otherwise use ordinary member Skills through the normal task planning path. "
+                "Do not repeat a declined SkillPack question in this request."
+            ),
+        }
 
     @staticmethod
     def eligible(snapshot: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -120,7 +163,7 @@ class SkillPackRouter:
         self, query: str, selected: list[str], *, mode: str, model_reference: str = "",
     ) -> PackRoute | None:
         """Return complete matches only; discovery/model failures fail open to compose."""
-        if mode == "off" or not query:
+        if not query or (mode == "off" and not selected):
             return None
         try:
             snapshot = await self.snapshot()
@@ -128,12 +171,26 @@ class SkillPackRouter:
             if not revision:
                 return None
             eligible = self.eligible(snapshot)
+            selected_pack_ids: set[str] = set()
+            for item in snapshot.get("skills", []):
+                if not isinstance(item, dict) or item.get("skill_type") != "skillpack":
+                    continue
+                identifier = item.get("id")
+                if isinstance(identifier, str) and identifier in selected:
+                    selected_pack_ids.add(identifier)
+            if selected_pack_ids - eligible.keys():
+                return PackRoute(blocked=True, source="explicit_picker")
             selected_packs = [eligible[name] for name in selected if name in eligible]
             if selected_packs:
-                route = PackRoute(candidates=selected_packs, inventory_revision=revision)
-                if len(selected) == 1 and mode == "confirm":
-                    await self.confirm(route, selected[0], source="explicit_picker")
-                return route if mode == "confirm" else None
+                route = PackRoute(
+                    candidates=selected_packs, inventory_revision=revision, source="explicit_picker",
+                )
+                if len(selected) == 1 and mode != "shadow":
+                    try:
+                        await self.confirm(route, selected[0], source="explicit_picker")
+                    except Exception:
+                        route.blocked = True
+                return route if mode != "shadow" else None
             if selected:
                 return None
             toolkit = self.toolkit()
@@ -151,7 +208,16 @@ class SkillPackRouter:
             ]
             if not candidates:
                 return None
-            matches = await self.judge(query, candidates, model_reference=model_reference)
+            started = monotonic()
+            try:
+                matches = await self.judge(query, candidates, model_reference=model_reference)
+            except Exception as exc:
+                logger.warning(
+                    "skillpack.route judgment_unavailable candidates=%s elapsed_seconds=%.3f error_type=%s; "
+                    "no coverage decision was made, continuing ordinary planning",
+                    len(candidates), monotonic() - started, type(exc).__name__, exc_info=True,
+                )
+                return None
             logger.info("skillpack.route judged candidates=%s complete=%s mode=%s", len(candidates), len(matches), mode)
             if not matches or mode == "shadow":
                 return None
@@ -181,20 +247,26 @@ class SkillPackRouter:
                 "Do not use a complete Pack for one member's job. A Do not use condition "
                 "sets excluded=true. Viewing, explaining, listing, comparing, searching or "
                 "recommending Packs is not execution. Missing information is uncertain. "
-                "Do not pick a winner among multiple complete matches. Judge every candidate."
+                "Do not pick a winner among multiple complete matches. Judge every candidate. "
+                "Keep each reason under 40 words. Do not output analysis or a plan."
         )
         user_content = json.dumps({"query": query, "candidates": [
                 {"pack_id": item["id"], "members": item["members"], "routing": item["routing"]}
                 for item in candidates
         ]}, ensure_ascii=False)
-        with disabled_thinking_fallback_scope():
-            response = await config.create_model().invoke(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                timeout=20,
-            )
+        # Bound the entire decision, including provider compatibility fallbacks.
+        # Classification must not inherit a large normal-chat output budget.
+        # Cancellation propagates; a timeout is not a negative coverage decision.
+        async with asyncio.timeout(MATCH_TIMEOUT_SECONDS):
+            with disabled_thinking_fallback_scope():
+                response = await config.create_model().invoke(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    timeout=MATCH_TIMEOUT_SECONDS,
+                    max_tokens=256 + 256 * len(candidates),
+                )
         create_model_response_observer(config)(response, "skillpack_direct_route", "skillpack_direct_route")
         payload = json.loads(repair_json(response.content, return_objects=False))
         decisions = payload.get("matches") if isinstance(payload, dict) else None
@@ -245,18 +317,45 @@ class SkillPackRouter:
         return True
 
     async def is_current(self, route: PackRoute) -> bool:
-        if route.blocked or route.token is None:
-            return False
-        snapshot = await self.snapshot()
-        current = self.eligible(snapshot).get(route.token.pack_id)
-        valid = (
-            snapshot.get("inventory_revision") == route.token.inventory_revision
-            and current is not None
-            and tuple(current["members"]) == route.token.allowed_member_ids
-        )
-        if not valid:
-            route.blocked = True
-        return valid
+        # Parallel tools in one request must not spend the file-lock acquisition
+        # budget waiting on each other's full scans. Each tool still reads fresh
+        # contents after queuing; a previous successful check is not cached.
+        scan_started = False
+        try:
+            async with route.validation_lock:
+                if route.blocked or route.token is None:
+                    return False
+                try:
+                    scan_started = True
+                    snapshot = await self.snapshot()
+                except Exception:
+                    route.blocked = True
+                    raise
+                if route.blocked:
+                    return False
+                current = self.eligible(snapshot).get(route.token.pack_id)
+                valid = (
+                    snapshot.get("inventory_revision") == route.token.inventory_revision
+                    and current is not None
+                    and tuple(current["members"]) == route.token.allowed_member_ids
+                )
+                if not valid:
+                    route.blocked = True
+                    logger.warning(
+                        "skillpack.route inventory_changed pack=%s revision_changed=%s eligible=%s members_changed=%s",
+                        route.token.pack_id,
+                        snapshot.get("inventory_revision") != route.token.inventory_revision,
+                        current is not None,
+                        current is not None and tuple(current["members"]) != route.token.allowed_member_ids,
+                    )
+                return valid
+        except asyncio.CancelledError:
+            # A started to_thread scan may still own the file lock. Cancelling
+            # only a waiter (e.g. a nested tool's deadline) owns no scan and
+            # must not revoke the other live tools' authorization.
+            if scan_started:
+                route.blocked = True
+            raise
 
 
 __all__ = ["DirectRouteToken", "PackRoute", "SkillPackRouter", "direct_route_mode"]

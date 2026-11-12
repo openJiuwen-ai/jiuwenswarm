@@ -20,7 +20,9 @@ await i18next.use(initReactI18next).init({
   lng: 'en', showSupportNotice: false, resources: { en: { translation: {} } },
 });
 const { MarketplaceView } = await import('../node_modules/.cache/skill-marketplace/MarketplaceView.mjs');
-const { groupMarketplaceSkills } = await import('../node_modules/.cache/skill-marketplace/skillPanelUtils.mjs');
+const { groupMarketplaceSkills, resolveSkillFileReference } = await import(
+  '../node_modules/.cache/skill-marketplace/skillPanelUtils.mjs'
+);
 
 const skill = { asset_id: 'ordinary', name: 'Ordinary Skill', plugin_type: 'skill', skill_type: 'skill' };
 const legacy = {
@@ -38,6 +40,17 @@ test('ordinary Skills and both Pack transport types share Featured Skills withou
   assert.equal(groups.featuredSkills[0].skill_type, 'skillpack');
   assert.equal(groups.featuredSkills[0].short_desc, legacy.short_desc);
   assert.deepEqual(groupMarketplaceSkills([]), { teamSkills: [], featuredSkills: [] });
+});
+
+test('resolves relative skill file references from the active Markdown file', () => {
+  assert.equal(resolveSkillFileReference('SKILL.md', 'references/guide.md'), 'references/guide.md');
+  assert.equal(resolveSkillFileReference('references/current.md', '../scripts/run.py#usage'), 'scripts/run.py');
+  assert.equal(resolveSkillFileReference('references/current.md', './next%20step.md?plain=1'), 'references/next step.md');
+  assert.equal(resolveSkillFileReference('references/current.md', '..\\assets\\diagram.svg'), 'assets/diagram.svg');
+  assert.equal(resolveSkillFileReference('SKILL.md', '#overview'), null);
+  assert.equal(resolveSkillFileReference('SKILL.md', 'https://example.com/guide.md'), null);
+  assert.equal(resolveSkillFileReference('SKILL.md', '/workspace/guide.md'), null);
+  assert.equal(resolveSkillFileReference('SKILL.md', '../outside.md'), null);
 });
 
 for (const searchKeyword of ['', 'standup']) {

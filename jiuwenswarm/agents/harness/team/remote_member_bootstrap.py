@@ -590,7 +590,56 @@ def parse_remote_bootstrap_ack_json(content: str) -> dict[str, Any] | None:
     return data
 
 
-def _swarm_assembly_hint(team_agent: Any) -> dict[str, Any]:
+def _persisted_cron_session(session_id: str | None) -> dict[str, Any] | None:
+    """Resolve the session-level cron ownership from a persisted ``cron_id``.
+
+    Web cron execution sessions use ordinary ``web_<ts>_<rand>`` ids and the
+    scheduler marker only exists on the request that fired the run. When the
+    Team is rebuilt for a later turn of that session (user follow-up, cold
+    recovery) the leader's own build context has no ``cron`` in its request
+    metadata, but the session is still a cron execution session. Remote
+    teammates rebuild from the bootstrap hints alone and may run where the
+    session metadata is unavailable, so they cannot resolve it themselves
+    (issue #6188).
+
+    Returns a session-marked payload for the ``cron_session`` hint. It is
+    deliberately *not* shaped like the scheduler marker: downstream consumers
+    of ``request_metadata["cron"]`` (interactive approvals, A4P scope, prompt
+    time rendering) must keep treating it as "this round was triggered by the
+    scheduler", which is false for a user follow-up.
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(sid, cache_bust=True, enable_writeback=False)
+    except Exception as exc:  # noqa: BLE001 - bootstrap must not fail on this
+        # Fail-open would silently re-expose cron tools on the remote member, so
+        # keep the failure visible instead of hiding it behind a debug log.
+        logger.warning(
+            "[RemoteMemberBootstrap] persisted cron session lookup failed; "
+            "remote members may re-expose cron tools session_id=%s: %s",
+            sid,
+            exc,
+        )
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    cron_id = str(metadata.get("cron_id") or "").strip()
+    if not cron_id:
+        return None
+    return {"job_id": cron_id, "source": "session_metadata"}
+
+
+def _swarm_assembly_hint(
+    team_agent: Any,
+    *,
+    session_id: str | None = None,
+) -> dict[str, Any]:
     """Extract provider-assembly hints (mode / project_dir / cron) from a leader spec.
 
     Reads the serializable ``build_context_seed`` the swarm enrichment leaves on
@@ -602,6 +651,12 @@ def _swarm_assembly_hint(team_agent: Any) -> dict[str, Any]:
     remote teammate rebuilds its spec from these hints alone, and without the
     marker the rebuilt members would re-expose cron tools inside a cron
     execution session (nested cron creation, issue #5116).
+
+    When the request carries no marker (later turns of a Web cron execution
+    session), *session_id* resolves the persisted ``cron_id`` on the leader side
+    and forwards it as the separate ``cron_session`` hint, keeping the
+    "scheduler triggered this round" meaning of ``cron`` intact; see
+    :func:`_persisted_cron_session`.
     """
     spec = getattr(team_agent, "spec", None)
     if spec is None:
@@ -626,6 +681,10 @@ def _swarm_assembly_hint(team_agent: Any) -> dict[str, Any]:
     )
     if isinstance(cron_meta, dict) and cron_meta:
         hint["cron"] = dict(cron_meta)
+    else:
+        cron_session = _persisted_cron_session(session_id)
+        if isinstance(cron_session, dict) and cron_session:
+            hint["cron_session"] = dict(cron_session)
     return hint
 
 
@@ -665,8 +724,9 @@ def build_bootstrap_envelope(
     }
     # Carry provider-assembly hints so the remote teammate rebuilds with the
     # same request mode / project dir, and keeps the cron execution marker for
-    # team cron runs (empty dict for the legacy path).
-    envelope.update(_swarm_assembly_hint(team_agent))
+    # team cron runs (empty dict for the legacy path). The session id lets the
+    # leader resolve a persisted cron_id when this turn has no scheduler marker.
+    envelope.update(_swarm_assembly_hint(team_agent, session_id=session_id))
     return envelope
 
 
@@ -2389,6 +2449,247 @@ async def _initialize_team_agent_db(
         return False
 
 
+# Teams already covered by the one-time enterprise known-boundary note (KD7).
+# Per-process (deliberate): this gate runs on the teammate process while the
+# leader-side note lives in swarm.assembly's own set — each side logs once.
+_ENTERPRISE_BOUNDARY_NOTED: set[str] = set()
+
+
+def _rebuild_member_sandbox_gate(
+    spec: Any, *, session_id: str, project_dir: str | None = None
+) -> None:
+    """Re-encode team entry sandbox specs against THIS node's config (KD6).
+
+    The leader-side enrich built every entry's ``SysOperationSpec`` from the
+    LEADER's sandbox endpoint; serialized as-is, a remote teammate would point
+    its members at the leader's jiuwenbox. This gate runs on the teammate
+    process right before the spawn payload is cut: entry ids stay on the same
+    deterministic derivation (same team, same entry names) while
+    ``base_url``/mounts re-resolve locally, so each node runs its own
+    containers (registry and provider cache are process-local; equal ids never
+    collide across nodes).
+
+    Degradation matrix mirrors the leader side (design KD7): ``enabled=false``
+    silent; enterprise known-boundary info once per team; endpoint unresolved
+    or unsupported type → loud warning, members stay LOCAL — or, when
+    ``sandbox.team_fail_closed`` is set, the member is rejected instead.
+
+    Args:
+        project_dir: The request's project directory, mounted rw into every
+            rebuilt entry (same as the leader-side enrich). Without it the
+            policy builder falls back to the agent-server cwd — not what the
+            members work on. A dir that does not exist on THIS node is simply
+            not mounted (the builder's project-dir resolution skips it).
+
+    Idempotent: re-running only recomputes the same values.
+    """
+    from jiuwenswarm.common.config import (
+        get_sandbox_endpoint,
+        get_sandbox_runtime,
+        get_sandbox_team_fail_closed,
+    )
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    runtime = get_sandbox_runtime()
+    if not runtime.get("enabled"):
+        return  # expected configuration: silent
+    if is_enterprise():
+        team_name = str(getattr(spec, "team_name", "") or "")
+        if team_name not in _ENTERPRISE_BOUNDARY_NOTED:
+            _ENTERPRISE_BOUNDARY_NOTED.add(team_name)
+            logger.info(
+                "[RemoteMemberBootstrap] team members stay LOCAL: enterprise "
+                "sandbox isolation is a known boundary (team=%s)",
+                team_name,
+            )
+        return
+
+    endpoint = get_sandbox_endpoint()
+    sandbox_url = str(endpoint.get("url") or "").strip()
+    sandbox_type = str(endpoint.get("type") or "").strip().lower()
+    if not sandbox_url or not sandbox_type or sandbox_type != "jiuwenbox":
+        reason = (
+            f"endpoint unresolved (type={sandbox_type}, url={sandbox_url})"
+            if not sandbox_url or not sandbox_type
+            else f"sandbox type {sandbox_type} not supported for team members yet"
+        )
+        if get_sandbox_team_fail_closed():
+            raise RuntimeError(
+                f"teammate refuses unsandboxed members (sandbox.team_fail_closed=true): {reason}"
+            )
+        logger.warning(
+            "[RemoteMemberBootstrap] team members stay LOCAL: %s (team=%s)",
+            reason,
+            getattr(spec, "team_name", ""),
+        )
+        return
+
+    from jiuwenswarm.agents.swarm.assembly import _entry_sandbox_slug
+    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+        _team_context_from_spec,
+        create_sandbox_sysop_card,
+    )
+    from openjiuwen.core.sys_operation import OperationMode
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    team_ctx = _team_context_from_spec(spec)
+    if team_ctx is None:
+        # Mirror the leader side: an unresolvable team context skips the 4
+        # team mounts but NEVER cancels sandboxing — members stay sandboxed
+        # with project_dir / agent workspace / files.* mounts. fail_closed is
+        # not consulted here because members are NOT left unsandboxed.
+        logger.warning(
+            "[RemoteMemberBootstrap] team mounts skipped: team context "
+            "unresolvable, members stay sandboxed without team mounts "
+            "(team=%s)",
+            getattr(spec, "team_name", ""),
+        )
+        team_ctx = None  # explicit: intent(None) == [] (no team mounts)
+    else:
+        team_ctx["session_id"] = str(session_id or "")
+
+    failed_entries: list[str] = []
+    for entry_name, agent_spec in list(spec.agents.items()):
+        entry_slug = _entry_sandbox_slug(str(getattr(spec, "team_name", "")), entry_name)
+        card = create_sandbox_sysop_card(
+            sandbox_url,
+            "jiuwenbox",
+            files_runtime=runtime.get("files"),
+            excluded_commands=runtime.get("excluded_commands"),
+            idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
+            idle_check_interval=runtime.get("idle_check_interval"),
+            fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
+            isolation_custom_id=entry_slug,
+            team_context=team_ctx,
+            project_dir=project_dir,
+        )
+        if card is None:
+            failed_entries.append(entry_name)
+            continue
+        spec.agents[entry_name] = agent_spec.model_copy(
+            update={
+                "sys_operation": SysOperationSpec(
+                    id=f"sandbox.{entry_slug}",
+                    mode=OperationMode.SANDBOX,
+                    gateway_config=card.gateway_config,
+                ),
+            }
+        )
+    if failed_entries and get_sandbox_team_fail_closed():
+        raise RuntimeError(
+            "teammate refuses unsandboxed members (sandbox.team_fail_closed=true): "
+            f"entry card build failed for {failed_entries}"
+        )
+
+    # The reviewer rides the teammate entry (design KD2); after a local rebuild
+    # the teammate's sysop object is fresh, so re-share it to keep the
+    # shared-id invariant intact on the distributed path.
+    teammate_sysop = (spec.agents.get("teammate").sys_operation
+                      if spec.agents.get("teammate") is not None else None)
+    if teammate_sysop is not None and getattr(spec, "reviewer_agent", None) is not None:
+        spec.reviewer_agent = spec.reviewer_agent.model_copy(
+            update={"sys_operation": teammate_sysop}
+        )
+
+    # KD7 parity with the leader side (assembly logs failed entries at
+    # warning): partial degradation on the teammate node must be as visible.
+    if failed_entries:
+        logger.warning(
+            "[RemoteMemberBootstrap] team members stay LOCAL: entry card "
+            "build failed for %s (team=%s)",
+            failed_entries,
+            getattr(spec, "team_name", ""),
+        )
+    logger.info(
+        "[RemoteMemberBootstrap] rebuilt team entry sandbox specs from local "
+        "config (entries=%d, failed=%s, team=%s)",
+        len(spec.agents) - len(failed_entries),
+        failed_entries,
+        getattr(spec, "team_name", ""),
+    )
+
+
+async def _apply_member_sandbox_gate_with_cleanup(
+    *,
+    spec_obj: Any,
+    team_manager: Any,
+    sid: str,
+    leader_team_agent: Any,
+    leader_member_name: str,
+    member: str,
+    assembly_project_dir: str = "",
+) -> bool:
+    """Run the local sandbox rebuild gate with fail-closed-safe cleanup.
+
+    Wraps ``_rebuild_member_sandbox_gate`` so a ``team_fail_closed`` rejection
+    (RuntimeError) is NOT swallowed by the caller loop's broad ``except``:
+    the same cleanup the normal path runs (discard the auxiliary team agent,
+    clean the auxiliary leader workspace, stop the stale member agent) executes
+    first, an explicit "sandbox rejected" warning is logged, and the caller
+    receives ``False`` to stop adoption. Any other exception propagates.
+
+    Returns:
+        True when the gate passed (caller proceeds); False when the member was
+        rejected (caller must abort adoption).
+    """
+    try:
+        _rebuild_member_sandbox_gate(
+            spec_obj, session_id=sid, project_dir=assembly_project_dir or None
+        )
+    except RuntimeError as exc:
+        await _discard_auxiliary_team_agent(team_manager, sid, leader_team_agent)
+        _cleanup_auxiliary_leader_workspace(
+            str(getattr(spec_obj, "team_name", "") or ""),
+            leader_member_name,
+        )
+        await _stop_dynamic_member_agent(sid, member)
+        logger.warning(
+            "[RemoteMemberBootstrap] sandbox rejected (team_fail_closed): "
+            "member=%s session_id=%s cleaned up auxiliary agent/workspace, "
+            "adoption aborted (%s)",
+            member,
+            sid,
+            exc,
+        )
+        return False
+    return True
+
+
+def _kickoff_request_metadata(
+    *,
+    assembly_mode: str,
+    assembly_project_dir: str,
+    assembly_cron_meta: dict[str, Any] | None,
+    assembly_cron_session: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Build the rebuilt leader's request metadata from the bootstrap hints.
+
+    ``cron`` and ``cron_session`` stay separate: the former means the current
+    round was triggered by the scheduler (approvals are skipped, A4P scope is
+    applied), the latter only marks the session as a cron execution session so
+    tool gating holds on a user follow-up turn (issue #6188).
+    """
+    request_metadata: dict[str, Any] | None = None
+    if assembly_mode:
+        request_metadata = {"mode": assembly_mode}
+        if assembly_project_dir:
+            request_metadata["project_dir"] = assembly_project_dir
+    if isinstance(assembly_cron_meta, dict) and assembly_cron_meta:
+        # Cluster team cron runs: the cron marker must survive the bootstrap
+        # boundary, otherwise the rebuilt remote members re-expose cron
+        # tools inside a cron execution session (nested cron, issue #5116).
+        request_metadata = dict(request_metadata or {})
+        request_metadata["cron"] = dict(assembly_cron_meta)
+    if isinstance(assembly_cron_session, dict) and assembly_cron_session:
+        # The session belongs to a cron run, but this turn was not fired by
+        # the scheduler (user follow-up / cold rebuild). Keep the ownership
+        # in its own key: consumers of ``cron`` (approvals, A4P scope,
+        # prompt time) must not treat this round as unattended (#6188).
+        request_metadata = dict(request_metadata or {})
+        request_metadata["cron_session"] = dict(assembly_cron_session)
+    return request_metadata
+
+
 async def _ensure_dynamic_member_execution_loop(
     *,
     session_id: str,
@@ -2400,6 +2701,7 @@ async def _ensure_dynamic_member_execution_loop(
     assembly_mode: str = "",
     assembly_project_dir: str = "",
     assembly_cron_meta: dict[str, Any] | None = None,
+    assembly_cron_session: dict[str, Any] | None = None,
     agent_manager: Any | None = None,
 ) -> tuple[bool, bool]:
     """Best-effort bootstrap for teammate runtime loop after dynamic member takeover.
@@ -2410,6 +2712,9 @@ async def _ensure_dynamic_member_execution_loop(
     build context — no customizer closure crosses the process boundary.
     ``assembly_cron_meta`` restores the scheduler's cron execution marker into
     that seed so members of a team cron run stay cron-gated (issue #5116).
+    ``assembly_cron_session`` carries session-level cron ownership for rebuilt
+    sessions whose current turn was not triggered by the scheduler; it is kept
+    apart from ``cron`` so interactive approvals stay available (issue #6188).
     """
     sid = str(session_id or "").strip()
     member = str(target_member or "").strip()
@@ -2469,17 +2774,12 @@ async def _ensure_dynamic_member_execution_loop(
             return False, False
 
         team_manager = get_team_manager(channel_id)
-        request_metadata: dict[str, Any] | None = None
-        if assembly_mode:
-            request_metadata = {"mode": assembly_mode}
-            if assembly_project_dir:
-                request_metadata["project_dir"] = assembly_project_dir
-        if isinstance(assembly_cron_meta, dict) and assembly_cron_meta:
-            # Cluster team cron runs: the cron marker must survive the bootstrap
-            # boundary, otherwise the rebuilt remote members re-expose cron
-            # tools inside a cron execution session (nested cron, issue #5116).
-            request_metadata = dict(request_metadata or {})
-            request_metadata["cron"] = dict(assembly_cron_meta)
+        request_metadata = _kickoff_request_metadata(
+            assembly_mode=assembly_mode,
+            assembly_project_dir=assembly_project_dir,
+            assembly_cron_meta=assembly_cron_meta,
+            assembly_cron_session=assembly_cron_session,
+        )
         leader_team_agent = await team_manager.get_or_create_team(
             sid,
             deep_agent,
@@ -2531,6 +2831,21 @@ async def _ensure_dynamic_member_execution_loop(
         if not leader_member_name:
             leader_spec = getattr(spec_obj, "leader", None)
             leader_member_name = str(getattr(leader_spec, "member_name", "") or "").strip()
+        # Re-encode the serialized leader-side sandbox specs against THIS
+        # process' config before the payload crosses into the member loop
+        # (design D-20261105-1041 KD6): each entry keeps the deterministic
+        # entry id (same derivation on both nodes) while base_url and mounts
+        # resolve locally, so the member runs in a container on its own node.
+        if not await _apply_member_sandbox_gate_with_cleanup(
+            spec_obj=spec_obj,
+            team_manager=team_manager,
+            sid=sid,
+            leader_team_agent=leader_team_agent,
+            leader_member_name=leader_member_name,
+            member=member,
+            assembly_project_dir=assembly_project_dir,
+        ):
+            return False, False
         payload = {
             "spec": spec_obj.model_dump(mode="json"),
             "context": teammate_ctx.model_dump(mode="json"),
@@ -2747,9 +3062,12 @@ async def apply_bootstrap_envelope_from_control_plane(
     # teammate's auxiliary leader is rebuilt provider-style with the same mode.
     # ``cron`` is the scheduler's cron execution marker: it must reach the
     # kickoff loop so a remote member of a team cron run stays cron-gated.
+    # ``cron_session`` is the session-level ownership for turns not fired by the
+    # scheduler; it gates cron tools without claiming this round is unattended.
     assembly_mode = str(envelope.get("mode", "")).strip()
     assembly_project_dir = str(envelope.get("project_dir", "")).strip()
     assembly_cron_meta = envelope.get("cron")
+    assembly_cron_session = envelope.get("cron_session")
 
     logger.info(
         "[RemoteMemberBootstrap] teammate received direct bootstrap team=%s session_id=%s "
@@ -2799,6 +3117,7 @@ async def apply_bootstrap_envelope_from_control_plane(
                 assembly_mode=assembly_mode,
                 assembly_project_dir=assembly_project_dir,
                 assembly_cron_meta=assembly_cron_meta,
+                assembly_cron_session=assembly_cron_session,
                 **manager_kwargs,
             )
             if kicked:

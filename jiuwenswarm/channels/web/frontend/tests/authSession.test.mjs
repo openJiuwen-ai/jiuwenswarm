@@ -57,6 +57,7 @@ const {
   getManagerAccessToken,
   getManagerRefreshToken,
   managerAuthenticatedFetch,
+  redirectToManagerLogin,
   setManagerTokens,
 } = await loadAuthSession();
 
@@ -66,6 +67,7 @@ function reset() {
   cookie = '';
   redirects = [];
   window.location.pathname = '/chat/';
+  delete window.__JIUWEN_LOGIN_ENTRY_URL__;
 }
 
 function authHeader(init) {
@@ -79,7 +81,7 @@ test('concurrent 401 responses share one refresh and retry with the rotated acce
   let protectedCalls = 0;
 
   globalThis.fetch = async (input, init) => {
-    if (String(input) === '/idp/v1/auth/refresh') {
+    if (String(input) === '/idp/v1/auth/refresh?surface=user') {
       refreshCalls += 1;
       await new Promise((resolve) => setTimeout(resolve, 5));
       return new Response(
@@ -111,7 +113,7 @@ test('concurrent 401 responses share one refresh and retry with the rotated acce
   assert.equal(protectedCalls, 4);
   assert.equal(getManagerAccessToken(), 'new-access');
   assert.equal(getManagerRefreshToken(), 'new-refresh');
-  assert.match(cookie, /^openjiuwen_access_token=new-access;/);
+  assert.match(cookie, /^openjiuwen_user_access_token=new-access;/);
   assert.deepEqual(redirects, []);
 });
 
@@ -120,7 +122,7 @@ test('a failed refresh clears the session and redirects to the login page', asyn
   setManagerTokens('expired-access', 'expired-refresh');
   let refreshCalls = 0;
   globalThis.fetch = async (input) => {
-    if (String(input) === '/idp/v1/auth/refresh') {
+    if (String(input) === '/idp/v1/auth/refresh?surface=user') {
       refreshCalls += 1;
       return new Response('{"detail":"auth_invalid_refresh"}', { status: 401 });
     }
@@ -143,7 +145,7 @@ test('the retried request is sent only once even when it also returns 401', asyn
   let refreshCalls = 0;
   let protectedCalls = 0;
   globalThis.fetch = async (input) => {
-    if (String(input) === '/idp/v1/auth/refresh') {
+    if (String(input) === '/idp/v1/auth/refresh?surface=user') {
       refreshCalls += 1;
       return new Response(
         JSON.stringify({
@@ -165,6 +167,19 @@ test('the retried request is sent only once even when it also returns 401', asyn
   assert.deepEqual(redirects, []);
 });
 
+test('login redirect keeps the portal prefix and honors an explicit entry URL', () => {
+  reset();
+  setManagerTokens('access', 'refresh');
+  window.location.pathname = '/portal/chat/session-1';
+  assert.equal(redirectToManagerLogin(), true);
+  assert.deepEqual(redirects, ['/portal/auth']);
+
+  setManagerTokens('access', 'refresh');
+  window.__JIUWEN_LOGIN_ENTRY_URL__ = 'https://portal.example.test/sign-in';
+  assert.equal(redirectToManagerLogin(), true);
+  assert.deepEqual(redirects, ['/portal/auth', 'https://portal.example.test/sign-in']);
+});
+
 test('clearing tokens removes both local values and expires the access cookie', () => {
   reset();
   setManagerTokens('access', 'refresh');
@@ -181,7 +196,7 @@ test('clearing tokens removes both local values and expires the access cookie', 
 
 test('requests synchronize externally written tokens to the cookie and include credentials', async () => {
   reset();
-  localStorage.setItem('openjiuwen_access_token', 'manager-web-token');
+  localStorage.setItem('openjiuwen_access_token', 'user-web-token');
   cookie = 'stale';
   let sent;
   globalThis.fetch = async (_input, init) => {
@@ -191,9 +206,9 @@ test('requests synchronize externally written tokens to the cookie and include c
 
   await managerAuthenticatedFetch('/manager-api/v1/authz/me');
 
-  assert.equal(sent.authorization, 'Bearer manager-web-token');
+  assert.equal(sent.authorization, 'Bearer user-web-token');
   assert.equal(sent.credentials, 'include');
-  assert.match(sent.cookie, /^openjiuwen_access_token=manager-web-token;/);
+  assert.match(sent.cookie, /^openjiuwen_user_access_token=user-web-token;/);
 });
 
 for (const prefix of ['', '/portal/']) {
@@ -202,7 +217,7 @@ for (const prefix of ['', '/portal/']) {
     const session = await loadAuthSession(prefix);
     session.setManagerTokens('old-access', 'refresh');
     const calls = [];
-    const refreshPath = `${prefix.replace(/\/+$/, '')}/idp/v1/auth/refresh`;
+    const refreshPath = `${prefix.replace(/\/+$/, '')}/idp/v1/auth/refresh?surface=user`;
     globalThis.fetch = async (input, init) => {
       calls.push({ path: String(input), credentials: init.credentials });
       if (String(input) === refreshPath) {
