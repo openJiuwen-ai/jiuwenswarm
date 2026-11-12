@@ -5,16 +5,12 @@
 # pylint: disable=protected-access
 
 import asyncio
+from functools import partial
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
-from functools import partial
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until as bounded_wait
-
-until = partial(bounded_wait, timeout=5)
 from openjiuwen.core.runner.callback.errors import AbortError
 
 from jiuwenswarm.extensions.video_duplex.backend import task_adapter
@@ -23,6 +19,11 @@ from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution,
 from jiuwenswarm.server.runtime.video_task.rail import task_checkpoint
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import routed_task_fixture
+
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until as bounded_wait
+
+
+until = partial(bounded_wait, timeout=5)
 
 
 @pytest.mark.parametrize("failure", ["cancel", "query"])

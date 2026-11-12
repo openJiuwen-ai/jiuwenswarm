@@ -1,7 +1,10 @@
 """In-process transport for the real checkpoint protocol and Gateway writer."""
 
+import asyncio
+import json
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from agent_gateway.extensions.video_duplex.backend.tasks.bridge import (
@@ -13,13 +16,6 @@ from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.server.runtime.video_task import bridge
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
-
-import asyncio
-
-import json
-
-from unittest.mock import AsyncMock
-
 
 
 class LocalCheckpoint:
@@ -78,7 +74,7 @@ def empty_task_file_query(monkeypatch):
 
 @pytest.fixture(name="routed_task")
 def routed_task_fixture(tmp_path, monkeypatch):
-    from unittest.mock import AsyncMock, Mock
+    from unittest.mock import Mock
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
     from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter

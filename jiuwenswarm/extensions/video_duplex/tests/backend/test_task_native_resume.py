@@ -1,16 +1,11 @@
 """Real Core interruption and Host answer conversion; only model/transport are local."""
 
 import asyncio
+from functools import partial
 import json
 from types import SimpleNamespace
 
 import pytest
-
-from functools import partial
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until as bounded_wait
-
-wait_for = partial(bounded_wait, timeout=5)
-
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.agent import create_agent_session
@@ -31,6 +26,11 @@ from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
 from jiuwenswarm.server.runtime.video_task.rail import VoiceAgentTaskRail
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import install_bridge
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until as bounded_wait
+
+
+wait_for = partial(bounded_wait, timeout=5)
 
 
 class CoreInputNormalizer(DeepAgent):
