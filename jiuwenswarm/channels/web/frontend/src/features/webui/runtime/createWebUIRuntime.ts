@@ -18,6 +18,7 @@ import type {
   WebUINormalizedTarget,
 } from '../contracts/normalized.ts';
 import { createProtocolPipeline } from '../protocol/process.ts';
+import { createRestoreReconnectTracker } from './restoreReconnect.ts';
 import { readAppearanceFrame, type WebUIAppearanceFrame } from '../appearance/appearance.ts';
 import type { WebUIProtocol } from '../protocol/process.ts';
 import type { WebUIConnectionState, WebUIDispatchReceipt, WebUITransportHandlers } from '../transport/types.ts';
@@ -58,6 +59,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   const protocol: WebUIProtocol = options.protocol ?? createProtocolPipeline(catalog, options.limits);
 
   const records = new Map<string, InstanceRecord>();
+  const restoreReconnect = createRestoreReconnectTracker();
   // Clear revisions outlive local instances and mounts, until the connection/request context ends.
   const clearedRevisions = new Map<string, number>();
   let entryContextChanged = false;
@@ -366,7 +368,9 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       if (disposed || state === connectionState) {
         return;
       }
+      if (connectionState === 'connected') restoreReconnect.onDisconnect();
       connectionState = state;
+      if (state === 'connected' && restoreReconnect.onConnect()) clearRestoredPluginState();
       if (state !== 'connected') {
         appearanceRevision = 0;
         appearanceStale = appearance !== null;
@@ -390,6 +394,28 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       }
     },
   };
+
+  function clearRestoredPluginState(): void {
+    // Keep the mounted hosts and their subscriptions. Deleted instance keys must
+    // also advance their external-store versions before listeners are notified.
+    for (const key of records.keys()) bumpInstance(key);
+    records.clear();
+    scopeIndex.clear();
+    clearedRevisions.clear();
+    nodeBindings.clear();
+    entryContextChanged = false;
+    appearanceRevision = 0;
+    appearanceStale = false;
+    setAppearance(null);
+    for (const owner of owners.values()) owner.readySent = false;
+  }
+
+  function confirmSystemPluginRestore(recordId: string, restoredAt: number): void {
+    if (disposed || !restoreReconnect.confirm(recordId, restoredAt)) return;
+    clearRestoredPluginState();
+    notifyAll();
+    void reportReadyAfterReconnect();
+  }
 
   async function notifyClosed(instanceKey: string, reason: string): Promise<WebUIDispatchReceipt | null> {
     const record = records.get(instanceKey);
@@ -817,6 +843,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     reportDisplayed,
     reportRenderFailure,
     clearSession,
+    confirmSystemPluginRestore,
     resetRequestContext,
     refreshContributions,
     getConnectionState: () => connectionState,

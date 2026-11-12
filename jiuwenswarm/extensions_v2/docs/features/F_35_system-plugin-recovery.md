@@ -43,6 +43,15 @@ AgentServer 前会回收其独立的 Runtime Worker，避免该 Worker 保留还
 仅重启 AgentServer（及其 Runtime Worker）和 Gateway，不重启桌面窗口或恢复进程。所有启动器都在结束 AgentServer
 前记录并回收其后代进程，因此 Runtime Worker 自建会话后也不会遗留到下一次启动。
 
+从设置页执行还原时，收到重启请求成功的确认且连接实际断开并重连后，当前窗口清理还原前的插件界面。
+仍在挂载的应用级和会话级槽位按各自规则重新上报 `ui.ready`。普通断网重连沿用现有行为。
+插件广场、我的扩展和详情页中，已安装 Gateway 插件的开关读取还原后受管版本的 `manifest.json`。
+
+When a restore from Settings confirms a restart request and the connection reconnects, the current window
+clears pre-restore plugin views. Mounted application and session slots report `ui.ready` under their existing
+rules. Ordinary reconnects retain their existing behavior.
+The marketplace, installed list and detail page read an installed Gateway plugin’s toggle from its restored managed manifest.
+
 ## 4. 职责边界
 
 恢复账本属于 JiuwenSwarm，不写入 agent-core。agent-core 只提供通用的包安装、卸载和 `enable` 管理接口；
