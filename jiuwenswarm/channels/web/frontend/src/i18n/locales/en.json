@@ -2211,7 +2211,10 @@
       "readFileFailed": "Failed to read file: {{name}}",
       "readImageFailed": "Failed to read image: {{name}}",
       "filePickerUnsupported": "Cannot open local file picker in this environment (please ensure jiuwenswarm is running locally and restarted with the latest backend)",
-      "filePickerFailed": "Failed to open file picker"
+      "filePickerFailed": "Failed to open file picker",
+      "preparingFiles": "Preparing files…",
+      "preparingFilesHint": "Please wait while files are read",
+      "cancelPreparing": "Cancel waiting"
     },
     "uploading": "Uploading...",
     "uploadFailed": "Upload failed",
