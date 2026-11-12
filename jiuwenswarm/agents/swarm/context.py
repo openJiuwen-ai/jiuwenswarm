@@ -15,8 +15,10 @@ config source (``config.yaml``), not by inheriting a pre-built single agent.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from openjiuwen.agent_teams import paths as ojw_paths
 from openjiuwen.agent_teams.schema.build_context import BuildContext
 
 
@@ -42,9 +44,20 @@ class SwarmBuildContext(BuildContext):
             config); replaces the old parent ``_jiuwenswarm_project_dir``.
         team_id: Team name.
         team_ws_root: Team shared workspace root path.
-        team_skills_dir: Team shared skills directory (``team_ws_root/skills``).
-        global_skills_dir: Global agent skills directory.
+        team_skill_visibility_path: Team-level Skill visibility metadata file
+            (``team_ws_root/skills-visibility.json``). Replaces the former
+            ``team_skills_dir``: a team owns no Skill directory of its own, only
+            a metadata document composed with each member's document. The
+            member-level counterpart is not a field but the
+            :meth:`resolve_member_skill_visibility_path` method.
+        global_skills_dir: The one physical Skill library every agent reads.
         config: The resolved ``config.yaml`` mapping (``get_config()``).
+
+    Note:
+        Backward incompatible: the ``team_skills_dir`` field and its seed key
+        were removed. A seed produced by an older process carries no
+        ``team_skill_visibility_path`` and rebuilds with ``None``, which leaves
+        the member document as the only visibility authority.
     """
 
     session_id: str = ""
@@ -57,24 +70,41 @@ class SwarmBuildContext(BuildContext):
     disable_teammate_worktree: bool = False
     team_id: str = ""
     team_ws_root: str | None = None
-    team_skills_dir: str | None = None
+    team_skill_visibility_path: str | None = None
     global_skills_dir: str | None = None
     config: dict[str, Any] | None = None
 
-    def to_seed(self) -> dict[str, Any]:
-        """Export the serializable per-team / per-process fields as a seed.
+    def resolve_member_skill_visibility_path(self) -> str | None:
+        """Resolve the current member's Skill visibility metadata file path.
 
-        The seed travels on ``TeamAgentSpec.build_context_seed`` across a
-        serialization boundary; :meth:`from_seed` rebuilds the context from it
-        plus locally-sourced non-serializable handles. Per-member fields
-        (``member_name`` / ``role`` / ``language`` / ``workspace`` /
-        ``member_card_id``) are intentionally excluded — ``setup_agent`` fills
-        them per member through ``derive()``. The live ``config`` is excluded too:
-        the receiver supplies it.
+        Named ``resolve_*`` on purpose: its team-level counterpart
+        ``team_skill_visibility_path`` is a plain field, and a consumer that
+        reads both must not mistake this one for a value.
+
+        Derived rather than stored: the base context is per-team and
+        ``member_name`` / ``workspace`` are only filled per member by
+        ``setup_agent`` through ``derive()``, so a per-member path could never
+        travel in :meth:`to_seed`.
+
+        The member workspace root is preferred over recomputing the stable
+        layout path, so a workspace that was relocated keeps its metadata next
+        to the workspace it actually uses.
 
         Returns:
-            A plain mapping of serializable primitives.
+            The absolute metadata path, or ``None`` when neither a workspace
+            nor a (team, member) identity pair is available.
         """
+        workspace = self.workspace
+        root_path = getattr(workspace, "root_path", None) if workspace else None
+        if root_path:
+            return str(Path(root_path) / ojw_paths.SKILL_VISIBILITY_FILENAME)
+        member_name = str(self.member_name or "").strip()
+        if not member_name or not self.team_id:
+            return None
+        return str(ojw_paths.member_skill_visibility_path(self.team_id, member_name))
+
+    def to_seed(self) -> dict[str, Any]:
+        """Export the serializable per-team / per-process fields as a seed."""
         return {
             "session_id": self.session_id,
             "request_id": self.request_id,
@@ -86,7 +116,7 @@ class SwarmBuildContext(BuildContext):
             "disable_teammate_worktree": self.disable_teammate_worktree,
             "team_id": self.team_id,
             "team_ws_root": self.team_ws_root,
-            "team_skills_dir": self.team_skills_dir,
+            "team_skill_visibility_path": self.team_skill_visibility_path,
             "global_skills_dir": self.global_skills_dir,
             "language": self.language,
         }
@@ -98,16 +128,7 @@ class SwarmBuildContext(BuildContext):
         *,
         config: dict[str, Any] | None,
     ) -> "SwarmBuildContext":
-        """Rebuild a context from a :meth:`to_seed` mapping plus local handles.
-
-        Args:
-            seed: The serializable mapping produced by :meth:`to_seed`.
-            config: The receiving process's resolved ``config.yaml`` mapping.
-
-        Returns:
-            A ``SwarmBuildContext`` with the seed fields restored and the
-            non-serializable handles sourced from the receiving process.
-        """
+        """Rebuild a context from a :meth:`to_seed` mapping plus local handles."""
         language = str(seed.get("language") or "").strip().lower()
         if language not in {"cn", "en"}:
             language = "cn"
@@ -122,7 +143,7 @@ class SwarmBuildContext(BuildContext):
             disable_teammate_worktree=bool(seed.get("disable_teammate_worktree", False)),
             team_id=seed.get("team_id", ""),
             team_ws_root=seed.get("team_ws_root"),
-            team_skills_dir=seed.get("team_skills_dir"),
+            team_skill_visibility_path=seed.get("team_skill_visibility_path"),
             global_skills_dir=seed.get("global_skills_dir"),
             config=config,
             language=language,

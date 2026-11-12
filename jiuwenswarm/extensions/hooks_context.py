@@ -103,6 +103,10 @@ class ModelHttpHookContext:
     # skill_turbo / symphony / repair。只读，由宿主在触发前归一化填入。
     # 追加在末尾，保持既有位置参数构造兼容。
     purpose: str = "chat"
+    # (session_id, request_id) supplied by a caller that requires request attribution.
+    # Scoped extensions opt in through a separate pocket so legacy values cannot leak.
+    request_scope: tuple[str, str] | None = None
+    scoped_headers: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

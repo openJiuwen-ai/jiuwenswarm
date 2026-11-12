@@ -925,6 +925,7 @@ from jiuwenswarm.common.utils import (
     load_yaml_dict,
     resolve_shipped_template_config_path,
 )
+from jiuwenswarm.common.runtime_workspace import resolve_runtime_workspace_paths
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
@@ -1113,6 +1114,7 @@ class JiuWenSwarmDeepAdapter:
         # 场景). 单点 source-of-truth, 避免分布在多个方法里靠 isinstance
         # 或字符串嗅探 agent_name 反推。
         self._is_code_agent: bool = False
+        self._sandbox_active_workspace_root: str | None = None
         self._vision_tools_registered: bool = False
         self._audio_tools_registered: bool = False
         self._video_tool_registered: bool = False
@@ -5600,16 +5602,10 @@ class JiuWenSwarmDeepAdapter:
         return card
 
     def _resolve_project_dir_for_sandbox(self) -> str | None:
-        """Best-effort lookup of the user project directory for sandbox builds.
-
-        Prefers ``self._project_dir``,
-        then falls back to ``self._instance_overrides["project_dir"]`` which
-        :meth:`AgentManager.get_agent` populates from ``trusted_dirs[0]``.
-        Returning ``None`` lets :func:`build_filesystem_policy` use its own
-        fallback chain, but the agent-server cwd usually isn't what we want
-        so callers should treat ``None`` as "policy will mount cwd, which
-        may shadow secrets" and at minimum log it.
-        """
+        """Resolve the active task/project root without mounting the server cwd."""
+        task_root = getattr(self, "_sandbox_active_workspace_root", None)
+        if task_root:
+            return str(task_root)
         direct = getattr(self, "_project_dir", None)
         if direct:
             return str(direct)
@@ -5618,7 +5614,7 @@ class JiuWenSwarmDeepAdapter:
             value = overrides.get("project_dir")
             if value:
                 return str(value)
-        return None
+        return str(get_agent_root_dir())
 
 
     def _create_sys_operation(self) -> SysOperation | None:
@@ -6342,8 +6338,29 @@ class JiuWenSwarmDeepAdapter:
         )
 
         if files_changed:
+            isolation_key = _sys_operation_isolation_key(card)
+            if not launcher.base_url or not isolation_key:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] sandbox recreation skipped: "
+                    "missing endpoint or isolation key; files policy change "
+                    "was not applied to the existing sandbox"
+                )
+                return
+            isolation = getattr(card.gateway_config, "isolation", None)
+            scope = getattr(isolation, "container_scope", None)
+            # Only CUSTOM has a fully resolved isolation key on the card.
+            # SESSION templates still contain {session_id}; using one as a
+            # shared-cache key could evict another session's sandbox.
+            if getattr(scope, "value", scope) != "custom":
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] sandbox recreation skipped: "
+                    "only CUSTOM isolation scope is supported; files policy "
+                    "change was not applied to the existing sandbox"
+                )
+                return
             try:
                 from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+                    build_jiuwenbox_shared_scope_key,
                     force_recreate_jiuwenbox_sandbox,
                 )
             except Exception as exc:
@@ -6356,6 +6373,9 @@ class JiuWenSwarmDeepAdapter:
             try:
                 new_sandbox_id = await force_recreate_jiuwenbox_sandbox(
                     launcher.base_url,
+                    shared_key=build_jiuwenbox_shared_scope_key(
+                        str(launcher.base_url), str(isolation_key)
+                    ),
                     policy=new_policy,
                     policy_mode=extra.get("policy_mode", "append"),
                     preserve_files_upload=upload_list,
@@ -10877,6 +10897,7 @@ class JiuWenSwarmDeepAdapter:
         cwd: str | None = None
         workspace: str | None = None
         project_dir: str | None = None
+        task_name: str | None = None
         supports_user_interaction: bool = True
         eternal_conversation_enabled: bool = False
         interaction_resume: bool = False
@@ -10886,6 +10907,34 @@ class JiuWenSwarmDeepAdapter:
         # 工具复制到 inputs["files"]，流水线 intent_classify 据此设 has_documents。
         files: Any = None
 
+
+    @staticmethod
+    def _extract_task_request_text(value: Any) -> str | None:
+        if isinstance(value, dict):
+            for key in ("content", "text", "query", "message"):
+                nested = value.get(key)
+                if isinstance(nested, str) and nested.strip():
+                    return nested.strip()
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    @staticmethod
+    def _resolve_request_task_name(request: AgentRequest, inputs: dict[str, Any]) -> str | None:
+        params = request.params if isinstance(request.params, dict) else {}
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        for source in (params, inputs, metadata):
+            for key in ("task_name", "title"):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        for source in (params, metadata):
+            for key in ("query", "content", "message"):
+                candidate = JiuWenSwarmDeepAdapter._extract_task_request_text(source.get(key))
+                if candidate is not None:
+                    return candidate
+        return JiuWenSwarmDeepAdapter._extract_task_request_text(inputs.get("query"))
 
     async def configure_session_runtime(
         self,
@@ -10978,8 +11027,8 @@ class JiuWenSwarmDeepAdapter:
             runtime_config: Per-request runtime parameters for this turn.
             stage_timer: Timer marked at each stage boundary.
         """
-        # Request tenant bindings do not survive the supervisor round task.
-        # Carry only the trusted session path, never cached authorization data.
+        # The supervisor round task needs the trusted session path. Do not
+        # carry request-scoped authorization data into that task.
         from jiuwenswarm.common.utils import get_agent_sessions_dir
 
         sessions_root = get_agent_sessions_dir()
@@ -10988,13 +11037,23 @@ class JiuWenSwarmDeepAdapter:
             if rail is not None:
                 rail.set_sessions_root(sessions_root)
 
-        task_workspace = (
-            runtime_config.workspace
-            or runtime_config.project_dir
-            or self._project_dir
-            or str(get_default_project_session_workspace_dir(runtime_config.session_id))
+        runtime_paths = resolve_runtime_workspace_paths(
+            internal_workspace_dir=self._workspace_dir,
+            project_dir=runtime_config.project_dir or self._project_dir,
+            workspace_dir=runtime_config.workspace,
+            cwd=runtime_config.cwd,
+            session_id=runtime_config.session_id,
+            task_name=runtime_config.task_name,
+            bind_request=bind_request,
         )
-        task_cwd = runtime_config.cwd or task_workspace
+        task_workspace = str(runtime_paths.runtime_workspace_root)
+        task_cwd = str(runtime_paths.cwd)
+        if task_workspace != getattr(self, "_sandbox_active_workspace_root", None):
+            self._sandbox_active_workspace_root = task_workspace
+            if get_sandbox_runtime().get("enabled"):
+                await self.apply_sandbox_runtime_patch(
+                    get_sandbox_runtime(), files_changed=True
+                )
         self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
         # Persist paths on StreamEventRail so the interaction round task can
         # rebind openjiuwen CwdState (request-task init_cwd does not propagate).
@@ -11050,6 +11109,7 @@ class JiuWenSwarmDeepAdapter:
         stage_timer.mark("eternal_conversation")
 
         if self._runtime_prompt_rail:
+            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
             self._runtime_prompt_rail.set_trusted_dirs(
@@ -11059,10 +11119,17 @@ class JiuWenSwarmDeepAdapter:
                 cwd=task_cwd,
                 project_dir=runtime_config.project_dir or self._project_dir,
                 workspace_dir=self._workspace_dir,
+                task_workspace_root=task_workspace if runtime_paths.is_projectless else None,
+                task_work_dir=str(runtime_paths.work_dir) if runtime_paths.work_dir else None,
+                task_outputs_dir=str(runtime_paths.outputs_dir) if runtime_paths.outputs_dir else None,
+            )
+            self._runtime_prompt_rail.set_execution_paths(
+                cwd=task_cwd,
+                project_root=str(runtime_paths.project_root),
+                workspace=task_workspace,
             )
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
-            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             self._runtime_prompt_rail.set_request_system_prompt(
                 runtime_config.request_system_prompt if bind_request else None
             )
@@ -11075,7 +11142,10 @@ class JiuWenSwarmDeepAdapter:
         if permission_rail is not None and bind_request:
             try:
                 self._sync_permission_workspace(permission_rail)
-                permission_rail.set_trusted_dirs(runtime_config.trusted_dirs)
+                trusted_dirs = list(runtime_config.trusted_dirs or ())
+                if runtime_paths.is_projectless:
+                    trusted_dirs.append(task_workspace)
+                permission_rail.set_trusted_dirs(trusted_dirs)
             except Exception:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] permission_rail.set_trusted_dirs failed",
@@ -13652,9 +13722,9 @@ class JiuWenSwarmDeepAdapter:
             await approve_evolution_records(rail, request_id, approved_record_ids)
             # Sync updated team skill from workspace to global team_skills dir.
             try:
-                from jiuwenswarm.agents.harness.team import refresh_team_shared_skill_links_across_managers
+                from jiuwenswarm.agents.harness.team import reload_team_skill_views_across_managers
 
-                refresh_team_shared_skill_links_across_managers(session_id)
+                await reload_team_skill_views_across_managers(session_id)
             except Exception as exc:
                 logger.warning("[JiuWenSwarmDeepAdapter] team shared skill link refresh after approval failed: %s", exc)
             logger.info("[JiuWenSwarmDeepAdapter] team skill evolve accepted: request_id=%s", request_id)
@@ -13686,10 +13756,10 @@ class JiuWenSwarmDeepAdapter:
         if accepted:
             await rail.on_approve_simplify(request_id)
             try:
-                from jiuwenswarm.agents.harness.team import refresh_team_shared_skill_links_across_managers
+                from jiuwenswarm.agents.harness.team import reload_team_skill_views_across_managers
 
                 if session_id:
-                    refresh_team_shared_skill_links_across_managers(session_id)
+                    await reload_team_skill_views_across_managers(session_id)
             except Exception as exc:
                 logger.warning("[JiuWenSwarmDeepAdapter] team shared skill link refresh after simplify failed: %s", exc)
             logger.info("[JiuWenSwarmDeepAdapter] team simplify accepted: request_id=%s", request_id)
@@ -15908,6 +15978,7 @@ class JiuWenSwarmDeepAdapter:
                     cwd=inputs.get("cwd"),
                     workspace=inputs.get("workspace_dir"),
                     project_dir=inputs.get("project_dir"),
+                    task_name=self._resolve_request_task_name(request, inputs),
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
@@ -16699,6 +16770,7 @@ class JiuWenSwarmDeepAdapter:
                         trusted_dirs=inputs.get("trusted_dirs"),
                         cwd=inputs.get("cwd"),
                         project_dir=inputs.get("project_dir"),
+                        task_name=self._resolve_request_task_name(request, inputs),
                         supports_user_interaction=inputs.get(
                             "supports_user_interaction", True
                         ),
@@ -17112,6 +17184,7 @@ class JiuWenSwarmDeepAdapter:
                     cwd=inputs.get("cwd"),
                     workspace=inputs.get("workspace_dir"),
                     project_dir=inputs.get("project_dir"),
+                    task_name=self._resolve_request_task_name(request, inputs),
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
@@ -20040,5 +20113,3 @@ class JiuWenSwarmDeepAdapter:
             self._dreaming_started = False
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] stop_dreaming failed: %s", exc)
-
-

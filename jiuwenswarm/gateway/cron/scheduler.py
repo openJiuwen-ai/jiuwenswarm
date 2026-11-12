@@ -32,6 +32,7 @@ from jiuwenswarm.gateway.cron.models import (
 )
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from jiuwenswarm.common.e2a.constants import E2A_INTERNAL_CANCEL_SOURCE_KEY, E2A_CANCEL_SOURCE_CRON_COMPLETE
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
@@ -2199,9 +2200,13 @@ class CronSchedulerService:
                 if not awaiting_permission:
                     release_sid = exec_session_id or state.exec_session_id or ""
                     if state.error == "cancelled":
-                        self._schedule_runtime_session_release(release_sid)
+                        self._schedule_runtime_session_release(
+                            release_sid, cleanup_agent=not is_team_cron_mode(mode)
+                        )
                     else:
-                        await self._release_finished_exec_session(release_sid)
+                        await self._release_finished_exec_session(
+                            release_sid, cleanup_agent=not is_team_cron_mode(mode)
+                        )
                 is_cancelled_ghost = state.error == "cancelled"
                 if not is_cancelled_ghost:
                     await asyncio.to_thread(
@@ -2299,7 +2304,9 @@ class CronSchedulerService:
             )
             return False
 
-    async def _release_finished_exec_session(self, session_id: str) -> None:
+    async def _release_finished_exec_session(
+        self, session_id: str, *, cleanup_agent: bool = True
+    ) -> None:
         """定时任务自己的流结束后，立刻释放 Runtime 槽位。
 
         没有 ``release_session`` 的客户端（本地直连）跳过。释放失败不改变
@@ -2314,6 +2321,21 @@ class CronSchedulerService:
                 sid,
             )
             return
+        if cleanup_agent:
+            try:
+                cleanup_env = e2a_from_agent_fields(
+                    request_id=f"cron-cleanup-{sid}",
+                    channel_id="__cron__",
+                    session_id=sid,
+                    req_method=ReqMethod.CHAT_CANCEL,
+                    params={"intent": "cleanup"},
+                    is_stream=False,
+                    timestamp=self._now_fn(),
+                )
+                cleanup_env.channel_context[E2A_INTERNAL_CANCEL_SOURCE_KEY] = E2A_CANCEL_SOURCE_CRON_COMPLETE
+                await self._agent_client.send_request(cleanup_env)
+            except Exception:  # noqa: BLE001
+                logger.warning("[Cron] agent session cleanup failed session=%s", sid, exc_info=True)
         release = getattr(self._agent_client, "release_session", None)
         if not callable(release):
             return
@@ -2326,14 +2348,16 @@ class CronSchedulerService:
                 exc_info=True,
             )
 
-    def _schedule_runtime_session_release(self, session_id: str) -> None:
+    def _schedule_runtime_session_release(
+        self, session_id: str, *, cleanup_agent: bool = True
+    ) -> None:
         """取消路径里调度释放，避免在已取消的任务上再 await。"""
         sid = str(session_id or "").strip()
         if not sid:
             return
 
         async def _run() -> None:
-            await self._release_finished_exec_session(sid)
+            await self._release_finished_exec_session(sid, cleanup_agent=cleanup_agent)
 
         task = asyncio.create_task(_run(), name=f"cron-release-{sid}")
         self._runtime_release_tasks.add(task)

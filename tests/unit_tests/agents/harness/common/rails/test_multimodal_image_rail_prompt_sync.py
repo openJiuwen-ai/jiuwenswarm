@@ -21,14 +21,17 @@ from types import SimpleNamespace
 from openjiuwen.harness.prompts.builder import SystemPromptBuilder
 from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentManager
 
+from jiuwenswarm.agents.harness.common.multimodal.image_history import (
+    rewrite_orphan_attached_markers,
+)
 from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
     MultimodalImageRail,
 )
 
 
-def _fake_agent() -> SimpleNamespace:
+def _fake_agent(language: str = "cn") -> SimpleNamespace:
     return SimpleNamespace(
-        system_prompt_builder=SystemPromptBuilder(language="cn"),
+        system_prompt_builder=SystemPromptBuilder(language=language),
         prompt_attachment_manager=PromptAttachmentManager(),
         deep_config=SimpleNamespace(enable_read_image_multimodal=True),
     )
@@ -112,6 +115,167 @@ def test_attachment_omits_reread_when_no_provided_paths() -> None:
     assert "read_file" not in text
 
 
+def test_attachment_no_pixels_routes_by_capability() -> None:
+    """0 张时按能力分流:enabled 指路 read_file(与能力段同向),disabled 保留 VQA 兜底。
+
+    回归焦点:压缩器搬走像素块后 attached 状态行残留,附件必须不再写"请调 VQA"
+    (原生模型的矛盾信号),而是引导 read_file 重读被压缩省略的图。
+    """
+
+    rail = MultimodalImageRail(enable_image_multimodal=True)
+    rail.init(_fake_agent())
+
+    native = rail._build_image_state_attachment(enabled=True, images_sent=0)
+    assert "本次请求附带图片：0 张" in native
+    assert "read_file" in native
+    assert "视觉理解能力允许时" not in native
+    assert "visual_question_answering" not in native
+
+    legacy = rail._build_image_state_attachment(enabled=False, images_sent=0)
+    assert "visual_question_answering 等图片理解工具" in legacy
+    assert "read_file" not in legacy
+
+
+def test_attachment_no_pixels_routes_by_capability_en() -> None:
+    """0 张时按能力分流(en):enabled 指路 read_file,disabled 保留 VQA 兜底。
+
+    回归焦点:能力分流曾只改 cn 分支,en 分支保持旧两分——enabled + 0 张时
+    附件仍写 "call a vision tool",与能力段 capability_en("call read_file on
+    it")互相矛盾,英文会话被推回视觉工具老路。
+    """
+
+    rail = MultimodalImageRail(enable_image_multimodal=True)
+    rail.init(_fake_agent(language="en"))
+
+    native = rail._build_image_state_attachment(enabled=True, images_sent=0)
+    assert "0 images" in native
+    assert "read_file" in native
+    assert "visual_question_answering" not in native
+
+    legacy = rail._build_image_state_attachment(enabled=False, images_sent=0)
+    assert "visual_question_answering" in legacy
+    assert "read_file" not in legacy
+
+
+def test_sync_mutator_rewrites_orphan_attached_markers() -> None:
+    """孤儿标记改写:压缩搬走像素块后,残留的 attached 状态行改为 omitted: compacted。
+
+    消费端契约(附件计数 / read_file 护栏的 provided 路径)按 attached 判定
+    "已提供、禁止重读";孤儿标记不改口会把无像素的模型锁死(换模型回程事故)。
+    """
+
+    agent = _fake_agent()
+    rail = MultimodalImageRail(enable_image_multimodal=True)
+    rail.init(agent)
+    ctx = _make_ctx(agent)
+
+    assert rail._install_image_state_sync_window_mutator(ctx, True) is True
+    mutator = ctx.context._window_mutators[0]
+
+    # 压缩后的消息:文本 part 里引用行 + attached 状态行都在,像素块没了。
+    window = _FakeWindow(
+        system_messages=[SimpleNamespace(content="stale-system")],
+        context_messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _reference_line(1, "/tmp/a.png")},
+                    {"type": "text", "text": "[image #1 attached]"},
+                ],
+            }
+        ],
+    )
+    result = asyncio.run(mutator(None, window))
+
+    # 1) 孤儿标记被改口为 omitted: compacted(按行定位,不动引用行)。
+    texts = [p["text"] for p in result.context_messages[0]["content"] if p.get("type") == "text"]
+    assert any("[image #1 omitted: compacted]" in t for t in texts), texts
+    assert not any("[image #1 attached]" in t for t in texts), texts
+    assert any("path=/tmp/a.png" in t for t in texts), texts
+
+    # 2) provided 路径不再包含孤儿(护栏据此放行 read_file 重读)。
+    rebuilt_policy = str(rail._system_prompt_builder.build())
+    assert "你可以直接看图" in rebuilt_policy
+
+    # 3) 像素块仍在的消息不被误伤:标记与块配对就不是孤儿。
+    window2 = _FakeWindow(
+        system_messages=[SimpleNamespace(content="s")],
+        context_messages=[_provided_image_message()],
+    )
+    result2 = asyncio.run(mutator(None, window2))
+    block_texts = [
+        p["text"]
+        for p in result2.context_messages[0]["content"]
+        if isinstance(p, dict) and p.get("type") == "text"
+    ]
+    assert any("[image #1 attached]" in t for t in block_texts), block_texts
+
+
+def test_rewrite_orphan_attached_markers_string_summary() -> None:
+    """字符串 content(压缩器摘要形态)同样改写孤儿 attached 标记。
+
+    DialogueCompressor 的替换消息是 UserMessage(content=<str>);旧实现的
+    isinstance(content, list) 检查会跳过字符串消息,docstring 声称的主场景
+    (纯文本摘要残留标记)实际不被处理。字符串消息不可能携带像素块,其中
+    残留的 attached 状态行必为孤儿。
+    """
+
+    # 压缩摘要形态:引用行 + attached 状态行同在一个纯字符串 content 里。
+    summary = {
+        "role": "user",
+        "content": (
+            "[image #1] path=/tmp/a.png filename=a.png mime=image/png\n"
+            "用户上传了图片并提问。\n"
+            "[image #1 attached]"
+        ),
+    }
+    assert rewrite_orphan_attached_markers([summary]) == 1
+    rewritten = summary["content"]
+    assert isinstance(rewritten, list), "命中后写回列表形态"
+    texts = [str(part.get("text", "")) for part in rewritten if isinstance(part, dict)]
+    joined = "\n".join(texts)
+    assert "[image #1 attached]" not in joined
+    assert "[image #1 omitted: compacted]" in joined
+    # 引用行原样保留(它是 read_file 重读的路径来源,不是孤儿)。
+    assert "[image #1] path=/tmp/a.png" in joined
+
+    # 无命中的字符串消息保持原形态,不强转列表。
+    plain = {"role": "user", "content": "普通文本,没有标记"}
+    assert rewrite_orphan_attached_markers([plain]) == 0
+    assert plain["content"] == "普通文本,没有标记"
+
+
+def test_rewrite_orphan_attached_markers_skips_non_user_messages() -> None:
+    """tool result / assistant 正文里的同格式行不改写。
+
+    状态行仅由上传入口写入 user 消息;其余角色里的同格式行是文件内容
+    (如 read_file 读到的会话导出),就地改写会让持久化历史与磁盘实际
+    内容不一致,破坏工具结果的权威记录。
+    """
+
+    # read_file 文本文件场景:tool 结果的字符串 content 里带一整行暗号。
+    tool_result = {
+        "role": "tool",
+        "content": "Image file read: log.txt\n[image #5 attached]\nend",
+    }
+    assert rewrite_orphan_attached_markers([tool_result]) == 0
+    assert tool_result["content"] == "Image file read: log.txt\n[image #5 attached]\nend"
+
+    # assistant 消息同样不改写(列表形态)。
+    assistant = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "[image #7 attached]"}],
+    }
+    assert rewrite_orphan_attached_markers([assistant]) == 0
+    assert assistant["content"][0]["text"] == "[image #7 attached]"
+
+    # user 消息照常改写(对照,主场景不受过滤影响)。
+    user_msg = {"role": "user", "content": "看这张\n[image #5 attached]"}
+    assert rewrite_orphan_attached_markers([user_msg]) == 1
+    assert "[image #5 attached]" not in str(user_msg["content"])
+    assert "[image #5 omitted: compacted]" in str(user_msg["content"])
+
+
 def test_sync_mutator_resyncs_prompt_after_compaction() -> None:
     """压缩搬走 image block 后，同步 mutator 应删策略段、并把附件重写为 0 张。"""
 
@@ -142,8 +306,15 @@ def test_sync_mutator_resyncs_prompt_after_compaction() -> None:
     )
     result = asyncio.run(mutator(None, window))
 
-    # 1) 策略段按最终 0 张删除，重建的系统提示不再宣称"已提供 / 别调 VQA"。
-    assert not rail._system_prompt_builder.has_section("multimodal_image_policy")
+    # 1) 策略段按最终 0 张降级为能力声明：不再宣称"已提供 / 别调 VQA"，
+    #    但保留"你可以直接看图"的能力事实 + read_file 取回路径（enabled 模型
+    #    始终知道自己的原生视觉与像素读取入口）。
+    assert rail._system_prompt_builder.has_section("multimodal_image_policy")
+    rebuilt_policy = str(rail._system_prompt_builder.build())
+    assert "你可以直接看图" in rebuilt_policy
+    assert "请用 read_file 读取" in rebuilt_policy
+    assert "已作为图像内容直接提供" not in rebuilt_policy
+    assert "不要调用" not in rebuilt_policy
     assert "不要调用" not in result.system_messages[0].content
 
     # 2) 附件重写为"0 张"，不再残留压缩前的"1 张"。

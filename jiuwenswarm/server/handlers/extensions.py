@@ -291,7 +291,8 @@ async def handle_harness_packages_activate(ctx: RequestContext) -> None:
             channel_id=channel_id,
             mode=agent_mode,
             project_dir=resolve_request_project_dir(request),
-            sub_mode=sub_mode
+            sub_mode=sub_mode,
+            session_id=request.session_id,
         )
         agent_instance = None
         if agent is not None:
@@ -361,7 +362,8 @@ async def handle_harness_packages_deactivate(ctx: RequestContext) -> None:
             channel_id=channel_id,
             project_dir=resolve_request_project_dir(request),
             mode=agent_mode,
-            sub_mode=sub_mode
+            sub_mode=sub_mode,
+            session_id=request.session_id,
         )
         agent_instance = None
         if agent is not None:
@@ -435,7 +437,8 @@ async def handle_harness_packages_delete(ctx: RequestContext) -> None:
             channel_id=request.channel_id,
             project_dir=resolve_request_project_dir(request),
             mode=agent_mode,
-            sub_mode=sub_mode
+            sub_mode=sub_mode,
+            session_id=request.session_id,
         )
         agent_instance = None
         if agent is not None:

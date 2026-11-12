@@ -860,6 +860,25 @@ class AgentManager:
                 )
                 continue
 
+            if cache_key.endswith(f":session:{sid}") and channel_agents.get(cache_key) is agent:
+                if not self._agent_pins.get(id(agent), 0) and not self._has_agent_borrowers(
+                    agent, exclude=asyncio.current_task(),
+                ):
+                    channel_agents.pop(cache_key, None)
+                    create_params = self._agent_create_params.get(channel_key, {}).pop(cache_key, None)
+                    try:
+                        await agent.cleanup()
+                    except Exception:
+                        channel_agents[cache_key] = agent
+                        if create_params is not None:
+                            self._agent_create_params.setdefault(channel_key, {})[cache_key] = create_params
+                        failed_agents += 1
+                        logger.exception(
+                            "[AgentManager] projectless session agent cleanup failed: "
+                            "channel_id=%s session_id=%s", channel_key, sid,
+                        )
+                    continue
+
             if channel_key != "tui":
                 continue
             try:
@@ -894,7 +913,17 @@ class AgentManager:
         reason: str = "session_deleted",
     ) -> bool:
         """Release subagent control owned by the channel's existing Agent."""
-        agent = self.get_agent_nowait(channel_id=channel_id or "")
+        agent = self.get_agent_for_session_nowait(channel_id or "", session_id)
+        if agent is None:
+            # 删除时 session runtime 可能已释放，仍需定位会话专属根实例。
+            channel_agents = self.agents.get(_normalize_channel_id(channel_id or ""), {})
+            agent = next(
+                (candidate for key, candidate in channel_agents.items()
+                 if key.endswith(f":session:{session_id}")),
+                None,
+            )
+        if agent is None:
+            agent = self.get_agent_nowait(channel_id=channel_id or "")
         adapter = getattr(agent, "_adapter", None) if agent is not None else None
         release_runtime = getattr(adapter, "release_subagent_runtime_for_session", None)
         if not callable(release_runtime):
@@ -1031,6 +1060,7 @@ class AgentManager:
             project_dir: str = None,
             sub_mode: str = None,
             request: Any | None = None,
+            session_id: str | None = None,
     ) -> "JiuWenSwarm | None":
         """获取 Agent 实例（自动创建）.
 
@@ -1051,6 +1081,9 @@ class AgentManager:
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_key = _normalize_project_dir(project_dir)
         cache_key = _make_agent_cache_key(mode_key, sub_mode_key, project_key)
+        # 无项目目录的会话有独立任务路径；Agent/rail/prompt builder 不能跨会话复用。
+        if not project_key and mode_key in {"agent", "code"} and session_id:
+            cache_key = f"{cache_key}:session:{session_id}"
         channel_agents = self.agents.get(channel_key, {})
         if cache_key in channel_agents:
             return self._borrow_agent(channel_agents[cache_key])
@@ -1331,6 +1364,7 @@ class AgentManager:
                 project_dir=project_dir,
                 sub_mode=sub_mode,
                 request=request if is_enterprise() else None,
+                session_id=session_id,
             )
         channel_id = str(getattr(request, "channel_id", "") or "")
         return await self.get_agent(
@@ -1339,6 +1373,7 @@ class AgentManager:
             project_dir=project_dir,
             sub_mode=sub_mode,
             request=request if is_enterprise() else None,
+            session_id=session_id,
         )
 
     def get_agent_nowait(
@@ -1893,7 +1928,7 @@ class AgentManager:
         params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
         mode_full = params.get("mode", "agent")
         mode = str(mode_full).split(".")[0] if mode_full else "agent"
-        workspace_dir = params.get("workspace_dir")
+        project_dir = params.get("project_dir")
 
         bound_skill_dirs = disk_only_evolution_skill_dirs(params)
         skill_dirs_token = None
@@ -1905,7 +1940,7 @@ class AgentManager:
             existing = self.get_agent_nowait(
                 channel_id,
                 mode,
-                project_dir=workspace_dir,
+                project_dir=project_dir,
             )
             if existing is not None:
                 return await existing.process_message(request)
@@ -2038,11 +2073,11 @@ class AgentManager:
                 adapter_source = getattr(request, "resolved_adapter_source", None)
         request.resolved_adapter_mode = adapter_mode
         request.resolved_adapter_source = adapter_source
-        project_dir = (
-            params.get("project_dir")
-            or params.get("workspace_dir")
-            or params.get("cwd")
-        )
+        # The internal workspace and cwd are execution paths, not a selected
+        # user project. Keep projectless Agent/Code cache identity projectless.
+        project_dir = params.get("project_dir")
+        if mode not in {"agent", "code", "auto_harness", "plan", "fast"} or agent_mode == "flash":
+            project_dir = project_dir or params.get("workspace_dir") or params.get("cwd")
         if isinstance(project_dir, str):
             project_dir = project_dir.strip() or None
         else:

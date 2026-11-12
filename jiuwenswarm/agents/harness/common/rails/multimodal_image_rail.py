@@ -23,6 +23,9 @@ from jiuwenswarm.agents.harness.common.multimodal import (
     inject_image_content_from_references,
     remove_multimodal_image_filter_window_mutator,
 )
+from jiuwenswarm.agents.harness.common.multimodal.image_history import (
+    rewrite_orphan_attached_markers,
+)
 from jiuwenswarm.agents.harness.common.rails.multimodal_image_state import (
     mark_native_images_sent,
     mark_provided_image_paths,
@@ -123,7 +126,14 @@ class MultimodalImageRail(DeepAgentRail):
         ``enabled=True`` 只说明模型**能**看图，不代表这次真发了。预算 / 引用行解析
         失败时视图里可能一张图都没有，此时再写"图片已作为图像内容直接提供、不要调用
         VQA"就是与真实负载相反的信号——模型会既看不到图、又不敢用兜底工具，最后
-        只能拿 OCR 文本作答。原生模式下没有像素时干脆不写本段，让视觉工具兜底。
+        只能拿 OCR 文本作答。因此原生模式下没有像素时不写「已提供 / 别调工具」，
+        只写能力事实（模型具备原生视觉）+ 取回路径，既让模型知道自己的能力，又不封
+        死视觉工具兜底路径。
+
+        取回路径（需要看图 → read_file）必须写在这里：docx 路径问答等场景没有图片
+        引用行（``_sync_image_state_attachment`` 无引用且无像素时直接清除附件），
+        read_file 返回提示又只在真调了 read_file 后才出现——能力段是 enabled 会话
+        唯一每轮都在的信号，缺了取回路径模型只能靠工具清单直觉选视觉工具。
         """
 
         builder = self._system_prompt_builder
@@ -136,31 +146,54 @@ class MultimodalImageRail(DeepAgentRail):
             # 段不存在或 builder 未实现移除时不影响本轮注入，仅记录便于定位。
             logger.warning("remove %s section failed", section_name, exc_info=True)
         if enabled and images_sent <= 0:
-            if not self._is_team_member_rail():
+            if self._is_team_member_rail():
+                # team 成员：还没有像素，但任务里常只给本地路径。最好走 read_file——
+                # read_file 的原生读图 resolver 读 deep_config，会把图片以图像内容返回给
+                # 原生模型；不引导的话成员会惯性调用 VQA/OCR（线上 trace 已多次复现）。
+                path_cn = (
+                    "本次请求可能涉及本地图片。如果上下文中出现图片文件路径，请直接使用 "
+                    "read_file 读取该路径：当前模型支持原生图片理解，read_file 会返回图像内容"
+                    "（不要调用 visual_question_answering / image_ocr 去读取本地文件）。"
+                    "只有远程 URL、或读取失败导致没有像素时，才使用视觉工具兜底。"
+                )
+                path_en = (
+                    "This request may involve local image files. When a local image path appears "
+                    "in the context, call read_file on it directly: the current model supports "
+                    "native image understanding and read_file returns image content (do not use "
+                    "visual_question_answering / image_ocr to read local files). Use a vision tool "
+                    "only for remote URLs or when reading failed and no pixels are available."
+                )
+                try:
+                    builder.add_section(PromptSection(
+                        name=section_name,
+                        content={"cn": path_cn, "en": path_en},
+                        priority=96,
+                    ))
+                except Exception:
+                    logger.warning("add %s section failed", section_name, exc_info=True)
                 return
-            # team 成员：还没有像素，但任务里常只给本地路径。最好走 read_file——
-            # read_file 的原生读图 resolver 读 deep_config，会把图片以图像内容返回给
-            # 原生模型；不引导的话成员会惯性调用 VQA/OCR（线上 trace 已多次复现）。
-            path_cn = (
-                "本次请求可能涉及本地图片。如果上下文中出现图片文件路径，请直接使用 "
-                "read_file 读取该路径：当前模型支持原生图片理解，read_file 会返回图像内容"
-                "（不要调用 visual_question_answering / image_ocr 去读取本地文件）。"
-                "只有远程 URL、或读取失败导致没有像素时，才使用视觉工具兜底。"
+            # 主代理 / leader：能力事实 + 取回路径（docx 路径问答等没有引用行的场景，
+            # 能力段是 enabled 会话唯一每轮都在的信号，缺了取回路径模型只能靠工具清单
+            # 直觉选视觉工具）。
+            capability_cn = (
+                "系统已确认当前模型支持原生图片输入，你可以直接看图。"
+                "需要查看图片文件时（含从文档解包提取的图片），请用 read_file 读取，"
+                "图片像素会作为图像内容直接进入你的上下文。"
             )
-            path_en = (
-                "This request may involve local image files. When a local image path appears "
-                "in the context, call read_file on it directly: the current model supports "
-                "native image understanding and read_file returns image content (do not use "
-                "visual_question_answering / image_ocr to read local files). Use a vision tool "
-                "only for remote URLs or when reading failed and no pixels are available."
+            capability_en = (
+                "The platform has confirmed that the current model supports native "
+                "image input; you can see images directly. To inspect an image file "
+                "(including images extracted from documents), call read_file on it; "
+                "the pixels will enter your context directly as image content."
             )
             try:
                 builder.add_section(PromptSection(
                     name=section_name,
-                    content={"cn": path_cn, "en": path_en},
+                    content={"cn": capability_cn, "en": capability_en},
                     priority=96,
                 ))
             except Exception:
+                # 提示增强写失败只降级，不影响像素注入主链路。
                 logger.warning("add %s section failed", section_name, exc_info=True)
             return
         native_cn = (
@@ -278,6 +311,17 @@ class MultimodalImageRail(DeepAgentRail):
                     "- Read text, watermarks and IDs in the image from the pixels you received."
                 )
                 return "\n".join(parts)
+            if enabled:
+                # 原生模型 + 本轮 0 张：与 cn 分支同构。指路 read_file 重读原文件——
+                # 若写"call a vision tool"会与能力段（capability_en：native input,
+                # call read_file on it）互相矛盾，把模型推回视觉工具老路。
+                return (
+                    "# Images In This Request\n\n"
+                    "- This request carries 0 images as image content (no pixels were attached).\n"
+                    "- When you need to inspect an image file (including images referenced in "
+                    "earlier messages but omitted by compaction), call read_file on it; the "
+                    "pixels will enter your context directly as image content."
+                )
             return (
                 "# Images In This Request\n\n"
                 "- This request carries 0 images as image content (no pixels were attached).\n"
@@ -298,6 +342,16 @@ class MultimodalImageRail(DeepAgentRail):
                 )
             parts.append("- 图中文字、水印、编号以你收到的像素为准。")
             return "\n".join(parts)
+        if enabled:
+            # 原生模型 + 本轮 0 张:像素不在窗口(典型:压缩把旧图搬走、引用行残留)。
+            # 必须指路 read_file 重读原文件——若写"请调 VQA"会与能力段(原生直读)
+            # 互相矛盾,把模型推回工具老路。
+            return (
+                "# 本次请求的图片\n\n"
+                "- 本次请求附带图片：0 张（图片未作为像素附带）。\n"
+                "- 需要查看图片文件时（含历史消息里引用过、但已被压缩省略的图片），"
+                "请用 read_file 读取，图片像素会作为图像内容直接进入你的上下文。"
+            )
         return (
             "# 本次请求的图片\n\n"
             "- 本次请求附带图片：0 张（图片未作为像素附带）。\n"
@@ -386,9 +440,21 @@ class MultimodalImageRail(DeepAgentRail):
         sync_policy = self._sync_image_policy_section
         sync_attachment = self._sync_image_state_attachment
         system_prompt_builder = self._system_prompt_builder
+        rewrite_orphan_markers = rewrite_orphan_attached_markers
 
         async def _image_state_sync_window_mutator(_context: Any, window: Any) -> Any:
             context_messages = list(getattr(window, "context_messages", []) or [])
+            # 先按消息作用域核对孤儿标记:压缩器搬走像素块时会把 attached 状态行
+            # 原样留在摘要里,消费端(附件/护栏)据此误判"已提供、禁止重读",模型
+            # 被夹死。改写为 omitted: compacted 后,collect_provided_image_paths 与
+            # after_model_call 的护栏重算自动放行 read_file 重读。
+            orphan_markers = rewrite_orphan_markers(context_messages)
+            if orphan_markers:
+                logger.info(
+                    "[MultimodalImageRail] rewrote %d orphan attached marker(s) "
+                    "to omitted: compacted",
+                    orphan_markers,
+                )
             final_images_sent = count_image_content_blocks(context_messages)
             final_has_refs = bool(
                 collect_image_references_from_messages(context_messages)
