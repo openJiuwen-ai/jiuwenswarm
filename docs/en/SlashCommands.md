@@ -55,7 +55,7 @@ Identified by Gateway and forwarded to AgentServer and other backend capabilitie
 | `/new_session` | Create new session (IM only) |
 | `/mode` | Mode switching (supports first-level entry and direct syntax) |
 | `/switch` | Switch second-level mode within current mode family |
-| `/skills` | Skills management (list, install, uninstall, marketplace, ClawHub, SkillNet) (see below) |
+| `/skills` | Skills management (list, install, uninstall, marketplace, ClawHub) (see below) |
 | `/model` | Model view, add, edit, delete, switch (see below) |
 | `/mcp` | MCP server management (see below) |
 | `/diff` | Interactive change review: per-turn diffs + uncommitted working tree changes (see below) |
@@ -512,14 +512,14 @@ Manage cron jobs via RPC calls to the backend `CronController`, sharing the same
 
 ### `/skills` (Skills Management)
 
-Manage skills lifecycle: listing, installing, uninstalling, marketplace source management, ClawHub and SkillNet online skill registries.
+Manage skills lifecycle: listing, installing, uninstalling, marketplace source management, and the ClawHub online skill registry.
 
 #### Subcommands
 
 | Command | Description |
 |---|---|
 | `/skills` or `/skills list` | List skills (grouped: Installed / Available to install) |
-| `/skills install <skill>` or `/skills install <slug@clawhub>` or `/skills install <name@skillnet>` or `/skills install <skill@marketplace>` or `/skills install <path_or_url>` | Install a skill: builtin accepts bare name, ClawHub uses `<slug>@clawhub`, SkillNet uses `<name>@skillnet` (auto-searches for URL), marketplace uses `<name>@<marketplace>`, local paths and URLs auto-detected |
+| `/skills install <skill>` or `/skills install <slug@clawhub>` or `/skills install <skill@marketplace>` or `/skills install <path_or_url>` | Install a skill: builtin accepts bare name, ClawHub uses `<slug>@clawhub`, marketplace uses `<name>@<marketplace>`, local paths and URLs auto-detected |
 | `/skills uninstall <name>` | Uninstall a skill by name |
 | `/skills marketplace` or `/skills marketplace list` | List marketplace sources (name, URL, enabled status, last updated) |
 | `/skills marketplace add <name> <url>` | Add a new marketplace source |
@@ -528,21 +528,18 @@ Manage skills lifecycle: listing, installing, uninstalling, marketplace source m
 | `/skills marketplace clawhub` | View ClawHub token status (configured/not configured) |
 | `/skills marketplace clawhub token <value>` | Set ClawHub CLI token |
 | `/skills marketplace clawhub token` | View ClawHub token status |
-| `/skills skillnet` or `/skills skillnet search <query>` | Search SkillNet skill registry (shows name, description, author, stars, category, URL) |
-| `/skills skillnet install <skill_url>` | Install a skill from SkillNet by URL (async download, auto-polls progress) |
 | `/skills use <skill_name>, <query>` | Execute a query using a specific skill |
 
 #### Concepts
 
-- **Skill**: An extension capability that can be installed from marketplace sources, ClawHub, SkillNet, builtin directory, or local paths, providing additional functionality to the agent.
+- **Skill**: An extension capability that can be installed from marketplace sources, ClawHub, builtin directory, or local paths, providing additional functionality to the agent.
 - **Builtin skill**: A preset skill shipped with the software. Install using bare skill name (e.g., `/skills install advanced-daily-report`); no marketplace source needed.
 - **ClawHub**: An online skill registry ([clawhub.ai](https://clawhub.ai)) hosting community-published skills. Install using `<slug>@clawhub` format, where slug is the skill's unique identifier (not its display name). Requires a ClawHub CLI token to be configured first.
-- **SkillNet**: An academic skill registry. Two install methods: `<name>@skillnet` (auto-searches to find URL then installs) and `/skills skillnet install <url>` (direct URL install).
 - **Marketplace source**: A remote Git repository that hosts available skills. Each source has a name, URL, and enabled/disabled state.
 - **Spec**: The install identifier format supporting: `<skill>@builtin` (builtin), `<slug>@clawhub` (ClawHub), `<skill>@<marketplace>` (Git marketplace); bare names without `@` are auto-detected as builtin if applicable.
 - **Local install**: Use `/skills install <path>` to install from a local directory (must contain `SKILL.md`) or remote archive URL; paths/URLs are auto-detected and routed to the local import flow.
 - **Install location**: The directory where a skill is stored after installation (`~/.jiuwenswarm/agent/workspace/skills/`).
-- **Source tag**: Each skill in the list is tagged with its source: `[builtin]` = builtin, `[local]` = imported, `[clawhub]` = ClawHub, `[skillnet]` = SkillNet, `[project]` or marketplace name = other.
+- **Source tag**: Each skill in the list is tagged with its source: `[builtin]` = builtin, `[local]` = imported, `[clawhub]` = ClawHub, `[project]` or marketplace name = other.
 
 #### Grouped List Display
 
@@ -566,14 +563,10 @@ For other subcommands (`/skills install`, `/skills uninstall`, `/skills marketpl
 
 - **Timeout**: `install`, `uninstall`, and `marketplace toggle` requests have a 120-second timeout on the TUI side; other subcommands have no explicit timeout.
 - **Builtin auto-detection**: When installing with `/skills install <skill>` (no `@`), the system checks if it matches a builtin skill and redirects to the builtin install flow; if not, a format hint is returned.
-- **Path/URL auto-detection**: When installing with `/skills install <path_or_url>` (local path like `/path/to/skill`, `~/skill`, or `C:\skill`, or remote URL `https://...`), the system automatically routes to the local import flow (`skills.import_local`). All URLs go through import_local; SkillNet is not auto-routed from URLs. Local paths must be **absolute** or use `~/...`; `~` means the JiuwenClaw service process user's home directory on the server. Other relative paths, sources under system/sensitive directories (e.g. `/etc`, `~/.ssh`), symbolic links, and `SKILL.md` files without valid `name`/`description` frontmatter are rejected.
-- **`@skillnet` search-install**: When using `/skills install <name>@skillnet`, the frontend first calls `skills.skillnet.search`. **Only auto-installs if an exact match by skill_name is found**; with no exact match, it only displays search results (with URLs and names) without auto-installing the first result — the user must choose one and install via `/skills skillnet install <url>` or `/skills install <exact_name>@skillnet`. This is because SkillNet search is semantic: searching "code" may return "taskflow", "coding-agent" etc. whose names don't contain "code".
+- **Path/URL auto-detection**: When installing with `/skills install <path_or_url>` (local path like `/path/to/skill`, `~/skill`, or `C:\skill`, or remote URL `https://...`), the system automatically routes to the local import flow (`skills.import_local`). All URLs go through import_local. Local paths must be **absolute** or use `~/...`; `~` means the JiuwenClaw service process user's home directory on the server. Other relative paths, sources under system/sensitive directories (e.g. `/etc`, `~/.ssh`), symbolic links, and `SKILL.md` files without valid `name`/`description` frontmatter are rejected.
 - **ClawHub token required**: A ClawHub CLI token must be configured before installing from ClawHub (via `/skills marketplace clawhub token <value>`). Without a token, `@clawhub` installs will fail with a message explaining how to set the token. Obtain your token at [clawhub.ai](https://clawhub.ai).
 - **ClawHub slug vs. display name**: ClawHub skills are identified by their unique **slug** (e.g., `code-review-security`), not their display name (e.g., "Code Review Assistant"). When a direct slug install fails, the system automatically searches ClawHub and displays matching results (with real slugs and summaries) to help you find the correct skill.
 - **ClawHub overwrite confirmation**: When the target slug already exists (same name from any source counts as installed), TUI presents an interactive prompt: "Skill xxx is already installed. Do you want to force overwrite?". Choosing "Yes" re-installs with `force: true`, replacing the old skill; choosing "No" or exiting keeps the existing skill unchanged. The Web UI bypasses confirmation and uses `force: true` directly.
-- **SkillNet async install**: SkillNet installation is asynchronous — it initiates a download task and returns an `install_id`, then TUI automatically polls `install_status` every 800ms until completion or failure (max wait: 15 minutes). Progress is shown as `Downloading... (install_id: xxx)`.
-- **SkillNet overwrite confirmation**: Same as ClawHub — TUI prompts the user interactively when a skill already exists. Web UI uses `force: true` directly.
-- **SkillNet accessible in China**: SkillNet search API is hosted at `http://api-skillnet.openkg.cn` (OpenKG platform) and is directly accessible in China without VPN. However, the skill content itself is hosted on GitHub, which may require VPN.
 - **Same-name skills cannot coexist**: Skills are stored as directories at `skills/{name}/`, and the filesystem does not allow two directories with the same name. Installing a skill with the same name from a different source will overwrite the previous one (with user confirmation). `/skills use` only uses the skill name and cannot distinguish between sources.
 - **ClawHub network access**: ClawHub API is hosted at `https://clawhub.ai`. VPN may be required in regions with restricted access to this domain.
 - **Cache cleanup**: `marketplace remove` sends `{ name, remove_cache: true }` to also clear the local cache for that source.
@@ -587,9 +580,6 @@ For other subcommands (`/skills install`, `/skills uninstall`, `/skills marketpl
 - `/skills install advanced-daily-report` — Install a builtin skill (bare name auto-detect)
 - `/skills install advanced-daily-report@builtin` — Install a builtin skill (explicit format)
 - `/skills install code-review@clawhub` — Install a skill from ClawHub (using slug)
-- `/skills install code-review@skillnet` — Install from SkillNet (auto-searches for URL)
-- `/skills skillnet search code-review` — Search SkillNet skill registry
-- `/skills skillnet install https://github.com/user/skill-repo` — Install via SkillNet subcommand (direct URL)
 - `/skills install my-skill@marketplace` — Install a skill from Git marketplace
 - `/skills install /path/to/my-skill` — Install a skill from local directory
 - `/skills install https://example.com/skill.zip` — Install from remote URL (local import)

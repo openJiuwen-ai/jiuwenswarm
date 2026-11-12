@@ -204,7 +204,7 @@ This section summarizes configuration for search and external services. All item
 | `bocha_api_key` | Bocha Web Search | [Bocha Open Platform](https://open.bochaai.com/) |
 | `serper_api_key` | Serper Search | [Serper](https://serper.dev/) |
 | `perplexity_api_key` | Perplexity | [Perplexity](https://www.perplexity.ai/) |
-| `github_token` | GitHub; SkillNet, etc. | [GitHub Tokens](https://github.com/settings/tokens) |
+| `github_token` | GitHub API access (e.g. version checks when GitHub is the release source) | [GitHub Tokens](https://github.com/settings/tokens) |
 | `teamskills_user_token` | TeamSkillsHub user token | [TeamSkillsHub](https://swarmskills.openjiuwen.com) |
 
 > ⚠️ **Note**: All optional. If unset, related features may be unavailable or fall back to degraded strategies; exact behavior depends on your product version.

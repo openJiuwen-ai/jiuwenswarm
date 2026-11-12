@@ -57,7 +57,6 @@ JiuwenSwarm supports multiple sources:
 | Source | Description                                                                     | Characteristics |
 |------|---------------------------------------------------------------------------------|------|
 | **Built-in skills** | Core skills shipped with the product; installed under **Skill Marketplace → Built-in** | Matches the product release |
-| **SkillNet** | A general AI skill management and connection platform (open-source skill registry) | Anonymous usage allowed; configuring a GitHub token improves API quota and stability |
 | **ClawHub** | Skill “app store” in the JiuwenSwarm ecosystem (enterprise skill registry) | Requires a CLI token; https://clawhub.ai/skills |
 | **SwarmSkills** | Team/cluster skill registry, searched under **Skill Marketplace → SwarmSkills online search** | No extra configuration needed |
 | **Local import** | User-authored skill files                                                       | Fully customizable; ideal for development/debug |
@@ -70,7 +69,7 @@ JiuwenSwarm supports multiple sources:
 
 ### Skill installation
 
-Whether skills come from built-in packages, SkillNet, ClawHub, or a local folder, **installation and activation are done in the web UI under Skills**. The Skills page has four top tabs: **My Skills**, **Skill Marketplace**, **Skill Graph**, and **Skill Index**. Online installation happens in **Skill Marketplace**, while installed skills are managed under **My Skills**. The sections below list prerequisites and paths by source.
+Whether skills come from built-in packages, ClawHub, or a local folder, **installation and activation are done in the web UI under Skills**. The Skills page has four top tabs: **My Skills**, **Skill Marketplace**, **Skill Graph**, and **Skill Index**. Online installation happens in **Skill Marketplace**, while installed skills are managed under **My Skills**. The sections below list prerequisites and paths by source.
 
 #### Built-in skills
 
@@ -80,39 +79,6 @@ Built-in skills are skill resources packaged with JiuwenSwarm.
 
    Left sidebar → **Skills** → **Skill Marketplace** → **Built-in**, find the target skill and click **Install**.  
    ![Skill install](../assets/images/current-ui-en/13-Skills-Marketplace.png)
-
-#### Install from SkillNet
-
-SkillNet is based on GitHub-hosted skill repositories.
-
-**Prerequisites:**
-- GitHub token is recommended to improve API quota and stability.
-- Token path: GitHub → Settings → Developer settings → Personal access tokens → Generate new token.
-
-**Steps:**
-
-1. **(Optional) Configure GitHub token**
-
-   Open left sidebar → **Configuration** → **Other** → **Third-party service configuration**, then fill in `github_token` (optional; improves GitHub API quota and stability).
-   ![github token set](../assets/images/current-ui-en/09-Configuration-Other-Tab.png)
-
-   Or set it in `~/.jiuwenswarm/config/.env`:
-
-   ```dotenv
-   GITHUB_TOKEN=ghp_your_token_here
-   ```
-
-   (The Configuration page writes to this same `.env`; the token is read from the `GITHUB_TOKEN` environment variable.)
-
-2. **Install**
-
-   Install from the web UI:  
-   Left sidebar → **Skills** → **Skill Marketplace** → **Skills online search**, click **Source management** in the top-right, choose **SkillNet**, then type a keyword in the search box and click **Install** to the right of the target skill.
-   ![skillnet search](../assets/images/current-ui-en/13-Skills-Marketplace.png)
-
-3. **Confirm success**
-
-   After installation, confirm the new skill appears in **Skills** → **My Skills**.
 
 #### Install from ClawHub
 
@@ -189,7 +155,7 @@ The Skills management page is the main place to manage and browse all skills. Op
 | Tab | Function |
 |--------|------|
 | **My Skills** | Browse and search installed skills, filter by "All / Enabled / Disabled", toggle skills on/off, and open details |
-| **Skill Marketplace** | Install new skills; contains three sub-pages: **Built-in**, **SwarmSkills online search**, and **Skills online search** (SkillNet / ClawHub) |
+| **Skill Marketplace** | Install new skills; contains three sub-pages: **Built-in**, **SwarmSkills online search**, and **Skills online search** (ClawHub) |
 | **Skill Graph** | Visualize capability relationships among installed skills; see [Symphony](Symphony.md) |
 | **Skill Index** | Build a local skill retrieval index and find matching skills by task need; see [Symphony](Symphony.md) |
 
@@ -239,7 +205,6 @@ Path: left sidebar → **Skills** → **Source management** in the top-right.
 
 | Action | Description |
 |------|------|
-| **Choose SkillNet** | Skills online search retrieves from SkillNet (open-source skill registry); the dialog includes network and GitHub API rate-limit tips—if it fails frequently, go to the configuration page and fill in `github_token` |
 | **Choose ClawHub** | Skills online search retrieves from ClawHub (enterprise skill registry); on first use, fill in and save the CLI token in the dialog |
 
 > **Tip:** Built-in skills (Skill Marketplace → Built-in) and SwarmSkills online search do not depend on source management and can be used directly. Switching the source does not affect already installed skills.
@@ -405,19 +370,19 @@ When a task needs several skills to work together, such as "recognize text from 
 
 ## Practical examples
 
-### Example 1: Weather query (SkillNet)
+### Example 1: Weather query (ClawHub)
 
 **Scenario:**  
 The user wants a quick weather summary and short-term forecast for a city.
 
-**Skill acquisition (reproducible, from SkillNet):**
-1. Open left sidebar → **Skills** → **Skill Marketplace** → **Skills online search** (choose SkillNet in **Source management** in the top-right).  
-2. Search for `weather` in the search box.  
-3. Click install, then confirm `weather` appears in your **My Skills** list.  
-4. If search rate is limited, fill in `github_token` under **Configuration → Other → Third-party service configuration** and retry.  
+**Skill acquisition (reproducible, from ClawHub):**
+1. For first-time use, configure the ClawHub CLI token as described in "Install from ClawHub" above.  
+2. Open left sidebar → **Skills** → **Skill Marketplace** → **Skills online search**.  
+3. Search for `weather` in the search box.  
+4. Click install, then confirm `weather` appears in your **My Skills** list.  
 
 **Prerequisites (for stable reproduction):**
-- `weather` skill is installed (using the SkillNet steps above)
+- `weather` skill is installed (using the ClawHub steps above)
 - Network can reach public weather services (such as wttr.in / Open-Meteo)
 
 **User input (example):**
@@ -443,25 +408,25 @@ Beijing weather:
 ```
 
 **Why this case is stably reproducible:**
-- Fixed skill source (SkillNet)
+- Fixed skill source (ClawHub)
 - Simple and explicit input template (city + time range)
 - No extra business account or complex local setup required
 
 ---
 
-### Example 2: PDF processing (SkillNet)
+### Example 2: PDF processing (ClawHub)
 
 **Scenario:**  
 You need to process PDF files quickly (for example merge files, split pages, or extract text) and get directly usable outputs.
 
-**Skill acquisition (reproducible, from SkillNet):**
-1. Open left sidebar → **Skills** → **Skill Marketplace** → **Skills online search** (choose SkillNet in **Source management** in the top-right).  
-2. Search for `pdf` in the search box.  
-3. Click install and confirm it appears in your **My Skills** list.  
-4. If search is limited, fill in `github_token` on the configuration page first, then install.  
+**Skill acquisition (reproducible, from ClawHub):**
+1. For first-time use, configure the ClawHub CLI token as described in "Install from ClawHub" above.  
+2. Open left sidebar → **Skills** → **Skill Marketplace** → **Skills online search**.  
+3. Search for `pdf` in the search box.  
+4. Click install and confirm it appears in your **My Skills** list.  
 
 **Prerequisites (for stable reproduction):**
-- `pdf` skill is installed (using SkillNet steps above)
+- `pdf` skill is installed (using ClawHub steps above)
 - Prepare 2 accessible PDF files (for example `a.pdf` and `b.pdf`)
 
 **User input (example):**
@@ -499,9 +464,9 @@ Done:
 
 | Possible cause | Resolution |
 |----------|----------|
-| Missing/invalid token | Check `github_token` / ClawHub CLI token config |
+| Missing/invalid token | Check ClawHub CLI token config |
 | Network issue | Check connection and retry |
-| Online source unreachable | Verify the runtime can reach GitHub (SkillNet) or the ClawHub service |
+| Online source unreachable | Verify the runtime can reach the ClawHub service |
 | Skill not found | Verify skill name |
 
 **Issue 2: Skill not visible after install**
@@ -539,7 +504,7 @@ Done:
 #### Precautions
 
 1. **Prefer trusted sources**
-   - SkillNet and built-in catalogs are relatively centralized—still read descriptions before installing
+   - Built-in skills ship with the product and are relatively controlled—still read descriptions before installing
    - For online sources such as ClawHub, verify author and source trust
 
 2. **Read documentation first**
