@@ -25,6 +25,21 @@ import type { RealtimeBrief } from './types.js';
 import { createQwenOmniOperationResponseEvent, createQwenOmniToolOutputEvent } from './qwenOmniTools.js';
 import type { SileroVad, SpeechDetection } from '../../../../channels/web/frontend/src/utils/speechDetection/sileroVad';
 
+function needsReceiptResponse(output: unknown): boolean {
+  if (!output || typeof output !== 'object') return true;
+  const receipt = output as Record<string, unknown>;
+  if (receipt.error || receipt.success === false || receipt.ok === false
+    || ['failed', 'rejected', 'incomplete', 'unknown'].includes(String(receipt.state || receipt.status))) return true;
+  if (Array.isArray(receipt.receipts)) {
+    const children = receipt.receipts as Array<{ name?: string; receipt?: Record<string, unknown> }>;
+    const writes = children.filter(entry => !['jiuwen_task_query', 'jiuwen_cron_query'].includes(entry.name || ''));
+    return (writes.length ? writes : children).some(entry => needsReceiptResponse(entry.receipt))
+      || !children.length;
+  }
+  // A user query needs its answer; successful writes only update context.
+  return receipt.operation === 'query' || Boolean(receipt.clarification);
+}
+
 export interface RealtimeDuplexConfig {
   restoreInstructions?: string;
   url: string;
@@ -417,7 +432,7 @@ export class RealtimeDuplexSession {
     this.pendingToolResults = this.pendingToolResults.filter((item) => item.jobId !== jobId);
     if (this.acceptedToolResultIds.has(jobId)) return;
     this.acceptedToolResultIds.add(jobId);
-    this.pendingNotices.push(taskCancellationNotice(jobId));
+    this.pendingNotices.push(`Background context only; do not announce: ${taskCancellationNotice(jobId)}`);
     this.dispatchQueuedToolResult();
   }
 
@@ -429,7 +444,8 @@ export class RealtimeDuplexSession {
     if (spokenAnswer !== undefined) {
       // Qwen never issued this call, so its receipt goes back as a notice, not a function output.
       this.spokenCardCalls.delete(callId);
-      this.pendingNotices.push(spokenCardAnswerNotice(spokenAnswer, output));
+      if (needsReceiptResponse(output)) this.pendingNotices.push(spokenCardAnswerNotice(spokenAnswer, output));
+      else this.pendingNotices.push(`Background context only; do not announce: ${JSON.stringify(output)}`);
       this.dispatchQueuedToolResult();
       return;
     }
@@ -853,7 +869,8 @@ export class RealtimeDuplexSession {
       this.send({type: 'conversation.item.create', item: {
         type: 'message', role: 'user', content: [{type: 'input_text', text: notice}],
       }});
-      this.requestResponse();
+      if (notice.startsWith('Background context only;')) this.dispatchQueuedToolResult();
+      else this.requestResponse();
       return;
     }
     const question = this.pendingQuestions.shift();
@@ -883,13 +900,14 @@ export class RealtimeDuplexSession {
         this.send({ type: 'conversation.item.create', item: {
           type: 'message', role: 'user', content: [{ type: 'input_text',
             text: `An earlier Jiuwen operation returned this receipt. `
-              + `Report its state briefly without repeating it: ${JSON.stringify(operation.output)}`,
+              + `Use this receipt as context; respond only to an error, clarification or requested query result: ${JSON.stringify(operation.output)}`,
           }],
         } });
       } else {
         this.send(createQwenOmniToolOutputEvent(operation.callId, JSON.stringify(operation.output)));
       }
-      this.requestResponse(true);
+      if (needsReceiptResponse(operation.output)) this.requestResponse(true);
+      else this.dispatchQueuedToolResult();
       return;
     }
     while (this.pendingToolResults.length > 0) {
@@ -901,6 +919,16 @@ export class RealtimeDuplexSession {
       });
       this.callbacks.onToolResultDispatched?.(toolResult.jobId);
 
+      if (toolResult.brief.status === 'completed') {
+        this.send({ type: 'conversation.item.create', item: {
+          type: 'message', role: 'user', content: [{ type: 'input_text',
+            text: `Background task result for future context only; do not announce or execute: ${JSON.stringify({
+              job_id: toolResult.jobId, question: toolResult.question, ...toolResult.brief,
+            })}` }],
+        } });
+        this.dispatchQueuedToolResult();
+        return;
+      }
       this.pendingToolResponseJobId = toolResult.jobId;
       this.notificationConflicts = 0;
       this.responseActive = true;

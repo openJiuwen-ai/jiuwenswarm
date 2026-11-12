@@ -502,17 +502,23 @@ async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_
 
 
 
-async def test_missing_cancel_receipt_reports_timeout_without_claiming_stop(routed_task, monkeypatch):
+async def test_missing_cancel_receipt_waits_without_claiming_stop(routed_task):
     r = routed_task
     client = SimpleNamespace(send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={"success": True})
     ))
     executor = task_adapter.AgentTaskExecutor(client, r.store, None)
-    monkeypatch.setattr(task_adapter, "STOP_SETTLEMENT_TIMEOUT", 0.02)
-    with pytest.raises(RuntimeError, match="cleanup was not confirmed"):
-        await executor.cancel(r.task)
-    assert not r.store.read(r.task["id"])["execution_settled"]
-    assert not r.store.read(r.task["id"])["execution_cancelled"]
+    pending = asyncio.create_task(executor.cancel(r.task))
+    try:
+        await asyncio.sleep(0.04)
+        assert not pending.done()
+        assert not r.store.read(r.task["id"])["execution_settled"]
+        assert not r.store.read(r.task["id"])["execution_cancelled"]
+        r.store.update(r.task["id"], lambda t: t.update(execution_settled=True))
+        await asyncio.wait_for(pending, 1)
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 

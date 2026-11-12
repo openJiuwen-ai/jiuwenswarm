@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 import uuid
 
 from jiuwenswarm.extensions.video_duplex.backend.video_files import normalize_file_items
+from jiuwenswarm.common.utils import mask_sensitive
 
 from .core_receipts import (
     MAX_REALTIME_BRIEF_CHARS, core_agent_brief_protocol, full_answer_language_rule, present_core_agent_result,
@@ -189,6 +190,49 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
             raw_result = result.get("data")
         if raw_result is None:
             raw_result = result.get("error") or result.get("summary")
+        # Structured tools can report failure inside their compatibility result.
+        sources = [result]
+        for key in ("raw_output", "result", "data"):
+            value = result.get(key)
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (ValueError, TypeError):
+                    continue
+            if isinstance(value, dict):
+                sources.append(value)
+                if isinstance(value.get("data"), dict):
+                    sources.append(value["data"])
+        failed = failed or any(
+            source.get("success") is False or source.get("isError") is True
+            or str(source.get("status") or "").lower() in {
+                "error", "failed", "failure", "timeout", "timed_out",
+            }
+            or bool(source.get("error"))
+            or (isinstance(source.get("exit_code"), int) and source["exit_code"] != 0)
+            for source in sources
+        )
+        if raw_status == "pending":
+            failed = False
+        if failed:
+            diagnostics = []
+            for source in sources:
+                for key in ("error", "message", "code", "error_code", "exit_code", "stderr"):
+                    value = source.get(key)
+                    if value is not None and value != "":
+                        text = f"{key}: {value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}"
+                        if text not in diagnostics:
+                            diagnostics.append(text)
+            rendered = result.get("rendered_result")
+            if isinstance(rendered, str) and rendered.strip():
+                diagnostics.append(rendered)
+            failure_text = mask_sensitive("\n".join(diagnostics) or core_agent_text(raw_result, limit=8000))
+            detail = core_agent_text(failure_text)
+            # Preserve native fields and artifact references; add diagnostics for
+            # the existing tool-result renderer rather than replacing the receipt.
+            result = {**result, "success": False, "status": "failed",
+                      "rendered_result": failure_text}
+            payload = {**payload, "tool_result": result} if isinstance(payload.get("tool_result"), dict) else result
         return {
             "stage": "tool_result",
             "tool_payload": payload,

@@ -1,7 +1,7 @@
 ---
 title: 当前规约 S索引
-author: ShowHsiang
-author_email: xiangxiaoneng@h-partners.com
+author: yzdnh123
+author_email: yzdnh123@gmail.com
 generated: true
 ---
 

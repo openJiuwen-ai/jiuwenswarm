@@ -267,12 +267,13 @@ test('queue pushes update waiting positions and delayed snapshots cannot undo a 
 
 test('cancelled jobs remain cancelled after late success and persist one cancellation record', async () => {
   const scope = await start();
-  await event('started', job(scope));
-  await event('cancelled', job(scope, { status: 'cancelled' }));
+  await event('started', job(scope, { title: '查看 Steam 游戏库', question: '呃，你打开我的Steam，并查看有哪些游戏。' }));
+  await event('cancelled', { job_id: job(scope).job_id, search_session_id: scope, status: 'cancelled' });
   await event('completed', job(scope, { status: 'completed', display_result: '不应显示的迟到成功' }));
   assert.equal(harness.tasks.sessions['conversation-a'][0].status, 'cancelled');
   assert.equal(harness.messages.length, 1);
-  assert.match(harness.messages[0][2], /已停止任务/);
+  assert.match(harness.messages[0][2], /已停止任务：查看 Steam 游戏库/);
+  assert.doesNotMatch(harness.messages[0][2], /呃，你打开我的Steam/);
   assert.equal(harness.mediaResults.length, 1);
   assert.equal(harness.mediaResults[0].status, 'cancelled');
 });
@@ -936,4 +937,22 @@ test('#5544 a capacity wait names the conversation and task it is waiting on', a
     waiting_on: [{ id: 'job-b', title: '打开浏览器下载报表', status: 'running', search_session_id: 'task-duplex:conversation-b' }] }));
   const detail = harness.tasks.sessions['conversation-a'].find((item) => item.id === 'job-wait').detail;
   assert.match(detail, /会话「整理周报」的任务「打开浏览器下载报表」（执行中）/);
+});
+
+
+test('failed tool diagnostics override generic raw output in the tool card', async () => {
+  const scope = await start();
+  const detail = 'error: Permission denied\nexit_code: 13\nstderr: Cannot open target';
+  await event('progress', job(scope, { progress_history: [
+    { sequence: 1, stage: 'tool_result', title: 'shell failed', status: 'failed', tool_call_id: 'failed-shell',
+      tool_payload: { event_type: 'chat.tool_result', tool_result: {
+        tool_call_id: 'failed-shell', tool_name: 'shell', summary: 'Execution failed',
+        success: false, rendered_result: detail, raw_output: { result: 'Execution failed' },
+      } } },
+  ] }));
+  const result = harness.tools.find(([kind]) => kind === 'result')?.[1] || harness.tools.at(-1)[1];
+  assert.equal(result.success, false);
+  assert.equal(result.result, detail);
+  const saved = harness.requests.find(r => r.method === 'video.conversation.append' && r.params.kind === 'tool_result');
+  assert.equal(saved.params.tool_result.rendered_result, detail);
 });

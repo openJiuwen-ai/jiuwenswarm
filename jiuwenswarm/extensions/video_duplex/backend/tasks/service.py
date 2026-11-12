@@ -11,11 +11,10 @@ from dataclasses import dataclass
 import portalocker
 
 from .store import TaskStore
-from .errors import CancellationSettlementTimeout, QueueVersionConflict, TaskRevisionConflict
+from .errors import QueueVersionConflict, TaskRevisionConflict
 from .diagnostics import trace_task, task_state
 
 TERMINAL = {"completed", "failed", "cancelled"}
-CANCEL_SETTLEMENT_TIMEOUT = 90
 RECONCILE_INTERVAL = 5
 logger = logging.getLogger(__name__)
 
@@ -634,14 +633,6 @@ class TaskService:
         trace_task("task_cancel_worker_started", task=task_state(task))
         try:
             await self.executor.cancel(task)
-        except CancellationSettlementTimeout as exc:
-            task = self.store.update(task["id"], lambda t: (
-                t.update(status="unknown", error=str(exc)) if t["status"] == "cancelling" else None
-            ))
-            trace_task("task_cancel_worker_failed", task=task_state(task), error=str(exc))
-            await self._notify(task)
-            self.kick()
-            return
         except Exception as exc:
             # A failed stop request does not end the execution; its settle ack still decides.
             message = str(exc) or type(exc).__name__
@@ -657,23 +648,12 @@ class TaskService:
             if observer and not observer.done():
                 observer.cancel()
                 await asyncio.gather(observer, return_exceptions=True)
-        try:
-            async with asyncio.timeout(CANCEL_SETTLEMENT_TIMEOUT):
-                # Without a worker (e.g. after restart) nothing else closes the output.
-                while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
-                    await asyncio.sleep(0.05)
-                # Wait for the execution's settle ack, which arrives even after a rejected stop.
-                while not self.store.read(task["id"])["execution_settled"]:
-                    await asyncio.sleep(0.05)
-        except TimeoutError:
-            task = self.store.update(task["id"], lambda t: (
-                t.update(status="unknown", error="Stop accepted, but execution cleanup was not confirmed")
-                if t["status"] == "cancelling" else None
-            ))
-            trace_task("task_cancel_settlement_timeout", task=task_state(task))
-            await self._notify(task)
-            self.kick()
-            return
+        # Without a worker (e.g. after restart) nothing else closes the output.
+        while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
+            await asyncio.sleep(0.05)
+        # Wait for the execution's settle ack, which arrives even after a rejected stop.
+        while not self.store.read(task["id"])["execution_settled"]:
+            await asyncio.sleep(0.05)
         task = self.store.update(
             task["id"],
             lambda t: (

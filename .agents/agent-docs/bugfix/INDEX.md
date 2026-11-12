@@ -1,7 +1,7 @@
 ---
 title: 故障修复 B索引
-author: ShowHsiang
-author_email: xiangxiaoneng@h-partners.com
+author: yzdnh123
+author_email: yzdnh123@gmail.com
 generated: true
 ---
 
@@ -25,20 +25,22 @@ generated: true
 | [jiuwenswarm/channels/tui](#module-8) |
 | [jiuwenswarm/channels/web](#module-9) |
 | [jiuwenswarm/channels/web/frontend](#module-10) |
-| [jiuwenswarm/server](#module-11) |
-| [jiuwenswarm/server/runtime](#module-12) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-13) |
-| [jiuwenswarm/server/runtime/skill](#module-14) |
-| [jiuwenswarm/server/supervisor](#module-15) |
-| [jiuwenswarm/server/worker](#module-16) |
-| [scripts](#module-17) |
-| [tests/fixtures/ttse_plugin](#module-18) |
-| [tests/unit_tests/agentserver](#module-19) |
-| [tests/unit_tests/gateway](#module-20) |
-| [tests/unit_tests/personal_context](#module-21) |
-| [tests/unit_tests/server](#module-22) |
-| [tests/unit_tests/server/extensions](#module-23) |
-| [未分类](#module-24) |
+| [jiuwenswarm/extensions/video_duplex](#module-11) |
+| [jiuwenswarm/server](#module-12) |
+| [jiuwenswarm/server/runtime](#module-13) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-14) |
+| [jiuwenswarm/server/runtime/skill](#module-15) |
+| [jiuwenswarm/server/runtime/video_task](#module-16) |
+| [jiuwenswarm/server/supervisor](#module-17) |
+| [jiuwenswarm/server/worker](#module-18) |
+| [scripts](#module-19) |
+| [tests/fixtures/ttse_plugin](#module-20) |
+| [tests/unit_tests/agentserver](#module-21) |
+| [tests/unit_tests/gateway](#module-22) |
+| [tests/unit_tests/personal_context](#module-23) |
+| [tests/unit_tests/server](#module-24) |
+| [tests/unit_tests/server/extensions](#module-25) |
+| [未分类](#module-26) |
 
 <a id="module-1"></a>
 
@@ -129,6 +131,16 @@ generated: true
 
 <a id="module-11"></a>
 
+## jiuwenswarm/extensions/video_duplex
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261111_1740_stop-task-title](video-duplex/B_20261111_1740_stop-task-title.md) | B | 全双工停止结果使用任务显示名称 | yzdnh123 | jiuwenswarm/extensions/video_duplex | jiuwenswarm/extensions/video_duplex/frontend/taskDuplexJobs.ts, jiuwenswarm/channels/web/frontend/tests/taskDuplexLifecycle.test.mjs | 无独立 D：恢复现有任务标题契约，无独立设计。 |
+| [B_20261111_1745_state-announcements](video-duplex/B_20261111_1745_state-announcements.md) | B | 全双工按已确认状态变化播报 | yzdnh123 | jiuwenswarm/extensions/video_duplex | jiuwenswarm/extensions/video_duplex/frontend/VideoLivePanel/taskPrompts.ts | 无独立 D：基于工具回执的现有状态契约修复提示词。 |
+| [B_20261111_1809_tool-failure-details](video-duplex/B_20261111_1809_tool-failure-details.md) | B | 全双工工具失败详细信息 | yzdnh123 | jiuwenswarm/extensions/video_duplex | jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/frontend/TaskFullDuplexRuntime.tsx, jiuwenswarm/extensions/video_duplex/tests/backend/test_tool_failure_details.py, jiuwenswarm/channels/web/frontend/tests/taskDuplexLifecycle.test.mjs | 无独立 D：对现有工具结果事件与展示契约的小范围修复，无独立设计。 |
+
+<a id="module-12"></a>
+
 ## jiuwenswarm/server
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
@@ -136,7 +148,7 @@ generated: true
 | [B_20261029_0927_missing-supervisor-entry](jiuwenswarm/server/B_20261029_0927_missing-supervisor-entry.md) | B | 重启 AgentServer 时缺少 supervisor 启动函数 | xinyang_bali | jiuwenswarm/server | jiuwenswarm/server/app_agentserver.py | 无独立 D：用户请求重启时发现当前工作区入口不完整，恢复既有 Front/Worker 启动契约。 |
 | [B_20261031_1042_pr9317-review](jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | jiuwenswarm/server, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/server/app_agentserver.py, jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, tests/unit_tests/test_app_agentserver.py, tests/unit_tests/agentserver/test_ttse_plugin_runtime.py | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
 
-<a id="module-12"></a>
+<a id="module-13"></a>
 
 ## jiuwenswarm/server/runtime
 
@@ -144,7 +156,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261110_1849_group-lock-cancellation](jiuwenswarm/server/runtime/B_20261110_1849_group-lock-cancellation.md) | B | 群任务取消期间等待文件锁清理完成 | ShowHsiang | jiuwenswarm/server/runtime, tests/unit_tests/server | jiuwenswarm/server/runtime/group_service.py, tests/unit_tests/server/test_group_lock.py, tests/conftest.py | 无独立 D：修复现有群锁的取消清理契约，不新增管理器或调整任务并发策略。 |
 
-<a id="module-13"></a>
+<a id="module-14"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -155,7 +167,7 @@ generated: true
 | [B_20261031_1053_atomgit-review](jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/openjiuwen_fs_rwlock_patch.py, tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/agentserver/test_ttse_background_drain.py, tests/unit_tests/test_openjiuwen_fs_rwlock_patch.py | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | jiuwenswarm/agents/swarm, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/swarm/group_execution.py, jiuwenswarm/agents/swarm/group_org_bootstrap.py, jiuwenswarm/server/runtime/agent_adapter/team_helpers.py, tests/agents/swarm/test_group_org_bootstrap.py | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 
-<a id="module-14"></a>
+<a id="module-15"></a>
 
 ## jiuwenswarm/server/runtime/skill
 
@@ -163,7 +175,15 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261103_0936_skill-action-param-type-validation](jiuwenswarm/server/runtime/skill/B_20261103_0936_skill-action-param-type-validation.md) | B | 技能安装/更新/卸载入口参数类型校验缺失修复 | openjiuwen_ai | jiuwenswarm/server/runtime/skill | jiuwenswarm/server/runtime/skill/skill_manager.py, tests/unit_tests/agentserver/test_skill_manager_enterprise_state.py | 无独立 D：三个入口的参数契约（string 标识、boolean force）已由前端 webHttpClient 与 EnterpriseSkillSourcePanel 既有调用形态声明，本次为入口 类型校验层缺失的补接，无独立设计。 |
 
-<a id="module-15"></a>
+<a id="module-16"></a>
+
+## jiuwenswarm/server/runtime/video_task
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261112_1030_task-round-settlement](video-duplex/B_20261112_1030_task-round-settlement.md) | B | 全双工连续任务等待外层轮次收尾 | yzdnh123 | jiuwenswarm/server/runtime/video_task | jiuwenswarm/server/runtime/video_task/execution.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_managed_tasks.py | 无独立 D：修复已有串行队列的执行收尾证据缺口，无独立设计。 |
+
+<a id="module-17"></a>
 
 ## jiuwenswarm/server/supervisor
 
@@ -171,7 +191,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261107_1505_6226-forwarding-replay](jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | jiuwenswarm/server/supervisor, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, tests/unit_tests/agentserver/test_supervisor_forwarding.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 
-<a id="module-16"></a>
+<a id="module-18"></a>
 
 ## jiuwenswarm/server/worker
 
@@ -179,7 +199,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | jiuwenswarm/server/worker | jiuwenswarm/server/worker/event_store.py | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
 
-<a id="module-17"></a>
+<a id="module-19"></a>
 
 ## scripts
 
@@ -187,7 +207,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-18"></a>
+<a id="module-20"></a>
 
 ## tests/fixtures/ttse_plugin
 
@@ -195,7 +215,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-19"></a>
+<a id="module-21"></a>
 
 ## tests/unit_tests/agentserver
 
@@ -204,7 +224,7 @@ generated: true
 | [B_20261031_1006_ttse-runtime-fixture](tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 | [B_20261031_1048_ttse-core-dependent-ut](tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | tests/unit_tests/agentserver | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 
-<a id="module-20"></a>
+<a id="module-22"></a>
 
 ## tests/unit_tests/gateway
 
@@ -212,7 +232,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-21"></a>
+<a id="module-23"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -220,7 +240,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-22"></a>
+<a id="module-24"></a>
 
 ## tests/unit_tests/server
 
@@ -228,7 +248,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261110_1849_group-lock-cancellation](jiuwenswarm/server/runtime/B_20261110_1849_group-lock-cancellation.md) | B | 群任务取消期间等待文件锁清理完成 | ShowHsiang | jiuwenswarm/server/runtime, tests/unit_tests/server | jiuwenswarm/server/runtime/group_service.py, tests/unit_tests/server/test_group_lock.py, tests/conftest.py | 无独立 D：修复现有群锁的取消清理契约，不新增管理器或调整任务并发策略。 |
 
-<a id="module-23"></a>
+<a id="module-25"></a>
 
 ## tests/unit_tests/server/extensions
 
@@ -236,7 +256,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-24"></a>
+<a id="module-26"></a>
 
 ## 未分类
 

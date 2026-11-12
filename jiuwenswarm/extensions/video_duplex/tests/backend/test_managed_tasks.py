@@ -1206,10 +1206,9 @@ async def test_resumed_cua_receipt_tracks_execution_missing_from_scheduler(tasks
 
 
 @pytest.mark.parametrize("native_handle", [False, True])
-async def test_settlement_timeout_does_not_claim_native_work_has_stopped(tasks, monkeypatch, native_handle):
+async def test_settlement_waits_for_native_work_to_stop(tasks, monkeypatch, native_handle):
     from jiuwenswarm.server.runtime.video_task import execution as module
 
-    monkeypatch.setattr(module, "CANCEL_SETTLEMENT_TIMEOUT", 0.02)
     service, executor = tasks
     task = submit(service, "settlement-timeout")
     await until(lambda: executor.calls)
@@ -1231,7 +1230,8 @@ async def test_settlement_timeout_does_not_claim_native_work_has_stopped(tasks, 
             if native is not None:
                 rail.managed_tasks[request.session_id].native_executions.add(native)
         assert request.request_id in module._reporting_requests
-        await until(lambda: request.request_id not in module._reporting_requests)
+        await asyncio.sleep(0.04)
+        assert request.request_id in module._reporting_requests
         assert not service.store.read(task["id"])["execution_settled"]
         assert not module.managed_request_detached(rail, request)
         if native is not None:
@@ -1239,6 +1239,8 @@ async def test_settlement_timeout_does_not_claim_native_work_has_stopped(tasks, 
             release.set()
             await native
         harness.active_round = None
+        await until(lambda: service.store.read(task["id"])["execution_settled"])
+        await until(lambda: request.request_id not in module._reporting_requests)
         assert module.managed_request_detached(rail, request)
         assert request.request_id not in module._unsettled_requests
     finally:
@@ -1260,24 +1262,28 @@ async def test_waiting_voice_cancel_does_not_create_a_followup(tasks):
     assert executor.calls == []
 
 
-async def test_failed_stop_without_settlement_becomes_unknown_and_retains_capacity(tasks, monkeypatch):
+async def test_failed_stop_waits_for_settlement_and_retains_capacity(tasks, monkeypatch):
     from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
 
-    monkeypatch.setattr(module, "CANCEL_SETTLEMENT_TIMEOUT", 0.02)
     service, executor = tasks
     service.concurrency = 1
     task = submit(service, "unconfirmed-stop")
     await until(lambda: executor.calls)
     executor.reject_stop = True
     await service.cancel("alice", "conversation", task["id"], "stop")
-    await until(lambda: service.store.read(task["id"])["status"] == "unknown")
+    await until(lambda: bool(service.store.read(task["id"])["error"]))
+    await asyncio.sleep(0.04)
+    assert service.store.read(task["id"])["status"] == "cancelling"
     current = service.store.read(task["id"])
     assert not current["execution_settled"] and not current["execution_cancelled"]
-    assert "cleanup was not confirmed" in current["error"]
+    assert "Stop acknowledgement unavailable" in current["error"]
     waiting = service.submit("alice", "another-conversation", "next", "Next independent task")
     await asyncio.sleep(0.03)
     assert service.store.read(waiting["id"])["status"] == "queued"
     assert len(executor.calls) == 1
+    executor.gates[task["id"]].set()
+    await until(lambda: service.store.read(task["id"])["status"] == "cancelled")
+
 
 
 @pytest.mark.asyncio
@@ -1342,3 +1348,44 @@ async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path, m
         assert store.read(other["id"])["status"] == "running"
     finally:
         await service.close()
+
+async def test_scheduler_completion_waits_for_round_cleanup_before_next_task(tasks, monkeypatch):
+    """A scheduler handle can finish before the round releases the shared Agent."""
+    service, executor = tasks
+    first = submit(service, "first-round")
+    await until(lambda: executor.calls)
+    scheduler = asyncio.create_task(asyncio.sleep(0))
+    await scheduler
+    release = asyncio.Event()
+    harness = _round_harness()
+
+    async def finish_round():
+        await release.wait()
+        harness.active_round = None
+
+    round_task = asyncio.create_task(finish_round())
+    harness._interaction_round_task = round_task
+    harness.loop_controller.task_scheduler._running_tasks["round-id"] = (None, scheduler)
+    rail = SimpleNamespace(managed_tasks={})
+    adapter = TaskAdapter(_instance=harness, _voice_agent_task_rail=rail, _is_session_scoped_adapter=True)
+    request = SimpleNamespace(channel_id="video_tool", session_id=first["core_session_id"],
+                              request_id=first["request_id"])
+    install_bridge(monkeypatch, service.store, request)
+    try:
+        async with bind_task_execution(request, adapter, {}):
+            pass
+        await asyncio.sleep(0.03)
+        successor = SimpleNamespace(
+            channel_id="video_tool", session_id="shared-chat", request_id="second-round",
+            params=request.params, user_id="alice",
+        )
+        with pytest.raises(RuntimeError, match="当前会话仍有任务"):
+            async with bind_task_execution(successor, adapter, {}):
+                pytest.fail("A new task must not enter the still-owned Agent")
+        assert not service.store.read(first["id"])["execution_settled"]
+        release.set()
+        await until(lambda: service.store.read(first["id"])["execution_settled"])
+    finally:
+        release.set()
+        await round_task
+        await until(lambda: service.store.read(first["id"])["execution_settled"])
