@@ -34,7 +34,7 @@ def trusted_session_user(session_id: str) -> str:
 def _local_web_workspace(session_id: str) -> str:
     """Resolve an anonymous desktop session only inside its personal Host root."""
     from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
-    from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_sessions_dir, get_user_workspace_dir
+    from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_sessions_dir
     from jiuwenswarm.enterprise.edition import is_enterprise
     from jiuwenswarm.server.runtime.session import lifecycle
 
@@ -42,8 +42,8 @@ def _local_web_workspace(session_id: str) -> str:
         return ""
     try:
         lifecycle.validate_id(session_id)
-        root = (get_user_workspace_dir() / "agent").resolve()
-        if get_agent_root_dir().resolve() != root or get_agent_sessions_dir().resolve() != root / "sessions":
+        root = get_agent_root_dir().resolve()
+        if get_agent_sessions_dir().resolve() != root / "sessions":
             return ""
         session_dir = lifecycle.resolve_session(session_id)
         if session_dir.resolve().parent not in {root / "sessions", root / "sessions_archived"}:
@@ -65,11 +65,11 @@ def _local_web_workspace(session_id: str) -> str:
 
 def _is_personal_flow(flow_root: Path | None) -> bool:
     """Legacy anonymous traces have no origin binding outside managed storage."""
-    from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.common.utils import get_agent_root_dir
 
     if flow_root is None:
         return False
-    expected = (get_user_workspace_dir() / "agent").resolve() / "workspace" / "symphony" / "flow"
+    expected = get_agent_root_dir().resolve() / "workspace" / "symphony" / "flow"
     return flow_root.resolve() == expected
 
 
