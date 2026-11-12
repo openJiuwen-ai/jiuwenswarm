@@ -29,6 +29,48 @@ def write_rows(path, rows):
     path.write_text(text, encoding="utf-8")
 
 
+@pytest.fixture
+def semantic_records():
+    return [
+        {"id": "call", "role": "assistant", "event_type": "chat.tool_call",
+         "event_payload": {"tool_call": {"id": "read-1", "name": "read_file",
+                                        "arguments": {"file_path": "example.txt"}}}},
+        {"id": "result", "role": "assistant", "event_type": "chat.tool_result",
+         "event_payload": {"tool_call_id": "read-1", "tool_name": "read_file",
+                           "rendered_result": "original tool result"}},
+        {"id": "usage", "role": "assistant", "event_type": "chat.usage_summary",
+         "usage": {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168},
+         "session_usage": {"revision": 2, "total_tokens": 336}},
+        {"id": "nested-usage", "role": "assistant", "event_type": "chat.usage_summary",
+         "event_payload": {"usage": {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168}}},
+    ]
+
+
+@pytest.mark.parametrize("source_format", ["json", "jsonl", "large_jsonl"])
+def test_indexed_page_preserves_replay_payload_and_usage(stored, semantic_records, source_format):
+    path = stored.with_suffix(".json" if source_format == "json" else ".jsonl")
+    rows = [dict(row) for row in semantic_records]
+    if source_format == "large_jsonl":
+        rows[1]["prompt"] = "x" * (5 * 1024 * 1024)
+    write_rows(path, rows)
+    original = path.read_bytes()
+    result = service.load_history_page("indexed", 1)
+    assert result == {"messages": list(reversed(semantic_records)), "total_pages": 1, "page_idx": 1}
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("source_format", ["json", "jsonl"])
+def test_indexed_page_rejects_oversized_semantic_payload_instead_of_omitting_it(stored, source_format):
+    path = stored.with_suffix("." + source_format)
+    write_rows(path, [{"role": "assistant", "event_type": "chat.tool_result",
+                      "event_payload": {"rendered_result": "x" * (5 * 1024 * 1024)}}])
+    original = path.read_bytes()
+    with pytest.raises(HistoryReplayError) as error:
+        service.load_history_page("indexed", 1)
+    assert error.value.code == "HISTORY_RESTORE_LIMIT"
+    assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize("source_format", ["json", "jsonl"])
 @pytest.mark.parametrize("count", [0, 50, 51, 103])
 @pytest.mark.parametrize("page_idx", [1, 2, 3])

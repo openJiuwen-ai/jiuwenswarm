@@ -454,3 +454,5 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 旧 `page_idx` 分页按块扫描历史，只保留请求页，保持最新到最旧的顺序及准确的 `total_pages`；旧 JSON 数组也使用流式读取。单次扫描最多 8 GiB / 120 秒，请求页保留内容最多 16 MiB；超大诊断字段不会整体加载。预算或内存分配失败返回明确的 `HISTORY_RESTORE_LIMIT`，源文件被替换或截断返回 `HISTORY_RESTORE_CHANGED`，不返回空历史成功。
 
 旧历史的上下文恢复仍使用扫描预算；分批恢复之间等待模型压缩的时间不计入扫描耗时，实际磁盘读取和解析仍受时间限制。
+
+旧历史分页保留 `event_payload`、`usage` 和 `session_usage`，用于恢复工具详情与用量摘要；这些字段仍受语义字段和页面预算限制。上下文恢复继续使用独立的诊断字段过滤规则。

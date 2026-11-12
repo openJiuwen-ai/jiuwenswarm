@@ -168,12 +168,15 @@ def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int |
                       metadata_only: bool = False, max_field_bytes: int = 4 * 1024 * 1024,
                       max_scan_bytes: int = 8 * 1024 * 1024 * 1024,
                       max_seconds: float = 120,
-                      include_record: Callable[[dict[str, Any]], bool] | None = None) -> Iterator[HistoryRow]:
+                      include_record: Callable[[dict[str, Any]], bool] | None = None,
+                      omit_fields: frozenset[str] | None = None) -> Iterator[HistoryRow]:
     """Project semantic rows with a scan-time budget that excludes consumer waits.
 
     Consumers may await native compression between pages. That wait must not
     exhaust the scanner's time budget while no history bytes are being parsed.
+    A caller may override diagnostic omissions; field and row budgets still apply.
     """
+    omitted = _OMIT_FIELDS if omit_fields is None else omit_fields
     end = path.stat().st_size if end is None else end
     if end < start or end - start > max_scan_bytes:
         raise HistoryReplayError("Legacy history exceeds the migration disk budget", code="HISTORY_RESTORE_LIMIT")
@@ -223,7 +226,7 @@ def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int |
             if not metadata_only and selected:
                 retained = 0
                 for key, span in spans.items():
-                    if key in record or key in _OMIT_FIELDS:
+                    if key in record or key in omitted:
                         continue
                     length = span[1] - span[0]
                     if length > max_field_bytes:
