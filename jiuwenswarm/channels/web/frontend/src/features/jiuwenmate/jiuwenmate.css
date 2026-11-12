@@ -4214,6 +4214,12 @@
   background: var(--jm-muted);
 }
 
+.jiuwenmate-capability-chip[aria-pressed='true'] {
+  border-color: var(--jm-blue);
+  color: var(--jm-blue);
+  background: var(--jm-blue-soft);
+}
+
 .jiuwenmate-capability-chip > span {
   min-width: 0;
   flex: 1;
@@ -5138,7 +5144,9 @@
 
 .jiuwenmate-profile__resource-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 12px;
 }
 
 .jiuwenmate-profile__resource-add {

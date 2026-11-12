@@ -541,7 +541,7 @@ function ActivityIndividualTab({
   const keyword = query.trim();
   const usage = usageChange(member?.days ?? [], period, today);
   const groups = (member?.groups ?? []).filter((group) => !keyword || group.name.includes(keyword));
-  const percent = usage.percent === null ? t('jiuwenmate.office.noResponse') : `${usage.percent}%`;
+  const percent = usage.percent === null ? '—' : `${usage.percent}%`;
 
   return (
     <div className="jiuwenmate-office__individual" data-testid="jiuwenmate-office-individual">
