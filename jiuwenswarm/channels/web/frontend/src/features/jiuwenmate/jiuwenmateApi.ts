@@ -438,6 +438,7 @@ export function withColleagueEdit(
     connectors?: readonly string[];
     plugins?: readonly string[];
     knowledge?: readonly string[];
+    starterPrompts?: readonly string[];
   },
 ): JiuwenMateWireSettings {
   const settings = toWireSettings(
@@ -456,6 +457,7 @@ export function withColleagueEdit(
         connectors: [...(edit.connectors ?? colleague.capabilities.connectors)],
         plugins: [...(edit.plugins ?? colleague.capabilities.plugins)],
         knowledge: [...(edit.knowledge ?? colleague.capabilities.knowledge)],
+        starterPrompts: [...(edit.starterPrompts ?? colleague.capabilities.starterPrompts)],
       },
     },
     models,

@@ -6,6 +6,7 @@ import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
 import { WelinkOauthDialog } from './components/WelinkOauthDialog';
 import { JiuwenMateConfirmDialog, JiuwenMateDialog } from './components/JiuwenMateDialog';
 import { JiuwenMateRail, type JiuwenMateRailView } from './components/JiuwenMateRail';
+import { MAX_STARTER_PROMPTS } from './components/StarterPromptsEditor';
 import {
   cancelColleagueCreation,
   closeCustomColleagueDialog,
@@ -488,7 +489,7 @@ export function JiuwenMateApp({
           connectors: available.connectors,
           plugins: available.plugins,
           knowledge: available.knowledge,
-          starterPrompts: [...template.capabilities.starterPrompts],
+          starterPrompts: template.capabilities.starterPrompts.slice(0, MAX_STARTER_PROMPTS),
         },
       }),
     );

@@ -302,6 +302,14 @@ test('draft settings trim blanks, drop uploaded images and keep only listed mode
   assert.deepEqual(settings.capabilities.starter_prompts, ['写一份周报']);
   assert.equal('persona' in settings, false);
   assert.equal(withColleagueEdit(toColleague(wireColleague), models, { persona: '新的人设' }).persona, '新的人设');
+  assert.deepEqual(
+    withColleagueEdit(toColleague(wireColleague), models, { persona: '新的人设' }).capabilities.starter_prompts,
+    ['帮我整理本周工作进展。'],
+  );
+  assert.deepEqual(
+    withColleagueEdit(toColleague(wireColleague), models, { starterPrompts: [] }).capabilities.starter_prompts,
+    [],
+  );
 
   const unlisted = toWireSettings({ ...draft, capabilities: { ...draft.capabilities, model: 'deepseek-v3.2' } }, models);
   assert.equal(unlisted.capabilities.model, null);

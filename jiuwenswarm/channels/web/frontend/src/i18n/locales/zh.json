@@ -6092,6 +6092,8 @@
         "knowledge": "添加知识",
         "starterPrompts": "添加快捷问"
       },
+      "starterPromptsLimit": "最多添加 {{count}} 条",
+      "starterPromptDuplicate": "与上面的问题重复，保存时只保留一条",
       "empty": {
         "skills": "暂无技能",
         "connectors": "暂无连接器",
@@ -6437,11 +6439,6 @@
       "webConnection": "网页",
       "connectionHint": "在这里生成的共享文件，{{platform}}用户也能读取。",
       "webResult": "网页工作空间有新结果，点击查看",
-      "defaultPrompts": [
-        "统计今日咨询热点",
-        "复盘群内回复质量",
-        "导出今日对话摘要"
-      ],
       "featuresTitle": "功能特点",
       "features": {
         "chat": {
