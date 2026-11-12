@@ -607,13 +607,281 @@ async def test_unknown_forever_abandons_after_max_attempts(monkeypatch) -> None:
 
 
 # ------------------------------------------------------------------
-# design/team/21：终态族治理（问题 3 重复去重 + 问题 2 流末强制补终态）
+# PM-78：settle False 不再裸赌 team.completed——事件驱动重评 + 定时器有界续窗
 # ------------------------------------------------------------------
+
+
+def _completion_chunk(text: str):
+    """leader 轮末 task_completion（被 parse 丢弃，由消费循环合成 chat.final）。"""
+    return SimpleNamespace(
+        type="controller_output",
+        payload=SimpleNamespace(
+            type="task_completion",
+            data=[SimpleNamespace(data={"output": text, "result_type": "answer"})],
+        ),
+        role=None,
+    )
+
+
+def _pm78_fake_parse(chunk):
+    ctype = getattr(chunk, "type", None)
+    if ctype == "team.member":
+        return {
+            "event_type": "team.member",
+            "event": {"type": "team.member.status_changed", "member_id": "m1"},
+        }
+    if ctype == "tool":
+        return {
+            "event_type": "chat.tool_call",
+            "tool_call": {"name": "bash", "tool_call_id": "c1"},
+        }
+    return None
+
+
+@pytest.mark.asyncio
+async def test_pm78_false_at_final_closes_via_bounded_recheck(monkeypatch) -> None:
+    """PM-78 复现钉：final 当口 settle=False（leader 收尾迁移落库前的毫秒级
+    时序窗，11-11 生产实测 20-50ms）→ 修复前裸赌 team.completed，接续轮
+    永不收口（只剩流末兜底补带 error 终态）；修复后置事件驱动重评标记+
+    静默窗续评，读数转 True 即补干净终态。"""
+    manager = _SettleRecordingManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(team_helpers, "_SETTLE_RECHECK_DEBOUNCE_SEC", 0)
+
+    settle_seq = [False] + [True] * 20
+
+    async def _settled(_cid, _sid):
+        return settle_seq.pop(0) if len(settle_seq) > 1 else settle_seq[0]
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _pm78_fake_parse)
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield _completion_chunk("本轮结论")
+        # PM-78 现场形态：final 广播后 leader/成员状态迁移帧才到达
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    await team_helpers._consume_stream_with_query(
+        "web", "sess-pm78", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
+    )
+    terminals = [
+        e
+        for e in manager.events
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert len(terminals) == 1
+    assert not terminals[0].get("error")
+
+
+@pytest.mark.asyncio
+async def test_pm78_event_recheck_reschedules_after_voided_window(monkeypatch) -> None:
+    """C 路径独有价值：final False 挂的静默窗被新内容帧作废（团队还在干活）
+    → 后续团队状态帧触发事件驱动重评，True 且窗口已死时补调度 → 干净终态。
+    修复前：窗口作废即再无评估，流末兜底补带 error 终态。"""
+    manager = _SettleRecordingManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.02)
+    monkeypatch.setattr(team_helpers, "_SETTLE_RECHECK_DEBOUNCE_SEC", 0)
+
+    settle_seq = [False] + [True] * 30
+
+    async def _settled(_cid, _sid):
+        return settle_seq.pop(0) if len(settle_seq) > 1 else settle_seq[0]
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _pm78_fake_parse)
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield _completion_chunk("本轮结论")
+        # final False 挂窗（+0.02s）后立刻来内容帧 → 窗口作废
+        yield SimpleNamespace(type="tool", payload={}, role=None)
+        await asyncio.sleep(0.05)  # 作废的窗口到点返回（无终态）
+        # 团队落定：状态迁移帧触发事件驱动重评 → True → 补调度静默窗
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        await asyncio.sleep(0.06)  # 补调度的窗口到点 → 干净终态
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    await team_helpers._consume_stream_with_query(
+        "web", "sess-pm78-void", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
+    )
+    terminals = [
+        e
+        for e in manager.events
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert len(terminals) == 1
+    assert not terminals[0].get("error")
+
+
+@pytest.mark.asyncio
+async def test_pm78_persistent_false_no_forced_clean_terminal(monkeypatch) -> None:
+    """持续 False = 确有在途工作：有界续窗耗尽后退回旧行为，不强制补干净
+    终态（防误杀成员长模型调用中的合法静默）；流末兜底仍补带 error 终态
+    （状态不明不粉饰）。"""
+    manager = _SettleRecordingManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(team_helpers, "_SETTLE_FALSE_RECHECK_SEC", 0.01)
+    monkeypatch.setattr(team_helpers, "_SETTLE_FALSE_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(team_helpers, "_SETTLE_RECHECK_DEBOUNCE_SEC", 0)
+
+    async def _settled(_cid, _sid):
+        return False
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _pm78_fake_parse)
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield _completion_chunk("本轮结论")
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        await asyncio.sleep(0.15)  # 续窗耗尽（0.01 + 3×0.01）
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    await team_helpers._consume_stream_with_query(
+        "web", "sess-pm78-false", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
+    )
+    terminals = [
+        e
+        for e in manager.events
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    # 干净 settle 终态零次（不误杀）；唯一终态来自流末强制兜底且带 error
+    assert len(terminals) == 1
+    assert terminals[0].get("error")
+
+
+@pytest.mark.asyncio
+async def test_pm78_trailing_recheck_covers_debounced_tail_frame(monkeypatch) -> None:
+    """去抖（leading-edge）跳过的帧簇尾帧携带决定性迁移时，
+    trailing 补评兜底收口。形态：定时续窗已耗尽 → 帧簇同批到达（首帧
+    leading 重评 False，尾帧 0.5s 窗内被去抖跳过）→ 之后零帧——修复前
+    永挂（只剩流末兜底带 error 终态）；修复后跳过时调度 trailing，
+    去抖窗满后补评 True → 干净终态。"""
+    manager = _SettleRecordingManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.02)
+    monkeypatch.setattr(team_helpers, "_SETTLE_FALSE_RECHECK_SEC", 0.02)
+    monkeypatch.setattr(team_helpers, "_SETTLE_FALSE_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(team_helpers, "_SETTLE_RECHECK_DEBOUNCE_SEC", 0.05)
+
+    state = {"settled": False}
+
+    async def _settled(_cid, _sid):
+        return True if state["settled"] else False
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _pm78_fake_parse)
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield _completion_chunk("本轮结论")
+        await asyncio.sleep(0.15)  # 定时续窗耗尽（0.02+2×0.02）
+        # 帧簇同批到达：首帧 leading 重评（仍 False），尾帧落在 0.05s 去抖
+        # 窗内被跳过 → 调度 trailing；两帧之间无 await，间隔 ~0
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        state["settled"] = True  # 尾帧之后团队落定，但再无新帧
+        await asyncio.sleep(0.2)  # trailing（0.05s）补评 True → 静默窗收口
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    await team_helpers._consume_stream_with_query(
+        "web", "sess-pm78-trailing", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
+    )
+    terminals = [
+        e
+        for e in manager.events
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert len(terminals) == 1
+    assert not terminals[0].get("error")
+
+
+@pytest.mark.asyncio
+async def test_pm78_recheck_never_blocks_chunk_consumption(monkeypatch) -> None:
+    """事件驱动重评不堵流：重评读数含 DB 点查，锁竞争
+    下可阻塞数秒——若内联 await 在帧消费循环里，重评挂起期间后续帧全部滞留
+    （旧实现即如此）。修复后 leading 也只调度后台 trailing 位：重评挂在
+    后台时，后续状态帧照常广播；闸门放开后重评完成、干净终态收口。"""
+    manager = _SettleRecordingManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(team_helpers, "_SETTLE_RECHECK_DEBOUNCE_SEC", 0)
+
+    gate = asyncio.Event()
+    state = {"calls": 0}
+    evidence = {"delivered_while_recheck_hung": False}
+
+    async def _release_gate_after(seconds: float) -> None:
+        await asyncio.sleep(seconds)
+        gate.set()
+
+    async def _settled(_cid, _sid):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return False  # final 当口 False → 置重评标记
+        await gate.wait()  # 重评挂起（模拟 DB 锁竞争）直到测试放行
+        return True
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _pm78_fake_parse)
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield _completion_chunk("本轮结论")
+        # 第一帧触发重评（挂起）；第二帧是证据帧——若重评内联堵循环，
+        # 它在重评挂起期间永远不会被广播
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        await gate.wait()  # 流保持打开直到闸门放行（防流末兜底抢跑）
+        await asyncio.sleep(0.1)  # 重评 True → 静默窗到点收口
+
+    def _count_member_events(mgr) -> int:
+        return sum(1 for e in mgr.events if e.get("event_type") == "team.member")
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    # 闸门 5s 定时放行兜底；证据判定严格以「闸门未开」为界（证据窗不能用
+    # 固定时长对齐放行点——sleep 粒度误差会让两窗口重叠，旧实现因此假绿）。
+    # 证据到手即提前放行收尾；旧实现下证据帧在闸门开启前永不广播，轮询到
+    # 闸门开启退出，断言干净失败。
+    releaser = asyncio.create_task(_release_gate_after(5.0))
+    consume_task = asyncio.create_task(
+        team_helpers._consume_stream_with_query(
+            "web", "sess-pm78-noblock", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
+        )
+    )
+    try:
+        for _ in range(1200):
+            if gate.is_set():
+                break
+            if state["calls"] >= 2 and _count_member_events(manager) >= 3:
+                evidence["delivered_while_recheck_hung"] = True
+                break
+            await asyncio.sleep(0.005)
+        gate.set()  # 证据到手（或兜底定时已到）即放行收尾
+        await consume_task
+    finally:
+        gate.set()
+        await releaser
+    # 证据帧在重评挂起期间已被广播（流没被堵）
+    assert evidence["delivered_while_recheck_hung"]
+    terminals = [
+        e
+        for e in manager.events
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert len(terminals) == 1
+    assert not terminals[0].get("error")
 
 
 @pytest.mark.asyncio
 async def test_no_duplicate_terminal_when_team_completed_follows_final(monkeypatch) -> None:
-    """问题 3 回归钉：final 挂起 settle 静默窗 → team.completed 转换已发终态 →
+    """final 挂起 settle 静默窗 → team.completed 转换已发终态 →
     流末 finally 兜底不得重复补发（_emit_settle_terminal 入口查 completion_signals）。
     修复前此场景必现 2 条终态帧（第二条无计数）。"""
     manager = _SettleRecordingManager()
@@ -667,7 +935,7 @@ async def test_no_duplicate_terminal_when_team_completed_follows_final(monkeypat
 
 @pytest.mark.asyncio
 async def test_forced_clean_terminal_when_stream_ends_without_any_terminal(monkeypatch) -> None:
-    """问题 2：流结束仍零终态（无 final、无 team.completed，settle 从未挂窗）
+    """流结束仍零终态（无 final、无 team.completed，settle 从未挂窗）
     且复核落定 → finally 强制补干净终态帧（不带 error）。"""
     manager = _SettleRecordingManager()
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)

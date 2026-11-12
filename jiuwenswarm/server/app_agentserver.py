@@ -89,7 +89,7 @@ else:
         "%(asctime)s.%(msecs)03d %(levelname)s %(name)s %(filename)s:%(lineno)d: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    # 按天切分：<logs_root>/<YYYY-MM-DD>/permissions.log（日内 2MB 轮转；
+    # 按天切分：<logs_root>/<YYYY-MM-DD>/permissions.log（日内 10MB 轮转；
     # 外层日期布局激活时 <DATE_ROOT>/<日期>/jiuwenswarm/<uidKey>/permissions.log）
     _perm_fh = make_dated_file_handler("permissions.log")
     _perm_fh.setLevel(logging.INFO)
