@@ -67,6 +67,41 @@ async def test_list_ready_initializes_each_declared_package_once(monkeypatch, fa
 
 
 @pytest.mark.asyncio
+async def test_application_footer_ready_initializes_each_declared_package(monkeypatch):
+    slot = "application.sidebar.footer"
+    catalog = UiCatalog(items=(
+        UiContribution("pkg.login", "web.slot.contribution", "login", slot, order=20),
+        UiContribution("pkg.harness", "web.slot.contribution", "harness", slot, order=10),
+    ))
+
+    async def dispatch(action, **kwargs):
+        assert action.target.session_id == ""
+        assert action.target.scope == "application"
+        assert action.target.connection_id == "tab-1"
+        assert kwargs == {"user_id": "user", "channel_id": "web", "connection_id": "tab-1"}
+        return UiActionOutput(True, "rendered")
+
+    invoke = AsyncMock(side_effect=dispatch)
+    runtime = SimpleNamespace(
+        catalog=lambda: SimpleNamespace(current=lambda: catalog), dispatch=invoke,
+        remember_ready_client=Mock(),
+    )
+    monkeypatch.setattr(assembly, "get_webui_runtime", lambda: runtime)
+
+    response = await WebUIDispatchAdapter().handle(AgentRequest(
+        request_id="footer-ready", channel_id="web", session_id="ignored", user_id="user",
+        req_method=ReqMethod.WEBUI_DISPATCH, metadata={"ws_id": "tab-1"}, params={
+            "event": "ui.ready",
+            "target": {"scope": "application", "slot_id": slot, "instance_key": "footer"},
+        },
+    ))
+
+    assert [call.args[0].target.package_id for call in invoke.call_args_list] == ["pkg.harness", "pkg.login"]
+    assert response.ok
+    assert response.payload["status"] == "ready"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("changes,code", [
     ({"event": ["ui.click"]}, "SCHEMA_ERROR"),
     ({"payload": []}, "SCHEMA_ERROR"),

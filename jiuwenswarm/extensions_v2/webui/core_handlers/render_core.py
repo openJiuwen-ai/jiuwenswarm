@@ -113,8 +113,9 @@ def build_render_core_handler(
 
             for evicted in claim.evicted:
                 async with registry.evict(evicted) as current:
-                    if current and await transport.send_clear(clear_frame(evicted, reason="evicted")):
-                        registry.drop_instance(evicted.target)
+                    evicted_frame = clear_frame(evicted, reason="evicted")
+                    if current and await transport.send_clear(evicted_frame):
+                        registry.drop_instance(evicted.target, retired_revision=evicted_frame.revision)
                         log_eviction(evicted)
 
         return UiRenderOutput(status=RenderStatus.DELIVERED, revision=frame.revision)

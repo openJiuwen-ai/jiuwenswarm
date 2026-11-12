@@ -131,6 +131,30 @@ async def test_package_cleanup_retains_failed_clear_for_retry(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_reenabled_application_view_resumes_above_package_clear_revision(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    runtime, _manager = await _runtime(tmp_path, transport)
+    target = RenderTarget(
+        "",
+        "application.sidebar.footer",
+        PACKAGE,
+        INSTANCE,
+        scope="application",
+        connection_id="web-1",
+    )
+
+    first = await runtime.render(UiRenderInput(target=target, root=RenderNode("Text", {"value": "before"})))
+    await runtime.drop_package(PACKAGE)
+    clear = transport.clears[-1]
+
+    resumed = await runtime.render(UiRenderInput(target=target, root=RenderNode("Text", {"value": "after"})))
+
+    assert first is not None and first.revision == 1
+    assert clear.revision == first.revision + 1
+    assert resumed is not None and resumed.revision > clear.revision
+
+
+@pytest.mark.asyncio
 async def test_eviction_happens_after_the_new_frame_is_delivered(tmp_path: Path) -> None:
     transport = FakeTransport()
     registry = ActiveRenderRegistry(max_instances_per_session=1)
@@ -139,8 +163,10 @@ async def test_eviction_happens_after_the_new_frame_is_delivered(tmp_path: Path)
     second = RenderTarget("s1", SLOT, "pkg.b", "b")
 
     await runtime.render(UiRenderInput(target=first, root=RenderNode("Text", {"value": "a"})))
-    await runtime.render(UiRenderInput(target=second, root=RenderNode("Text", {"value": "b"})))
+    delivered = await runtime.render(UiRenderInput(target=second, root=RenderNode("Text", {"value": "b"})))
 
+    assert delivered is not None
+    assert delivered.revision == transport.frames[-1].revision == 1
     assert runtime.registry.get(first) is None
     assert runtime.registry.get(second) is not None
     assert [frame.target.key for frame in transport.clears] == [first.key]
