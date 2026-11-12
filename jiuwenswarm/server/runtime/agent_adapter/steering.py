@@ -361,8 +361,9 @@ class SteeringSession:
         except Exception:
             return {"input_id": input_id, "status": "unknown"}
 
+    @staticmethod
     def _compensate_ambiguous_delivery(
-        self, input_id: str, item: _Input, receipt: dict[str, Any]
+        input_id: str, item: _Input, receipt: dict[str, Any]
     ) -> None:
         """模糊投递窗口的补偿落地（清单后移落地的第三条腿）。
 
