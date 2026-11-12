@@ -1,9 +1,5 @@
 # Full-duplex conversation continuity
 
-After voice submits a chat card answer, it waits for Core to confirm resumption without
-an additional ten-second deadline. Replacement, invalidation or service shutdown ends
-the wait; the answer is reported as applied only after resumption is confirmed.
-
 The frontend currently exposes only Qwen Omni Realtime. JoyAI configuration and startup are hidden. Users with saved JoyAI settings must configure Qwen in Settings; the backend integration and saved settings are retained.
 
 Enable Full-duplex in the experimental settings and start it from a saved Work or Code chat, or a Design project.
@@ -352,9 +348,3 @@ version; the server reads the current value and checks it when applying the move
 An invalid model version is ignored, while a valid stale version still conflicts.
 Control diagnostics are saved in `~/.jiuwenswarm/logs/duplex-task-trace.jsonl` to
 correlate requests, cancellation settlement, queue versions and interface updates.
-
-Full duplex adds no deadline to tool calls, queue operations, card answers, execution settlement, or cancellation acknowledgement. Core lifecycle and actual receipts govern tasks and cards. Connection protection and configured model timeouts still apply.
-
-On tool failure, the tool card shows supplied error details, error codes, exit codes and stderr with sensitive values masked. Successful acceptance, results and stop confirmations update the interface and context silently. Failures, questions requiring user input and explicit queries can still trigger a voice response. Stop receipts prefer the task display title.
-
-While a duplex task is running, its chat elapsed time updates from a local clock independently of progress messages. The display freezes after completion, failure or confirmed cancellation. This clock changes presentation only; it does not change task state, timeouts or cancellation.
