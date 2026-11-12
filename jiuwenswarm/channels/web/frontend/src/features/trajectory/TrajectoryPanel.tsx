@@ -1101,6 +1101,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       // Content hashes stay valid across epochs of one session, but another
       // session's content is only memory this reader will not use again.
       sequenceCacheRef.current = createSequenceCache();
+      // Archive banners describe the previous session's last import/export.
+      // clearPublishedWindow() resets the rest of this reader's display state;
+      // these two live outside it, so the switch must drop them too or a failed
+      // import keeps hanging over the session that replaced it.
+      setArchiveError(null);
+      setArchiveNotice(null);
     }
     if (sessionId === 'new') {
       setLoading(false);
