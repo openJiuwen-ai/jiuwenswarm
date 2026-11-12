@@ -1,10 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Subagent callbacks retain bounded audit records when artifact storage fails."""
+"""Subagent callbacks persist lifecycle and usage without copying model inputs."""
 import asyncio
-import hashlib
 import json
-from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -28,7 +27,6 @@ def forwarder(stored, monkeypatch):
     framework = AsyncCallbackFramework(enable_metrics=False, enable_logging=False)
     monkeypatch.setattr(Runner, "callback_framework", framework)
     monkeypatch.setattr(observability, "_PARENT_REQ_BY_SESSION", {})
-    monkeypatch.setattr(observability, "_LAST_PROMPT_BY_SESSION", {})
     monkeypatch.setattr(observability, "_LAST_CALL_START_BY_SESSION", {})
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: stored.path.parent.parent)
     observability.set_parent_request_context(
@@ -71,10 +69,10 @@ async def test_artifact_io_failure_keeps_start_usage_and_end_audit(forwarder, mo
     start = rows[0]
     assert start["request_id"] == "parent-request" and start["channel_id"] == "web"
     assert start["subagent_type"] == "code" and start["sub_session_id"] == forwarder.child
-    assert "FIRST USER TASK" in start["prompt"] and len(start["prompt"]) < 5000
+    assert "prompt" not in start
     assert "payload_refs" not in start
     usage = rows[1]["metadata"]
-    assert usage["usage_metadata"]["prompt"] == start["prompt"]
+    assert "prompt" not in usage["usage_metadata"]
     assert usage["usage_metadata"]["input_tokens"] == 11
     assert usage["total_latency_ms"] >= 0
     assert rows[2]["content"] == "SUBAGENT RESULT"
@@ -83,25 +81,23 @@ async def test_artifact_io_failure_keeps_start_usage_and_end_audit(forwarder, mo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event", INPUT_EVENTS)
-async def test_healthy_storage_keeps_the_full_prompt_and_tool_artifact(forwarder, event):
+async def test_model_input_and_tools_are_preserved_without_prompt_artifact(forwarder, monkeypatch, event):
+    put_prompt = Mock()
+    monkeypatch.setattr(artifacts, "put_prompt", put_prompt)
     system = "COMPLETE SYSTEM " * 10000
+    messages = [SystemMessage(content=system), UserMessage(content="ORIGINAL TASK")]
     tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
     await _trigger(
         forwarder, event,
-        messages=[SystemMessage(content=system), UserMessage(content="ORIGINAL TASK")],
+        messages=messages,
         tools=tools,
     )
     rows = await _records(forwarder)
     assert len(rows) == 1 and rows[0]["event_type"] == "chat.llm_call_start"
-    reference = rows[0]["payload_refs"]["prompt"]
-    content = Path(reference["path"]).read_bytes()
-    full_prompt = json.loads(content)
-    assert full_prompt["messages"][0]["content"] == system
-    assert full_prompt["messages"][1]["content"] == "ORIGINAL TASK"
-    assert full_prompt["tools"] == tools
-    assert reference["sha256"] == hashlib.sha256(content).hexdigest()
-    assert reference["bytes"] == len(content) and reference["media_type"] == "application/json"
-    assert len(rows[0]["prompt"]) < 5000
+    assert "prompt" not in rows[0] and "payload_refs" not in rows[0]
+    assert messages[0].content == system and messages[1].content == "ORIGINAL TASK"
+    assert tools == [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
+    put_prompt.assert_not_called()
 
 
 @pytest.mark.asyncio
