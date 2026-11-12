@@ -445,6 +445,8 @@ def get_panel() -> dict[str, Any]:
         payload["skill_evolution"] = _bool_text(
             evolution_cfg.get("skill_evolution"), False
         )
+        ttse_cfg = react_cfg.get("ttse") or {}
+        payload["ttse_enabled"] = _bool_text(ttse_cfg.get("enabled"), False)
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = _bool_text(memory_cfg.get("enabled"), False)
         payload["memory_forbidden_description"] = memory_cfg.get("description") or {}
@@ -513,6 +515,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
+        payload.setdefault("ttse_enabled", "false")
         payload.setdefault("memory_forbidden_enabled", "false")
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("a2ui_enabled", "false")
