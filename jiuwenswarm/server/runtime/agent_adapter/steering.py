@@ -71,6 +71,25 @@ def _extract_steer_image_files(files: Any) -> list[dict[str, Any]]:
     return extract_multimodal_image_files({"files": mapped})
 
 
+def _steer_request_digest(params: dict[str, Any]) -> str:
+    """幂等摘要：wire content + 提取后的补充图片 path 集合（排序）。
+
+    只盖 content 不盖 files 时，同 input_id 换图重放会命中首轮回执被静默吞掉
+    （新图零投递零落地），客户端得不到 IDEMPOTENCY_CONFLICT 纠错信号。files
+    取提取后的 image path 排序集合：非图片条目 / 空 path 等语义等价差异不
+    误报冲突，判定口径 =「文字 + 图片集合相同」才是同一笔请求。
+    """
+    digest = hashlib.sha256()
+    digest.update(str(params.get("content") or "").encode("utf-8"))
+    for path in sorted(
+        str(image.get("path") or "")
+        for image in _extract_steer_image_files(params.get("files"))
+    ):
+        digest.update(b"\x00")
+        digest.update(path.encode("utf-8"))
+    return digest.hexdigest()
+
+
 def _live_manifest(agent: Any) -> list[dict[str, Any]]:
     """读 agent 当前的上传清单（live 通道优先）。
 
@@ -328,11 +347,8 @@ class SteeringSession:
             item = binding.inputs.get(input_id)
             if item is not None:
                 if not query:
-                    digest = hashlib.sha256(
-                        params["content"].encode("utf-8")
-                    ).hexdigest()
                     if (
-                        digest != item.digest
+                        _steer_request_digest(params) != item.digest
                         or params["client_message_id"] != item.client_message_id
                     ):
                         return rejected("IDEMPOTENCY_CONFLICT", input_id=input_id)
@@ -403,7 +419,7 @@ class SteeringSession:
             if client_id in binding.client_ids:
                 return rejected("IDEMPOTENCY_CONFLICT", input_id=input_id)
             item = _Input(
-                digest=hashlib.sha256(params["content"].encode("utf-8")).hexdigest(),
+                digest=_steer_request_digest(params),
                 client_message_id=client_id,
                 runtime=runtime,
                 runtime_request_id=runtime_id,
@@ -412,7 +428,9 @@ class SteeringSession:
             # same input ID queryable, instead of encouraging a duplicate send.
             binding.inputs[input_id] = item
             binding.client_ids[client_id] = input_id
-            # 幂等摘要仍按 wire 原文 content 计算；补充图片仅影响投递内容。
+            # 幂等摘要按 wire 原文 content + 补充图片 path 集合计算
+            # （_steer_request_digest）；引用行拼接不影响摘要，同 input_id
+            # 原样重试不产生二次投递。
             # 引用行先随 content 投递，清单在投递确认（accepted / consumed）后
             # 才落地：steer_active 失败（异常 / not_applied / unknown）时若清单
             # 已写，本轮去重会把同一张图的重试吞掉（fresh 恒空 → 引用行不再

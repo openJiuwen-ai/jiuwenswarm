@@ -729,6 +729,22 @@ async def test_steer_files_retries_stay_idempotent_on_wire_content():
     assert agent.steer_active.await_count == 1
 
 
+@pytest.mark.asyncio
+async def test_steer_files_replay_with_swapped_files_reports_idempotency_conflict():
+    """同 input_id 换图重放：摘要覆盖 files，报冲突而非静默吞掉新图。"""
+    control, _, agent, _ = session()
+    await control.handle(control_request(files=_steer_files()), query=False)
+    swapped = await control.handle(
+        control_request(
+            files=[{"type": "image", "name": "other.png", "path": "/tmp/other.png"}]
+        ),
+        query=False,
+    )
+    assert swapped["status"] == "not_applied"
+    assert swapped["reason"] == "IDEMPOTENCY_CONFLICT"
+    assert agent.steer_active.await_count == 1
+
+
 def _team_agent_with_bound_rail(agent, bound_files):
     """给 runtime 挂上 leader 形态的 harness：find_rails 返回绑定清单的 rail。"""
     from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
