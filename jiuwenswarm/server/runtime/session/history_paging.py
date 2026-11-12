@@ -94,7 +94,7 @@ def read_indexed_history(
                     continue
                 try:
                     record = json.loads(raw.decode("utf-8-sig" if start == 0 else "utf-8"))
-                except (ValueError, UnicodeError):
+                except ValueError:
                     logger.warning("Invalid history page row skipped: session=%s offset=%s", session_id, start)
                     continue
                 if isinstance(record, dict):
