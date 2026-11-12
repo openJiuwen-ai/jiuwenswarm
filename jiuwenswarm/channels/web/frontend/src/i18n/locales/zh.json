@@ -6606,6 +6606,7 @@
       "periodStart": "开始日期",
       "periodEnd": "结束日期",
       "periodTo": "至",
+      "periodLimit": "最多支持查看 {{count}} 天数据，已自动调整开始日期",
       "metrics": {
         "members": "员工数量",
         "activeDays": "活跃天数",
