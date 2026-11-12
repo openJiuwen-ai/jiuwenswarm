@@ -37,6 +37,7 @@ dependencies = [
     "aiosqlite>=0.22.1,<0.23",
     "asyncpg>=0.29,<1",
     "croniter>=3.0.0,<7",
+    "cryptography>=44.0.0",  # the Office add-ins' localhost certificate
     "python-telegram-bot>=20.0,<23",
     "discord.py>=2.4.0,<3",
     "slack-bolt>=1.30.0,<2",

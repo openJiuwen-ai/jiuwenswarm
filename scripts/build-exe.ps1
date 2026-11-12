@@ -359,6 +359,13 @@ if (Test-Path "node_modules") {
 npm run build
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 Pop-Location
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+Push-Location (Join-Path $ProjectRoot "packages\jiuwenswarm-office-addin")
+npm ci --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+npm run build:desktop
+if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+Pop-Location
 
 # 3. Run PyInstaller
 Write-Host "`n[3/4] Running PyInstaller..." -ForegroundColor Yellow

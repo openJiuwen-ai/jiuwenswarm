@@ -24,6 +24,7 @@ import ssl
 import sys
 import threading
 import time
+from dataclasses import asdict
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -50,6 +51,7 @@ _resolve_agent_upload_base = resolve_agent_upload_base
 from jiuwenswarm.common.projectless_workspace import get_projectless_tasks_dir
 
 if TYPE_CHECKING:
+    from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
     from jiuwenswarm.channels.web.share_image_export import (
         ShareImageExportManager,
         ShareImageRenderAuth,
@@ -335,6 +337,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     # Cookie 名按端口区分: 同 host 多桌面实例(端口偏移)互不覆盖。
     desktop_cookie_name = "__wsdt"
     _DESKTOP_TOKEN_QUERY_PARAM = "dt"
+    # Set only in desktop mode, where the office add-in routes exist.
+    office_addins: OfficeAddins | None = None
+    _OFFICE_ADDINS_PATH = "/desktop-api/office-addins"
 
     project_root = _get_user_workspace_dir()
     workspace_root = _get_agent_root_dir()
@@ -1013,13 +1018,38 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._send_desktop_forbidden()
             return True
 
-        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
-        if cookie_token and hmac.compare_digest(
-            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
-        ):
+        if self._has_desktop_cookie():
             return False
 
         self._send_desktop_forbidden()
+        return True
+
+    def _has_desktop_cookie(self) -> bool:
+        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
+        return bool(cookie_token) and hmac.compare_digest(
+            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
+        )
+
+    def _dispatch_office_addins(self, parsed: ParseResult) -> bool:
+        """``/desktop-api/office-addins``: exists only for the desktop window, answers 404 to anyone else."""
+        if not parsed.path.startswith(self._OFFICE_ADDINS_PATH):
+            return False
+        from jiuwenswarm.channels.desktop.office_addins import SUITES
+
+        route = parsed.path[len(self._OFFICE_ADDINS_PATH):]
+        # A page on another local port shares the cookie; only the desktop window's own page may act.
+        same_origin = self.headers.get("Sec-Fetch-Site") == "same-origin"
+        addins = self.office_addins
+        if addins is None or not self._has_desktop_cookie():
+            self._write_json(404, {"error": "not_found"})
+            return True
+        match (self.command, route.split("/")):
+            case ("GET", [""]):
+                self._write_json(200, {"suites": {name: asdict(status) for name, status in addins.status().items()}})
+            case ("POST", ["", suite, "install" | "remove" as action]) if same_origin and suite in SUITES:
+                self._write_json(200, asdict(addins.install(suite) if action == "install" else addins.remove(suite)))
+            case _:
+                self._write_json(404, {"error": "not_found"})
         return True
 
     def _resolve_enterprise_upstream(self) -> tuple[str, str] | None:
@@ -2424,6 +2454,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
+        if self._dispatch_office_addins(parsed):
+            return
         if parsed.path == "/oauth/hub/callback":
             from jiuwenswarm.channels.web.hub_oauth import complete
 
@@ -2468,6 +2500,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
+        if self._dispatch_office_addins(parsed):
+            return
         if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
             from jiuwenswarm.channels.web.hub_oauth import result, start
 
@@ -2895,6 +2929,16 @@ def main() -> None:
     _ConfiguredHandler.logger = logger
     handler = partial(_ConfiguredHandler, directory=str(dist_dir))
     server = ThreadingHTTPServer((args.host, args.port), handler)
+    office_listener = None
+    if desktop_token:
+        from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
+        from jiuwenswarm.channels.desktop.office_addins.listener import TlsListener
+
+        # Office loads task panes only over HTTPS: the same handler, on its own port.
+        office_listener = TlsListener(int(os.getenv("OFFICE_TLS_PORT", "5443")), handler)
+        _ConfiguredHandler.office_addins = OfficeAddins.for_this_machine(
+            project_root, office_listener, dist_dir / "office",
+        )
 
     # Windows has no SIGUSR1, so avoid importing debug_dump (which itself
     # imports the runtime utility module) in the EXE's critical Web path.
@@ -2945,6 +2989,13 @@ def main() -> None:
             daemon=True,
         ).start()
 
+        if _ConfiguredHandler.office_addins is not None:
+            try:
+                _ConfiguredHandler.office_addins.ensure_registered()
+            except OSError as exc:
+                # The status route reports what is still wrong; the panes are optional.
+                logger.warning("[office-addins] could not restore the installed add-ins: %s", exc)
+
     threading.Thread(
         target=_finish_after_listen,
         name="web-post-listen-setup",
@@ -2962,6 +3013,8 @@ def main() -> None:
         except Exception as exc:
             logger.warning("Failed to remove web process info: %s", exc)
         server.server_close()
+        if office_listener is not None:
+            office_listener.close()
         logger.info("[jiuwenswarm-web] server closed")
 
 

@@ -9,7 +9,8 @@ import { renderMarkdown } from './markdown';
 
 /** How close to the end a reader must be for the transcript to follow new text. */
 const FOLLOW_THRESHOLD_PX = 72;
-const BEE = '/assets/bee.png';
+/** Relative to the page, which the desktop serves under `/office/`. */
+const BEE = 'assets/bee.png';
 /** How long Copy shows that it copied. */
 const COPIED_MS = 2000;
 
