@@ -22,7 +22,7 @@ import {
 } from '../designerEntry';
 import { findDesignModelsProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
-import { isDesignerChatStoppable } from '../designerGraphLock';
+import { designerChatStopControl, isDesignerChatStoppable } from '../designerGraphLock';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
@@ -132,6 +132,8 @@ export function DesignerChatPanel() {
   const [attachments, setAttachments] = useState<ComposerDraft[]>([]);
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
+  const stopControl = designerChatStopControl({ canStop, stopPending });
   const stopRequestedRef = useRef(false);
   // The canvas owns exactly one session: read and write the model against that
   // session id. `activeSessionId` follows the app route and can point at
@@ -205,9 +207,12 @@ export function DesignerChatPanel() {
   }, [sessionId]);
 
   useEffect(() => {
-    if (canStop || !stopRequestedRef.current) return;
-    stopRequestedRef.current = false;
-    useDesignerRunStore.getState().applyLeaderActivity(null);
+    if (canStop) return;
+    if (stopRequestedRef.current) {
+      stopRequestedRef.current = false;
+      useDesignerRunStore.getState().applyLeaderActivity(null);
+    }
+    setStopPending(false);
   }, [canStop]);
 
   const limitError = useCallback(
@@ -317,8 +322,9 @@ export function DesignerChatPanel() {
   }, [attachments, blockedProblem, chatBusy, domainGraph, draft, selectedModelName, sessionId, t]);
 
   const handleStop = useCallback(() => {
-    if (!sessionId) return;
+    if (!sessionId || stopPending) return;
     setAttachError('');
+    setStopPending(true);
     stopRequestedRef.current = true;
     const runStore = useDesignerRunStore.getState();
     const cancelLeaderRun =
@@ -340,9 +346,10 @@ export function DesignerChatPanel() {
       })
       .catch(() => {
         stopRequestedRef.current = false;
+        setStopPending(false);
         setAttachError(t('designer.chat.stopError'));
       });
-  }, [domainGraph, sessionId, t]);
+  }, [domainGraph, sessionId, stopPending, t]);
 
   const handleUserAnswer = useCallback(
     async (requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> => {
@@ -503,7 +510,24 @@ export function DesignerChatPanel() {
                 stop: t('chat.taskFullDuplexStop'),
               }}
               fallback={
-                canStop ? (
+                stopControl === 'stopping' ? (
+                  <button
+                    type="button"
+                    className="designer-chat-panel__send"
+                    disabled
+                    aria-busy
+                    aria-label={t('designer.chat.stopping')}
+                    title={t('designer.chat.stopping')}
+                    data-testid="designer-chat-panel-stop"
+                    data-variant="running"
+                  >
+                    <LoaderCircle
+                      className="designer-chat-panel__send-spinner animate-spin"
+                      size={18}
+                      aria-hidden
+                    />
+                  </button>
+                ) : stopControl === 'stop' ? (
                   <button
                     type="button"
                     className="designer-chat-panel__send"
