@@ -22,6 +22,7 @@ import {
 } from '../designerEntry';
 import { findDesignModelsProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import { isDesignerChatStoppable } from '../designerGraphLock';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
@@ -114,6 +115,16 @@ export function DesignerChatPanel() {
   const isProcessing = useChatStore((state) =>
     sessionId ? state.runtimes[sessionId]?.isProcessing ?? false : false,
   );
+  const runIsRunning = useDesignerRunStore((state) => state.isRunning);
+  const runTriggerSource = useDesignerRunStore((state) => state.run?.metadata?.trigger_source ?? null);
+  const leaderRunActive = runIsRunning && runTriggerSource === 'leader';
+  // After chat.final, isProcessing is false while the leader-triggered canvas
+  // autorun continues. Keep the stop control for that phase too.
+  const canStop = isDesignerChatStoppable({
+    isProcessing,
+    isRunning: runIsRunning,
+    triggerSource: runTriggerSource,
+  });
   const toggleChatSidebar = useDesignerUiStore((state) => state.toggleChatSidebar);
   const bodyRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -143,7 +154,7 @@ export function DesignerChatPanel() {
     setChatModel(selectedModelName, selectedModelId);
   }, [selectedModelId, selectedModelName, sessionId, setChatModel]);
 
-  const chatBusy = isProcessing || sending;
+  const chatBusy = isProcessing || sending || leaderRunActive;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
   const ensureDuplexSession = useCallback(async () => {
     if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
@@ -193,10 +204,10 @@ export function DesignerChatPanel() {
   }, [sessionId]);
 
   useEffect(() => {
-    if (isProcessing || !stopRequestedRef.current) return;
+    if (canStop || !stopRequestedRef.current) return;
     stopRequestedRef.current = false;
     useDesignerRunStore.getState().applyLeaderActivity(null);
-  }, [isProcessing]);
+  }, [canStop]);
 
   const limitError = useCallback(
     (kind: DesignerReferenceKind) => {
@@ -309,13 +320,23 @@ export function DesignerChatPanel() {
     setAttachError('');
     stopRequestedRef.current = true;
     const runStore = useDesignerRunStore.getState();
-    const leaderRunActive = runStore.isRunning && runStore.run?.metadata?.trigger_source === 'leader';
-    // Cancel through the engine first: pausing the leader kills its trigger
-    // task outright, skipping the abort that unwinds the run cleanly.
-    void (leaderRunActive ? runStore.cancel(domainGraph) : Promise.resolve())
-      .then(() =>
-        webClient.request('chat.interrupt', { session_id: sessionId, intent: 'pause', mode: DESIGNER_TEAM_MODE }),
-      )
+    const cancelLeaderRun =
+      runStore.isRunning && runStore.run?.metadata?.trigger_source === 'leader';
+    const interruptChat = Boolean(
+      useChatStore.getState().getRuntime(sessionId)?.isProcessing,
+    );
+    // Cancel the canvas autorun first: pausing the leader alone can kill its
+    // trigger task without unwinding the run. Skip chat.interrupt when the
+    // leader turn already finished and only child nodes are still running.
+    void (cancelLeaderRun ? runStore.cancel(domainGraph) : Promise.resolve())
+      .then(() => {
+        if (!interruptChat) return undefined;
+        return webClient.request('chat.interrupt', {
+          session_id: sessionId,
+          intent: 'pause',
+          mode: DESIGNER_TEAM_MODE,
+        });
+      })
       .catch(() => {
         stopRequestedRef.current = false;
         setAttachError(t('designer.chat.stopError'));
@@ -481,7 +502,7 @@ export function DesignerChatPanel() {
                 stop: t('chat.taskFullDuplexStop'),
               }}
               fallback={
-                isProcessing ? (
+                canStop ? (
                   <button
                     type="button"
                     className="designer-chat-panel__send"
