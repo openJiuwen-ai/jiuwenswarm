@@ -908,8 +908,8 @@ class TeamManager:
             (".completed", ".cancelled", ".verified")
         )
 
+    @staticmethod
     def _publish_terminal_team_task_live(
-        self,
         session_id: str,
         event: dict[str, Any],
         *,

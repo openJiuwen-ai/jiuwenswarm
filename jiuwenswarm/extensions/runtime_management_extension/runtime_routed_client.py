@@ -757,8 +757,6 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                     )
                     self._session_keepalives.pop(session_id, None)
                     return
-        except asyncio.CancelledError:
-            raise
         except Exception:  # noqa: BLE001 - 后续期失败只停掉自己
             logger.warning(
                 "[RuntimeRouted] deferred keepalive failed: session=%s",
