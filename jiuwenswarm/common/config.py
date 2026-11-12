@@ -1950,6 +1950,38 @@ def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict
     return merged
 
 
+#: Vendor identity fields in ``model_client_config``. They must follow the
+#: explicit payload on model edits instead of the omitted-key-preserved rule.
+_VENDOR_IDENTITY_KEYS = ("vendor_key", "plan", "endpoint_profile")
+
+
+def _clear_stale_vendor_identity(merged: dict[str, Any], update: dict[str, Any]) -> None:
+    """Drop vendor identity the update payload no longer declares (#6440).
+
+    The edit dialog expresses "switch to the custom vendor" by *omitting*
+    ``vendor_key`` / ``plan`` / ``endpoint_profile`` from the payload, while
+    the generic merge preserves omitted keys to protect write-only settings.
+    Without this, a DeepSeek entry edited into a custom provider keeps its
+    stale ``vendor_key: deepseek`` identity: the UI re-resolves the DeepSeek
+    preset on reopen and the next save overwrites the custom endpoint back
+    with the preset one.
+
+    The triplet is one identity unit: when the payload declares any of its
+    keys the merged identity stays; when it declares none, all are cleared
+    (partial payloads keep their remaining fields from the current entry).
+    """
+    mcc = update.get("model_client_config")
+    if not isinstance(mcc, dict):
+        return
+    merged_mcc = merged.get("model_client_config")
+    if not isinstance(merged_mcc, dict):
+        return
+    if any(mcc.get(key) for key in _VENDOR_IDENTITY_KEYS):
+        return
+    for key in _VENDOR_IDENTITY_KEYS:
+        merged_mcc.pop(key, None)
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
     model_config = saved.get("model_config_obj")
@@ -1972,7 +2004,10 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
         for index, current in enumerate(defaults):
             if current.get("model_id") == saved["model_id"]:
                 _protect_model_key(saved, current)
+                incoming = saved
                 saved = _merge_model_update(current, saved)
+                # 供应商身份跟随本次 payload：未携带即清除（#6440）。
+                _clear_stale_vendor_identity(saved, incoming)
                 defaults[index] = saved
                 break
         else:
