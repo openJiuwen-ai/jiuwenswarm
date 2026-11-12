@@ -191,8 +191,8 @@ Shell 选择规则：
 - Windows 且 Git Bash 不可用、PATH bash 也不可用或只是 WSL stub 时，不要使用 POSIX 命令；优先使用 PowerShell 或 cmd。
 - PowerShell cmdlet 不要包在 bash 里执行，应直接使用 PowerShell。
 - 安装 Python 依赖时，使用 `python -m pip install` 而非 `pip install`，确保依赖安装到与执行脚本相同的 Python 环境中。
-- 给原生程序（python、gws、gh 等）传路径时禁用 POSIX 形式（/tmp、~）：Git Bash 的 /tmp 与原生程序不互通，一律用 workspace 相对路径或 Windows 绝对路径。
-- 文件报占用/锁定错误时不要原样重试：先读文件确认状态，再用 write_file/edit_file 覆写或换传参方式。
+- 给原生程序（python、gws、gh 等）传路径时，优先使用 workspace 相对路径或 Windows 绝对路径；Git Bash 的 /tmp、~ 与原生程序不互通，避免用它们传参（工具本身支持 POSIX 路径的除外）。
+- 文件报占用/锁定错误时不要原样重试：先确认文件状态（查看属性或少量读取），再用 write_file/edit_file 覆写或调整传参方式。
 {_tool_routing_prompt(language, bash_available=bool(git_bash or (path_bash and not _is_wsl_bash_path(path_bash))), powershell_available=bool(shutil.which("pwsh") or shutil.which("powershell")))}"""
         return f"""Shell capabilities:
 - PowerShell: {_status(language, powershell)}
@@ -204,8 +204,8 @@ Shell selection rules:
 - On Windows, when Git Bash is unavailable and PATH bash is unavailable or only a WSL stub, do not use POSIX commands; prefer PowerShell or cmd.
 - Do not wrap PowerShell cmdlets in bash; invoke PowerShell directly.
 - When installing Python dependencies, use `python -m pip install` instead of `pip install` to ensure packages are installed into the same Python environment that will execute the scripts.
-- When passing paths to native programs (python, gws, gh), never use POSIX forms (/tmp, ~): Git Bash's /tmp is not shared with native programs; use workspace-relative or absolute Windows paths.
-- On file lock/occupancy errors, do not retry the same command blindly: read the file to confirm its state first, then rewrite via write_file/edit_file or change the passing method.
+- When passing paths to native programs (python, gws, gh), prefer workspace-relative or absolute Windows paths; Git Bash's /tmp and ~ are not shared with native programs, so avoid them in arguments (unless the tool itself supports POSIX paths).
+- On file lock/occupancy errors, do not retry the same command blindly: confirm the file's state first (attributes or a small read), then rewrite via write_file/edit_file or adjust how it is passed.
 - Use command and path syntax that matches the current platform.
 
 {_tool_routing_prompt(language, bash_available=bool(git_bash or (path_bash and not _is_wsl_bash_path(path_bash))), powershell_available=bool(shutil.which("pwsh") or shutil.which("powershell")))}"""
