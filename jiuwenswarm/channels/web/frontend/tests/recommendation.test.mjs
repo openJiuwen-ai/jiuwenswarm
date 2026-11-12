@@ -442,6 +442,33 @@ function scopeParams(request) {
   return scope;
 }
 
+test('enterprise skips topic UI, reads, subscriptions and foreground checks', async () => {
+  const previousEdition = window.__JIUWENSWARM_EDITION__;
+  const originalOn = webClient.on;
+  const subscriptions = [];
+  window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  webClient.on = function (event, handler) {
+    subscriptions.push(event);
+    return originalOn.call(this, event, handler);
+  };
+  let panel;
+  try {
+    panel = await mountWelcome('enterprise-topic-disabled', { holdResponses: true });
+    await panel.rerender({ isConnected: false });
+    await panel.rerender({ isConnected: true });
+    await setPageVisibility('hidden');
+    await setPageVisibility('visible');
+    assert.equal(document.querySelector('[data-testid="chat-panel-welcome-suggestions"]'), null);
+    assert.deepEqual(subscriptions.filter((event) => event.startsWith('topic_starters.')), []);
+    assert.deepEqual(sent.filter((frame) => frame.method.startsWith('topic_starters.')), []);
+  } finally {
+    if (panel) await panel.unmount();
+    webClient.on = originalOn;
+    if (previousEdition === undefined) delete window.__JIUWENSWARM_EDITION__;
+    else window.__JIUWENSWARM_EDITION__ = previousEdition;
+  }
+});
+
 test('a pool that answers at once is shown without a static entrance first', async () => {
   const panel = await mountWelcome('sess-no-flash', { holdResponses: true });
   try {
