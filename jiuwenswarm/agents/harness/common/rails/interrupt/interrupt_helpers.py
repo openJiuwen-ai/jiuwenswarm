@@ -629,6 +629,12 @@ def build_permission_rail(
                         "ask 需有效 A4P cron intent token，或将工具设为 allow/deny"
                     )
 
+            from jiuwenswarm.runtime.client_tools import supports_host_approval
+            if channel == "ag-ui" or not supports_host_approval(req.ctx):
+                return PermissionConfirmResponse(
+                    approved=False, auto_confirm=False,
+                    feedback="[PERMISSION_DENIED] This channel has no human approval interface.",
+                )
             if channel != "acp":
                 return "interrupt"
 

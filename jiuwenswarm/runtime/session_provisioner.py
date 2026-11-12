@@ -171,6 +171,8 @@ class SessionCreateInput:
     npc_session: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.role_instructions, str):
+            raise SessionProvisionError("role_instructions must be text", code="BAD_REQUEST")
         if self.client_app:
             # A client app creates its conversations with its id as ``client_app``.
             from jiuwenswarm.server.client_attachments.registry import client_apps
@@ -660,7 +662,7 @@ class RuntimeSessionProvisioner:
         try:
             try:
                 execution_profile, role_instructions = normalize_execution_profile(
-                    provision_input.execution_profile, provision_input.role_instructions,
+                    provision_input.execution_profile, provision_input.role_instructions, channel_id=channel_id,
                 )
                 npc_team: dict[str, Any] | None = None
                 if provision_input.role_tools:
@@ -852,6 +854,11 @@ class RuntimeSessionProvisioner:
                     )
                 if any(member["name"] in RESERVED_MEMBER_NAMES | {"leader"} for member in npc_team["members"]):
                     raise SessionProvisionError("NPC Team member name is reserved", code="BAD_REQUEST")
+            if channel_id == "ag-ui" and (
+                final_work_mode != "work" or is_swarm or canonical_mode not in {"agent", "agent.work.normal"}
+                or provision_input.cron_id
+            ):
+                raise SessionProvisionError("AG-UI requires an ordinary Work session", code="BAD_REQUEST")
             from jiuwenswarm.common.config import get_config
             from agent_gateway.common.model_selection import ModelSelection
             from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
@@ -940,6 +947,8 @@ class RuntimeSessionProvisioner:
                 if _stored_profile_conflicts(
                     stored, execution_profile, role_instructions, npc_team, npc_session,
                 ):
+                    if channel_id == "ag-ui" and stored.get("role_instructions", "") != role_instructions:
+                        raise SessionProvisionError("create_token has different role instructions", code="CONFLICT")
                     raise SessionProvisionError("create_token conflicts with the session execution profile")
                 result = SessionCreateResult(
                     channel_id=channel_id,

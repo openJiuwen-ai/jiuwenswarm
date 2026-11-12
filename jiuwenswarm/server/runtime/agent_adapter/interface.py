@@ -243,7 +243,7 @@ def _person_drove_turn(request: AgentRequest, *, is_team_mode: bool) -> bool:
     Background recommendation, team members, Heartbeat, cron and another Session's Agent start
     turns the person did not ask for (topic spec D4).
     """
-    if is_team_mode or _session_message_owns_completion(request):
+    if request.channel_id == "ag-ui" or is_team_mode or _session_message_owns_completion(request):
         return False
     if is_interrupt_resume_payload(request.params):
         return True
@@ -2009,7 +2009,7 @@ class JiuWenSwarm:
         }
         if _request_debug:
             inputs["_request_debug"] = True
-        skip_a2ui = bool(
+        skip_a2ui = request_channel == "ag-ui" or bool(
             request.metadata and request.metadata.get("skip_a2ui") is True
         )
         if skip_a2ui:
@@ -2803,6 +2803,14 @@ class JiuWenSwarm:
         plan_language = str(params.get("plan_language") or "").strip().lower()
         return plan_language in {"cn", "en"}
 
+    @staticmethod
+    def _validate_application_channel(request: AgentRequest) -> None:
+        from jiuwenswarm.runtime.client_tools import validate_application_request
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+        if request.session_id:
+            validate_application_request(request, get_session_metadata(request.session_id, enable_writeback=False))
+
     @history_context_request
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
@@ -2858,6 +2866,16 @@ class JiuWenSwarm:
 
         支持多 session 并发执行，同 session 内任务按先进后出顺序执行.
         """
+        self._validate_application_channel(request)
+        if request.channel_id == "ag-ui" and request.req_method == ReqMethod.CHAT_SEND:
+            payload = {}
+            async with aclosing(self._process_message_stream(request)) as stream:
+                async for chunk in stream:
+                    payload = chunk.payload or payload
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=payload.get("state") in {"completed", "waiting_client_tools"}, payload=payload,
+            )
         if request.req_method == ReqMethod.CHAT_CANCEL:
             return await self._process_interrupt(request)
 
@@ -3390,6 +3408,7 @@ class JiuWenSwarm:
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """Dispatch execution through request-owned projection/history services."""
+        self._validate_application_channel(request)
         from jiuwenswarm.server.runtime.agent_adapter.stream_execution import (
             StreamExecutionPorts, StreamExecutionService,
         )
@@ -3953,6 +3972,7 @@ class JiuWenSwarm:
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """Delegate continuation execution and persistence to its owned service."""
+        self._validate_application_channel(request)
         from jiuwenswarm.server.runtime.agent_adapter.control_input_execution import (
             ControlInputExecutionService, ControlInputPorts,
         )

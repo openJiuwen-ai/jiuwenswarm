@@ -159,7 +159,7 @@ def message_from_record(record: Mapping[str, Any], *, prefer_stored: bool = True
     name = None
     content = record.get("content_blocks", record.get("content", ""))
     calls, tool_id = None, None
-    if event_type == "chat.tool_result":
+    if event_type == "chat.tool_result" or record.get("role") == "tool":
         kind, name, tool_id = "tool", record.get("tool_name") or record.get("name"), record.get("tool_call_id")
         rendered = record.get("rendered_result")
         if rendered is None:
@@ -171,7 +171,7 @@ def message_from_record(record: Mapping[str, Any], *, prefer_stored: bool = True
                 content = json.dumps(rendered, ensure_ascii=False)
         else:
             content = rendered if isinstance(rendered, str) else json.dumps(rendered, ensure_ascii=False)
-    elif event_type == "chat.tool_call":
+    elif event_type in {"chat.tool_call", "chat.client_tool_request"}:
         calls = copy.deepcopy(record.get("tool_calls"))
         if calls is None:
             calls = [{
@@ -196,9 +196,9 @@ def classify_record(
     if source == "extension":
         return "note", SessionAppendOrigin("extension", record.get("extension_package_id"), "ops.session.append")
     event_type = record.get("event_type", "")
-    if event_type == "chat.tool_result":
+    if event_type == "chat.tool_result" or record.get("role") == "tool":
         door, kind, name = "tool-result", "tool", record.get("tool_name") or record.get("name")
-    elif event_type == "chat.tool_call":
+    elif event_type in {"chat.tool_call", "chat.client_tool_request"}:
         door, kind, name = "tool-call", "model", model_name
     elif event_type in ("chat.attachment", "attachment"):
         door, kind, name = "attachment", "platform", None

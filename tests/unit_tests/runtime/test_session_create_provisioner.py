@@ -335,6 +335,33 @@ async def test_npc_team_token_retry_conflict_is_rejected(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_application_create_persists_role_instructions(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    provisioner = _provisioner(state)
+    prepared = await provisioner.prepare_session_create(_input(
+        channel_id="ag-ui",
+        role_instructions="Help with the counter.",
+    ))
+    result = prepared.result
+    metadata = get_session_metadata(result.session_id, cache_bust=True)
+    assert "execution_policy" not in metadata
+    assert "capabilities" not in metadata
+    assert metadata["role_instructions"] == "Help with the counter."
+    reused = await provisioner.prepare_session_create(_input(
+        channel_id="ag-ui",
+        role_instructions="Help with the counter.",
+    ))
+    assert reused.result.created is False
+    with pytest.raises(SessionProvisionError, match="different role instructions"):
+        await provisioner.prepare_session_create(_input(channel_id="ag-ui"))
+    await provisioner.abort_session_provision(reused)
+    await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
 async def test_create_prepares_metadata_and_commits_kvc_after_delivery(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
@@ -1061,3 +1088,12 @@ async def test_project_work_mode_mismatch_keeps_exact_legacy_error(
     assert str(captured.value) == (
         f"work_mode mismatch: project is 'code'{' ' * 37}but request specified 'work'"
     )
+
+
+@pytest.mark.asyncio
+async def test_application_create_rejects_team_before_creation(monkeypatch, tmp_path):
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    provisioner = _provisioner(state)
+    with pytest.raises(SessionProvisionError, match="ordinary Work"):
+        await provisioner.prepare_session_create(_input(channel_id="ag-ui", is_swarm=True))

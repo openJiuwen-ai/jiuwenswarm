@@ -357,6 +357,8 @@ class HistoryCommitter:
             await self.persist_pending_final_text()
             await self.persist_pending_reasoning()
         extra = {key: value for key, value in payload.items() if key not in ("event_type", "content")}
+        if event_type == "chat.client_tool_request":
+            extra["tool_call_id"] = extra.pop("request_id", "")
         record = self._assistant_record(
             event_type, payload.get("content") or payload.get("error") or "",
             self._decorate_record(event_type, extra, payload),

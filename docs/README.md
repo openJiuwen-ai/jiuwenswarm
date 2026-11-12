@@ -199,6 +199,11 @@
       <td width="50%">Gateway 与 AgentServer 之间的统一请求信封协议。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>AG-UI</strong></td>
+      <td width="28%"><a href="zh/AG-UI.md">宿主接入</a> / <a href="en/AG-UI.md">Host integration</a></td>
+      <td width="50%">通过 Gateway 接入文本对话、应用状态与客户端工具。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>A2A</strong></td>
       <td width="28%"><a href="zh/A2A.md">A2A</a></td>
       <td width="50%">Agent to Agent 通信协议与接入流程。</td>

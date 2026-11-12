@@ -27,6 +27,8 @@ async def run_history_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> A
                 if receipt is not None and receipt.status == "rejected":
                     raise SessionHistoryError("APPEND_REJECTED")
                 return None
+        if fn is append_history_record and kwargs.get("channel_id") == "ag-ui":
+            kwargs["wait_for_write"] = True
         return await asyncio.to_thread(fn, *args, **kwargs)
 
     task = asyncio.create_task(operation())

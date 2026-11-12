@@ -1320,12 +1320,15 @@ def init_session_metadata(
         metadata["client_app"] = client_app
     from jiuwenswarm.runtime.app_role import normalize_execution_profile, normalize_npc_team
 
-    execution_profile, role_instructions = normalize_execution_profile(execution_profile, role_instructions)
+    execution_profile, role_instructions = normalize_execution_profile(
+        execution_profile, role_instructions, channel_id=channel_id,
+    )
     if npc_session or execution_profile == APP_ROLE_PROFILE:
         metadata["npc_session"] = True
+    if role_instructions:
+        metadata["role_instructions"] = role_instructions
     if execution_profile != "default":
         metadata["execution_profile"] = execution_profile
-        metadata["role_instructions"] = role_instructions
         normalized_team = normalize_npc_team(npc_team)
         if normalized_team is not None:
             metadata["npc_team"] = normalized_team

@@ -265,6 +265,27 @@ def test_session_create_handler_is_runtime_adapter_only() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["handle_session_create_for_test", "handle_ws_unary_for_test"])
+async def test_client_execution_contract_survives_session_create_wire(entry):
+
+    trace = []
+    runtime = CreateRuntime(trace)
+    server = make_server(runtime)
+    ws = RecordingWebSocket(trace)
+    request = AgentRequest(
+        request_id="client-create", channel_id="ag-ui", req_method=ReqMethod.SESSION_CREATE,
+        params={"mode": "agent", "create_token": "client-token",
+                "role_instructions": "Help the application."},
+    )
+    await getattr(server, entry)(ws, request, asyncio.Lock())
+    response = parse_agent_server_wire_unary(ws.sent[0])
+    assert response.ok
+    assert "capabilities" not in response.payload
+    assert "execution_policy" not in response.payload
+    assert runtime.inputs[0].role_instructions == "Help the application."
+
+
+@pytest.mark.asyncio
 async def test_success_preserves_claim_metadata_team_send_kvc_order() -> None:
     trace: list[str] = []
     runtime = CreateRuntime(trace)

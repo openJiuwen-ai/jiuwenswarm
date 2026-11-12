@@ -4636,6 +4636,7 @@ class JiuWenSwarmDeepAdapter:
         if smart_lifecycle and (
             self._is_interrupt_resume_dispatch(request.params)
             and cached is None
+            and not (request.channel_id == "ag-ui" and is_client_tool_resume(request.params))
         ):
             raise RootPermissionQueueError("permission_resume_owner_missing")
 
@@ -6172,6 +6173,11 @@ class JiuWenSwarmDeepAdapter:
             ],
             should_add_general_purpose,
         )
+        if self._channel_id == "ag-ui":
+            from jiuwenswarm.runtime.client_tools import ApplicationInteractionRail
+            for spec in subagents:
+                if isinstance(spec, SubAgentConfig):
+                    spec.rails = [*(spec.rails or []), ApplicationInteractionRail()]
         return subagents or None, should_add_general_purpose
 
     @staticmethod
@@ -11414,7 +11420,8 @@ class JiuWenSwarmDeepAdapter:
             PromptSuggestionForkRail,
         )
 
-        rails_list.append(PromptSuggestionForkRail())
+        if self._channel_id != "ag-ui":
+            rails_list.append(PromptSuggestionForkRail())
         stage_timer.mark("prompt_suggestion_rail")
 
         # Observability rail: opens an agent-layer span (agent.<name>.task_iteration.<n>
@@ -11715,6 +11722,10 @@ class JiuWenSwarmDeepAdapter:
                 root_context_rail=group["_root_context_rail"],
                 stream_event_rail=group["_stream_event_rail"], permission_rail=group["_permission_rail"],
             )
+        if self._channel_id == "ag-ui":
+            from jiuwenswarm.runtime.client_tools import ApplicationInteractionRail
+
+            rails.insert(0, ApplicationInteractionRail())
         return rails
 
     def _permission_interrupt_rail_infos(
@@ -11788,7 +11799,7 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None = None,
     ) -> bool:
         """Return whether persistent subagent runtime tools should be enabled."""
-        if not getattr(self, "_subagent_runtime_supported", True):
+        if self._channel_id == "ag-ui" or not getattr(self, "_subagent_runtime_supported", True):
             return False
         return is_subagent_runtime_enabled(config_base or get_config())
 
@@ -16677,6 +16688,37 @@ class JiuWenSwarmDeepAdapter:
                 and not (request.channel_id == "video_tool"
                          and isinstance(inputs.get("query"), InteractiveInput))):
             raise RuntimeError("全双工工具任务正在执行，请等待任务完成后再发送文字消息。")
+        if request.channel_id == "ag-ui":
+            from jiuwenswarm.runtime.client_tools import (
+                APPLICATION_RUN_REF, _APPLICATION_RUNS, parse_client_tools,
+                replace_application_tools, validate_complete_client_answers,
+            )
+            pending = await self.pending_interactions(request.session_id)
+            resume = is_client_tool_resume(request.params)
+            if pending or resume:
+                if not resume:
+                    raise ValueError("pending application tools require their complete answers")
+                validate_complete_client_answers(request.params.get("answers"), pending)
+            reference = inputs.get("run", {}).get("context", {}).get("extra", {}).get(APPLICATION_RUN_REF)
+            data = _APPLICATION_RUNS.get(reference)
+            if data is None:
+                raise ValueError("application invocation context is unavailable")
+            data["agent"] = self._instance
+            owned = getattr(self._instance, "_application_client_cards", {})
+            for tool in data["tools"]:
+                existing = self._instance.ability_manager.get(tool.card.name)
+                if existing is not None and existing is not owned.get(tool.card.name):
+                    raise ValueError(f"client tool conflicts with an existing tool: {tool.card.name}")
+            if resume and not owned:
+                from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+                metadata = get_session_metadata(request.session_id, enable_writeback=False)
+                replace_application_tools(self._instance, parse_client_tools(metadata.get("application_client_tools", [])))
+            if not resume:
+                replace_application_tools(self._instance, data["tools"])
+            from jiuwenswarm.server.runtime.session.session_metadata import patch_session_metadata
+            patch_session_metadata(request.session_id, {"application_execution": {
+                "request_id": request.request_id, "state": "preparing",
+            }})
         if is_client_tool_resume(request.params):
             validate_client_tool_answers(self._loop_session_of_instance(), inputs.get("query"))
         if (self._enable_auto_permission
@@ -16934,7 +16976,7 @@ class JiuWenSwarmDeepAdapter:
     ) -> "AgentResponse":
         return await self._get_execution_driver().interrupt_interaction(request, intent, new_input)
 
-    def _cancel_scheduler_running_tasks(self, execution_task: asyncio.Task | None = None) -> None:
+    def _cancel_scheduler_running_tasks(self, execution_task: asyncio.Task | None = None) -> set[asyncio.Task]:
         """Cancel in-flight asyncio.Tasks in the Controller's TaskScheduler.
 
         Cooperative abort (rail.abort + instance.abort) only stops at checkpoints,
@@ -16960,11 +17002,13 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] interrupt: 已取消 %d 个 TaskScheduler 运行中的任务",
                     cancelled_count,
                 )
+            return executions
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] _cancel_scheduler_running_tasks 失败: %s",
                 exc,
             )
+            return set()
 
     async def abort_on_gateway_disconnect(
         self,
@@ -18338,14 +18382,14 @@ class JiuWenSwarmDeepAdapter:
             tool_permissions=tuple(tool_levels.items()) if isinstance(tool_levels, dict) else None,
             credential_context=self._scoped_login_auth(request),
             supports_permission_approval=(
-                request_params.get("supports_permission_approval",
+                request.channel_id != "ag-ui" and request_params.get("supports_permission_approval",
                                    request_params.get("supports_user_interaction", True)) is True
             ),
         )
         permission_rail = self._permission_rail
         approval_rail = (
             getattr(permission_rail, "base_rail", permission_rail)
-            if request.channel_id == "process_cli" else None
+            if request.channel_id in {"process_cli", "ag-ui"} else None
         )
         previous_approval_support = getattr(approval_rail, "supports_permission_approval", None)
         previous_rail_levels = (
@@ -18480,6 +18524,15 @@ class JiuWenSwarmDeepAdapter:
     async def _process_message_with_plugin_reservation(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AgentResponse:
+        if request.channel_id == "ag-ui":
+            payload = {}
+            async with aclosing(self.process_message_stream_impl(request, inputs)) as stream:
+                async for chunk in stream:
+                    payload = chunk.payload or payload
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=payload.get("state") in {"completed", "waiting_client_tools"}, payload=payload,
+            )
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
 
@@ -19226,9 +19279,137 @@ class JiuWenSwarmDeepAdapter:
                 request.session_id or "default", request_id=request.request_id,
             ):
                 async with self._get_hook_services().bind_task_execution(request, self, inputs):
-                    async with aclosing(self._process_message_stream_impl(request, inputs)) as stream:
+                    stream_factory = self._process_message_stream_impl
+                    if request.channel_id == "ag-ui" and self._is_session_scoped_adapter:
+                        stream_factory = self._stream_application_run
+                    async with aclosing(stream_factory(request, inputs)) as stream:
                         async for chunk in stream:
                             yield chunk
+
+    async def _stream_application_run(
+        self, request: AgentRequest, inputs: dict[str, Any],
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """Project application execution facts around the existing session stream."""
+        import uuid
+        from jiuwenswarm.runtime.client_tools import (
+            APPLICATION_RUN_REF, _APPLICATION_RUNS, parse_client_tools,
+        )
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+        reference = uuid.uuid4().hex
+        data = None
+        accepted = False
+        try:
+            metadata = get_session_metadata(request.session_id, enable_writeback=False)
+            from jiuwenswarm.runtime.client_tools import validate_application_request
+            validate_application_request(request, metadata)
+            params = request.params or {}
+            context = params.get("run_context", {})
+            if not isinstance(context, dict):
+                raise ValueError("run_context must be an object")
+            invocation_data = {key: context[key] for key in ("state", "context") if key in context}
+            invocation_data = json.loads(json.dumps(invocation_data, ensure_ascii=False, allow_nan=False))
+            tools = parse_client_tools(params.get("client_tools", []))
+            data = {
+                "tools": tools, "data": invocation_data, "agent": self._instance,
+                "role_instructions": metadata.get("role_instructions", ""),
+                "previous_names": set(getattr(self._instance, "_application_client_cards", {})),
+            }
+            _APPLICATION_RUNS[reference] = data
+            inputs = dict(inputs)
+            run = dict(inputs.get("run") or {})
+            context = dict(run.get("context") or {})
+            extra = dict(context.get("extra") or {})
+            extra[APPLICATION_RUN_REF] = reference
+            context["extra"] = extra
+            run["context"] = context
+            inputs["run"] = run
+            inputs["supports_user_interaction"] = False
+            from jiuwenswarm.server.runtime.session.session_metadata import patch_session_metadata
+            async with aclosing(self._process_message_stream_impl(request, inputs)) as stream:
+                async for chunk in stream:
+                    payload = chunk.payload or {}
+                    if payload.get("event_type") == "runtime.accepted" and not accepted:
+                        accepted = True
+                        current = get_session_metadata(request.session_id, enable_writeback=False).get("application_execution", {})
+                        if current.get("state") != "cancelled" or current.get("request_id") != request.request_id:
+                            patch_session_metadata(request.session_id, {"application_execution": {
+                                "request_id": request.request_id, "state": "accepted",
+                            }})
+                        yield AgentResponseChunk(
+                            request_id=request.request_id, channel_id=request.channel_id,
+                            payload={"event_type": "execution.status", "request_id": request.request_id,
+                                     "state": "accepted"}, is_complete=False,
+                        )
+                    elif payload.get("event_type") == "chat.error":
+                        data["error"] = payload.get("error") or "execution failed"
+                    elif payload.get("event_type") == "chat.usage_summary":
+                        data["usage"] = payload.get("usage", {})
+                    if not chunk.is_complete:
+                        yield chunk
+            if not accepted:
+                raise RuntimeError(data.get("error") or "input was not accepted")
+            if data.get("error"):
+                raise RuntimeError(data["error"])
+            fact = get_session_metadata(request.session_id, enable_writeback=False).get("application_execution", {})
+            if fact.get("request_id") == request.request_id and fact.get("state") == "cancelled":
+                yield AgentResponseChunk(
+                    request_id=request.request_id, channel_id=request.channel_id, is_complete=True,
+                    payload={"event_type": "execution.status", "request_id": request.request_id,
+                             "state": "cancelled"},
+                )
+                return
+            result = data.get("round_result")
+            if not isinstance(result, dict) or result.get("result_type") in {"error", "goal_error"}:
+                raise RuntimeError("native round did not report success")
+            pending = await self.pending_interactions(request.session_id)
+            if any(item.get("event_type") != "chat.client_tool_request" for item in pending):
+                raise RuntimeError("unsupported host interaction")
+            session = self._active_loop_session()
+            if session is None:
+                raise RuntimeError("native session is unavailable")
+            await session.commit()
+            from jiuwenswarm.server.runtime.session.session_metadata import patch_session_metadata
+
+            patch_session_metadata(request.session_id, {
+                "application_client_tools": params.get("client_tools", []),
+            })
+            state = "waiting_client_tools" if pending else "completed"
+            patch_session_metadata(request.session_id, {"application_execution": {
+                "request_id": request.request_id, "state": state,
+            }})
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id, is_complete=True,
+                payload={"event_type": "execution.status", "request_id": request.request_id,
+                         "state": state, "usage": data.get("usage", {}),
+                         "pending_client_tools": [
+                             {"request_id": item["request_id"], "interrupt_id": item["interrupt_id"]}
+                             for item in pending
+                         ]},
+            )
+        except (asyncio.CancelledError, GeneratorExit):
+            raise
+        except Exception as exc:
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id, is_complete=True,
+                payload={"event_type": "execution.status", "request_id": request.request_id,
+                         "state": "failed" if accepted or (data and data.get("submitted")) else "rejected", "error": str(exc)},
+            )
+        finally:
+            try:
+                if data is not None and data.get("submitted") and data.get("round_result") is None:
+                    stopping = self._cancel_scheduler_running_tasks()
+                    await self._instance.cancel_round(reason="application_stream_closed")
+                    stopping.update(self._cancel_scheduler_running_tasks())
+                    if stopping:
+                        _, remaining = await asyncio.wait(stopping, timeout=10)
+                        if remaining:
+                            raise RuntimeError("application execution did not stop")
+            finally:
+                _APPLICATION_RUNS.pop(reference, None)
+                builder = getattr(self._instance, "system_prompt_builder", None)
+                if builder is not None:
+                    builder.remove_section("application.invocation")
 
     async def _process_message_stream_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -20410,6 +20591,15 @@ class JiuWenSwarmDeepAdapter:
             # has handed the message over, so the session exists now — persist
             # it, or a HITL resume that outlives this adapter loses the turn.
             await self._turn_tracker.sync(self._active_loop_session())
+            if request.channel_id == "ag-ui":
+                from jiuwenswarm.runtime.client_tools import APPLICATION_RUN_REF, _APPLICATION_RUNS
+                reference = inputs.get("run", {}).get("context", {}).get("extra", {}).get(APPLICATION_RUN_REF)
+                application = _APPLICATION_RUNS.get(reference)
+                if application is not None and application.get("submitted"):
+                    yield AgentResponseChunk(
+                        request_id=rid, channel_id=cid,
+                        payload={"event_type": "runtime.accepted", "request_id": rid}, is_complete=False,
+                    )
 
             def observe_runner_stream_chunk(
                 chunk: Any,

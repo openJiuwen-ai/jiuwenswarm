@@ -1421,10 +1421,10 @@ class AgentRuntime:
         team_paused = False
         lifecycle_pause_result = None
         target_request_id = str(params.get("target_request_id") or "").strip()
-        # Only the web cron path fences a specific execution. Other transports
+        # Web cron and application Runs fence a specific execution. Other transports
         # (for example process-cli request-scoped cancels) must keep the
         # adapter's semantic-interrupt path before the coordinator cancel.
-        if target_request_id and request.channel_id == "web":
+        if target_request_id and request.channel_id in {"web", "ag-ui"}:
             from jiuwenswarm.common.schema.agent import AgentResponse
 
             expected_id = str(params.get("expected_execution_id") or "").strip()
@@ -1460,6 +1460,18 @@ class AgentRuntime:
                     request.session_id, reason="cron request cancellation",
                     generation=snapshot.generation, expected_request_id=target_request_id,
                 )
+            if request.channel_id == "ag-ui":
+                from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+                fact = get_session_metadata(request.session_id, enable_writeback=False).get("application_execution", {})
+                if (fact.get("request_id") == target_request_id
+                        and fact.get("state") in {"preparing", "accepted", "waiting_client_tools"}
+                        and (not expected_id or owners)):
+                    from jiuwenswarm.runtime.request import cancel_request
+                    manager = await self.resolve_manager(request)
+                    native_response = await cancel_request(manager, request, allow_create=True)
+                    producer_stopped = native_response.ok and native_response.payload.get("success") is True
+                elif not owners or expected_id:
+                    producer_stopped = False
             result = None
             if targets:
                 results = []
@@ -1492,7 +1504,7 @@ class AgentRuntime:
                             )
             stop_confirmed = (
                 producer_stopped and not result.timed_out
-                if result is not None else bool(owners)
+                if result is not None else (producer_stopped if request.channel_id == "ag-ui" else bool(owners))
             )
             if stop_confirmed and stopped_at is not None and targets:
                 question_ids = set()
@@ -2158,7 +2170,7 @@ class AgentRuntime:
                 self._session_coordinator.bind_agent(
                     request.session_id or "default", request.request_id, agent,
                 )
-                if not readonly_goal_get:
+                if not readonly_goal_get and channel_id != "ag-ui":
                     plan_result = await self._plan_controller.ensure_state(
                         request,
                         mode,
@@ -2901,7 +2913,7 @@ class AgentRuntime:
                 self._session_coordinator.bind_agent(
                     request.session_id or "default", request.request_id, agent,
                 )
-                if not readonly_goal_get:
+                if not readonly_goal_get and channel_id != "ag-ui":
                     plan_result = await self._plan_controller.ensure_state(
                         request,
                         mode,
@@ -4349,6 +4361,9 @@ class AgentRuntime:
             return request, {}
         if not isinstance(metadata, dict):
             return request, {}
+        from jiuwenswarm.runtime.client_tools import validate_application_request
+
+        validate_application_request(request, metadata)
         resolved_mode = metadata.get("mode")
         if not isinstance(resolved_mode, str) or not resolved_mode.strip():
             return request, metadata

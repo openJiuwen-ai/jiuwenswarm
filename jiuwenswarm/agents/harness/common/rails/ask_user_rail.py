@@ -368,6 +368,9 @@ class StructuredAskUserRail(AskUserRail):
         place of an answer. Quoting the shape to send is what breaks that cycle,
         so a rejection added later should quote one too.
         """
+        from jiuwenswarm.runtime.client_tools import supports_host_approval
+        if not supports_host_approval(ctx, self):
+            return self.reject(tool_result="[INTERACTION_UNAVAILABLE] Ask the user in ordinary text on this channel.")
         strict_initial_request = (
             self._strict_continuation_contract
             and user_input is None
