@@ -623,3 +623,55 @@ test('正文不参与工作折叠，后续总结不会把澄清问题收起', ()
   assert.ok(messageBranch.includes('renderAfterMessage?.(item.message)'));
   assert.doesNotMatch(messageBranch, /timeline-collapse|turnFoldable/);
 });
+
+function teamEventMessage(id, event, timestampMs) {
+  return {
+    id,
+    role: 'system',
+    content: `team.event:${JSON.stringify({ event })}`,
+    timestamp: new Date(timestampMs).toISOString(),
+  };
+}
+
+test('code team 成员协作消息不进入主对话框，面向用户的团队消息仍保留', () => {
+  const messages = [
+    { id: 'user', role: 'user', content: '实现这个函数', timestamp: new Date(U).toISOString() },
+    teamEventMessage('broadcast', {
+      type: 'team.message.broadcast',
+      message_id: 'broadcast',
+      from_member: 'coder',
+      content: '我先看一下调用方',
+      timestamp: U + 1_000,
+    }, U + 1_000),
+    teamEventMessage('member-p2p', {
+      type: 'team.message.p2p',
+      message_id: 'member-p2p',
+      from_member: 'coder',
+      to_member: 'reviewer',
+      content: '这里建议改成早返回',
+      timestamp: U + 2_000,
+    }, U + 2_000),
+    teamEventMessage('leader', {
+      type: 'team.message',
+      message_id: 'leader',
+      from_member: 'team_leader',
+      content: '函数已经改好了',
+      timestamp: U + 3_000,
+    }, U + 3_000),
+    teamEventMessage('p2p-user', {
+      type: 'team.message.p2p',
+      message_id: 'p2p-user',
+      from_member: 'coder',
+      to_member: 'user',
+      content: '需要你确认一下参数名',
+      timestamp: U + 4_000,
+    }, U + 4_000),
+  ];
+
+  for (const isTeam of [false, true]) {
+    const rendered = buildRenderItems(buildTimelineItems(messages, [], []), isTeam, false)
+      .filter((item) => item.type === 'message')
+      .map((item) => item.message.id);
+    assert.deepEqual(rendered, ['user', 'leader', 'p2p-user']);
+  }
+});
