@@ -90,6 +90,27 @@ def test_spa_fallback_serves_index_with_revalidate(static_server: str) -> None:
     assert headers["cache-control"] == "no-cache"
 
 
+def test_route_prefixed_static_paths_resolve_to_static_root(static_server: str) -> None:
+    # Electron builds reference assets relatively, so a full page reload on a
+    # nested route requests ``/chat/assets/...`` and must still reach the file.
+    status, headers, body = _request(static_server, "/chat/assets/index-Byh9IHKO.js")
+    assert status == 200
+    assert body == b"console.log(1)"
+    assert headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    status, headers, body = _request(static_server, "/chat/settings/logo.svg")
+    assert status == 200
+    assert body == b"<svg/>"
+    assert headers["cache-control"] == "no-cache"
+
+
+def test_route_prefixed_missing_asset_keeps_spa_fallback(static_server: str) -> None:
+    status, headers, body = _request(static_server, "/chat/assets/index-STALE123.js")
+    assert status == 200
+    assert body == b"<html>app</html>"
+    assert headers["cache-control"] == "no-cache"
+
+
 def test_conditional_request_for_asset_returns_304_with_immutable(static_server: str) -> None:
     _, headers, _ = _request(static_server, "/assets/index-Byh9IHKO.js")
     last_modified = headers["last-modified"]
