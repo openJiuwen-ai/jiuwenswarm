@@ -157,6 +157,7 @@
       "send": "Send",
       "running": "The design leader is working…",
       "stop": "Stop",
+      "stopping": "Stopping…",
       "stopError": "Could not stop. Please try again.",
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",

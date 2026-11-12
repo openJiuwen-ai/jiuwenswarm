@@ -630,7 +630,8 @@ function AppContent({
     if (activeNav === 'chat') {
       const { defaultModelName, setSelectedModelName } = useSessionStore.getState();
       const runtime = useSessionStore.getState().getRuntime(sessionId);
-      if (defaultModelName && !runtime?.selectedModelName) {
+      const missingModelName = Boolean(defaultModelName && !runtime?.selectedModelName);
+      if (missingModelName && !runtime?.selectedModelSelection) {
         useSessionStore.getState().ensureRuntime(sessionId);
         setSelectedModelName(sessionId, defaultModelName);
       }
