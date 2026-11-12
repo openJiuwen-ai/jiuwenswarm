@@ -506,6 +506,35 @@ def test_a_nameless_garment_block_belongs_to_nobody() -> None:
     assert "jumper" not in _wardrobe_for("char_3", cfg, graph)
 
 
+def test_a_seated_setting_repeats_its_layout_in_every_shot() -> None:
+    layout = "Long table down the centre; grandmother and grandfather at the left end."
+    cfg = {
+        "pipeline": "clip",
+        "on_screen": ["char_1", "char_2"],
+        "spatial_lock": {"layout": layout},
+        "clip_action": "They sit down.",
+    }
+
+    prompt = compose_practice_prompt(cfg=cfg, graph=None, action="They sit down.")
+
+    assert layout in prompt
+    assert "people stay in frame together: 1, 2." in prompt
+
+
+def test_structured_seats_do_not_repeat_the_layout_essay() -> None:
+    cfg = {
+        "pipeline": "clip",
+        "on_screen": ["char_1"],
+        "spatial_lock": {"layout": "Long table down the centre."},
+        "seat_anchors": {"char_1": {"zone": "left"}},
+        "clip_action": "Ruth waits.",
+    }
+
+    prompt = compose_practice_prompt(cfg=cfg, graph=None, action="Ruth waits.")
+
+    assert "Long table down the centre" not in prompt
+
+
 def test_a_shot_wardrobe_keyed_by_id_reaches_a_name_only_composer() -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
         _wardrobe_for,

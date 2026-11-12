@@ -59,6 +59,8 @@ _PHRASES: dict[str, dict[str, str]] = {
     "scene_as_in_unnamed": "The scene is as shown in {scene_word}.",
         "scene_description": "Scene description: {desc}.",
         "props_in_view": "Props in view: {props}.",
+        "headcount": "{count} people stay in frame together: {cast}.",
+        "staging": "Staging, unchanged across the shots of this setting: {layout}.",
         "connected_still": "{word} is the connected still {label}, and that subject is visible in this shot.",
         "cast_references": "the cast references",
         "camera": "The camera {cam}.",
@@ -101,6 +103,8 @@ _PHRASES: dict[str, dict[str, str]] = {
     "scene_as_in_unnamed": "场景如 {scene_word} 所示。",
         "scene_description": "场景描述：{desc}。",
         "props_in_view": "画面中的道具：{props}。",
+        "headcount": "画面内共 {count} 人：{cast}。",
+        "staging": "本场景的座位与站位（同一场景的各镜头保持一致）：{layout}。",
         "connected_still": "{word} 是相连的静帧「{label}」，该主体在本镜头中可见。",
         "cast_references": "角色参考图",
         "camera": "镜头：{cam}。",
@@ -732,6 +736,36 @@ def _continuity_story_lines(cfg: dict[str, Any], lang: str = "en") -> list[str]:
     return lines
 
 
+def _staging_lines(
+    cfg: dict[str, Any],
+    graph: dict[str, Any] | None,
+    tokens: list[str],
+    lang: str = "en",
+) -> list[str]:
+    """Head count and setting geometry every shot in the setting has to reuse.
+
+    The storyboard states who sits/stands where once per setting; a shot that got
+    no structured blocking would otherwise let the video model re-invent the
+    arrangement, moving people between shots of the same scene.
+    """
+    if len(tokens) < 2:
+        return []
+    names = [_name_for_id(token, graph) or str(token) for token in tokens]
+    if any(_cast_form_for(token, name, graph) == "group" for token, name in zip(tokens, names)):
+        # A group reference renders a varying crowd: a fixed head count would fight it.
+        return []
+    out = [phrase(_PHRASES, lang, "headcount", count=len(names), cast=list_separator(lang).join(names))]
+    seats = cfg.get("seat_anchors") if isinstance(cfg.get("seat_anchors"), dict) else {}
+    if seats:
+        # Per-cast seat clauses already carry the placement.
+        return out
+    spatial = cfg.get("spatial_lock") if isinstance(cfg.get("spatial_lock"), dict) else {}
+    layout = strip_phrase(_scrub_lock_phrase(str(spatial.get("layout") or "").strip()))
+    if layout and not _BAD_DIRECTIVE.search(layout):
+        out.append(phrase(_PHRASES, lang, "staging", layout=layout))
+    return out
+
+
 def _costume_for_setting(token: str, name: str, cfg: dict[str, Any]) -> str:
     """Per-scene wardrobe so a character can change clothes between settings."""
     table = cfg.get("costume_by_setting")
@@ -1177,6 +1211,10 @@ def compose_practice_prompt(
 
     for line in _continuity_story_lines(cfg, lang):
         if line and line not in sentences:
+            sentences.append(line)
+
+    for line in _staging_lines(cfg, graph, tokens, lang):
+        if line and line not in sentences and not _BAD_DIRECTIVE.search(line):
             sentences.append(line)
 
     # The storyboard's own action text always leads the cast lines: it carries

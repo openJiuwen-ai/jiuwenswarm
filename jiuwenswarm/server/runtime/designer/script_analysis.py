@@ -1698,6 +1698,10 @@ async def analyze_creative_brief(
             "animation with flat shapes, soft rendering, and rounded forms. "
             "NOT every character in every scene. Per shot: on_screen (visible), offscreen "
             "(in scene, not in frame), cast_actions {id: doing-what}. "
+            "blocking.positions: when the visible cast keeps a fixed layout (seated at a "
+            "table, standing in a line, facing each other), name every visible character's "
+            "zone/facing plus the shared landmark in every shot of that setting, so the "
+            "shots keep the same seats. "
             + shot_count_rule
             + duration_rule
             + (
