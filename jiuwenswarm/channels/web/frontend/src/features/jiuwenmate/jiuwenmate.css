@@ -2221,6 +2221,9 @@
 .jiuwenmate-chat-welcome__suggestions {
   display: grid;
   width: min(552px, 100%);
+  /* Reserve three rows so the avatar and intro keep their place with fewer prompts. */
+  min-height: calc(56px * 3 + 12px * 2);
+  align-content: start;
   gap: 12px;
 }
 
@@ -4195,6 +4198,11 @@
   cursor: pointer;
 }
 
+.jiuwenmate-collapsible__add-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .jiuwenmate-collapsible__add-button svg {
   width: 14px;
   height: 14px;
@@ -4317,10 +4325,24 @@
   gap: 8px;
 }
 
-.jiuwenmate-starter-prompts > div {
+.jiuwenmate-starter-prompts__item {
+  display: grid;
+  gap: 4px;
+}
+
+.jiuwenmate-starter-prompts__item > div {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.jiuwenmate-starter-prompts input[aria-invalid='true'] {
+  border-color: var(--jm-warning);
+}
+
+.jiuwenmate-starter-prompts small {
+  color: var(--jm-warning);
+  font-size: 12px;
 }
 
 .jiuwenmate-starter-prompts input {
@@ -4918,6 +4940,24 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
+}
+
+.jiuwenmate-profile__starter-prompts {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.jiuwenmate-profile__starter-prompts > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.jiuwenmate-profile__starter-prompts h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .jiuwenmate-profile__persona-editor textarea {
@@ -6075,6 +6115,7 @@
   }
 
   .jiuwenmate-chat-welcome__suggestions {
+    min-height: calc(44px * 3 + 8px * 2);
     gap: 8px;
   }
 

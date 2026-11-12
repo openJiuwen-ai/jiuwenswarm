@@ -41,6 +41,9 @@ import { JiuwenMateConfirmDialog } from '../components/JiuwenMateDialog';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { GroupSharingPermissions } from '../components/GroupSharingPermissions';
+import {
+  StarterPromptsAddButton, StarterPromptsEditor, normalizeStarterPrompts,
+} from '../components/StarterPromptsEditor';
 import { EmptyState } from '../../../components/ui/EmptyState/EmptyState';
 import { errorMessage } from '../jiuwenmateApi';
 import type { GroupSharingApi } from '../groupSharingApi';
@@ -130,6 +133,7 @@ export interface ColleagueSettingsEdit {
   connectors?: string[];
   plugins?: string[];
   knowledge?: string[];
+  starterPrompts?: string[];
 }
 
 interface ColleagueProfilePageProps extends WelinkOfficeActions {
@@ -242,6 +246,7 @@ export function ColleagueProfilePage({
   const [description, setDescription] = useState(colleague.description);
   const [persona, setPersona] = useState(colleague.persona ?? '');
   const [savedPersona, setSavedPersona] = useState(colleague.persona ?? '');
+  const [starterPrompts, setStarterPrompts] = useState<string[]>([...colleague.capabilities.starterPrompts]);
   const [tags, setTags] = useState(colleague.tags);
   const [model, setModel] = useState(colleague.capabilities.model);
   const [settingsError, setSettingsError] = useState<{ section: JiuwenMateProfileSection; message: string } | null>(null);
@@ -687,6 +692,7 @@ export function ColleagueProfilePage({
         if (!saved) return;
         setEditing(false);
         if (edit.persona !== undefined) setSavedPersona(edit.persona);
+        if (edit.starterPrompts !== undefined) setStarterPrompts(edit.starterPrompts);
         setSavedNotice(true);
       });
   };
@@ -828,6 +834,8 @@ export function ColleagueProfilePage({
               persona={persona}
               savedPersona={savedPersona}
               onPersonaChange={setPersona}
+              starterPrompts={starterPrompts}
+              onStarterPromptsChange={setStarterPrompts}
               model={model}
               skills={skills}
               connectors={connectors}
@@ -1377,6 +1385,8 @@ function ProfileSectionDetail({
   section,
   persona,
   savedPersona,
+  starterPrompts,
+  onStarterPromptsChange,
   model,
   skills,
   connectors,
@@ -1433,6 +1443,8 @@ function ProfileSectionDetail({
   section: Exclude<JiuwenMateProfileSection, 'overview'>;
   persona: string;
   savedPersona: string;
+  starterPrompts: readonly string[];
+  onStarterPromptsChange: (prompts: string[]) => void;
   model: string;
   skills: readonly string[];
   connectors: readonly string[];
@@ -1503,7 +1515,9 @@ function ProfileSectionDetail({
   }, [section]);
 
   if (section === 'persona') {
-    const dirty = persona !== savedPersona;
+    const normalizedPrompts = normalizeStarterPrompts(starterPrompts);
+    const promptsDirty = normalizedPrompts.join('\n') !== colleague.capabilities.starterPrompts.join('\n');
+    const dirty = persona !== savedPersona || promptsDirty;
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
@@ -1515,13 +1529,23 @@ function ProfileSectionDetail({
             data-testid="jiuwenmate-profile-persona-input"
           />
         </label>
+        <div className="jiuwenmate-profile__starter-prompts" data-testid="jiuwenmate-profile-starter-prompts">
+          <header>
+            <h3>{t('jiuwenmate.create.sections.starterPrompts')}</h3>
+            <StarterPromptsAddButton prompts={starterPrompts} onChange={onStarterPromptsChange} />
+          </header>
+          <StarterPromptsEditor prompts={starterPrompts} onChange={onStarterPromptsChange} />
+        </div>
         <div className="jiuwenmate-profile__resource-actions" data-testid="jiuwenmate-profile-persona-actions">
           <SavedNote visible={savedNotice} />
           <button
             type="button"
             className="jiuwenmate-dark-button jiuwenmate-profile__save-button"
             disabled={!dirty || savingResources}
-            onClick={() => onSaveSettings?.({ persona: persona.trim() })}
+            onClick={() => onSaveSettings?.({
+              persona: persona.trim(),
+              ...(promptsDirty ? { starterPrompts: normalizedPrompts } : {}),
+            })}
             data-testid="jiuwenmate-profile-persona-save"
           >
             {savingResources ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
