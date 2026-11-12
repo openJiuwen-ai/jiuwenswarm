@@ -94,3 +94,4 @@ export {
   type PickerListRegionProps,
   type PickerListStatus,
 } from './PickerListRegion/PickerListRegion';
+export { useDialogFocusTrap } from './useDialogFocusTrap';

@@ -1,7 +1,7 @@
 import { useId, useRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
-import { useDialogFocusTrap } from '../ui/useDialogFocusTrap';
+import { useDialogFocusTrap } from '../ui';
 
 interface ConfirmDialogProps {
   title: string;
@@ -10,6 +10,7 @@ interface ConfirmDialogProps {
   onCancel: () => void;
   loading?: boolean;
   restoreFocusRef?: RefObject<HTMLElement | null>;
+  restoreFocusFallback?: () => HTMLElement | null;
 }
 
 export default function ConfirmDialog({
@@ -19,11 +20,20 @@ export default function ConfirmDialog({
   onCancel,
   loading = false,
   restoreFocusRef,
+  restoreFocusFallback,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
   const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
-  useDialogFocusTrap({ dialogRef, restoreFocusRef, onEscape: onCancel, escapeDisabled: loading });
+  useDialogFocusTrap({
+    dialogRef,
+    restoreFocusRef,
+    restoreFocusFallback,
+    initialFocusRef: cancelRef,
+    onEscape: onCancel,
+    escapeDisabled: loading,
+  });
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay-cron-dialog" data-testid="cron-confirm-overlay" onClick={onCancel}>
       <div
@@ -53,6 +63,7 @@ export default function ConfirmDialog({
             {t('cron.actions.confirm')}
           </button>
           <button
+            ref={cancelRef}
             onClick={onCancel}
             data-testid="cron-confirm-cancel-btn"
             className="rounded-full border border-border bg-card px-10 py-1.5 text-sm font-bold text-text hover:bg-bg-hover focus-visible:shadow-focus"
