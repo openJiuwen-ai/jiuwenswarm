@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -74,6 +74,8 @@ def _fast_and_clean(monkeypatch):
     monkeypatch.setattr(pec, "_BUSY_RETRY_INTERVAL_SECONDS", 0.0)
     yield
     pec._pending.clear()
+    pec._claimed.clear()
+    pec._cancelled_keys.clear()
 
 
 # ── 识别真值表 ───────────────────────────────────────────────────────────────
@@ -174,6 +176,34 @@ async def test_cancel_other_session_is_noop(monkeypatch):
     assert run_stream.await_count == 1
 
 
+@pytest.mark.asyncio
+async def test_schedule_copies_trusted_identity_and_memory():
+    """调度白名单抄送身份/记忆键与归档维度，一次性载荷不夹带（评审 CR-2）。"""
+    metadata = {
+        "user_id": "u-1",
+        "routing": {"group_id": "g-1", "bot_id": "b-1", "gateway_id": "w-1"},
+        "enable_memory": False,
+        "one_shot_payload": "must-not-copy",
+    }
+    request = _resume_request()
+    request.metadata = metadata
+    request.thread_id = "thread_abc"
+    request.chat_id = "chat_123"
+
+    assert pec.schedule_plan_execute_continuation(None, request, object()) is True
+
+    plan = pec._pending["sess-plan-1:call_1"]
+    assert plan.trusted_metadata["user_id"] == "u-1"
+    assert plan.trusted_metadata["enable_memory"] is False
+    assert plan.trusted_metadata["routing"] == metadata["routing"]
+    # routing 浅拷贝防别名：原请求后续改写不影响记账
+    plan.trusted_metadata["routing"]["group_id"] = "mutated"
+    assert metadata["routing"]["group_id"] == "g-1"
+    assert "one_shot_payload" not in plan.trusted_metadata
+    assert plan.thread_id == "thread_abc"
+    assert plan.chat_id == "chat_123"
+
+
 # ── 合成请求与推送 ──────────────────────────────────────────────────────────
 
 class _FakeChunk:
@@ -209,6 +239,13 @@ async def test_continuation_request_fields_and_pushes():
         mode="code.normal",
         query="计划已批准，请按计划开始执行。",
         copied_params={"project_dir": "C:/work/proj", "work_mode": "code"},
+        trusted_metadata={
+            "user_id": "u-1",
+            "routing": {"group_id": "g-1", "bot_id": "b-1"},
+            "enable_memory": False,
+        },
+        thread_id="thread_abc",
+        chat_id="chat_123",
     )
 
     await pec._run_continuation_stream(ctx, agent, plan)
@@ -226,6 +263,22 @@ async def test_continuation_request_fields_and_pushes():
     assert sent.params["work_mode"] == "code"
     assert "answers" not in sent.params
     assert "request_id" not in sent.params
+    # 身份/记忆白名单抄送（评审 CR-2）：续跑与普通请求同源——
+    # _bind_tenant_request_context 经 web_routing_identity 读同一 metadata 形状，
+    # 配额策略选择随之一致；PC 记忆归档维度（thread_id）不丢。
+    assert sent.thread_id == "thread_abc"
+    assert sent.chat_id == "chat_123"
+    assert sent.metadata is not plan.trusted_metadata
+    assert sent.metadata["user_id"] == "u-1"
+    assert sent.metadata["enable_memory"] is False
+    assert sent.metadata["routing"] == {"group_id": "g-1", "bot_id": "b-1"}
+    from jiuwenswarm.common.request_identity import web_routing_identity
+
+    assert web_routing_identity(sent.metadata) == {
+        "user_id": "u-1",
+        "group_id": "g-1",
+        "bot_id": "b-1",
+    }
 
     pushes = ctx.services.send_push.await_args_list
     assert len(pushes) == 2
@@ -239,6 +292,153 @@ async def test_continuation_request_fields_and_pushes():
     assert pushes[1].args[0]["request_id"] == sent.request_id
     assert pushes[1].args[0]["payload"] == chunk.payload
     assert pushes[1].args[0]["is_complete"] is True
+
+
+# ── 显式中断取消与领取竞态（评审 CR-3 双保险）───────────────────────────────
+
+
+def _bare_plan() -> pec._ContinuationPlan:
+    return pec._ContinuationPlan(
+        key="sess-plan-1:call_1",
+        session_id="sess-plan-1",
+        channel_id="web",
+        round_id="call_1",
+        plan_slug="slug-1",
+        mode="code.normal",
+        query="计划已批准，请按计划开始执行。",
+        copied_params={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_claimed_tombstones_without_count():
+    """已领取未代发条目被取消：记账移除 + 写墓碑，不计入待执行取消数（CR-3）。"""
+    plan = _bare_plan()
+    pec._pending[plan.key] = plan
+    pec._claimed.add(plan.key)
+
+    assert (
+        pec.cancel_plan_execute_continuation(
+            "sess-plan-1", reason="chat.interrupt:cancel"
+        )
+        == 0
+    )
+    assert plan.key not in pec._pending
+    assert plan.key in pec._cancelled_keys
+
+
+@pytest.mark.asyncio
+async def test_pre_dispatch_tombstone_recheck_skips_dispatch(monkeypatch):
+    """代发前墓碑复核：已领取且已取消 → 不代发，收尾清理三处状态（CR-3 双保险）。
+
+    直接摆出「已领取 + 已取消墓碑」的记账形态跑真实 _grace_then_run：
+    复核退出且 finally 清理记账/领取标记/墓碑，不累积。
+    """
+    run_stream = AsyncMock()
+    monkeypatch.setattr(pec, "_wait_until_session_idle", AsyncMock(return_value=True))
+    monkeypatch.setattr(pec, "_run_continuation_stream", run_stream)
+    plan = _bare_plan()
+    pec._pending[plan.key] = plan
+    pec._claimed.add(plan.key)
+    pec._cancelled_keys.add(plan.key)
+
+    await pec._grace_then_run(SimpleNamespace(), object(), plan)
+
+    assert run_stream.await_count == 0
+    assert pec._pending == {}
+    assert plan.key not in pec._claimed
+    assert plan.key not in pec._cancelled_keys
+
+
+@pytest.mark.asyncio
+async def test_claimed_entry_dispatches_when_not_cancelled(monkeypatch):
+    """已领取且未取消 → 正常代发；收尾清理领取标记与记账。"""
+    run_stream = AsyncMock()
+    monkeypatch.setattr(pec, "_wait_until_session_idle", AsyncMock(return_value=True))
+    monkeypatch.setattr(pec, "_run_continuation_stream", run_stream)
+    plan = _bare_plan()
+    pec._pending[plan.key] = plan
+    pec._claimed.add(plan.key)
+
+    await pec._grace_then_run(SimpleNamespace(), object(), plan)
+
+    assert run_stream.await_count == 1
+    assert pec._pending == {}
+    assert not pec._claimed
+    assert not pec._cancelled_keys
+
+
+def _cancel_request(session_id="sess-plan-1", intent="cancel", metadata=None):
+    return AgentRequest(
+        request_id="interrupt-1",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"intent": intent},
+        metadata=metadata,
+        is_stream=False,
+    )
+
+
+def _cancel_ctx(request):
+    """handle_chat_cancel_dispatch 只触及 request/agent_manager/sink/
+    session_stream_tasks（test_chat_interrupt_team_cancel.py 同款 stub）。"""
+    return SimpleNamespace(
+        request=request,
+        services=SimpleNamespace(
+            agent_manager=SimpleNamespace(
+                get_agent_nowait=MagicMock(return_value=None),
+            ),
+            session_stream_tasks={request.session_id or "default": {}},
+        ),
+        sink=AsyncMock(),
+        connection_id="c1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_interrupt_cancels_pending_continuation(monkeypatch):
+    """显式中断（cancel/supplement）取消待执行续跑；断连形态不取消（CR-3）。"""
+    from jiuwenswarm.common.e2a.constants import (
+        E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+        E2A_INTERNAL_CANCEL_SOURCE_KEY,
+    )
+    from jiuwenswarm.server.handlers import chat as chat_handlers
+
+    cancelled: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        chat_handlers,
+        "cancel_plan_execute_continuation",
+        lambda sid, *, reason="": cancelled.append((sid, reason)) or 0,
+    )
+
+    ctx = _cancel_ctx(_cancel_request(intent="cancel"))
+    await chat_handlers.handle_chat_cancel_dispatch(ctx)
+    assert cancelled == [("sess-plan-1", "chat.interrupt:cancel")]
+
+    cancelled.clear()
+    ctx = _cancel_ctx(_cancel_request(intent="supplement"))
+    await chat_handlers.handle_chat_cancel_dispatch(ctx)
+    assert cancelled == [("sess-plan-1", "chat.interrupt:supplement")]
+
+    # pause/resume 任务仍在运行，不取消续跑
+    for intent in ("pause", "resume"):
+        cancelled.clear()
+        ctx = _cancel_ctx(_cancel_request(intent=intent))
+        await chat_handlers.handle_chat_cancel_dispatch(ctx)
+        assert cancelled == []
+
+    # 客户端断连保持继续执行语义（断连兜底是本特性的存在理由）
+    cancelled.clear()
+    ctx = _cancel_ctx(
+        _cancel_request(
+            metadata={
+                E2A_INTERNAL_CANCEL_SOURCE_KEY: E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
+            }
+        )
+    )
+    await chat_handlers.handle_chat_cancel_dispatch(ctx)
+    assert cancelled == []
 
 
 # ── busy 避让与语言 ─────────────────────────────────────────────────────────

@@ -208,7 +208,7 @@ Web revise：`reject` + `custom_input` → `approved=False, feedback=修改意�
 6. **清理 p76 遗留**（建议项）：删除 `code_plan_approval_rail.py` 与 N15 列出的无消费常量/函数时，同步删 `test_plan_approval.py` 中仅服务它们的测试；`PLAN_MODE_EXITED_EVENT_TYPE` 与 `PLAN_REMINDER_ORIGINAL_QUERY_KEY` 有真实消费，**不可**一并删。
 7. **改 AFTER_TOOL_CALL 段序**：Segment 1 的 task_tool 注销依赖"真执行"判定，顺序不可提前到挂起守门之前。
 8. **新增确认类中断选项**：检查取值不与 `PLAN_SKIP_OPTION_VALUES` / `PLAN_EXECUTE_OPTION_VALUES` 撞车（N8）。
-9. **动 Web「执行」续跑链**（`server/runtime/plan_execute_continuation.py` / `_check_post_process_plan_exit` 挂点 / 前端回显分支）：重跑 `test_plan_execute_continuation.py` 全部用例；确认 grace window 取消面（普通 chat.send、session delete/rewind）仍完整；前端 `useWebSocket` 不得复活 `pendingPlanExecuteRef` 补发（issue 5223 失效面）。
+9. **动 Web「执行」续跑链**（`server/runtime/plan_execute_continuation.py` / `_check_post_process_plan_exit` 挂点 / 前端回显分支）：重跑 `test_plan_execute_continuation.py` 全部用例；确认 grace window 取消面（普通 chat.send、显式中断 chat.interrupt（cancel/supplement）、session delete/rewind）仍完整；前端 `useWebSocket` 不得复活 `pendingPlanExecuteRef` 补发（issue 5223 失效面）。
 
 ## 9. 与其它 spec 的关系
 
