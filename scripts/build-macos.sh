@@ -159,6 +159,9 @@ printf 'Verifying frozen A2UI v0.8 bundle...\n'
 printf 'Verifying frozen RSI Harness baseline bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_rsi_bundle.py"
 
+printf 'Verifying frozen Gateway extensions bundle...\n'
+"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gateway_extensions_bundle.py"
+
 printf 'Verifying frozen Computer Use runtime without build tools...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_computer_use_bundle.py"
 

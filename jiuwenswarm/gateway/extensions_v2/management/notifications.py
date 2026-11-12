@@ -31,3 +31,21 @@ async def notify_installed(runtime: GatewayRuntime, package_ids: Sequence[str]) 
         logger.warning("[GatewayExtensions] installed packages could not notify browsers", exc_info=True)
         return False
     return True
+
+
+async def notify_disabled(runtime: GatewayRuntime, package_ids: Sequence[str]) -> bool:
+    """Withdraw declarations after released views have been cleared by the browser.
+
+    Publishing before the management response lands keeps the browser's request
+    bindings and the runtime activation in step, so the next request is not judged
+    against stale capabilities.
+    """
+    if not package_ids:
+        return True
+    await runtime.browser.settle()
+    try:
+        await runtime.browser.publish_declarations()
+    except Exception:  # noqa: BLE001 - the package result has already committed
+        logger.warning("[GatewayExtensions] released packages could not notify browsers", exc_info=True)
+        return False
+    return True

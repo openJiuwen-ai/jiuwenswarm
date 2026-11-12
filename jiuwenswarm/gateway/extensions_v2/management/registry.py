@@ -415,6 +415,13 @@ class GatewayPackageManager:
                 manifest = load_manifest(root, require_domain=True)
                 if manifest.domain != DOMAIN_GATEWAY:
                     raise ExtensionFailure(StatusCode.EXTENSION_DOMAIN_MISMATCH, package_id=package_id)
+                active = self._runtime.active_record(package_id)
+                if enabled and active is not None and active.version == manifest.version:
+                    # Re-enabling the running version is a no-op. Admitting it again to the
+                    # shared install report would fail with EXTENSION_PACKAGE_EXISTS and
+                    # turn a repeated toggle into a user-visible error. A newer installed
+                    # version still has to go through the normal activation path.
+                    return _success(package_id, "enable", active=active)
                 if self._report is not None:
                     report = await _run_to_end(self._set_enabled_reported(root, manifest, enabled))
                 elif enabled:

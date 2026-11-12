@@ -2488,6 +2488,30 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return cls._IMMUTABLE_CACHE_CONTROL
         return cls._REVALIDATE_CACHE_CONTROL
 
+    @staticmethod
+    def _resolve_route_relative_static(base_dir: Path, rel_path: str) -> Path | None:
+        """Map a route-prefixed static request back onto the static root.
+
+        The Electron build emits relative asset URLs, so a full page reload on a
+        nested route (for example ``/chat/assets/app-xxx.js``) asks the server
+        for the file with the route prefix attached. Serving the matching file
+        keeps deep links working without changing the frontend ``base``.
+        """
+        parts = rel_path.split("/")
+        if len(parts) < 2 or "." not in parts[-1]:
+            return None
+        for start in range(1, len(parts)):
+            # SPA routes never end in a file name, so only file-like tails are
+            # rewritten; anything else keeps the regular index.html fallback.
+            candidate = (base_dir.joinpath(*parts[start:])).resolve()
+            try:
+                in_base = os.path.commonpath([str(base_dir), str(candidate)]) == str(base_dir)
+            except ValueError:
+                continue
+            if in_base and candidate.is_file():
+                return candidate
+        return None
+
     def end_headers(self) -> None:
         # 缓存策略在 send_head 里决定、这里统一落头：super().send_head() 内部
         # 就会调用 end_headers，之后再追加头已来不及。非静态路径不设置该
@@ -2537,6 +2561,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return super().send_head()
 
         self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
+        route_static = self._resolve_route_relative_static(base_dir, rel_path)
+        if route_static is not None:
+            route_rel_path = route_static.relative_to(base_dir).as_posix()
+            self._static_cache_control = self._cache_control_for_static(route_rel_path)
+            self.path = "/" + route_rel_path
+            return super().send_head()
         self.path = "/index.html"
         return super().send_head()
 

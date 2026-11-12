@@ -390,6 +390,17 @@ if ($RsiVerifyProcess.ExitCode -ne 0) {
     throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
+$ExtensionsVerifier = Join-Path $ProjectRoot "scripts\verify_gateway_extensions_bundle.py"
+$ExtensionsVerifyProcess = Start-Process `
+    -FilePath $FrozenExe `
+    -ArgumentList @("`"$ExtensionsVerifier`"") `
+    -Wait `
+    -PassThru `
+    -NoNewWindow
+if ($ExtensionsVerifyProcess.ExitCode -ne 0) {
+    throw "Frozen Gateway extensions bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+}
+
 $CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"
 $CuaVerifyProcess = Start-Process `
     -FilePath $FrozenExe `

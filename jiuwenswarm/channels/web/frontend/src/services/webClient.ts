@@ -324,7 +324,11 @@ class WebClient {
       ...(options.isStream ? { is_stream: true } : {}),
     });
 
-    if (method !== 'webui.dispatch' && browserClientCapabilities.isChanging()) {
+    // Extension management requests change the declarations themselves; aborting them as
+    // the change lands would report a false failure for a completed operation.
+    const control = method === 'webui.dispatch' || method.startsWith('extensions.v2.');
+
+    if (!control && browserClientCapabilities.isChanging()) {
       throw this.createWebError(i18n.t('network.requestAborted'), 'CONTEXT_CHANGED', id, false);
     }
 
@@ -335,7 +339,7 @@ class WebClient {
       }, timeoutMs);
 
       const pending: PendingRequest = {
-        control: method === 'webui.dispatch', settled: new Set(),
+        control, settled: new Set(),
         resolve: (value) => resolve(value as T),
         reject,
         timeoutId,

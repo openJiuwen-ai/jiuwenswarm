@@ -121,6 +121,7 @@ class BrowserConnection:
     ws: Any
     epoch: str = field(default_factory=lambda: uuid4().hex)
     declaration_signature: str = ""
+    declared_packages: set[str] = field(default_factory=set)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -134,8 +135,10 @@ class BrowserBridge:
         self._appearance_locks: dict[str, asyncio.Lock] = {}
         # Browser notifications started from synchronous package release.
         self._tasks: set[asyncio.Task] = set()
-        # Releases that still have to clear their views before declarations are withdrawn.
-        self._releases_pending = 0
+        # Releases that still owe some connection a clear frame with the retired generation.
+        # Counted per package: two overlapping releases of the same package must both finish
+        # before the declaration can be withdrawn.
+        self._releasing: dict[str, int] = {}
         self.splash_preferences = SplashPreferences(runtime.config.data_dir)
         self.transfers = TransferManager(runtime)
         self.presentations = PresentationControl(runtime)
@@ -420,8 +423,8 @@ class BrowserBridge:
         if clears or revokes or generation is not None:
             task = self.spawn(self._notify_release(package_id, clears, revokes, generation))
             if task is not None:
-                # The browser must clear before any declarations withdraw the package (S_06).
-                self._releases_pending += 1
+                # The browsers still hold this package's declaration until its clears arrive.
+                self._releasing[package_id] = self._releasing.get(package_id, 0) + 1
         for upload in self.transfers.release(package_id=package_id):
             self.transfers.discard_later(upload)
 
@@ -451,10 +454,14 @@ class BrowserBridge:
                         "package_id": package_id, "revision": revision, "appearance": None,
                     })
         finally:
-            self._releases_pending -= 1
-            if self._releases_pending == 0:
-                # Declarations are withdrawn only after every release cleared its views.
-                await self.publish_declarations()
+            pending = self._releasing.get(package_id, 0) - 1
+            if pending > 0:
+                self._releasing[package_id] = pending
+            else:
+                self._releasing.pop(package_id, None)
+            # Every release withdraws its own package; connections that still owe another
+            # pending release a clear frame are skipped by ``_declare`` on their own.
+            await self.publish_declarations()
 
     def spawn(self, coroutine) -> asyncio.Task | None:
         """Run a browser notification or file cleanup in the background; ``settle`` waits for it."""
@@ -515,12 +522,16 @@ class BrowserBridge:
             await self._declare(connection)
 
     async def _declare(self, connection: BrowserConnection) -> None:
-        if self._releases_pending:
-            # The last pending release withdraws the package after its clear frames arrive.
-            return
         packages = [{"packageId": activation.package_id, "activationGeneration": activation.generation,
                      "requestBindings": activation.package.client["requestBindings"]}
                     for activation in self.runtime.current_activations() if activation.package.client]
+        published = {entry["packageId"] for entry in packages}
+        if connection.declared_packages & set(self._releasing):
+            # This browser still owes a clear frame for a package whose release is in flight.
+            # Delivering declarations first — even a fresh generation of that package — would
+            # make the clear unacceptable and leave the retired view mounted (S_06). Only the
+            # affected connections wait, and only until the release that owns them finishes.
+            return
         signature = json.dumps(packages, sort_keys=True)
         if signature != connection.declaration_signature:
             await self.runtime.channel.send_event(connection.ws, "client.declarations", {
@@ -528,6 +539,7 @@ class BrowserBridge:
                 "connectionEpoch": connection.epoch, "packages": packages,
             })
             connection.declaration_signature = signature
+            connection.declared_packages = published
 
     async def publish_declarations(self) -> None:
         """Send current declarations to every connected browser.

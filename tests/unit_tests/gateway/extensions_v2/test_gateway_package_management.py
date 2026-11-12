@@ -386,6 +386,12 @@ async def test_installing_a_disabled_copy_releases_an_active_gateway_package(tmp
     )
     assert manifest["enable"] is False
 
+    # Enabling again has to activate the newer copy instead of reporting the running one.
+    enabled = await manager.set_enabled("demo.gateway", True)
+    assert enabled.status == "SUCCESS"
+    assert runtime.user_handler_count == 1
+    assert runtime.active_record("demo.gateway").version == "0.2.0"
+
 
 async def test_reload_of_a_disabled_gateway_package_succeeds_without_enabling_it(tmp_path):
     runtime = await _runtime(tmp_path)
@@ -843,8 +849,23 @@ async def test_set_enabled_notifies_mounted_slots_after_enabling(tmp_path, monke
         req_id="r2",
     )
 
-    assert "ui_notified" not in runtime.channel.responses[1]["payload"]
+    assert runtime.channel.responses[1]["payload"]["reports"][0]["operation"] == "disable"
     assert notices == [("extensions.v2.installed", {"package_ids": ["demo.gateway"]})]
+
+
+async def test_set_enabled_again_succeeds_without_activating_twice(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    await runtime.packages.install([_package_zip(tmp_path, enable=True)])
+
+    handled = await _handle(
+        runtime,
+        extension_package_handlers.ReqMethod.EXTENSIONS_V2_SET_ENABLED,
+        {"package_id": "demo.gateway", "enable": True},
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["ok"] is True
 
 
 async def test_show_answers_for_an_uninstalled_gateway_preset(tmp_path, monkeypatch):

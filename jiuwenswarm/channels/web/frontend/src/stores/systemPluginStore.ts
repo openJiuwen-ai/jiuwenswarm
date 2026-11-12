@@ -1,6 +1,10 @@
 import { create } from 'zustand';
-import { systemPluginApi } from '../services/extensionsV2Api';
 import { catalogScope, scheduleCatalogRefresh } from '../features/catalogCache';
+import {
+  isTransientManagementError,
+  systemPluginApi,
+  waitForClientContext,
+} from '../services/extensionsV2Api';
 import type { SystemPluginDetail, SystemPluginSummary } from '../types/systemPlugin';
 
 type MutationResult = { ok: true } | { ok: false; error: string };
@@ -98,7 +102,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       set(scope === 'catalog' ? { catalog: packages } : { mine: packages });
     } catch (error) {
       if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return;
-      if (!silent) set({ error: messageOf(error) });
+      if (!silent && !isTransientManagementError(error)) set({ error: messageOf(error) });
     } finally {
       if (!silent) {
         pendingLoads -= 1;
@@ -107,12 +111,44 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
     }
   };
 
-  const mutate = async (id: string, action: () => Promise<void>): Promise<MutationResult> => {
+  // The toggle result is authoritative once the management call has resolved: the follow-up
+  // catalog/detail reads can still be answered from a snapshot taken before it, or be rejected
+  // while the client declarations swap, which left the switch showing the old state until a
+  // manual reload. Keep the confirmed value on the item instead of relying on those reads.
+  const applyEnabled = (id: string, enable: boolean) =>
+    set((state) => {
+      const patch = <T extends SystemPluginSummary>(item: T): T =>
+        item.id === id || item.packageId === id ? { ...item, enabled: enable, active: enable } : item;
+      const detail = state.detailCache[id];
+      return {
+        catalog: state.catalog.map(patch),
+        mine: state.mine.map(patch),
+        ...(detail ? { detailCache: { ...state.detailCache, [id]: patch(detail) } } : {}),
+      };
+    });
+
+  const mutate = async (
+    id: string,
+    action: () => Promise<void>,
+    options?: { tolerateTransient?: boolean; confirmed?: () => void },
+  ): Promise<MutationResult> => {
     setBusy(id, true);
     try {
-      await action();
+      let handled = false;
+      try {
+        await action();
+        handled = true;
+      } catch (error) {
+        // Only the toggle can fall back to the state below: its result is re-read and no
+        // destructive UI action depends on it. Install/uninstall/reload must report failures,
+        // otherwise a denied call would close the detail page as if the package was removed.
+        if (!options?.tolerateTransient || !isTransientManagementError(error)) throw error;
+        await waitForClientContext();
+      }
+      if (handled) options?.confirmed?.();
       await refresh();
       await syncDetail(id);
+      if (handled) options?.confirmed?.();
       return { ok: true };
     } catch (error) {
       const message = messageOf(error);
@@ -145,7 +181,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
         set((state) => ({ detailCache: { ...state.detailCache, [id]: next } }));
         return true;
       } catch (error) {
-        set({ error: messageOf(error) });
+        if (!isTransientManagementError(error)) set({ error: messageOf(error) });
         return false;
       }
     },
@@ -165,6 +201,10 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
     },
     uninstall: (id, version) => mutate(id, () => systemPluginApi.uninstall(id, version)),
     reload: (id) => mutate(id, () => systemPluginApi.reload(id)),
-    setEnabled: (id, enable) => mutate(id, () => systemPluginApi.setEnabled(id, enable)),
+    setEnabled: (id, enable) =>
+      mutate(id, () => systemPluginApi.setEnabled(id, enable), {
+        tolerateTransient: true,
+        confirmed: () => applyEnabled(id, enable),
+      }),
   };
 });
