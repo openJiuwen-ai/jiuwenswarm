@@ -1420,6 +1420,7 @@
       "outletsPending": "诊断完成后在这里给出优化建议",
       "detailsPending": "评估结果和诊断发现会显示在这里",
       "stageStatus": {
+        "degraded": "有降级项",
         "pending": "等待中",
         "running": "进行中",
         "completed": "完成",
@@ -1453,6 +1454,7 @@
       "emptyHint": "还没有诊断记录。点击右上角的“诊断轨迹”开始。",
       "loadingRecord": "正在加载诊断记录…",
       "plannedStage": {
+        "trajectory_summary": "轨迹摘要",
         "task_parse": "任务解析",
         "diagnose": "诊断分析",
         "attribute": "归因分析"
@@ -1510,6 +1512,16 @@
       "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
       "objectTask": "任务描述",
       "objectSummary": "轨迹摘要",
+      "summaryTree": {
+        "root": "整体轨迹摘要",
+        "agentsHint": "各 Agent 摘要（团队领导及成员）",
+        "coverage": "已完成分段 {{completed}} / {{total}}",
+        "download": "下载完整摘要 JSON",
+        "warnings": "告警 {{count}} 条",
+        "unavailable": "该摘要暂不可用，完整轨迹及定位信息可在下载文件中查看。",
+        "unmerged": "整体摘要尚未完成归并。请查看下方各 Agent 摘要，完整分层内容保留在下载文件中。",
+        "agentUnmerged": "该 Agent 的摘要尚未完成归并，已保留各轮执行记录，请下载完整摘要查看。"
+      },
       "sectionExpand": "展开",
       "sectionCollapse": "收起",
       "findingCauses": "{{count}} 条产物归因",

@@ -41,6 +41,8 @@ export function ItemMark() {
 export function FoldableItem({
   title,
   extra,
+  action,
+  mark,
   children,
   className,
   testId,
@@ -48,6 +50,8 @@ export function FoldableItem({
 }: {
   title: string;
   extra?: ReactNode;
+  action?: ReactNode;
+  mark?: ReactNode;
   children: ReactNode;
   className?: string;
   testId?: string;
@@ -55,28 +59,53 @@ export function FoldableItem({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
-  return (
-    <div className={className === undefined ? css.block : `${css.block} ${className}`} data-testid={testId}>
+  const toggle = () => setOpen(value => !value);
+  const label = t(open ? 'trajectory.diagnosis.sectionCollapse' : 'trajectory.diagnosis.sectionExpand');
+  const chevron = (
+    <ChevronRight
+      className={`${css.chevron} ${css.itemChevron} ${open ? css.chevronOpen : ''}`}
+      size={16}
+      strokeWidth={2}
+      aria-hidden
+    />
+  );
+  const head = action === undefined ? (
+    <button
+      type="button"
+      className={`${css.itemHead} ${css.itemToggle}`}
+      aria-expanded={open}
+      onClick={toggle}
+      data-testid={toggleTestId}
+    >
+      {mark ?? <ItemMark />}
+      <h4 className={css.blockTitle}>{title}</h4>
+      {extra}
+      {chevron}
+      <span className={css.srOnly}>{label}</span>
+    </button>
+  ) : (
+    <div className={css.itemHead}>
       <button
         type="button"
-        className={`${css.itemHead} ${css.itemToggle}`}
+        className={`${css.itemToggle} ${css.itemToggleMain}`}
         aria-expanded={open}
-        onClick={() => setOpen(value => !value)}
+        onClick={toggle}
         data-testid={toggleTestId}
       >
-        <ItemMark />
+        {mark ?? <ItemMark />}
         <h4 className={css.blockTitle}>{title}</h4>
         {extra}
-        <ChevronRight
-          className={`${css.chevron} ${css.itemChevron} ${open ? css.chevronOpen : ''}`}
-          size={16}
-          strokeWidth={2}
-          aria-hidden
-        />
-        <span className={css.srOnly}>
-          {t(open ? 'trajectory.diagnosis.sectionCollapse' : 'trajectory.diagnosis.sectionExpand')}
-        </span>
+        <span className={css.srOnly}>{label}</span>
       </button>
+      <div className={css.itemAction}>{action}</div>
+      <button type="button" className={css.itemChevronButton} tabIndex={-1} aria-label={label} onClick={toggle}>
+        {chevron}
+      </button>
+    </div>
+  );
+  return (
+    <div className={className === undefined ? css.block : `${css.block} ${className}`} data-testid={testId}>
+      {head}
       {open ? children : null}
     </div>
   );
