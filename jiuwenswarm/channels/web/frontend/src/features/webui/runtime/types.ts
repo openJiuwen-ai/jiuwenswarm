@@ -116,6 +116,8 @@ export interface WebUIRuntime {
   /** 渲染失败反馈；revision 与 localFrameId 都必须匹配当前实例。 */
   reportRenderFailure(instanceKey: string, revision: number, message: string, localFrameId: number): void;
   clearSession(sessionId: string): void;
+  /** Arm a one-time reset for a successful restore recorded by the local sidecar. */
+  confirmSystemPluginRestore(recordId: string, restoredAt: number): void;
   resetRequestContext(): void;
   refreshContributions(): Promise<void>;
   getConnectionState(): WebUIConnectionState;

@@ -18,6 +18,7 @@ import pytest
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.extension import ExtensionFailure
 
+from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
 from jiuwenswarm.gateway.channel_manager.web import extension_package_handlers
 from jiuwenswarm.gateway.extensions_v2 import assembly
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
@@ -26,6 +27,7 @@ from jiuwenswarm.gateway.extensions_v2.management.catalog import list_installed,
 from jiuwenswarm.gateway.extensions_v2.management.registry import GatewayPackageManager
 from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
+from jiuwenswarm.server.runtime.marketplace.extension_install_state import ExtensionInstallState
 
 
 class Channel:
@@ -759,6 +761,45 @@ async def test_catalog_lists_disabled_installed_gateway_package(tmp_path, monkey
     ]
 
 
+@pytest.mark.parametrize("restored_enabled", [False, True])
+async def test_catalog_mine_and_detail_after_gateway_recovery(tmp_path, monkeypatch, restored_enabled):
+    methods = extension_package_handlers.ReqMethod
+    package_id = "demo.gateway"
+    examples, install_dir = _local_gateway(tmp_path, monkeypatch)
+    _example_package(examples, package_id, "gateway")
+    monkeypatch.delenv("JIUWENSWARM_RECOVERY_RESTART_SIGNAL_PATH", raising=False)
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    try:
+        archive = _package_zip(tmp_path, enable=restored_enabled)
+        await _handle(runtime, methods.EXTENSIONS_V2_INSTALL, {"paths": [str(archive)]})
+        assert runtime.channel.responses[-1]["payload"]["reports"][0]["status"] == "SUCCESS"
+        recovery = SystemPluginRecovery(install_dir, tmp_path / "extension")
+        point = recovery.begin_session("before-toggle")
+        await _handle(
+            runtime, methods.EXTENSIONS_V2_SET_ENABLED, {"package_id": package_id, "enable": not restored_enabled},
+        )
+        assert runtime.channel.responses[-1]["payload"]["reports"][0]["status"] == "SUCCESS"
+        recovery.restore(point["id"])
+    finally:
+        await runtime.shutdown()
+
+    runtime = await _runtime(tmp_path)
+    try:
+        store = ExtensionInstallState.for_install_dir(install_dir)
+        assert store.get(package_id).enabled is not restored_enabled
+        assert runtime.is_active_package(package_id) is restored_enabled
+        for scope in ("catalog", "mine"):
+            await _handle(runtime, methods.EXTENSIONS_V2_CATALOG, {"scope": scope})
+            [card] = runtime.channel.responses[-1]["payload"]["packages"]
+            assert (card["enabled"], card["active"], card["origin"]) == (restored_enabled, restored_enabled, "user")
+        await _handle(runtime, methods.EXTENSIONS_V2_SHOW, {"package_id": package_id})
+        detail = runtime.channel.responses[-1]["payload"]["package"]
+        assert (detail["enabled"], detail["active"]) == (restored_enabled, restored_enabled)
+    finally:
+        await runtime.shutdown()
+
+
 async def test_set_enabled_accepts_proxy_metadata_fields(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
@@ -1146,6 +1187,48 @@ def test_merge_packages_applies_gateway_state_to_remote_cards():
     assert merged[0]["installed"] is True
     assert merged[0]["active"] is True
     assert merged[0]["enabled"] is True
+
+
+def test_catalog_switch_uses_the_active_versions_manifest(tmp_path):
+    package_id = "demo.gateway"
+    install_dir = tmp_path / "installed" / package_id
+    for version, enabled in (("0.1.0", False), ("0.2.0", True)):
+        with zipfile.ZipFile(_package_zip(tmp_path, package_id=package_id, version=version, enable=enabled)) as archive:
+            archive.extractall(install_dir / version)
+    state = {
+        "installed": [str(install_dir / "0.1.0"), str(install_dir / "0.2.0")],
+        "active": [{"package_id": package_id, "version": "0.1.0", "root": str(install_dir / "0.1.0")}],
+    }
+    detail = package_detail(package_id, tmp_path / "examples", state)
+    assert (detail["installedVersion"], detail["active"], detail["enabled"]) == ("0.1.0", True, False)
+
+
+async def test_hub_card_and_asset_detail_use_gateway_status(tmp_path, monkeypatch):
+    methods = extension_package_handlers.ReqMethod
+    runtime = await _runtime(tmp_path)
+    _local_gateway(tmp_path, monkeypatch)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    gateway_card = {"id": "hub-asset", "packageId": "demo.gateway", "enabled": True, "active": True}
+    agent_card = {"id": "agent-asset", "packageId": "demo.agent", "enabled": True, "active": False}
+
+    async def hub_response(_env):
+        return SimpleNamespace(ok=True, payload={"packages": [gateway_card, agent_card], "package": gateway_card})
+
+    client = SimpleNamespace(send_request=hub_response)
+    extension_package_handlers.register_extension_package_handlers(runtime.channel, lambda: client)
+    try:
+        await runtime.packages.install([_package_zip(tmp_path, enable=False)])
+        await runtime.channel.methods[methods.EXTENSIONS_V2_CATALOG.value](
+            SimpleNamespace(), "list", {"scope": "catalog"}, None,
+        )
+        expected = {**gateway_card, "enabled": False, "active": False, "installed": True}
+        assert runtime.channel.responses[-1]["payload"]["packages"] == [expected, agent_card]
+        await runtime.channel.methods[methods.EXTENSIONS_V2_SHOW.value](
+            SimpleNamespace(), "detail", {"package_id": "hub-asset"}, None,
+        )
+        assert runtime.channel.responses[-1]["payload"]["package"] == expected
+    finally:
+        await runtime.shutdown()
 
 
 async def test_reported_uninstall_one_version_keeps_the_other(tmp_path):

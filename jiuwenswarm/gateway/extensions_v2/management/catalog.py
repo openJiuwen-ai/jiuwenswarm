@@ -52,15 +52,28 @@ class MarketEntry:
 
 
 @dataclass(frozen=True, slots=True)
-class _Facts:
+class GatewayCatalogFacts:
     """Active and installed Gateway facts keyed by package id."""
 
     active: dict[str, Mapping[str, Any]]
     installed: dict[str, Path]
     roots: dict[str, tuple[Path, ...]] = field(default_factory=dict)
 
+    def status(self, package_id: str, default_enable: object = True) -> dict[str, bool]:
+        """Project enablement from the managed version and activation from the runtime."""
+        active = self.active.get(package_id)
+        installed_root = self.installed.get(package_id)
+        active_root = active.get("root") if active is not None else None
+        root = Path(active_root) if isinstance(active_root, str) and active_root else installed_root
+        return {
+            "installed": active is not None or installed_root is not None,
+            "active": active is not None,
+            "enabled": _enabled(root, default_enable),
+        }
 
-def _facts(state: Mapping[str, Any]) -> _Facts:
+
+def catalog_facts(state: Mapping[str, Any]) -> GatewayCatalogFacts:
+    """Index managed Gateway versions for local and Hub catalog responses."""
     active = {
         str(record.get("package_id")): record
         for record in state.get("active") or []
@@ -76,7 +89,7 @@ def _facts(state: Mapping[str, Any]) -> _Facts:
         current = installed.get(path.parent.name)
         if current is None or _version_key(path) > _version_key(current):
             installed[path.parent.name] = path
-    return _Facts(
+    return GatewayCatalogFacts(
         active=active,
         installed=installed,
         roots={package_id: tuple(sorted(items, key=_version_key)) for package_id, items in roots.items()},
@@ -86,7 +99,7 @@ def _facts(state: Mapping[str, Any]) -> _Facts:
 def list_presets(examples_dir: Path, state: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Return the Gateway presets shown in the market tab, installed or not."""
 
-    facts = _facts(state)
+    facts = catalog_facts(state)
     store = _install_state(facts)
     result = []
     for entry in _scan(examples_dir, exposed_only=True):
@@ -98,7 +111,7 @@ def list_presets(examples_dir: Path, state: Mapping[str, Any]) -> list[dict[str,
 def list_installed(examples_dir: Path, state: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Return installed Gateway packages, including ones kept disabled."""
 
-    facts = _facts(state)
+    facts = catalog_facts(state)
     presets = {entry.package_id: entry for entry in _scan(examples_dir, exposed_only=False)}
     store = _install_state(facts)
     packages: list[dict[str, Any]] = []
@@ -128,7 +141,7 @@ def package_detail(package_id: str, examples_dir: Path, state: Mapping[str, Any]
     """Return the detail payload for one Gateway package."""
 
     entry = _find(package_id, examples_dir, state)
-    facts = _facts(state)
+    facts = catalog_facts(state)
     display = _display(entry.document)
     record = _record(_install_state(facts), package_id, _installed_version(facts, package_id))
     detail = _summary(entry, facts, origin=record.origin if record else "preset", origin_record=record)
@@ -187,7 +200,7 @@ def _entry(root: Path) -> MarketEntry | None:
 def _find(package_id: str, examples_dir: Path, state: Mapping[str, Any]) -> MarketEntry:
     """Resolve a Gateway package, preferring the loaded copy over the preset."""
 
-    facts = _facts(state)
+    facts = catalog_facts(state)
     record = facts.active.get(package_id)
     roots = [record["root"]] if record is not None and isinstance(record.get("root"), str) else []
     installed = facts.installed.get(package_id)
@@ -206,16 +219,13 @@ def _find(package_id: str, examples_dir: Path, state: Mapping[str, Any]) -> Mark
 
 def _summary(
     entry: MarketEntry,
-    facts: _Facts,
+    facts: GatewayCatalogFacts,
     *,
     origin: str,
     origin_record: ExtensionInstallRecord | None = None,
 ) -> dict[str, Any]:
     document = entry.document
     display = _display(document)
-    record = facts.active.get(entry.package_id)
-    installed_root = facts.installed.get(entry.package_id)
-    installed = record is not None or installed_root is not None
     installed_version_value = _installed_version(facts, entry.package_id)
     versions = _installed_versions(facts, entry.package_id)
     if entry.version not in versions:
@@ -234,15 +244,11 @@ def _summary(
         "avatar": _avatar(entry.root, display),
         "source": "hub" if origin == "hub" else "local",
         "origin": origin,
-        "installed": installed,
-        "active": record is not None,
-        "enabled": record is not None or (
-            origin_record.enabled if origin_record is not None else _enabled(entry, installed_root)
-        ),
+        **facts.status(entry.package_id, document.get("enable")),
     }
 
 
-def _installed_version(facts: _Facts, package_id: str) -> str:
+def _installed_version(facts: GatewayCatalogFacts, package_id: str) -> str:
     record = facts.active.get(package_id)
     if record is not None:
         return str(record.get("version") or "")
@@ -253,7 +259,7 @@ def _installed_version(facts: _Facts, package_id: str) -> str:
     return entry.version if entry is not None else root.name
 
 
-def _installed_versions(facts: _Facts, package_id: str) -> list[str]:
+def _installed_versions(facts: GatewayCatalogFacts, package_id: str) -> list[str]:
     versions: list[str] = []
     for root in facts.roots.get(package_id, ()):
         entry = _entry(root)
@@ -273,7 +279,7 @@ def _sort_versions(versions: Sequence[str]) -> list[str]:
     return sorted({version for version in versions if version}, key=_version_text_key)
 
 
-def _install_state(facts: _Facts) -> ExtensionInstallState | None:
+def _install_state(facts: GatewayCatalogFacts) -> ExtensionInstallState | None:
     root = next(iter(facts.installed.values()), None)
     if root is not None:
         return ExtensionInstallState.for_install_dir(root.parent.parent)
@@ -293,15 +299,15 @@ def _record(
     return store.get(package_id, version) or store.get(package_id)
 
 
-def _enabled(entry: MarketEntry, installed_root: Path | None) -> bool:
+def _enabled(managed_root: Path | None, default_enable: object) -> bool:
     """Read the persisted state from the managed copy when one exists."""
-    if installed_root is None:
-        value = entry.document.get("enable")
+    if managed_root is None:
+        value = default_enable
     else:
         try:
-            value = read_manifest_document(installed_root).get("enable")
+            value = read_manifest_document(managed_root).get("enable")
         except (OSError, UnicodeError, ValueError):
-            value = entry.document.get("enable")
+            value = default_enable
     return value if isinstance(value, bool) else True
 
 
