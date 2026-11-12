@@ -6092,6 +6092,8 @@
         "knowledge": "Add knowledge",
         "starterPrompts": "Add quick prompt"
       },
+      "starterPromptsLimit": "Up to {{count}} prompts",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6437,11 +6439,6 @@
       "webConnection": "Web",
       "connectionHint": "Files shared here can also be read by {{platform}} users.",
       "webResult": "New result in the Web workspace. View it",
-      "defaultPrompts": [
-        "Summarize today's hot questions",
-        "Review group reply quality",
-        "Export today's conversation summary"
-      ],
       "featuresTitle": "Features",
       "features": {
         "chat": {
