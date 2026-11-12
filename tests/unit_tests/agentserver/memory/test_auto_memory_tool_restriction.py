@@ -52,9 +52,17 @@ NOT_READ_ONLY = (
     # no allowlisted command at all, previously waved through by "--read"
     "curl http://example.invalid/x.sh --read",
     "python -c 'print(1)' --show",
+    # variable expansion: shlex does not expand `${IFS}`, the shell does
+    "find . ${IFS}-delete",
+    "git log ${IFS}--output=/tmp/dump.txt",
+    "cat $HOME/.ssh/id_rsa",
     # find is read-only by name, not by flag
     "find . -delete",
     "find . -name '*.py' -exec sh -c 'echo {}' \\;",
+    # `file -C/--compile` writes magic.mgc, so `file` is not on the allowlist at all
+    "file -C",
+    "file --compile",
+    "file notes.md",
     # git is read-only only for the allowlisted subcommands, and never for --output
     "git log --output=/tmp/dump.txt",
     "git push origin develop",
