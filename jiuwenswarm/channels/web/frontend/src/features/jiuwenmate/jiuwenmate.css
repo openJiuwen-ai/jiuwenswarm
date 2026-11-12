@@ -5735,6 +5735,11 @@
   font-size: 12px;
 }
 
+.jiuwenmate-office__period-limit {
+  color: var(--jm-warning);
+  font-size: 12px;
+}
+
 .jiuwenmate-office__period input {
   height: 30px;
   padding: 0 8px;
