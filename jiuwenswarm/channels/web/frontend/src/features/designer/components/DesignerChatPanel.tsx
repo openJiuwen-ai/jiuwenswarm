@@ -155,13 +155,15 @@ export function DesignerChatPanel() {
   );
   const setChatModel = useDesignerStore((state) => state.setChatModel);
   const availableModelCount = useSessionStore((state) => state.chatAvailableModels.length);
-  // The director chain resolves its preferred model from graph.metadata.model_name,
+  const selectedModelId = selectedModelSelection?.type === 'model' ? selectedModelSelection.id : undefined;
+  // The director chain resolves its preferred model from graph metadata,
   // and leader rounds run on the session selection: keep both in sync so a pick
   // made here takes effect on the next round instead of only relabelling the UI.
+  // A shared model_name is not enough; the stable id distinguishes custom rows.
   useEffect(() => {
     if (!sessionId || !selectedModelName) return;
-    setChatModel(selectedModelName);
-  }, [selectedModelName, sessionId, setChatModel]);
+    setChatModel(selectedModelName, selectedModelId);
+  }, [selectedModelId, selectedModelName, sessionId, setChatModel]);
 
   const chatBusy = isProcessing || sending;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
