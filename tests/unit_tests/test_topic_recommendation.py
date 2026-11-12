@@ -2231,10 +2231,20 @@ def test_topic_pools_isolate_by_work_mode(tmp_path):
         design_key
     )
     other_model = build_generation_trigger_key(**{**common, "model": "other"}, work_mode="work")
-    assert "model" not in build_serving_compatibility_key(work_key)
+    other_endpoint = build_generation_trigger_key(
+        **{**common, "model": "other", "generation_config_version": "cfg:base_url=https://other.example"},
+        work_mode="work",
+    )
+    serving = build_serving_compatibility_key(work_key)
+    assert "model" not in serving
+    assert "generation_config_version" not in serving
     assert serving_compatibility_keys_match(
-        {**build_serving_compatibility_key(work_key), "model": "legacy"},
+        {**serving, "model": "legacy"},
         build_serving_compatibility_key(other_model),
+    )
+    assert serving_compatibility_keys_match(
+        serving,
+        build_serving_compatibility_key(other_endpoint),
     )
 
     service = TopicService(
@@ -3437,7 +3447,65 @@ async def test_recommendation_stage_invoker_uses_core_model_factory() -> None:
         "enable_thinking": False,
         "chat_template_kwargs": {"enable_thinking": False},
     }
-    assert captured[0]["response_format"]["type"] == "json_object"
+    assert "response_format" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_recommendation_stage_invoker_parses_fenced_json_without_response_format() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    class _Message:
+        content = 'Here you go:\n```json\n{"ok": true, "items": [1]}\n```\n'
+        refusal = None
+
+    class _Choice:
+        message = _Message()
+        finish_reason = "stop"
+
+    class _Response:
+        id = "provider-response"
+        object = "chat.completion"
+        model = "DeepSeek-V4.1-Flash"
+        usage = None
+        choices = [_Choice()]
+
+    captured: list[dict] = []
+    receipts: list[dict] = []
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured.append(kwargs)
+            return _Response()
+
+    class _Client:
+        class chat:  # noqa: N801 - mimics the OpenAI client shape
+            completions = _Completions()
+
+        async def close(self) -> None:
+            return None
+
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(
+            api_key="test",
+            model="DeepSeek-V4.1-Flash",
+            expected_model="DeepSeek-V4.1-Flash",
+        ),
+        client_factory=lambda **_kwargs: _Client(),
+        receipt_sink=receipts.append,
+    )
+    assert await invoke("v6_utility_scorer", "system", "{}") == {
+        "ok": True,
+        "items": [1],
+    }
+    assert "response_format" not in captured[0]
+    assert any(
+        receipt.get("structured_output_mode") == "prompt_json"
+        and receipt.get("status") == "parsed"
+        for receipt in receipts
+    )
 
 
 def test_memory_response_schema_omits_array_keywords_dashscope_rejects() -> None:

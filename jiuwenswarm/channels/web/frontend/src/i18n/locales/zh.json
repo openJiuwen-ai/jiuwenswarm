@@ -823,10 +823,6 @@
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
-      "proactive": "主动推荐",
-      "proactiveLimits": "推荐频率限制",
-      "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "multiModelCollaboration": "多模型协同",
       "toolOptimize": "工具检索优化",
       "designMode": "设计模式",
@@ -1174,20 +1170,6 @@
       },
       "external_cli_agent_codex_cli_path": {
         "title": "Codex CLI 路径"
-      },
-      "proactive_recommendation_enabled": {
-        "title": "启用主动推荐",
-        "description": "允许系统在满足条件时主动发送推荐。"
-      },
-      "proactive_recommendation_max_recommend_per_day": {
-        "title": "每日推荐上限",
-        "description": "每个用户每日主动推荐次数上限，防止打扰过多。默认值：10。",
-        "placeholder": "请输入 1–50 的整数"
-      },
-      "proactive_recommendation_max_rounds_per_tick": {
-        "title": "每次检查对话轮数",
-        "description": "每次检查时最多读取的近期对话轮数，用于推断推荐上下文。默认值：20。",
-        "placeholder": "请输入 1–50 的整数"
       },
       "multi_model_collaboration_enabled": {
         "title": "多模型协同",
@@ -2676,13 +2658,6 @@
         "failed": "安装失败",
         "running": "正在安装"
       }
-    },
-    "proactive": {
-      "typeLabel": {
-        "skill_recommend": "技能推荐",
-        "task_reminder": "任务提醒",
-        "need_exploration": "探索发现"
-      }
     }
   },
   "cron": {
@@ -2707,9 +2682,7 @@
     "disable": "停用",
     "loading": "正在加载任务列表...",
     "deleteConfirm": "确定要删除这个任务吗？",
-    "autoManaged": "自动维护",
-    "autoManagedHint": "此任务由主动推荐开关自动创建/删除；开关在设置→主动推荐。仅 Cron 表达式与时区可在此面板编辑，其余字段（名称/状态/描述/偏移/频道）不可改；删除请到设置关闭开关。",
-    "autoManagedToggleDisabled": "自动维护任务的开关由设置→主动推荐控制，不可在此切换。",
+    "autoManagedToggleDisabled": "此字段当前不可编辑。",
     "pageTitle": "定时任务",
     "pageSubtitle": "配置和管理按计划执行的自动化任务。",
     "actions": {
@@ -2948,8 +2921,7 @@
       "updated": "任务更新成功",
       "deleted": "任务删除成功",
       "statusUpdated": "任务状态更新成功",
-      "runNow": "任务已触发立即执行",
-      "proactiveRunNow": "推荐任务已在后台启动，将自动判断是否需要推荐，结果稍后提示。"
+      "runNow": "任务已触发立即执行"
     },
     "preview": {
       "loading": "正在加载下次触发时间...",

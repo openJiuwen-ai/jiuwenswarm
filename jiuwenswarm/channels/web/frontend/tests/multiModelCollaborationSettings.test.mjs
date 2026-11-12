@@ -79,7 +79,6 @@ await build({
           './ExperimentalSettings': [
             'A2UISetting',
             'ExternalCliCustomAgentsItem',
-            'ProactiveLimitsSetting',
             'RSISetting',
             'TaskAsrSetting',
             'TaskFullDuplexSetting',
@@ -275,7 +274,6 @@ test('experimental sections retain their order with a single computer control se
     'kv-cache-affinity',
     'team-organization',
     'team-scheduled-dispatch',
-    'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
     'computer-control',

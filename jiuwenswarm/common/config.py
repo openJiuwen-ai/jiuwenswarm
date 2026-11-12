@@ -1090,13 +1090,8 @@ def update_enable_free_models_in_config(value: bool) -> None:
 
 
 def update_proactive_recommendation_in_config(updates: dict[str, Any]) -> None:
-    """更新 proactive_recommendation 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "proactive_recommendation" not in data or data["proactive_recommendation"] is None:
-        data["proactive_recommendation"] = {}
-    section = data["proactive_recommendation"]
-    _merge_config_dict(section, updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """No-op: proactive recommendation settings removed."""
+    _ = updates
 
 
 def update_trajectory_ui_in_config(enabled: bool) -> None:

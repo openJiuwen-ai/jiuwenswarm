@@ -152,46 +152,13 @@ async def test_non_chat_does_not_copy_team_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_implicit_feedback_skips_proactive_and_non_chat(monkeypatch) -> None:
-    collector = types.ModuleType(
-        "jiuwenswarm.agents.harness.common.recommendation.feedback_collector"
-    )
-
-    def fail(*_args, **_kwargs):
-        raise AssertionError("这条请求不该记隐式反馈")
-
-    collector.find_latest_recommendation = fail
-    collector.record_implicit_feedback = fail
-    monkeypatch.setitem(sys.modules, collector.__name__, collector)
-
-    proactive = _request(
-        ReqMethod.CHAT_SEND,
-        session_id="sess-1",
-        params={"query": "系统指令", "source": "proactive_recommendation"},
-    )
-    await try_record_implicit_feedback(proactive)
-    await try_record_implicit_feedback(_request(ReqMethod.CHAT_RESUME, session_id="sess-1"))
-
-
-@pytest.mark.asyncio
-async def test_implicit_feedback_records_the_following_reply(monkeypatch) -> None:
-    recorded: list[tuple[str, str]] = []
-    collector = types.ModuleType(
-        "jiuwenswarm.agents.harness.common.recommendation.feedback_collector"
-    )
-    collector.find_latest_recommendation = lambda session_id, max_age_seconds=0: {"id": "rec-1"}
-    collector.record_implicit_feedback = lambda rec_id, query: recorded.append((rec_id, query))
-    monkeypatch.setitem(sys.modules, collector.__name__, collector)
-
+async def test_implicit_feedback_is_noop() -> None:
     await try_record_implicit_feedback(
         _request(ReqMethod.CHAT_SEND, session_id="sess-1", params={"query": "简洁点"})
     )
 
-    assert recorded == [("rec-1", "简洁点")]
 
-
-def test_websocket_still_calls_the_three_steps_on_the_server() -> None:
+def test_websocket_still_calls_chat_prep_steps_on_the_server() -> None:
     text = _SERVER_FILE.read_text(encoding="utf-8")
     assert "await self._trigger_before_chat_request_hook(request)" in text
     assert "await self._ensure_auto_team_binding_for_chat(request)" in text
-    assert "await self._try_record_implicit_feedback(request)" in text
