@@ -10677,7 +10677,7 @@ class JiuWenSwarmDeepAdapter:
                 pass
             ttse_rail = TTSERail(
                 llm=self._model,
-                model=self._default_model_name or config.get("model_name", "gpt-4"),
+                model=self._resolve_model_name(),
                 ttse_config=TTSEConfig(**ttse_kwargs),
                 trajectory_span_processor=trajectory_span_processor,
             )
@@ -12674,7 +12674,7 @@ class JiuWenSwarmDeepAdapter:
             if callable(update_llm):
                 update_llm(
                     self._model,
-                    self._default_model_name or config.get("model_name", "gpt-4"),
+                    self._resolve_model_name(),
                 )
 
         # Reuse existing SkillUseRail to preserve dynamically loaded skills
