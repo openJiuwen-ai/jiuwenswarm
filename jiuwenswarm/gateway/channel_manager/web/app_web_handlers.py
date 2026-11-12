@@ -5275,6 +5275,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("external_cli.install", _external_cli_install)
     channel.register_method("external_cli.custom_agent.remove", _external_cli_custom_agent_remove)
 
+    from jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers import (
+        register_rea_setup_handlers,
+    )
+
+    register_rea_setup_handlers(channel)
+
     async def _proxy_config_request(ws, req_id, params, session_id, user_id=None, *, req_method):
         """Execute configuration RPCs in the target AgentServer's directories.
 

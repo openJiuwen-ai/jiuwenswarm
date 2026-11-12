@@ -1,0 +1,1236 @@
+{
+  "schema_version": 1,
+  "rea_versions": ">=6.8 <7",
+  "components": [
+    {
+      "id": "java",
+      "display_name": "Java 21 / JDK",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "artifact_by_platform": {
+        "windows-x64": {
+          "version": "21.0.13+9",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip",
+            "https://ghfast.top/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip",
+            "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/x64/windows/OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip"
+          ],
+          "archive_type": "zip",
+          "size_bytes": 205421281,
+          "sha256": "a4dbaa05fca4bd89d84584e58c459bd732efebb1722af80ab13c6516832004f9",
+          "destination": "rea/cache/OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip",
+          "max_bytes": 314572800
+        },
+        "linux-x64": {
+          "version": "21.0.13+9",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",
+            "https://ghfast.top/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 207858352,
+          "sha256": "d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c",
+          "destination": "rea/cache/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",
+          "max_bytes": 314572800
+        },
+        "linux-arm64": {
+          "version": "21.0.13+9",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.13_9.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.13_9.tar.gz",
+            "https://ghfast.top/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.13_9.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 205995218,
+          "sha256": "e3522e707fc7dbe2a72c30746b1e7068301a0213ecd213d4491f35a14eb55578",
+          "destination": "rea/cache/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.13_9.tar.gz",
+          "max_bytes": 314572800
+        },
+        "macos-x64": {
+          "version": "21.0.13+9",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_mac_hotspot_21.0.13_9.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_mac_hotspot_21.0.13_9.tar.gz",
+            "https://ghfast.top/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_mac_hotspot_21.0.13_9.tar.gz",
+            "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/x64/mac/OpenJDK21U-jdk_x64_mac_hotspot_21.0.13_9.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 193957782,
+          "sha256": "9aa1d1c17ae5467a022679e7e0af5c00797d94ac462ed1a46f4db07a8a34a6dd",
+          "destination": "rea/cache/OpenJDK21U-jdk_x64_mac_hotspot_21.0.13_9.tar.gz",
+          "max_bytes": 314572800
+        },
+        "macos-arm64": {
+          "version": "21.0.13+9",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13_9.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13_9.tar.gz",
+            "https://ghfast.top/https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13_9.tar.gz",
+            "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/aarch64/mac/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13_9.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 199754598,
+          "sha256": "bf036b35b071bfb2f54f2c0af8ee8d88afa95ee6eb3dce02c0f94cfc2524d04a",
+          "destination": "rea/cache/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13_9.tar.gz",
+          "max_bytes": 314572800
+        }
+      },
+      "primary_timeout_seconds": 25,
+      "fallback_timeout_seconds": 1200,
+      "extract_to": "rea/tools/java/21.0.13",
+      "env": {
+        "JAVA_HOME": "${install_root}/rea/tools/java/21.0.13/jdk-21.0.13+9"
+      },
+      "env_by_platform": {
+        "macos-x64": {
+          "JAVA_HOME": "${install_root}/rea/tools/java/21.0.13/jdk-21.0.13+9/Contents/Home"
+        },
+        "macos-arm64": {
+          "JAVA_HOME": "${install_root}/rea/tools/java/21.0.13/jdk-21.0.13+9/Contents/Home"
+        }
+      },
+      "install_hint": "先复用兼容 JDK 21；没有时由 Workswarm 下载 Temurin 并校验 SHA-256",
+      "default_selected": true
+    },
+    {
+      "id": "ghidra",
+      "display_name": "Ghidra",
+      "group": "analysis_engine",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "requires": ["java-full-jdk-21"],
+      "artifact": {
+        "version": "12.1.4",
+        "url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip",
+        "fallback_urls": [
+          "https://gh-proxy.com/https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip",
+          "https://ghfast.top/https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip"
+        ],
+        "primary_timeout_seconds": 25,
+        "fallback_timeout_seconds": 1800,
+        "size_bytes": 569649598,
+        "sha256": "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db",
+        "archive_type": "zip",
+        "destination": "rea/cache/ghidra_12.1.4_PUBLIC_20260921.zip",
+        "max_bytes": 734003200
+      },
+      "extract_to": "rea/tools/ghidra/12.1.4",
+      "env": {
+        "GHIDRA_INSTALL_DIR": "${install_root}/rea/tools/ghidra/12.1.4/ghidra_12.1.4_PUBLIC"
+      },
+      "install_hint": "先复用兼容 Ghidra；没有时由 Workswarm 下载并校验固定版本",
+      "env_keys": ["GHIDRA_INSTALL_DIR", "JAVA_HOME"],
+      "default_selected": true,
+      "assisted_setup": {
+        "summary": "Workswarm 会先复用兼容的本地 Ghidra/JDK；没有或在支持的版本范围外时，可用一键安装下载固定版本。这里也保留手动指定本地目录的入口。",
+        "prerequisites": [
+          "Ghidra 已解压到本机目录",
+          "安装了 JDK 21 或更高版本（不能只有 JRE）"
+        ],
+        "instructions": [
+          "优先让一键安装复用已有 Ghidra；也可从官方 Releases 手动下载 ZIP 并解压到固定目录。",
+          "如果系统 PATH 中还没有完整 JDK 21，一键安装会自动下载 Temurin 21，也可以在下方手动指定已有目录。",
+          "选择 Ghidra 解压目录；需要时再选择 JDK 的根目录（其中应包含 bin/java）。",
+          "点击“保存并验证”。Workswarm 会把路径写入 REA MCP 的环境，并重新查询 Provider 状态。"
+        ],
+        "links": [
+          {"label": "Ghidra 官方 Releases", "url": "https://github.com/NationalSecurityAgency/ghidra/releases"},
+          {"label": "Ghidra 安装说明", "url": "https://github.com/NationalSecurityAgency/ghidra#install"},
+          {"label": "Eclipse Temurin JDK", "url": "https://adoptium.net/temurin/releases/"}
+        ],
+        "inputs": [
+          {
+            "id": "ghidra_dir",
+            "label": "Ghidra 解压目录",
+            "type": "directory",
+            "env_key": "GHIDRA_INSTALL_DIR",
+            "required": true,
+            "placeholder": "选择包含 support/analyzeHeadless 的目录",
+            "help": "通常选择 ghidra_<version>_PUBLIC 目录，而不是下载的 ZIP 文件。",
+            "probe_files": ["support/analyzeHeadless", "support/analyzeHeadless.bat"]
+          },
+          {
+            "id": "java_home",
+            "label": "JDK 根目录（可选）",
+            "type": "directory",
+            "env_key": "JAVA_HOME",
+            "required": false,
+            "placeholder": "选择包含 bin/java 的 JDK 目录",
+            "help": "若 java -version 已在系统 PATH 中可用，可以不填。",
+            "probe_files": ["bin/java", "bin/java.exe"]
+          }
+        ],
+        "required": ["ghidra_dir"],
+        "activation": "保存后会重新启动一次临时 REA MCP 进行验证。已经打开的会话需要重新切换 REA 连接器，后续会话会继承新环境。"
+      }
+    },
+    {
+      "id": "jadx",
+      "display_name": "JADX / Android",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "macos-x64", "macos-arm64"],
+      "requires": ["java-full-jdk"],
+      "artifact": {
+        "version": "0.7.1",
+        "url": "https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar",
+        "fallback_urls": [
+          "https://gh-proxy.com/https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar",
+          "https://ghfast.top/https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar"
+        ],
+        "primary_timeout_seconds": 25,
+        "fallback_timeout_seconds": 900,
+        "size_bytes": 42619858,
+        "sha256": "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75",
+        "destination": "rea/tools/jadx/0.7.1/jadx-headless-mcp-0.7.1-all.jar",
+        "max_bytes": 67108864
+      },
+      "env": {
+        "REA_JADX_MCP_JAR": "${install_root}/rea/tools/jadx/0.7.1/jadx-headless-mcp-0.7.1-all.jar"
+      },
+      "install_hint": "由 Workswarm 下载并校验 JADX bridge，复用已有 JDK",
+      "default_selected": true,
+      "assisted_setup": {
+        "summary": "JADX bridge 由 Workswarm 自动下载。JADX 运行仍需要一份完整 JDK；如果兼容 JDK 已在 PATH 中，不需要填写。",
+        "prerequisites": ["JDK 17 或更高版本（不能只有 JRE）"],
+        "instructions": [
+          "先在这个页面确认“增强能力”是否显示 JADX 可自动安装。",
+          "若显示缺少 JDK，从 Eclipse Temurin 或其他可信供应商安装 JDK 21。",
+          "选择 JDK 根目录并保存；页面重新扫描后，使用唯一的“一键安装 / 修复”按钮安装 JADX。"
+        ],
+        "links": [
+          {"label": "Eclipse Temurin JDK", "url": "https://adoptium.net/temurin/releases/"},
+          {"label": "REA Android 分析说明", "url": "https://github.com/morluto/rea/blob/main/docs/android-analysis.md"}
+        ],
+        "commands": [
+          {
+            "label": "Windows PowerShell · Winget",
+            "platforms": ["windows-x64"],
+            "language": "powershell",
+            "content": "winget install --id EclipseAdoptium.Temurin.21.JDK -e",
+            "note": "安装后重新打开 Workswarm，或在下方选择新 JDK 的根目录。"
+          },
+          {
+            "label": "macOS · Homebrew",
+            "platforms": ["macos-x64", "macos-arm64"],
+            "language": "shell",
+            "content": "brew install --cask temurin@21",
+            "note": "如果 Homebrew 未安装，请优先使用上方官方安装包链接。"
+          },
+          {
+            "label": "Ubuntu / Debian · APT",
+            "platforms": ["linux-x64", "linux-arm64"],
+            "language": "shell",
+            "content": "sudo apt update && sudo apt install openjdk-21-jdk",
+            "note": "其他 Linux 发行版请按包管理器或 Temurin 官方说明安装。"
+          }
+        ],
+        "inputs": [
+          {
+            "id": "java_home",
+            "label": "JDK 根目录",
+            "type": "directory",
+            "env_key": "JAVA_HOME",
+            "required": true,
+            "placeholder": "选择包含 bin/java 的 JDK 目录",
+            "help": "只选择 JDK 根目录，不要选择 bin 目录或 java.exe。",
+            "probe_files": ["bin/java", "bin/java.exe"]
+          }
+        ],
+        "required": ["java_home"],
+        "activation": "保存后会重新验证 REA MCP。随后点击主按钮完成 JADX 下载和校验。"
+      }
+    },
+    {
+      "id": "ida",
+      "display_name": "IDA MCP adapter",
+      "group": "analysis_engine",
+      "install_mode": "manual_license",
+      "platforms": ["windows-x64", "linux-x64", "macos-x64", "macos-arm64"],
+      "install_hint": "安装 IDA 和上游 IDA MCP，并在软件中完成许可证激活",
+      "env_keys": ["REA_IDA_MCP_CONFIG"],
+      "default_selected": false,
+      "assisted_setup": {
+        "summary": "REA 通过上游 IDA MCP 适配器访问 IDA。IDA 本体、许可证、插件和上游 MCP 都由用户安装，Workswarm 只保存注册文件引用并在本地验证。",
+        "prerequisites": [
+          "已安装 IDA Pro 或 IDA Free，并在 IDA 软件内完成许可证或登录流程",
+          "已按上游文档安装 ida-pro-mcp 或受支持的 IDA 原生 MCP 插件"
+        ],
+        "instructions": [
+          "先根据你使用的模式阅读 REA 的 IDA Provider 文档，确认 attached、native 或 headless 的要求。",
+          "在 IDA 软件中完成官方许可证或 Demo/Free 登录；不要把许可证密钥粘贴到这里。",
+          "按上游 ida-pro-mcp 或 ida-free-mcp 文档安装并验证 MCP 注册。",
+          "如果你已经有 JSON 注册文件，选择该文件；也可以把注册 JSON 粘贴到下方由 Workswarm 保存到自己的工作区。",
+          "保存后页面会重新验证 REA MCP。真正分析前仍需要确保 IDA、上游 MCP 和目标文件的模式互相匹配。"
+        ],
+        "links": [
+          {"label": "IDA Pro 产品页", "url": "https://hex-rays.com/ida-pro/"},
+          {"label": "IDA Free", "url": "https://hex-rays.com/ida-free/"},
+          {"label": "REA IDA Provider 文档", "url": "https://github.com/morluto/rea/blob/main/docs/ida-provider.md"},
+          {"label": "ida-pro-mcp", "url": "https://github.com/mrexodia/ida-pro-mcp"},
+          {"label": "IDA Free MCP 插件", "url": "https://github.com/0xshlomil/ida-free-mcp"}
+        ],
+        "inputs": [
+          {
+            "id": "ida_config_path",
+            "label": "已有 IDA MCP JSON 文件（二选一）",
+            "type": "path",
+            "env_key": "REA_IDA_MCP_CONFIG",
+            "required": false,
+            "placeholder": "选择现有 ida-mcp.json",
+            "help": "选择后直接引用原文件；Workswarm 不复制其中的凭据。"
+          },
+          {
+            "id": "registration_json",
+            "label": "或粘贴 IDA MCP JSON（二选一）",
+            "type": "json",
+            "env_key": "REA_IDA_MCP_CONFIG",
+            "target": "rea/config/ida-mcp.json",
+            "required": false,
+            "placeholder": "{\"command\":\"python\",\"args\":[...],\"env\":{...}}",
+            "help": "只粘贴 command/args/env 或 mcpServers 注册结构；不要填写 IDA 许可证、密码或访问令牌。"
+          }
+        ],
+        "required_any": ["ida_config_path", "registration_json"],
+        "activation": "保存后会验证 REA MCP 本身。IDA 及上游 MCP 是否能启动，以下一次实际分析或 rea doctor --provider ida 的结果为准。"
+      }
+    },
+    {
+      "id": "hopper",
+      "display_name": "Hopper Disassembler",
+      "group": "analysis_engine",
+      "install_mode": "rea_setup",
+      "platforms": ["linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "install_hint": "先复用本地 Hopper；没有时调用 REA 官方安装器安装已验证的免费 Demo",
+      "env_keys": ["HOPPER_LAUNCHER_PATH"],
+      "default_selected": true,
+      "assisted_setup": {
+        "summary": "Hopper 有可免费使用的 Demo。Workswarm 会先复用已有安装，没有时在受支持平台调用 REA 官方安装器下载、校验并安装 Demo；当前 Windows 不受 REA Provider 支持。",
+        "prerequisites": ["受支持的 macOS 或 Linux 系统", "在 Hopper 中自行选择 Demo 或商业授权"],
+        "instructions": [
+          "一键安装会调用 REA 官方 `rea setup --yes --install-hopper`，由 REA 下载、校验并安装 Hopper Demo。",
+          "安装 Hopper，并在软件界面中自行选择 Demo 或完成商业许可证激活。",
+          "选择实际的 Hopper 启动器文件，而不是 `.app` 目录。",
+          "保存后页面会重新扫描 Provider。首次大型分析可能还需要在 REA 环境中调大启动超时。"
+        ],
+        "links": [
+          {"label": "Hopper 官方购买", "url": "https://www.hopperapp.com/buy.html"},
+          {"label": "Hopper 下载", "url": "https://www.hopperapp.com/download.html"},
+          {"label": "REA Hopper 配置说明", "url": "https://github.com/morluto/rea/blob/main/docs/installation.md#hopper"}
+        ],
+        "inputs": [
+          {
+            "id": "launcher_path",
+            "label": "Hopper 启动器路径",
+            "type": "path",
+            "env_key": "HOPPER_LAUNCHER_PATH",
+            "required": true,
+            "placeholder": "选择 Hopper 可执行文件",
+            "help": "必须选择可执行文件；macOS 不要选择 Hopper Disassembler.app 目录。",
+            "expect": "executable"
+          }
+        ],
+        "required": ["launcher_path"],
+        "activation": "保存后会临时启动 REA MCP 并重新查询 Provider。Hopper 的许可证仍由 Hopper 自己管理，不会进入 Workswarm 或模型上下文。"
+      }
+    },
+    {
+      "id": "kuna",
+      "display_name": "Kuna",
+      "group": "analysis_engine",
+      "install_mode": "managed",
+      "platforms": ["linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "install_hint": "自动复用或安装 REA 验证过的 Kuna 1.833，并写入 REA_KUNA_COMMAND",
+      "env_key": "REA_KUNA_COMMAND",
+      "executable_names": ["kuna.exe", "kuna"],
+      "default_selected": true,
+      "artifact_by_platform": {
+        "linux-x64": {
+          "version": "1.833",
+          "url": "https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-linux-x86_64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-linux-x86_64.tar.gz",
+            "https://ghfast.top/https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-linux-x86_64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 22305032,
+          "sha256": "e9f047fb5a93925ede6d869df22c26c1c0ced90764ace7467ae90f880625d530",
+          "destination": "rea/cache/kuna-v1.833-linux-x86_64.tar.gz"
+        },
+        "linux-arm64": {
+          "version": "1.833",
+          "url": "https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-linux-arm64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-linux-arm64.tar.gz",
+            "https://ghfast.top/https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-linux-arm64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 21884026,
+          "sha256": "c1f7cd7cdb990cdf1149d2f595a56adf3a4afce052d014b2b6670adbfbcc71e5",
+          "destination": "rea/cache/kuna-v1.833-linux-arm64.tar.gz"
+        },
+        "macos-x64": {
+          "version": "1.833",
+          "url": "https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-macos-x86_64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-macos-x86_64.tar.gz",
+            "https://ghfast.top/https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-macos-x86_64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 22029501,
+          "sha256": "6b1c45bc28c0b4281599ce757762b8bd4f6c13df94352e564aaa7dc980af2df0",
+          "destination": "rea/cache/kuna-v1.833-macos-x86_64.tar.gz"
+        },
+        "macos-arm64": {
+          "version": "1.833",
+          "url": "https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-macos-arm64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-macos-arm64.tar.gz",
+            "https://ghfast.top/https://github.com/Noelo-Lab/kuna/releases/download/v1.833/kuna-v1.833-macos-arm64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 21384415,
+          "sha256": "6d5f2157bf7aef705c670b044a38f69574e184bf0ebd062f2a0d5e0545844c90",
+          "destination": "rea/cache/kuna-v1.833-macos-arm64.tar.gz"
+        }
+      },
+      "extract_to": "rea/tools/kuna/1.833",
+      "assisted_setup": {
+        "summary": "Workswarm 自动复用本地 Kuna 1.833 或从固定 Release 安装，并写入 REA MCP 环境。",
+        "prerequisites": ["当前平台支持 Kuna 二进制"],
+        "instructions": ["优先一键安装；也可手动选择已有的 Kuna 可执行文件。"],
+        "links": [{"label": "Kuna GitHub", "url": "https://github.com/Noelo-Lab/kuna"}],
+        "inputs": [
+          {
+            "id": "kuna_path",
+            "label": "Kuna 可执行文件",
+            "type": "path",
+            "env_key": "REA_KUNA_COMMAND",
+            "required": true,
+            "placeholder": "选择 kuna 可执行文件",
+            "expect": "executable"
+          }
+        ],
+        "required": ["kuna_path"],
+        "activation": "保存后重新验证 Provider。"
+      }
+    },
+    {
+      "id": "jeb",
+      "display_name": "JEB / Android 反编译",
+      "group": "analysis_engine",
+      "install_mode": "manual_license",
+      "platforms": ["windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "install_hint": "启动带 MCP 的 JEB 客户端，并配置 JEB MCP 地址",
+      "env_keys": ["REA_JEB_MCP_URL"],
+      "default_selected": false,
+      "assisted_setup": {
+        "summary": "REA 连接外部 JEB MCP 服务，不安装、不启动 JEB，也不处理许可证。",
+        "prerequisites": ["已安装并激活 JEB Pro", "JEB 客户端或 headless launcher 已提供 MCP 服务"],
+        "instructions": [
+          "在 JEB 软件中完成厂商许可证流程。",
+          "启动提供 MCP 的 JEB 客户端或 headless launcher。",
+          "填写 JEB MCP 地址；未填写时 REA 默认使用 http://127.0.0.1:8425/mcp。",
+          "保存后页面会重新查询 Provider；JEB 未运行时仍会显示不可用。"
+        ],
+        "links": [
+          {"label": "JEB 官方产品页", "url": "https://www.pnfsoftware.com/"}
+        ],
+        "inputs": [
+          {
+            "id": "jeb_mcp_url",
+            "label": "JEB MCP URL",
+            "type": "text",
+            "format": "url",
+            "env_key": "REA_JEB_MCP_URL",
+            "required": true,
+            "placeholder": "http://127.0.0.1:8425/mcp",
+            "help": "必须是已启动 JEB MCP 服务可访问的 HTTP URL。"
+          }
+        ],
+        "required": ["jeb_mcp_url"],
+        "activation": "保存后重新验证 REA MCP；JEB 本体是否可操作仍取决于其许可证、客户端状态和工具目录。"
+      }
+    },
+    {
+      "id": "adb",
+      "display_name": "ADB / Android 设备",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "macos-x64", "macos-arm64"],
+      "install_hint": "由 Workswarm 下载官方 Android platform-tools",
+      "artifact_by_platform": {
+        "windows-x64": {
+          "version": "37.0.1",
+          "url": "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip",
+          "sha1": "e03e78b1d80b396f1c3358e31251cb31740e1110",
+          "archive_type": "zip",
+          "size_bytes": 8044989,
+          "destination": "rea/cache/platform-tools_r37.0.1.zip",
+          "max_bytes": 33554432
+        },
+        "linux-x64": {
+          "version": "37.0.1",
+          "url": "https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip",
+          "sha1": "477254aa5f903c15cf51001717bdf347fb6b53e0",
+          "archive_type": "zip",
+          "size_bytes": 8044989,
+          "destination": "rea/cache/platform-tools_r37.0.1.zip",
+          "max_bytes": 33554432
+        },
+        "macos-x64": {
+          "version": "37.0.1",
+          "url": "https://dl.google.com/android/repository/platform-tools_r37.0.1-darwin.zip",
+          "fallback_urls": [
+            "https://mirrors.cloud.tencent.com/AndroidSDK/platform-tools_r37.0.1-darwin.zip"
+          ],
+          "sha1": "6ae73f4de6452dc57e62ec02b68eed92a4c21661",
+          "archive_type": "zip",
+          "size_bytes": 16110554,
+          "destination": "rea/cache/platform-tools_r37.0.1.zip",
+          "max_bytes": 33554432
+        },
+        "macos-arm64": {
+          "version": "37.0.1",
+          "url": "https://dl.google.com/android/repository/platform-tools_r37.0.1-darwin.zip",
+          "fallback_urls": [
+            "https://mirrors.cloud.tencent.com/AndroidSDK/platform-tools_r37.0.1-darwin.zip"
+          ],
+          "sha1": "6ae73f4de6452dc57e62ec02b68eed92a4c21661",
+          "archive_type": "zip",
+          "size_bytes": 16110554,
+          "destination": "rea/cache/platform-tools_r37.0.1.zip",
+          "max_bytes": 33554432
+        }
+      },
+      "extract_to": "rea/tools/adb/37.0.1",
+      "executables": {
+        "windows-x64": "platform-tools/adb.exe",
+        "linux-x64": "platform-tools/adb",
+        "macos-x64": "platform-tools/adb",
+        "macos-arm64": "platform-tools/adb"
+      },
+      "env_key": "REA_ADB_PATH",
+      "default_selected": true,
+      "assisted_setup": {
+        "summary": "选择本机已有的 ADB 可执行文件；Workswarm 会写入 REA MCP 环境并用 REA 客户端探针验证。",
+        "prerequisites": ["ADB 或 Android platform-tools 已安装"],
+        "instructions": [
+          "选择 adb 或 adb.exe 的实际文件路径。",
+          "保存后 Workswarm 会重新启动 REA MCP 并执行 ADB 客户端探测。"
+        ],
+        "links": [
+          {"label": "Android Platform Tools", "url": "https://developer.android.com/tools/releases/platform-tools"}
+        ],
+        "inputs": [
+          {
+            "id": "adb_path",
+            "label": "ADB 可执行文件",
+            "type": "path",
+            "env_key": "REA_ADB_PATH",
+            "required": true,
+            "placeholder": "选择 adb 或 adb.exe",
+            "help": "必须选择可执行文件，而不是 SDK 目录。",
+            "expect": "executable"
+          }
+        ],
+        "required": ["adb_path"],
+        "activation": "保存后会重新验证 REA MCP 和 ADB 客户端。"
+      }
+    },
+    {
+      "id": "apktool",
+      "display_name": "Apktool / Android 资源",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "macos-x64", "macos-arm64"],
+      "requires": ["java-full-jdk"],
+      "install_hint": "由 Workswarm 下载 Apktool 并生成本地启动器",
+      "artifact": {
+        "version": "3.0.3",
+        "url": "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar",
+        "fallback_urls": [
+          "https://gh-proxy.com/https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar",
+          "https://ghfast.top/https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar"
+        ],
+        "primary_timeout_seconds": 25,
+        "fallback_timeout_seconds": 180,
+        "size_bytes": 15478013,
+        "sha256": "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423",
+        "destination": "rea/tools/apktool/3.0.3/apktool_3.0.3.jar",
+        "max_bytes": 33554432
+      },
+      "java_launcher": {
+        "path": "rea/tools/apktool/3.0.3",
+        "jar": "apktool_3.0.3.jar",
+        "env_key": "REA_APKTOOL_COMMAND"
+      },
+      "default_selected": true,
+      "assisted_setup": {
+        "summary": "选择已有 Apktool 启动器，或先安装完整 JDK 后让 Workswarm 生成受管启动器。",
+        "prerequisites": ["Apktool 与 JDK 17 或更高版本已安装"],
+        "instructions": [
+          "选择 apktool、apktool.bat 或 apktool.cmd 启动器。",
+          "保存后 Workswarm 会重新启动 REA MCP 并执行 Apktool 客户端探测。"
+        ],
+        "links": [
+          {"label": "Apktool 官方安装说明", "url": "https://apktool.org/docs/install"}
+        ],
+        "inputs": [
+          {
+            "id": "apktool_command",
+            "label": "Apktool 启动器",
+            "type": "path",
+            "env_key": "REA_APKTOOL_COMMAND",
+            "required": true,
+            "placeholder": "选择 apktool 启动器",
+            "help": "Windows 通常选择 apktool.cmd。",
+            "expect": "executable"
+          }
+        ],
+        "required": ["apktool_command"],
+        "activation": "保存后会重新验证 REA MCP 和 Apktool 客户端。"
+      }
+    },
+    {
+      "id": "firmware",
+      "display_name": "固件提取",
+      "group": "specialized_tool",
+      "install_mode": "manual",
+      "platforms": ["linux-x64", "linux-arm64"],
+      "install_hint": "安装 Binwalk 或 Unblob 及所需 extractor",
+      "env_keys": ["REA_BINWALK_COMMAND", "REA_UNBLOB_COMMAND"],
+      "default_selected": false,
+      "assisted_setup": {
+        "summary": "固件提取在 Linux 上由 Binwalk 或 Unblob 提供。至少配置其中一个可执行文件。",
+        "prerequisites": ["Linux 主机", "至少安装 Binwalk 或 Unblob 之一，并按上游说明安装所需 extractor"],
+        "instructions": [
+          "按当前发行版和上游文档安装 Binwalk 或 Unblob，并补齐其外部 extractor。",
+          "选择至少一个可执行文件的绝对路径；两个都安装时可以同时配置。",
+          "保存后重新扫描。若提取过程中缺少外部 extractor，REA 会在分析结果中报告具体依赖。"
+        ],
+        "links": [
+          {"label": "Binwalk", "url": "https://github.com/ReFirmLabs/binwalk"},
+          {"label": "Unblob", "url": "https://github.com/onekey-sec/unblob"},
+          {"label": "REA 固件分析说明", "url": "https://github.com/morluto/rea/blob/main/docs/firmware-analysis.md"}
+        ],
+        "inputs": [
+          {
+            "id": "binwalk_path",
+            "label": "Binwalk 可执行文件",
+            "type": "path",
+            "env_key": "REA_BINWALK_COMMAND",
+            "required": false,
+            "placeholder": "可选",
+            "help": "选择二进制可执行文件，不是 Python 包目录。",
+            "expect": "executable"
+          },
+          {
+            "id": "unblob_path",
+            "label": "Unblob 可执行文件",
+            "type": "path",
+            "env_key": "REA_UNBLOB_COMMAND",
+            "required": false,
+            "placeholder": "可选",
+            "help": "选择二进制可执行文件，不是 Python 包目录。",
+            "expect": "executable"
+          }
+        ],
+        "required_any": ["binwalk_path", "unblob_path"],
+        "activation": "保存后会重新验证 MCP；实际提取时缺失的 extractor 会由 REA 在诊断中列出。"
+      }
+    },
+    {
+      "id": "pcap",
+      "display_name": "PCAP 分析",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "auto_platforms": ["windows-x64", "macos-x64", "macos-arm64"],
+      "install_hint": "安装 TShark/Capinfos 并配置命令路径",
+      "env_keys": ["REA_TSHARK_COMMAND", "REA_CAPINFOS_COMMAND"],
+      "default_selected": true,
+      "artifact_by_platform": {
+        "windows-x64": {
+          "version": "4.6.9",
+          "url": "https://2.na.dl.wireshark.org/win64/all-versions/Wireshark-4.6.9-x64.msi",
+          "fallback_urls": [
+            "https://1.na.dl.wireshark.org/win64/all-versions/Wireshark-4.6.9-x64.msi",
+            "https://www.wireshark.org/download/win64/all-versions/Wireshark-4.6.9-x64.msi",
+            "https://mirrors.tuna.tsinghua.edu.cn/wireshark/win64/all-versions/Wireshark-4.6.9-x64.msi"
+          ],
+          "primary_timeout_seconds": 900,
+          "fallback_timeout_seconds": 900,
+          "size_bytes": 80433152,
+          "sha256": "1975dfc96581a9b674fda3f41ac1585963b4ba52ea9459f3b6d9cedfac3a7217",
+          "destination": "rea/cache/Wireshark-4.6.9-x64.msi",
+          "max_bytes": 134217728
+        },
+        "macos-x64": {
+          "version": "4.6.9",
+          "url": "https://mirrors.tuna.tsinghua.edu.cn/wireshark/osx/Wireshark%204.6.9.dmg",
+          "fallback_urls": [
+            "https://2.na.dl.wireshark.org/osx/all-versions/Wireshark%204.6.9.dmg",
+            "https://1.na.dl.wireshark.org/osx/all-versions/Wireshark%204.6.9.dmg"
+          ],
+          "archive_type": "dmg",
+          "primary_timeout_seconds": 1800,
+          "fallback_timeout_seconds": 1800,
+          "size_bytes": 147277050,
+          "sha256": "10bd54ccdc3f40457f6a1f0c517bc93703fcb327c4cd4b93002e7a623dacbf38",
+          "destination": "rea/cache/Wireshark 4.6.9.dmg",
+          "max_bytes": 201326592
+        },
+        "macos-arm64": {
+          "version": "4.6.9",
+          "url": "https://mirrors.tuna.tsinghua.edu.cn/wireshark/osx/Wireshark%204.6.9.dmg",
+          "fallback_urls": [
+            "https://2.na.dl.wireshark.org/osx/all-versions/Wireshark%204.6.9.dmg",
+            "https://1.na.dl.wireshark.org/osx/all-versions/Wireshark%204.6.9.dmg"
+          ],
+          "archive_type": "dmg",
+          "primary_timeout_seconds": 1800,
+          "fallback_timeout_seconds": 1800,
+          "size_bytes": 147277050,
+          "sha256": "10bd54ccdc3f40457f6a1f0c517bc93703fcb327c4cd4b93002e7a623dacbf38",
+          "destination": "rea/cache/Wireshark 4.6.9.dmg",
+          "max_bytes": 201326592
+        }
+      },
+      "extract_to": "rea/tools/pcap/4.6.9",
+      "env_by_platform": {
+        "macos-x64": {
+          "REA_TSHARK_COMMAND": "${install_root}/rea/tools/pcap/4.6.9/Wireshark.app/Contents/MacOS/tshark",
+          "REA_CAPINFOS_COMMAND": "${install_root}/rea/tools/pcap/4.6.9/Wireshark.app/Contents/MacOS/capinfos"
+        },
+        "macos-arm64": {
+          "REA_TSHARK_COMMAND": "${install_root}/rea/tools/pcap/4.6.9/Wireshark.app/Contents/MacOS/tshark",
+          "REA_CAPINFOS_COMMAND": "${install_root}/rea/tools/pcap/4.6.9/Wireshark.app/Contents/MacOS/capinfos"
+        }
+      },
+      "installer_by_platform": {
+        "windows-x64": {
+          "type": "msi_admin",
+          "target": "rea/tools/pcap/4.6.9",
+          "timeout_seconds": 600
+        }
+      },
+      "assisted_setup": {
+        "summary": "PCAP 能力需要 Wireshark 4.x 的 tshark 和 capinfos。Workswarm 在 Windows 与 macOS 可自动安装；macOS 仅支持上游允许的工具身份探测。",
+        "prerequisites": [
+          "Wireshark 4.x 已安装",
+          "macOS 当前只支持 tshark/capinfos 客户端探测，抓包摘要需要 Linux util-linux prlimit 或 Windows Job Object",
+          "Linux 上需要手动配置 Wireshark 与 util-linux prlimit"
+        ],
+        "instructions": [
+          "Windows 与 macOS 优先使用 Workswarm 管理的固定版本；国内镜像下载后仍按官方发布清单校验哈希。",
+          "Linux 请从系统包管理器或 Wireshark 官方页面安装完整工具集，并分别选择 tshark 和 capinfos。",
+          "保存后页面会重新验证 MCP。macOS 的 inspect_pcap_capture 会明确返回 unsupported_host，不会伪装成可用。"
+        ],
+        "links": [
+          {"label": "Wireshark 下载", "url": "https://www.wireshark.org/download.html"},
+          {"label": "清华 Wireshark 镜像", "url": "https://mirrors.tuna.tsinghua.edu.cn/wireshark/"},
+          {"label": "REA PCAP 分析说明", "url": "https://github.com/morluto/rea/blob/main/docs/pcap-analysis.md"}
+        ],
+        "inputs": [
+          {
+            "id": "tshark_path",
+            "label": "TShark 可执行文件",
+            "type": "path",
+            "env_key": "REA_TSHARK_COMMAND",
+            "required": true,
+            "placeholder": "选择 tshark",
+            "help": "需要 Wireshark 4.x 对应的 tshark。",
+            "expect": "executable"
+          },
+          {
+            "id": "capinfos_path",
+            "label": "Capinfos 可执行文件",
+            "type": "path",
+            "env_key": "REA_CAPINFOS_COMMAND",
+            "required": true,
+            "placeholder": "选择 capinfos",
+            "help": "通常和 tshark 位于同一目录。",
+            "expect": "executable"
+          }
+        ],
+        "required": ["tshark_path", "capinfos_path"],
+        "activation": "保存后会重新验证 MCP。即使工具通过探测，具体文件仍可能因格式、权限或主机边界失败。"
+      }
+    },
+    {
+      "id": "wakaru",
+      "display_name": "JavaScript 恢复",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["linux-x64"],
+      "install_hint": "自动复用或安装 REA 验证过的 Wakaru 1.14.0",
+      "env_key": "REA_WAKARU_COMMAND",
+      "executable_names": ["wakaru"],
+      "default_selected": true,
+      "artifact_by_platform": {
+        "linux-x64": {
+          "version": "1.14.0",
+          "url": "https://github.com/pionxzh/wakaru/releases/download/v1.14.0/wakaru-linux-x64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/pionxzh/wakaru/releases/download/v1.14.0/wakaru-linux-x64.tar.gz",
+            "https://ghfast.top/https://github.com/pionxzh/wakaru/releases/download/v1.14.0/wakaru-linux-x64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 9899060,
+          "sha256": "db0e620034723195ab426e94d00d55dbd8fd0106a928ada2563f1103196d09fa",
+          "destination": "rea/cache/wakaru-v1.14.0-linux-x64.tar.gz"
+        }
+      },
+      "extract_to": "rea/tools/wakaru/1.14.0",
+      "assisted_setup": {
+        "summary": "Workswarm 自动复用或安装固定版本 Wakaru，并写入 REA MCP 环境。",
+        "prerequisites": ["Linux x64 主机", "util-linux prlimit"],
+        "instructions": ["优先一键安装；需要时也可手动指定 Wakaru 可执行文件。"],
+        "links": [
+          {"label": "Wakaru", "url": "https://github.com/pionxzh/wakaru"}
+        ],
+        "inputs": [
+          {
+            "id": "wakaru_path",
+            "label": "Wakaru 可执行文件",
+            "type": "path",
+            "env_key": "REA_WAKARU_COMMAND",
+            "required": true,
+            "placeholder": "选择 wakaru",
+            "expect": "executable"
+          }
+        ],
+        "required": ["wakaru_path"],
+        "activation": "保存后会重新验证 MCP 和 Provider。"
+      }
+    },
+    {
+      "id": "pwntools",
+      "display_name": "pwntools / ELF",
+      "group": "specialized_tool",
+      "install_mode": "python_venv",
+      "platforms": ["linux-x64"],
+      "install_hint": "复用兼容 Python，或使用受管 uv 创建 pwntools 4.15.0 环境",
+      "env_key": "REA_PWNTOOLS_PYTHON",
+      "python_packages": {
+        "pwntools": "4.15.0",
+        "pyelftools": "0.33",
+        "unicorn": "2.1.2"
+      },
+      "default_selected": true
+    },
+    {
+      "id": "wabt",
+      "display_name": "WABT / WASM",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "linux-arm64", "macos-arm64"],
+      "install_hint": "自动安装 WABT 1.0.42 并写入 REA_WABT_BIN_DIRECTORY",
+      "env_key": "REA_WABT_BIN_DIRECTORY",
+      "executable_names": ["wasm-validate.exe", "wasm-validate"],
+      "env_directory": true,
+      "default_selected": true,
+      "artifact_by_platform": {
+        "windows-x64": {
+          "version": "1.0.42",
+          "url": "https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-windows-x64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-windows-x64.tar.gz",
+            "https://ghfast.top/https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-windows-x64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 6519558,
+          "sha256": "62f1eb2b51aa57cf0f0b8ba333bf2c72a049930aa9c5de01dcad271c4fe48c88",
+          "destination": "rea/cache/wabt-1.0.42-windows-x64.tar.gz"
+        },
+        "linux-x64": {
+          "version": "1.0.42",
+          "url": "https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-x64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-x64.tar.gz",
+            "https://ghfast.top/https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-x64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 4761911,
+          "sha256": "84895407a6bbb80e918f33b16b2fb2206021c150b6bc9ff6f761263a745ab131",
+          "destination": "rea/cache/wabt-1.0.42-linux-x64.tar.gz"
+        },
+        "linux-arm64": {
+          "version": "1.0.42",
+          "url": "https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-arm64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-arm64.tar.gz",
+            "https://ghfast.top/https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-arm64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 4817547,
+          "sha256": "a7632c1cc66f70886441842ecf5a2ffa91a98c79e026059458451234ad013ea8",
+          "destination": "rea/cache/wabt-1.0.42-linux-arm64.tar.gz"
+        },
+        "macos-arm64": {
+          "version": "1.0.42",
+          "url": "https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-macos-arm64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-macos-arm64.tar.gz",
+            "https://ghfast.top/https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-macos-arm64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 3695890,
+          "sha256": "3f654779b436c628db3ca4323c51538815f5fbc887a6d5f3bb1c18d36281e240",
+          "destination": "rea/cache/wabt-1.0.42-macos-arm64.tar.gz"
+        }
+      },
+      "extract_to": "rea/tools/wabt/1.0.42"
+    },
+    {
+      "id": "mitmproxy",
+      "display_name": "mitmproxy / Web 抓包",
+      "group": "specialized_tool",
+      "install_mode": "python_tool",
+      "platforms": ["linux-x64", "linux-arm64"],
+      "install_hint": "使用受管 Python 环境安装 mitmproxy 并配置 REA_MITMDUMP_COMMAND",
+      "env_key": "REA_MITMDUMP_COMMAND",
+      "python_packages": {
+    "mitmproxy": "12.2.3"
+      },
+      "default_selected": true
+    },
+    {
+      "id": "chrome",
+      "display_name": "Chrome for Testing / 浏览器",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "macos-x64", "macos-arm64"],
+      "install_hint": "优先复用本地 Chrome、Edge 或 Chromium；缺失时安装固定 Chrome for Testing",
+      "env_key": "REA_BROWSER_EXECUTABLE",
+      "executable_names": ["chrome.exe", "chrome", "Google Chrome for Testing"],
+      "default_selected": true,
+      "artifact_by_platform": {
+        "windows-x64": {
+          "version": "157.0.8103.38",
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.38/win64/chrome-win64.zip",
+          "fallback_urls": [
+            "https://registry.npmmirror.com/-/binary/chrome-for-testing/157.0.8103.38/win64/chrome-win64.zip"
+          ],
+          "archive_type": "zip",
+          "size_bytes": 210600182,
+          "sha256": "ae0deef27d449e1d7529df7705d609bab102de48464da13567ed3dd2ee1a0586",
+          "destination": "rea/cache/chrome-157.0.8103.38-win64.zip"
+        },
+        "linux-x64": {
+          "version": "157.0.8103.38",
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.38/linux64/chrome-linux64.zip",
+          "fallback_urls": [
+            "https://registry.npmmirror.com/-/binary/chrome-for-testing/157.0.8103.38/linux64/chrome-linux64.zip"
+          ],
+          "archive_type": "zip",
+          "size_bytes": 203502190,
+          "sha256": "8cdeb344e9b2cefe59f4aea8d1d93d5d93054c03cde217665c16fc1f62e72a66",
+          "destination": "rea/cache/chrome-157.0.8103.38-linux64.zip"
+        },
+        "macos-x64": {
+          "version": "157.0.8103.38",
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.38/mac-x64/chrome-mac-x64.zip",
+          "fallback_urls": [
+            "https://registry.npmmirror.com/-/binary/chrome-for-testing/157.0.8103.38/mac-x64/chrome-mac-x64.zip"
+          ],
+          "archive_type": "zip",
+          "size_bytes": 207117913,
+          "sha256": "c6fcc2869b0d5a421e880d7bcdabe96e4261c4100e125fc4e4daf6346474efa6",
+          "destination": "rea/cache/chrome-157.0.8103.38-mac-x64.zip"
+        },
+        "macos-arm64": {
+          "version": "157.0.8103.38",
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.38/mac-arm64/chrome-mac-arm64.zip",
+          "fallback_urls": [
+            "https://registry.npmmirror.com/-/binary/chrome-for-testing/157.0.8103.38/mac-arm64/chrome-mac-arm64.zip"
+          ],
+          "archive_type": "zip",
+          "size_bytes": 196562867,
+          "sha256": "3406b38b52b7d341d74450eb7b369be038c9fec9894c8b8a9e9e9f97333caf2f",
+          "destination": "rea/cache/chrome-157.0.8103.38-mac-arm64.zip"
+        }
+      },
+      "extract_to": "rea/tools/chrome/157.0.8103.38"
+    },
+    {
+      "id": "rizin",
+      "display_name": "Rizin",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "macos-x64", "macos-arm64"],
+      "install_hint": "自动复用或安装 Rizin 0.9.1",
+      "env_key": "REA_RIZIN_COMMAND",
+      "executable_names": ["rizin.exe", "rizin"],
+      "default_selected": true,
+      "artifact_by_platform": {
+        "windows-x64": {
+          "version": "0.9.1",
+          "url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-windows-shared64-v0.9.1.zip",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-windows-shared64-v0.9.1.zip",
+            "https://ghfast.top/https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-windows-shared64-v0.9.1.zip"
+          ],
+          "archive_type": "zip",
+          "size_bytes": 11731171,
+          "sha256": "45ffa004e26653eaee8d262b8e6eeae09402a7d319c1f20a2ba794bd6af1cc28",
+          "destination": "rea/cache/rizin-windows-shared64-v0.9.1.zip"
+        },
+        "linux-x64": {
+          "version": "0.9.1",
+          "url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-v0.9.1-static-x86_64.tar.xz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-v0.9.1-static-x86_64.tar.xz",
+            "https://ghfast.top/https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-v0.9.1-static-x86_64.tar.xz"
+          ],
+          "archive_type": "tar.xz",
+          "size_bytes": 137626404,
+          "sha256": "9102249a9f0b6319c5334a2e5cf8d9cc3f2035e1d3def027c41f6a90f647e8cf",
+          "destination": "rea/cache/rizin-v0.9.1-static-x86_64.tar.xz"
+        },
+        "macos-x64": {
+          "version": "0.9.1",
+          "url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-macos-v0.9.1.pkg",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-macos-v0.9.1.pkg",
+            "https://ghfast.top/https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-macos-v0.9.1.pkg"
+          ],
+          "archive_type": "pkg",
+          "size_bytes": 11372456,
+          "sha256": "949f56d56698bdad2f39996badc10d0ada13033fad5fc7ef4fe5eaa89d945e94",
+          "destination": "rea/cache/rizin-macos-v0.9.1.pkg"
+        },
+        "macos-arm64": {
+          "version": "0.9.1",
+          "url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-macos-v0.9.1.pkg",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-macos-v0.9.1.pkg",
+            "https://ghfast.top/https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-macos-v0.9.1.pkg"
+          ],
+          "archive_type": "pkg",
+          "size_bytes": 11372456,
+          "sha256": "949f56d56698bdad2f39996badc10d0ada13033fad5fc7ef4fe5eaa89d945e94",
+          "destination": "rea/cache/rizin-macos-v0.9.1.pkg"
+        }
+      },
+      "extract_to": "rea/tools/rizin/0.9.1"
+    },
+    {
+      "id": "cutter",
+      "display_name": "Cutter",
+      "group": "specialized_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "macos-x64", "macos-arm64"],
+      "install_hint": "自动复用或安装 Cutter 2.5.0，并安装 REA 桥接插件；live 命令仍需用户启动 Cutter 实例",
+      "setup_bridge": "rea-cutter",
+      "env_key": "REA_CUTTER_COMMAND",
+      "executable_names": ["Cutter.exe", "Cutter", "cutter", "Cutter-v2.5.0-Linux-x86_64.AppImage"],
+      "default_selected": true,
+      "artifact_by_platform": {
+        "windows-x64": {
+          "version": "2.5.0",
+          "url": "https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-Windows-x86_64.zip",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-Windows-x86_64.zip",
+            "https://ghfast.top/https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-Windows-x86_64.zip"
+          ],
+          "archive_type": "zip",
+          "size_bytes": 140530846,
+          "sha256": "a04154a03a392dbf5886a629938582f7d23a93636fa0611c3e1c34905b197e69",
+          "destination": "rea/cache/Cutter-v2.5.0-Windows-x86_64.zip"
+        },
+        "linux-x64": {
+          "version": "2.5.0",
+          "url": "https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-Linux-x86_64.AppImage",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-Linux-x86_64.AppImage",
+            "https://ghfast.top/https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-Linux-x86_64.AppImage"
+          ],
+          "archive_type": "appimage",
+          "size_bytes": 144423416,
+          "sha256": "b8ad215d7a9e2af9e1f463511229f16e1f4745a0fb541413e5f4787f949ac0cf",
+          "destination": "rea/cache/Cutter-v2.5.0-Linux-x86_64.AppImage"
+        },
+        "macos-x64": {
+          "version": "2.5.0",
+          "url": "https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-macOS-x86_64.dmg",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-macOS-x86_64.dmg",
+            "https://ghfast.top/https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-macOS-x86_64.dmg"
+          ],
+          "archive_type": "dmg",
+          "size_bytes": 124647134,
+          "sha256": "02a7f1c507239691b151e6cc41a5d33f89d672ec443f12890e31087ad37271a6",
+          "destination": "rea/cache/Cutter-v2.5.0-macOS-x86_64.dmg"
+        },
+        "macos-arm64": {
+          "version": "2.5.0",
+          "url": "https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-macOS-arm64.dmg",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-macOS-arm64.dmg",
+            "https://ghfast.top/https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-macOS-arm64.dmg"
+          ],
+          "archive_type": "dmg",
+          "size_bytes": 120445928,
+          "sha256": "ec08477489cb7f769d4121e5084b09131b02b6a801ac7a2d5896a67e87193452",
+          "destination": "rea/cache/Cutter-v2.5.0-macOS-arm64.dmg"
+        }
+      },
+      "extract_to": "rea/tools/cutter/2.5.0"
+    },
+    {
+      "id": "gdb",
+      "display_name": "GDB",
+      "group": "specialized_tool",
+      "install_mode": "system",
+      "platforms": ["linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "install_hint": "Workswarm 不自动管理系统 GDB；请按系统包管理器安装后配置 REA_GDB_COMMAND",
+      "env_key": "REA_GDB_COMMAND",
+      "default_selected": false,
+      "assisted_setup": {
+        "summary": "GDB 是系统依赖，Workswarm 不会自动修改系统软件包。安装后选择 gdb 可执行文件并重新检测。",
+        "prerequisites": ["系统包管理器可用", "目标平台支持 GDB live session"],
+        "instructions": [
+          "使用下方对应平台的系统包命令安装 GDB。",
+          "选择实际的 gdb 可执行文件并保存；Workswarm 只会写入 REA_GDB_COMMAND。",
+          "真正的调试仍需要目标文件、运行权限和场景条件。"
+        ],
+        "links": [
+          {"label": "GDB 官方文档", "url": "https://sourceware.org/gdb/documentation/"}
+        ],
+        "commands": [
+          {
+            "label": "Ubuntu / Debian · APT",
+            "platforms": ["linux-x64", "linux-arm64"],
+            "language": "shell",
+            "content": "sudo apt update && sudo apt install gdb"
+          },
+          {
+            "label": "macOS · Homebrew",
+            "platforms": ["macos-x64", "macos-arm64"],
+            "language": "shell",
+            "content": "brew install gdb",
+            "note": "macOS 可能还需要按系统要求为 GDB 授权。"
+          }
+        ],
+        "inputs": [
+          {
+            "id": "gdb_path",
+            "label": "GDB 可执行文件",
+            "type": "path",
+            "env_key": "REA_GDB_COMMAND",
+            "required": true,
+            "placeholder": "选择 gdb",
+            "expect": "executable"
+          }
+        ],
+        "required": ["gdb_path"],
+        "activation": "保存后重新验证 REA MCP 和工具可用性。"
+      }
+    },
+    {
+      "id": "objdump",
+      "display_name": "GNU objdump",
+      "group": "specialized_tool",
+      "install_mode": "system",
+      "platforms": ["windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "install_hint": "Workswarm 不自动管理系统 binutils；请安装 objdump 后配置 REA_OBJDUMP_COMMAND",
+      "env_key": "REA_OBJDUMP_COMMAND",
+      "default_selected": false,
+      "assisted_setup": {
+        "summary": "objdump 属于系统 binutils。Workswarm 只保存可执行文件路径，不修改系统 PATH。",
+        "prerequisites": ["已安装 GNU binutils"],
+        "instructions": [
+          "使用对应平台的系统包管理器安装 binutils。",
+          "选择 objdump 可执行文件并保存。",
+          "重新检测后以 REA 的 inspect_with_objdump 工具的可用性为准。"
+        ],
+        "links": [
+          {"label": "GNU binutils", "url": "https://www.gnu.org/software/binutils/"}
+        ],
+        "commands": [
+          {
+            "label": "Windows · MSYS2",
+            "platforms": ["windows-x64"],
+            "language": "powershell",
+            "content": "winget install --id MSYS2.MSYS2 -e",
+            "note": "安装后在 MSYS2 MinGW 环境中安装 mingw-w64-x86_64-binutils。"
+          },
+          {
+            "label": "Ubuntu / Debian · APT",
+            "platforms": ["linux-x64", "linux-arm64"],
+            "language": "shell",
+            "content": "sudo apt update && sudo apt install binutils"
+          },
+          {
+            "label": "macOS · Homebrew",
+            "platforms": ["macos-x64", "macos-arm64"],
+            "language": "shell",
+            "content": "brew install binutils",
+            "note": "Homebrew 可能以 gobjdump 命名，请选择实际 objdump 可执行文件。"
+          }
+        ],
+        "inputs": [
+          {
+            "id": "objdump_path",
+            "label": "objdump 可执行文件",
+            "type": "path",
+            "env_key": "REA_OBJDUMP_COMMAND",
+            "required": true,
+            "placeholder": "选择 objdump",
+            "expect": "executable"
+          }
+        ],
+        "required": ["objdump_path"],
+        "activation": "保存后重新验证 REA MCP。"
+      }
+    },
+    {
+      "id": "sigrok",
+      "display_name": "sigrok / 逻辑信号",
+      "group": "specialized_tool",
+      "install_mode": "system",
+      "platforms": ["linux-x64", "linux-arm64"],
+      "install_hint": "Workswarm 不自动管理系统 sigrok-cli；请安装后配置 REA_SIGROK_COMMAND",
+      "env_key": "REA_SIGROK_COMMAND",
+      "default_selected": false,
+      "assisted_setup": {
+        "summary": "逻辑信号解码依赖系统 sigrok-cli 和 util-linux prlimit；Workswarm 不自动安装系统包。",
+        "prerequisites": ["Linux 主机", "sigrok-cli 0.7.2", "util-linux prlimit"],
+        "instructions": [
+          "使用系统包管理器安装 sigrok-cli。",
+          "选择 sigrok-cli 可执行文件并保存。",
+          "如果 prlimit 不在默认目录，还需要在 REA MCP 环境中配置 REA_SIGROK_PRLIMIT_COMMAND。"
+        ],
+        "links": [
+          {"label": "sigrok-cli", "url": "https://sigrok.org/wiki/Sigrok-cli"}
+        ],
+        "commands": [
+          {
+            "label": "Ubuntu / Debian · APT",
+            "platforms": ["linux-x64", "linux-arm64"],
+            "language": "shell",
+            "content": "sudo apt update && sudo apt install sigrok-cli util-linux"
+          }
+        ],
+        "inputs": [
+          {
+            "id": "sigrok_path",
+            "label": "sigrok-cli 可执行文件",
+            "type": "path",
+            "env_key": "REA_SIGROK_COMMAND",
+            "required": true,
+            "placeholder": "选择 sigrok-cli",
+            "expect": "executable"
+          }
+        ],
+        "required": ["sigrok_path"],
+        "activation": "保存后重新验证 REA MCP；真实解码仍需要 recording 文件。"
+      }
+    }
+  ]
+}

@@ -22,6 +22,7 @@ import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
 import { RsiPage } from './features/rsi/RsiPage';
+import { ReaSetupPage } from './features/reaSetup/ReaSetupPage';
 import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
 import { useRsiStore } from './features/rsi/rsiStore';
 import { useMediaQuery } from './hooks/useResponsive';
@@ -4706,6 +4707,21 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               collapsed={rsiSidebarCollapsed}
               onCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
               openCreateNonce={rsiOpenCreateNonce}
+            />
+          </div>
+        )}
+        {activeNav === 'rea' && (
+          <div className="app-section">
+            <ReaSetupPage
+              onUseRea={(prompt) =>
+                requestSessionNavigation('new', {
+                  initialInputValue: prompt,
+                  initialSelectedSkills: ['reverse-engineer-anything'],
+                  initialEnabledMcps: ['rea'],
+                  forceMode: 'agent.code.normal',
+                  metadata: { prefer_mcp: 'rea' },
+                })
+              }
             />
           </div>
         )}

@@ -912,6 +912,25 @@
   box-sizing: border-box;
 }
 
+.chat-input-chip-inline--rea {
+  gap: 4px;
+  padding: 0 6px;
+  background: #deecff;
+  color: #1476ff;
+}
+
+.chat-input-chip-inline--rea .chat-input-chip-inline__icon {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-input-chip-inline--rea .chat-input-chip-inline__label {
+  color: #1476ff;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
 .chat-input-chip-inline--member,
 .chat-input-chip-inline--role,
 .chat-input-chip-inline--slash-command {

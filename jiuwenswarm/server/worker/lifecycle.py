@@ -140,9 +140,13 @@ def _apply_runtime_entry_patches() -> None:
     )
     from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
     from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
+    from jiuwenswarm.server.runtime.mcp.schema_compat_patch import (
+        apply_openjiuwen_schema_compat_patch,
+    )
 
     install_shell_tool_safety_hooks()
     apply_provider_compat_patches()
+    apply_openjiuwen_schema_compat_patch()
     try:
         from jiuwenswarm.common.auth.login_credentials import apply_login_credential_patch
 
