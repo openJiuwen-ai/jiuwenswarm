@@ -28,6 +28,7 @@ import { mergeChatEntries } from '../chatEntries';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ConversationComposer } from '../components/ConversationComposer';
 import { GroupSharingInbox } from '../components/GroupSharingInbox';
+import { MAX_STARTER_PROMPTS } from '../components/StarterPromptsEditor';
 import { SHARING_CONVERSATION_ID } from '../groupSharingApi';
 import {
   chatPhase,
@@ -1149,10 +1150,7 @@ export function ColleagueWorkspacePage({
   };
 
   const renderWelcome = () => {
-    const prompts =
-      colleague.capabilities.starterPrompts.length > 0
-        ? colleague.capabilities.starterPrompts.slice(0, 3)
-        : [0, 1, 2].map((index) => t(`jiuwenmate.workspace.defaultPrompts.${index}`));
+    const prompts = colleague.capabilities.starterPrompts.slice(0, MAX_STARTER_PROMPTS);
     return (
       <section className="jiuwenmate-chat-welcome" data-testid="jiuwenmate-chat-welcome">
         <header className="jiuwenmate-main-header jiuwenmate-chat-welcome__header">
@@ -1167,7 +1165,7 @@ export function ColleagueWorkspacePage({
             <h2>{colleague.name}</h2>
             <p>{colleague.description}</p>
           </div>
-          <div className="jiuwenmate-chat-welcome__suggestions">
+          <div className="jiuwenmate-chat-welcome__suggestions" aria-hidden={prompts.length === 0 || undefined}>
             {prompts.map((prompt, index) => (
               <button type="button" key={`${prompt}-${index}`} onClick={() => setDraft(prompt)}>
                 <span>{prompt}</span>
@@ -1226,10 +1224,7 @@ export function ColleagueWorkspacePage({
             <ArrowLeft aria-hidden />
           </button>
         ) : null}
-        <strong>
-          {channel.name}
-          <ChevronDown aria-hidden />
-        </strong>
+        <strong>{channel.name}</strong>
         {!state.traceOpen ? (
           <button
             type="button"
