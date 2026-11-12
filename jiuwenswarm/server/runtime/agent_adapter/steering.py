@@ -62,8 +62,11 @@ def _extract_steer_image_files(files: Any) -> list[dict[str, Any]]:
         return []
     mapped: list[Any] = []
     for item in files[:_MAX_STEER_IMAGE_FILES]:
-        if isinstance(item, dict) and not item.get("filename") and item.get("name"):
-            item = {**item, "filename": str(item["name"])}
+        if isinstance(item, dict):
+            # G.TYP.07：取值一律走 get（name 的存在性由真值判定保证，行为不变）。
+            name = item.get("name")
+            if name and not item.get("filename"):
+                item = {**item, "filename": str(name)}
         mapped.append(item)
     from jiuwenswarm.agents.harness.common.multimodal import (
         extract_multimodal_image_files,
