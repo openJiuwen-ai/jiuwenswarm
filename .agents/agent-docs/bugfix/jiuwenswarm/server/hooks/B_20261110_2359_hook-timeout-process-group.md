@@ -29,13 +29,14 @@ design_note: 局部超时清理缺陷修复，对齐 command_tools 既有进程�
 
 1. POSIX 上创建 hook 子进程时设置 `start_new_session=True`，hook 子进程成为进程组长，其 pid 即 hook 派生进程树的 pgid。
 2. 超时清理改用新增的 `_kill_hook_process_group(proc, pgid)`：先 `os.killpg(pgid, SIGKILL)` 清理整个进程组，再对直接子进程兜底 `proc.kill()`；Windows（`os.name == "nt"`）行为不变，仍只杀直接子进程。
-3. 不引入新配置项；正常路径（communicate + 退出码语义）不变。
+3. 超时清理的回收等待同样有界：`proc.wait()` 以 `_CLEANUP_WAIT_TIMEOUT`（5s）封顶，进程组清理未命中时超时路径本身不挂死。
+4. 不引入新配置项；正常路径（communicate + 退出码语义）不变。
 
 ## 回归范围
 
 新增 `TestCommandHookTimeoutProcessGroup`：
 
-- POSIX 端到端：hook 后台拉起 `sleep 60` 孙进程并前台挂起，超时后断言孙进程随进程组一并清理（psutil 僵尸态视为已清理）；
+- POSIX 端到端：hook 后台拉起 `sleep 60` 孙进程并前台挂起，超时后断言孙进程随进程组一并清理（psutil 僵尸态视为已清理），并断言超时路径在时限内返回（外层 `wait_for` 兜底，清理挂死时用例判失败）；
 - `_kill_hook_process_group` 有 pgid 时先对整组 SIGKILL 再兜底杀子进程；
 - 无 pgid（Windows / 未开新会话）时退回只杀直接子进程，killpg 不被调用。
 

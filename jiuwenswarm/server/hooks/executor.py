@@ -18,6 +18,9 @@ from openjiuwen.harness_providers.jsonsafe import to_json_safe
 
 logger = logging.getLogger(__name__)
 
+# 超时清理自身的等待上限：进程组清理未命中时，回收等待不能反过来挂死调用方
+_CLEANUP_WAIT_TIMEOUT = 5.0
+
 
 def _hook_input_json(hook_input: dict) -> str:
     """Serialize hook input; tool results are models (e.g. ``ToolOutput``), not plain JSON."""
@@ -126,7 +129,7 @@ class HookExecutor:
             try:
                 if proc is not None:
                     _kill_hook_process_group(proc, pgid)
-                    await proc.wait()
+                    await asyncio.wait_for(proc.wait(), timeout=_CLEANUP_WAIT_TIMEOUT)
             except Exception:
                 logger.debug("Failed to kill hook process after timeout", exc_info=True)
             return HookResult(

@@ -253,14 +253,22 @@ class TestCommandHookTimeoutProcessGroup:
         """超时清理应连同后台孙进程一起杀掉进程组，不留下孤儿."""
         pid_file = tmp_path / "grandchild.pid"
         command = f"sleep 60 & echo $! > '{pid_file}'; sleep 60"
+        hook_timeout = 1
         e = HookExecutor()
-        results = await e.run_all(
-            [{"command": command, "timeout": 1}],
-            {"event": "Test"},
+        # 外层兜底：清理路径挂死时用例判失败，而不是无限阻塞
+        start = time.monotonic()
+        results = await asyncio.wait_for(
+            e.run_all([{"command": command, "timeout": hook_timeout}], {"event": "Test"}),
+            timeout=hook_timeout + 20,
         )
+        elapsed = time.monotonic() - start
         r = results[0]
         assert r.outcome == HookOutcome.NON_BLOCKING_ERROR
         assert "timeout" in r.error.lower()
+        # 超时加有界清理应在时限内返回，清理挂死在此暴露
+        assert elapsed < hook_timeout + 10, (
+            f"timeout cleanup took {elapsed:.1f}s; unbounded cleanup wait?"
+        )
 
         grandchild_pid = int(pid_file.read_text().strip())
         assert await _pid_dead(grandchild_pid), (
