@@ -714,6 +714,9 @@ react:
       - write_memory
       - edit_memory
       - external_memory_search
+      - enter_plan_mode             # plan 模式两件套必须常驻（BUG20261105402443）：plan 态下
+      - exit_plan_mode              # reminder 指示模型调 enter_plan_mode，但懒加载把它滤进
+                                    # deferred，模型反复探测无进展触发 agent_ras 熔断 OA.05000060
     # 模型白名单（空=全部启用），对模型名做子串匹配，大小写不敏感；未命中的模型全部工具直接可见。
     # 懒加载依赖模型读懂 tools_search → invoke_tool，加入新模型前需先验证。
     enable_for_models:

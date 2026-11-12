@@ -86,6 +86,23 @@ def test_progressive_defaults_expose_registered_ask_user_tool():
     assert "ttse_consult" not in rail.eager_tools
 
 
+def test_progressive_defaults_expose_plan_mode_tools():
+    """企业配置省略 eager_tools 键时代码回退到 _DEFAULT_PROGRESSIVE_EAGER_TOOLS，
+    该默认列表也必须常驻 plan 两件套（BUG20261105402443），否则同类部署在 plan 态
+    下仍会被懒加载剔除触发熔断（CR-1 检视意见）。"""
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {"enabled": True},
+            "ttse": {"enabled": False},
+        },
+        language="zh",
+    )
+
+    assert rail is not None
+    assert "enter_plan_mode" in rail.eager_tools
+    assert "exit_plan_mode" in rail.eager_tools
+
+
 def test_progressive_runtime_config_exposes_registered_ask_user_tool():
     config_path = Path(__file__).parents[3] / "jiuwenswarm/resources/config.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -96,6 +113,18 @@ def test_progressive_runtime_config_exposes_registered_ask_user_tool():
     # Default-off: the shipped eager list must not advertise ttse_consult.
     # After react.ttse.enabled=true, runtime inserts it for first-turn consult.
     assert "ttse_consult" not in eager_tools
+
+
+def test_progressive_runtime_config_keeps_plan_mode_tools_eager():
+    """Plan 态 reminder 指示模型调 enter_plan_mode（BUG20261105402443）：
+    两工具若被 ProgressiveToolRail 懒加载剔除出 schema，模型会反复探测无进展，
+    触发 agent_ras 熔断（OA.05000060）。必须常驻 eager_tools。"""
+    config_path = Path(__file__).parents[3] / "jiuwenswarm/resources/config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    eager_tools = config["react"]["tool_lazy_load"]["eager_tools"]
+
+    assert "enter_plan_mode" in eager_tools
+    assert "exit_plan_mode" in eager_tools
 
 
 def test_progressive_legacy_eager_config_exposes_registered_ask_user_tool():
