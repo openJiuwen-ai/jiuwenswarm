@@ -1,4 +1,4 @@
-.settings-agent-media__row > .setting-row__sub-settings {
+.settings-agent-media__row > .setting-row__sub-settings:not(:empty) {
   padding: 0 24px 24px;
 }
 
@@ -46,7 +46,7 @@
 }
 
 @container setting-row (max-width: 30rem) {
-  .settings-agent-media__row > .setting-row__sub-settings {
+  .settings-agent-media__row > .setting-row__sub-settings:not(:empty) {
     padding: 0 16px 16px;
   }
 }
