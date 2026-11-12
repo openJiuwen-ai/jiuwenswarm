@@ -1290,6 +1290,35 @@ def enrich_history_messages_session_id(
     return out
 
 
+#: Private attribute set on ``AgentRequest`` once this turn's user message has
+#: been appended. Pre-flight steps in ``server/pipeline.py`` run *before* the
+#: adapter gets the request, so their failure handler needs to know whether the
+#: adapter already persisted the turn before writing a fallback user record.
+#:
+#: This lives on the request object itself rather than in ``metadata``: metadata
+#: is a user/channel-facing bag that gets copied verbatim onto the wire and
+#: persisted into ``metadata.json``, so an internal control-flow flag stored
+#: there would leak to clients and could be forged by a caller to suppress the
+#: fallback write. A leading-underscore attribute stays process-local.
+_USER_HISTORY_PERSISTED_ATTR = "_user_history_persisted"
+
+
+def mark_user_history_persisted(request: Any) -> None:
+    """Record on ``request`` that its user turn already reached history.
+
+    ``AgentRequest`` is a plain (non-slotted, non-frozen) dataclass, so this
+    cannot fail today. It deliberately does *not* swallow exceptions: if the
+    schema ever gains ``slots``/``frozen``, a silent failure here turns into
+    duplicated history records that are far harder to notice than a raised error.
+    """
+    setattr(request, _USER_HISTORY_PERSISTED_ATTR, True)
+
+
+def user_history_persisted(request: Any) -> bool:
+    """Whether the adapter already appended this request's user turn."""
+    return bool(getattr(request, _USER_HISTORY_PERSISTED_ATTR, False))
+
+
 def append_history_record(
     *,
     session_id: str,
