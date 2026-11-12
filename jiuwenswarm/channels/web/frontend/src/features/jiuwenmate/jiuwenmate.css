@@ -15,6 +15,7 @@
   --jm-warning: #f08a24;
   --jm-warning-soft: #fdecd8;
   --jm-danger: #f04438;
+  --jm-danger-soft: #ffe5e3;
   --jm-success: #22b357;
   --jm-heat-0: #eeeeee;
   --jm-heat-1: #d5e4ff;
@@ -809,6 +810,24 @@
   color: var(--jm-warning);
   fill: var(--jm-warning);
   stroke: #fff;
+}
+
+.jiuwenmate-dialog__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--jm-danger);
+  background: var(--jm-danger-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.jiuwenmate-dialog__error svg {
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
 }
 
 .jiuwenmate-dialog__message {
