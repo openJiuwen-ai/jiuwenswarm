@@ -145,6 +145,7 @@
       "send": "发送",
       "running": "设计团长正在执行…",
       "stop": "停止",
+      "stopping": "正在停止…",
       "stopError": "停止失败，请稍后重试。",
       "attach": "添加参考素材",
       "removeAttachment": "移除参考素材",

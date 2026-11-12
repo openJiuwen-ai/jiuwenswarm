@@ -38,6 +38,16 @@ export function isDesignerChatStoppable(params: {
   return params.isRunning && params.triggerSource === 'leader';
 }
 
+/** Stop control after a click: spinner until the run or leader turn actually ends. */
+export function designerChatStopControl(params: {
+  canStop: boolean;
+  stopPending: boolean;
+}): 'stopping' | 'stop' | 'send' {
+  if (params.stopPending) return 'stopping';
+  if (params.canStop) return 'stop';
+  return 'send';
+}
+
 /**
  * The workflow stays read-only from the moment a prompt is sent until its
  * first run finishes. While the design leader's round is open
