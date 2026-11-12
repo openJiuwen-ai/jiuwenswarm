@@ -39,6 +39,20 @@ const colleague = {
   ],
 };
 
+test('clearing employee starter prompts removes suggestions from the welcome page', async () => {
+  const capabilities = { ...colleague.capabilities, starterPrompts: ['Organize my notes', 'Draft an email'] };
+  const workspace = await renderWorkspace({ capabilities });
+  const suggestions = () => workspace.container.querySelector('.jiuwenmate-chat-welcome__suggestions');
+  try {
+    assert.deepEqual([...suggestions().querySelectorAll('button')].map(button => button.textContent), capabilities.starterPrompts);
+    await workspace.replaceEmployee({ capabilities: { ...capabilities, starterPrompts: [] } });
+    assert.equal(suggestions(), null);
+    assert.ok(workspace.container.querySelector('[data-testid="jiuwenmate-chat-welcome"]'));
+  } finally {
+    await workspace.close();
+  }
+});
+
 const webResult = {
   id: 'new-web-result',
   title: 'Web 新结果',
