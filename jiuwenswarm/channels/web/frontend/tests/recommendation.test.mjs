@@ -622,6 +622,8 @@ test('General renders and persists the topic switch through config while keeping
     assert.equal(storedValue, 'false', 'model deletion must persist the disabled switch on the backend');
     assert.equal(topicSwitch().getAttribute('aria-checked'), 'false', 'a fresh settings page must read the persisted disabled switch');
     assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
+    const clearedSubSettings = topicSwitch().closest('.setting-row').querySelector('.setting-row__sub-settings');
+    assert.ok(clearedSubSettings.matches(':empty'), 'deleting the model must not leave a closed dialog in the spacing container');
   } finally {
     await react.act(async () => root.unmount());
   }
@@ -645,6 +647,9 @@ test('General ignores legacy chat models and opens the connection form without a
     })));
     await react.act(settle);
     assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
+    const topicSwitch = document.querySelector('[data-testid="settings-switch"][data-variant="topic-recommendation-enabled"]');
+    const subSettings = topicSwitch.closest('.setting-row').querySelector('.setting-row__sub-settings');
+    assert.ok(subSettings.matches(':empty'), 'an unconfigured model must not leave hidden dialog content that adds padding');
     await react.act(async () => document.querySelector('[data-testid="settings-switch"][data-variant="topic-recommendation-enabled"]').click());
     await react.act(settle);
     const dialog = document.querySelector('[data-testid="settings-agent-media-config-dialog"]');
