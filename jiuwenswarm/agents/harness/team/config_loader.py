@@ -123,13 +123,34 @@ def _resolve_legacy_team_template(config_base: dict[str, Any]) -> tuple[str, dic
     return "", {}
 
 
-def list_team_template_summaries(config_base: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Return configured team templates from ``modes.team``."""
+def list_team_template_summaries(
+    config_base: dict[str, Any] | None = None,
+    *,
+    catalog_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Return configured team templates from ``modes.team`` (+ optional samples).
+
+    When *catalog_only* is true, only expert-team summon entries are returned
+    (sample / Ace preset catalog). The engine shell ``jiuwen_team`` is excluded.
+    """
+    from jiuwenswarm.agents.harness.team.sample_templates import (
+        is_catalog_expert_template,
+        merge_sample_team_templates,
+    )
+
     if config_base is None:
         config_base = get_config()
     templates: list[dict[str, Any]] = []
-    for template_id, team_raw in _get_modes_team(config_base).items():
+    # Samples are catalog-only; never bleed into default list / load_team_spec_dict.
+    teams_raw = dict(_get_modes_team(config_base))
+    if catalog_only:
+        teams_raw = merge_sample_team_templates(teams_raw)
+    for template_id, team_raw in teams_raw.items():
         if not isinstance(team_raw, dict):
+            continue
+        if catalog_only and not is_catalog_expert_template(
+            team_raw, template_id=str(template_id)
+        ):
             continue
         display_name = (
             str(team_raw.get("display_name") or "").strip()
@@ -137,13 +158,21 @@ def list_team_template_summaries(config_base: dict[str, Any] | None = None) -> l
             or str(team_raw.get("team_name") or "").strip()
             or str(template_id)
         )
+        source = (
+            "sample"
+            if team_raw.get("sample")
+            else f"modes.team.{template_id}"
+        )
         templates.append(
             {
                 "template_id": str(template_id),
                 "display_name": display_name,
                 "available": True,
-                "source": f"modes.team.{template_id}",
+                "source": source,
                 "team_name": str(team_raw.get("team_name") or "").strip(),
+                "expose_in_catalog": bool(
+                    is_catalog_expert_template(team_raw, template_id=str(template_id))
+                ),
             }
         )
     if templates:
@@ -151,6 +180,10 @@ def list_team_template_summaries(config_base: dict[str, Any] | None = None) -> l
 
     template_id, legacy_team = _resolve_legacy_team_template(config_base)
     if legacy_team:
+        if catalog_only and not is_catalog_expert_template(
+            legacy_team, template_id=template_id
+        ):
+            return []
         display_name = (
             str(legacy_team.get("display_name") or "").strip()
             or str(legacy_team.get("name") or "").strip()
@@ -164,6 +197,9 @@ def list_team_template_summaries(config_base: dict[str, Any] | None = None) -> l
                 "available": True,
                 "source": "team",
                 "team_name": str(legacy_team.get("team_name") or "").strip(),
+                "expose_in_catalog": bool(
+                    is_catalog_expert_template(legacy_team, template_id=template_id)
+                ),
             }
         )
     return templates
@@ -194,6 +230,10 @@ def _select_modes_team(
     *,
     strict_template: bool = False,
 ) -> tuple[str, dict[str, Any]]:
+    from jiuwenswarm.agents.harness.team.sample_templates import (
+        lookup_sample_team_template,
+    )
+
     teams_raw = _get_modes_team(config_base)
     legacy_template_id, legacy_team = _resolve_legacy_team_template(config_base)
     requested_template_id = str(template_id or "").strip()
@@ -205,6 +245,14 @@ def _select_modes_team(
         if legacy_team and requested_template_id == legacy_template_id:
             logger.debug("[TeamConfigLoader] selected legacy team template: %s", requested_template_id)
             return legacy_template_id, legacy_team
+        # Catalog samples live outside modes.team; resolve for bind/snapshot.
+        sample = lookup_sample_team_template(requested_template_id)
+        if sample is not None:
+            logger.debug(
+                "[TeamConfigLoader] selected sample team template: %s",
+                requested_template_id,
+            )
+            return requested_template_id, sample
         if strict_template:
             raise TeamTemplateNotFoundError(f"team template not found: {requested_template_id}")
         logger.warning("[TeamConfigLoader] requested team template not found: %s", requested_template_id)

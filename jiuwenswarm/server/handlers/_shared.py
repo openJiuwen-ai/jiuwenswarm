@@ -664,13 +664,18 @@ def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
 
 
 def _request_query_text(request: AgentRequest) -> str:
-    """Return text chat query only; structured events are handled downstream."""
+    """Return text chat query; fall back to content when query is empty.
+
+    Matches adapter ``_build_inputs`` priority (query → content) so WebSocket
+    sends that only populate ``content`` still drive auto-team descriptions.
+    """
     if not isinstance(request.params, dict):
         return ""
-    query = request.params.get("query")
-    if not isinstance(query, str):
-        return ""
-    return query.strip()
+    for key in ("query", "content"):
+        raw = request.params.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return ""
 
 
 def _uses_tenant_pool(request: AgentRequest) -> bool:
