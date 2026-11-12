@@ -59,6 +59,7 @@ from jiuwenswarm.common.xiaoyi_reference import (
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.a2a_vars import (
     extract_model_input,
     extract_model_name,
+    has_model_name_key,
 )
 from jiuwenswarm.common.permission_profile import (
     normalize_permission_profile,
@@ -3616,6 +3617,11 @@ class XiaoyiChannel(BaseChannel):
             # _send_ask_user_tab_prompt/文本回退登记），答卡 resume 随请求带回。
             self._session_model_names[logical_session] = model_name
             logger.info("[Xiaoyi] Found modelName: %s", model_name)
+        elif has_model_name_key(parts):
+            # 端侧显式置空/none（回到默认模型）：清除会话级记录，防发卡
+            # 快照到用户已弃用的旧模型（extract_model_name 对置空与未携带
+            # 不可区分，这里按键存在性判定）。
+            self._session_model_names.pop(logical_session, None)
         # Per-request input modalities of the selected model (e.g. ["text","image"]).
         # Empty/missing = no declaration: agent falls back to its own config/probe.
         model_input = extract_model_input(parts)
@@ -4806,6 +4812,7 @@ class XiaoyiChannel(BaseChannel):
             for key, value in self._accumulated_texts.items()
             if key[0] != session_id
         }
+        self._session_model_names.pop(session_id, None)
 
     async def _handle_clear_context(self, message: dict[str, Any]) -> None:
         """处理清空上下文请求."""
@@ -4817,6 +4824,11 @@ class XiaoyiChannel(BaseChannel):
         conversation_id = message.get("conversationId") or message.get("params", {}).get("sessionId", "") or ""
         if conversation_id:
             self._pending_approvals.pop(conversation_id, None)
+        # 清理会话级模型记录：清上下文后按下次上报重建，缺省则 resume 不带
+        # model_name（服务端回落默认模型），不残留已弃用的旧模型。
+        self._session_model_names.pop(session_id, None)
+        if conversation_id:
+            self._session_model_names.pop(conversation_id, None)
 
         # Check if there's an active task for this session
         if self._is_session_active(session_id):

@@ -73,3 +73,27 @@ def extract_model_input(parts: list[Any] | None) -> list[str] | None:
         if modes:
             return modes
     return None
+
+
+def has_model_name_key(parts: list[Any] | None) -> bool:
+    """判断端侧消息是否显式携带 clientVariables.modelName 键（含空值）。
+
+    ``extract_model_name`` 按契约忽略空值/``none``，无法区分"未携带"与
+    "显式置空（端侧回到默认模型）"——会话级模型记录依赖该区分：显式
+    置空应清除记录，未携带应保持上次选择不动。
+    """
+    for part in parts or []:
+        if not isinstance(part, dict) or part.get("kind") != "data":
+            continue
+        data = part.get("data")
+        if not isinstance(data, dict):
+            continue
+        variables = data.get("variables")
+        if not isinstance(variables, dict):
+            continue
+        client_vars = variables.get("clientVariables")
+        if not isinstance(client_vars, dict):
+            continue
+        if "modelName" in client_vars:
+            return True
+    return False

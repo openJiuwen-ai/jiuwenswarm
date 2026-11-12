@@ -835,6 +835,53 @@ async def test_ask_user_resume_carries_card_round_model(cfg_file):
 
 
 @pytest.mark.asyncio
+async def test_session_model_name_record_lifecycle(cfg_file):
+    """会话级模型记录生命周期：上报更新、未携带保持、显式置空清除、清理路径收口。
+
+    端侧契约允许 modelName="none"/空 表示回到默认模型——显式置空须清除
+    会话记录（否则发卡快照到已弃用的旧模型）；未携带则保持上次选择不动。
+    清上下文/强清会话同步收口该表。
+    """
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        # 上报 modelName → 记录更新
+        await ch._handle_message_stream(_build_stream_msg(
+            "你好",
+            client_vars={"workspace": None, "modelName": "LLM_GLM5.3"},
+            task="task-1",
+        ))
+        assert ch._session_model_names["conv-1"] == "LLM_GLM5.3"
+
+        # 未携带 modelName → 记录保持（不动上次选择）
+        await ch._handle_message_stream(_build_stream_msg(
+            "再见",
+            client_vars={"workspace": None},
+            task="task-2",
+        ))
+        assert ch._session_model_names["conv-1"] == "LLM_GLM5.3"
+
+        # 显式置空（none，端侧回到默认模型）→ 记录清除
+        await ch._handle_message_stream(_build_stream_msg(
+            "你好",
+            client_vars={"workspace": None, "modelName": "none"},
+            task="task-3",
+        ))
+        assert "conv-1" not in ch._session_model_names
+
+        # 清空上下文 → 记录收口（清前重设一次，区分两条清理路径）
+        ch._session_model_names["conv-1"] = "MiniMax_M3.1_Flash"
+        await ch._handle_clear_context({"sessionId": "conv-1", "conversationId": "conv-1"})
+        assert "conv-1" not in ch._session_model_names
+
+        ch._session_model_names["conv-1"] = "MiniMax_M3.1_Flash"
+        ch._force_cleanup_session("conv-1")
+        assert "conv-1" not in ch._session_model_names
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
 async def test_ask_user_timeout_loop_skips_text_fallback_entries(
     cfg_file, monkeypatch
 ):
