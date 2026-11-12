@@ -7,20 +7,10 @@
 import { copy } from './copy';
 import {
   incomingMessage, incomingMessageStatus, MESSAGE_STATUS_EVENT, outgoingMessage,
-  toolCallOf, toolResultCallId, toolResultFailed, toolResultText,
+  toolCallOf, toolResultCallId, toolResultFailed,
 } from './crossDocumentMessages';
 import { isRecord, type GatewayEvent, type JsonObject } from './gatewayClient';
 import { isContractTool, isMutatingTool } from './presentationContract';
-
-/** What a finished call said beyond done or failed. */
-export type ToolOutcome =
-  /** The visual review's verdict on a slide: ``none`` when the review itself could not decide. */
-  | { kind: 'verdict'; verdict: 'done' | 'needs_work' | 'none' }
-  /** The backend answered the call for a pane that had gone: it may or may not have run. */
-  | { kind: 'client_gone' };
-
-/** A call that changed the presentation in the turn a ``changes`` entry closes. */
-export interface Edit { callId: string; name: string; failed: boolean }
 
 export type Entry =
   | { kind: 'user'; id: string; text: string }
@@ -30,15 +20,14 @@ export type Entry =
     /** What the model said the call is for. */
     goal?: string;
     args?: JsonObject;
-    outcome?: ToolOutcome;
   }
   /** A task another document's conversation sent here; ``status`` is the mailbox's. */
   | { kind: 'incoming'; id: string; sourceTitle: string; text: string; status: string }
   /** A task this conversation sent to another document's. */
   | { kind: 'outgoing'; id: string; targetSessionId: string; text: string; status: 'sending' | 'sent' | 'failed' }
   | { kind: 'notice'; id: string; tone: 'info' | 'error'; text: string }
-  /** What the turn before it changed in the presentation; only a turn that called a writing tool has one. */
-  | { kind: 'changes'; id: string; edits: Edit[] };
+  /** The end of a turn that called a writing tool: the calls its undo takes back. */
+  | { kind: 'changes'; id: string; callIds: string[] };
 
 export interface PromptOption { label: string; value?: string; description?: string }
 
@@ -122,20 +111,27 @@ export function startTurn(conversation: Conversation): Conversation {
   return { ...conversation, turn: 'running', turnStart: conversation.turnStart ?? conversation.entries.length };
 }
 
-/** The turn is over here: the user stopped it, or it failed. */
+/** The turn is over here: the user stopped it, or it failed. Its steps still under way will not finish. */
 export function endTurn(conversation: Conversation): Conversation {
-  return closeTurn({ ...conversation, turn: 'idle', awaitingTools: false, prompt: undefined, openReply: undefined });
+  return closeTurn(unfinishedFailed(
+    { ...conversation, turn: 'idle', awaitingTools: false, prompt: undefined, openReply: undefined }));
 }
 
-/** The turn is over for the user: what it changed in the presentation, if anything, follows it. */
+function unfinishedFailed(conversation: Conversation): Conversation {
+  return { ...conversation, entries: conversation.entries.map(entry => (
+    (entry.kind === 'tool' && entry.status === 'running') || (entry.kind === 'outgoing' && entry.status === 'sending')
+      ? { ...entry, status: 'failed' } : entry)) };
+}
+
+/** The turn is over for the user: if it called a writing tool, its undo follows it. */
 function closeTurn(conversation: Conversation): Conversation {
   const { turnStart } = conversation;
   if (turnStart === undefined) return conversation;
-  const edits = conversation.entries.slice(turnStart).flatMap((entry): Edit[] => (
+  const callIds = conversation.entries.slice(turnStart).flatMap(entry => (
     entry.kind === 'tool' && entry.status !== 'running' && isContractTool(entry.name) && isMutatingTool(entry.name)
-      ? [{ callId: entry.id, name: entry.name, failed: entry.status === 'failed' }] : []));
+      ? [entry.id] : []));
   const closed = { ...conversation, turnStart: undefined };
-  return edits.length ? add(closed, { kind: 'changes', edits }) : closed;
+  return callIds.length ? add(closed, { kind: 'changes', callIds }) : closed;
 }
 
 export function clearPrompt(conversation: Conversation): Conversation {
@@ -235,7 +231,12 @@ function reply(conversation: Conversation, write: (text: string) => string): Con
   return { ...opened, openReply: opened.entries.at(-1)!.id };
 }
 
+/** The tool a deferred tool runs through; the same call comes again as ``<id>:target`` under the tool's own name. */
+const DEFERRED_DISPATCH = 'tool_call';
+
 function toolCall(conversation: Conversation, payload: JsonObject): Conversation {
+  const { callId, name, args, goal } = toolCallOf(payload);
+  if (!callId || !name || name === DEFERRED_DISPATCH || has(conversation, callId)) return conversation;
   const outgoing = outgoingMessage(payload);
   if (outgoing) {
     return add(conversation, {
@@ -243,8 +244,6 @@ function toolCall(conversation: Conversation, payload: JsonObject): Conversation
       status: 'sending',
     });
   }
-  const { callId, name, args, goal } = toolCallOf(payload);
-  if (!callId || !name || has(conversation, callId)) return conversation;
   return add(conversation, {
     kind: 'tool', id: callId, name, status: 'running',
     ...(goal ? { goal } : {}), ...(Object.keys(args).length ? { args } : {}),
@@ -254,26 +253,10 @@ function toolCall(conversation: Conversation, payload: JsonObject): Conversation
 function toolResult(conversation: Conversation, payload: JsonObject): Conversation {
   const failed = toolResultFailed(payload);
   return replace(conversation, toolResultCallId(payload), entry => {
-    if (entry.kind === 'tool') {
-      const outcome = toolOutcome(entry.name, toolResultText(payload));
-      return { ...entry, status: failed ? 'failed' : 'done', ...(outcome ? { outcome } : {}) };
-    }
+    if (entry.kind === 'tool') return { ...entry, status: failed ? 'failed' : 'done' };
     if (entry.kind === 'outgoing') return { ...entry, status: failed ? 'failed' : 'sent' };
     return entry;
   });
-}
-
-/**
- * The backend's wording of a result, read where nothing else carries it: the
- * review's ``<verifier-result>`` (``office/review.py``), and the text a call
- * answered ``client_gone`` turns into (agent-core ``tool/client.py``).
- */
-function toolOutcome(name: string, text: string): ToolOutcome | undefined {
-  if (/the client that runs it disconnected/i.test(text)) return { kind: 'client_gone' };
-  if (name !== 'verify_slide_visual') return undefined;
-  const verdict = /<verifier-result\b[^>]*\bverdict="(done|needs_work)"/.exec(text)?.[1];
-  if (verdict === 'done' || verdict === 'needs_work') return { kind: 'verdict', verdict };
-  return /<verifier-result\b/.test(text) ? { kind: 'verdict', verdict: 'none' } : undefined;
 }
 
 function incomingId(messageId: string): string {
@@ -353,7 +336,7 @@ export function replayHistory(messages: readonly JsonObject[]): Conversation {
       ? addNotice(conversation, 'info', note)
       : applyTranscriptEvent(conversation, event, message);
   }
-  return { ...conversation, openReply: undefined };
+  return unfinishedFailed({ ...conversation, openReply: undefined });
 }
 
 function replayedUserMessage(conversation: Conversation, message: JsonObject): Conversation {

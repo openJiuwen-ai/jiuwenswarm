@@ -9,10 +9,12 @@ Create, rename, pin, and all git operations stay on the execution plane.
 from __future__ import annotations
 
 import logging
+from functools import partial
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.control.methods import CONTROL_PROJECT_METHODS
+from jiuwenswarm.server.control.query_executor import run_control_query
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.server.control.store.project_queries import (
     load_pinned_sessions,
@@ -47,6 +49,11 @@ def _from_triple(
 
 
 async def handle_project_request(request: AgentRequest) -> AgentResponse:
+    """Keep complete project scans and their result copies off the Front loop."""
+    return await run_control_query(partial(_handle_project_request, request))
+
+
+def _handle_project_request(request: AgentRequest) -> AgentResponse:
     method = request.req_method.value if request.req_method is not None else ""
     if method not in CONTROL_PROJECT_METHODS:
         return build_error_response(

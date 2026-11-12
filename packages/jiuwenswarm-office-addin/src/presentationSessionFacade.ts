@@ -131,13 +131,15 @@ export class PresentationSessionFacade {
     );
   }
 
+  /** Stop the running turn; a supplement starts the next one on ``modelName``, as ``chat.send`` does. */
   async interrupt(
-    sessionId: SessionId, intent: 'pause' | 'resume' | 'cancel' | 'supplement', newInput?: string,
+    sessionId: SessionId, intent: 'pause' | 'resume' | 'cancel' | 'supplement', newInput?: string, modelName?: string,
   ): Promise<void> {
     await this.gateway.request('chat.interrupt', {
       session_id: sessionId,
       intent,
       ...(intent === 'supplement' ? { new_input: newInput ?? '' } : {}),
+      ...(modelName ? { model_name: modelName } : {}),
     });
   }
 

@@ -142,12 +142,12 @@ def test_python_linux_updater_forwards_its_attempt_receipt_before_replacing_file
     method = next(node for node in runtime_class.body if isinstance(node, ast.FunctionDef)
                   and node.name == "_launch_linux_install_helper")
     namespace = {"Path": Path, "os": os, "shlex": shlex, "EXECUTABLE_NAME": "workswarm",
-                 "get_infra_data_dir": lambda: tmp_path / "infra", "logger": logging.getLogger(__name__),
+                 "get_user_workspace_dir": lambda: tmp_path, "logger": logging.getLogger(__name__),
                  "subprocess": SimpleNamespace(DEVNULL=-3, Popen=Mock())}
     exec(compile(ast.Module(body=[method], type_ignores=[]), "linux-updater", "exec"), namespace)
     receipt = create_shutdown_receipt(tmp_path / "attempt with spaces")
     runtime = SimpleNamespace(_update_shutdown_receipt=receipt)
     assert namespace[method.name](runtime, tmp_path / "update.tar.gz", tmp_path / "app/workswarm")
-    helper = (tmp_path / "infra/.updates/_install_helper.sh").read_text(encoding="utf-8")
+    helper = (tmp_path / ".updates/_install_helper.sh").read_text(encoding="utf-8")
     assert f"--shutdown-receipt {shlex.quote(str(receipt))}" in helper
     assert helper.index("--shutdown-receipt") < helper.index("mv ")

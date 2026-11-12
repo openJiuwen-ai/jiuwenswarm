@@ -157,19 +157,19 @@ def _mysql_settings_env(monkeypatch) -> None:
     monkeypatch.setenv("GATEWAY_DB_NAME", "db")
 
 
-def test_use_team_mysql_true_for_mysql(monkeypatch):
-    import jiuwenswarm.infrastructure.db.team_mysql_actor as actor
+def test_use_shared_team_store_true_for_mysql(monkeypatch):
+    import jiuwenswarm.infrastructure.db.team_store_actor as actor
 
     monkeypatch.setenv("GATEWAY_DB_TYPE", "mysql")
     _mysql_settings_env(monkeypatch)
-    assert actor.use_team_mysql() is True
+    assert actor.use_shared_team_store() is True
 
 
 def test_run_team_store_sqlite_stays_on_the_caller_thread(monkeypatch):
     import asyncio
     import threading
 
-    import jiuwenswarm.infrastructure.db.team_mysql_actor as actor
+    import jiuwenswarm.infrastructure.db.team_store_actor as actor
 
     monkeypatch.setenv("GATEWAY_DB_TYPE", "sqlite")
     monkeypatch.setenv("GATEWAY_SQLITE_PATH", "agent_gateway.db")
@@ -192,7 +192,7 @@ def test_run_team_store_mysql_waits_off_the_event_loop(monkeypatch):
     import asyncio
     import threading
 
-    import jiuwenswarm.infrastructure.db.team_mysql_actor as actor
+    import jiuwenswarm.infrastructure.db.team_store_actor as actor
 
     monkeypatch.setenv("GATEWAY_DB_TYPE", "mysql")
     _mysql_settings_env(monkeypatch)
@@ -223,26 +223,26 @@ def test_run_team_store_mysql_waits_off_the_event_loop(monkeypatch):
     asyncio.run(_go())
 
 
-def test_use_team_mysql_false_for_sqlite(monkeypatch):
-    import jiuwenswarm.infrastructure.db.team_mysql_actor as actor
+def test_use_shared_team_store_false_for_sqlite(monkeypatch):
+    import jiuwenswarm.infrastructure.db.team_store_actor as actor
 
     monkeypatch.setenv("GATEWAY_DB_TYPE", "sqlite")
     monkeypatch.setenv("GATEWAY_SQLITE_PATH", "agent_gateway.db")
-    assert actor.use_team_mysql() is False
+    assert actor.use_shared_team_store() is False
 
 
-def test_use_team_mysql_false_for_postgresql(monkeypatch):
-    import jiuwenswarm.infrastructure.db.team_mysql_actor as actor
+def test_use_shared_team_store_true_for_postgresql(monkeypatch):
+    import jiuwenswarm.infrastructure.db.team_store_actor as actor
 
     _mysql_settings_env(monkeypatch)
     monkeypatch.setenv("GATEWAY_DB_PORT", "5432")
     for kind in ("postgresql", "postgres", "pg"):
         monkeypatch.setenv("GATEWAY_DB_TYPE", kind)
-        assert actor.use_team_mysql() is False
+        assert actor.use_shared_team_store() is True
 
 
 def test_unique_violation_detects_mysql():
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import is_unique_violation
+    from jiuwenswarm.infrastructure.db.team_store_actor import is_unique_violation
 
     class _Orig:
         def __init__(self, *args):
@@ -260,13 +260,13 @@ def test_unique_violation_detects_mysql():
     assert not is_unique_violation(_Wrap(_Orig(1054, "Unknown column")))
 
 
-def test_team_mysql_actor_call_rejects_reentry():
+def test_team_store_actor_call_rejects_reentry():
     import asyncio
     import threading
 
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import TeamMysqlActor
+    from jiuwenswarm.infrastructure.db.team_store_actor import TeamStoreActor
 
-    actor = TeamMysqlActor()
+    actor = TeamStoreActor()
     loop = asyncio.new_event_loop()
     thread = threading.Thread(
         target=actor._run_loop,
@@ -303,13 +303,13 @@ def test_gateway_table_init_does_not_create_team_tables():
     assert "team_quota_lease" not in names
 
 
-def test_team_mysql_actor_call_timeout_has_a_message():
+def test_team_store_actor_call_timeout_has_a_message():
     import asyncio
     import threading
 
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import TeamMysqlActor
+    from jiuwenswarm.infrastructure.db.team_store_actor import TeamStoreActor
 
-    actor = TeamMysqlActor()
+    actor = TeamStoreActor()
     actor._call_timeout = 0.05
     loop = asyncio.new_event_loop()
     thread = threading.Thread(
@@ -339,13 +339,13 @@ def test_team_mysql_actor_call_timeout_has_a_message():
         thread.join(timeout=2)
 
 
-def test_team_mysql_actor_call_reconnects_when_cancel_does_not_finish():
+def test_team_store_actor_call_reconnects_when_cancel_does_not_finish():
     import asyncio
     import threading
 
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import TeamMysqlActor
+    from jiuwenswarm.infrastructure.db.team_store_actor import TeamStoreActor
 
-    actor = TeamMysqlActor()
+    actor = TeamStoreActor()
     actor._call_timeout = 0.05
     loop = asyncio.new_event_loop()
     thread = threading.Thread(

@@ -10,6 +10,7 @@ import { PowerPointToolDispatcher, type PresentationToolRuntime } from './powerP
 import { presentationAttachDeclaration } from './presentationContract';
 import { PresentationSessionFacade } from './presentationSessionFacade';
 import { ScriptedGateway } from './scriptedGateway';
+import type { SlideSnapshots, UndoResult } from './slideSnapshots';
 import type { Timer } from './workerTimer';
 
 const DOCUMENT = '3f1c2a9e-7b4d-4e8a-9c21-5d6f7a8b9c0d' as DocumentId;
@@ -25,6 +26,11 @@ const PERMISSION: JsonObject = {
 
 let gateway: ScriptedGateway;
 let execute: ReturnType<typeof vi.fn<PresentationToolRuntime['execute']>>;
+let snapshots: {
+  closeTurn: ReturnType<typeof vi.fn<SlideSnapshots['closeTurn']>>;
+  undoable: ReturnType<typeof vi.fn<SlideSnapshots['undoable']>>;
+  undo: ReturnType<typeof vi.fn<SlideSnapshots['undo']>>;
+};
 
 /** The pane as the task pane wires it, against a scripted Gateway and a stand-in PowerPoint. */
 function pane(): TaskPaneController {
@@ -41,7 +47,12 @@ function pane(): TaskPaneController {
     createSession: async () => sessions.create(await sessions.defaultModel()),
     renewTimer: pageTimer,
   });
-  return new TaskPaneController({ attachment, sessions, documentId: DOCUMENT, connection: gateway });
+  snapshots = {
+    closeTurn: vi.fn(async () => undefined),
+    undoable: vi.fn(() => ({ slides: 2 })),
+    undo: vi.fn(async (): Promise<UndoResult> => ({ kind: 'undone', turns: 1, positions: [2, 3] })),
+  };
+  return new TaskPaneController({ attachment, sessions, documentId: DOCUMENT, connection: gateway, snapshots });
 }
 
 const settle = async (): Promise<void> => {
@@ -127,7 +138,7 @@ describe('chatting', () => {
 
     expect(await controller.send('只看前 3 页')).toBe(true);
     expect(gateway.sent('chat.interrupt')).toEqual([
-      { session_id: 's1', intent: 'supplement', new_input: '只看前 3 页' }]);
+      { session_id: 's1', intent: 'supplement', new_input: '只看前 3 页', model_name: 'm-active' }]);
     expect(gateway.sent('chat.send')).toHaveLength(1);
     expect(transcript(controller).filter(entry => entry.kind === 'user')).toEqual(
       ['改标题', '检查标题', '只看前 3 页'].map(text => ({ kind: 'user', text })));
@@ -174,6 +185,52 @@ describe('chatting', () => {
     expect(gateway.sent('chat.send')[0]).toMatchObject({ content: '检查标题', model_name: 'm-other' });
   });
 
+  it('carries the picked model on a message that joins a running turn', async () => {
+    const controller = pane();
+    await controller.open();
+    await settle();
+    controller.chooseModel('m-other');
+    await controller.send('检查标题');
+    await controller.send('只看前 3 页');
+
+    expect(gateway.sent('chat.interrupt')).toEqual([
+      { session_id: 's1', intent: 'supplement', new_input: '只看前 3 页', model_name: 'm-other' }]);
+  });
+
+  it('drops the writes the turn still had queued when a message takes the turn over', async () => {
+    const controller = pane();
+    await controller.open();
+    await settle();
+    let release: () => void = () => undefined;
+    execute.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve({ ok: true, result: {} });
+    }));
+    await controller.send('做三页');
+    for (const id of ['w1', 'w2']) {
+      emit('chat.client_tool_request', {
+        request_id: id, interrupt_id: `i-${id}`, tool_name: 'presentation_apply_patch', arguments: {} });
+    }
+    await settle();
+    await controller.send('先别做了，换个主题');
+    release();
+    await settle();
+
+    expect(execute.mock.calls.map(([call]) => call.callId)).toEqual(['w1']);
+  });
+
+  it('reads the models again when the server changes them, falling back to its active one', async () => {
+    const controller = pane();
+    await controller.open();
+    await settle();
+    controller.chooseModel('m-other');
+    gateway.answer('models.list', { active_model: 'm-new', models: [{ model_name: 'm-third' }] });
+    gateway.emit('models.updated', {});
+    await settle();
+
+    expect(gateway.sent('models.list')).toHaveLength(2);
+    expect(controller.state()).toMatchObject({ models: ['m-new', 'm-third'], model: 'm-new' });
+  });
+
   it('shows the history again when it attaches again after a reconnect, as the turn may have ended meanwhile', async () => {
     const controller = pane();
     await controller.open();
@@ -209,6 +266,66 @@ describe('chatting', () => {
 
     expect(gateway.sent('chat.interrupt')).toEqual([{ session_id: 's1', intent: 'cancel' }]);
     expect(controller.state().conversation.turn).toBe('idle');
+  });
+});
+
+describe('undoing a turn', () => {
+  /** A turn that wrote the presentation, from the user's message to its end; the id of its changes card. */
+  async function turnThatWrote(controller: TaskPaneController): Promise<string> {
+    await controller.send('做三页');
+    emit('chat.tool_call', { tool_call: { id: 'w1', name: 'presentation_apply_patch' } });
+    emit('chat.tool_result', { tool_result: { tool_call_id: 'w1', status: 'success' } });
+    emit('chat.processing_status', { is_processing: false });
+    await settle();
+    return controller.state().conversation.entries.at(-1)!.id;
+  }
+
+  it('offers the undo of a turn that wrote, once its snapshots are closed, and none while a turn runs', async () => {
+    const controller = pane();
+    await controller.open();
+    await settle();
+    const card = await turnThatWrote(controller);
+
+    expect(snapshots.closeTurn).toHaveBeenCalledTimes(1);
+    expect(snapshots.undoable).toHaveBeenLastCalledWith(['w1']);
+    expect(controller.state().undo.offers).toEqual(new Set([card]));
+    await controller.send('再改一下');
+    expect(controller.state().undo.offers.size).toBe(0);
+  });
+
+  it('undoes the turn quietly, and tells only the agent with the next message that slide ids changed', async () => {
+    const controller = pane();
+    await controller.open();
+    await settle();
+    const card = await turnThatWrote(controller);
+    const before = transcript(controller);
+    snapshots.undoable.mockReturnValue(undefined);
+    await controller.undo(card);
+
+    expect(snapshots.undo).toHaveBeenCalledWith(['w1'], false);
+    expect(transcript(controller)).toEqual(before);
+    expect(controller.state().undo.offers.size).toBe(0);
+    await controller.send('换个配色');
+    expect(gateway.sent('chat.send').at(-1)).toMatchObject({ content:
+      '（已撤销你此前的修改，恢复了第 2、3 页；这些页的 id 已变化，请先重新读取演示文稿。）\n换个配色' });
+    expect(transcript(controller).at(-1)).toEqual({ kind: 'user', text: '换个配色' });
+    await controller.send('再试一次');
+    expect(gateway.sent('chat.interrupt').at(-1)).toMatchObject({ new_input: '再试一次' });
+  });
+
+  it('asks before it overwrites slides changed since, and undoes once the user confirms', async () => {
+    const controller = pane();
+    await controller.open();
+    await settle();
+    const card = await turnThatWrote(controller);
+    snapshots.undo.mockResolvedValueOnce({ kind: 'changed', slides: 1 });
+    await controller.undo(card);
+
+    expect(controller.state().undo.confirm).toBe(card);
+    controller.cancelUndo();
+    expect(controller.state().undo.confirm).toBeUndefined();
+    await controller.undo(card, true);
+    expect(snapshots.undo).toHaveBeenLastCalledWith(['w1'], true);
   });
 });
 

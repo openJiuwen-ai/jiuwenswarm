@@ -47,7 +47,7 @@ afterEach(() => {
 function mounted(initial: Partial<PaneState> = {}) {
   let state: PaneState = {
     attachment: ATTACHED, conversation: emptyConversation, conversations: [], documents: new Map([['s9', '市场分析.pptx']]),
-    loadingHistory: false, connection: { kind: 'open' }, models: [], ...initial,
+    loadingHistory: false, connection: { kind: 'open' }, models: [], undo: { offers: new Set() }, ...initial,
   };
   const listeners = new Set<(state: PaneState) => void>();
   const controller = {
@@ -58,12 +58,14 @@ function mounted(initial: Partial<PaneState> = {}) {
     },
     send: vi.fn(async (_text: string) => true),
     stop: vi.fn(async () => undefined),
-    answer: vi.fn(async () => undefined),
+    answer: vi.fn(async (): Promise<void> => undefined),
     switchTo: vi.fn(async () => undefined),
     newConversation: vi.fn(async () => undefined),
     continueHere: vi.fn(async () => undefined),
     chooseModel: vi.fn(),
     dismissAlert: vi.fn(),
+    undo: vi.fn(async (_card: string, _overwrite?: boolean) => undefined),
+    cancelUndo: vi.fn(),
   };
   const root = document.createElement('div');
   document.body.replaceChildren(root);
@@ -147,6 +149,17 @@ describe('the approval sheet', () => {
     expect(controller.answer).not.toHaveBeenCalled();
   });
 
+  it('sends one answer while it is on its way, whatever keys follow', () => {
+    const { controller } = mounted({ conversation: conversationOf(['chat.ask_user_question', PERMISSION]) });
+    controller.answer.mockImplementation(() => new Promise<void>(() => undefined));
+    vi.advanceTimersByTime(ENTER_GUARD_MS);
+    key('Escape');
+    vi.advanceTimersByTime(ENTER_GUARD_MS);
+    key('Enter');
+    expect(controller.answer).toHaveBeenCalledTimes(1);
+    expect(controller.answer).toHaveBeenCalledWith([{ selected: [{ value: 'reject', label: '拒绝' }] }]);
+  });
+
   it('stops listening once answered', () => {
     const { controller, set } = mounted({ conversation: conversationOf(['chat.ask_user_question', PERMISSION]) });
     set({ conversation: emptyConversation });
@@ -179,6 +192,25 @@ describe('the agent\'s question', () => {
     button('提交').click();
     expect(controller.answer).toHaveBeenCalledWith([{ selected: [{ label: '图片' }], customInput: '偏蓝色' }]);
   });
+
+  it('submits once while the answer is on its way, and again once it did not go out', async () => {
+    const { root, controller, button } = mounted({ conversation: conversationOf(['chat.ask_user_question', {
+      request_id: 'ask_1', source: 'ask_user_interrupt', questions: [{ question: '封面风格？', options: [{ label: '简洁' }] }],
+    }]) });
+    let fail: () => void = () => undefined;
+    controller.answer.mockImplementation(() => new Promise<void>(resolve => { fail = resolve; }));
+    const choice = root.querySelector<HTMLInputElement>('.choice input')!;
+    choice.checked = true;
+    choice.dispatchEvent(new Event('change'));
+    button('提交').click();
+    button('提交').click();
+    expect(controller.answer).toHaveBeenCalledTimes(1);
+
+    fail();
+    await Promise.resolve();
+    button('提交').click();
+    expect(controller.answer).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('the composer', () => {
@@ -190,6 +222,14 @@ describe('the composer', () => {
     expect(controller.send).toHaveBeenCalledWith('检查标题');
     expect(input().value).toBe('');
     await vi.waitFor(() => expect(input().value).toBe('检查标题'));
+  });
+
+  it('leaves the Enter that picks an input method candidate to the input method', () => {
+    const { controller, input } = mounted();
+    input().value = '检查标题';
+    input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true }));
+    expect(controller.send).not.toHaveBeenCalled();
+    expect(input().value).toBe('检查标题');
   });
 
   it('turns Send into Stop while a turn runs, and back into Send for a message typed meanwhile', () => {
@@ -232,11 +272,6 @@ describe('the composer', () => {
     expect(document.activeElement).toBe(document.body);
     set({ conversation: emptyConversation });
     expect(document.activeElement).toBe(input());
-  });
-
-  it('names the document it writes to', () => {
-    const { text } = mounted();
-    expect(text('.document-name')).toBe('季度汇报.pptx');
   });
 });
 
@@ -290,13 +325,14 @@ describe('the tool timeline', () => {
   const result = (id: string, extra: JsonObject = {}): [string, JsonObject] => (
     ['chat.tool_result', { tool_result: { tool_call_id: id, status: 'success', ...extra } }]);
 
-  it('shows the running step with its purpose and live seconds, then folds to a summary', () => {
+  it('shows the running step in one line with live seconds, its purpose on request, then a summary', () => {
     const running = conversationOf(['chat.processing_status', { is_processing: true }],
       call('c1', 'read_presentation_context', {}, '了解页数'), result('c1'), call('c2', 'list_slide_shapes', { slide_id: '258' }));
     const { set, root, text, second } = mounted({ conversation: running });
     const head = root.querySelector<HTMLButtonElement>('.activity-head')!;
-    expect(head.getAttribute('aria-expanded')).toBe('true');
-    expect(text('.activity-summary')).toBe('执行中：查看页面上的形状');
+    expect(head.getAttribute('aria-expanded')).toBe('false');
+    expect(text('.activity-summary')).toBe('查看页面上的形状');
+    head.click();
     expect(text('.step-goal')).toBe('了解页数');
     second();
     second();
@@ -304,10 +340,10 @@ describe('the tool timeline', () => {
 
     set({ conversation: applyEvent(running, { event: 'chat.tool_result', payload: { tool_result: {
       tool_call_id: 'c2', status: 'success' } } }) });
-    expect(text('.activity-summary')).toBe('读取演示文稿，另有 1 步');
-    expect(root.querySelector('.activity-steps')!.hasAttribute('hidden')).toBe(true);
-    root.querySelector<HTMLButtonElement>('.activity-head')!.click();
+    expect(text('.activity-summary')).toBe('查看过程');
     expect(root.querySelector('.activity-steps')!.hasAttribute('hidden')).toBe(false);
+    root.querySelector<HTMLButtonElement>('.activity-head')!.click();
+    expect(root.querySelector('.activity-steps')!.hasAttribute('hidden')).toBe(true);
   });
 
   it('keeps arguments hidden and opens one step\'s details at a time', () => {
@@ -329,16 +365,22 @@ describe('the tool timeline', () => {
     expect([...root.querySelectorAll('.slide-rows li')].map(item => item.textContent)).toEqual(['第 3 页', '第 4 页', '第 5 页']);
   });
 
-  it('marks the visual review\'s verdict and a call the backend answered for a pane that had gone', () => {
-    const { text } = mounted({ conversation: conversationOf(
-      call('c1', 'verify_slide_visual', { slide_id: '258' }),
-      result('c1', { result: '<verifier-result verdict="needs_work" slide_id="258">…</verifier-result>' }),
-      call('c2', 'read_slide_image', { slide_id: '258' }),
-      result('c2', { status: 'error', result: "Client tool 'read_slide_image' could not finish: the client that runs it "
-        + 'disconnected. It may or may not have taken effect.' })) });
-    expect(text('.outcome-needs_work .chip')).toBe('需要修改');
-    expect(text('.outcome-gone .chip')).toBe('窗格已断开，这一步可能没有完成');
-    expect(text('.activity-head .chip')).toBe('窗格已断开');
+  it('folds a finished run to one quiet line, with no counts, failures or verdicts in it', () => {
+    const { root, text } = mounted({ conversation: conversationOf(
+      call('c1', 'read_presentation_context'), result('c1'),
+      call('c2', 'presentation_apply_patch'), result('c2', { status: 'error' }),
+      call('c3', 'verify_slide_visual', { slide_id: '258' }),
+      result('c3', { result: '<verifier-result verdict="needs_work" slide_id="258">…</verifier-result>' })) });
+    expect(text('.activity-head')).toBe('查看过程');
+    expect(root.querySelector('.activity.has-failed, .activity .chip')).toBeNull();
+    root.querySelector<HTMLButtonElement>('.activity-head')!.click();
+    expect([...root.querySelectorAll('.step-title')].map(node => node.textContent)).toEqual(['读取演示文稿', '更新页面', '视觉复核']);
+    expect(root.querySelector('.step.status-failed .step-title')!.textContent).toBe('更新页面');
+  });
+
+  it('folds a single finished step to its own name', () => {
+    const { text } = mounted({ conversation: conversationOf(call('c1', 'read_presentation_context'), result('c1')) });
+    expect(text('.activity-summary')).toBe('读取演示文稿');
   });
 
   it('names the document a task went to', () => {
@@ -349,29 +391,93 @@ describe('the tool timeline', () => {
 });
 
 describe('the end of a turn', () => {
-  it('says what the turn changed, and reads the reply out', () => {
-    const { set, text, announced } = mounted({ conversation: conversationOf(
+  it('reads the reply out', () => {
+    const { set, announced } = mounted({ conversation: conversationOf(
       ['chat.processing_status', { is_processing: true }]) });
     set({ conversation: conversationOf(['chat.processing_status', { is_processing: true }],
-      ['chat.tool_call', { tool_call: { id: 'e1', name: 'edit_slide_text', arguments: { ref: '258:4' } } }],
-      ['chat.tool_result', { tool_result: { tool_call_id: 'e1', status: 'success' } }],
-      ['chat.tool_call', { tool_call: { id: 'e2', name: 'edit_slide_text', arguments: { ref: '263:2' } } }],
-      ['chat.tool_result', { tool_result: { tool_call_id: 'e2', status: 'success' } }],
-      ['chat.final', { content: '标题改好了。' }],
-      ['chat.processing_status', { is_processing: false }]) });
-    expect(text('.entry-changes')).toBe('本轮改了什么修改页面文字2 次');
+      ['chat.final', { content: '标题改好了。' }], ['chat.processing_status', { is_processing: false }]) });
     expect(announced()).toBe('WorkSwarm 回复：标题改好了。');
+  });
+
+  const wrote = (): Conversation => conversationOf(['chat.processing_status', { is_processing: true }],
+    ['chat.tool_call', { tool_call: { id: 'w1', name: 'presentation_apply_patch' } }],
+    ['chat.tool_result', { tool_result: { tool_call_id: 'w1', status: 'success' } }],
+    ['chat.tool_call', { tool_call: { id: 'w2', name: 'edit_slide_text' } }],
+    ['chat.tool_result', { tool_result: { tool_call_id: 'w2', status: 'error' } }],
+    ['chat.final', { content: '做好了。' }],
+    ['chat.processing_status', { is_processing: false }]);
+
+  const actions = (root: HTMLElement): (string | null)[] =>
+    [...root.querySelectorAll('.turn-actions button')].map(item => item.getAttribute('aria-label'));
+
+  it('ends a turn with icons under the reply: copy, and undo while the turn\'s changes can be undone', () => {
+    const conversation = wrote();
+    const card = conversation.entries.at(-1)!.id;
+    const { controller, button, set, root } = mounted({ conversation });
+    expect(actions(root)).toEqual(['复制']);
+
+    set({ undo: { offers: new Set([card]) } });
+    expect(actions(root)).toEqual(['复制', '撤销本轮修改']);
+    expect(root.querySelector('.turn-actions')!.textContent).toBe('');
+    expect(root.querySelector('.turn-actions')!.previousElementSibling!.textContent).toBe('做好了。');
+    button('撤销本轮修改').click();
+    expect(controller.undo).toHaveBeenCalledWith(card);
+  });
+
+  it('copies the whole reply of the turn, and shows for a moment that it did', async () => {
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const { button, root } = mounted({ conversation: conversationOf(
+      ['chat.processing_status', { is_processing: true }], ['chat.delta', { content: '先看一下。' }],
+      ['chat.tool_call', { tool_call: { id: 'r1', name: 'read_presentation_context' } }],
+      ['chat.tool_result', { tool_result: { tool_call_id: 'r1', status: 'success' } }],
+      ['chat.final', { content: '共 4 页。' }], ['chat.processing_status', { is_processing: false }]) });
+    button('复制').click();
+    await vi.waitFor(() => expect(actions(root)).toEqual(['已复制']));
+    expect(writeText).toHaveBeenCalledWith('先看一下。\n\n共 4 页。');
+    vi.advanceTimersByTime(2000);
+    expect(actions(root)).toEqual(['复制']);
+  });
+
+  it('shows dots while the agent works and nothing on screen moves', () => {
+    const { set, root } = mounted();
+    const dots = (): boolean => root.querySelector('.thinking') !== null;
+    const events: [string, JsonObject][] = [['chat.processing_status', { is_processing: true }]];
+    const step = (...more: [string, JsonObject][]): boolean => {
+      events.push(...more);
+      set({ conversation: conversationOf(...events) });
+      return dots();
+    };
+    expect(step()).toBe(true);
+    expect(step(['chat.tool_call', { tool_call: { id: 'r1', name: 'read_presentation_context' } }])).toBe(false);
+    expect(step(['chat.tool_result', { tool_result: { tool_call_id: 'r1', status: 'success' } }])).toBe(true);
+    expect(step(['chat.delta', { content: '共' }])).toBe(false);
+    expect(step(['chat.final', { content: '共 4 页。' }], ['chat.processing_status', { is_processing: false }])).toBe(false);
+  });
+
+  it('asks in one short line before it overwrites slides changed since', () => {
+    const conversation = wrote();
+    const card = conversation.entries.at(-1)!.id;
+    const { controller, button, root } = mounted({ conversation, undo: { offers: new Set([card]), confirm: card } });
+    expect(root.querySelector('.transcript')!.lastElementChild!.textContent).toBe('后续修改会被覆盖取消仍然撤销');
+    button('仍然撤销').click();
+    expect(controller.undo).toHaveBeenCalledWith(card, true);
+    button('取消').click();
+    expect(controller.cancelUndo).toHaveBeenCalled();
   });
 });
 
 describe('the header', () => {
   it('lists the document\'s conversations, marks the current one, and switches', () => {
+    const now = Math.floor(Date.now() / 1000);
     const { root, button, controller } = mounted({ conversations: [
-      { sessionId: S1, title: '改标题', lastMessageAt: 2 }, { sessionId: 's0' as SessionId, title: '', lastMessageAt: 1 },
+      { sessionId: S1, title: '改标题', lastMessageAt: now - 300 },
+      { sessionId: 's0' as SessionId, title: '', lastMessageAt: now - 3 * 86_400 },
     ] });
     button('本文档的对话').click();
     const items = [...root.querySelectorAll<HTMLButtonElement>('#history-menu .menu-item')];
     expect(items.map(item => item.querySelector('.menu-item-title')!.textContent)).toEqual(['改标题', '新对话']);
+    expect(items.map(item => item.querySelector('.menu-item-meta')?.textContent)).toEqual(['5分钟', '3天']);
     expect(items[0].getAttribute('aria-current')).toBe('true');
     items[1].click();
     expect(controller.switchTo).toHaveBeenCalledWith('s0');
@@ -380,23 +486,51 @@ describe('the header', () => {
 
   it('closes a menu on Esc and gives the focus back to its button', () => {
     const { root, button } = mounted();
-    button('更多').click();
-    key('Escape', root.querySelector('#more-menu')!);
-    expect(root.querySelector<HTMLElement>('#more-menu')!.hidden).toBe(true);
-    expect(document.activeElement).toBe(button('更多'));
+    button('本文档的对话').click();
+    key('Escape', root.querySelector('#history-menu')!);
+    expect(root.querySelector<HTMLElement>('#history-menu')!.hidden).toBe(true);
+    expect(document.activeElement).toBe(button('本文档的对话'));
   });
 
-  it('picks the model the next message runs on', () => {
-    const { root, button, controller } = mounted({ models: ['jiuwen-pro', 'jiuwen-flash'], model: 'jiuwen-pro' });
+  it('downloads the conversation from More, once it has anything', async () => {
+    const saved: Blob[] = [];
+    Object.assign(URL, { createObjectURL: (blob: Blob) => { saved.push(blob); return 'blob:x'; }, revokeObjectURL: () => undefined });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    const { set, button } = mounted();
     button('更多').click();
-    [...root.querySelectorAll<HTMLButtonElement>('#more-menu .menu-item')][1].click();
-    expect(controller.chooseModel).toHaveBeenCalledWith('jiuwen-flash');
+    expect(button('下载对话记录').disabled).toBe(true);
+    set({ conversation: conversationOf(['chat.final', { content: '好的。' }]) });
+    button('下载对话记录').click();
+    expect(click).toHaveBeenCalledTimes(1);
+    const text = await new Promise<string>(resolve => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsText(saved[0]);
+    });
+    expect(text).toBe('# 季度汇报.pptx\n\n**WorkSwarm**\n\n好的。\n');
+    click.mockRestore();
   });
 
   it('starts a new conversation', () => {
     const { button, controller } = mounted();
     button('新对话').click();
     expect(controller.newConversation).toHaveBeenCalled();
+  });
+});
+
+describe('the model picker', () => {
+  it('names the model under the message box and picks the one the next message runs on', () => {
+    const { root, button, controller } = mounted({ models: ['jiuwen-pro', 'jiuwen-flash'], model: 'jiuwen-pro' });
+    expect(root.querySelector('.model-name')!.textContent).toBe('jiuwen-pro');
+    button('模型：jiuwen-pro').click();
+    [...root.querySelectorAll<HTMLButtonElement>('#model-menu .menu-item')][1].click();
+    expect(controller.chooseModel).toHaveBeenCalledWith('jiuwen-flash');
+    expect(root.querySelector<HTMLElement>('#model-menu')!.hidden).toBe(true);
+  });
+
+  it('is not there while the server offers no model', () => {
+    const { root } = mounted();
+    expect(root.querySelector<HTMLElement>('.composer-foot')!.hidden).toBe(true);
   });
 });
 

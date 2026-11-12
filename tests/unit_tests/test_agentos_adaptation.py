@@ -179,7 +179,7 @@ class SandboxBoundaryTest(unittest.TestCase):
                  patch.object(builder, "Path", side_effect=lambda value: project if value == "~/workspace" else Path(value)):
                 result = builder._build_yuanrong_extra_params()
             self.assertEqual(result["mounts"], [
-                {"source": str(user_dir / ".jiuwenswarm" / "domain" / "agent" / "workspace"),
+                {"source": str(user_dir / ".jiuwenswarm" / "agent" / "workspace"),
                  "target": str(workspace), "readonly": False},
                 {"source": str(user_dir / "workspace"), "target": str(project), "readonly": False},
             ])

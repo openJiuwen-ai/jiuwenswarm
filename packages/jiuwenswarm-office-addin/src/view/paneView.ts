@@ -2,7 +2,9 @@ import type { AttachmentState, SessionId } from '../clientAttachment';
 import type { Entry, Prompt } from '../conversationModel';
 import { copy } from '../copy';
 import type { PaneState, TaskPaneController } from '../paneController';
+import { transcriptFileName, transcriptMarkdown } from '../transcriptMarkdown';
 import { Composer, type Waiting } from './composer';
+import { saveFile } from './download';
 import { h } from './dom';
 import { Header } from './header';
 import { approvalSheet, questionCard, type Interaction } from './interaction';
@@ -11,7 +13,7 @@ import { Tray, trayItems, type TrayItem } from './tray';
 
 type Controller = Pick<
   TaskPaneController, 'state' | 'subscribe' | 'send' | 'stop' | 'answer' | 'switchTo' | 'newConversation'
-  | 'continueHere' | 'chooseModel' | 'dismissAlert'>;
+  | 'continueHere' | 'chooseModel' | 'dismissAlert' | 'undo' | 'cancelUndo'>;
 
 /** The longest reply the pane reads out when a turn ends; the transcript has the rest. */
 const ANNOUNCED_REPLY_CHARS = 200;
@@ -32,10 +34,20 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
   const header = new Header({
     switchTo: sessionId => void controller.switchTo(sessionId),
     newConversation: () => void controller.newConversation(),
-    chooseModel: model => controller.chooseModel(model),
+    downloadTranscript: () => {
+      const { attachment, conversation, documents } = controller.state();
+      const name = attachment.kind === 'attached' ? attachment.displayName : '';
+      saveFile(transcriptFileName(name, new Date()),
+        transcriptMarkdown(name || copy.untitledConversation, conversation.entries, documents));
+    },
   });
-  const composer = new Composer({ send: text => controller.send(text), stop: () => void controller.stop() });
-  const transcript = new Transcript(text => composer.fill(text));
+  const composer = new Composer({
+    send: text => controller.send(text), stop: () => void controller.stop(), chooseModel: model => controller.chooseModel(model),
+  });
+  const transcript = new Transcript(text => composer.fill(text), {
+    undo: (...choice) => void controller.undo(...choice),
+    cancelUndo: () => controller.cancelUndo(),
+  });
   const tray = new Tray();
   const interactionSlot = h('div', { class: 'interaction-slot' });
   // Not the transcript: a streamed reply would be read out again on every delta.
@@ -59,19 +71,18 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
   };
 
   let interaction: { prompt: Prompt; view: Interaction } | undefined;
-  let documentName = '';
   let last: PaneState | undefined;
   const render = (state: PaneState): void => {
     const { attachment, conversation } = state;
     const attached = attachment.kind === 'attached';
-    if (attachment.kind === 'attached') documentName = attachment.displayName;
     header.update({
       conversations: state.conversations, shown: shownSession(attachment), enabled: attachment.kind !== 'detached',
-      models: state.models, model: state.model,
+      canDownload: conversation.entries.length > 0,
     });
     transcript.update({
       entries: conversation.entries, documents: state.documents, openReply: conversation.openReply,
-      loadingHistory: state.loadingHistory, canSuggest: attached && !conversation.prompt,
+      working: attached && conversation.turn === 'running' && !conversation.prompt,
+      loadingHistory: state.loadingHistory, canSuggest: attached && !conversation.prompt, undo: state.undo,
     });
     if (state.connection !== last?.connection || attachment !== last?.attachment || state.alert !== last?.alert) {
       paintTray(state, clock.now());
@@ -79,7 +90,7 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
     const prompt = attached ? conversation.prompt : undefined;
     if (prompt !== interaction?.prompt) {
       interaction?.view.dispose();
-      interaction = prompt ? { prompt, view: promptView(prompt, state, choices => void controller.answer(choices)) }
+      interaction = prompt ? { prompt, view: promptView(prompt, state, choices => controller.answer(choices)) }
         : undefined;
       interactionSlot.replaceChildren(...(interaction ? [interaction.view.element] : []));
       if (prompt) announce(isApproval(prompt) ? copy.approvalNeeded : copy.questionAsked);
@@ -87,8 +98,9 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
     composer.update({
       enabled: attached && state.connection.kind === 'open' && !conversation.prompt && !state.loadingHistory,
       running: attached && (conversation.turn === 'running' || conversation.prompt !== undefined),
-      documentName: documentName || copy.notConnected,
       waiting: waiting(state),
+      models: state.models,
+      model: state.model,
     });
     if (last && !state.loadingHistory && !last.loadingHistory && conversation !== last.conversation) {
       const said = news(last.conversation, conversation);
