@@ -2370,6 +2370,18 @@ _SETTLE_TERMINAL_QUIET_SEC = 2.0
 # settle 读数未就绪（None）时的续窗重试上限：monitor 快照/DB 就绪通常在秒级，
 # 超过仍不就绪才放弃（放弃=维持旧行为等 team.completed，不会更糟）。
 _SETTLE_TERMINAL_MAX_ATTEMPTS = 3
+# settle False（确未落定）的两层重评预算：final 当口的 False 多为
+# leader 收尾迁移落库前的毫秒级时序差或成员排空
+# 途中，裸赌 team.completed 会把「边沿未触发/门槛泄漏/零任务门禁」的接续轮
+# 永久挂死。① 事件驱动：后续 team.member/team.task/workflow.updated 帧到达
+# 即重评（settle 判据本来就是状态真值——状态变了就该重评，不等定时器）；
+# ② 定时器兜底：事件链静默死亡时按本预算续窗。
+# 持续 False = 确有在途工作，耗尽后退回等 team.completed 旧行为（不会更糟）
+# ——不强制收口，防误杀成员长模型调用中的合法静默。
+_SETTLE_FALSE_RECHECK_SEC = 15.0
+_SETTLE_FALSE_MAX_ATTEMPTS = 8
+# 事件驱动重评的去抖间隔：团队落定过程状态帧密集到达，DB 点查不必每帧一次
+_SETTLE_RECHECK_DEBOUNCE_SEC = 0.5
 
 # 主理人死亡但成员仍在工作时不补终态：成员回报会经 mailbox 唤醒主理人续跑，
 # 收尾由恢复后的正常路径负责，探针按窗口续探。上限兜底成员永忙（卡死）
@@ -2568,9 +2580,23 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool |
             # 与停摆看门狗的 live+DB 双读数同构；DB 也不可得才算未知
             progress = await team_progress_snapshot_db(channel_id, session_id)
         if progress is None:
+            # False/None 也落明细（哪个子条件拒的）——此前只在 True 时
+            # 落日志，False 现场无法区分零任务门禁/门槛泄漏/时序窗误拒
+            logger.info(
+                "[TeamHelpers] settle check unknown: progress snapshot "
+                "unavailable (live+db) -> None, session_id=%s",
+                session_id,
+            )
             return None
         in_flight, pending, _recent = progress
         if in_flight > 0 or pending > 0:
+            logger.info(
+                "[TeamHelpers] settle check not settled: in_flight=%d pending=%d "
+                "-> False, session_id=%s",
+                in_flight,
+                pending,
+                session_id,
+            )
             return False
         # leader 在途。两份快照都刻意剔除 leader
         # （成员面板语义），settle 看不见 leader 的排空轮/追问轮——终态会
@@ -2578,13 +2604,33 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool |
         # execution_changed 事件写穿 DB、随回合翻转。
         leader_busy = await team_leader_in_flight(channel_id, session_id)
         if leader_busy is None:
+            logger.info(
+                "[TeamHelpers] settle check unknown: leader in-flight reading "
+                "unavailable -> None, session_id=%s",
+                session_id,
+            )
             return None
         if leader_busy:
+            logger.info(
+                "[TeamHelpers] settle check not settled: leader_in_flight=True "
+                "-> False, session_id=%s",
+                session_id,
+            )
             return False
         unread = await _team_has_unread_messages(channel_id, session_id)
         if unread is None:
+            logger.info(
+                "[TeamHelpers] settle check unknown: unread reading unavailable "
+                "-> None, session_id=%s",
+                session_id,
+            )
             return None
         if unread:
+            logger.info(
+                "[TeamHelpers] settle check not settled: unread=True -> False, "
+                "session_id=%s",
+                session_id,
+            )
             return False
         logger.info(
             "[TeamHelpers] settle check settled: in_flight=%d pending=%d "
@@ -2920,6 +2966,20 @@ async def _consume_stream_with_query(
     # 新内容帧即作废；读数未就绪（None）续窗重试；流先结束则 finally 立即补发
     settle_terminal_task: asyncio.Task | None = None
     settle_terminal_fired = False
+    # settle False（确未落定）后的事件驱动重评标记：final 当口的
+    # False 多为 leader 收尾迁移落库前的毫秒级时序差——置标后，消费循环内
+    # 后续 team.member/team.task/workflow.updated 帧到达即重评，True 进静默
+    # 窗收口；定时器（_delayed 内 False 续窗）兜底事件链静默死亡形态。
+    # 生命周期：终态发射（_reset_round_terminal_marks）或新一轮 leader 内容
+    # 帧到达（再武装点）时清除——不得跨轮残留（新轮起跑间隙的空板快照会把
+    # 旧轮的重评误判 True，对新轮发抢跑终态）。
+    settle_pending_recheck = False
+    settle_last_recheck_at = 0.0
+    # trailing 补评任务：去抖（leading-edge）跳过的帧簇尾帧若携带决定性迁移
+    # （如 task.completed 与 member.idle 同批到达——事件循环饱和时监控事件
+    # 队列积压成批 drain 属常态），跳过即丢、之后零帧则永挂再现；跳过时调度
+    # 一次性延迟重评兜底。标记清除后其 fire 时空转返回，无需随重置点取消。
+    settle_trailing_recheck_task: asyncio.Task | None = None
     # 挂起交互守卫：本流广播过 leader 的
     # chat.ask_user_question（HITL 等用户输入）时，流末不强制补终态——
     # 回合是"暂停待恢复"而非"终结"。
@@ -2969,19 +3029,22 @@ async def _consume_stream_with_query(
         _reset_round_terminal_marks()
 
     def _reset_round_terminal_marks() -> None:
-        """回合终态发出后复位本轮判据（内容/团队活动/建团尝试/挂起交互）。
+        """回合终态发出后复位本轮判据（内容/团队活动/建团尝试/挂起交互/重评标记）。
 
         回合边界按「终态发射」定义而非「下轮内容帧到达」——零产出的新回合
         没有内容帧可触发复位，残留 True 会让它被误记已完成。
         所有终态发射点（settle 三分支/team.completed/即时收尾/探针补发）
-        都必须过这里。
+        都必须过这里。settle 重评标记一并拆除：回合已收口，
+        旧轮不得再驱动重评。
         """
         nonlocal round_had_answer_content, round_saw_team_activity
         nonlocal round_saw_build_attempt, saw_pending_interaction
+        nonlocal settle_pending_recheck
         round_had_answer_content = False
         round_saw_team_activity = False
         round_saw_build_attempt = False
         saw_pending_interaction = False
+        settle_pending_recheck = False
     # Reset the team-events flag at the start of a new round so chat.final
     # can correctly determine whether the team is active.
     tm_ = get_team_manager(channel_id)
@@ -3146,7 +3209,9 @@ async def _consume_stream_with_query(
 
     def _schedule_settle_terminal() -> None:
         """settle 终态延迟静默窗确认：窗口内有新内容帧（团队还在干活）即作废；
-        读数未就绪（None）续窗重试 _SETTLE_TERMINAL_MAX_ATTEMPTS 次。"""
+        读数未就绪（None）续窗重试 _SETTLE_TERMINAL_MAX_ATTEMPTS 次；
+        确未落定（False）按 _SETTLE_FALSE 预算续窗重评（不再裸赌
+        team.completed）——持续 False 耗尽后退回旧行为，不强制收口。"""
         nonlocal settle_terminal_task
         if settle_terminal_task is not None and not settle_terminal_task.done():
             settle_terminal_task.cancel()
@@ -3158,7 +3223,9 @@ async def _consume_stream_with_query(
                 TeamNotEstablishedError,
             )
 
-            for _attempt in range(_SETTLE_TERMINAL_MAX_ATTEMPTS):
+            none_attempts = 0
+            false_attempts = 0
+            while True:
                 try:
                     await asyncio.sleep(_SETTLE_TERMINAL_QUIET_SEC)
                 except asyncio.CancelledError:
@@ -3178,31 +3245,117 @@ async def _consume_stream_with_query(
                     await _emit_settle_terminal()
                     return
                 logger.info(
-                    "[TeamHelpers] settle window attempt %s/%s: session_id=%s "
-                    "round_id=%s result=%s",
-                    _attempt + 1,
-                    _SETTLE_TERMINAL_MAX_ATTEMPTS,
+                    "[TeamHelpers] settle window check: session_id=%s round_id=%s "
+                    "result=%s none_attempts=%s false_attempts=%s",
                     session_id,
                     round_id,
                     result,
+                    none_attempts,
+                    false_attempts,
                 )
-                if result is False:
-                    return  # 确未落定：放弃，等 team.completed
-                # 三态守卫：此处必须 is False/is True 显式判断（None=续窗重试），
                 if result is True:
                     await _emit_settle_terminal()
                     return
-                # None（读数未就绪）→ 续窗重试
-            logger.info(
-                "[TeamHelpers] settle terminal abandoned after retries: "
-                "session_id=%s round_id=%s",
-                session_id,
-                round_id,
-            )
+                if result is None:
+                    # None（读数未就绪）→ 续窗重试（原语义）
+                    none_attempts += 1
+                    if none_attempts >= _SETTLE_TERMINAL_MAX_ATTEMPTS:
+                        logger.info(
+                            "[TeamHelpers] settle terminal abandoned after retries: "
+                            "session_id=%s round_id=%s",
+                            session_id,
+                            round_id,
+                        )
+                        return
+                    continue
+                # result is False —— 确未落定不等于永不落定：final 当口的
+                # False 多为 leader 收尾迁移落库前的毫秒级时序差或成员排空途中，
+                # 续窗重评变 True 即收口；持续 False = 确有在途工作，耗尽预算后
+                # 退回等 team.completed 旧行为（不会更糟）——不强制收口，防误杀
+                # 成员长模型调用中的合法静默。
+                false_attempts += 1
+                if false_attempts >= _SETTLE_FALSE_MAX_ATTEMPTS:
+                    logger.warning(
+                        "[TeamHelpers] settle still false after %s rechecks, "
+                        "falling back to waiting for team.completed: "
+                        "session_id=%s round_id=%s",
+                        false_attempts,
+                        session_id,
+                        round_id,
+                    )
+                    return
+                try:
+                    await asyncio.sleep(_SETTLE_FALSE_RECHECK_SEC)
+                except asyncio.CancelledError:
+                    return
 
         settle_terminal_task = asyncio.create_task(
             _delayed(), name=f"settle-terminal-{session_id}"
         )
+
+    async def _settle_recheck(trigger: str) -> None:
+        """事件驱动重评单份实现：leading（帧到达即评）与 trailing（去抖跳过后
+        延迟补评）共用。True 进静默窗收口（窗在排队则交给窗内复核）；False/None
+        保持标记等下一帧/定时器；TeamNotEstablishedError 立即收口不再重评。"""
+        nonlocal settle_last_recheck_at, settle_pending_recheck
+        settle_last_recheck_at = time.monotonic()
+        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+            TeamNotEstablishedError,
+        )
+
+        try:
+            recheck_result = await _team_round_settled(channel_id, session_id)
+        except TeamNotEstablishedError:
+            # 确定性终结（团队从未建立）：与静默窗同口径——
+            # 立即收口（_emit 内置 degraded/dissolved/solo
+            # 三分支与级联收流），不再重评
+            settle_pending_recheck = False
+            await _emit_settle_terminal()
+            return
+        except Exception as exc:
+            # 瞬时读失败：事件驱动重评跑在
+            # 后台 task 里，异常绝不能外抛成 task never-retrieved 雷；
+            # 保持标记，下一帧/定时器续窗会再评。
+            logger.warning(
+                "[TeamHelpers] settle event-driven recheck failed: "
+                "session_id=%s round_id=%s trigger=%s error=%s",
+                session_id,
+                round_id,
+                trigger,
+                exc,
+            )
+            return
+        logger.info(
+            "[TeamHelpers] settle event-driven recheck: "
+            "session_id=%s round_id=%s trigger=%s result=%s",
+            session_id,
+            round_id,
+            trigger,
+            recheck_result,
+        )
+        if recheck_result is True:
+            # 静默窗已在排队则交给它（窗内自会复核后发
+            # 终态），否则补调度；标记保留至终态发射——
+            # 窗口若被新内容帧作废，后续状态帧仍可重评
+            if settle_terminal_task is None or settle_terminal_task.done():
+                _schedule_settle_terminal()
+        # False（确有在途）/None（读数未就绪）：保持标记等
+        # 下一帧；定时器兜底（_delayed False 续窗）并行守
+
+    async def _settle_trailing_recheck(trigger: str) -> None:
+        """去抖跳过的补评：睡满一个去抖窗后重评。fire 时标记已清（终态已发/
+        新轮起跑）、流已不在、或刚被别人评过（leading 抢跑），均空转返回。"""
+        try:
+            await asyncio.sleep(_SETTLE_RECHECK_DEBOUNCE_SEC)
+        except asyncio.CancelledError:
+            return
+        if not settle_pending_recheck:
+            return
+        if not tm_.has_stream_task(session_id):
+            return
+        if time.monotonic() - settle_last_recheck_at < _SETTLE_RECHECK_DEBOUNCE_SEC:
+            return
+        await _settle_recheck(f"trailing:{trigger}")
 
     def _is_clean_text_round() -> bool:
         """本地可证的干净纯文本轮：本轮无团队事件、无工具调用、无成员产出，
@@ -3404,6 +3557,11 @@ async def _consume_stream_with_query(
                         if is_leader:
                             completion_signals = 0
                             settle_terminal_fired = False
+                            # 新一轮 leader 回合起跑 = 旧轮 settle 上下文
+                            # 已死——重评标记一并清除（防旧轮 False 的待重评标记
+                            # 跨轮残留：新轮起跑间隙的空板快照会误判 True，
+                            # 对新轮发抢跑终态）
+                            settle_pending_recheck = False
                             logger.info(
                                 "[TeamHelpers] settle terminal re-armed: new leader "
                                 "content after terminal, session_id=%s",
@@ -3764,7 +3922,8 @@ async def _consume_stream_with_query(
                         # 要求任务行存在（is_team_completed 条件①），消息制委派/
                         # 纯问答团从不建任务行，seen_team_events 又被成员状态帧
                         # 置位 → 没有任何终态帧、流永挂。settle 三态补判：
-                        # True=落定、False=确未落定（等 team.completed）、
+                        # True=落定、False=确未落定（置事件驱动重评标记+静默窗
+                        # 续评，不再裸赌 team.completed）、
                         # None=读数未就绪（续窗重试，不得一次性放弃）。
                         settle_evaluated = True
                         try:
@@ -3799,6 +3958,17 @@ async def _consume_stream_with_query(
                             settle_decision,
                         )
                         if settle_decision is not False:
+                            _schedule_settle_terminal()
+                        else:
+                            # False（确未落定）是瞬时快照——leader 收尾迁移
+                            # 常在 final 广播后毫秒级才落库、
+                            # 成员排空亦可能晚于 final。裸赌
+                            # team.completed 会把「边沿未触发/门槛泄漏/零任务
+                            # 门禁」的接续轮永久挂死：置事件驱动重评标记（后续
+                            # team.member/team.task/workflow.updated 帧到达即
+                            # 重评），静默窗兜底事件链静默死亡形态——两层重评，
+                            # 不再放弃。
+                            settle_pending_recheck = True
                             _schedule_settle_terminal()
                         continue
                     if should_finish_round:
@@ -3849,6 +4019,27 @@ async def _consume_stream_with_query(
                         ),
                     )
                 await _broadcast_event(channel_id, session_id, parsed)
+                # 事件驱动重评：settle False 置标后，团队状态帧（成员/任务/
+                # 工作流迁移）到达即重评——final 当口的 False 多为 leader 收尾
+                # 迁移落库前的毫秒级时序差，下一帧到达时读数已净。去抖防落定
+                # 过程密集状态帧打爆 DB 点查；去抖跳过的帧调度 trailing 补评——
+                # 帧簇尾帧可能携带决定性迁移（饱和 drain 同批到达），丢尾帧后
+                # 零帧即永挂。标记由终态发射点/新一轮 leader 内容帧清除，跨轮
+                # 不残留。**重评绝不内联 await 在帧消费循环里**（读数含 DB 点查，
+                # 锁竞争/读池饱和下可阻塞数秒）：leading 同样只调度后台
+                # trailing 位，0.5s 后补评，其内部新鲜度检查保证去抖语义不变。
+                if (
+                    settle_pending_recheck
+                    and _parsed_event_type in _TEAM_BUILDING_EVENT_TYPES
+                ):
+                    if (
+                        settle_trailing_recheck_task is None
+                        or settle_trailing_recheck_task.done()
+                    ):
+                        settle_trailing_recheck_task = asyncio.create_task(
+                            _settle_trailing_recheck(_parsed_event_type),
+                            name=f"settle-trailing-recheck-{session_id}",
+                        )
 
         # If stream ended without any chunks, broadcast an error event
         if received_chunks == 0:

@@ -123,6 +123,39 @@ class TestLoggerSetup:
         assert "StreamHandler" in handler_types
         assert handler_types.count("DatedDailyFileHandler") == 5
 
+    @staticmethod
+    def test_full_log_level_defaults_to_off(monkeypatch):
+        """full.log 默认 OFF（不写汇总文件），config.yaml 可开启。"""
+        import logging
+
+        monkeypatch.setattr(utils, "_load_logging_config_from_yaml", lambda: {})
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+
+        levels = utils._resolve_logging_levels(None)
+        assert levels.full == utils._LOG_LEVEL_OFF
+        assert levels.gateway == logging.INFO
+        # OFF 哨兵高于 CRITICAL，不拉低根级别——DEBUG 记录根本不会创建。
+        assert levels.logger == logging.INFO
+
+        # OFF 是显式可配值：配了 OFF 与默认等价；配 DEBUG 则开启且根级别
+        # 放到 DEBUG（DEBUG 记录由各 handler 自身级别分流，组件文件仍
+        # 只收 INFO+）。
+        monkeypatch.setattr(
+            utils,
+            "_load_logging_config_from_yaml",
+            lambda: {"full": "OFF"},
+        )
+        assert utils._resolve_logging_levels(None).full == utils._LOG_LEVEL_OFF
+
+        monkeypatch.setattr(
+            utils,
+            "_load_logging_config_from_yaml",
+            lambda: {"full": "DEBUG"},
+        )
+        levels = utils._resolve_logging_levels(None)
+        assert levels.full == logging.DEBUG
+        assert levels.logger == logging.DEBUG
+
 
 class TestDatedDailyFileHandler:
     """Test the per-day dated log file handler."""
@@ -179,8 +212,8 @@ class TestDatedDailyFileHandler:
         )
 
     @staticmethod
-    def test_rotates_to_old_log_at_size_cap(tmp_path):
-        """Exceeding the daily cap rotates to <stem>.old.log."""
+    def test_rotates_to_numbered_backup_at_size_cap(tmp_path):
+        """Exceeding the daily cap rolls aside to a numbered backup."""
         import logging
 
         handler = utils.DatedDailyFileHandler(
@@ -198,8 +231,86 @@ class TestDatedDailyFileHandler:
         handler.flush()
 
         today = utils.DatedDailyFileHandler._today()
-        backup = tmp_path / today / "app.old.log"
-        assert backup.exists()
+        day = tmp_path / today
+        backups = list(day.glob("app.*.log"))
+        assert backups, "expected at least one numbered backup"
+        assert all(b.stem.rsplit(".", 1)[1].isdigit() for b in backups)
+        assert not (day / "app.old.log").exists()
+
+    @staticmethod
+    def test_rotation_prunes_oldest_beyond_backup_count(tmp_path):
+        """Only the newest ``backup_count`` backups survive per day."""
+        import logging
+
+        handler = utils.DatedDailyFileHandler(
+            tmp_path,
+            "app.log",
+            max_bytes=200,
+            backup_count=3,
+        )
+        lg = logging.getLogger("test_dated_rotate_prune")
+        lg.setLevel(logging.INFO)
+        lg.addHandler(handler)
+        lg.propagate = False
+
+        for i in range(40):
+            lg.info("message %03d padded to exceed cap", i)
+        handler.flush()
+        handler.close()
+
+        today = utils.DatedDailyFileHandler._today()
+        day = tmp_path / today
+        backups = sorted(day.glob("app.*.log"))
+        assert len(backups) == 3, f"expected 3 backups, got {backups}"
+        # 存活的三个备份是序号最高（最新）的三个，且序号连续。
+        numbers = [int(b.stem.rsplit(".", 1)[1]) for b in backups]
+        assert numbers == sorted(numbers)
+        assert numbers[-1] - numbers[0] == 2
+
+        # 存活备份为最新者：最早的消息已被裁掉，最新的仍在盘上。
+        contents = (day / "app.log").read_text(encoding="utf-8")
+        for backup in backups:
+            contents += backup.read_text(encoding="utf-8")
+        assert "message 000" not in contents
+        assert "message 039" in contents
+
+    @staticmethod
+    def test_negative_backup_count_keeps_all_without_loss(tmp_path):
+        """``backup_count < 0`` disables pruning; every backup is kept."""
+        import logging
+
+        handler = utils.DatedDailyFileHandler(
+            tmp_path,
+            "app.log",
+            max_bytes=200,
+            backup_count=-1,
+        )
+        lg = logging.getLogger("test_dated_rotate_all")
+        lg.setLevel(logging.INFO)
+        lg.addHandler(handler)
+        lg.propagate = False
+
+        total = 40
+        for i in range(total):
+            lg.info("message %03d padded to exceed cap", i)
+        handler.flush()
+        handler.close()
+
+        today = utils.DatedDailyFileHandler._today()
+        day = tmp_path / today
+        backups = sorted(day.glob("app.*.log"))
+        assert len(backups) >= 3, f"expected multiple backups, got {backups}"
+
+        contents = (day / "app.log").read_text(encoding="utf-8")
+        for backup in backups:
+            contents += backup.read_text(encoding="utf-8")
+        for i in range(total):
+            assert f"message {i:03d}" in contents
+
+    @staticmethod
+    def test_default_backup_count_is_ten(tmp_path):
+        handler = utils.DatedDailyFileHandler(tmp_path, "app.log")
+        assert handler.backup_count == utils._LOG_DATED_BACKUP_COUNT == 10
 
 
 class TestDatedLogCleanup:

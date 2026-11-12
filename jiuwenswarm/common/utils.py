@@ -22,7 +22,7 @@ Runtime layout:
 - <root>/agent/sessions
 - <root>/agent/workspace/agent-data.json
 - <root>/agent/.checkpoint
-- <root>/agent/.logs（gateway.log / channel.log / agent_server.log / full.log）
+- <root>/agent/.logs（gateway.log / channel.log / agent_server.log / full.log / permissions.log）
 
 内置模板位于包内 ``jiuwenswarm/resources/``（含 ``agent/`` 下各技能模板以及 ``skills_state.json``）。
 """
@@ -44,13 +44,26 @@ from typing import Any, Literal, Optional
 import logging
 from ruamel.yaml import YAML
 
-# 按天切分：日内超限轮转出 <stem>.old.log（仅保最近一份），保留 90 天。
+# 按天切分：日内超限轮转出序号备份 <stem>.<NNN>.log（当日单调递增、三位
+# 零填充），每日每文件保最近 10 个备份（超出裁最旧），日期目录过期清理
+# （默认 90 天）兜底跨天总量。
 # 布局与桌面端 <dataRoot>/logs/YYYY-MM-DD/ 一致，便于反馈打包按天过滤。
 # 注意：agent-core 侧有同名同语义实现
 # （openjiuwen/core/common/logging/dated_file_handler.py），两份需同步维护。
-_LOG_DATED_MAX_BYTES = 2 * 1024 * 1024
+_LOG_DATED_MAX_BYTES = 10 * 1024 * 1024  # 10MB，对齐桌面端 logger.ts 与 agent-core DEFAULT_MAX_BYTES（2MB 滚动过频繁、排障窗口太短）
+_LOG_DATED_BACKUP_COUNT = 10
 _LOG_RETENTION_DAYS = 90
 _DATED_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _is_dated_backup_name(name: str, stem: str) -> bool:
+    """匹配 ``<stem>.<NNN>.log`` 序号备份文件名。"""
+    return re.fullmatch(re.escape(stem) + r"\.\d+\.log", name) is not None
+
+
+def _dated_backup_number(path: Path, stem: str) -> int:
+    """返回 ``<stem>.<NNN>.log`` 备份的序号。"""
+    return int(path.name[len(stem) + 1 : -len(".log")])
 
 
 @dataclass
@@ -185,7 +198,9 @@ class DatedDailyFileHandler(logging.FileHandler):
 
     活动文件为 ``<base_dir>/<YYYY-MM-DD>/<filename>``，日期取本地时钟，
     每次 emit 时解析——长驻进程跨天自动切文件。日内超过 ``max_bytes``
-    轮转出 ``<stem>.old.log``（仅保最近一份，对齐桌面端）。
+    轮转出序号备份 ``<stem>.<NNN>.log``（当日单调递增、三位零填充），
+    每日每文件保最近 ``backup_count`` 个备份（超出裁最旧），跨天总量
+    由日期目录过期清理兜底。
 
     ``filename`` 可含子目录。``base_dir`` 属性暴露给调用方做幂等判断。
 
@@ -197,16 +212,23 @@ class DatedDailyFileHandler(logging.FileHandler):
         base_dir: 日期目录的父目录（统一日志根）。
         filename: 日期目录内的日志文件相对路径。
         max_bytes: 日内大小上限；``0`` 表示不轮转。
+        backup_count: 每日保留的序号备份数；``<0`` 表示全保留。
         encoding: 文件编码。
     """
 
     def __init__(
-        self, base_dir, filename, max_bytes=_LOG_DATED_MAX_BYTES, encoding="utf-8"
+        self,
+        base_dir,
+        filename,
+        max_bytes=_LOG_DATED_MAX_BYTES,
+        backup_count=_LOG_DATED_BACKUP_COUNT,
+        encoding="utf-8",
     ):
         """Initialize the handler."""
         self.base_dir = str(base_dir)
         self._relative_filename = filename
         self.max_bytes = max_bytes
+        self.backup_count = backup_count
         self._current_date = None
         super().__init__(self._current_path(), mode="a", encoding=encoding, delay=True)
         self._current_date = self._today()
@@ -255,7 +277,12 @@ class DatedDailyFileHandler(logging.FileHandler):
                     pass
 
     def _rotate_if_needed(self, record):
-        """日内超限时 copy+truncate 轮转到 ``<stem>.old.log``。"""
+        """日内超限时 copy+truncate 轮转出序号备份，并裁剪超量最旧备份。
+
+        copy+truncate 保持已打开流有效（Windows 下不能 rename 占用中的
+        文件）；每日每文件保最近 ``backup_count`` 个备份，跨天总量由日
+        期目录过期清理兜底。
+        """
         if not self.stream or self.max_bytes <= 0:
             return
         try:
@@ -266,20 +293,75 @@ class DatedDailyFileHandler(logging.FileHandler):
                 < self.max_bytes
             ):
                 return
-            backup = Path(self.baseFilename).with_suffix(".old.log")
-            if backup.exists():
-                backup.unlink()
-            shutil.copy2(self.baseFilename, backup)
+            shutil.copy2(self.baseFilename, self._next_backup_path())
             self.stream.seek(0)
             self.stream.truncate(0)
+            self._prune_backups()
+        except OSError:
+            pass
+
+    def _next_backup_path(self):
+        """返回 ``<stem>.<NNN>.log``，NNN = 目录内最大序号 + 1。
+
+        序号在日期目录内单调递增、三位零填充，文件名序即时间序。每次
+        轮转铸新号、存量备份永不动——桌面端 gateway 与 agent 双进程
+        同写一个目录时可交错轮转互不踩踏，同号竞争则顺延到下一个空
+        号。备份内容时间看文件 mtime（copy2 保留）。
+        """
+        active = Path(self.baseFilename)
+        try:
+            highest = max(
+                (
+                    _dated_backup_number(p, active.stem)
+                    for p in active.parent.iterdir()
+                    if _is_dated_backup_name(p.name, active.stem)
+                ),
+                default=0,
+            )
+        except OSError:
+            highest = 0
+        number = highest + 1
+        backup = active.with_name(f"{active.stem}.{number:03d}.log")
+        while backup.exists():
+            number += 1
+            backup = active.with_name(f"{active.stem}.{number:03d}.log")
+        return backup
+
+    def _prune_backups(self):
+        """裁掉超出 ``backup_count`` 的最旧序号备份。
+
+        三位零填充序号使文件名序即时间序；``backup_count < 0`` 不裁
+        （全保留）。
+        """
+        if self.backup_count < 0:
+            return
+        active = Path(self.baseFilename)
+        try:
+            backups = sorted(
+                (
+                    p
+                    for p in active.parent.iterdir()
+                    if _is_dated_backup_name(p.name, active.stem)
+                ),
+                key=lambda p: _dated_backup_number(p, active.stem),
+            )
+            for stale in backups[: max(0, len(backups) - self.backup_count)]:
+                stale.unlink(missing_ok=True)
         except OSError:
             pass
 
 
+# 日志级别 OFF 哨兵：高于 CRITICAL，handler 挂此级即静默（配合
+# delay=True 连文件都不创建）。config.yaml 各组件级别均可写 OFF。
+_LOG_LEVEL_OFF = logging.CRITICAL + 10
+
+
 def _parse_log_level(name: str, default: int = logging.INFO) -> int:
-    """Parse level name to logging module constant."""
+    """Parse level name to logging module constant; ``OFF`` silences."""
     if not name or not isinstance(name, str):
         return default
+    if name.strip().upper() == "OFF":
+        return _LOG_LEVEL_OFF
     return getattr(logging, name.strip().upper(), default)
 
 
@@ -357,7 +439,9 @@ def _resolve_logging_levels(
     gateway = _coerce("gateway")
     channel = _coerce("channel")
     agent_server = _coerce("agent_server")
-    full = _coerce("full")
+    # full.log 为全量汇总诊断落点：默认 OFF。需要跨组件
+    # 合并视图时在 config.yaml 设 ``logging.full: DEBUG``/``INFO`` 开启。
+    full = _parse_log_level(str(cfg["full"]), base) if cfg.get("full") is not None else _LOG_LEVEL_OFF
 
     if log_level_override is not None:
         v = _parse_log_level(log_level_override)
@@ -2934,10 +3018,14 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     - ``jiuwenswarm.agents.*`` 或 ``jiuwenswarm.server.*`` → agent_server.log
     - 其余 ``jiuwenswarm.*``（含 ``jiuwenswarm.app``、gateway、evolution、utils 等）→ gateway.log
 
-    所有分类日志同时写入 ``full.log``。输出按天切分：
+    所有分类日志同时写入 ``full.log``——其为全量汇总诊断落点，默认
+    **OFF**（组件文件已齐全，full 与之重复；需要跨组件合并视图时在
+    config.yaml 设 ``logging.full: DEBUG``/``INFO`` 开启，DEBUG 级时
+    full 是唯一含 DEBUG 的文件）。输出按天切分：
     ``<logs_root>/<YYYY-MM-DD>/gateway.log`` 等（对齐桌面端
-    ``<dataRoot>/logs/YYYY-MM-DD/`` 布局；日内超 2MB 轮转出 ``.old.log``，
-    保留 90 天）。``<logs_root>`` 为 ``~/.jiuwenswarm/agent/.logs/``
+    ``<dataRoot>/logs/YYYY-MM-DD/`` 布局；日内超 10MB 轮转出序号备份
+    ``<stem>.<NNN>.log``，每日每文件保最近 10 个备份，
+    日期目录保留 90 天）。``<logs_root>`` 为 ``~/.jiuwenswarm/agent/.logs/``
     （注入 ``JIUWENSWARM_LOG_DIR`` 时为该目录，桌面端为
     ``<dataRoot>/logs/jiuwenswarm``）。外层日期布局激活（桌面端注入
     ``JIUWENSWARM_LOG_DATE_ROOT``）时为
