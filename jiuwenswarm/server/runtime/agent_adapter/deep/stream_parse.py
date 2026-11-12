@@ -16,6 +16,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 )
 from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import try_handle_subagent_chunk
 from jiuwenswarm.server.utils.stream_utils import (
+    build_chat_error_event,
     build_tool_result_payload,
     normalize_context_usage_payload,
     parse_ask_user_question_payload,
@@ -536,23 +537,18 @@ def _parse_stream_chunk(
             if chunk_type == "answer":
                 if isinstance(payload, dict):
                     if payload.get("result_type") == "error":
-                        err = {
-                            "event_type": "chat.error",
-                            "error": payload.get("output", "未知错误"),
-                        }
-                        if payload.get("soft_stop_recovery_exhausted"):
-                            err["code"] = "soft_stop_recovery_exhausted"
-                        return err
+                        return build_chat_error_event(
+                            payload, payload.get("output", "未知错误")
+                        )
                     output = payload.get("output", {})
                     if isinstance(output, dict) and output.get("result_type") == "error":
                         logger.warning(
                             "[interface_deep] nested_answer_error_detected output=%s",
                             output.get("output", "未知错误"),
                         )
-                        return {
-                            "event_type": "chat.error",
-                            "error": output.get("output", "未知错误"),
-                        }
+                        return build_chat_error_event(
+                            output, output.get("output", "未知错误")
+                        )
                     content = (
                         output.get("output", "") if isinstance(output, dict) else str(output)
                     )
@@ -634,7 +630,7 @@ def _parse_stream_chunk(
                     if isinstance(payload, dict)
                     else str(payload)
                 )
-                return {"event_type": "chat.error", "error": error_msg}
+                return build_chat_error_event(payload, error_msg)
 
             if chunk_type == "retry_notification":
                 if isinstance(payload, dict):
@@ -903,20 +899,16 @@ def _parse_stream_chunk(
                     "[interface_deep] top_level_chunk_error_detected output=%s",
                     chunk.get("output", "未知错误"),
                 )
-                return {
-                    "event_type": "chat.error",
-                    "error": chunk.get("output", "未知错误"),
-                }
+                return build_chat_error_event(chunk, chunk.get("output", "未知错误"))
             output_payload = chunk.get("output")
             if isinstance(output_payload, dict) and output_payload.get("result_type") == "error":
                 logger.warning(
                     "[interface_deep] nested_chunk_error_detected output=%s",
                     output_payload.get("output", "未知错误"),
                 )
-                return {
-                    "event_type": "chat.error",
-                    "error": output_payload.get("output", "未知错误"),
-                }
+                return build_chat_error_event(
+                    output_payload, output_payload.get("output", "未知错误")
+                )
             output = chunk.get("output", "")
             if output:
                 return {"event_type": "chat.delta", "content": str(output)}
