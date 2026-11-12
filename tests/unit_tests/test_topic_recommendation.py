@@ -1689,7 +1689,6 @@ def _register_panel(channel, *, service, store, queue) -> None:
     host.topic_outcome_queue = queue
     host._services_built = True
     server = AgentWebSocketServer()
-    host.bind_active_requests(server._recommendation_active_request_ids)
     host.bind_push(server._push_recommendation_event)
     server._recommendation_host = host
 
@@ -3343,6 +3342,141 @@ async def test_recommendation_request_disables_thinking_for_every_model(
         "chat_template_kwargs": {"enable_thinking": False},
     }
     assert "reasoning_effort" not in captured[0]
+    # No stage budget hook → invoker default floor (never omit / never 4k provider default).
+    assert captured[0]["max_tokens"] == 16384
+
+
+def test_v6_max_tokens_matches_designer_structured_budgets() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _v6_max_tokens,
+    )
+
+    assert _v6_max_tokens("v6_session_summarizer") == 65536
+    assert _v6_max_tokens("v6_utility_scorer") == 32768
+    assert _v6_max_tokens("v6_hot_news_matcher") == 16384
+
+
+def test_topic_minimal_reasoning_prefers_off(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import topic_model as tm
+
+    class _Capability:
+        options = ("off", "low", "medium", "high")
+
+    monkeypatch.setattr(
+        "openjiuwen.core.foundation.llm.get_reasoning_capability",
+        lambda **_kwargs: _Capability(),
+    )
+    config = tm.ArkBackgroundConfig(
+        api_key="k",
+        model="glm-4-flash",
+        base_url="https://example.com/v1",
+    )
+    assert tm._minimal_reasoning(config) == {"mode": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_recommendation_model_path_passes_minimal_reasoning(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _Assistant:
+        content = "{}"
+        refusal = None
+        response_id = "resp-1"
+        response_model = "glm-4-flash"
+        finish_reason = "stop"
+        usage_metadata = None
+
+    class _Model:
+        async def invoke(self, messages, **kwargs):
+            captured["kwargs"] = kwargs
+            return _Assistant()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.recommendation.topic_model._minimal_reasoning",
+        lambda _config: {"mode": "disabled"},
+    )
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(api_key="k", model="glm-4-flash", expected_model="glm-4-flash"),
+        model_factory=lambda _config: _Model(),
+        max_tokens_for_stage=lambda _stage: 32768,
+        require_response_metadata=False,
+    )
+    await invoke("v6_utility_scorer", "system", "{}")
+    assert captured["kwargs"]["max_tokens"] == 32768
+    assert captured["kwargs"]["reasoning"] == {"mode": "disabled"}
+    assert captured["kwargs"]["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_v6_ark_stage_invoker_caps_parallel_provider_calls() -> None:
+    """Utility/diversity used to fan out past provider max_parallel_requests."""
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _TOPIC_ARK_STAGE_CONCURRENCY,
+        build_v6_ark_stage_invoker,
+    )
+
+    class _Message:
+        content = "{}"
+        refusal = None
+
+    class _Choice:
+        message = _Message()
+        finish_reason = "stop"
+
+    class _Response:
+        id = "provider-response"
+        object = "chat.completion"
+        model = "Qwen3.8-Flash"
+        usage = None
+        choices = [_Choice()]
+
+    peak = 0
+    inflight = 0
+    lock = asyncio.Lock()
+
+    class _Completions:
+        async def create(self, **_kwargs):
+            nonlocal peak, inflight
+            async with lock:
+                inflight += 1
+                peak = max(peak, inflight)
+            await asyncio.sleep(0.05)
+            async with lock:
+                inflight -= 1
+            return _Response()
+
+    class _Client:
+        class chat:  # noqa: N801 - mimics the OpenAI client shape
+            completions = _Completions()
+
+        async def close(self) -> None:
+            return None
+
+    limit = 2
+    invoke = build_v6_ark_stage_invoker(
+        ArkBackgroundConfig(
+            api_key="test", model="Qwen3.8-Flash", expected_model="Qwen3.8-Flash",
+        ),
+        client_factory=lambda **_kwargs: _Client(),
+        max_concurrency=limit,
+    )
+    assert invoke.max_concurrency == limit
+    assert _TOPIC_ARK_STAGE_CONCURRENCY == 3
+
+    await asyncio.gather(*(
+        invoke("v6_utility_scorer", "system", '{"request_id":"r","candidates":[]}')
+        for _ in range(6)
+    ))
+    assert peak == limit
+    assert inflight == 0
 
 
 @pytest.mark.asyncio
@@ -3706,3 +3840,15 @@ async def test_rebind_reports_success_when_recommendation_hook_fails(monkeypatch
     response = e2a_response_to_agent_response(E2AResponse.from_dict(socket.frames[-1]))
     assert response.ok is True
     assert response.payload["project_id"] == "proj-new"
+
+
+def test_topic_service_has_no_pending_hold_or_manual_retry() -> None:
+    """Replenishment uses the durable completed boundary; no inflight hold / retry origin."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_service as ts
+
+    assert "manual_retry" not in ts._ORIGIN_RANK
+    assert "chat_request_inflight" not in ts._QUIET_OUTCOMES
+    assert not hasattr(ts.TopicService, "_held_for_chat")
+    assert not hasattr(ts.TopicService, "_keep_for_chat")
+    assert not hasattr(ts.TopicService, "scope_has_pending_request")

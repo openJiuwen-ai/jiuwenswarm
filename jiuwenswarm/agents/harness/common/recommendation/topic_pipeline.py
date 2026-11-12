@@ -212,8 +212,13 @@ DIVERSITY_CONFIG_VERSION = "topic-starter-v6-diversity-api-v12"
 # Diversity answers each pair in turn: smaller batches sent together finish sooner.
 DIVERSITY_PAIR_BATCH_SIZE = 5
 DIVERSITY_MARGINAL_BATCH_SIZE = 12
-# Utility judges each card on its own: a few cards per call, all calls sent together.
+# Utility judges each card on its own: a few cards per call; in-flight calls share
+# the stage invoker's concurrency slots with diversity and other Ark stages.
 UTILITY_CANDIDATE_BATCH_SIZE = 3
+# Cap concurrent Ark stage calls for one topic generation. Utility+diversity used
+# to fan out past common provider max_parallel_requests (~10) and fail with 429.
+# Match session-summary / native-search caps in this package.
+_TOPIC_ARK_STAGE_CONCURRENCY = 3
 SHORT_INTENT_SNAPSHOT_PREFIX = "v6-short"
 MAX_FROZEN_DOCUMENT_CHARS = 8_000
 _PROFILE_INTEREST_CATEGORY = "profile_interest_continuation"
@@ -874,15 +879,17 @@ def _v6_system_prompt(stage: str, supplied_prompt: str) -> str:
     return supplied_prompt
 
 
-def _v6_max_tokens(stage: str) -> int | None:
-    """Cap stages whose answers grow with input or batch size above provider defaults.
+def _v6_max_tokens(stage: str) -> int:
+    """Completion budget for JSON stages (aligned with Designer structured calls).
 
-    Doubao's default 4,096 answer tokens cut summaries and multi-candidate scorer
-    batches off; truncated JSON then fails closed into cold corpus.
+    Providers often default near 4,096; always-think models share that budget with
+    reasoning, so truncated JSON fails closed. Never omit ``max_tokens`` — raise
+    it high enough that content can finish after reasoning, matching Designer's
+    16k–65k structured-output practice.
     """
 
     if stage == "v6_session_summarizer":
-        return 16384
+        return 65536
     if stage in {
         "v6_utility_scorer",
         "v6_diversity_scorer",
@@ -896,8 +903,8 @@ def _v6_max_tokens(stage: str) -> int | None:
         "memory_incremental",
         "rid_interest_distiller",
     }:
-        return 8192
-    return None
+        return 32768
+    return 16384
 
 
 _V6_PROMPT_VERSIONS = {
@@ -1055,8 +1062,14 @@ def build_v6_ark_stage_invoker(
     *,
     client_factory: Callable[..., Any] | None = None,
     receipt_sink: Callable[[dict[str, Any]], None] | None = None,
+    max_concurrency: int | None = None,
 ) -> StageInvoker:
-    """Prompt-json stage invoker with lineage receipts and provider metadata checks."""
+    """Prompt-json stage invoker with lineage receipts and provider metadata checks.
+
+    One generation run shares a semaphore across every Ark stage call so utility,
+    diversity and other batches cannot open more parallel provider requests than
+    ``max_concurrency`` (default ``_TOPIC_ARK_STAGE_CONCURRENCY``).
+    """
 
     kwargs: dict[str, Any] = {
         "receipt_sink": receipt_sink,
@@ -1074,13 +1087,20 @@ def build_v6_ark_stage_invoker(
         config,
         **kwargs,
     )
+    concurrency = (
+        _TOPIC_ARK_STAGE_CONCURRENCY
+        if max_concurrency is None
+        else max(1, int(max_concurrency))
+    )
+    slots = asyncio.Semaphore(concurrency)
 
     async def invoke(stage: str, system_prompt: str, payload: str) -> Any:
-        return await base_invoke(
-            stage,
-            _v6_system_prompt(stage, system_prompt),
-            payload,
-        )
+        async with slots:
+            return await base_invoke(
+                stage,
+                _v6_system_prompt(stage, system_prompt),
+                payload,
+            )
 
     setattr(invoke, "record_validation", getattr(base_invoke, "record_validation", None))
     receipts = getattr(base_invoke, "invocation_receipts", None)
@@ -1089,6 +1109,7 @@ def build_v6_ark_stage_invoker(
     close = getattr(base_invoke, "aclose", None)
     if callable(close):
         setattr(invoke, "aclose", close)
+    setattr(invoke, "max_concurrency", concurrency)
     return invoke
 
 
@@ -4679,12 +4700,10 @@ class TopicPipeline:
         classify_source: SourceClassifier = default_v6_source_classifier,
         news_feed: WebSearchFn | None = None,
         hot_list: HotListFeed | None = None,
-        active_request_ids_loader: Callable[[], Iterable[str]] | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
         self.store = store
         self._now = now
-        self._active_request_ids_loader = active_request_ids_loader or (lambda: ())
         self._news_feed: WebSearchFn = news_feed or BingNewsFeed(now=now)
         self._hot_list = hot_list or HotListFeed(store, now=now)
         self._records_loader = records_loader or history.load_all_session_records
@@ -4756,69 +4775,6 @@ class TopicPipeline:
         if not reason:
             await self._summarize_completed_sessions(config)
         return reason
-
-    def scope_has_pending_request(
-        self,
-        context_scope: str,
-        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
-    ) -> bool:
-        """A source session of the scope has a request the host is still running.
-
-        The history projection marks a request without its completion row as
-        ``request_pending``; it counts only while the gateway still runs it, so
-        a request lost to a restart cannot hold replenishment.
-        """
-
-        project_id_for_scope(context_scope)
-        normalized_work_mode = normalize_topic_work_mode(work_mode)
-        live = set(self._active_request_ids_loader())
-        if not live:
-            return False
-        records = self.completed_records_loader()
-        metadata, _ = get_all_sessions_metadata(limit=1_000_000, offset=0)
-        project_by_session = {
-            str(item.get("session_id") or ""): (str(item.get("project_id") or "") or None)
-            for item in metadata
-            if str(item.get("session_id") or "")
-        }
-        work_mode_by_session = {
-            str(item.get("session_id") or ""): normalize_topic_work_mode(
-                item.get("work_mode")
-            )
-            for item in metadata
-            if str(item.get("session_id") or "")
-        }
-        for session_id, session_records in records.items():
-            session_project_id = project_by_session.get(session_id)
-            if not (
-                _scope_matches(session_project_id, context_scope)
-                or (
-                    context_scope == GLOBAL_NEW_CHAT_SCOPE
-                    and str(session_project_id or "") not in GLOBAL_PROJECT_BUCKETS
-                )
-            ):
-                continue
-            if not _work_mode_matches(
-                work_mode_by_session.get(session_id),
-                normalized_work_mode,
-            ):
-                continue
-            trailing: dict[str, Any] | None = None
-            for record in reversed(session_records):
-                if not isinstance(record, dict):
-                    continue
-                role = str(record.get("role") or "").casefold()
-                if role not in {"user", "human", "request_pending"}:
-                    continue
-                trailing = record
-                break
-            if (
-                trailing is not None
-                and str(trailing.get("role") or "").casefold() == "request_pending"
-                and str(trailing.get("request_id") or "") in live
-            ):
-                return True
-        return False
 
     def scope_input_revision(
         self,
@@ -6282,7 +6238,6 @@ class TopicPipeline:
         config: ArkBackgroundConfig,
         invoke_stage: StageInvoker,
         decision_time: float | None = None,
-        retry_empty: bool = False,
     ) -> Any:
         binding = _api_binding(
             RID_COMPONENT_ID,
@@ -6389,7 +6344,6 @@ class TopicPipeline:
             reuse_key=reuse_key,
             rid_inputs=rid_inputs,
             invoke_stage=invoke_stage,
-            retry_empty=retry_empty,
         )
         if reused is not None:
             return reused
@@ -6506,7 +6460,6 @@ class TopicPipeline:
         reuse_key: dict[str, Any],
         rid_inputs: Mapping[str, Any],
         invoke_stage: StageInvoker,
-        retry_empty: bool = False,
     ) -> Any:
         """The scope's last RID decision, while everything it judged is unchanged today.
 
@@ -6547,8 +6500,6 @@ class TopicPipeline:
             for interest_id in cached["selected_interest_summary_ids"]
             if interest_id in input_ids
         ]
-        if retry_empty and not kept:
-            return None
 
         async def replay(_payload: dict[str, Any]) -> Any:
             return {
@@ -9780,7 +9731,6 @@ class TopicPipeline:
             config=config,
             invoke_stage=invoke_stage,
             decision_time=decision_time,
-            retry_empty=trigger_origin == "manual_retry",
         )
         if not rid.trigger_interests:
             # RID judged and released no interest; an admitted news card still makes the pool alone.

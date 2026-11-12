@@ -35,6 +35,9 @@ _THINKING_DISABLED_EXTRA_BODY = {
     "chat_template_kwargs": {"enable_thinking": False},
 }
 _THINKING_DISABLE_BODY_KEYS = frozenset({"thinking", "enable_thinking", "chat_template_kwargs"})
+# Match Designer structured-output ceilings: reasoning shares max_tokens with content.
+_TOPIC_MAX_TOKENS_CAP = 65536
+_TOPIC_DEFAULT_MAX_TOKENS = 16384
 _ALWAYS_THINK_UNSUPPORTED_MARKERS = (
     "不支持关闭",
     "始终思考",
@@ -80,11 +83,20 @@ class ArkBackgroundConfig:
     top_p: float = 1.0
     context_window_tokens: int | None = None
     expected_model: str | None = None
+    client_provider: str = "OpenAI"
+    endpoint_profile: str | None = None
 
     def __post_init__(self) -> None:
         # Decoding is part of cache identities: 0 and 0.0 must spell the same.
         object.__setattr__(self, "temperature", float(self.temperature))
         object.__setattr__(self, "top_p", float(self.top_p))
+        object.__setattr__(
+            self,
+            "client_provider",
+            str(self.client_provider or "OpenAI").strip() or "OpenAI",
+        )
+        profile = str(self.endpoint_profile or "").strip() or None
+        object.__setattr__(self, "endpoint_profile", profile)
 
     @property
     def effective_temperature(self) -> float:
@@ -252,6 +264,54 @@ def model_ids_compatible(actual: Any, expected: str) -> bool:
     )
 
 
+def _clamp_topic_max_tokens(value: int | None) -> int:
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1:
+        n = _TOPIC_DEFAULT_MAX_TOKENS
+    return max(256, min(_TOPIC_MAX_TOKENS_CAP, n))
+
+
+def _minimal_reasoning(config: ArkBackgroundConfig) -> dict[str, str] | None:
+    """Lowest reasoning setting the model accepts (Designer call_model_tool policy).
+
+    Reasoning shares ``max_tokens`` with the visible JSON reply, so stages turn
+    thinking off where core allows and otherwise pick the lowest listed level.
+    ``None`` means the model exposes no control at all.
+    """
+
+    from openjiuwen.core.foundation.llm import get_reasoning_capability
+
+    from jiuwenswarm.common.reasoning_config import (
+        SUPPORTED_REASONING_LEVELS,
+        effective_endpoint_profile,
+        reasoning_config_for_level,
+        reasoning_level_options,
+    )
+
+    capability = get_reasoning_capability(
+        provider=config.client_provider,
+        model=config.model,
+        protocol=(
+            "anthropic"
+            if str(config.client_provider).strip().lower() == "anthropic"
+            else "openai"
+        ),
+        api_base=config.base_url,
+        endpoint_profile=effective_endpoint_profile(
+            config.base_url, config.endpoint_profile,
+        ),
+    )
+    options = set(reasoning_level_options(capability))
+    for level in SUPPORTED_REASONING_LEVELS:
+        # A bare "on" is a toggle without a lower setting to choose.
+        if level != "on" and level in options:
+            return reasoning_config_for_level(level)
+    return None
+
+
 def _default_model_factory(config: ArkBackgroundConfig) -> Any:
     """Build the same OpenAI-compatible core Model used by settings probes."""
 
@@ -261,6 +321,19 @@ def _default_model_factory(config: ArkBackgroundConfig) -> Any:
         ModelRequestConfig,
     )
 
+    from jiuwenswarm.common.reasoning_config import effective_endpoint_profile
+
+    client_kwargs: dict[str, Any] = {
+        "client_id": "topic-recommendation",
+        "client_provider": config.client_provider,
+        "api_key": config.api_key,
+        "api_base": config.base_url,
+        "timeout": 120.0,
+        "max_retries": 0,
+    }
+    profile = effective_endpoint_profile(config.base_url, config.endpoint_profile)
+    if profile:
+        client_kwargs["endpoint_profile"] = profile
     return Model(
         model_config=ModelRequestConfig(
             model_name=config.model,
@@ -268,14 +341,7 @@ def _default_model_factory(config: ArkBackgroundConfig) -> Any:
             top_p=config.effective_top_p,
             context_window=config.context_window_tokens,
         ),
-        model_client_config=ModelClientConfig(
-            client_id="topic-recommendation",
-            client_provider="OpenAI",
-            api_key=config.api_key,
-            api_base=config.base_url,
-            timeout=120.0,
-            max_retries=0,
-        ),
+        model_client_config=ModelClientConfig(**client_kwargs),
     )
 
 
@@ -437,6 +503,15 @@ def build_ark_stage_invoker(
         else client_factory(api_key=config.api_key, base_url=config.base_url)
     )
     model = None if client is not None else (model_factory or _default_model_factory)(config)
+    try:
+        reasoning = _minimal_reasoning(config)
+    except Exception:  # noqa: BLE001 - capability lookup must not block stages
+        logger.warning(
+            "[Topic] reasoning capability lookup failed model=%s",
+            config.model,
+            exc_info=True,
+        )
+        reasoning = None
     invocation_receipts: list[dict[str, Any]] = []
     validation_receipts: dict[int, tuple[Any, dict[str, Any]]] = {}
 
@@ -446,7 +521,10 @@ def build_ark_stage_invoker(
         # designer / proactive / prompt_suggestion — so deepseek-flash and peers
         # that reject response_format stay usable.
         _ = response_schema_for_stage
-        max_tokens = max_tokens_for_stage(stage) if max_tokens_for_stage is not None else None
+        requested = (
+            max_tokens_for_stage(stage) if max_tokens_for_stage is not None else None
+        )
+        max_tokens = _clamp_topic_max_tokens(requested)
         started_at = time.perf_counter()
         messages = [
             {"role": "system", "content": system_prompt},
@@ -469,7 +547,10 @@ def build_ark_stage_invoker(
             "provider_response_id": None,
             "usage": None,
             "structured_output_mode": "prompt_json",
+            "max_tokens": max_tokens,
         }
+        if reasoning is not None:
+            receipt["reasoning"] = dict(reasoning)
         prompt_version = (
             prompt_version_for_stage(stage)
             if prompt_version_for_stage is not None
@@ -502,10 +583,9 @@ def build_ark_stage_invoker(
                     "messages": messages,
                     "temperature": config.effective_temperature,
                     "top_p": config.effective_top_p,
+                    "max_tokens": max_tokens,
                     "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
                 }
-                if max_tokens is not None:
-                    request["max_tokens"] = max_tokens
                 response = await _create_completion_prefer_thinking_disabled(
                     client.chat.completions.create,
                     request,
@@ -529,10 +609,11 @@ def build_ark_stage_invoker(
                 invoke_kwargs: dict[str, Any] = {
                     "temperature": config.effective_temperature,
                     "top_p": config.effective_top_p,
+                    "max_tokens": max_tokens,
                     "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
                 }
-                if max_tokens is not None:
-                    invoke_kwargs["max_tokens"] = max_tokens
+                if reasoning is not None:
+                    invoke_kwargs["reasoning"] = dict(reasoning)
                 assistant = await _invoke_model_prefer_thinking_disabled(
                     model,
                     messages,
