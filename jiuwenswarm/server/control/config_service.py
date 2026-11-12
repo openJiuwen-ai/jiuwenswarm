@@ -27,6 +27,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
 from jiuwenswarm.common.version import get_runtime_version
+from jiuwenswarm.common.kv_cache_affinity_config import get_affinity_status
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.common.symphony_config import (
@@ -437,9 +438,10 @@ def get_panel() -> dict[str, Any]:
         )
         ctx_cfg = react_cfg.get("context_engine_config") or {}
         payload["context_engine_enabled"] = _bool_text(ctx_cfg.get("enabled"), False)
-        payload["kv_cache_affinity_enabled"] = (
-            "true" if _affinity_enabled(raw) else "false"
-        )
+        affinity = get_affinity_status(_resolve_env_vars(raw))
+        payload["kv_cache_affinity_enabled"] = _bool_text(affinity["enabled"])
+        payload["kv_cache_affinity_can_enable"] = affinity["can_enable"]
+        payload["kv_cache_affinity_status"] = affinity
         perm_cfg = raw.get("permissions") or {}
         payload.update(canonical_permission_facade(permission_profile(perm_cfg)))
         evolution_cfg = (raw.get("react") or {}).get("evolution") or {}

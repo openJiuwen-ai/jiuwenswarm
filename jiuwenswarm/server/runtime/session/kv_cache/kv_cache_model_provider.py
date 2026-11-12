@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import Any, NamedTuple
 
-from jiuwenswarm.common.config import get_agentos_models, get_config, get_default_models
+from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.common.kv_cache_affinity_config import (
     has_kv_cache_affinity_capability,
     is_affinity_enabled,
@@ -73,7 +73,8 @@ def _select_unique_affinity_entry(
         if not isinstance(entry, dict):
             continue
         client = entry.get("model_client_config") or {}
-        if not isinstance(client, dict) or not has_kv_cache_affinity_capability(client):
+        if (not isinstance(client, dict) or not str(client.get("model_name") or "").strip()
+                or not has_kv_cache_affinity_capability(client)):
             continue
         targets.setdefault(_kv_cache_target_identity(client), entry)
     if len(targets) != 1:
@@ -84,13 +85,12 @@ def _select_unique_affinity_entry(
 def create_default_kv_cache_model():
     """Build a fallback from the one unambiguous KVC control target.
 
-    AgentOS model configuration is authoritative for KVC control. Generic
-    defaults are considered only when no valid ``models.agentos`` entry exists.
-    This does not change which model normal inference selects.
+    Consider configured defaults and AgentOS entries together. Multiple physical
+    targets remain ambiguous; normal inference and live-session bindings select
+    their own actual model independently.
     """
     config = get_config()
-    agentos_entries = get_agentos_models(config)
-    candidates = agentos_entries or get_default_models(config)
+    candidates = get_default_models(config)
     entry = _select_unique_affinity_entry(candidates)
     if entry is None:
         return None

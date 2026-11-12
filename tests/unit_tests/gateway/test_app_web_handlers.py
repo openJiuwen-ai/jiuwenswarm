@@ -1989,7 +1989,7 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
 
     monkeypatch.setattr(
         "agent_gateway.extensions.registry.ExtensionRegistry.get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     for key in keys:
         monkeypatch.setenv(key, "")
@@ -2152,7 +2152,7 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
     monkeypatch.setattr(
         ExtensionRegistry,
         "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
@@ -2178,7 +2178,7 @@ async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatc
     monkeypatch.setattr(
         ExtensionRegistry,
         "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
@@ -2515,7 +2515,7 @@ async def test_config_get_returns_canonical_permission_profile(
     monkeypatch.setattr(
         ExtensionRegistry,
         "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     monkeypatch.setattr(
         config_set_handlers, "flatten_modes_team_for_config_panel", lambda raw: {}
@@ -2694,27 +2694,18 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
     saved: list[str] = []
     affinity_checks: list[None] = []
 
-    def invalid_affinity():
+    def invalid_affinity(_models, *, affinity_enabled):
+        assert affinity_enabled is True
         affinity_checks.append(None)
-        return False, ["invalid affinity"]
+        raise ValueError("invalid affinity")
 
     monkeypatch.setattr(
         ExtensionRegistry,
         "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: {})
-    monkeypatch.setattr(config_set_handlers, "is_affinity_enabled", lambda _config: False)
-    monkeypatch.setattr(
-        config_set_handlers,
-        "update_default_models_in_config",
-        lambda _models: None,
-    )
-    monkeypatch.setattr(
-        config_set_handlers,
-        "validate_persisted_kv_cache_affinity",
-        invalid_affinity,
-    )
+    monkeypatch.setattr(config_set_handlers, "update_default_models_in_config", invalid_affinity)
     monkeypatch.setattr(
         config_set_handlers,
         "update_kv_cache_affinity_enabled_in_config",
@@ -2731,7 +2722,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
         object(),
         "req-save-all-invalid-kvc",
         {
-            "config": {"permissions_profile": "automatic"},
+            "config": {"permissions_profile": "automatic", "kv_cache_affinity_enabled": "true"},
             "models": [
                 {
                     "model_name": "model-one",
@@ -2748,7 +2739,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
     assert affinity_checks == [None]
     assert saved == []
     assert channel.responses[-1]["ok"] is False
-    assert channel.responses[-1]["code"] == "INTERNAL_ERROR"
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
 
 
 @pytest.mark.asyncio
