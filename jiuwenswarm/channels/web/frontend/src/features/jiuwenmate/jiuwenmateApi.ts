@@ -940,8 +940,15 @@ export function toSchedule(value: unknown): JiuwenMateSchedule {
     endsAt: text(plan.ends_at) || null,
     conversationId: text(plan.conversation_id) || `schedule:${text(plan.plan_id)}`,
     runCount: typeof plan.run_count === 'number' ? plan.run_count : 0,
-    lastStatus: plan.last_status === 'failed' || plan.last_status === 'completed' || plan.last_status === 'paused'
-      ? plan.last_status : plan.enabled === true ? 'running' : 'paused',
+    // Trust server last_status including running: a finished once/ends_at plan can be
+    // enabled=false while its latest fire is still in flight; remapping that to paused
+    // flashes "已暂停" before "已完成" on the next refresh.
+    lastStatus: plan.last_status === 'failed'
+      || plan.last_status === 'completed'
+      || plan.last_status === 'paused'
+      || plan.last_status === 'running'
+      ? plan.last_status
+      : plan.enabled === true ? 'running' : 'paused',
   };
 }
 
