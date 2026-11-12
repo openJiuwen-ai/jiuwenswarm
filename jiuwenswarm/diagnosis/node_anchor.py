@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
+from openjiuwen.agent_evolving.attribution.turns import TurnResolver
 from openjiuwen.agent_evolving.trajectory.messages import tool_call_id
 from openjiuwen.agent_evolving.trajectory.spans import is_compaction_span, read_llm_exchange, span_identity
 from openjiuwen.agent_evolving.trajectory.team import span_category
@@ -116,6 +117,7 @@ def anchor_assistant_nodes(
             records_by_subject[str(subject.get("subject_id") or "")] = list(subject.get("records") or [])
     anchored: dict[str, list[TrajectoryNode]] = {}
     for subject_id, nodes in nodes_by_subagent.items():
+        resolver = TurnResolver(records_by_subject.get(subject_id, []))
         calls: _ModelCalls | None = None
         result: list[TrajectoryNode] = []
         for node in nodes:
@@ -125,10 +127,22 @@ def anchor_assistant_nodes(
             if calls is None:
                 calls = _index_model_calls(records_by_subject.get(subject_id, []))
             key = _producing_call(node, calls)
+            if key is not None and node.turn_id:
+                produced_turn, _ = resolver.resolve(*key)
+                if produced_turn is not None and produced_turn != node.turn_id:
+                    matching = []
+                    for reply in calls.replies:
+                        if reply.text == (node.content or "").strip():
+                            if resolver.resolve(*reply.key)[0] == node.turn_id:
+                                matching.append(reply.key)
+                    key = matching[0] if matching else None
             if key is None or key == (node.trace_id, node.span_id):
                 result.append(node)
                 continue
-            result.append(dataclasses.replace(node, trace_id=key[0], span_id=key[1]))
+            turn_id, turn_number = resolver.resolve(*key)
+            result.append(dataclasses.replace(node, trace_id=key[0], span_id=key[1],
+                                              turn_id=turn_id or node.turn_id,
+                                              turn_number=turn_number if turn_id else node.turn_number))
         anchored[subject_id] = result
     return anchored
 

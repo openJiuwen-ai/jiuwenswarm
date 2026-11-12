@@ -45,7 +45,8 @@ from openjiuwen.agent_evolving.attribution import (
     run_attribution,
     run_diagnosis,
     run_task_parse,
-    run_trajectory_summary,
+    summarize_trajectory,
+    SummaryTree,
     slice_nodes_by_range,
 )
 from openjiuwen.agent_evolving.attribution.snapshot import SlicedNodes
@@ -76,6 +77,7 @@ _TASK_PARSE_TIMEOUT_S = 180.0
 
 #: Core LLM status stages mapped onto the three zhou stage ids.
 _CORE_STAGE_TO_ZHOU = {
+    "trajectory_summary": "trajectory_summary",
     "task_parse": "task_parse",
     "keyword_diag": "diagnose",
     "reward": "diagnose",
@@ -89,6 +91,8 @@ _EXPERIENCE_SCORE = {"success": 1.0, "partial": 0.5, "fail": 0.0}
 
 _TEXTS: dict[str, dict[str, str]] = {
     "zh": {
+        "stage_trajectory_summary": "轨迹摘要",
+        "summary_completed": "分层摘要已保存 · {segments} 个 Segment · {agents} 个 Agent",
         "stage_task_parse": "任务解析",
         "stage_diagnose": "诊断分析",
         "stage_attribute": "归因分析",
@@ -99,6 +103,9 @@ _TEXTS: dict[str, dict[str, str]] = {
         "task_summary": "提取任务与 {artifacts} 个产物（消息 {messages} · 文件 {files}）",
         "parse_incomplete": "选中范围不包含完整任务，无法提取任务描述",
         "summary_generating": "正在生成轨迹摘要",
+        "summary_reused": "已复用预先生成的轨迹摘要",
+        "summary_failed": "分层轨迹摘要生成失败，后续诊断继续：{reason}",
+        "summary_degraded": "分层轨迹摘要存在不完整项：{reason}",
         "summary_only_skipped": "未解析出任务，已改为生成轨迹摘要",
         "parse_unrelated": "选中范围包含多个互不相关的任务，无法归因",
         "parse_invalid": "任务解析输出无法解析：{reason}",
@@ -139,6 +146,8 @@ _TEXTS: dict[str, dict[str, str]] = {
         "llm_status_failed": "失败",
     },
     "en": {
+        "stage_trajectory_summary": "Summarize trajectory",
+        "summary_completed": "Hierarchical summary saved · {segments} segments · {agents} agents",
         "stage_task_parse": "Parse task",
         "stage_diagnose": "Diagnose",
         "stage_attribute": "Attribute causes",
@@ -149,6 +158,9 @@ _TEXTS: dict[str, dict[str, str]] = {
         "task_summary": "Task and {artifacts} artifacts extracted ({messages} messages · {files} files)",
         "parse_incomplete": "The selection does not contain a complete task; no task description could be extracted",
         "summary_generating": "Generating the trajectory summary",
+        "summary_reused": "Reusing the precomputed trajectory summary",
+        "summary_failed": "Hierarchical summary failed; diagnosis will continue: {reason}",
+        "summary_degraded": "Hierarchical summary has incomplete items: {reason}",
         "summary_only_skipped": "No task was parsed; generating the trajectory summary instead",
         "parse_unrelated": "The selection contains multiple unrelated tasks; attribution is not possible",
         "parse_invalid": "The task parse output could not be parsed: {reason}",
@@ -285,8 +297,8 @@ class _TaskParseAdapter:
         self._timeout_s = timeout_s
 
     async def invoke(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any) -> Any:
-        del kwargs
-        return await self._model.invoke(messages, tools=tools, temperature=0.0, timeout=self._timeout_s)
+        return await self._model.invoke(messages, tools=tools, temperature=0.0, timeout=self._timeout_s,
+                                        max_tokens=kwargs.get("max_tokens"))
 
 
 def _default_workspace_resolver(session_id: str) -> str:
@@ -728,6 +740,7 @@ class _StageContext:
     sink: _QueueStatusSink
     nodes: dict[str, list[Any]]
     workspace: str
+    summary_tree: SummaryTree | None = None
 
 
 class AttributionCoreEngine:
@@ -827,6 +840,7 @@ class AttributionCoreEngine:
             nodes=sliced,
             workspace=workspace,
         )
+        await self._stage_trajectory_summary(context)
         try:
             task_parse = await self._stage_task_parse(context)
         except EngineError as exc:
@@ -837,7 +851,11 @@ class AttributionCoreEngine:
                 queue.put_nowait(
                     EngineEvent("task_parse", "stage_finished", status="failed", summary=exc.message),
                 )
-                return EngineResult(error=DiagnosisError(code=exc.code, message=exc.message))
+                return EngineResult(
+                    error=DiagnosisError(code=exc.code, message=exc.message),
+                    trajectory_summary=context.summary_tree.trajectory_summary if context.summary_tree else "",
+                    summary_tree=context.summary_tree.to_dict() if context.summary_tree else None,
+                )
             # A valid range must still produce a summary when the selection has
             # no single task. The parse stage stays open and finishes completed
             # with the reason; the summary's model requests stay on that stage.
@@ -845,25 +863,29 @@ class AttributionCoreEngine:
             # and this path has no record-level error.
             logger.warning("[diagnosis] task parse failed; summary only: %s", exc.code)
             queue.put_nowait(
-                EngineEvent("task_parse", "output_delta", text_delta=text["summary_generating"]),
+                EngineEvent("task_parse", "output_delta", text_delta=text["summary_reused"]
+                            if context.summary_tree and context.summary_tree.trajectory_summary
+                            else text["trajectory_summary_unavailable"]),
             )
             _skip_stage(queue, "diagnose", text["stage_diagnose"], text["summary_only_skipped"])
             _skip_stage(queue, "attribute", text["stage_attribute"], text["summary_only_skipped"])
-            context.sink.redirect_stage("attribution", "task_parse")
-            try:
-                summary = await self._summary_only(context)
-            finally:
-                context.sink.clear_stage_redirect("attribution")
+            summary = await self._summary_only(context)
             queue.put_nowait(
                 EngineEvent("task_parse", "stage_finished", status="completed", summary=exc.message),
             )
-            return EngineResult(trajectory_summary=summary)
+            return EngineResult(trajectory_summary=summary,
+                                summary_tree=context.summary_tree.to_dict() if context.summary_tree else None)
         diagnosis = await self._stage_diagnose(context, task_parse)
         if diagnosis.signals:
             result = await self._stage_attribute(context, task_parse, diagnosis)
         else:
             # Nothing to attribute is a normal outcome, not a failure.
             result = await self._result_without_signals(context, task_parse, diagnosis)
+        if context.summary_tree is not None:
+            result.summary_tree = context.summary_tree.to_dict()
+            result.trajectory_summary = (
+                context.summary_tree.trajectory_summary or text["trajectory_summary_unavailable"]
+            )
         return result
 
     @staticmethod
@@ -878,27 +900,42 @@ class AttributionCoreEngine:
 
     async def _summary_only(self, context: _StageContext, *, task_description: str = "") -> str:
         """A narrative summary for a valid range when the normal attribution agent will not run."""
-        hint = task_description.strip() or self._task_hint(context)
-        try:
-            outcome = await run_trajectory_summary(
-                model=context.model,
-                nodes_by_subagent=context.nodes,
-                language=context.inputs.locale,
-                status_sink=context.sink,
-                model_name=context.model_name,
-                status_counter=context.counter,
-                task_hint=hint,
-            )
-            summary = str(outcome.trajectory_summary or "").strip()
-        except Exception:  # noqa: BLE001 - a valid range still needs some summary
-            logger.warning("[diagnosis] summary-only run failed", exc_info=True)
-            summary = ""
+        summary = context.summary_tree.trajectory_summary if context.summary_tree else ""
         return summary or context.text["trajectory_summary_unavailable"]
 
-    async def _stage_task_parse(self, context: _StageContext) -> Any:
+    async def _stage_trajectory_summary(self, context: _StageContext) -> None:
         inputs = context.inputs
         text = context.text
         queue = context.queue
+        queue.put_nowait(EngineEvent("trajectory_summary", "stage_started", title=text["stage_trajectory_summary"]))
+        queue.put_nowait(EngineEvent("trajectory_summary", "output_delta", text_delta=text["summary_generating"]))
+        try:
+            context.summary_tree = await summarize_trajectory(
+                model=_TaskParseAdapter(context.model), nodes_by_agent=context.nodes,
+                language=inputs.locale, background=self._task_hint(context),
+                status_sink=context.sink, model_name=context.model_name, status_counter=context.counter,
+            )
+        except Exception as exc:  # A summary failure must not discard the original diagnosis evidence.
+            logger.warning("[diagnosis] hierarchical summary failed", exc_info=True)
+            context.summary_tree = SummaryTree(warnings=[{"code": "summary_failed", "message": str(exc)[:200]}])
+        if context.summary_tree.status != "completed":
+            key = "summary_failed" if context.summary_tree.status == "failed" else "summary_degraded"
+            reasons = "; ".join(str(w.get("message") or w.get("code") or "")
+                                for w in context.summary_tree.warnings[:3])
+            queue.put_nowait(EngineEvent("trajectory_summary", "output_delta",
+                                        text_delta=text[key].format(reason=reasons or context.summary_tree.status)))
+        queue.put_nowait(EngineEvent("trajectory_summary", "trajectory_summary",
+                                    summary_tree=context.summary_tree.to_dict()))
+        segments = []
+        for turns in context.summary_tree.turns.values():
+            for turn in turns:
+                segments.extend(turn.segments)
+        queue.put_nowait(EngineEvent("trajectory_summary", "stage_finished", status=context.summary_tree.status,
+                                    summary=text["summary_completed"].format(
+                                        segments=len(segments), agents=len(context.summary_tree.turns))))
+
+    async def _stage_task_parse(self, context: _StageContext) -> Any:
+        inputs, text, queue = context.inputs, context.text, context.queue
         queue.put_nowait(EngineEvent("task_parse", "stage_started", title=text["stage_task_parse"]))
         try:
             parsed = await run_task_parse(
@@ -909,6 +946,7 @@ class AttributionCoreEngine:
                 status_sink=context.sink,
                 model_name=context.model_name,
                 status_counter=context.counter,
+                summary_tree=context.summary_tree,
             )
         except TaskParseError as exc:
             if exc.error_type == "multiple_unrelated_tasks":
@@ -1058,7 +1096,9 @@ class AttributionCoreEngine:
         queue = context.queue
         queue.put_nowait(EngineEvent("attribute", "stage_started", title=text["stage_attribute"]))
         queue.put_nowait(
-            EngineEvent("attribute", "output_delta", text_delta=text["summary_generating"]),
+            EngineEvent("attribute", "output_delta", text_delta=text["summary_reused"]
+                        if context.summary_tree and context.summary_tree.trajectory_summary
+                        else text["trajectory_summary_unavailable"]),
         )
         summary = await self._summary_only(context, task_description=task_parse.task_description)
         unavailable = text["trajectory_summary_unavailable"]
@@ -1107,6 +1147,11 @@ class AttributionCoreEngine:
             return EngineResult(trajectory_summary=summary, reward=diagnosis.reward_payload)
         # Entries are logged and the two tables refreshed as the agent submits them.
         runtime = _StreamingRuntime(nodes, language, queue, text, diagnosis.signals, diagnosis.reward_payload)
+        runtime.summary_tree = context.summary_tree
+        if context.summary_tree is not None:
+            runtime.trajectory_summary = (
+                context.summary_tree.trajectory_summary or text["trajectory_summary_unavailable"]
+            )
         outcome = await run_attribution(
             model=context.model,
             nodes_by_subagent=nodes,
