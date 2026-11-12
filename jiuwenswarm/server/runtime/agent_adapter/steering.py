@@ -480,6 +480,15 @@ class SteeringSession:
                     )
                 )
             except Exception:
+                # 模糊投递窗口的已知取舍：异常 ≠ 未送达。若 input 实际已进模型流
+                # （重放/状态查询可查到 accepted / consumed），则引用行已投、
+                # 清单未落地，该图本轮零物化（N12 拒死引用，read_file 兜底依赖
+                # 模型主动调用）。按协议同 input_id 重试只查回执、不重放 commit，
+                # 需换新 input_id 重发同图或等下一轮 chat.send 覆盖清单恢复。
+                # 不为该窗口在状态轮询热路径上增加补偿式落地（需 pending 状态
+                # 暂存与清理、runtime 存活判定）；窗口需「异常 + 实际送达 +
+                # 同 input_id 重试」三重叠加、触发后影响有界，线上出现真实
+                # 案例再跟进补偿实现。
                 return {"input_id": input_id, "status": "unknown"}
             if result.get("status") == "not_applied":
                 item.receipt = result
