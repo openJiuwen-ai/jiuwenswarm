@@ -172,6 +172,7 @@ from jiuwenswarm.server.personal_context.ws_handler import (
 
 logger = logging.getLogger(__name__)
 
+
 _INTERFACE_DEEP_MODULE = "jiuwenswarm.server.runtime.agent_adapter.interface_deep"
 _startup_warmup_task: asyncio.Task[None] | None = None
 
@@ -292,6 +293,8 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _WORKFLOW_LIST_SUMMARY_STRING_LIMIT,
     _WORKFLOW_COLLAPSED_AGENT_TEXT_LIMIT,
     _WORKFLOW_WAITING_HUMAN_PROMPT_MAX_BYTES,
+    _WORKFLOW_AGENT_SUMMARY_PREVIEW_LIMIT,
+    _WORKFLOW_PHASE_MAX_AGENT_LIMIT,
     _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
     _json_wire_size,
     _coerce_int,
@@ -318,6 +321,10 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _build_workflow_list_payload,
     _build_workflow_detail_payload,
     _find_workflow_agent,
+    _find_workflow_phase,
+    _workflow_agent_summary,
+    _build_workflow_phase_payload,
+    _build_workflow_agent_payload,
     _build_workflow_human_prompt_payload,
     _build_workflow_snapshot_payload,
 )

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { File, Maximize2, Puzzle } from 'lucide-react';
+import { File, GitBranch, Maximize2, Puzzle } from 'lucide-react';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
+import { useChatStore, useSessionStore } from '../../stores';
 import recentTasksIcon from '../../assets/work-mode/recent-tasks.svg';
 import statusProcessingIcon from '../../assets/work-mode/status-processing.svg';
 import statusSuccessIcon from '../../assets/work-mode/status-success.svg';
@@ -21,6 +22,8 @@ import {
   type TeamMember,
 } from './shared';
 import { getTotalTaskVisualProgressPercent } from './taskProgress';
+import { SwarmflowTreeView } from './SwarmflowTreeView';
+import { SwarmflowGraphView } from './SwarmflowGraphView';
 
 type TaskPlanningPanelProps = {
   variant: 'compact' | 'expanded';
@@ -62,7 +65,15 @@ export function TaskPlanningPanel({
 }: TaskPlanningPanelProps) {
   const { t } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
-  const [view, setView] = useState<'board' | 'list'>('board');
+  const [view, setView] = useState<'board' | 'list' | 'workflow'>('board');
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const workflowRuns = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.workflowRuns ?? []);
+  const showWorkflow = workflowRuns.length > 0 && Boolean(activeSessionId);
+  useEffect(() => {
+    if (!showWorkflow && view === 'workflow') {
+      setView('board');
+    }
+  }, [showWorkflow, view]);
   const groupedTasks = useMemo(() => {
     const groups: Record<TaskColumnKey, SessionTeamTask[]> = {
       waiting: [],
@@ -221,23 +232,51 @@ export function TaskPlanningPanel({
       >
         <BoardViewIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
       </button>
+      {showWorkflow ? (
+        <button
+          type="button"
+          onClick={() => setView('workflow')}
+          className={`flex h-8 w-8 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-card ${view === 'workflow' ? 'bg-secondary text-text' : 'text-text-muted hover:bg-secondary/50 hover:text-text'}`}
+          aria-label={t('swarmflow.layoutGraph')}
+          title={t('swarmflow.layoutGraph')}
+          aria-pressed={view === 'workflow'}
+        >
+          <GitBranch className="h-4 w-4 shrink-0" aria-hidden="true" />
+        </button>
+      ) : null}
     </div>
   );
 
   return (
     <div className="flex-1 overflow-hidden bg-card">
       {view === 'list' ? (
-        <div className="flex h-full flex-col px-6 pb-6">
+        <div className="flex h-full min-h-0 flex-col px-6 pb-6">
           <div className="flex h-8 items-center gap-3">
             <h2 className="text-sm font-medium leading-5 text-text-strong">{t('team.planning.progressTitle')}</h2>
             {viewSwitcher}
           </div>
-          <ExpandedTaskList
-            tasks={tasks}
-            groupedTasks={groupedTasks}
-            globalIndexMap={globalIndexMap}
-            progressPercent={progressPercent}
-          />
+          {showWorkflow && activeSessionId ? (
+            <div className="min-h-0 flex-1 overflow-hidden pt-3">
+              <SwarmflowTreeView runs={workflowRuns} sessionId={activeSessionId} />
+            </div>
+          ) : (
+            <ExpandedTaskList
+              tasks={tasks}
+              groupedTasks={groupedTasks}
+              globalIndexMap={globalIndexMap}
+              progressPercent={progressPercent}
+            />
+          )}
+        </div>
+      ) : view === 'workflow' && showWorkflow && activeSessionId ? (
+        <div className="flex h-full min-h-0 flex-col px-6 pb-6">
+          <div className="mb-3 flex h-8 items-center gap-3">
+            <h2 className="text-sm font-medium leading-5 text-text-strong">{t('team.planning.progressTitle')}</h2>
+            {viewSwitcher}
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <SwarmflowGraphView runs={workflowRuns} sessionId={activeSessionId} />
+          </div>
         </div>
       ) : (
         <div className="flex h-full flex-col px-6 pb-6">

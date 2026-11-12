@@ -14,6 +14,7 @@ from typing import Any
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
@@ -42,6 +43,61 @@ from jiuwenswarm.server.wire_truncate import (
 
 logger = logging.getLogger(__name__)
 
+_SWARMFLOW_ACTIONS = {
+    ReqMethod.SWARMFLOW_PAUSE: "pause",
+    ReqMethod.SWARMFLOW_RESUME: "resume",
+    ReqMethod.SWARMFLOW_STOP: "stop",
+}
+
+
+def _cleanup_orphaned_generated_team(
+    *,
+    binding_store: Any,
+    team_name: str,
+) -> bool:
+    """Delete a session-generated team only when no sessions remain bound.
+
+    Returns True when the binding record and entity directory were removed.
+    """
+    logical = str(team_name or "").strip()
+    if not logical:
+        return False
+    try:
+        remaining = binding_store.get(logical)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[AgentWebSocketServer] orphan generated lookup failed: team=%s error=%s",
+            logical,
+            exc,
+        )
+        return False
+    if remaining is not None and remaining.session_ids:
+        return False
+    deleted = True
+    try:
+        binding_store.delete(logical)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[AgentWebSocketServer] orphan generated binding delete failed: "
+            "team=%s error=%s",
+            logical,
+            exc,
+        )
+        deleted = False
+    try:
+        from jiuwenswarm.server.runtime.team_entity_store import get_team_entity_store
+
+        get_team_entity_store().delete_team_directory(logical)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[AgentWebSocketServer] orphan generated entity delete failed: "
+            "team=%s error=%s",
+            logical,
+            exc,
+        )
+        deleted = False
+    return deleted
+
 
 def _team_binding_payload(binding: Any) -> dict[str, Any]:
     if hasattr(binding, "to_dict"):
@@ -58,10 +114,8 @@ def _create_team_binding_from_template(
     config_base: dict[str, Any],
     heal: bool = False,
 ) -> Any:
-    from jiuwenswarm.agents.harness.team import (
-        get_team_template_snapshot,
-        list_team_template_summaries,
-    )
+    from jiuwenswarm.agents.harness.team import get_team_template_snapshot
+    from jiuwenswarm.agents.harness.team.config_loader import TeamTemplateNotFoundError
     from jiuwenswarm.server.runtime.team_binding_store import (
         TeamBindingStoreError,
         ensure_binding_for_entity,
@@ -69,6 +123,13 @@ def _create_team_binding_from_template(
         validate_team_name,
     )
     from jiuwenswarm.server.runtime.team_entity_store import ensure_team_entity, get_team_entity_store
+
+    # Reject empty template_id before any store write. Otherwise
+    # get_team_template_snapshot("") fall-through-selects the first modes.team
+    # entry, create() succeeds with template_id="", then ensure_team_entity
+    # returns None → misleading "team entity config missing" + create/delete churn.
+    if not str(template_id or "").strip():
+        raise TeamBindingStoreError("template_id not found", code="NOT_FOUND")
 
     normalized_name = validate_team_name(team_name)
     entity_store = get_team_entity_store()
@@ -94,14 +155,14 @@ def _create_team_binding_from_template(
         )
         return binding
 
-    template_ids = {
-        str(item.get("template_id") or "")
-        for item in list_team_template_summaries(config_base)
-    }
-    if template_id not in template_ids:
-        raise TeamBindingStoreError("template_id not found", code="NOT_FOUND")
-
-    template_snapshot = get_team_template_snapshot(config_base, template_id=template_id)
+    # Resolve against modes.team + shipped samples (catalog may list samples that
+    # are omitted from the default templates.list to avoid polluting generate).
+    try:
+        template_snapshot = get_team_template_snapshot(
+            config_base, template_id=template_id
+        )
+    except TeamTemplateNotFoundError as exc:
+        raise TeamBindingStoreError("template_id not found", code="NOT_FOUND") from exc
     binding = binding_store.create(team_name=normalized_name, template_id=template_id)
     try:
         entity = ensure_team_entity(
@@ -272,12 +333,34 @@ def _legacy_team_bindings_from_sessions(known_team_names: set[str]) -> list[dict
     return list(legacy.values())
 
 
+def _coerce_request_bool(value: Any, *, default: bool = False) -> bool:
+    """Parse REST/WS bool params without ``bool("false") == True`` traps."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
 async def handle_team_templates_list(ctx: RequestContext) -> None:
     request = ctx.request
     from jiuwenswarm.agents.harness.team import list_team_template_summaries
 
+    params = request.params if isinstance(request.params, dict) else {}
+    # Default False so REST/OA callers keep the full list; Web menu passes true.
+    if "catalog_only" in params:
+        catalog_only = _coerce_request_bool(params.get("catalog_only"), default=False)
+    else:
+        catalog_only = False
     templates = list_team_template_summaries(
-        _effective_config_for_request(request)
+        _effective_config_for_request(request),
+        catalog_only=catalog_only,
     )
     resp = AgentResponse(
         request_id=request.request_id,
@@ -455,21 +538,55 @@ async def handle_team_binding_generate(ctx: RequestContext) -> None:
     await ctx.sink.send_wire(wire)
 
 
+def _resolve_session_dir_for_bind(
+    request: Any,
+    *,
+    session_id: str,
+    sessions_root: str | Path | None,
+):
+    """Resolve session directory for bind; supports legacy root fallback."""
+    from jiuwenswarm.server.runtime.session.session_metadata import resolve_session_subdir
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError
+
+    session_dir = resolve_session_subdir(session_id, sessions_root=sessions_root)
+    if session_dir is None:
+        raise TeamBindingStoreError("invalid session_id", code="BAD_REQUEST")
+    has_tenant_scope = bool(
+        str(request.service_id or "").strip()
+        or str(request.agent_id or "").strip()
+        or request.channel_id == "officeclaw"
+    )
+    legacy_session_exists = False
+    if not has_tenant_scope and not session_dir.is_dir():
+        legacy_session_dir = resolve_session_subdir(
+            session_id,
+            sessions_root=get_agent_sessions_dir(),
+        )
+        legacy_session_exists = bool(
+            legacy_session_dir is not None and legacy_session_dir.is_dir()
+        )
+    if not session_dir.is_dir() and not legacy_session_exists:
+        raise TeamBindingStoreError("session not found", code="NOT_FOUND")
+    return session_dir
+
+
 async def handle_team_session_bind(ctx: RequestContext) -> None:
     request = ctx.request
     from jiuwenswarm.agents.harness.team import TeamManager, get_team_template_snapshot
     from jiuwenswarm.agents.harness.team.config_loader import TeamTemplateNotFoundError
     from jiuwenswarm.server.runtime.session.session_metadata import (
         capture_session_team_binding_artifacts,
-        resolve_session_subdir,
+        get_session_metadata,
         restore_session_team_binding_artifacts,
         update_session_metadata,
     )
+    from jiuwenswarm.server.runtime.swarm_skill_session import reject_deprecated_dynamic_entry
     from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError, get_team_binding_store
     from jiuwenswarm.server.runtime.team_entity_store import (
         TeamEntityStoreError,
         ensure_team_entity_for_binding,
         get_team_entity_store,
+        normalize_team_entity_snapshot,
     )
 
     params = request.params if isinstance(request.params, dict) else {}
@@ -479,29 +596,14 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
     try:
         if not session_id:
             raise TeamBindingStoreError("session_id is required", code="BAD_REQUEST")
+        reject_deprecated_dynamic_entry(params)
+        if not team_name:
+            raise TeamBindingStoreError("team_name is required", code="BAD_REQUEST")
+
         sessions_root = _sessions_dir_for_request(request)
-        session_dir = resolve_session_subdir(
-            session_id,
-            sessions_root=sessions_root,
+        _resolve_session_dir_for_bind(
+            request, session_id=session_id, sessions_root=sessions_root
         )
-        if session_dir is None:
-            raise TeamBindingStoreError("invalid session_id", code="BAD_REQUEST")
-        has_tenant_scope = bool(
-            str(request.service_id or "").strip()
-            or str(request.agent_id or "").strip()
-            or request.channel_id == "officeclaw"
-        )
-        legacy_session_exists = False
-        if not has_tenant_scope and not session_dir.is_dir():
-            legacy_session_dir = resolve_session_subdir(
-                session_id,
-                sessions_root=get_agent_sessions_dir(),
-            )
-            legacy_session_exists = bool(
-                legacy_session_dir is not None and legacy_session_dir.is_dir()
-            )
-        if not session_dir.is_dir() and not legacy_session_exists:
-            raise TeamBindingStoreError("session not found", code="NOT_FOUND")
         async with _session_team_binding_lock(session_id):
             binding_store = get_team_binding_store()
             existing_binding = binding_store.get(team_name)
@@ -514,7 +616,6 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
             )
             if entity is None:
                 raise TeamBindingStoreError("team entity config missing", code="NOT_FOUND")
-            from jiuwenswarm.server.runtime.team_entity_store import normalize_team_entity_snapshot
 
             try:
                 raw_snapshot = get_team_template_snapshot(
@@ -528,6 +629,17 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
                 session_id,
                 sessions_root=sessions_root,
             )
+            prior_metadata = get_session_metadata(
+                session_id,
+                cache_bust=True,
+                sessions_root=sessions_root,
+            )
+            prior_team_name = str(prior_metadata.get("team_name") or "").strip()
+            from jiuwenswarm.server.runtime.swarm_skill_session import (
+                is_session_generated_team,
+            )
+
+            prior_was_generated = is_session_generated_team(prior_metadata)
             try:
                 update_session_metadata(
                     session_id=session_id,
@@ -540,6 +652,12 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
                     ),
                     team_template_id=existing_binding.template_id,
                     team_template_snapshot=session_snapshot,
+                    temporary_team_session=False,
+                    team_lifecycle="",
+                    team_origin="",
+                    team_entry="",
+                    skill_id="",
+                    team_cold_reopen_required=False,
                     sync=True,
                     sessions_root=sessions_root,
                 )
@@ -547,6 +665,41 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
                     team_name=team_name,
                     session_id=session_id,
                 )
+                # Rebinding away from a session-generated team must drop the
+                # orphan binding + workspace once no other session holds it.
+                # Align with dissolve: unbind this session from the prior team
+                # first, otherwise remaining.session_ids still contains us.
+                if (
+                    prior_was_generated
+                    and prior_team_name
+                    and prior_team_name != binding.team_name
+                ):
+                    try:
+                        binding_store.unbind_session(
+                            session_id=session_id,
+                            team_name=prior_team_name,
+                        )
+                    except Exception as unbind_exc:  # noqa: BLE001
+                        logger.warning(
+                            "[AgentWebSocketServer] prior generated unbind failed: "
+                            "session_id=%s team=%s error=%s",
+                            session_id,
+                            prior_team_name,
+                            unbind_exc,
+                        )
+                    else:
+                        cleaned = _cleanup_orphaned_generated_team(
+                            binding_store=binding_store,
+                            team_name=prior_team_name,
+                        )
+                        if not cleaned:
+                            logger.info(
+                                "[AgentWebSocketServer] prior generated cleanup "
+                                "skipped (still held or already gone): "
+                                "session_id=%s team=%s",
+                                session_id,
+                                prior_team_name,
+                            )
             except Exception as exc:
                 try:
                     restore_session_team_binding_artifacts(
@@ -1060,6 +1213,127 @@ async def handle_team_runtime_dissolve(ctx: RequestContext) -> None:
                             exc,
                         )
                         ok = False
+            # Session-generated / temporary teams: unbind + drop binding/entity
+            # when no other session holds them. Preset/OA: unbind runtime only —
+            # keep team_name / template identity so the same-turn chat.send can
+            # rebuild from the edited config (lazy dissolve + rebuild).
+            catalog_cleaned = False
+            if ok:
+                from jiuwenswarm.server.runtime.session.session_metadata import (
+                    update_session_metadata,
+                )
+                from jiuwenswarm.server.runtime.swarm_skill_session import (
+                    is_session_generated_team,
+                )
+                from jiuwenswarm.server.runtime.team_binding_store import (
+                    get_team_binding_store,
+                )
+
+                async with _session_team_binding_lock(session_id):
+                    if is_session_generated_team(metadata):
+                        logical_team = str(metadata.get("team_name") or "").strip()
+                        binding_store = get_team_binding_store()
+                        cleanup_ok = True
+                        unbind_ok = True
+                        try:
+                            binding_store.unbind_session(
+                                session_id=session_id,
+                                team_name=logical_team or None,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[AgentWebSocketServer] dissolve unbind failed: "
+                                "session_id=%s error=%s",
+                                session_id,
+                                exc,
+                            )
+                            unbind_ok = False
+                            cleanup_ok = False
+                        if logical_team and unbind_ok:
+                            remaining = binding_store.get(logical_team)
+                            if remaining is not None and remaining.session_ids:
+                                logger.info(
+                                    "[AgentWebSocketServer] dissolve keeps "
+                                    "shared generated team: team=%s "
+                                    "remaining_sessions=%s",
+                                    logical_team,
+                                    len(remaining.session_ids),
+                                )
+                            elif not _cleanup_orphaned_generated_team(
+                                binding_store=binding_store,
+                                team_name=logical_team,
+                            ):
+                                cleanup_ok = False
+                        # Only clear session team identity after unbind succeeds.
+                        # Otherwise binding still lists the session while metadata
+                        # claims no team (half-dissolved; startup orphan GC skips).
+                        if unbind_ok:
+                            try:
+                                update_session_metadata(
+                                    session_id=session_id,
+                                    team_name="",
+                                    runtime_team_name="",
+                                    team_template_id="",
+                                    temporary_team_session=False,
+                                    team_lifecycle="",
+                                    team_mode="",
+                                    team_entry="",
+                                    team_origin="",
+                                    skill_id="",
+                                    team_cold_reopen_required=False,
+                                    touch_last_message_at=False,
+                                    sync=True,
+                                    sessions_root=sessions_root,
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "[AgentWebSocketServer] dissolve clear temporary "
+                                    "metadata failed: session_id=%s error=%s",
+                                    session_id,
+                                    exc,
+                                )
+                                cleanup_ok = False
+                        else:
+                            logger.warning(
+                                "[AgentWebSocketServer] dissolve left session "
+                                "partially bound (unbind failed; metadata kept): "
+                                "session_id=%s team=%s",
+                                session_id,
+                                logical_team,
+                            )
+                        catalog_cleaned = cleanup_ok
+                    elif str(metadata.get("team_name") or "").strip():
+                        # Preset/OA: release binding lock only; retain identity so
+                        # same-turn chat.send rebuilds the original team.
+                        logical_team = str(metadata.get("team_name") or "").strip()
+                        try:
+                            get_team_binding_store().unbind_session(
+                                session_id=session_id,
+                                team_name=logical_team or None,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[AgentWebSocketServer] dissolve preset unbind failed: "
+                                "session_id=%s error=%s",
+                                session_id,
+                                exc,
+                            )
+                        try:
+                            update_session_metadata(
+                                session_id=session_id,
+                                team_cold_reopen_required=False,
+                                team_lifecycle="",
+                                touch_last_message_at=False,
+                                sync=True,
+                                sessions_root=sessions_root,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[AgentWebSocketServer] dissolve clear preset "
+                                "runtime flags failed: session_id=%s error=%s",
+                                session_id,
+                                exc,
+                            )
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -1069,6 +1343,7 @@ async def handle_team_runtime_dissolve(ctx: RequestContext) -> None:
                     "session_id": session_id,
                     # 回显解析后的权威运行时名（relay 可不传 team_name）。
                     "team_name": runtime_team_name,
+                    "temporary_catalog_cleaned": catalog_cleaned,
                 },
                 metadata=request.metadata,
             )
@@ -1422,4 +1697,125 @@ async def handle_team_members_get(ctx: RequestContext) -> None:
     wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
     await ctx.sink.send_wire(wire)
 
+
+async def handle_swarmflow_control(ctx: RequestContext) -> None:
+    """Shared pause/resume/stop control-path handler for a swarmflow run.
+
+    Looks up the session's BackgroundTaskController and applies the requested
+    control to the run identified by ``run_id`` (accepting ``run_id`` or the
+    ``workflow_run_id`` alias). Returns ok=False with a reason when run_id is
+    missing, the team is asleep (no leader harness to host the run — the
+    tree-view buttons are greyed then), or no matching run
+    is registered on the controller.
+    """
+    request = ctx.request
+    action = _SWARMFLOW_ACTIONS[request.req_method]
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+        classify_swarmflow_control_miss,
+        get_background_task_controller,
+    )
+    from jiuwenswarm.agents.harness.team.swarmflow_btc import (
+        pause_background_tasks,
+        resume_background_tasks,
+        stop_background_tasks,
+    )
+
+    session_id = request.session_id or ""
+    channel_id = request.channel_id or "web"
+    params = request.params if isinstance(request.params, dict) else {}
+    run_id = params.get("run_id") or params.get("workflow_run_id")
+
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+    from openjiuwen.core.runner import Runner
+
+    from jiuwenswarm.agents.harness.team import get_team_manager
+
+    tm = get_team_manager(channel_id)
+    active_teams = await Runner.list_active_teams()
+    team_runtime_running = any(
+        str(info.current_session_id or "") == session_id
+        and info.state == RuntimeState.RUNNING
+        for info in active_teams
+    )
+    if not isinstance(run_id, str) or not run_id.strip():
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=False,
+            payload={"error": "run_id is required"},
+        )
+    elif not team_runtime_running:
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=False,
+            payload={"error": "工作流控制不可用，发送一条消息唤醒团队后即可使用。"},
+        )
+    else:
+        run_id = run_id.strip()
+        controller = get_background_task_controller(session_id)
+        status = {"pause": "paused", "resume": "resumed", "stop": "stopped"}.get(action, "")
+        wf_handler = tm.get_workflow_handler(session_id)
+        if action == "pause":
+            acted = await pause_background_tasks(controller, run_id)
+            # 与 stop 对称：RPC 已回 {status: paused}，但仍合成 workflow.updated，
+            # 避免引擎事件丢失/滞后时树卡在 running、前端 pending 等事件解锁。
+            if acted and wf_handler is not None:
+                await wf_handler.pause_run(run_id)
+        elif action == "resume":
+            acted = await resume_background_tasks(controller, run_id)
+            # 引擎没有 workflow_resumed 进度事件；controller 重启后必须由 handler
+            # 把快照从 paused 推回 running，否则树状态滞后、控制按钮易锁死。
+            if acted and wf_handler is not None:
+                await wf_handler.resume_run(run_id)
+        elif action == "stop":
+            acted = await stop_background_tasks(controller, run_id)
+            # 已解栈的 paused run 没有引擎回发的 WORKFLOW_STOPPED，快照会永远停在
+            # paused；由 handler 合成终态 delta（树刷新 + 落盘），不写 journal seal
+            # （丢票不 seal，手动 resume_id 仍可续）。active run 由引擎事件路径更新，
+            # stop_run 对非 paused run 是 no-op。
+            if wf_handler is not None and await wf_handler.stop_run(run_id):
+                acted = True
+        else:  # pragma: no cover - internal dispatch only
+            acted = False
+        if not acted:
+            # controller 注册表 miss ≠ run 不存在：run 可能已经自然终态
+            # （用户点的是一张停在 running/paused 的陈旧卡片），也可能是
+            # 进程重启后注册表清空而状态快照还在。由 team 层找回权威
+            # status 一并返回，前端据此纠正卡片并明确提示，而不是
+            # 一句 not found。
+            miss = classify_swarmflow_control_miss(channel_id, session_id, run_id)
+            if miss is not None:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload=miss,
+                )
+            else:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload={"error": "workflow run not found"},
+                )
+        else:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=True,
+                payload={"run_id": run_id, "status": status},
+            )
+
+    logger.info(
+        "[SWARMFLOW] %s req channel_id=%s session_id=%s request_id=%s run_id=%s ok=%s",
+        action,
+        channel_id,
+        session_id,
+        request.request_id,
+        run_id,
+        resp.ok,
+    )
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)
 
