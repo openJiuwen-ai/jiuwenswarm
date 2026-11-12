@@ -42,6 +42,12 @@ OBSERVABILITY_CONFIG_KEY = "observability"
 LEGACY_TEAM_OBSERVABILITY_KEY = "team_observability"
 LEGACY_AGENT_OBSERVABILITY_KEY = "agent_observability"
 
+_OBSERVABILITY_SECTION_KEYS: tuple[str, ...] = (
+    OBSERVABILITY_CONFIG_KEY,
+    LEGACY_TEAM_OBSERVABILITY_KEY,
+    LEGACY_AGENT_OBSERVABILITY_KEY,
+)
+
 ObservabilityScope = Literal["team", "agent"]
 OBSERVABILITY_SCOPES: tuple[ObservabilityScope, ...] = ("team", "agent")
 
@@ -84,12 +90,18 @@ def _legacy_default(scope: ObservabilityScope, key: str) -> Any:
 def _merge_legacy_value(
     key: str,
     legacy_sections: Mapping[ObservabilityScope, Mapping[str, Any]],
+    *,
+    log_conflicts: bool,
 ) -> tuple[bool, Any]:
     """Pick the value one shared field takes when two legacy sections merge.
 
     Args:
         key: Shared field name, such as ``exporter``.
         legacy_sections: Legacy sections by scope; only those present.
+        log_conflicts: Log a WARNING when both sections set conflicting
+            values. The message names the field and the winning section only:
+            values are never logged, since fields such as
+            ``langfuse_secret_key`` hold credentials.
 
     Returns:
         ``(found, value)``. ``found`` is False when the field must be left
@@ -121,20 +133,23 @@ def _merge_legacy_value(
         scope for scope in customized if bool(legacy_sections[scope].get("enabled", False))
     ]
     winner: ObservabilityScope = enabled_scopes[0] if len(enabled_scopes) == 1 else "team"
-    logger.warning(
-        "observability config migration: %s differs between %s (%r) and %s (%r); "
-        "keeping the %s value",
-        key,
-        LEGACY_TEAM_OBSERVABILITY_KEY,
-        customized.get("team"),
-        LEGACY_AGENT_OBSERVABILITY_KEY,
-        customized.get("agent"),
-        _LEGACY_KEY_BY_SCOPE[winner],
-    )
+    if log_conflicts:
+        logger.warning(
+            "observability config migration: %s differs between %s and %s; "
+            "keeping the %s value",
+            key,
+            LEGACY_TEAM_OBSERVABILITY_KEY,
+            LEGACY_AGENT_OBSERVABILITY_KEY,
+            _LEGACY_KEY_BY_SCOPE[winner],
+        )
     return True, customized[winner]
 
 
-def migrate_legacy_observability_config(config: MutableMapping[str, Any]) -> bool:
+def migrate_legacy_observability_config(
+    config: MutableMapping[str, Any],
+    *,
+    log_conflicts: bool = True,
+) -> bool:
     """Fold ``team_observability`` / ``agent_observability`` into ``observability``.
 
     The legacy sections are removed. Values already present in the canonical
@@ -145,6 +160,8 @@ def migrate_legacy_observability_config(config: MutableMapping[str, Any]) -> boo
 
     Args:
         config: Whole config mapping, mutated in place.
+        log_conflicts: Log one WARNING per conflicting shared field (field
+            name and winning section only, never the values).
 
     Returns:
         True when the mapping changed.
@@ -184,7 +201,7 @@ def migrate_legacy_observability_config(config: MutableMapping[str, Any]) -> boo
     for key in shared_keys:
         if key in canonical:
             continue
-        found, value = _merge_legacy_value(key, legacy_sections)
+        found, value = _merge_legacy_value(key, legacy_sections, log_conflicts=log_conflicts)
         if found:
             canonical[key] = deepcopy(value)
     return True
@@ -194,8 +211,9 @@ def resolve_observability_section(config: Mapping[str, Any]) -> dict[str, Any]:
     """Return the effective ``observability`` section of one loaded config.
 
     A config still carrying the legacy sections is migrated on a copy, so the
-    caller's mapping is never modified. A deprecation warning is logged once
-    per process in that case.
+    caller's mapping is never modified. The deprecation warning, and any
+    conflict warnings from the migration, are logged once per process: this
+    runs on every Team / Agent request, so repeating them would flood logs.
 
     Args:
         config: Whole loaded config.
@@ -203,17 +221,12 @@ def resolve_observability_section(config: Mapping[str, Any]) -> dict[str, Any]:
     Returns:
         The canonical section as a plain dict (empty when absent).
     """
-    view: dict[str, Any] = {
-        key: deepcopy(config[key])
-        for key in (
-            OBSERVABILITY_CONFIG_KEY,
-            LEGACY_TEAM_OBSERVABILITY_KEY,
-            LEGACY_AGENT_OBSERVABILITY_KEY,
-        )
-        if key in config
-    }
-    if migrate_legacy_observability_config(view):
-        _warn_legacy_once()
+    view: dict[str, Any] = {}
+    for key in _OBSERVABILITY_SECTION_KEYS:
+        if key in config:
+            view[key] = deepcopy(config[key])
+    if LEGACY_TEAM_OBSERVABILITY_KEY in view or LEGACY_AGENT_OBSERVABILITY_KEY in view:
+        migrate_legacy_observability_config(view, log_conflicts=_claim_legacy_warning())
     section = view.get(OBSERVABILITY_CONFIG_KEY)
     return dict(section) if isinstance(section, Mapping) else {}
 
@@ -232,11 +245,12 @@ def observability_export_settings(section: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in section.items() if key not in OBSERVABILITY_SCOPES}
 
 
-def _warn_legacy_once() -> None:
+def _claim_legacy_warning() -> bool:
+    """Return True for the first legacy read in this process, and log it then."""
     global _legacy_warning_emitted
     with _legacy_warning_lock:
         if _legacy_warning_emitted:
-            return
+            return False
         _legacy_warning_emitted = True
     logger.warning(
         "config sections '%s' / '%s' are deprecated and were read as '%s' "
@@ -246,3 +260,4 @@ def _warn_legacy_once() -> None:
         LEGACY_AGENT_OBSERVABILITY_KEY,
         OBSERVABILITY_CONFIG_KEY,
     )
+    return True
