@@ -12,7 +12,7 @@ from openjiuwen.agent_teams.schema.meeting import MeetingRoute, SpeechRequestSta
 from openjiuwen.agent_teams.tools.database import DatabaseConfig, TeamDatabase
 from openjiuwen.agent_teams.tools.team import TeamBackend
 
-from jiuwenswarm.common.voice_matching import load_tts_voice_catalog
+from jiuwenswarm.common.voice_matching import MemberVoiceRegistry, load_tts_voice_catalog
 from jiuwenswarm.extensions.meeting import meeting_manager
 from jiuwenswarm.extensions.meeting.meeting_manager import MeetingManager
 from jiuwenswarm.extensions.meeting.publication import MeetingSetAddressedMembersTool
@@ -21,6 +21,15 @@ from jiuwenswarm.extensions.meeting.publication import MeetingSetAddressedMember
 SESSION = "meeting-lifecycle-session"
 TEAM = "meeting-lifecycle-team"
 LEADER = "leader"
+
+
+def test_meeting_leader_can_reuse_voice_with_chinese_app_locale():
+    catalog = load_tts_voice_catalog("cosyvoice")
+    voices = MemberVoiceRegistry(SESSION, TEAM, catalog.default_model, catalog=catalog)
+    assigned = voices.assign_voice(LEADER, preference=catalog.default_voice)
+
+    assert voices.assign_voice(LEADER, language="cn") is assigned
+    assert voices.assign_voice(LEADER, language="en") is assigned
 
 
 @pytest_asyncio.fixture

@@ -26,7 +26,7 @@ def _nonblank(value: str, label: str) -> str:
 
 def _language(value: str) -> str:
     language = _nonblank(value, "Language").replace("_", "-").lower()
-    if language in {"zh", "zh-cn", "zh-hans"}:
+    if language in {"cn", "zh", "zh-cn", "zh-hans"}:
         return "zh-CN"
     if language == "en" or language.startswith("en-"):
         return "en"
