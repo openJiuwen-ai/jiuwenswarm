@@ -35,7 +35,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import ProviderType
 
-from jiuwenswarm.common.permission_mode import permission_profile
+from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
@@ -471,13 +471,6 @@ DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
 EXTERNAL_CLI_PUBLISH_PATH = "/ws"
 UNSUPPORTED_WINDOWS_CLI_SUFFIXES = {".bat", ".cmd", ".ps1"}
 PERMISSIONS_PROFILES = frozenset({"default", "automatic", "full_access"})
-
-
-def canonical_permission_facade(profile: str) -> dict[str, str]:
-    return {
-        "permissions_profile": profile,
-        "permissions_enabled": "false" if profile == "full_access" else "true",
-    }
 
 
 SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {

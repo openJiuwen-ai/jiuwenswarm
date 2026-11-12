@@ -82,6 +82,22 @@ canonical_permission 或 front_module_import_does_not_load_runtime；未更改�
 
 ## 遗留与重验条件
 
+### PR review 反馈修正
+
+本次新增档位字段与 Front 原有宽松布尔显示规则组合后，非布尔 enabled（如字符串
+"yes"、"true"、"1"、"on" 或整数 1）可能返回 full_access/true 的矛盾响应。
+该问题由 !10109 的当前版本行评论指出；相同实现也存在于另两个修复分支。
+修正将既有 canonical_permission_facade 原样移入轻量 permission_mode 模块，由
+Front 和配置保存端共用，旧模块继续导出该符号。运行时 enabled is True 的判定不变。
+
+新增 8 组非布尔与边界取值、1 组后续字段异常用例；修复前每分支 6 失败、17 通过，
+修复后权限专项每分支 23 项全部通过。组合回归 28 项通过；10 项 Gateway 配置路由测试仍因旧协议覆盖层缺少 MULTIMODAL_MODELS_LIST 失败，与发布前上游基线对照的失败集合及原因相同。
+真实 YAML 测试继续验证 YAMLError，但不再要求整个查询过程只记录一次 warning，
+避免把无关配置字段的后续日志绑定到该用例。原有 mock 读取失败及后续字段异常测试
+已经覆盖 get_panel 的外层回退，无需再增加重复的异常测试。
+环境和锁定依赖限制沿用前述记录；本轮原始反馈、红绿测试日志和 JUnit 位于
+approval-refresh-20261112/pr-feedback-6541/，未运行格式化或静态检查。
+
 PR 发布前重放到上游基线 36992b5c77657efeeb92ae4be7318dbd3f0f096e，保留上游新 CUA 接口；此前 29 项通过结果仅对应重放前基线。
 当前协议锁定 267c077fa832b25f7f64a913461c2124353bc911，Gateway 锁定 ae0b8c085d61f35542b411196f1246701b7e4e78；锁定协议取源失败。
 当前 Gateway 加旧 cbbadde 协议覆盖层下，19 项通过、10 项配置路由测试因缺少 MULTIMODAL_MODELS_LIST 失败；同环境上游基线也有完全相同的 10 项失败。

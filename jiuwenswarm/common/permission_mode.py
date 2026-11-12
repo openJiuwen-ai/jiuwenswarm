@@ -42,6 +42,14 @@ def permission_profile(permission_config: object) -> str:
     return "automatic" if is_auto_permission_mode(permission_config) else "default"
 
 
+def canonical_permission_facade(profile: str) -> dict[str, str]:
+    """Project both Web permission fields from the same canonical profile."""
+    return {
+        "permissions_profile": profile,
+        "permissions_enabled": "false" if profile == "full_access" else "true",
+    }
+
+
 def is_permission_boundary_enabled(permission_config: Mapping[str, Any]) -> bool:
     """Return whether the permission boundary is explicitly enabled."""
     return permission_config.get("enabled") is True
