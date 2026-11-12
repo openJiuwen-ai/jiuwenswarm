@@ -162,6 +162,22 @@ class TestMigrateLegacyObservabilityConfig:
         assert config == {"observability": {}}
 
 
+    @staticmethod
+    def test_conflict_warning_never_logs_values(caplog):
+        config = _legacy_config(
+            team=_legacy_section(enabled=True, service_name="jiuwenswarm", langfuse_secret_key="sk-team-secret"),
+            agent=_legacy_section(enabled=True, service_name="jiuwenswarm-agent", langfuse_secret_key="sk-agent-secret"),
+        )
+
+        with caplog.at_level("WARNING"):
+            migrate_legacy_observability_config(config)
+
+        assert "langfuse_secret_key differs" in caplog.text
+        assert "sk-team-secret" not in caplog.text
+        assert "sk-agent-secret" not in caplog.text
+        assert config["observability"]["langfuse_secret_key"] == "sk-team-secret"
+
+
 class TestResolveObservabilitySection:
     @staticmethod
     def test_canonical_section_is_returned_as_is():
@@ -186,6 +202,28 @@ class TestResolveObservabilitySection:
         assert "team_observability" in config
         assert "observability" not in config
         assert caplog.text.count("deprecated") == 1
+
+    @staticmethod
+    def test_runtime_conflict_warnings_are_logged_once(caplog):
+        config = _legacy_config(
+            team={"enabled": True, "endpoint": "http://a:4317"},
+            agent={"enabled": False, "endpoint": "http://b:4317"},
+        )
+
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                section = resolve_observability_section(config)
+
+        assert section["endpoint"] == "http://a:4317"
+        assert caplog.text.count("endpoint differs") == 1
+
+    @staticmethod
+    def test_canonical_config_never_logs_deprecation(caplog):
+        with caplog.at_level("WARNING"):
+            resolve_observability_section({"observability": {"agent": {"enabled": True}}})
+
+        assert "deprecated" not in caplog.text
+        assert observability_config._legacy_warning_emitted is False
 
     @staticmethod
     def test_missing_section_resolves_to_disabled():

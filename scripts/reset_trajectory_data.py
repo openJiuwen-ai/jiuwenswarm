@@ -7,8 +7,8 @@ removes what a workspace holds of it:
 * the web trajectory session databases (``trajectory_ui.db_path``, by default
   ``<workspace>/.trace/sessions``), with their WAL sidecars;
 * the file exporter's ``traces-*.jsonl`` under the default ``<workspace>/.trace``
-  and under the ``observability`` ``traces_dir`` (legacy ``agent_observability`` /
-  ``team_observability`` sections are read through the same migration).
+  and under the ``observability`` ``traces_dir`` (plus each legacy
+  ``agent_observability`` / ``team_observability`` ``traces_dir`` still present).
 
 Evolution trajectory archives and RSI role trajectories live outside the
 workspace; pass them with ``--extra``. Langfuse data is never touched.
@@ -28,6 +28,7 @@ import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
+
 
 def _load_config() -> Mapping[str, Any]:
     try:
@@ -54,12 +55,22 @@ def _session_root(config: Mapping[str, Any], workspace: Path) -> Path:
 
 def _trace_dirs(config: Mapping[str, Any], workspace: Path) -> list[Path]:
     directories = [workspace / ".trace"]
-    from jiuwenswarm.common.observability_config import resolve_observability_section
+    from jiuwenswarm.common.observability_config import (
+        LEGACY_AGENT_OBSERVABILITY_KEY,
+        LEGACY_TEAM_OBSERVABILITY_KEY,
+        resolve_observability_section,
+    )
 
-    configured = str(resolve_observability_section(config).get("traces_dir") or "").strip()
-    if configured:
-        path = Path(configured).expanduser()
-        directories.append(path if path.is_absolute() else workspace / path)
+    # The migrated section holds one traces_dir. A config still carrying both
+    # legacy sections may have written traces to two different directories, so
+    # each legacy value is cleaned as well.
+    sections: list[Any] = [resolve_observability_section(config)]
+    sections.extend(config.get(key) for key in (LEGACY_TEAM_OBSERVABILITY_KEY, LEGACY_AGENT_OBSERVABILITY_KEY))
+    for section in sections:
+        configured = str(section.get("traces_dir") or "").strip() if isinstance(section, Mapping) else ""
+        if configured:
+            path = Path(configured).expanduser()
+            directories.append(path if path.is_absolute() else workspace / path)
     return list(dict.fromkeys(directories))
 
 
