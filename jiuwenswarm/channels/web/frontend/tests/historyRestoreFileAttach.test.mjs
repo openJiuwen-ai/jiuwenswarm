@@ -171,19 +171,32 @@ test('a file after a system message becomes a standalone card', () => {
   assert.deepEqual(names(last), ['after-error.txt']);
 });
 
-test('a file after a proactive recommendation card becomes a standalone card', () => {
+test('a file after a goal completion card becomes a standalone card', () => {
   const messages = restore([
-    user('u1', T, '推荐点东西'),
-    final('p', T + 1, '推荐内容', { source: 'proactive_recommendation' }),
-    file('f', T + 2, ['推荐产物.txt']),
+    user('u1', T, '第一轮'),
+    final('f1', T + 1, '第一轮总结'),
+    user('u2', T + 2, '设个目标'),
+    final('g', T + 3, 'goal.completed:{"evidence":"目标达成"}'),
+    file('f', T + 4, ['目标产物.txt']),
   ]);
 
-  const proactive = messages.find((message) => message.id === 'p');
-  assert.equal(proactive.isProactiveRecommendation, true);
-  assert.equal(proactive.fileItems, undefined);
-  const last = messages[messages.length - 1];
-  assert.ok(last.id.startsWith('hist-file-'));
-  assert.deepEqual(names(last), ['推荐产物.txt']);
+  const goalCard = messages.find((message) => message.id === 'g');
+  assert.ok(goalCard);
+  assert.equal(goalCard.content.startsWith('goal.completed:'), true);
+  assert.equal(goalCard.fileItems, undefined);
+
+  const standalone = messages.find((message) => message.id.startsWith('hist-file-'));
+  assert.ok(standalone);
+  assert.deepEqual(names(standalone), ['目标产物.txt']);
+  assert.ok(
+    messages.indexOf(standalone) > messages.findIndex((message) => message.content === '设个目标'),
+    'file card must sit after the second user message',
+  );
+  assert.ok(
+    messages.indexOf(standalone) < messages.indexOf(goalCard),
+    'file card must sit before the goal card that is sunk to the turn end',
+  );
+  assert.equal(messages.find((message) => message.content === '第一轮总结').fileItems, undefined);
 });
 
 test('team leader bubbles still host file cards', () => {
@@ -225,15 +238,6 @@ test('only bubbles that render file items can host chat.file', () => {
   );
   assert.equal(
     canMessageHostFileItems({ role: 'assistant', id: 'goal', content: 'goal.completed:{}' }),
-    false,
-  );
-  assert.equal(
-    canMessageHostFileItems({
-      role: 'assistant',
-      id: 'proactive',
-      content: 'x',
-      isProactiveRecommendation: true,
-    }),
     false,
   );
   assert.equal(canMessageHostFileItems({ role: 'system', id: 'sys', content: 'x' }), false);
