@@ -62,16 +62,23 @@ class LastIterationFinalizeRail(DeepAgentRail):
             if not tool_calls:
                 return
 
+        # 临时手段：``max_iterations_reached`` 前缀是给下游按文本归类错误用的标记。
+        # 本改动已把 finish_reason 透传为 chat.error.code，但现网下游分类器尚无
+        # 按 errorCode == "max_iterations" 的精确分支，仍依赖正则
+        # /max iterations reached|max_iterations_reached/i 命中文案，故前缀暂留。
+        # Web 展示路径会剥离该前缀，避免英文标记暴露给终端用户。
+        # 移除条件：待下游分类器增加该 code 分支后，删除此前缀，恢复纯中文/英文用户文案。
         if self._language == "en":
             output = (
-                f"The maximum number of reasoning iterations "
-                f"({iteration}/{max_iterations}) was reached and the task did "
-                "not complete.\nNarrow the task scope or provide the missing data "
-                "source, then retry."
+                "max_iterations_reached: The maximum number of reasoning "
+                f"iterations ({iteration}/{max_iterations}) was reached and the "
+                "task did not complete.\nNarrow the task scope or provide the "
+                "missing data source, then retry."
             )
         else:
             output = (
-                f"已达到最大思考轮数（{iteration}/{max_iterations}），任务未完成。\n"
+                f"max_iterations_reached：已达到最大思考轮数"
+                f"（{iteration}/{max_iterations}），任务未完成。\n"
                 "建议：缩小任务范围，或补充数据源后重试。"
             )
 

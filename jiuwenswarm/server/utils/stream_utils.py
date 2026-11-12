@@ -60,6 +60,49 @@ def build_tool_result_payload(result_info: Any) -> dict[str, Any]:
     return result_payload
 
 
+_PLACEHOLDER_FINISH_REASONS = frozenset({"", "null", "none"})
+
+
+def _structured_error_code(source: Any) -> str | None:
+    """Derive the structured error code to forward on a ``chat.error`` frame.
+
+    Downstream consumers read ``payload.code`` to classify the failure; without
+    it, a failure may fall through to ``unknown`` / OA.05000090. Precedence: explicit
+    ``code`` > ``error_code`` > ``finish_reason`` (placeholder values such as
+    ``"null"`` are ignored) > legacy ``soft_stop_recovery_exhausted`` flag.
+    """
+    if not isinstance(source, dict):
+        return None
+    for field in ("code", "error_code", "finish_reason"):
+        value = source.get(field)
+        if (
+            isinstance(value, str)
+            and value.strip()
+            and value.strip().lower() not in _PLACEHOLDER_FINISH_REASONS
+        ):
+            return value
+    if source.get("soft_stop_recovery_exhausted"):
+        return "soft_stop_recovery_exhausted"
+    return None
+
+
+def build_chat_error_event(source: Any, message: Any) -> dict[str, Any]:
+    """Assemble a ``chat.error`` event, forwarding structured error metadata.
+
+    Upstream error chunks carry the human-readable message plus structured fields
+    (``code`` / ``error_code`` / ``finish_reason``). Those fields are forwarded as
+    ``payload.code`` so downstream classifiers can map a failure to a precise
+    error kind; dropping them — e.g. ``finish_reason="max_iterations"``
+    from ``last_iteration_finalize_rail`` — makes the failure fall through to
+    ``unknown`` / OA.05000090 instead of a proper max-iterations message.
+    """
+    event: dict[str, Any] = {"event_type": "chat.error", "error": message}
+    code = _structured_error_code(source)
+    if code:
+        event["code"] = code
+    return event
+
+
 def _propagate_stream_source_id(src_payload: Any) -> dict[str, Any]:
     """从上游 payload 提取 stream_source_id（skill_turbo 并发节点用它标识 source）。
 
@@ -317,20 +360,14 @@ def _parse_dict_chunk(
     if "output" in chunk:
         result_type = chunk.get("result_type", "")
         if result_type == "error":
-            return {
-                "event_type": "chat.error",
-                "error": chunk.get("output", ""),
-            }
+            return build_chat_error_event(chunk, chunk.get("output", ""))
         output = chunk.get("output")
         if isinstance(output, dict) and output.get("result_type") == "error":
             logger.warning(
                 "[stream_utils] nested_error_chunk_detected output.result_type=error output=%s",
                 output.get("output", ""),
             )
-            return {
-                "event_type": "chat.error",
-                "error": output.get("output", ""),
-            }
+            return build_chat_error_event(output, output.get("output", ""))
         output = chunk.get("output", "")
         if _is_absent_stream_text(output, preserve_whitespace=preserve_whitespace):
             return None
@@ -565,20 +602,14 @@ def _parse_typed_chunk(
     if chunk_type == "answer":
         if isinstance(payload, dict):
             if payload.get("result_type") == "error":
-                return {
-                    "event_type": "chat.error",
-                    "error": payload.get("output", "未知错误"),
-                }
+                return build_chat_error_event(payload, payload.get("output", "未知错误"))
             output = payload.get("output", {})
             if isinstance(output, dict) and output.get("result_type") == "error":
                 logger.warning(
                     "[stream_utils] nested_answer_error_detected output.result_type=error output=%s",
                     output.get("output", "未知错误"),
                 )
-                return {
-                    "event_type": "chat.error",
-                    "error": output.get("output", "未知错误"),
-                }
+                return build_chat_error_event(output, output.get("output", "未知错误"))
             content = (
                 output.get("output", "")
                 if isinstance(output, dict)
@@ -648,7 +679,7 @@ def _parse_typed_chunk(
             if isinstance(payload, dict)
             else str(payload)
         )
-        return {"event_type": "chat.error", "error": error_msg}
+        return build_chat_error_event(payload, error_msg)
 
     if chunk_type == "retry_notification":
         if isinstance(payload, dict):
@@ -1103,20 +1134,14 @@ def _parse_response_chunk(
         if "output" in payload:
             result_type = payload.get("result_type", "")
             if result_type == "error":
-                return {
-                    "event_type": "chat.error",
-                    "error": payload.get("output", ""),
-                }
+                return build_chat_error_event(payload, payload.get("output", ""))
             output = payload.get("output")
             if isinstance(output, dict) and output.get("result_type") == "error":
                 logger.warning(
                     "[stream_utils] nested_response_error_detected output.result_type=error output=%s",
                     output.get("output", ""),
                 )
-                return {
-                    "event_type": "chat.error",
-                    "error": output.get("output", ""),
-                }
+                return build_chat_error_event(output, output.get("output", ""))
             content = payload.get("output", "")
             # Default: keep historical no-filter behavior for AgentResponseChunk.
             # Team (preserve_whitespace=True): only drop absent/empty text.

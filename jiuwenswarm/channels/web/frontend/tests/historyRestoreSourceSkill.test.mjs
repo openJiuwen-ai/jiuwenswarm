@@ -23,6 +23,31 @@ test('history replay restores failed turns as system error messages', () => {
   assert.equal(messages[4].content, 'retry succeeded');
 });
 
+test('history replay strips transitional max_iterations_reached prefix on chat.error', () => {
+  const { messages } = parseHistoryJsonFileToTimelinePreview([
+    { role: 'user', content: 'long task', timestamp: 1757801000 },
+    {
+      role: 'assistant',
+      event_type: 'chat.error',
+      error: 'max_iterations_reached：已达到最大思考轮数（100/100），任务未完成。',
+      timestamp: 1757801001,
+    },
+    {
+      role: 'assistant',
+      event_type: 'chat.error',
+      event_payload: { error: 'max_iterations_reached: Max iterations reached (100/100).' },
+      timestamp: 1757801002,
+    },
+  ], 'prefix-session');
+  assert.equal(messages.length, 3);
+  assert.equal(messages[1].role, 'system');
+  assert.match(messages[1].content, /已达到最大思考轮数（100\/100），任务未完成。/);
+  assert.doesNotMatch(messages[1].content, /max_iterations_reached/i);
+  assert.equal(messages[2].role, 'system');
+  assert.match(messages[2].content, /Max iterations reached \(100\/100\)\./);
+  assert.doesNotMatch(messages[2].content, /max_iterations_reached/i);
+});
+
 // 历史记录字段对齐 pod 本地 history.json 的落盘结构：chat.tool_call 事件把
 // tool_call（含 source_skill）展平在 extra 里（interface.py _append_history_record）。
 const TOOL_CALL_WITH_SOURCE_SKILL = {

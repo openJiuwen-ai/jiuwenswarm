@@ -60,6 +60,7 @@ import {
   RUNTIME_SCOPE_CHANGED_EVENT,
 } from '../services/runtimeScope';
 import { getWebTransport } from '../utils/env';
+import { stripTransitionalErrorPrefix } from '../utils/stripTransitionalErrorPrefix';
 import { isEnterprise } from '../edition';
 import {
   SWARM_SKILL_FORBIDDEN_WHEN_TEAM_BOUND,
@@ -4151,8 +4152,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
         useChatStore.getState().setThinking(sessionId, false);
+        // chat.error 可能携带 max_iterations_reached 前缀（给下游按文本归类的过渡标记）。
+        // 展示时剥离，避免英文技术标记暴露给终端用户；原始 error/code 仍随事件保留，不影响下游分类。
         const rawError =
-          typeof payload.error === 'string' ? payload.error : t('network.unknownError');
+          typeof payload.error === 'string'
+            ? stripTransitionalErrorPrefix(payload.error)
+            : t('network.unknownError');
         const swarmCode = resolveSwarmSkillErrorCode({
           code: typeof payload.code === 'string' ? payload.code : undefined,
           payload,
