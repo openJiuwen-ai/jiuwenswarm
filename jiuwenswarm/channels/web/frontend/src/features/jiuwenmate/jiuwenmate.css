@@ -4302,6 +4302,11 @@
   cursor: pointer;
 }
 
+.jiuwenmate-model-card button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .jiuwenmate-model-card button svg {
   width: 14px;
   height: 14px;
