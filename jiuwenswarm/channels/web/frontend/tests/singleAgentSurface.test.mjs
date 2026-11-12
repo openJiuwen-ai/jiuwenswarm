@@ -793,3 +793,34 @@ test('diagnosis sub-page folds finished stages and offers record management', ()
   assert.match(select, /trajectory-diagnosis-record-search/);
   assert.match(select, /trajectory-diagnosis-record-delete-confirm/);
 });
+
+test('switching sessions drops a stale archive error and notice', () => {
+  const panelSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  // A failed import or a replay-mode notice belongs to the session that raised
+  // it. The session-change branch resets the reader, so both banners must be
+  // cleared inside that branch, not only when a later import/export/exit
+  // happens to run. Slice the branch out first: a plain `[\s\S]*?` would reach
+  // the import/export handlers that also call these setters.
+  const start = panelSource.indexOf('if (sessionChanged) {');
+  assert.notEqual(start, -1, 'session-change branch not found');
+  let depth = 0;
+  let end = -1;
+  for (let index = panelSource.indexOf('{', start); index < panelSource.length; index += 1) {
+    const char = panelSource[index];
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        end = index;
+        break;
+      }
+    }
+  }
+  assert.notEqual(end, -1, 'session-change branch does not close');
+  const branch = panelSource.slice(start, end);
+  assert.match(branch, /setArchiveError\(null\)/);
+  assert.match(branch, /setArchiveNotice\(null\)/);
+});
