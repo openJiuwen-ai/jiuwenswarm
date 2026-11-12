@@ -59,6 +59,7 @@ import {
   RUNTIME_SCOPE_CHANGED_EVENT,
 } from '../services/runtimeScope';
 import { getWebTransport } from '../utils/env';
+import { stripTransitionalErrorPrefix } from '../utils/stripTransitionalErrorPrefix';
 import { isEnterprise } from '../edition';
 import {
   clearStaleCronPermissionPrompt,
@@ -4057,7 +4058,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // 展示时剥离，避免英文技术标记暴露给终端用户；原始 error/code 仍随事件保留，不影响下游分类。
         const rawError =
           typeof payload.error === 'string'
-            ? payload.error.replace(/^max_iterations_reached[:：]?\s*/i, '')
+            ? stripTransitionalErrorPrefix(payload.error)
             : t('network.unknownError');
         const errorMsg = isWorkspaceQuotaError(payload)
           ? t('multiSession.errors.quotaExceeded')
