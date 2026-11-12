@@ -1899,6 +1899,7 @@
   },
   "chat": {
     "recordingInProgress": "Recording. Select Stop to transcribe.",
+    "toolResultLabel": "Tool result",
     "duplexControls": {
       "sharingVideo": "WorkSwarm is receiving shared video",
       "screenOrWindow": "Screen or window",
@@ -2266,7 +2267,8 @@
     "empty": "No tasks",
     "inProgress": "In progress",
     "pending": "Pending",
-    "completed": "Completed"
+    "completed": "Completed",
+    "cancelled": "Cancelled"
   },
   "plan": {
     "toolbarTag": "Plan",
