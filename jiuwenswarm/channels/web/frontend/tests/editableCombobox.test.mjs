@@ -44,6 +44,18 @@ async function mount({ top, height = 600, count = 20 }) {
   };
 }
 
+function measureList(list, { height = 90, padding = 0 } = {}) {
+  Object.defineProperty(list, 'clientHeight', { value: height });
+  Object.defineProperty(list, 'clientTop', { value: 1 });
+  list.getBoundingClientRect = () => ({ top: 100, bottom: 102 + height });
+  for (const [index, row] of Array.from(list.children).entries()) {
+    row.getBoundingClientRect = () => {
+      const top = 101 + padding + index * 30 - list.scrollTop;
+      return { top, bottom: top + 30 };
+    };
+  }
+}
+
 test('opens upward near the viewport bottom and keeps every Agent selectable', async () => {
   const view = await mount({ top: 520 });
   try {
@@ -91,11 +103,7 @@ test('repositions on resize and ancestor scroll, then removes listeners on close
 test('keyboard navigation scrolls the active Agent into the list viewport', async () => {
   const view = await mount({ top: 520 });
   try {
-    Object.defineProperty(view.list, 'clientHeight', { value: 90 });
-    for (const [index, option] of Array.from(view.list.children).entries()) {
-      Object.defineProperty(option, 'offsetTop', { value: index * 30 });
-      Object.defineProperty(option, 'offsetHeight', { value: 30 });
-    }
+    measureList(view.list);
     const input = view.container.querySelector('input');
     for (let index = 0; index < 10; index++) {
       await act(async () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
@@ -103,6 +111,28 @@ test('keyboard navigation scrolls the active Agent into the list viewport', asyn
     assert.equal(view.list.scrollTop, 240);
     await act(async () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     assert.deepEqual(view.changes, ['agent-10']);
+  } finally { await view.close(); }
+});
+
+test('keyboard scrolling respects panel borders and padding without moving its ancestor', async () => {
+  const view = await mount({ top: 520 });
+  try {
+    measureList(view.list, { padding: 4 });
+    view.container.scrollTop = 45;
+    const input = view.container.querySelector('input');
+    const press = async key => act(async () => input.dispatchEvent(
+      new window.KeyboardEvent('keydown', { key, bubbles: true }),
+    ));
+    await press('ArrowDown');
+    assert.equal(view.list.scrollTop, 0, 'a fully visible option needs no scrolling');
+    for (let index = 1; index < 10; index++) await press('ArrowDown');
+    assert.equal(view.list.scrollTop, 244);
+    for (let index = 0; index < 10; index++) await press('ArrowUp');
+    assert.equal(view.list.scrollTop, 4);
+    assert.equal(view.container.scrollTop, 45);
+    assert.deepEqual(view.changes, []);
+    await press('Escape');
+    assert.equal(view.list, null);
   } finally { await view.close(); }
 });
 

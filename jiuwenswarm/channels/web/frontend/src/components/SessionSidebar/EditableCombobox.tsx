@@ -66,14 +66,16 @@ export function EditableCombobox({
   }, [open, disabled, filteredOptions]);
 
   useLayoutEffect(() => {
-    const list = listRef.current;
-    const option = list?.children[activeIndex] as HTMLElement | undefined;
-    if (!list || !option) return;
-    // Scroll only the options, without moving the page or the user popover.
-    if (option.offsetTop < list.scrollTop) list.scrollTop = option.offsetTop;
-    else if (option.offsetTop + option.offsetHeight > list.scrollTop + list.clientHeight) {
-      list.scrollTop = option.offsetTop + option.offsetHeight - list.clientHeight;
-    }
+    const panel = listRef.current;
+    const activeRow = panel?.children.item(activeIndex);
+    if (!panel || !(activeRow instanceof HTMLElement)) return;
+    const rowBounds = activeRow.getBoundingClientRect();
+    const contentTop = panel.getBoundingClientRect().top + panel.clientTop;
+    // Measure both edges in viewport coordinates; move only the list itself.
+    const clippedAbove = Math.min(0, rowBounds.top - contentTop);
+    const clippedBelow = Math.max(0, rowBounds.bottom - contentTop - panel.clientHeight);
+    const adjustment = clippedAbove < 0 ? clippedAbove : clippedBelow;
+    if (adjustment !== 0) panel.scrollTop += adjustment;
   }, [open, activeIndex, filteredOptions, listLayout.maxHeight]);
 
   useEffect(() => {
