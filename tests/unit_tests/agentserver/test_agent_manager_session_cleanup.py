@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -117,6 +118,31 @@ async def test_concurrent_get_agent_creates_one_cached_root() -> None:
 
     assert manager.create_count == 1
     assert first_agent is second_agent
+
+
+@pytest.mark.asyncio
+async def test_projectless_sessions_use_distinct_agent_instances() -> None:
+    manager = _SlowCreateAgentManager()
+    manager.allow_create.set()
+
+    first = await manager.get_agent("web", "agent", None, session_id="session-a")
+    second = await manager.get_agent("web", "agent", None, session_id="session-b")
+    first_again = await manager.get_agent("web", "agent", None, session_id="session-a")
+
+    assert first is first_again
+    assert first is not second
+    assert manager.create_count == 2
+
+
+@pytest.mark.asyncio
+async def test_projectless_session_agent_is_released_after_cleanup() -> None:
+    manager = _SlowCreateAgentManager()
+    manager.allow_create.set()
+    agent = await manager.get_agent("web", "agent", None, session_id="session-a")
+
+    assert await manager.cleanup_session_runtime(channel_id="web", session_id="session-a")
+    assert agent.cleaned is True
+    assert not manager.agents.get("web")
 
 
 @pytest.mark.asyncio
@@ -346,6 +372,29 @@ async def test_release_subagent_runtime_uses_existing_agent_adapter() -> None:
     )
     assert released is True
     assert calls == [("delete-session", "session_deleted")]
+
+
+@pytest.mark.asyncio
+async def test_release_subagent_runtime_targets_projectless_session_owner() -> None:
+    calls: list[str] = []
+
+    class Adapter:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        async def release_subagent_runtime_for_session(self, _session_id: str, *, reason: str) -> None:
+            calls.append(self.label)
+
+    manager = AgentManager()
+    manager.agents["web"] = {
+        "agent:::session:session-a": SimpleNamespace(_adapter=Adapter("a")),
+        "agent:::session:session-b": SimpleNamespace(_adapter=Adapter("b")),
+    }
+
+    assert await manager.release_subagent_runtime_for_session(
+        channel_id="web", session_id="session-b", reason="session_deleted",
+    )
+    assert calls == ["b"]
 
 
 @pytest.mark.asyncio

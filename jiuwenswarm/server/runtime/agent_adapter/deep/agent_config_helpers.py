@@ -154,7 +154,7 @@ def _try_add_cache_control(msg: Any) -> None:
     where content is ``Union[str, List[Union[str, dict]]]``). If the last block
     is a dict, we add ``cache_control: {"type": "ephemeral"}`` to it.
 
-    Mark the last pre-prompt message for prompt caching, 
+    Mark the last pre-prompt message for prompt caching,
     while the btw/recap prompt itself carries no marker
     (skipCacheWrite — the side response doesn't create a new cache entry).
 

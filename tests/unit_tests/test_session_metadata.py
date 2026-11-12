@@ -2863,5 +2863,11 @@ def test_remove_team_mode_session_dirs_at_startup_keeps_stable_team_sessions(
     assert (sessions_dir / "stable_team").exists()
     assert (sessions_dir / "stable_plan").exists()
     assert (sessions_dir / "stable_code").exists()
-    assert not (sessions_dir / "temp_team").exists()
+    # v2: keep chat dir; clear temporary flags without sticky cold reopen.
+    assert (sessions_dir / "temp_team").exists()
     assert (sessions_dir / "agent_temp").exists()
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    temp_meta = get_session_metadata("temp_team", cache_bust=True, sessions_root=sessions_dir)
+    assert temp_meta.get("team_cold_reopen_required") is not True
+    assert not bool(temp_meta.get("temporary_team_session"))

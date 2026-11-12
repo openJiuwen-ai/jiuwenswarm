@@ -114,16 +114,19 @@ def test_member_policy_switches_to_native_once_pixels_sent() -> None:
 
 
 def test_leader_and_single_agent_get_no_path_guidance() -> None:
-    """leader（dispatch_hint）/ 单 agent（未绑定清单）没有像素时不写该段。"""
+    """leader（dispatch_hint）/ 单 agent（未绑定清单）没有像素时不写成员路径引导段。
+
+    合并 feat/native-multimodal 后：主代理/leader 0 张时写「能力 + read_file
+    取回路径」能力段；成员专用路径引导（含 VQA/OCR 禁令）仍只对 team 成员生效。
+    """
 
     for rail in (
         MultimodalImageRail(enable_image_multimodal=True, dispatch_hint=True, image_files=_MANIFEST),
         MultimodalImageRail(enable_image_multimodal=True),
     ):
-        builder = _RecordingPromptBuilder()
-        rail.init(SimpleNamespace(system_prompt_builder=builder))
-        rail._sync_image_policy_section(True, 0)
-        assert "multimodal_image_policy" not in builder.sections
+        text = _policy_text(rail, images_sent=0)
+        assert "read_file" in text
+        assert "不要调用 visual_question_answering" not in text
 
 
 def test_leader_dispatch_hint_tells_how_to_forward_reference_line() -> None:
@@ -139,16 +142,18 @@ def test_leader_dispatch_hint_tells_how_to_forward_reference_line() -> None:
 
 
 def test_dispatch_hint_absent_by_default_and_without_images() -> None:
-    """默认（teammate / 单 agent）不写转发提示；0 张图时整段策略也不写。"""
+    """默认（teammate / 单 agent）不写转发提示；0 张图时写能力段（含取回路径）。"""
 
     rail = MultimodalImageRail(enable_image_multimodal=True)
     text = _policy_text(rail)
     assert "任务看板" not in text
 
-    builder = _RecordingPromptBuilder()
-    rail.init(SimpleNamespace(system_prompt_builder=builder))
-    rail._sync_image_policy_section(True, 0)
-    assert "multimodal_image_policy" not in builder.sections
+    text_no_images = _policy_text(rail, images_sent=0)
+    assert "任务看板" not in text_no_images
+    # 合并 feat/native-multimodal：0 张时主代理拿能力段（read_file 取回路径），
+    # 而非成员段、也非转发提示。
+    assert "read_file" in text_no_images
+    assert "不要调用 visual_question_answering" not in text_no_images
 
 
 _MANIFEST = [

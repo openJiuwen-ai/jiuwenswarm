@@ -45,9 +45,12 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
 from jiuwenswarm.server.runtime.session.session_history import append_compact_history_records
 from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata
 from jiuwenswarm.server.wire_truncate import (
+    _build_workflow_agent_payload,
     _build_workflow_detail_payload,
     _build_workflow_human_prompt_payload,
     _build_workflow_list_payload,
+    _build_workflow_phase_payload,
+    _coerce_int,
     _json_wire_size,
 )
 
@@ -292,12 +295,128 @@ async def handle_command_workflows(ctx: RequestContext) -> None:
                     ok="error" not in prompt_payload,
                     payload=prompt_payload,
                 )
-    else:
+    elif action == "get_phase":
+        phase_id = params.get("phase_id")
+        phase_id_str = phase_id.strip() if isinstance(phase_id, str) and phase_id.strip() else ""
+        if not isinstance(workflow_id, str) or not workflow_id.strip():
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=False,
+                payload={"error": "workflow_id is required for action=get_phase"},
+            )
+        elif not phase_id_str:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=False,
+                payload={"error": "phase_id is required for action=get_phase"},
+            )
+        else:
+            target_id = workflow_id.strip()
+            match = next(
+                (item for item in workflows if isinstance(item, dict) and item.get("id") == target_id),
+                None,
+            )
+            if match is None:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload={"error": f"workflow not found: {target_id}"},
+                )
+            else:
+                agent_offset = _coerce_int(
+                    params.get("agent_offset"), default=0, minimum=0, maximum=1_000_000
+                )
+                raw_limit = params.get("agent_limit")
+                agent_limit = (
+                    None
+                    if raw_limit is None or raw_limit == ""
+                    else _coerce_int(raw_limit, default=500, minimum=1, maximum=2000)
+                )
+                phase_payload = _build_workflow_phase_payload(
+                    match,
+                    session_id=session_id,
+                    phase_id=phase_id_str,
+                    agent_offset=agent_offset,
+                    agent_limit=agent_limit,
+                )
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok="error" not in phase_payload,
+                    payload=phase_payload,
+                )
+    elif action == "get_agent":
+        phase_id = params.get("phase_id")
+        agent_id = params.get("agent_id")
+        phase_id_str = phase_id.strip() if isinstance(phase_id, str) and phase_id.strip() else ""
+        agent_id_str = agent_id.strip() if isinstance(agent_id, str) and agent_id.strip() else ""
+        if not isinstance(workflow_id, str) or not workflow_id.strip():
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=False,
+                payload={"error": "workflow_id is required for action=get_agent"},
+            )
+        elif not phase_id_str:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=False,
+                payload={"error": "phase_id is required for action=get_agent"},
+            )
+        elif not agent_id_str:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=False,
+                payload={"error": "agent_id is required for action=get_agent"},
+            )
+        else:
+            target_id = workflow_id.strip()
+            match = next(
+                (item for item in workflows if isinstance(item, dict) and item.get("id") == target_id),
+                None,
+            )
+            if match is None:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload={"error": f"workflow not found: {target_id}"},
+                )
+            else:
+                agent_payload = _build_workflow_agent_payload(
+                    match,
+                    session_id=session_id,
+                    phase_id=phase_id_str,
+                    agent_id=agent_id_str,
+                )
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok="error" not in agent_payload,
+                    payload=agent_payload,
+                )
+    elif action == "list":
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=channel_id,
             ok=True,
             payload=_build_workflow_list_payload(workflows, session_id=session_id),
+        )
+    else:
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=False,
+            payload={
+                "type": "workflow_command_error",
+                "action": action,
+                "error": f"unsupported action: {action}",
+            },
         )
 
     payload = resp.payload if isinstance(resp.payload, dict) else {}
@@ -427,6 +546,7 @@ async def handle_command_compact(ctx: RequestContext) -> None:
                 mode=agent_mode,
                 project_dir=resolve_request_project_dir(request),
                 sub_mode=sub_mode,
+                session_id=session_id,
             )
 
         if agent is None:
@@ -555,6 +675,7 @@ async def handle_command_compact_partial(ctx: RequestContext) -> None:
             mode=agent_mode,
             project_dir=resolve_request_project_dir(request),
             sub_mode=sub_mode,
+            session_id=session_id,
         )
 
         if agent is None:
@@ -603,6 +724,7 @@ async def handle_command_context(ctx: RequestContext) -> None:
             mode=agent_mode,
             project_dir=resolve_request_project_dir(request),
             sub_mode=sub_mode,
+            session_id=session_id,
         )
 
         if agent is None:
@@ -643,6 +765,7 @@ async def handle_command_recap(ctx: RequestContext) -> None:
             mode=agent_mode,
             project_dir=resolve_request_project_dir(request),
             sub_mode=sub_mode,
+            session_id=session_id,
         )
 
         if agent is None:
@@ -715,6 +838,7 @@ async def handle_command_btw(ctx: RequestContext) -> None:
             mode=agent_mode,
             project_dir=resolve_request_project_dir(request),
             sub_mode=sub_mode,
+            session_id=session_id,
         )
 
         if agent is None:

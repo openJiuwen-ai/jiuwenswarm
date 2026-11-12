@@ -82,7 +82,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("team.bindings.list", "GET", "/teams/bindings"),
     ("team.binding.create", "POST", "/teams/bindings"),
     ("team.binding.generate", "POST", "/teams/bindings/actions/generate"),
+    # Default map row for dynamic open (no path team_name). Legacy path is
+    # selected in assemble_rest_request when params.team_name is present.
     ("team.session.bind", "POST", "/teams/{team_name}/sessions/{session_id}/bind"),
+    ("team.runtime.dissolve", "POST", "/sessions/{session_id}/team/runtime/dissolve"),
     ("team.snapshot", "GET", "/sessions/{session_id}/team/snapshot"),
     ("team.members.get", "GET", "/sessions/{session_id}/team/members"),
     ("team.history.get", "GET", "/sessions/{session_id}/team/history"),
@@ -237,6 +240,9 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
 
 REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb, path in _ROUTE_ROWS}
 
+# team.session.bind requires team_name (v2); map to the legacy URL shape.
+_TEAM_SESSION_BIND_PATH = "/teams/{team_name}/sessions/{session_id}/bind"
+
 
 class RestAssemblyError(ValueError):
     """REST 路径无法从信封拼出（缺 method / 缺路径占位符）。"""
@@ -388,6 +394,9 @@ def assemble_rest_request(envelope: E2AEnvelope, *, base_url: str) -> AssembledR
         values.pop("session_id", None)
     elif envelope.session_id and not values.get("session_id"):
         values["session_id"] = envelope.session_id
+
+    if method == "team.session.bind" and not rpc:
+        template = _TEAM_SESSION_BIND_PATH
 
     filled, used = _fill_path(template, values)
     remaining = _remaining_params(values, used)

@@ -2016,6 +2016,14 @@ def get_agent_workspace_dir() -> Path:
     return get_agent_root_dir() / "jiuwenclaw_workspace"
 
 
+def get_projectless_task_registry_dir() -> Path:
+    """Return the private session-to-task registry under the active workspace."""
+    configured = os.environ.get("JIUWENSWARM_TASK_REGISTRY_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (get_agent_workspace_dir() / ".projectless_tasks").resolve()
+
+
 def get_default_project_workspace_dir() -> Path:
     """Get the fallback task workspace used when no project is bound.
 

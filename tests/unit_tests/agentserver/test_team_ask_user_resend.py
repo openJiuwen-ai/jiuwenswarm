@@ -201,6 +201,13 @@ class _ResendTestManager:
     def __init__(self) -> None:
         self._seen: dict[str, bool] = {}
 
+    def get_background_task_controller(self, session_id: str):
+        from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+
+        return self.__dict__.setdefault("_test_controllers", {}).setdefault(
+            session_id, BackgroundTaskController()
+        )
+
     def reset_seen_team_events(self, session_id: str) -> None:
         self._seen.pop(session_id, None)
 

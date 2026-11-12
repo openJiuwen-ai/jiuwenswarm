@@ -154,6 +154,7 @@ async def test_prepare_chat_normalizes_agent_request_for_code_workspace() -> Non
         mode="code",
         project_dir="/tmp/code-project",
         sub_mode="normal",
+        session_id=request.session_id,
     )
 
 
@@ -186,6 +187,7 @@ async def test_prepare_chat_defaults_missing_e2a_work_mode() -> None:
         mode="agent",
         project_dir=None,
         sub_mode=None,
+        session_id=request.session_id,
     )
 
 
@@ -213,6 +215,49 @@ async def test_prepare_chat_defaults_missing_web_work_mode() -> None:
 
     assert (mode, sub_mode, resolved_agent) == ("agent", None, agent)
     assert request.params["work_mode"] == "work"
+
+
+@pytest.mark.asyncio
+async def test_prepare_auto_harness_chat_disables_legacy_project_fallbacks() -> None:
+    agent = MagicMock()
+    manager = MagicMock()
+    manager.get_agent = AsyncMock(return_value=agent)
+    manager.wait_for_session_prewarm = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    request = _chat_request(
+        "sess_auto_harness_projectless",
+        mode="auto_harness",
+        extra_params={"cwd": "/tmp/transient-cwd"},
+    )
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={},
+    ), patch.object(
+        _default,
+        "resolve_request_project_dir",
+        return_value=None,
+    ) as resolve_project_dir:
+        mode, sub_mode, resolved_agent = await _default._prepare_code_mode_chat_turn(
+            _default_ctx(server, request),
+            request,
+            "web",
+            sync_metadata=False,
+        )
+
+    assert (mode, sub_mode, resolved_agent) == ("auto_harness", None, agent)
+    resolve_project_dir.assert_called_once_with(
+        request,
+        include_legacy_fallbacks=False,
+    )
+    manager.get_agent.assert_awaited_once_with(
+        channel_id="web",
+        mode="agent",
+        project_dir=None,
+        sub_mode=None,
+        session_id=request.session_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -285,8 +330,44 @@ async def test_prepare_team_chat_turn_propagates_locked_project_dir() -> None:
         mode="team",
         project_dir="/tmp/locked-project",
         sub_mode=None,
+        session_id=request.session_id,
     )
     manager.wait_for_session_prewarm.assert_awaited_once_with("sess_team_project")
+
+
+@pytest.mark.asyncio
+async def test_prepare_team_chat_keeps_legacy_workspace_fallback() -> None:
+    manager = MagicMock()
+    manager.get_agent = AsyncMock(return_value=MagicMock())
+    manager.wait_for_session_prewarm = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    request = _chat_request(
+        "sess_team_legacy",
+        mode="team",
+        extra_params={"workspace_dir": "/tmp/legacy-team-workspace"},
+    )
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={},
+    ), patch.object(
+        _default,
+        "resolve_request_project_dir",
+        return_value="/tmp/legacy-team-workspace",
+    ) as resolve_project_dir:
+        await _default._prepare_code_mode_chat_turn(
+            _default_ctx(server, request), request, "web", sync_metadata=False,
+        )
+
+    resolve_project_dir.assert_called_once_with(request, include_legacy_fallbacks=True)
+    manager.get_agent.assert_awaited_once_with(
+        channel_id="web",
+        mode="team",
+        project_dir="/tmp/legacy-team-workspace",
+        sub_mode=None,
+        session_id=request.session_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -560,14 +641,18 @@ async def test_prepare_code_mode_chat_turn_uses_injected_agent_manager() -> None
     default_manager.get_agent.assert_not_called()
 
 
-def test_agent_lookup_uses_plan_sub_mode_and_workspace_dir() -> None:
+def test_agent_lookup_uses_plan_sub_mode_and_project_dir() -> None:
     from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
     manager = AgentManager.__new__(AgentManager)
     manager.service_id = "default"
     manager.agent_id = "office"
     request = SimpleNamespace(
-        params={"mode": "code.plan", "workspace_dir": "E:/workspace/demo-project"}
+        params={
+            "mode": "code.plan",
+            "project_dir": "E:/workspace/demo-project",
+            "workspace_dir": "E:/workspace/internal-agent-data",
+        }
     )
     mode, sub_mode, project_dir = manager._agent_lookup_from_request(request)
     assert mode == "code"
@@ -633,6 +718,7 @@ async def test_tenant_interrupt_continuation_restores_code_route_before_defaults
         mode="code",
         project_dir=metadata["project_dir"],
         sub_mode="normal",
+        session_id=request.session_id,
     )
 
 

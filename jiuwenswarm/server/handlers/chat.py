@@ -12,6 +12,7 @@ from weakref import WeakValueDictionary
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_CANCEL_SOURCE_CRON_COMPLETE,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
@@ -348,6 +349,7 @@ async def _handle_cancel(
             mode=agent_mode,
             project_dir=project_dir,
             sub_mode=sub_mode,
+            session_id=request.session_id,
         )
 
     if agent is None and resp is None:
@@ -368,6 +370,19 @@ async def _handle_cancel(
 async def handle_chat_cancel_dispatch(ctx: RequestContext) -> None:
     """处理 chat.interrupt：按 intent 决定是否取消流式任务。"""
     request = ctx.request
+    if (request.metadata or {}).get(E2A_INTERNAL_CANCEL_SOURCE_KEY) == E2A_CANCEL_SOURCE_CRON_COMPLETE:
+        cleaned = await ctx.services.agent_manager.cleanup_session_runtime(
+            channel_id=request.channel_id or "__cron__",
+            session_id=request.session_id,
+        )
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"event_type": "chat.interrupt_result", "success": True, "cleaned": cleaned},
+        )
+        await ctx.sink.send_wire(encode_agent_response_for_wire(response, response_id=request.request_id))
+        return
     # 中断请求：根据 intent 决定是否取消流式任务
     sid = request.session_id or "default"
     intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
@@ -433,10 +448,39 @@ async def handle_chat_cancel_dispatch(ctx: RequestContext) -> None:
 #: 按 session 串行化自动建队。弱引用持有，一次性会话不累积进程级状态。
 
 
-# chat.send的自动team绑定
+def _apply_open_library_on_generated_entity(team_name: str) -> dict[str, Any] | None:
+    """Clear agents.*.skills on a freshly generated entity (Swarm path only).
+
+    Returns the cleared snapshot so callers can freeze it on the session and
+    avoid live-template reconcile restoring preset whitelists.
+    """
+    from jiuwenswarm.server.runtime.swarm_skill_session import clear_member_skill_allow_lists
+    from jiuwenswarm.server.runtime.team_entity_store import get_team_entity_store
+
+    entity_store = get_team_entity_store()
+    entity = entity_store.get(team_name)
+    if entity is None or not isinstance(entity.template_snapshot, dict):
+        return None
+    snapshot = dict(entity.template_snapshot)
+    clear_member_skill_allow_lists(snapshot)
+    entity_store.write(
+        team_name=entity.team_name,
+        template_id=entity.template_id,
+        template_snapshot=snapshot,
+        created_at=entity.created_at,
+    )
+    return snapshot
+
+
+# chat.send 的自动 team 绑定 + Swarm Skill 会话策略（需求 v2）
 async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any | None:
-    """Create and bind a team before the first team chat without consuming its query."""
-    if request.req_method != ReqMethod.CHAT_SEND:
+    """Ensure team binding before team chat; enforce Swarm XOR / open-library SOP.
+
+    - Bound team + Swarm → reject (does not write visibility for ordinary skills).
+    - Unbound + Swarm → idempotent generated bind, empty allow, Leader SOP hint.
+    - Unbound without Swarm → existing Office/dev-stable generated auto-bind.
+    """
+    if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME):
         return None
 
     params = request.params if isinstance(request.params, dict) else {}
@@ -446,11 +490,17 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
     if not session_id:
         return None
 
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
     from jiuwenswarm.server.runtime.session.session_metadata import (
         get_session_metadata,
         update_session_metadata,
     )
-    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.server.runtime.swarm_skill_session import (
+        TEAM_ORIGIN_SESSION_GENERATED,
+        assert_chat_swarm_skill_policy,
+        inject_swarm_sop_into_params,
+        parse_request_skill_ids,
+    )
 
     sessions_root = _sessions_dir_for_request(request)
     metadata = get_session_metadata(
@@ -468,17 +518,58 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
     if not _is_team_metadata_mode({"mode": canonical_mode}):
         return None
 
-    existing_team_name = str(metadata.get("team_name") or "").strip()
+    # XOR / routing identity comes from session metadata only. Client-supplied
+    # params.team_name must not bypass bound-team Swarm rejection or resume
+    # entity checks by pretending a different team is already bound.
+    metadata_team_name = str(metadata.get("team_name") or "").strip()
+    params_team_name = str(params.get("team_name") or "").strip()
+    if (
+        metadata_team_name
+        and params_team_name
+        and params_team_name != metadata_team_name
+    ):
+        logger.warning(
+            "[AgentWebSocketServer] chat team_name mismatch; using metadata: "
+            "session_id=%s params=%s metadata=%s",
+            session_id,
+            params_team_name,
+            metadata_team_name,
+        )
+    existing_team_name = metadata_team_name
+    skill_ids = parse_request_skill_ids(params)
+    swarm_ids, _ordinary_ids = assert_chat_swarm_skill_policy(
+        session_id=session_id,
+        team_name=existing_team_name,
+        skill_ids=skill_ids,
+        metadata=metadata,
+    )
+
+    # Resume continues an existing runtime; policy above still applies.
+    if request.req_method != ReqMethod.CHAT_SEND:
+        if existing_team_name:
+            params["team_name"] = existing_team_name
+        return existing_team_name or None
+
     if existing_team_name:
-        params.setdefault("team_name", existing_team_name)
+        # Bound path: ordinary skills are carried only — never mutate visibility.
+        params["team_name"] = existing_team_name
         template_id = str(metadata.get("team_template_id") or "").strip()
         if template_id:
             params.setdefault("team_template_id", template_id)
+        # Same-skill Swarm continuation: keep Leader SOP on later turns too.
+        if swarm_ids:
+            inject_swarm_sop_into_params(params, swarm_ids[0])
         return existing_team_name
 
+    # Capture user text BEFORE SOP inject so titles / generated-team names stay clean.
     query = _request_query_text(request)
-    if not query:
+    if not query and not swarm_ids:
         return None
+    if not query:
+        query = f"Follow Swarm Skill {swarm_ids[0]}"
+
+    if swarm_ids:
+        inject_swarm_sop_into_params(params, swarm_ids[0])
 
     async with _session_team_binding_lock(session_id):
         metadata = get_session_metadata(
@@ -488,10 +579,19 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
         )
         existing_team_name = str(metadata.get("team_name") or "").strip()
         if existing_team_name:
-            params.setdefault("team_name", existing_team_name)
+            # Idempotent reuse — do not create another generated binding.
+            assert_chat_swarm_skill_policy(
+                session_id=session_id,
+                team_name=existing_team_name,
+                skill_ids=skill_ids,
+                metadata=metadata,
+            )
+            params["team_name"] = existing_team_name
             template_id = str(metadata.get("team_template_id") or "").strip()
             if template_id:
                 params.setdefault("team_template_id", template_id)
+            if swarm_ids:
+                inject_swarm_sop_into_params(params, swarm_ids[0])
             return existing_team_name
 
         from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
@@ -504,6 +604,14 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
         binding_store = get_team_binding_store()
         entity_store = get_team_entity_store()
         try:
+            open_library_snapshot: dict[str, Any] | None = None
+            # Only Swarm open-library path is session_generated / temporary.
+            # Plain Office auto-bind stays sticky across restarts (baseline).
+            is_swarm_generated = bool(swarm_ids)
+            if is_swarm_generated:
+                open_library_snapshot = _apply_open_library_on_generated_entity(
+                    binding.team_name
+                )
             binding = binding_store.bind_session(
                 team_name=binding.team_name,
                 session_id=session_id,
@@ -519,6 +627,14 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
                     session_id,
                 ),
                 team_template_id=binding.template_id,
+                team_template_snapshot=open_library_snapshot,
+                temporary_team_session=is_swarm_generated,
+                team_lifecycle="temporary" if is_swarm_generated else "",
+                team_origin=(
+                    TEAM_ORIGIN_SESSION_GENERATED if is_swarm_generated else ""
+                ),
+                skill_id=swarm_ids[0] if swarm_ids else "",
+                team_cold_reopen_required=False,
                 touch_last_message_at=False,
                 sync_write=True,
                 sessions_root=sessions_root,
@@ -553,14 +669,18 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
         request.metadata = dict(request.metadata or {})
         request.metadata["team_name"] = binding.team_name
         request.metadata["team_template_id"] = binding.template_id
+        if swarm_ids:
+            request.metadata["skill_id"] = swarm_ids[0]
         logger.info(
             "[AgentWebSocketServer] auto-created and bound team before chat: "
-            "session_id=%s team_name=%s template_id=%s",
+            "session_id=%s team_name=%s template_id=%s swarm=%s",
             session_id,
             binding.team_name,
             binding.template_id,
+            swarm_ids[0] if swarm_ids else "",
         )
         return binding
+
 
 
 

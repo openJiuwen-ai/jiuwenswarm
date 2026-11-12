@@ -65,17 +65,21 @@ import {
   canOpenSessionHistory,
   isSessionNode,
   findWorkflowAgent,
+  formatTokenCount,
   formatWorkflowAgentKindLabel,
   formatWorkflowTimingText,
   groupWorkflowAgentsByName,
   HUMAN_TURN_CACHED_ANSWER,
   HUMAN_TURN_CACHED_QUESTION,
   isHumanTurnCached,
+  isWorkflowBudgetLow,
   pendingHumanViewHint,
   pendingInputsBannerText,
   runningWorkflowsBannerText,
   sessionMembersInPhase,
   shouldShowTurnInDetailOrReply,
+  workflowBudgetExhaustedScope,
+  workflowBudgetUsedPercent,
   workflowStatusBannerText,
   workflowStatusIcon,
   type WorkflowAgent,
@@ -100,7 +104,7 @@ import {
   stripBracketedPasteMarkers,
 } from "../core/pasted-text.js";
 import { handleAppScreenKeyInput } from "./keymap.js";
-import { resolveAction } from "../core/keybindings/resolver.js";
+import { getContextBindings, resolveAction } from "../core/keybindings/resolver.js";
 import { buildAppScreenLines } from "./screen-layout.js";
 import { buildTranscriptLines } from "./transcript-renderer.js";
 import {
@@ -455,6 +459,7 @@ function formatSwarmWorkflowsSummary(workflows: WorkflowRun[]): string {
   if (workflows.length === 0) return "No workflows";
   const statusOrder: WorkflowStatus[] = [
     "running",
+    "paused",
     "pending",
     "planned",
     "completed",
@@ -1475,6 +1480,7 @@ function workflowStatusTone(status: WorkflowStatus): (value: string) => string {
   switch (status) {
     case "planned":
     case "pending":
+    case "paused":
       return palette.status.warning;
     case "running":
       return palette.status.info;
@@ -5550,6 +5556,156 @@ export class AppScreen implements Component, Focusable {
     ];
   }
 
+  private swarmActionKeyLabel(
+    action: "swarm:budget" | "swarm:pauseResume" | "swarm:stop",
+  ): string {
+    const key = getContextBindings("SwarmWorkflows").find(
+      (binding) => binding.action === action,
+    )?.key;
+    if (!key) {
+      return action === "swarm:budget" ? "B" : action === "swarm:pauseResume" ? "P" : "S";
+    }
+    // Shifted single letters display as uppercase (shift+b -> B, shift+p -> P, shift+s -> S).
+    if (key.startsWith("shift+")) {
+      const base = key.slice("shift+".length);
+      if (base.length === 1) return base.toUpperCase();
+    }
+    return key;
+  }
+
+  private showTransientNotice(message: string, durationMs = 3000): void {
+    this.transientNotice = message;
+    if (this.transientNoticeTimer) {
+      clearTimeout(this.transientNoticeTimer);
+    }
+    this.transientNoticeTimer = setTimeout(() => {
+      this.transientNotice = null;
+      this.transientNoticeTimer = null;
+      this.tui.requestRender();
+    }, durationMs);
+    this.tui.requestRender();
+  }
+
+  private sendSwarmWorkflowControl(
+    workflowId: string,
+    action: "pause" | "resume" | "stop",
+  ): void {
+    const snapshot = this.state.getSnapshot();
+    // Use a request instead of fire-and-forget so backend rejections are visible.
+    void this.state
+      .request<{ error?: string; message?: string }>(`swarmflow.${action}`, {
+        session_id: snapshot.sessionId,
+        run_id: workflowId,
+      })
+      .then((response) => {
+        const notice = response?.message || response?.error;
+        if (notice) {
+          this.showTransientNotice(notice);
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.showTransientNotice(message);
+      });
+  }
+
+  private workflowIdForBudgetView(): string | null {
+    const state = this.swarmWorkflowsViewState;
+    if (!state) return null;
+    if (state.phase === "list") return state.list.getSelectedItem()?.value ?? null;
+    if (state.phase === "pending-list") {
+      return this.getSelectedPendingListWaiting(state)?.workflowId ?? null;
+    }
+    return state.workflowId;
+  }
+
+  private workflowBudgetViewerContent(workflow: WorkflowRun): string {
+    const budget = workflow.budget;
+    const runBudget = workflow.workflow_budget;
+    if (!budget && !runBudget) return "Budget data unavailable";
+
+    const lines: string[] = [];
+    if (budget) {
+      const spent = formatTokenCount(budget.spent) ?? "—";
+      const total = formatTokenCount(budget.total);
+      const remaining = formatTokenCount(budget.remaining);
+      const usedPercent = workflowBudgetUsedPercent(budget);
+      const low = isWorkflowBudgetLow(budget);
+      lines.push(
+        "Team budget",
+        "",
+        "Scope       Session shared",
+        `Spent       ${spent}`,
+        total ? `Total       ${total}` : "Limit       Unbounded",
+      );
+      if (total) {
+        const remainingLine = `Remaining   ${remaining ?? "—"}`;
+        const usedLine = `Used        ${usedPercent === null ? "—" : `${usedPercent}%`}`;
+        lines.push(low ? palette.status.warning(`⚠ ${remainingLine}`) : remainingLine);
+        lines.push(low ? palette.status.warning(`⚠ ${usedLine}`) : usedLine);
+      }
+    }
+    if (runBudget) {
+      const spent = formatTokenCount(runBudget.spent) ?? "—";
+      const total = formatTokenCount(runBudget.total);
+      const remaining = formatTokenCount(runBudget.remaining);
+      const usedPercent = workflowBudgetUsedPercent(runBudget);
+      const low = isWorkflowBudgetLow(runBudget);
+      if (lines.length > 0) lines.push("");
+      lines.push(
+        "Run budget (this invocation)",
+        "",
+        "Scope       Workflow (META.workflow_token_limit)",
+        `Spent       ${spent}`,
+        total ? `Total       ${total}` : "Limit       Unbounded",
+      );
+      if (total) {
+        const remainingLine = `Remaining   ${remaining ?? "—"}`;
+        const usedLine = `Used        ${usedPercent === null ? "—" : `${usedPercent}%`}`;
+        lines.push(low ? palette.status.warning(`⚠ ${remainingLine}`) : remainingLine);
+        lines.push(low ? palette.status.warning(`⚠ ${usedLine}`) : usedLine);
+      }
+    }
+    const exhaustedScope = workflowBudgetExhaustedScope(workflow);
+    if (exhaustedScope === "workflow") {
+      lines.push(
+        "",
+        palette.status.error("Run budget exhausted"),
+        palette.status.error(
+          "Revise the workflow (or raise META.workflow_token_limit) and relaunch.",
+        ),
+      );
+    } else if (exhaustedScope === "session") {
+      lines.push(
+        "",
+        palette.status.error("Team budget exhausted"),
+        palette.status.error("This workflow cannot be resumed."),
+      );
+    }
+    return lines.join("\n");
+  }
+
+  private async openSwarmWorkflowBudget(
+    workflowId = this.workflowIdForBudgetView(),
+  ): Promise<void> {
+    if (!workflowId) return;
+    let workflow = this.state.getSnapshot().workflowRuns.find((item) => item.id === workflowId);
+    if (workflow && !workflow.budget && !workflow.workflow_budget) {
+      try {
+        await this.state.loadWorkflowDetail(workflowId);
+      } catch {
+        // The read-only viewer below provides the unavailable state.
+      }
+      workflow = this.state.getSnapshot().workflowRuns.find((item) => item.id === workflowId);
+    }
+    if (!workflow) return;
+    this.enterFileViewer(
+      this.workflowBudgetViewerContent(workflow),
+      `Budget - ${workflow.name}`,
+      workflow.name,
+    );
+  }
+
   private async openSwarmWorkflowsView(): Promise<void> {
     const selectedWorkflowId =
       this.swarmWorkflowsViewState?.phase === "list"
@@ -5999,6 +6155,55 @@ export class AppScreen implements Component, Focusable {
     const state = this.swarmWorkflowsViewState;
     if (!state) return;
     const action = resolveAction("SwarmWorkflows", data);
+    // Fallback: resolveAction's matchesKey doesn't match shift+letter on some
+    // terminals (Windows Terminal). Check the raw data for the uppercase letter.
+    let effectiveAction = action;
+    if (effectiveAction === null) {
+      const lower = data.toLowerCase();
+      if (data === "P" || lower === "shift+p") {
+        effectiveAction = "swarm:pauseResume";
+      } else if (data === "S" || lower === "shift+s") {
+        effectiveAction = "swarm:stop";
+      } else if (data === "B" || lower === "shift+b") {
+        effectiveAction = "swarm:budget";
+      }
+    }
+    if (effectiveAction === "swarm:budget") {
+      void this.openSwarmWorkflowBudget();
+      return;
+    }
+    if (effectiveAction === "swarm:pauseResume" || effectiveAction === "swarm:stop") {
+      const workflowId = this.workflowIdForBudgetView();
+      if (!workflowId) {
+        this.showTransientNotice("Select a workflow first.");
+        return;
+      }
+      const workflow = this.state
+        .getSnapshot()
+        .workflowRuns.find((item) => item.id === workflowId);
+      if (!workflow) return;
+      if (effectiveAction === "swarm:stop") {
+        if (workflow.status === "running" || workflow.status === "paused") {
+          this.sendSwarmWorkflowControl(workflowId, "stop");
+        } else {
+          this.showTransientNotice(
+            `This workflow is ${workflow.status} and cannot be stopped.`,
+          );
+        }
+        return;
+      }
+      // swarm:pauseResume toggles: running -> pause, paused -> resume.
+      if (workflow.status === "paused") {
+        this.sendSwarmWorkflowControl(workflowId, "resume");
+      } else if (workflow.status === "running") {
+        this.sendSwarmWorkflowControl(workflowId, "pause");
+      } else {
+        this.showTransientNotice(
+          `This workflow is ${workflow.status} and cannot be paused or resumed.`,
+        );
+      }
+      return;
+    }
     if (action === "swarm:back") {
       if (state.phase === "pending-list") {
         this.restoreFromPendingList(state.previous_phase);
@@ -6484,8 +6689,13 @@ export class AppScreen implements Component, Focusable {
         width,
       ),
     ];
+    const budgetKey = this.swarmActionKeyLabel("swarm:budget");
+    const pauseKey = this.swarmActionKeyLabel("swarm:pauseResume");
+    const stopKey = this.swarmActionKeyLabel("swarm:stop");
     const helpLine = padToWidth(
-      palette.text.dim("↑/↓ select · Enter/→ load detail · r refresh · Esc/← close"),
+      palette.text.dim(
+        `↑/↓ select · Enter/→ load detail · ${budgetKey} budget · ${pauseKey} pause/resume · ${stopKey} stop · r refresh · Esc/← close`,
+      ),
       width,
     );
     if (state.loading || workflows.length === 0) {

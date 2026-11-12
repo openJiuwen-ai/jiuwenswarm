@@ -30,8 +30,11 @@ def main() -> None:
         try:
             from dotenv import load_dotenv
             from jiuwenswarm.common.utils import get_env_file
+            from jiuwenswarm.dotenv_early import ensure_utf8_dotenv
 
-            load_dotenv(dotenv_path=get_env_file(), override=False)
+            env_file = get_env_file()
+            ensure_utf8_dotenv(env_file)
+            load_dotenv(dotenv_path=env_file, override=False)
         except ImportError:
             pass
         except KeyboardInterrupt:

@@ -198,6 +198,8 @@ def load_instance_bootstrap_by_name(name: str) -> Path | None:
 
     # Load the .env file with override=True
     from dotenv import load_dotenv
+    if env_path.is_file():
+        env_path.read_bytes().decode("utf-8")
     load_dotenv(env_path, override=True)
 
     return env_path

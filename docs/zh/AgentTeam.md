@@ -210,17 +210,18 @@ Agent Team 模式是 JiuwenSwarm 平台的一种特殊协作模式，用户可�
 
 ### 2.4 Team Skills
 
-Agent Team 模式下同样支持技能（Skills）的使用和开发。团队中的每个 Agent 都可以配置和使用技能，团队也可以共享技能资源。
+Agent Team 模式下同样支持技能（Skills）的使用和开发。磁盘上只有**一份物理共享库**；Leader / Teammate 通过同轨 `TeamSkillUseRail` 扫描该库，成员工作区不再维护 soft-link 技能副本。
 
 **Team Skills 的概念：**
 
-- **个人技能**：每个 Agent 自己配置和使用的技能，存放在各自的 `workspaces/<agent_name>_workspace/skills/` 目录下
-- **团队共享技能**：团队级别的共享技能，存放在 `team-workspace/skills/` 目录下，所有团队成员都可以使用
+- **物理共享库**：Hub / 本地安装的 Skill 与 Swarm Skill 都落在 `primary_team_skill_library_dir()`（bootstrap 经 `configure_global_skills_dir` 钉死），团队成员读的是同一棵根
+- **成员可见性**：每个成员工作区根目录的 `skills-visibility.json` 控制可见范围；**空 allow = 全库可见**，不再用 `agents.*.skills` 或目录软链当白名单
+- **不再双源 soft-link**：历史 `MemberSkillToolkit` / `team-workspace/skills` 挂载视图已迁出主路径；勿再按「每人一份 skills/」理解
 
 **技能在团队中的作用：**
 
 1. **增强专业能力**：每个 Agent 可以通过技能增强自己在特定领域的执行能力
-2. **共享工具资源**：团队共享技能可以让所有成员使用同一套工具，避免重复开发
+2. **共享工具资源**：同一物理库避免重复安装与双源列表
 3. **协作效率提升**：技能可以让 Agent 更高效地完成分配的任务
 
 > 有关 Team Skills 的详细使用和开发教程，请参阅 [SwarmSkills 指南](SwarmSkills.md)。
@@ -386,8 +387,8 @@ Agent Team 提供团队共享工作区，成员之间可以围绕同一批中间
 
 Agent Team 的文件结构分为两个层级：**团队共享工作区**和**成员独立工作空间**。
 
-- **团队共享工作区（team-workspace）**：所有团队成员共享的目录，存放团队产出物和共享技能。每个 Agent Team Session 会独立创建一个文件夹，文件夹下包含 team-workspace。
-- **成员独立工作空间（workspaces）**：每个 Agent 的专属空间，存放各自的配置、记忆、技能和待办事项。
+- **团队共享工作区（team-workspace）**：所有团队成员共享的目录，存放团队产出物。每个 Agent Team Session 会独立创建一个文件夹，文件夹下包含 team-workspace。
+- **成员独立工作空间（workspaces）**：每个 Agent 的专属空间，存放各自的配置、记忆、可见性与待办事项。技能包本体在平台全局库，不在成员目录下拷贝。
 
 完整路径层级如下：
 
@@ -395,20 +396,21 @@ Agent Team 的文件结构分为两个层级：**团队共享工作区**和**成
 .agent_teams/                          ← Agent Team 根目录
 └── <team_name>/                       ← 每个团队独立一个文件夹
     ├── team-workspace/                 ← 团队共享工作区（所有成员共享）
-    │   ├── artifacts/                  ← 团队产出物
-    │   │   ├── code/                   ← 代码产出
-    │   │   ├── docs/                   ← 文档产出
-    │   │   └── reports/                ← 报告产出
-    │   └── skills/                     ← 团队共享技能
+    │   └── artifacts/                  ← 团队产出物
+    │       ├── code/                   ← 代码产出
+    │       ├── docs/                   ← 文档产出
+    │       └── reports/                ← 报告产出
     └── workspaces/                     ← 各成员独立工作空间
         └── <agent_name>_workspace/     ← 各 Agent 的独立空间
             ├── AGENT.md                ← 智能体配置
             ├── memory/                 ← 个人长期记忆（general 场景）
             ├── coding_memory/          ← 个人编码记忆（coding 场景）
-            ├── skills/                 ← 技能库
+            ├── skills-visibility.json  ← 成员技能可见性（空 allow = 全库）
             ├── todo/                   ← 待办事项
             └── ...                     ← 其他 Agent 专属文件
 ```
+
+> 技能物理包在 `primary_team_skill_library_dir()`（与 Hub 安装根一致），不在上图树内。
 
 **协作机制：**
 

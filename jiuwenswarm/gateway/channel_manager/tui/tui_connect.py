@@ -34,6 +34,7 @@ from jiuwenswarm.common.config import (
     update_permissions_enabled_in_config,
     get_model_names,
     update_preferred_language_in_config,
+    update_swarmflow_budget_in_config,
     update_swarmflow_enabled_in_config,
     update_config,
 )
@@ -226,6 +227,9 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "chat.resume",
         "chat.user_answer",
         "chat.swarmflow_reply",
+        "swarmflow.pause",
+        "swarmflow.resume",
+        "swarmflow.stop",
         "history.get",
         "skills.marketplace.list",
         "skills.list",
@@ -288,6 +292,7 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "team.binding.create",
         "team.binding.generate",
         "team.session.bind",
+        "team.runtime.dissolve",
         "team.mq.publish",
         "session.fork",
         # Agent configuration
@@ -337,6 +342,9 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "command.sandbox",
         "command.session",
         "command.workflows",
+        "swarmflow.pause",
+        "swarmflow.resume",
+        "swarmflow.stop",
         "command.status",
         "command.goal",
         "skills.marketplace.list",
@@ -400,6 +408,7 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "team.binding.create",
         "team.binding.generate",
         "team.session.bind",
+        "team.runtime.dissolve",
         "team.mq.publish",
         "session.fork",
         # Agent configuration
@@ -507,6 +516,8 @@ _CLI_CONFIG_YAML_SETTERS: dict[str, Any] = {
     "memory_forbidden_enabled": update_memory_forbidden_enabled_in_config,
     "preferred_language": update_preferred_language_in_config,
     "enable_swarmflow": update_swarmflow_enabled_in_config,
+    # String-valued (not a boolean toggle); see _CLI_CONFIG_YAML_STRING_KEYS.
+    "swarmflow_budget": update_swarmflow_budget_in_config,
     # Auto-Harness config items (stored in ~/.jiuwenswarm/auto-harness/config.yaml)
     # 用户名同时设置 git.user_name, fork_owner, gitcode.username（三者合一）
     "auto_harness_git_user_name": _update_auto_harness_git_user_name,
@@ -515,6 +526,13 @@ _CLI_CONFIG_YAML_SETTERS: dict[str, Any] = {
 }
 
 _CLI_CONFIG_YAML_KEYS = frozenset(_CLI_CONFIG_YAML_SETTERS.keys())
+# Setters that consume the raw string (not a boolean parse of "true"/"false").
+_CLI_CONFIG_YAML_STRING_KEYS = frozenset(
+    {
+        "preferred_language",
+        "swarmflow_budget",
+    }
+)
 
 
 _PREFERRED_LANGUAGE_OPTIONS = ("zh", "en")
@@ -844,11 +862,16 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             payload["auto_recap_enabled"] = (
                 "true" if auto_recap_cfg.get("enabled", True) else "false"
             )
-            # swarmflow toggle lives at modes.team.jiuwen_team.enable_swarmflow
+            # swarmflow toggle / budget live at modes.team.jiuwen_team.*
             _team_cfg = (raw.get("modes") or {}).get("team") or {}
             _jiuwen_team_cfg = _team_cfg.get("jiuwen_team") or {}
             _swarmflow_enabled = bool(_jiuwen_team_cfg.get("enable_swarmflow", False))
             payload["enable_swarmflow"] = "true" if _swarmflow_enabled else "false"
+            _swarmflow_budget = _jiuwen_team_cfg.get("swarmflow_budget")
+            if _swarmflow_budget is None or _swarmflow_budget == "":
+                payload["swarmflow_budget"] = "none"
+            else:
+                payload["swarmflow_budget"] = str(_swarmflow_budget)
 
             # Resolve model-related fields from config.yaml.
             # When models.defaults list is in use, it is the canonical source
@@ -983,10 +1006,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     )
                     return
             try:
-                if param_key == "preferred_language":
-                    setter(raw_value)
-                elif param_key.startswith("auto_harness_"):
-                    # Auto-harness config items are strings, not toggles
+                if (
+                    param_key in _CLI_CONFIG_YAML_STRING_KEYS
+                    or param_key.startswith("auto_harness_")
+                ):
+                    # String-valued YAML keys (language / budget / auto-harness).
+                    # Must not go through the boolean parse below — e.g.
+                    # swarmflow_budget "500000" would become False and raise.
                     setter(raw_value)
                 else:
                     parsed = raw_value.lower() in ("true", "1", "yes")
@@ -996,6 +1022,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 logger.warning(
                     "[cli config.set] 写回 config.yaml 失败 %s: %s", param_key, e
                 )
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error=f"Failed to write {param_key} to config.yaml: {e}",
+                    code="CONFIG_WRITE_FAILED",
+                )
+                return
 
         for env_key, value in env_updates.items():
             set_os_environ(env_key, value)

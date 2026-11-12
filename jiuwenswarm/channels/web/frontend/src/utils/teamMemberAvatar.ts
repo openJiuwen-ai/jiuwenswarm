@@ -46,6 +46,15 @@ const FNV_PRIME = 16777619;
 
 export type TeamMemberAvatarKind = 'leader' | 'user' | 'member';
 
+/** 成员身份提示（SwarmFlow 节点头像用）；本仓头像解析暂未消费，仅作类型契约。 */
+export interface TeamMemberIdentity {
+  role?: string;
+  mode?: string;
+  cliAgent?: string | null;
+  agentTemplate?: string | null;
+  packageMember?: boolean;
+}
+
 export interface ResolvedTeamMemberAvatar {
   src: string;
   kind: TeamMemberAvatarKind;
