@@ -71,8 +71,13 @@ class CompatibleSubagentControl(SubagentControl):
         self._mirror_reasoning_flushed_at: dict[str, float] = {}
         self._mirror_reasoning_frames: dict[str, int] = {}
 
-    async def resume(self, subagent_id: str) -> ResumeResult:
-        result = await super().resume(subagent_id)
+    async def resume(
+        self,
+        subagent_id: str,
+        *,
+        caller_id: str | None = None,
+    ) -> ResumeResult:
+        result = await super().resume(subagent_id, caller_id=caller_id)
         if (
             not result.restored
             or result.status.kind is not SubagentStatusKind.PENDING_INIT
