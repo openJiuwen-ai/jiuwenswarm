@@ -469,6 +469,34 @@ test('enterprise skips topic UI, reads, subscriptions and foreground checks', as
   }
 });
 
+test('downward slash suggestions raise the input container above welcome topics', async () => {
+  const panel = await mountWelcome('new', { holdResponses: true });
+  try {
+    await react.act(async () => {
+      const input = editor();
+      input.focus();
+      input.textContent = '/';
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    await react.act(settle);
+    const menu = document.querySelector('[data-testid="chat-panel-composer-suggestion"]');
+    assert.ok(menu?.classList.contains('chat-composer-suggestion--below'));
+    const container = document.querySelector('[data-testid="chat-panel-input-container"]');
+    assert.ok(container.classList.contains('chat-input-container--suggestion-open'));
+    await pressInComposer('Escape');
+    assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+    assert.equal(container.classList.contains('chat-input-container--suggestion-open'), false);
+  } finally {
+    await panel.unmount();
+  }
+});
+
 test('a pool that answers at once is shown without a static entrance first', async () => {
   const panel = await mountWelcome('sess-no-flash', { holdResponses: true });
   try {
