@@ -427,6 +427,7 @@ async def handle_command_compact(ctx: RequestContext) -> None:
                 mode=agent_mode,
                 project_dir=resolve_request_project_dir(request),
                 sub_mode=sub_mode,
+                session_id=session_id,
             )
 
         if agent is None:
@@ -555,6 +556,7 @@ async def handle_command_compact_partial(ctx: RequestContext) -> None:
             mode=agent_mode,
             project_dir=resolve_request_project_dir(request),
             sub_mode=sub_mode,
+            session_id=session_id,
         )
 
         if agent is None:
@@ -603,6 +605,7 @@ async def handle_command_context(ctx: RequestContext) -> None:
             mode=agent_mode,
             project_dir=resolve_request_project_dir(request),
             sub_mode=sub_mode,
+            session_id=session_id,
         )
 
         if agent is None:
@@ -643,6 +646,7 @@ async def handle_command_recap(ctx: RequestContext) -> None:
             mode=agent_mode,
             project_dir=resolve_request_project_dir(request),
             sub_mode=sub_mode,
+            session_id=session_id,
         )
 
         if agent is None:
@@ -715,6 +719,7 @@ async def handle_command_btw(ctx: RequestContext) -> None:
             mode=agent_mode,
             project_dir=resolve_request_project_dir(request),
             sub_mode=sub_mode,
+            session_id=session_id,
         )
 
         if agent is None:

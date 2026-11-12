@@ -63,8 +63,8 @@ async def handle_schedule_request(ctx: RequestContext, action: str) -> None:
                 channel_id=request.channel_id or "tui",
                 mode=agent_mode,
                 project_dir=resolve_request_project_dir(request),
-                sub_mode=sub_mode
-
+                sub_mode=sub_mode,
+                session_id=request.session_id,
             )
             if agent is None:
                 raise ValueError("Failed to get agent for schedule request")

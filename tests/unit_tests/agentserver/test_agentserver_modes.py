@@ -2588,13 +2588,14 @@ def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
             self.agent = FakeAgent()
             self.calls = []
 
-        async def get_agent(self, channel_id, mode, project_dir=None, sub_mode=None):
+        async def get_agent(self, channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
             self.calls.append(
                 {
                     "channel_id": channel_id,
                     "mode": mode,
                     "project_dir": project_dir,
                     "sub_mode": sub_mode,
+                    "session_id": session_id,
                 }
             )
             return self.agent
@@ -2627,6 +2628,7 @@ def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
             "mode": "team",
             "project_dir": None,
             "sub_mode": None,
+            "session_id": "",
         }
     ]
     assert fake_manager.agent.seen_request is request
@@ -2663,13 +2665,14 @@ def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
             self.agent = FakeAgent()
             self.calls = []
 
-        async def get_agent(self, channel_id, mode, project_dir=None, sub_mode=None):
+        async def get_agent(self, channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
             self.calls.append(
                 {
                     "channel_id": channel_id,
                     "mode": mode,
                     "project_dir": project_dir,
                     "sub_mode": sub_mode,
+                    "session_id": session_id,
                 }
             )
             return self.agent
@@ -2702,6 +2705,7 @@ def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
             "mode": "code",
             "project_dir": None,
             "sub_mode": "team",
+            "session_id": "",
         }
     ]
     assert fake_manager.agent.seen_request is request

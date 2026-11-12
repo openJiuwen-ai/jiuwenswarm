@@ -12,6 +12,7 @@ from weakref import WeakValueDictionary
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_CANCEL_SOURCE_CRON_COMPLETE,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
@@ -348,6 +349,7 @@ async def _handle_cancel(
             mode=agent_mode,
             project_dir=project_dir,
             sub_mode=sub_mode,
+            session_id=request.session_id,
         )
 
     if agent is None and resp is None:
@@ -368,6 +370,19 @@ async def _handle_cancel(
 async def handle_chat_cancel_dispatch(ctx: RequestContext) -> None:
     """处理 chat.interrupt：按 intent 决定是否取消流式任务。"""
     request = ctx.request
+    if (request.metadata or {}).get(E2A_INTERNAL_CANCEL_SOURCE_KEY) == E2A_CANCEL_SOURCE_CRON_COMPLETE:
+        cleaned = await ctx.services.agent_manager.cleanup_session_runtime(
+            channel_id=request.channel_id or "__cron__",
+            session_id=request.session_id,
+        )
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"event_type": "chat.interrupt_result", "success": True, "cleaned": cleaned},
+        )
+        await ctx.sink.send_wire(encode_agent_response_for_wire(response, response_id=request.request_id))
+        return
     # 中断请求：根据 intent 决定是否取消流式任务
     sid = request.session_id or "default"
     intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
