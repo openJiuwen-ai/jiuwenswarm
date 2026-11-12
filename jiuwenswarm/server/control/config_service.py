@@ -22,7 +22,6 @@ from dotenv import dotenv_values
 
 from jiuwenswarm.common.browser_settings import project_browser_decision
 from jiuwenswarm.common.cua_config import cua_backend_settings, is_cua_agent_enabled
-from jiuwenswarm.common.config import get_team_code_todo_reminder_disabled
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
@@ -125,6 +124,9 @@ _TEAM_DISPATCH_MODE_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 _TEAM_TASK_VERIFICATION_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
 _TEAM_MEMBER_MESSAGING_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
 _TEAM_MEMBER_SUBTASK_DEPTH_PATH = ("modes", "team", "jiuwen_team", "max_subtask_depth")
+# Mirrors ``TEAM_CODE_TODO_REMINDER_DISABLED_CONFIG_PATH`` in ``jiuwenswarm.common.config``;
+# duplicated because the Front process must not import the Runtime config module.
+_TEAM_CODE_TODO_REMINDER_DISABLED_PATH = ("modes", "team", "jiuwen_team", "disable_code_todo_reminder")
 _KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 _KV_CACHE_ENABLED_KEY = "enable_kv_cache_affinity"
 
@@ -491,7 +493,9 @@ def get_panel() -> dict[str, Any]:
         payload["team_member_subtasks_enabled"] = _depth_switch_text(
             _nested(raw, _TEAM_MEMBER_SUBTASK_DEPTH_PATH, 0)
         )
-        payload["team_code_todo_reminder_disabled"] = _bool_text(get_team_code_todo_reminder_disabled(raw))
+        payload["team_code_todo_reminder_disabled"] = _bool_text(
+            _nested(raw, _TEAM_CODE_TODO_REMINDER_DISABLED_PATH, False)
+        )
         budget = _nested(raw, _SWARMFLOW_BUDGET_PATH)
         if budget is not None:
             payload["swarmflow_budget"] = str(budget)
