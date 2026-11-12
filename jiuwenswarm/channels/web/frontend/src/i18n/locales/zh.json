@@ -1542,6 +1542,20 @@
     }
   },
   "trajectory": {
+    "goalAssessment": {
+      "label": "Goal 评估",
+      "title": "Goal 评估 · 第 {{attempt}} 轮",
+      "summary": "独立评估：{{count}} 次调用 · {{tokens}} tokens",
+      "isolated": "仅用于复核目标，不属于执行 Agent 的对话上下文",
+      "status": {
+        "running": "评估中",
+        "complete": "完成",
+        "continue": "继续执行",
+        "blocked": "阻塞",
+        "error": "失败",
+        "unknown": "无有效结论"
+      }
+    },
     "loading": "正在加载轨迹界面…",
     "tabs": {
       "aria": "Agent 与团队内容视图",

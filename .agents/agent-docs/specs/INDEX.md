@@ -28,10 +28,12 @@ generated: true
 | [jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel](#module-jiuwenswarm-channels-web-frontend-src-components-AppMarketPanel) |
 | [jiuwenswarm/channels/web/frontend/src/features/rsi](#module-jiuwenswarm-channels-web-frontend-src-features-rsi) |
 | [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
+| [jiuwenswarm/channels/web/frontend/src/features/trajectory](#module-jiuwenswarm-channels-web-frontend-src-features-trajectory) |
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/observability](#module-jiuwenswarm-observability) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
 | [jiuwenswarm/resources/plugins/ttse](#module-jiuwenswarm-resources-plugins-ttse) |
@@ -108,6 +110,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [S_01_team-goal-config](jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-agents-swarm"></a>
@@ -160,6 +163,15 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
+| [S_01_team-goal-config](jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
+
+<a id="module-jiuwenswarm-channels-web-frontend-src-features-trajectory"></a>
+
+## jiuwenswarm/channels/web/frontend/src/features/trajectory
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_goal-assessment-trajectory](jiuwenswarm/observability/S_01_goal-assessment-trajectory.md) | S | Goal 评估轨迹的宿主投影契约 | alan_cheng | — |
 
 <a id="module-jiuwenswarm-common"></a>
 
@@ -176,6 +188,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [S_01_team-goal-config](jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
 <a id="module-jiuwenswarm-extensions-app_market"></a>
@@ -194,6 +207,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
+
+<a id="module-jiuwenswarm-observability"></a>
+
+## jiuwenswarm/observability
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_goal-assessment-trajectory](jiuwenswarm/observability/S_01_goal-assessment-trajectory.md) | S | Goal 评估轨迹的宿主投影契约 | alan_cheng | — |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills"></a>
 
@@ -233,6 +254,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [S_01_team-goal-config](jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
 <a id="module-jiuwenswarm-server-runtime"></a>
@@ -251,6 +273,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_01_app-agent-interaction](mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
+| [S_01_team-goal-config](jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |

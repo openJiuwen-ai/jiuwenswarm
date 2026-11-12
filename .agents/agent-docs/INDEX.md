@@ -43,6 +43,7 @@ generated: true
 | [jiuwenswarm/channels/web/frontend/src/features/rsi](#module-jiuwenswarm-channels-web-frontend-src-features-rsi) |
 | [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
 | [jiuwenswarm/channels/web/frontend/src/features/settings/modules/models](#module-jiuwenswarm-channels-web-frontend-src-features-settings-modules-models) |
+| [jiuwenswarm/channels/web/frontend/src/features/trajectory](#module-jiuwenswarm-channels-web-frontend-src-features-trajectory) |
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
@@ -64,6 +65,7 @@ generated: true
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
 | [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
+| [openjiuwen/agent_teams](#module-openjiuwen-agent_teams) |
 | [scripts](#module-scripts) |
 | [tests](#module-tests) |
 | [tests/fixtures/ttse_plugin](#module-tests-fixtures-ttse_plugin) |
@@ -213,6 +215,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261114_1302_terminal-metrics-and-model-errors](bugfix/jiuwenswarm/agents/harness/common/rsi/B_20261114_1302_terminal-metrics-and-model-errors.md) | B | RSI 终态统计、侧栏运行态和论文模型错误修复 | l_x_d | 无独立 D：按用户确认修复现有行为及 Issue 6558、6539、6532，无独立设计。 |
+| [B_20261119_1104_paper-snapshot-restart](bugfix/jiuwenswarm/agents/harness/common/rsi/B_20261119_1104_paper-snapshot-restart.md) | B | 论文优化历史快照的重启恢复 | l_x_d | 无独立 D：按确认的重启恢复用例修复既有行为，无独立设计。 |
 | [S_01_observation-projection](specs/jiuwenswarm/agents/harness/common/rsi/S_01_observation-projection.md) | S | RSI 进度、报告与前端终态投影 | l_x_d | — |
 
 <a id="module-jiuwenswarm-agents-harness-common-tools"></a>
@@ -240,8 +243,11 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) | D | Swarm 团队 Goal 配置接入方案 | alan_cheng | — |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
 | [B_20261112_1405_stop-btn-stuck-after-skip](bugfix/jiuwenswarm/B_20261112_1405_stop-btn-stuck-after-skip.md) | B | 集群模式跳过后停止按钮永久卡死：interrupt 收尾窗口护栏 | xiajing | 无独立 D：依据现场日志与轨迹定位，无独立设计文档；修复范围限定前端状态机护栏，并补后端判据不变量测试。 |
+| [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
@@ -351,9 +357,12 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) | D | Swarm 团队 Goal 配置接入方案 | alan_cheng | — |
 | [F_20261110_2026_affinity-settings](features/F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
+| [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
 | [B_20261112_1716_affinity-status-read](bugfix/jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
+| [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings-modules-models"></a>
 
@@ -363,6 +372,15 @@ generated: true
 |---|---|---|---|---|
 | [B_20261116_1636_custom-model-reasoning-policy](bugfix/jiuwenswarm/channels/web/frontend/B_20261116_1636_custom-model-reasoning-policy.md) | B | 自定义模型误展示推理配置修复 | lizhiyuan | 无独立 D：用户已确认的既有设置页能力边界收敛；不新增模型发现或跨仓接口，属于局部回归修复。 |
 | [B_20261117_1727_model-output-token-limit](bugfix/jiuwenswarm/channels/web/frontend/B_20261117_1727_model-output-token-limit.md) | B | 模型单次最大输出配置修复 | lizhiyuan | 无独立 D：用户在本轮会话确认的模型设置范围调整，未形成独立设计文档。 |
+
+<a id="module-jiuwenswarm-channels-web-frontend-src-features-trajectory"></a>
+
+## jiuwenswarm/channels/web/frontend/src/features/trajectory
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261112_1120_goal-assessment-view](features/F_20261112_1120_goal-assessment-view.md) | F | Goal 评估轨迹独立展示与回放隔离 | alan_cheng | agent-core:D-20261112-1120-goal-assessment-isolation（非本仓或待定位） |
+| [S_01_goal-assessment-trajectory](specs/jiuwenswarm/observability/S_01_goal-assessment-trajectory.md) | S | Goal 评估轨迹的宿主投影契约 | alan_cheng | — |
 
 <a id="module-jiuwenswarm-common"></a>
 
@@ -375,6 +393,7 @@ generated: true
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261110_2026_affinity-settings](features/F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
 | [F_20261111_1528_unified-observability-config](features/F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
 | [B_20261103_1636_builtin-catalog-upgrade](bugfix/jiuwenswarm/server/runtime/skill/builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [B_20261112_1716_affinity-status-read](bugfix/jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [B_20261112_2025_permission-profile-refresh](bugfix/jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
@@ -387,9 +406,12 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) | D | Swarm 团队 Goal 配置接入方案 | alan_cheng | — |
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
 | [B_20261117_1727_model-output-token-limit](bugfix/jiuwenswarm/channels/web/frontend/B_20261117_1727_model-output-token-limit.md) | B | 模型单次最大输出配置修复 | lizhiyuan | 无独立 D：用户在本轮会话确认的模型设置范围调整，未形成独立设计文档。 |
+| [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
 <a id="module-jiuwenswarm-extensions-app_market"></a>
@@ -432,6 +454,8 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | — |
+| [F_20261112_1120_goal-assessment-view](features/F_20261112_1120_goal-assessment-view.md) | F | Goal 评估轨迹独立展示与回放隔离 | alan_cheng | agent-core:D-20261112-1120-goal-assessment-isolation（非本仓或待定位） |
+| [S_01_goal-assessment-trajectory](specs/jiuwenswarm/observability/S_01_goal-assessment-trajectory.md) | S | Goal 评估轨迹的宿主投影契约 | alan_cheng | — |
 
 <a id="module-jiuwenswarm-resources"></a>
 
@@ -512,9 +536,12 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) | D | Swarm 团队 Goal 配置接入方案 | alan_cheng | — |
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
 | [B_20261112_1716_affinity-status-read](bugfix/jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [B_20261112_2025_permission-profile-refresh](bugfix/jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
+| [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
 <a id="module-jiuwenswarm-server-ipc"></a>
@@ -555,11 +582,13 @@ generated: true
 | [F_20261103_1501_app-role-session](features/app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
 | [B_20261031_0946_ttse-codecheck-boundaries](bugfix/jiuwenswarm/B_20261031_0946_ttse-codecheck-boundaries.md) | B | TTSE 相关 CodeCheck 受保护访问与关闭条件复杂度修复 | xinyang_bali | 无独立 D：按用户提供的 20 项 CodeCheck 清单修复实现边界，沿用当前 TTSE 通用运行契约，无独立 D。 |
 | [B_20261031_1042_pr9317-review](bugfix/jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
 | [B_20261031_1053_atomgit-review](bugfix/jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
+| [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
@@ -605,6 +634,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](bugfix/jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
+
+<a id="module-openjiuwen-agent_teams"></a>
+
+## openjiuwen/agent_teams
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) | D | Swarm 团队 Goal 配置接入方案 | alan_cheng | — |
 
 <a id="module-scripts"></a>
 
