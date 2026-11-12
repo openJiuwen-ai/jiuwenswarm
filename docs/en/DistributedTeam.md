@@ -207,6 +207,17 @@ Unless both sides explicitly configure a jointly visible workspace root, leader 
 
 These paths have the same shape but are not the same physical directory. If the leader must directly read files written by a teammate, configure a shared `team.workspace.root_path` or return results through messages, DB state, or file transfer tooling.
 
+### Sandboxing (jiuwenbox) and distributed members
+
+With `sandbox.enabled=true` and `type=jiuwenbox`, member commands on a teammate node run inside that node's own jiuwenbox sandbox. Deployment requirements and behavior boundaries:
+
+- **Each teammate node needs a locally deployed jiuwenbox**, and that node's `sandbox.url` must point at a locally reachable address (e.g. `http://127.0.0.1:<port>`). The leader's sandbox settings do not propagate across nodes: after bootstrap, the teammate process rebuilds member sandbox specs from **its own config**.
+- Each member's sandbox container is lazily created on the node where the member actually runs; containers are never shared across nodes. Deliverable interop still relies on the shared `JIUWEN_TEAM_WORKSPACE_ROOT` (NFS) above.
+- When the local sandbox is unavailable (jiuwenbox not running / endpoint unresolved), members degrade to local execution with a warning log. Security-sensitive deployments can set `sandbox.team_fail_closed: true` — the teammate then refuses to adopt unsandboxed members (bootstrap fails) instead of degrading.
+- `sandbox.network_mode` (optional, e.g. `host`): forwards the network mode into each member sandbox's client policy fragment. jiuwenbox's append-merge only keeps fields present in the fragment, so a root-policy-only `network.mode` is lost after merge (visible as container creation failure on privilege-limited hosts: `ip netns add` needs CAP_NET_ADMIN). Setting `host` enables host networking on unprivileged machines (WSL/containers). Default empty = not forwarded, legacy behavior unchanged.
+- Under scheduled dispatch, members are spawned at runtime with no named entries, so sandbox granularity degrades to role level (one container for leader, one for teammate).
+- When a named team is dissolved and rebuilt while the agent-server and jiuwenbox processes keep running, members may reuse the previous sandbox containers (environment continuity — the same semantics as single agents sharing a per-project container). Idle containers are reclaimed by jiuwenbox's idle eviction.
+
 Open firewall ports as needed; replace `127.0.0.1` with real IPs for multi-host setups.
 
 ---

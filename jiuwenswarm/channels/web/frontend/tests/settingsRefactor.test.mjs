@@ -478,7 +478,7 @@ test('simple Settings definitions reject unknown sources and derive required i18
               {
                 id: 'enabled',
                 component: 'switch',
-                key: 'proactive_recommendation_enabled',
+                key: 'topic_recommendation_enabled',
                 subItems: {
                   show: 'sometimes',
                   disabled: 'never',
@@ -1034,12 +1034,12 @@ test('settings contract rejects unknown keys and normalizes supported values', (
   assert.deepEqual(
     normalizeSettingsConfigUpdates({
       external_cli_agent_claude_cli_path: '  /usr/bin/claude  ',
-      proactive_recommendation_max_recommend_per_day: ' 10 ',
+      moa_verifier_interval: ' 7 ',
       permissions_enabled: 'true',
     }),
     {
       external_cli_agent_claude_cli_path: '/usr/bin/claude',
-      proactive_recommendation_max_recommend_per_day: '10',
+      moa_verifier_interval: '7',
       permissions_enabled: 'true',
     },
   );
@@ -1161,7 +1161,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'team_task_verification_enabled',
       'team_member_messaging_enabled',
       'team_member_subtasks_enabled',
-      'proactive_recommendation_enabled',
       'progressive_tool_optimize',
     ].sort(),
   );
@@ -1190,9 +1189,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'music_gen_model',
     'music_gen_protocol',
     'music_gen_provider',
-    'proactive_recommendation_enabled',
-    'proactive_recommendation_max_recommend_per_day',
-    'proactive_recommendation_max_rounds_per_tick',
     'progressive_tool_optimize',
     'rsi_enabled',
     'symphony_evolution_enabled',
@@ -1307,7 +1303,6 @@ test('Settings form dialogs share the same dirty-close contract without disablin
 
   for (const { path, id } of [
     { path: 'src/features/settings/modules/agent/AgentSettings.tsx', id: 'agent-config-dialog' },
-    { path: 'src/features/settings/modules/experimental/ExperimentalSettings.tsx', id: 'proactive-limits-dialog' },
     { path: 'src/features/settings/modules/models/ModelDialog.tsx', id: 'model-dialog' },
   ]) {
     const module = source(path);
@@ -1440,6 +1435,7 @@ test('multimodal dialogs reuse provider-first model configuration; topic probes 
   assert.match(dialog, /probeBeforeSave = modality === 'topic'/);
   assert.match(dialog, /'config\.validate_model'/);
   assert.match(mediaConfig, /buildMediaModelValidationPayload/);
+  assert.match(mediaConfig, /buildSavedTopicModelValidationPayload/);
   assert.doesNotMatch(dialog, /OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/);
 });
 
@@ -2070,7 +2066,6 @@ test('legacy page translations and Harness package state are removed without del
     'keyHelp',
     'modelList',
     'openaiAccount',
-    'proactive',
   ];
 
   for (const locale of [zh, en]) {

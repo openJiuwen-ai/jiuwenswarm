@@ -13,6 +13,25 @@ logging:
   agent_server: INFO
   full: INFO
 
+# ============================================================
+# 沙箱（jiuwenbox）——分布式 teammate 节点按需开启
+# 开启前须在本节点部署并启动 jiuwenbox，url 指向本机可达地址。
+# leader 的沙箱配置不跨节点传播：本节点在收到 bootstrap 后按此处的
+# 本机配置重建成员沙箱。未开启时成员在本节点本地执行。
+# team_fail_closed=true：本机沙箱不可用时拒绝收养成员（不降级）。
+# 部署步骤见 docs/zh/分布式Team.md（英文: docs/en/DistributedTeam.md）。
+# ============================================================
+# sandbox:
+#   enabled: true
+#   type: jiuwenbox
+#   url: http://127.0.0.1:18080
+#   team_fail_closed: false
+# network_mode: 可选(如 host)。显式把网络模式写进成员沙箱的 client policy
+# fragment;仅在 jiuwenbox 根 policy 配 network.mode 时需要(append-merge 会丢失
+# 未出现在 fragment 的字段)。无特权主机(WSL/容器)设 host 可避免 netns 权限要求。
+# 不配置 = 不转发,行为与旧版一致。
+#   network_mode: host
+
 memory:
   # ============================================================
   # 记忆系统配置

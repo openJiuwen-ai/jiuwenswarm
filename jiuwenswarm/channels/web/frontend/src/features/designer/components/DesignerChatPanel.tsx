@@ -23,6 +23,7 @@ import {
 } from '../designerEntry';
 import { findDesignModelsProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import { designerChatStopControl, isDesignerChatStoppable } from '../designerGraphLock';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
@@ -132,6 +133,16 @@ export function DesignerChatPanel() {
   const isProcessing = useChatStore((state) =>
     sessionId ? state.runtimes[sessionId]?.isProcessing ?? false : false,
   );
+  const runIsRunning = useDesignerRunStore((state) => state.isRunning);
+  const runTriggerSource = useDesignerRunStore((state) => state.run?.metadata?.trigger_source ?? null);
+  const leaderRunActive = runIsRunning && runTriggerSource === 'leader';
+  // After chat.final, isProcessing is false while the leader-triggered canvas
+  // autorun continues. Keep the stop control for that phase too.
+  const canStop = isDesignerChatStoppable({
+    isProcessing,
+    isRunning: runIsRunning,
+    triggerSource: runTriggerSource,
+  });
   const toggleChatSidebar = useDesignerUiStore((state) => state.toggleChatSidebar);
   const bodyRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -139,6 +150,8 @@ export function DesignerChatPanel() {
   const [attachments, setAttachments] = useState<ComposerDraft[]>([]);
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
+  const stopControl = designerChatStopControl({ canStop, stopPending });
   const [atMenu, setAtMenu] = useState<{ start: number; query: string; index: number } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Safari can fire compositionend before the keydown that confirms a candidate.
@@ -155,15 +168,18 @@ export function DesignerChatPanel() {
   );
   const setChatModel = useDesignerStore((state) => state.setChatModel);
   const availableModelCount = useSessionStore((state) => state.chatAvailableModels.length);
-  // The director chain resolves its preferred model from graph.metadata.model_name,
+  const selectedModelId = selectedModelSelection?.type === 'model' ? selectedModelSelection.id : undefined;
+  // The director chain resolves its preferred model from graph metadata,
   // and leader rounds run on the session selection: keep both in sync so a pick
   // made here takes effect on the next round instead of only relabelling the UI.
+  // A shared model_name is not enough; the stable id distinguishes custom rows.
   useEffect(() => {
     if (!sessionId || !selectedModelName) return;
-    setChatModel(selectedModelName);
-  }, [selectedModelName, sessionId, setChatModel]);
+    setChatModel(selectedModelName, selectedModelId);
+  }, [selectedModelId, selectedModelName, sessionId, setChatModel]);
 
-  const chatBusy = isProcessing || sending;
+  const composerBusy = isProcessing || sending;
+  const chatBusy = composerBusy || leaderRunActive;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
   const ensureDuplexSession = useCallback(async () => {
     if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
@@ -247,10 +263,13 @@ export function DesignerChatPanel() {
   }, [sessionId]);
 
   useEffect(() => {
-    if (isProcessing || !stopRequestedRef.current) return;
-    stopRequestedRef.current = false;
-    useDesignerRunStore.getState().applyLeaderActivity(null);
-  }, [isProcessing]);
+    if (canStop) return;
+    if (stopRequestedRef.current) {
+      stopRequestedRef.current = false;
+      useDesignerRunStore.getState().applyLeaderActivity(null);
+    }
+    setStopPending(false);
+  }, [canStop]);
 
   const limitError = useCallback(
     (kind: DesignerReferenceKind) => {
@@ -364,22 +383,34 @@ export function DesignerChatPanel() {
   }, [attachments, blockedProblem, chatBusy, domainGraph, draft, selectedModelName, sessionId, t]);
 
   const handleStop = useCallback(() => {
-    if (!sessionId) return;
+    if (!sessionId || stopPending) return;
     setAttachError('');
+    setStopPending(true);
     stopRequestedRef.current = true;
     const runStore = useDesignerRunStore.getState();
-    const leaderRunActive = runStore.isRunning && runStore.run?.metadata?.trigger_source === 'leader';
-    // Cancel through the engine first: pausing the leader kills its trigger
-    // task outright, skipping the abort that unwinds the run cleanly.
-    void (leaderRunActive ? runStore.cancel(domainGraph) : Promise.resolve())
-      .then(() =>
-        webClient.request('chat.interrupt', { session_id: sessionId, intent: 'pause', mode: DESIGNER_TEAM_MODE }),
-      )
+    const cancelLeaderRun =
+      runStore.isRunning && runStore.run?.metadata?.trigger_source === 'leader';
+    const interruptChat = Boolean(
+      useChatStore.getState().getRuntime(sessionId)?.isProcessing,
+    );
+    // Cancel the canvas autorun first: pausing the leader alone can kill its
+    // trigger task without unwinding the run. Skip chat.interrupt when the
+    // leader turn already finished and only child nodes are still running.
+    void (cancelLeaderRun ? runStore.cancel(domainGraph) : Promise.resolve())
+      .then(() => {
+        if (!interruptChat) return undefined;
+        return webClient.request('chat.interrupt', {
+          session_id: sessionId,
+          intent: 'pause',
+          mode: DESIGNER_TEAM_MODE,
+        });
+      })
       .catch(() => {
         stopRequestedRef.current = false;
+        setStopPending(false);
         setAttachError(t('designer.chat.stopError'));
       });
-  }, [domainGraph, sessionId, t]);
+  }, [domainGraph, sessionId, stopPending, t]);
 
   const handleUserAnswer = useCallback(
     async (requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> => {
@@ -608,7 +639,24 @@ export function DesignerChatPanel() {
                 stop: t('chat.taskFullDuplexStop'),
               }}
               fallback={
-                isProcessing ? (
+                stopControl === 'stopping' ? (
+                  <button
+                    type="button"
+                    className="designer-chat-panel__send"
+                    disabled
+                    aria-busy
+                    aria-label={t('designer.chat.stopping')}
+                    title={t('designer.chat.stopping')}
+                    data-testid="designer-chat-panel-stop"
+                    data-variant="running"
+                  >
+                    <LoaderCircle
+                      className="designer-chat-panel__send-spinner animate-spin"
+                      size={18}
+                      aria-hidden
+                    />
+                  </button>
+                ) : stopControl === 'stop' ? (
                   <button
                     type="button"
                     className="designer-chat-panel__send"
