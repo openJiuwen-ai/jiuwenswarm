@@ -322,8 +322,10 @@ def test_build_inputs_gates_xiaoyi_user_interaction_by_app_ver(monkeypatch):
     """xiaoyi 交互能力按手机端 app_ver 判定（gateway 随 metadata.xiaoyi_app_ver
     透传，源自 systemVariables.app_ver）：
 
-    - > 11.7.9（如 11.7.10.200）→ 交互开启（选项卡可渲染可回答）；
-    - ≤ 11.7.9 / 未上报 → fail-closed 关闭（旧端侧不识别选项卡契约字段）。
+    - >= 11.7.10（如 11.7.10、11.7.10.900、11.7.11.100）→ 交互开启
+      （选项卡可渲染可回答）；
+    - < 11.7.10（11.7.9.x）/ 未上报 → fail-closed 关闭
+      （旧端侧不识别选项卡契约字段）。
     """
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -340,10 +342,19 @@ def test_build_inputs_gates_xiaoyi_user_interaction_by_app_ver(monkeypatch):
             metadata=metadata,
         )
 
-    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.10.200"))
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.11.100"))
+    assert inputs["supports_user_interaction"] is True
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.10.900"))
+    assert inputs["supports_user_interaction"] is True
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.10"))
     assert inputs["supports_user_interaction"] is True
 
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9.200"))
+    assert inputs["supports_user_interaction"] is False
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9.301"))
     assert inputs["supports_user_interaction"] is False
 
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build(""))
@@ -1387,8 +1398,8 @@ def test_deep_adapter_gates_xiaoyi_rails_by_app_ver(monkeypatch):
     """xiaoyi 渠道 ask_user/permission rails 按手机端 app_ver 判定。
 
     装配期 app_ver 尚未上报（会话 adapter 创建先于首条请求）→ 保守摘除，
-    与 11.7.9 及以下已发端侧行为一致；上报 11.7.10+（支持选项卡）→ 装配
-    即挂载。运行期补挂/摘除由 _set_user_interaction_enabled/
+    与低于 11.7.10 的已发端侧行为一致；上报 >= 11.7.10（支持选项卡）→
+    装配即挂载。运行期补挂/摘除由 _set_user_interaction_enabled/
     _set_permission_rail_enabled（_update_runtime_config）按请求版本执行。
     """
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -1424,7 +1435,7 @@ def test_deep_adapter_gates_xiaoyi_rails_by_app_ver(monkeypatch):
     assert ask_user_rail not in rails
     assert permission_rail not in rails
 
-    # 上报支持选项卡的版本（> 11.7.9）：装配即挂载
+    # 上报支持选项卡的版本（>= 11.7.10）：装配即挂载
     adapter._client_app_ver = "11.7.10.200"
     rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
     assert ask_user_rail in rails

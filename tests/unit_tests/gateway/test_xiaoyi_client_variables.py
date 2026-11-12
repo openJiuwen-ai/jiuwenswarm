@@ -72,7 +72,7 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     ch._pending_approvals = {}
     # 默认按新版本手机端跑（app_ver=11.7.10.200，systemVariables 上报）：
     # AskUser 结构化选项卡出站/应答路径开启；版本开关相关用例显式覆盖本表
-    # （≤ 11.7.9 / 未上报 → 文本回退，见 test_ask_user_prompt_falls_back_*）。
+    # （< 11.7.10 / 未上报 → 文本回退，见 test_ask_user_prompt_falls_back_*）。
     ch._session_app_vers = {"conv-1": "11.7.10.200"}
     ch._session_model_names = {}
     ch._ws_connections = {"k": _FakeWs(sent)}
@@ -686,11 +686,11 @@ def _make_ask_user_event(request_id: str):
 
 @pytest.mark.asyncio
 async def test_ask_user_prompt_falls_back_to_text_for_old_client(cfg_file):
-    """app_ver ≤ 11.7.9：出站回退纯文本审批提示（无选项卡 data part/ask_user_id）。
+    """app_ver < 11.7.10（11.7.9.x 旧版）：出站回退纯文本
+    审批提示（无选项卡 data part/ask_user_id）。
 
     登记精简待答复（无 question_ids/ask_user_tabs 标记）；流收尾 completed
-    不降级（与 11.7.9 已发端侧行为一致）；新契约结构化应答帧不消费、按
-    普通消息处理。
+    不降级（与已发旧端侧行为一致）；新契约结构化应答帧不消费、按普通消息处理。
     """
     captured, sent = [], []
     ch = _make_channel(captured, sent)

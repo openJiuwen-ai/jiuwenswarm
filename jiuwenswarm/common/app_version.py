@@ -2,17 +2,19 @@
 
 AskUser 结构化选项卡（status-update input-required 出站 + ToolExecute/
 InvokeRsp 应答回传 + ask_user_id 契约字段）仅对支持该契约的手机端开启：
-app_ver >= 11.7.9.301。app_ver 由手机端随消息 data part 的
-variables.systemVariables 携带（与 push_id 同层，既有字段）；缺失/非法
-版本一律按不支持处理（fail-closed）——旧端侧对契约外字段做严格 schema
-校验，宁可不发卡也不能破坏旧版本。
+app_ver >= 11.7.10。app_ver 由手机端随消息 data part 的
+variables.systemVariables 携带（与 push_id 同层，既有字段，四段如
+"11.7.10.900"）；缺失/非法版本一律按不支持处理（fail-closed）——旧
+端侧对契约外字段做严格 schema 校验，宁可不发卡也不能破坏旧版本。
 
 gateway（xiaoyi_connect）与 server（agent_adapter）共用同一实现，
 避免两份拷贝语义漂移。
 """
 
-# 选项卡契约最低端侧版本：11.7.9.301 起支持（更低版本不识别）。
-ASK_USER_TABS_MIN_APP_VER = (11, 7, 9, 301)
+# 选项卡契约最低端侧版本：11.7.10 起支持（含等号，元组逐段比较）。
+# 裸三段 "11.7.10" 即 (11,7,10) 弹框；带构建号的四段版本（
+# "11.7.10.200"/"11.7.10.900"）与 11.7.11 起均弹框；11.7.9.x 及更低不弹。
+ASK_USER_TABS_MIN_APP_VER = (11, 7, 10)
 
 
 def parse_version_tuple(app_ver: str) -> tuple[int, ...] | None:
@@ -46,13 +48,17 @@ def parse_version_tuple(app_ver: str) -> tuple[int, ...] | None:
 
 
 def xiaoyi_ask_user_tabs_supported(app_ver: str) -> bool:
-    """手机端 app_ver 是否支持 AskUser 结构化选项卡（>= 11.7.9.301）。
+    """手机端 app_ver 是否支持 AskUser 结构化选项卡（>= 11.7.10）。
+
+    完整元组逐段比较：等于 11.7.10（裸三段）支持；高于它的版本
+    （"11.7.10.200"/"11.7.10.900" 等带构建号四段、11.7.11 起）支持；
+    11.7.9.x 及更低不支持。
 
     Args:
         app_ver: 端侧上报的版本字符串；缺失按不支持处理。
 
     Returns:
-        大于等于 11.7.9.301 时为 True，否则 False。
+        版本大于等于 11.7.10 时为 True，否则 False。
     """
     parsed = parse_version_tuple(app_ver)
     return parsed is not None and parsed >= ASK_USER_TABS_MIN_APP_VER
