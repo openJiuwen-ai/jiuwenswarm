@@ -45,7 +45,11 @@ await build({
     setup(builder) {
       builder.onResolve({ filter: /assets\/settings$/ }, () => ({ path: 'settings-icons', namespace: 'test-icons' }));
       builder.onLoad({ filter: /.*/, namespace: 'test-icons' }, () => ({
-        contents: 'export const settingsNavigationIcons = { browser: () => null, experimental: () => null }; export const settingsActionIcons = {};', loader: 'js',
+        contents: 'export const settingsNavigationIcons = { browser: () => null, experimental: () => null }; export const settingsActionIcons = {}; export const settingsCustomModelIcon = "custom.svg";', loader: 'js',
+      }));
+      builder.onResolve({ filter: /assets\/providers$/ }, () => ({ path: 'providers', namespace: 'test-providers' }));
+      builder.onLoad({ filter: /.*/, namespace: 'test-providers' }, () => ({
+        contents: 'export const getModelLogoUrl = () => "provider.svg"; export const getProviderLogoUrl = () => "provider.svg"; export const getVendorLogoUrl = () => "vendor.svg";', loader: 'js',
       }));
     },
   }],

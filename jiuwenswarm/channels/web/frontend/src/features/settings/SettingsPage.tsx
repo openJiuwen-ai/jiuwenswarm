@@ -12,7 +12,7 @@ import type { ExternalCliInstallStatuses } from '../../components/ExternalCliIns
 import { SettingsPageLayout, type SettingsSidebarControls } from './SettingsPageLayout';
 import { SettingsServicesProvider } from './services/SettingsServicesProvider';
 import type { SettingsPageDefinition } from './registry/types';
-import type { SettingsModuleTarget } from './settingsNavigation';
+import type { SettingsModuleTarget, SettingsNavigationTarget } from './settingsNavigation';
 
 export function SettingsPage({
   definition,
@@ -35,6 +35,7 @@ export function SettingsPage({
   onExternalCliDetectResultsChange,
   onRecommendationEnabledChange,
   initialModuleId,
+  navigationTarget,
   sidebar,
 }: {
   definition: SettingsPageDefinition;
@@ -71,10 +72,12 @@ export function SettingsPage({
   ) => void;
   onRecommendationEnabledChange?: (enabled: boolean) => void;
   initialModuleId?: SettingsModuleTarget;
+  navigationTarget?: SettingsNavigationTarget;
   sidebar?: SettingsSidebarControls;
 }) {
   return (
     <SettingsServicesProvider
+      navigationTarget={navigationTarget}
       appVersion={appVersion}
       isConnected={isConnected}
       connectionState={connectionState}

@@ -226,6 +226,7 @@ from jiuwenswarm.server.runtime.agent_manager import (
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
+    MultimodalConfigAdapter,
     DesignerAdapter,
     HarmonyOSAdapter,
     MemoryAdapter,
@@ -1382,6 +1383,7 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
+            MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
             self._jiuwenmate_web,
         ):
             self._adapter_registry.register(adapter)
@@ -2415,6 +2417,7 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
+                    MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
                     self._jiuwenmate_web,
                 ):
                     self._adapter_registry.register(adapter)

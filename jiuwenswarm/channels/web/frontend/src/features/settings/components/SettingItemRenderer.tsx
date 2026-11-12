@@ -168,7 +168,7 @@ function SimpleSettingItem({
         checked={checked}
         disabled={controlDisabled || configuring || editingSubItems.size > 0 || unavailable}
         onChange={(next) => {
-          if (next && Configuration) setConfiguring(true);
+          if (next && Configuration && (source.requiresConfiguration?.(item.key) ?? true)) setConfiguring(true);
           else void source.save(buildSwitchUpdates(next), item.id).catch(() => undefined);
         }}
         data-testid="settings-switch"
@@ -219,8 +219,12 @@ function SimpleSettingItem({
   }
 
   if (item.component === 'select') {
-    const selectedIndex = item.options.findIndex((option) => Object.is(option.value, source.values[item.key]));
-    const options = item.options.map((option, index) => ({ value: String(index), label: t(option.labelKey) }));
+    if (item.optionsFromSource && !source.optionsFor) throw new Error(`Settings source has no options for ${item.key}`);
+    const entries = item.optionsFromSource ? source.optionsFor!(item.key)
+      : item.options.map((option) => ({ ...option, label: t(option.labelKey) }));
+    const selectedIndex = entries.findIndex((option) => Object.is(option.value, source.values[item.key]));
+    const options = entries.map((option, index) => ({ value: String(index), label: option.label }));
+    if (item.configure) options.push({ value: 'configure', label: t('settingsPanel.models.addModel') });
     control = (
       <Select
         aria-label={title}
@@ -228,7 +232,11 @@ function SimpleSettingItem({
         disabled={controlDisabled}
         options={options}
         onChange={(index) => {
-          const option = item.options[Number(index)];
+          if (index === 'configure') {
+            setConfiguring(true);
+            return;
+          }
+          const option = entries[Number(index)];
           if (option) void source.save({ [item.key]: option.value }, item.id).catch(() => undefined);
         }}
         data-testid="settings-select"
@@ -240,9 +248,14 @@ function SimpleSettingItem({
   }
 
   return (
-    <SettingRow title={title} description={description}>
-      {control}
-    </SettingRow>
+    <>
+      <SettingRow title={title} description={description}>
+        {control}
+      </SettingRow>
+      {item.component === 'select' && configuring && item.configure ? (
+        <item.configure onClose={() => setConfiguring(false)} />
+      ) : null}
+    </>
   );
 }
 

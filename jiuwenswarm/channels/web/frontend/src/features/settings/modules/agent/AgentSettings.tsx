@@ -16,20 +16,11 @@ import { parseConfigBoolean, toConfigBoolean } from '../../services/settingsCont
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useSettingsSource } from '../../services/SettingsSourceProvider';
-import {
-  isMediaCapabilityConfigured,
-  mediaCapabilityEnabledField,
-  mediaCapabilityPersistenceFields,
-  wasConfigAppliedWithoutRestart,
-  type MediaCapabilityModality,
-} from './mediaCapabilities';
 import { GenerationModelConfigDialog } from './GenerationModelConfigDialog';
 import { isGenerationSlotConfigured, type GenerationSlot } from './generationModels';
-import { MediaModelConfigDialog } from './MediaModelConfigDialog';
 import './AgentSettings.css';
 
 const keyFields = ['jina_api_key', 'bocha_api_key', 'perplexity_api_key', 'serper_api_key'] as const;
-const modalities = ['vision', 'audio', 'video'] as const;
 const generationSlotFields = ['provider', 'protocol', 'api_base', 'api_key', 'model'] as const;
 // 音频生成没有 context window 字段，后端也不认 music_gen_context_window_tokens。
 const generationSlotSettings: Record<GenerationSlot, { titleKey: string; contextWindow: boolean }> = {
@@ -222,164 +213,6 @@ export function AgentSearchSettings({ disabled }: SettingsCustomItemProps) {
       />
     </>
   );
-}
-
-export function AgentMediaSettings({ disabled }: SettingsCustomItemProps) {
-  const { t } = useTranslation();
-  const { isConnected } = useSettingsServices();
-  const { values, savingKeys, save } = useSettingsSource();
-  const [dialog, setDialog] = useState<{
-    modality: MediaCapabilityModality;
-    enableOnSave: boolean;
-  } | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<MediaCapabilityModality | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState('');
-  const [restartRequired, setRestartRequired] = useState(false);
-  const saveConfig: SaveConfig = (updates, operation) => save(updates, operation);
-  const handleSaveResult = (result: unknown) => {
-    setRestartRequired(!wasConfigAppliedWithoutRestart(result));
-  };
-
-  const confirmDeleteModel = async () => {
-    if (!deleteTarget) return;
-    const enabledField = mediaCapabilityEnabledField(deleteTarget);
-    const updates: Record<string, string> = Object.fromEntries(
-      mediaCapabilityPersistenceFields(deleteTarget).map((field) => [field, '']),
-    );
-    if (parseConfigBoolean(values[enabledField])) {
-      updates[enabledField] = toConfigBoolean(false);
-    }
-    setDeleting(true);
-    setDeleteError('');
-    try {
-      const result = await saveConfig(updates, `settingsPanel.agent.${deleteTarget}`);
-      handleSaveResult(result);
-      setDeleteTarget(null);
-    } catch (error) {
-      setDeleteError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  const toggleCapability = async (modality: MediaCapabilityModality, nextEnabled: boolean) => {
-    if (nextEnabled && !isMediaCapabilityConfigured(values, modality)) {
-      setDialog({ modality, enableOnSave: true });
-      return;
-    }
-
-    setRestartRequired(false);
-    try {
-      const result = await saveConfig(
-        { [mediaCapabilityEnabledField(modality)]: toConfigBoolean(nextEnabled) },
-        `settingsPanel.agent.${modality}`,
-      );
-      handleSaveResult(result);
-    } catch {
-      setRestartRequired(false);
-    }
-  };
-
-  return (
-    <>
-      {restartRequired ? (
-        <div className="settings-agent-media__restart-notice" role="status" data-testid="settings-agent-media-restart-notice">
-          {t('settingsPanel.agent.savedRestartRequired')}
-        </div>
-      ) : null}
-      {modalities.map((modality) => {
-        const configured = isMediaCapabilityConfigured(values, modality);
-        const enabledField = mediaCapabilityEnabledField(modality);
-        const enabled = configured && parseConfigBoolean(values[enabledField]);
-        const capabilityFields = [...mediaCapabilityPersistenceFields(modality), enabledField];
-        const busy = capabilityFields.some((field) => savingKeys.has(field));
-        const name = t(`settingsPanel.agent.${modality}`);
-        return (
-          <SettingRow
-            key={modality}
-            className="settings-agent-media__row"
-            title={name}
-            description={t(`settingsPanel.agent.${modality}Description`)}
-            subSettings={
-              configured ? (
-                <div className="settings-agent-media__model-card">
-                  <strong className="settings-agent-media__model-name">{String(values[`${modality}_model`])}</strong>
-                  <div className="settings-agent-media__actions">
-                    <Button
-                      variant="quiet"
-                      size="sm"
-                      icon={<settingsActionIcons.edit aria-hidden />}
-                      title={t('common.modify')}
-                      aria-label={`${t('common.modify')} ${name}`}
-                      disabled={disabled || !isConnected || busy}
-                      onClick={() => setDialog({ modality, enableOnSave: false })}
-                      data-testid="settings-agent-modality-edit-btn"
-                      data-variant={modality}
-                    />
-                    <Button
-                      variant="quiet"
-                      size="sm"
-                      icon={<settingsActionIcons.delete aria-hidden />}
-                      title={t('common.delete')}
-                      aria-label={`${t('common.delete')} ${name}`}
-                      disabled={disabled || !isConnected || busy}
-                      onClick={() => {
-                        setDeleteError('');
-                        setDeleteTarget(modality);
-                      }}
-                    />
-                  </div>
-                </div>
-              ) : null
-            }
-          >
-            <Switch
-              checked={enabled}
-              disabled={disabled || !isConnected || busy}
-              aria-label={t('settingsPanel.agent.toggleCapability', { name })}
-              onChange={(nextEnabled) => void toggleCapability(modality, nextEnabled)}
-              data-testid="settings-agent-modality-toggle"
-              data-variant={modality}
-            />
-          </SettingRow>
-        );
-      })}
-      {dialog ? (
-        <MediaModelConfigDialog
-          modality={dialog.modality}
-          config={values}
-          save={saveConfig}
-          enableOnSave={dialog.enableOnSave}
-          onSaved={handleSaveResult}
-          onClose={() => setDialog(null)}
-        />
-      ) : null}
-      <SettingsConfirmDialog
-        open={deleteTarget !== null}
-        title={t('settingsPanel.agent.deleteModelTitle')}
-        message={
-          deleteTarget
-            ? t('settingsPanel.agent.deleteModelConfirm', { name: t(`settingsPanel.agent.${deleteTarget}`) })
-            : ''
-        }
-        confirming={deleting}
-        error={deleteError}
-        onConfirm={() => void confirmDeleteModel()}
-        onCancel={() => {
-          if (!deleting) setDeleteTarget(null);
-        }}
-      />
-    </>
-  );
-}
-
-export function VideoGenSettings(props: SettingsCustomItemProps) {
-  return <GenerationSlotSettings slot="video_gen" {...props} />;
-}
-
-export function VisualGenSettings(props: SettingsCustomItemProps) {
-  return <GenerationSlotSettings slot="visual_gen" {...props} />;
 }
 
 export function MusicGenSettings(props: SettingsCustomItemProps) {
