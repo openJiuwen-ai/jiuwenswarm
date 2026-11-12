@@ -19,15 +19,18 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@3c7a6b7ed128f58cd4a3d2d5104bb53167950ae6",
     "openjiuwen-computeruse @ git+https://gitcode.com/openJiuwen/computer-use.git@dd2cd5317bbe4cfaaa3bdfb2c3ba91c083136790",
     "JiuwenMemory>=0.2.0",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@cbbadde9101db6e3d75e4ef2b9bdb6029fd92088#subdirectory=openjiuwen-protocol",
+    # openjiuwen（agent-core）自本变更起不再由母仓直接声明，唯一来源是 agent-gateway
+    # 的传递钉：whl 元数据与 uv 解析中 rev 均以 gateway 为准，由发版流程同步。
+    # 前进 core = 把 agent-gateway re-pin 到钉了目标 agent-core rev 的 commit
+    # （本分支当前目标 core：3c7a6b7e，经 agent-gateway!83 传递）。
     # Gateway 传输层已拆分为独立仓 agent-gateway
-    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@43a1d502d0bd6ea4b6665644be50d674167003e9",
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@342b8681133e0410cc5f3023824402770e7d0b5b",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -100,7 +103,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@3c7a6b7ed128f58cd4a3d2d5104bb53167950ae6",
+    "openjiuwen>=0.1.20",  # 经 agent-gateway 传递（见 project.dependencies 注释）；harmony 组为手动安装清单，从 PyPI 解析
     "filelock>=3.25.0,<4",  # task-owned async locks strand openjiuwen FS locks
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
@@ -228,23 +231,18 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
-# agent-gateway（独立仓）与母仓各自钉 agent-core / 协议的 git rev；
-# uv 的 override-dependencies 只接受 PEP 508 字符串，无法按包限定（per-package），
-# 故全局把 openjiuwen 覆盖为母仓直接依赖的同一 git rev，网关传递的钉随之被抹平，
-# 并按 extra 名重放母仓 cua/claude/codex/distribute 的 extras 链
-# （distribute 对应 openjiuwen[postgres,zmq]）。bump core rev 时需同步以下各行。
+# openjiuwen（agent-core）自本变更起不再由母仓直接声明：whl 元数据与 uv 解析中，
+# 它唯一的 git 钉都是 agent-gateway 的传递钉，rev 以 gateway 为准、由发版流程同步
+# （gateway release/0.1.0 侧经 agent-gateway!83 持有 3c7a6b7e）。
+# override-dependencies 仅保留 openjiuwen-protocol —— 协议钉仍由母仓主导，
+# 覆盖网关传递的协议钉（override-dependencies 覆盖解析中所有来源的约束）。
 override-dependencies = [
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@3c7a6b7ed128f58cd4a3d2d5104bb53167950ae6",
-    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@3c7a6b7ed128f58cd4a3d2d5104bb53167950ae6 ; extra == 'cua'",
-    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@3c7a6b7ed128f58cd4a3d2d5104bb53167950ae6 ; extra == 'claude'",
-    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@3c7a6b7ed128f58cd4a3d2d5104bb53167950ae6 ; extra == 'codex'",
-    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@3c7a6b7ed128f58cd4a3d2d5104bb53167950ae6 ; extra == 'distribute'",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@cbbadde9101db6e3d75e4ef2b9bdb6029fd92088#subdirectory=openjiuwen-protocol",
 ]
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "43a1d502d0bd6ea4b6665644be50d674167003e9" }
+agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "342b8681133e0410cc5f3023824402770e7d0b5b" }
 openjiuwen-computeruse = { git = "https://gitcode.com/openJiuwen/computer-use.git", rev = "dd2cd5317bbe4cfaaa3bdfb2c3ba91c083136790" }
 openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "cbbadde9101db6e3d75e4ef2b9bdb6029fd92088", subdirectory = "openjiuwen-protocol" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
