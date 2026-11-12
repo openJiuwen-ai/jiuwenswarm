@@ -307,7 +307,7 @@ async def test_leader_rejects_unadvertised_search_tool(monkeypatch):
 
     class Model:
         async def stream(self, **kwargs):
-            assert [tool["name"] for tool in kwargs["tools"]] == ["ask_fisherman"]
+            assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["ask_fisherman"]
             yield AssistantMessageChunk(tool_calls=[_tool_call("web_search", '{"query":"q"}')])
 
     adapter = await _adapter(monkeypatch, Model())
