@@ -2266,11 +2266,21 @@ def test_topic_pools_isolate_by_work_mode(tmp_path):
         project_id=None,
         work_mode="design",
     )
+    code = service.serve(
+        "session-code",
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+        project_id=None,
+        work_mode="code",
+    )
     assert work["available"] is True
-    assert design["available"] is True
     assert work["work_mode"] == "work"
+    # Packaged corpus stand-ins are work-only; design/code wait for personalized pools.
+    assert design["available"] is False
     assert design["work_mode"] == "design"
-    assert work["manifest_id"] != design["manifest_id"]
+    assert design.get("topics") in (None, [])
+    assert code["available"] is False
+    assert code["work_mode"] == "code"
+    assert code.get("topics") in (None, [])
 
 
 @pytest.mark.asyncio
@@ -2922,6 +2932,69 @@ async def test_turning_recommendation_on_prepares_past_the_preset_pool(tmp_path)
             work_mode="design",
         )
         assert design.get("preparation_state") != "preparing"
+        assert design["available"] is False
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_design_and_code_welcome_skip_packaged_presets(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        build_cold_start_cards,
+        write_cold_start_pool,
+    )
+
+    clock = [1_700_000_000.0]
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: clock[0],
+    )
+    try:
+        work = service.serve(
+            "session-work",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="work",
+        )
+        assert work["available"] is True
+        assert len(work["topics"]) == 4
+
+        # Even a leftover design cold-start pool must not surface on the design welcome page.
+        design_trigger = service._trigger_key(
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        written = write_cold_start_pool(
+            store,
+            build_cold_start_cards(trigger_key=design_trigger, now=clock[0]),
+            trigger_key=design_trigger,
+            created_at=clock[0],
+        )
+        assert written
+        design = service.serve(
+            "session-design",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        code = service.serve(
+            "session-code",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="code",
+        )
+        assert design["available"] is False
+        assert code["available"] is False
     finally:
         await service.shutdown()
 
@@ -2996,16 +3069,15 @@ async def test_preset_click_does_not_suppress_other_work_modes(tmp_path):
             topic["source_starter_id"] for topic in work_again["topics"]
         }
 
+        # Design never serves packaged presets, so a work click cannot leak there.
         design = service.serve(
             "session-design",
             context_scope=GLOBAL_NEW_CHAT_SCOPE,
             project_id=None,
             work_mode="design",
         )
-        assert any(
-            topic["source_starter_id"] == clicked["source_starter_id"]
-            for topic in design["topics"]
-        )
+        assert design["available"] is False
+        assert design.get("topics") in (None, [])
     finally:
         await service.shutdown()
 

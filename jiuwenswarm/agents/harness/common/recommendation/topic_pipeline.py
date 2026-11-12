@@ -138,9 +138,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_selection import (
     score_interaction_utility,
     utility_scores_by_id,
 )
-from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
-    V6_BACKGROUND_GENERATION_DEADLINE_SECONDS,
-)
 from jiuwenswarm.agents.harness.common.recommendation.topic_short_intent import (
     MIN_DRIFT_SAMPLES,
     ShortIntentBehavior,
@@ -222,11 +219,11 @@ _TOPIC_ARK_STAGE_CONCURRENCY = 3
 SHORT_INTENT_SNAPSHOT_PREFIX = "v6-short"
 MAX_FROZEN_DOCUMENT_CHARS = 8_000
 _PROFILE_INTEREST_CATEGORY = "profile_interest_continuation"
-# A retained card is republished when the run that carries it finishes, and the
-# service caps one run at V6_BACKGROUND_GENERATION_DEADLINE_SECONDS. A card with
-# less life left than that would expire inside its own pool write and take the
-# whole pool with it, so it stays in the pool it already has.
-_RETAINED_MINIMUM_REMAINING_SECONDS = V6_BACKGROUND_GENERATION_DEADLINE_SECONDS
+# A retained card is republished when the run that carries it finishes. A card
+# with less life left than this window would expire inside its own pool write
+# and take the whole pool with it, so it stays in the pool it already has.
+# Independent of the (removed) total generation wall-clock deadline.
+_RETAINED_MINIMUM_REMAINING_SECONDS = 300.0
 # The project domain, global recent and hot-news lanes add cards a pool can do
 # without (D10, D22). Once the mandatory lane is ready they get this much longer,
 # generation and web evidence included; they normally finish within 45 seconds.

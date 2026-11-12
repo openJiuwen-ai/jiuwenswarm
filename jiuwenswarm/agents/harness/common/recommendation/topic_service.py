@@ -94,7 +94,10 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
 logger = logging.getLogger(__name__)
 
 RETRIEVAL_CONFIG_VERSION = "topic-starter-v6-web-retrieval-v18"
-V6_BACKGROUND_GENERATION_DEADLINE_SECONDS = 300.0
+# No wall-clock cap on one successor run: stages are sequential LLM calls and a
+# fixed total (formerly 300s) cancelled mid-pipeline before a pool could write.
+# Per-call client timeout matches Designer (1200s in topic_model).
+V6_BACKGROUND_GENERATION_DEADLINE_SECONDS: float | None = None
 INPUT_REVISION_EVENT_TYPE = "v6_input_revision_receipt"
 ISSUED_SLATE_EVENT_TYPE = "v6_issued_slate"
 NEWS_CHECK_EVENT_TYPE = "v6_news_feed_check"
@@ -1086,34 +1089,19 @@ class TopicService:
         work_mode: str = DEFAULT_TOPIC_WORK_MODE,
         answered: str = "",
     ) -> str:
-        """Serve one request within the total deadline; ``answered`` is the outcome of the run before it."""
+        """Serve one queued request; no total wall-clock cancel (per-call timeouts remain)."""
 
-        deadline = min(V6_BACKGROUND_GENERATION_DEADLINE_SECONDS, self._coordinator.deadline_seconds)
         attempt_id = f"background-attempt-{uuid.uuid4().hex}"
         context_token = _GENERATION_ATTEMPT_ID.set(attempt_id)
         try:
-            async with asyncio.timeout(deadline):
-                return await self._serve_request(
-                    slot,
-                    request,
-                    context_scope=context_scope,
-                    project_id=project_id,
-                    work_mode=work_mode,
-                    answered=answered,
-                )
-        except TimeoutError:
-            self._coordinator.record_generation_event(
-                "background_generation_deadline",
-                self._trigger_key(
-                    context_scope=context_scope,
-                    project_id=project_id,
-                    work_mode=work_mode,
-                    input_revision_receipt=slot.receipt,
-                ),
-                generation_attempt_id=attempt_id,
-                reason="total_deadline_exceeded",
+            return await self._serve_request(
+                slot,
+                request,
+                context_scope=context_scope,
+                project_id=project_id,
+                work_mode=work_mode,
+                answered=answered,
             )
-            return "background_generation_deadline"
         finally:
             _GENERATION_ATTEMPT_ID.reset(context_token)
 
@@ -1680,8 +1668,12 @@ class TopicService:
                     work_mode=normalized_work_mode,
                 ):
                     issued = payload
+        # Packaged corpus presets are the work-mode welcome stand-in only.
+        # Design / code keep separate personalized pools and must not fall back
+        # to the shared lifestyle corpus (or resurface an older cold-start write).
+        allow_packaged_presets = normalized_work_mode == DEFAULT_TOPIC_WORK_MODE
         preset_only = not self._accepting_work or self._ark_config is None
-        if preset_only:
+        if allow_packaged_presets and preset_only:
             # Global and project welcome pages both stand on packaged cards while
             # recommendation is off or the background model is unset.
             served = self._serve_cold_start(
@@ -1690,7 +1682,7 @@ class TopicService:
                 issued_slate=issued,
                 preset_only=True,
             )
-        else:
+        elif allow_packaged_presets:
             served = read_terminal_pool(
                 self.store,
                 serving_compatibility_key=build_serving_compatibility_key(trigger_key),
@@ -1706,6 +1698,20 @@ class TopicService:
                     feedback=feedback,
                     issued_slate=issued,
                 )
+        else:
+            served = read_terminal_pool(
+                self.store,
+                serving_compatibility_key=build_serving_compatibility_key(trigger_key),
+                context_scope=context_scope,
+                project_id=project_id,
+                feedback=feedback,
+                now=self._now(),
+                issued_slate=issued,
+            )
+            if served["cards"] and all(
+                is_cold_start_card(card) for card in served["cards"]
+            ):
+                served = {**served, "cards": [], "served_card_ids": [], "pool_card_count": 0}
         if not served["cards"]:
             return {
                 "available": False,
