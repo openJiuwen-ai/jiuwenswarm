@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { groupTimeline, groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
+import { filterGroupMembers, matchesMemberQuery, groupTimeline, groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
 import { parseChatRoute, chatRoutePath } from '../node_modules/.cache/group-chat/multi-session/routing/route.js';
 
 const message = (id, timestamp, content = id) => ({ message_id: id, timestamp, content });
@@ -74,6 +74,23 @@ test('display names are never used as core member identities', () => {
   assert.deepEqual(selectedMentions('@小九', [], [a, b]), []);
   assert.deepEqual(selectedMentions('@小九2', [a.member_name], [a]), []);
   assert.deepEqual(selectedMentions('@小九，请分析', [a.member_name], [a]), [a.member_name]);
+});
+
+test('group member search never matches internal member ids', () => {
+  const members = [
+    { kind: 'agent_group', id: 'team-ad', member_name: 'member-3ad9f1c2-77b4-4d0e-9f5a-1c2b3d4e5f60', display_name: '商业策划专家团' },
+    { kind: 'agent_group', id: 'team-ad-2', member_name: 'member-8b7fad21-5c6d-4e3f-a0b1-c2d3e4f5a6b7', display_name: '小红书爆款打造专家团' },
+    { kind: 'agent_template', id: 'expert-grace', member_name: 'member-11c3d5e7-9f20-4a6b-8c1d-2e3f4a5b6c7d', display_name: 'Grace' },
+  ];
+  // Regression for #6318: a query that only occurs inside member_name must not return any row.
+  assert.deepEqual(filterGroupMembers(members, 'ad'), []);
+  assert.deepEqual(filterGroupMembers(members, 'GRACE').map((member) => member.display_name), ['Grace']);
+  assert.deepEqual(filterGroupMembers(members, '专家团').map((member) => member.display_name),
+    ['商业策划专家团', '小红书爆款打造专家团']);
+  assert.deepEqual(filterGroupMembers(members, '   '), members);
+  assert.equal(matchesMemberQuery('Me', 'me'), true);
+  assert.equal(matchesMemberQuery('我', '  '), true);
+  assert.equal(matchesMemberQuery('Me', 'ad'), false);
 });
 
 test('group routes support refresh, IDs and existing chat routes', () => {
