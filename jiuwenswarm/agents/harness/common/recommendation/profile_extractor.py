@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,13 +100,28 @@ def load_recommendation_state(path: Path | None = None) -> RecommendationState:
 
 
 def save_recommendation_state(state: RecommendationState, path: Path | None = None) -> None:
-    """Persist state to disk."""
+    """Persist state to disk（原子写）.
+
+    写入路径：同目录临时文件 → os.replace 原子替换。直接 write_text 是
+    "先截断再写"——写一半崩溃或多写者并发会留下残缺 JSON，下次
+    load 失败返回空态并被后续保存固化，反馈缓冲/策略梯度/推荐历史
+    全部永久清零。os.replace 保证任意时刻磁盘上只有完整的旧版或
+    完整的新版；保存失败（含替换中断）时此前的好状态完好无损。
+    """
     state_path = path or _default_state_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_name: str | None = None
     try:
-        state_path.write_text(
-            json.dumps(asdict(state), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        fd, tmp_name = tempfile.mkstemp(
+            dir=state_path.parent, prefix=f".{state_path.name}.", suffix=".tmp"
         )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(asdict(state), ensure_ascii=False, indent=2))
+        os.replace(tmp_name, state_path)
     except Exception as exc:
         logger.warning("[RecommendationState] save failed: %s", exc)
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass  # 清理失败无需再报——临时文件不影响正式状态文件
