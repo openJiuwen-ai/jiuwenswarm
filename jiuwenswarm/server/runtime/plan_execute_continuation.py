@@ -17,11 +17,14 @@ tool_call id。同一审批轮重复触发（双事件 / 对账并发）凭记�
 grace window：登记后等待 :data:`PLAN_EXECUTE_CONTINUATION_GRACE_SECONDS` 才
 代发；窗口内该会话到达非 interrupt-resume 的普通 ``chat.send`` 即取消，由那条
 消息充当执行消息——兼容滚动发布期旧前端缓存包的补发，零双发。取消面还包括
-session delete / rewind（同 ``_plan_exited_sessions`` 清理位点）；客户端断连
-**不**取消（服务端兜底正是为此）。
+显式中断 ``chat.interrupt``（cancel/supplement 意图，``handlers/chat.py`` 挂点，
+评审 CR-3）与 session delete / rewind（同 ``_plan_exited_sessions`` 清理位点）；
+客户端断连**不**取消（服务端兜底正是为此）。
 
 代发：合成 ``AgentRequest(is_stream=True)``，mode 取批准请求的
-``normal_mode``，project_dir 等上下文抄自原请求，query 为服务端双语执行文案；
+``normal_mode``，project_dir 等上下文与身份/记忆白名单键（user_id/routing/
+enable_memory——不抄则配额按 fallback 额度兜底、记忆开关失真；评审 CR-2）
+及 thread_id/chat_id 归档维度抄自原请求，query 为服务端双语执行文案；
 ``source=plan_execute_continuation`` 不在 ``_should_record_user_history`` 跳过
 名单内，用户历史照常落盘（重连 / 刷新经历史恢复可见）。chunk 逐个经
 ``server.send_push`` 下行（proactive_adapter 同配方），并先推一帧带 content 的
@@ -37,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
@@ -57,8 +60,21 @@ _BUSY_RETRY_INTERVAL_SECONDS = 2.0
 # 从原请求 params 抄进续跑请求的上下文键（白名单，防夹带一次性载荷）。
 _COPIED_PARAM_KEYS = ("project_dir", "project_id", "work_mode", "agent_scope")
 
+# 从原请求 metadata 抄进续跑请求的可信键（白名单，防夹带一次性载荷；评审
+# CR-2）。只覆盖配额身份（顶层 user_id + routing 三元组，
+# ``_bind_tenant_request_context`` 经 ``web_routing_identity`` 读取）与记忆
+# 开关（interface 按 ``metadata["enable_memory"]`` 读取）；thread_id/chat_id
+# 是 AgentRequest 顶层字段，单列在记账上。
+_COPIED_METADATA_KEYS = ("user_id", "routing", "enable_memory")
+
 # (session_id:request_id) → 待执行的续跑记账。
 _pending: dict[str, "_ContinuationPlan"] = {}
+
+# 已领取记账、尚未代发收尾的键（评审 CR-3 双保险）：领取与取消存在竞态
+# 窗口——取消到达时若条目已被领取，仅从记账移除拦不住代发，取消侧写入
+# 墓碑、代发前复核。收尾（成功/失败/被取消）统一清理，不累积。
+_claimed: set[str] = set()
+_cancelled_keys: set[str] = set()
 
 # 后台续跑 task 强引用：事件循环只持弱引用，不持会被 GC 静默回收
 # （asyncio 官方要求调用方保存 create_task 返回值）；done 回调自清理。
@@ -78,6 +94,12 @@ class _ContinuationPlan:
     mode: str
     query: str
     copied_params: dict[str, Any]
+    # 身份/记忆白名单抄送（评审 CR-2）：配额策略、记忆开关与普通请求同源。
+    trusted_metadata: dict[str, Any] = field(default_factory=dict)
+    # 业务归档维度（PC OfficeAce 记忆按 thread_id 归档；session_id 是其
+    # sha256，不可逆，须单独透传）。
+    thread_id: str | None = None
+    chat_id: str | None = None
 
 
 def is_plan_execute_resume(params: Any) -> bool:
@@ -103,6 +125,31 @@ def is_plan_execute_resume(params: Any) -> bool:
         ):
             return True
     return False
+
+
+def _trusted_metadata_from(request: Any) -> dict[str, Any]:
+    """按白名单从原请求 metadata 抄可信身份/记忆键（评审 CR-2）。
+
+    续跑是服务端合成请求，不透传 metadata 会丢身份：配额按
+    ``bind_quota_identity`` 绑定（缺省回退 fallback 大额度，策略失效）、
+    ``enable_memory`` 缺省回 True、PC 记忆归档维度丢失。逐键按类型校验，
+    routing 整体浅拷贝防别名，其余键不夹带。
+    """
+    metadata = getattr(request, "metadata", None)
+    trusted: dict[str, Any] = {}
+    if not isinstance(metadata, dict):
+        return trusted
+    for key in _COPIED_METADATA_KEYS:
+        value = metadata.get(key)
+        if key == "routing":
+            if isinstance(value, dict) and value:
+                trusted[key] = dict(value)
+        elif key == "enable_memory":
+            if isinstance(value, bool):
+                trusted[key] = value
+        elif isinstance(value, str) and value:
+            trusted[key] = value
+    return trusted
 
 
 def schedule_plan_execute_continuation(
@@ -146,6 +193,9 @@ def schedule_plan_execute_continuation(
         mode=resolved.normal_mode,
         query=PLAN_EXECUTE_PROMPT_OUTPUT.get(_resolve_language(agent)),
         copied_params=copied,
+        trusted_metadata=_trusted_metadata_from(request),
+        thread_id=str(getattr(request, "thread_id", "") or "") or None,
+        chat_id=str(getattr(request, "chat_id", "") or "") or None,
     )
     existing = _pending.get(plan.key)
     if existing is not None:
@@ -166,23 +216,33 @@ def schedule_plan_execute_continuation(
 
 
 def cancel_plan_execute_continuation(session_id: str, *, reason: str = "") -> int:
-    """取消该会话待执行的续跑（grace 窗口内有效），返回取消条数。
+    """取消该会话待执行的续跑，返回取消的待执行条数。
 
-    供普通 ``chat.send`` 到达（消息即执行消息）与 session delete / rewind
-    清理调用；客户端断连**不**调用——断连兜底是本模块的存在理由。取消即从
-    记账移除：grace 计时醒来后领取不到记账，静默退出（领取是权威判据；
-    后台 task 引用仅防 GC 回收，不用于强杀）。
+    供普通 ``chat.send`` 到达（消息即执行消息）、显式中断 ``chat.interrupt``
+    （cancel/supplement 意图，``handlers/chat.py`` 挂点）与 session delete /
+    rewind 清理调用；客户端断连**不**调用——断连兜底是本模块的存在理由。
+
+    取消即从记账移除：grace 计时醒来后领取不到记账，静默退出（领取是权威
+    判据；后台 task 引用仅防 GC 回收，不用于强杀）。已领取未代发的条目
+    （领取与取消的竞态窗口）写入取消墓碑、由代发前复核拦下（评审 CR-3
+    双保险），不计入返回值。
     """
     cancelled = 0
+    tombstoned = 0
     for key, plan in list(_pending.items()):
         if plan.session_id != session_id:
             continue
         _pending.pop(key, None)
-        cancelled += 1
-    if cancelled:
+        if key in _claimed:
+            _cancelled_keys.add(key)
+            tombstoned += 1
+        else:
+            cancelled += 1
+    if cancelled or tombstoned:
         logger.info(
-            "[plan_execute_continuation] cancelled %d pending for session=%s (%s)",
-            cancelled, session_id, reason or "unspecified",
+            "[plan_execute_continuation] cancelled %d pending (+%d claimed "
+            "tombstoned) for session=%s (%s)",
+            cancelled, tombstoned, session_id, reason or "unspecified",
         )
     return cancelled
 
@@ -205,14 +265,25 @@ async def _grace_then_run(ctx: Any, agent: Any, plan: _ContinuationPlan) -> None
         )
         return
 
-    # 领取记账：此后同一审批轮的重复调度不再被挡（正常情况下也不会再来）。
-    if _pending.pop(plan.key, None) is None:
+    # 领取记账：标记领取态但暂留记账表——取消侧对已领取条目写入墓碑
+    # （评审 CR-3 双保险），代发前复核拦下；代发收尾（成功/失败/被取消）
+    # 统一在 finally 清理。领取至收尾期间同一审批轮的重复调度被记账挡住
+    # （幂等窗口从 grace 延长到整轮）。
+    if _pending.get(plan.key) is None:
         return
+    _claimed.add(plan.key)
 
     # request_id 在此生成并贯穿整轮（回显帧 / chunk 帧 / 失败终态帧共用），
     # 前端按 request_id 对齐续跑事件。
     request_id = f"plan_execute_continuation_{plan.round_id}_{int(time.time() * 1000)}"
     try:
+        # 双保险复核：取消落在「已领取、未代发」竞态窗口时凭墓碑拦下。
+        if plan.key in _cancelled_keys:
+            logger.info(
+                "[plan_execute_continuation] cancelled between claim and "
+                "dispatch: %s", plan.key,
+            )
+            return
         await _run_continuation_stream(ctx, agent, plan, request_id)
     except Exception as exc:  # noqa: BLE001
         # fire-and-forget 后台任务：失败落日志，并向前端补终态帧后即可手动
@@ -221,6 +292,10 @@ async def _grace_then_run(ctx: Any, agent: Any, plan: _ContinuationPlan) -> None
             "[plan_execute_continuation] continuation run failed: %s", plan.key
         )
         await _push_failure_terminal_frames(ctx, plan, request_id, exc)
+    finally:
+        _pending.pop(plan.key, None)
+        _claimed.discard(plan.key)
+        _cancelled_keys.discard(plan.key)
 
 
 async def _wait_until_session_idle(agent: Any, session_id: str) -> bool:
@@ -289,10 +364,15 @@ async def _run_continuation_stream(
 
     if not request_id:
         request_id = f"plan_execute_continuation_{plan.round_id}_{int(time.time() * 1000)}"
+    # 身份/记忆白名单抄送（评审 CR-2）：不抄则配额回退 fallback 额度、
+    # enable_memory 回 True、PC 记忆归档维度丢失——与普通请求同源读取。
+    metadata = dict(plan.trusted_metadata) if plan.trusted_metadata else None
     agent_request = AgentRequest(
         request_id=request_id,
         channel_id=plan.channel_id,
         session_id=plan.session_id,
+        thread_id=plan.thread_id,
+        chat_id=plan.chat_id,
         params={
             "query": plan.query,
             "display_query": plan.query,
@@ -300,6 +380,7 @@ async def _run_continuation_stream(
             "source": "plan_execute_continuation",
             **plan.copied_params,
         },
+        metadata=metadata,
         is_stream=True,
     )
     logger.info(
