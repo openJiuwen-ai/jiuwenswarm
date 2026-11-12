@@ -170,6 +170,7 @@ interface ColleagueProfilePageProps extends WelinkOfficeActions {
   onRemoveConnection?: (connection: JiuwenMateConnection) => void;
   onConfigureWelink: () => void;
   onRevokeChannel?: (platform: 'feishu' | 'welink') => void | Promise<void>;
+  imNotice?: { platform: 'feishu' | 'dingtalk' | 'welink'; text: string } | null;
   onToggleDisabled: () => void;
   onDelete: () => void;
 }
@@ -230,6 +231,7 @@ export function ColleagueProfilePage({
   onConfigureWelink,
   onRevokeChannel,
   onRemoveConnection,
+  imNotice = null,
   onToggleDisabled,
   onDelete,
 }: ColleagueProfilePageProps) {
@@ -836,6 +838,7 @@ export function ColleagueProfilePage({
               onRevokeChannel={setRevokePlatform}
               revoking={revoking}
               onRemoveConnection={onRemoveConnection}
+              imNotice={imNotice}
               schedules={schedules}
               savingSchedule={savingSchedule}
               onCreateSchedule={onCreateSchedule}
@@ -921,22 +924,33 @@ function ImBindingAction({
   platform,
   configured,
   revoking = false,
+  notice,
   onConfigure,
   onRevoke,
 }: {
   platform: 'feishu' | 'dingtalk' | 'welink';
   configured: boolean;
   revoking?: boolean;
+  notice?: string | null;
   onConfigure: () => void;
   onRevoke?: (platform: 'feishu' | 'welink') => void;
 }) {
   const { t } = useTranslation();
+  const noticeText = notice ? (
+    <small className="jiuwenmate-profile__im-notice" role="status" data-testid="jiuwenmate-profile-im-notice" data-variant={platform}>
+      {notice}
+    </small>
+  ) : null;
   return !configured ? (
-    <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={onConfigure}>
-      {t('jiuwenmate.profile.authorize')}
-    </button>
+    <div className="jiuwenmate-profile__im-actions">
+      {noticeText}
+      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={onConfigure}>
+        {t('jiuwenmate.profile.authorize')}
+      </button>
+    </div>
   ) : (
     <div className="jiuwenmate-profile__im-actions">
+      {noticeText}
       <em className="jiuwenmate-badge" data-tone="success">{t('jiuwenmate.profile.authorized')}</em>
       <button
         type="button"
@@ -1362,6 +1376,7 @@ function ProfileSectionDetail({
   onConfigureWelink,
   onRevokeChannel,
   revoking = false,
+  imNotice = null,
   schedules,
   savingSchedule,
   onCreateSchedule,
@@ -1416,6 +1431,7 @@ function ProfileSectionDetail({
   onConfigureWelink: () => void;
   onRevokeChannel?: (platform: 'feishu' | 'welink') => void;
   revoking?: boolean;
+  imNotice?: { platform: 'feishu' | 'dingtalk' | 'welink'; text: string } | null;
   schedules: readonly JiuwenMateSchedule[];
   savingSchedule: boolean;
   onCreateSchedule?: (draft: ScheduleDraft) => void | Promise<void>;
@@ -1624,14 +1640,21 @@ function ProfileSectionDetail({
                     <img src={platform === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
                     <strong>{t(`jiuwenmate.im.${platform}`)}</strong>
                   </span>
-                  <button
-                    type="button"
-                    className="jiuwenmate-link-button jiuwenmate-link-button--blue"
-                    onClick={() => onConfigureIm(undefined, platform)}
-                    data-testid={platformConnections.length ? 'jiuwenmate-profile-im-add' : 'jiuwenmate-profile-im-authorize'}
-                  >
-                    {t(platformConnections.length ? 'jiuwenmate.profile.addConnection' : 'jiuwenmate.profile.authorize')}
-                  </button>
+                  <div className="jiuwenmate-profile__im-actions">
+                    {imNotice?.platform === platform ? (
+                      <small className="jiuwenmate-profile__im-notice" role="status" data-testid="jiuwenmate-profile-im-notice" data-variant={platform}>
+                        {imNotice.text}
+                      </small>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                      onClick={() => onConfigureIm(undefined, platform)}
+                      data-testid={platformConnections.length ? 'jiuwenmate-profile-im-add' : 'jiuwenmate-profile-im-authorize'}
+                    >
+                      {t(platformConnections.length ? 'jiuwenmate.profile.addConnection' : 'jiuwenmate.profile.authorize')}
+                    </button>
+                  </div>
                 </header>
                 {platformConnections.length > 0 ? (
                   <ul className="jiuwenmate-profile__connections" data-testid="jiuwenmate-profile-connections">
@@ -1747,6 +1770,7 @@ function ProfileSectionDetail({
             platform="welink"
             configured={colleague.welinkConfigured === true}
             revoking={revoking}
+            notice={imNotice?.platform === 'welink' ? imNotice.text : null}
             onConfigure={onConfigureWelink}
             onRevoke={onRevokeChannel}
           />
