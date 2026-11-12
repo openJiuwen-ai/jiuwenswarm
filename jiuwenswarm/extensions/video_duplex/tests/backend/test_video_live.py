@@ -3947,6 +3947,52 @@ async def test_joyai_voice_answers_typed_chat_card_with_empty_job_id(monkeypatch
     assert '"state": "accepted"' in prompts[1]
 
 
+@pytest.mark.parametrize("outcome", ["resumed", "replaced", "closed"])
+async def test_chat_answer_waits_for_card_lifecycle_without_deadline(monkeypatch, outcome):
+    channel = _scoped_channel(monkeypatch)
+    manager = channel.manager
+    manager._on_session_event("chat.ask_user_question", "chat", {
+        "request_id": "typed-approval", "interrupt_id": "exact-interrupt",
+        "source": "confirm_interrupt", "questions": [{
+            "question": "Continue?", "options": [{"label": "Yes"}],
+        }],
+    })
+    submitted = asyncio.Event()
+
+    async def dispatch(ws, method, params):
+        assert params["interrupt_id"] == "exact-interrupt"
+        submitted.set()
+
+    monkeypatch.setattr(channel, "dispatch_client_request", dispatch)
+    waiting = asyncio.create_task(manager.answer_chat_card(
+        object(), "test-user", "task-duplex:chat", "typed-approval", ["Yes"],
+    ))
+    try:
+        await asyncio.wait_for(submitted.wait(), 2)
+        # Advance beyond the old deadline without a wall-clock sleep.
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        monkeypatch.setattr(loop, "time", lambda: now + 11)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        if outcome == "resumed":
+            manager._on_session_event("chat.processing_status", "chat", {"is_processing": True})
+        elif outcome == "replaced":
+            manager._on_session_event("chat.ask_user_question", "chat", {
+                "request_id": "new-card", "source": "confirm_interrupt", "questions": [],
+            })
+        else:
+            await manager.close()
+        receipt = await asyncio.wait_for(waiting, 2)
+        assert receipt["applied"] is (outcome == "resumed")
+        assert receipt["state"] == ("accepted" if outcome == "resumed" else "rejected")
+        assert not manager._chat_resumed
+    finally:
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+
+
 @pytest.mark.parametrize("spoken, label", [("同意", "本次允许"), ("本会话保持同意", "会话内记住")])
 async def test_joyai_voice_answers_managed_task_card(monkeypatch, spoken, label):
     from unittest.mock import AsyncMock

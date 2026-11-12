@@ -19,7 +19,7 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import (
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["success", "timeout", "cancelled"])
-async def test_action_review_bounds_transport_and_cancels_stalled_request(monkeypatch, outcome):
+async def test_action_review_uses_model_timeout_and_supports_cancellation(monkeypatch, outcome):
     from jiuwenswarm.common import config, reasoning_injector
     from jiuwenswarm.extensions.video_duplex.backend import joyai_action_helper as helper
     from openjiuwen.core.foundation import llm
@@ -41,6 +41,8 @@ async def test_action_review_bounds_transport_and_cancels_stalled_request(monkey
         try:
             if outcome == "success":
                 return SimpleNamespace(content="review result")
+            if outcome == "timeout":
+                raise TimeoutError("Model transport timeout")
             await asyncio.Future()
         finally:
             stopped.set()
@@ -48,13 +50,6 @@ async def test_action_review_bounds_transport_and_cancels_stalled_request(monkey
     model = SimpleNamespace(invoke=AsyncMock(side_effect=invoke))
     build = Mock(return_value=model)
     monkeypatch.setattr(llm, "Model", build)
-    real_timeout = asyncio.timeout
-
-    def short_timeout(delay):
-        assert delay == 10
-        return real_timeout(0.01 if outcome == "timeout" else 10)
-
-    monkeypatch.setattr(helper.asyncio, "timeout", short_timeout)
     request = asyncio.create_task(helper.request_review({"user_request": "hello"}))
     if outcome == "success":
         assert await request == "review result"
@@ -68,7 +63,7 @@ async def test_action_review_bounds_transport_and_cancels_stalled_request(monkey
             await request
     assert stopped.is_set()
     connection = build.call_args.kwargs["model_client_config"]
-    assert connection.timeout == 10 and connection.max_retries == 0
+    assert connection.timeout == 120 and connection.max_retries == 0
     assert connection.api_key == "test-key"
     assert entry["model_client_config"]["timeout"] == 120
     model.invoke.assert_awaited_once()

@@ -268,15 +268,22 @@ async def test_typed_card_answer_is_not_reported_applied_until_core_resumes(syst
     channel.resumes = False
     manager, query = manager_for(service, core, channel)
     monkeypatch.setattr(task_adapter, "task_agent_query", query)
-    monkeypatch.setattr(task_adapter, "CHAT_ANSWER_CONFIRM_TIMEOUT", 0.05)
     core.card_live = True
     channel.push("chat.ask_user_question", {
         "request_id": "typed-approval", "source": "confirm_interrupt",
         "questions": [{"question": "允许执行 rm？", "header": "权限审批: bash", "options": OPTIONS}],
     })
-    receipt = await manager.answer_chat_card(object(), "alice", SCOPE, "typed-approval", ["允许"])
-    assert receipt["state"] == "submitted" and receipt["applied"] is False
-    assert channel.dispatched and "query again" in receipt["message"]
+    pending = asyncio.create_task(manager.answer_chat_card(object(), "alice", SCOPE, "typed-approval", ["允许"]))
+    try:
+        await until(lambda: bool(channel.dispatched))
+        await asyncio.sleep(0.06)
+        assert not pending.done()
+        channel.push("chat.processing_status", {"is_processing": True})
+        receipt = await pending
+        assert receipt["state"] == "accepted" and receipt["applied"] is True
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 async def test_joyai_may_answer_approval_cards_but_not_information_forms(system):
