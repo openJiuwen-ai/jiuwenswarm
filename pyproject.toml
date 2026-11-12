@@ -61,10 +61,10 @@ dependencies = [
     # 自定义 httpx.AsyncClient 的 http_client 会被 SDK 类型校验拒绝。
     # 待模型客户端适配 httpx2 后再放开上限。
     "anthropic>=0.40.0,<1.0.0",
-    "opentelemetry-api>=1.28.0,<1.42",
-    "opentelemetry-sdk>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-http>=1.28.0,<1.42",
+    "opentelemetry-api>=1.45.1,<2",
+    "opentelemetry-sdk>=1.45.1,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.45.1,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1,<2",
     "sqlite-vec==0.1.6",
     "fastapi>=0.115,<1.0",
     "uvicorn[standard]>=0.30,<1.0",
@@ -236,8 +236,24 @@ default-groups = ['dev']
 # 它唯一的 git 钉都是 agent-gateway 的传递钉，rev 以 gateway 为准、由发版流程同步。
 # override-dependencies 仅保留 openjiuwen-protocol —— 协议钉仍由母仓主导，
 # 覆盖网关传递的协议钉（override-dependencies 覆盖解析中所有来源的约束）。
+#
+# 临时例外：会话执行环境与 expert fork 需要 agent-core 75cce15，而 agent-gateway
+# 尚未 re-pin 到该 rev，故在此临时覆盖网关传递的 openjiuwen 钉。override 替换整条
+# requirement（含 extras），因此带 extras 的本仓 extra 逐个按 extra 名等价重放。
+# agent-gateway re-pin 到 >= 75cce15 后删除下面 5 行 openjiuwen override。
 override-dependencies = [
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@75cce15ec5f0cc25d4e99a4f9f51769fe25e47a6",
+    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@75cce15ec5f0cc25d4e99a4f9f51769fe25e47a6 ; extra == 'cua'",
+    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@75cce15ec5f0cc25d4e99a4f9f51769fe25e47a6 ; extra == 'claude'",
+    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@75cce15ec5f0cc25d4e99a4f9f51769fe25e47a6 ; extra == 'codex'",
+    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@75cce15ec5f0cc25d4e99a4f9f51769fe25e47a6 ; extra == 'distribute'",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
+    # agent-core 安全修复要求 opentelemetry>=1.45.1，agent-gateway 仍钉 <1.42；
+    # 以母仓为准覆盖网关传递的上限，待 agent-gateway 放开后可删除这几行。
+    "opentelemetry-api>=1.45.1,<2",
+    "opentelemetry-sdk>=1.45.1,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.45.1,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1,<2",
 ]
 
 [tool.uv.sources]
