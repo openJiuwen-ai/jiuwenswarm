@@ -2393,7 +2393,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime) return state;
       const lastMessage = runtime.messages[runtime.messages.length - 1];
       // 与历史 restore 一致：优先挂当前流；否则只在最后一条消息能承载文件卡片时挂上去。
-      // goal 完成卡 / 主动推荐卡不渲染 fileItems，挂上去会让文件消失。
+      // goal 完成卡不渲染 fileItems，挂上去会让文件消失。
       const targetId =
         runtime.currentStreamId ??
         (lastMessage && canMessageHostFileItems(lastMessage) ? lastMessage.id : null);

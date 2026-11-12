@@ -51,25 +51,6 @@ test('live chat.file does not hide on a goal completion card', () => {
   assert.deepEqual(names(messages[1]), ['b.txt']);
 });
 
-test('live chat.file does not hide on a proactive recommendation card', () => {
-  const sid = 'live_file_attach_proactive';
-  seed(sid, []);
-  chat().addMessage(sid, {
-    id: 'proactive',
-    role: 'assistant',
-    content: '推荐内容',
-    isProactiveRecommendation: true,
-    timestamp: '2026-09-22T00:00:00.000Z',
-  });
-  chat().addFileItems(sid, [file('c.txt')], { timestampIso: '2026-09-22T00:00:01.000Z' });
-
-  const messages = messagesOf(sid);
-  assert.equal(messages.length, 2);
-  assert.equal(messages[0].fileItems, undefined);
-  assert.ok(messages[1].id.startsWith('file-'));
-  assert.deepEqual(names(messages[1]), ['c.txt']);
-});
-
 test('live chat.file still attaches to a team leader bubble', () => {
   const sid = 'live_file_attach_team_leader';
   seed(sid, []);
