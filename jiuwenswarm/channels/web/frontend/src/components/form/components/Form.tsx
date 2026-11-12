@@ -168,6 +168,7 @@ export function Form<TValues extends FormValues>({
   disabled = false,
   className,
   testIdPrefix,
+  renderFields,
 }: {
   form: FormStore<TValues>;
   items: readonly FormItem<TValues>[];
@@ -177,6 +178,8 @@ export function Form<TValues extends FormValues>({
   disabled?: boolean;
   className?: string;
   testIdPrefix?: string;
+  /** Render one section while retaining the complete field/rule configuration. */
+  renderFields?: readonly (keyof TValues)[];
 }) {
   const fields = useMemo(
     () =>
@@ -203,7 +206,7 @@ export function Form<TValues extends FormValues>({
       data-testid={testIdPrefix ? `${testIdPrefix}-fields` : undefined}
       onSubmit={(event) => event.preventDefault()}
     >
-      {items.map((item) => (
+      {items.filter((item) => !renderFields || renderFields.includes(item.name)).map((item) => (
         <FormItemRenderer
           key={String(item.name)}
           form={form}

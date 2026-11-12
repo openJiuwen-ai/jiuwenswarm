@@ -26,16 +26,11 @@ def _configure_openjiuwen_logging() -> None:
     """Install OpenJiuwen logging after the Worker IPC socket is listening."""
     from openjiuwen.core.common.logging import LogManager
 
-    from jiuwenswarm.common.media_capability_config import (
-        migrate_media_capability_switches,
-    )
     from jiuwenswarm.common.utils import (
         apply_free_search_runtime_defaults,
-        get_env_file,
         get_root_dir,
     )
 
-    migrate_media_capability_switches(get_env_file())
     apply_free_search_runtime_defaults()
 
     _logging_yaml = get_root_dir() / "config" / "logging.yaml"

@@ -144,6 +144,10 @@ export class FormStore<TValues extends FormValues> implements FormInstance<TValu
     for (const name of asNames(names, this.values)) delete this.errors[name];
     this.emit();
   }
+  setErrors(errors: Partial<Record<keyof TValues, string>>): void {
+    Object.assign(this.errors, errors);
+    this.emit();
+  }
   reset(nextValues?: TValues): void {
     if (nextValues) {
       assertFormValue(nextValues);

@@ -21,6 +21,7 @@ import { ModelGroupDialog } from './ModelGroupDialog';
 import { ModelGroupsSettings } from './ModelGroupsSettings';
 import { parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
 import { formatModelMetadata, getModelDisplayName } from './modelPresentation';
+import { MultimodalModelsSettings } from './MultimodalModelsSettings';
 import { JevSettings } from './JevSettings';
 import {
   extractModelSelectionReferences,
@@ -122,7 +123,7 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   };
 }
 
-export type ModelSettingsTabId = 'models' | 'groups' | 'jev';
+export type ModelSettingsTabId = 'models' | 'groups' | 'jev' | 'multimodal';
 
 type ModelsSettingsProps = {
   tabs: readonly SettingsTabDefinition<ModelSettingsTabId>[];
@@ -170,7 +171,7 @@ export function parseModelsPayload(payload: unknown): {
 
 export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSettingsProps) {
   const { t } = useTranslation();
-  const { isConnected, request, saveQueue } = useSettingsServices();
+  const { isConnected, request, saveQueue, navigationTarget } = useSettingsServices();
   const { refreshStatus, checkRefreshStatus } = useModelRefreshStatus(isConnected, request);
   const setAvailableModels = useSessionStore((state) => state.setAvailableModels);
   const setAvailableModelGroups = useSessionStore((state) => state.setAvailableModelGroups);
@@ -643,6 +644,7 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         </SettingsSection>
       ) : null}
       <SettingsTabLayout
+        requestedTab={navigationTarget?.moduleId === 'models' ? navigationTarget : undefined}
         tabs={tabs}
         defaultTab={defaultTab}
         ariaLabelKey="settingsPanel.models.tabsLabel"
@@ -709,6 +711,8 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         </div>
         ) : activeTab === 'jev' ? (
         <JevSettings disabled={disabled} />
+        ) : activeTab === 'multimodal' ? (
+        <MultimodalModelsSettings disabled={disabled} />
         ) : (
         <ModelGroupsSettings
           models={models}

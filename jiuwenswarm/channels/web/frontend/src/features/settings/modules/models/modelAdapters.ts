@@ -159,7 +159,10 @@ export function selectProviderDefaultModel(currentModel: string, options: readon
 }
 
 /** Keep display name in sync with model_name until the user customizes it. */
-export function syncDisplayNameWithModelName(draft: ModelDraft, previousModelName: string): ModelDraft {
+export function syncDisplayNameWithModelName<T extends { alias: string; model_name: string }>(
+  draft: T,
+  previousModelName: string,
+): T {
   const nextModelName = draft.model_name.trim();
   const currentAlias = draft.alias.trim();
   const previous = previousModelName.trim();

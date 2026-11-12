@@ -634,6 +634,9 @@ def config_write_lock(*, lock_timeout: float = 10.0, config_path: Path | None = 
         with portalocker.Lock(
             str(_config_lock_path(config_path or CONFIG_YAML_PATH)), timeout=lock_timeout
         ):
+            from jiuwenswarm.common.config_persistence import recover_multimodal_transaction
+
+            recover_multimodal_transaction(config_path or CONFIG_YAML_PATH)
             yield
     finally:
         _CONFIG_WRITE_LOCK.release()
