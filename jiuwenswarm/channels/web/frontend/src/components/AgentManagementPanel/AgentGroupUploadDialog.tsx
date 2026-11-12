@@ -13,7 +13,7 @@ import {
 } from '../../features/workspace/localFilePicker';
 import { isAgentGroupUploadFilename, isAgentUploadFilename } from '../../features/agentManagement';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
-import { useDialogFocusTrap } from './useDialogFocusTrap';
+import { useDialogFocusTrap } from '../ui/useDialogFocusTrap';
 
 type AgentGroupUploadDialogProps = {
   initialKind?: 'agent' | 'group';

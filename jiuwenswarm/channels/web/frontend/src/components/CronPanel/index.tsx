@@ -357,6 +357,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const [rowMenuDirection, setRowMenuDirection] = useState<'up' | 'down'>('down');
   const rowMenuRef = useRef<HTMLDivElement>(null);
   const rowMenuPortalRef = useRef<HTMLDivElement>(null);
+  // 删除确认从行内菜单打开，菜单卸载后焦点无处可依；记住"更多"按钮，关闭弹窗时还焦
+  const rowMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const confirmRestoreRef = useRef<HTMLElement | null>(null);
   // "触发的会话" / "预览"弹层：从"更多"菜单里的按钮打开，菜单关闭后弹层独立存在。
   // 与"更多"菜单一样 portal 到 body（fixed 定位）：absolute 弹层会被 overflow-x-auto 的
   // 表格容器裁剪（表格底部一行 + 横向滚动时必现）。锚点复用"更多"按钮的 rect，
@@ -1227,6 +1230,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                       return;
                     }
                     const rect = e.currentTarget.getBoundingClientRect();
+                    rowMenuTriggerRef.current = e.currentTarget;
                     setRowMenuDirection(window.innerHeight - rect.bottom >= 150 ? 'down' : 'up');
                     setRowMenuAnchor(rect);
                     setRowMenuJobId(job.id);
@@ -1285,6 +1289,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                       </button>
                       <button
                         onClick={() => {
+                          confirmRestoreRef.current = rowMenuTriggerRef.current;
                           closeRowMenu();
                           setConfirmState({ type: 'delete', job });
                         }}
@@ -1916,6 +1921,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             onConfirm={() => void handleDeleteConfirm()}
             onCancel={() => setConfirmState(null)}
             loading={confirmBusy}
+            restoreFocusRef={confirmRestoreRef}
           />
         )}
 

@@ -60,10 +60,19 @@ export function useDialogFocusTrap({
       }
       const first = focusableElements[0];
       const last = focusableElements[focusableElements.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
+      const active = document.activeElement;
+      // 焦点可能被 blur/禁用按钮等甩到弹窗外，或落在 tabIndex=-1 的容器自身上
+      // （点击弹窗空白/文案时）。此时浏览器会按文档顺序继续找可聚焦元素，直接跑出弹窗。
+      const activeInside = active instanceof HTMLElement && active !== dialog && dialog.contains(active);
+      if (!activeInside) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
+      if (event.shiftKey && active === first) {
         event.preventDefault();
         last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && active === last) {
         event.preventDefault();
         first.focus();
       }
