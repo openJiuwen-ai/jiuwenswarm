@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.utils import logger
 
 SUPPORTED_MODES = frozenset(
     {"agent", "agent.plan", "agent.fast", "code", "team", "team.plan", "code.team"}
@@ -133,7 +134,9 @@ def _live_manifest(agent: Any) -> list[dict[str, Any]]:
     return _dedup(current_multimodal_image_files_from_agent(agent))
 
 
-def _refresh_live_rail_bound_manifests(agent: Any, fresh: list[dict[str, Any]]) -> None:
+def _refresh_live_rail_bound_manifests(
+    agent: Any, input_id: str, fresh: list[dict[str, Any]]
+) -> None:
     """把补充图片同步进当前活跃轮 rail 的绑定清单（第三通道）。
 
     绑定清单是 rail 构造期的快照（team 成员/leader 由 swarm provider 从
@@ -158,8 +161,16 @@ def _refresh_live_rail_bound_manifests(agent: Any, fresh: list[dict[str, Any]]) 
             append = getattr(rail, "append_round_image_files", None)
             if callable(append):
                 append(fresh)
-    except Exception:  # pragma: no cover - 防御：清单同步失败不阻断 steer 投递
-        pass
+    except Exception:
+        # 降级语义不变（不阻断 steer 投递），但必须可观测：引用行已随 content
+        # 投递、快照同步失败时本轮 leader 0 像素，无日志则线上无从排查。
+        logger.warning(
+            "[steer-files] live rail bound-manifest sync failed: input_id=%s "
+            "pending=%s",
+            input_id,
+            [str(image.get("path") or "") for image in fresh],
+            exc_info=True,
+        )
 
 
 def _plan_steer_image_files(
@@ -197,7 +208,9 @@ def _plan_steer_image_files(
     return enriched, fresh
 
 
-def _commit_steer_image_files(runtime: Any, fresh: list[dict[str, Any]]) -> None:
+def _commit_steer_image_files(
+    runtime: Any, input_id: str, fresh: list[dict[str, Any]]
+) -> None:
     """把补充图片落地进三个清单通道（仅在 steer_active 投递确认后调用）。
 
     三写（与普通消息的非首轮上传同一组通道，见 ``team_helpers``）：
@@ -207,7 +220,9 @@ def _commit_steer_image_files(runtime: Any, fresh: list[dict[str, Any]]) -> None
     - 活跃轮 rail 的绑定清单快照：team leader 的 rail 构造期已绑定快照，仅靠
       前两处它本轮读不到——追加进快照后本轮即可物化（成员仍靠下一轮重建）。
     commit 时按当前清单重新去重（plan 与 commit 之间隔着投递 await），
-    重复落地幂等。
+    重复落地幂等。任一通道写入失败仅告警降级、不阻断投递：引用行已随
+    content 发出，落地缺位表现为本轮该图零物化（N12 拒非清单路径），
+    必须留日志线索。
     """
     if not fresh:
         return
@@ -231,13 +246,23 @@ def _commit_steer_image_files(runtime: Any, fresh: list[dict[str, Any]]) -> None
     merged = existing + pending
     try:
         store_current_multimodal_image_files_on_agent(runtime, merged)
-    except Exception:  # pragma: no cover - 冻结实例等写入失败时仅靠 build context
-        pass
+    except Exception:
+        logger.warning(
+            "[steer-files] agent mirror write failed: input_id=%s pending=%s",
+            input_id,
+            [str(image.get("path") or "") for image in pending],
+            exc_info=True,
+        )
     try:
         _bind_round_image_files_to_agent(runtime, merged)
-    except Exception:  # pragma: no cover - 非 team runtime 无 harness 时为 no-op
-        pass
-    _refresh_live_rail_bound_manifests(runtime, pending)
+    except Exception:
+        logger.warning(
+            "[steer-files] request_metadata write failed: input_id=%s pending=%s",
+            input_id,
+            [str(image.get("path") or "") for image in pending],
+            exc_info=True,
+        )
+    _refresh_live_rail_bound_manifests(runtime, input_id, pending)
 
 
 @dataclass
@@ -460,5 +485,5 @@ class SteeringSession:
                 item.receipt = result
                 return result
             if fresh_images and result.get("status") in ("accepted", "consumed"):
-                _commit_steer_image_files(runtime, fresh_images)
+                _commit_steer_image_files(runtime, input_id, fresh_images)
             return result

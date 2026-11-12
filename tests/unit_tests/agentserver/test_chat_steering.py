@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -842,6 +843,51 @@ async def test_steer_files_next_round_does_not_inherit_previous_round_mirror():
         query=False,
     )
     assert [image["path"] for image in team_request_image_files(metadata)] == ["/tmp/b.png"]
+
+
+class _ListLogHandler(logging.Handler):
+    """jiuwenswarm 根 logger propagate=False，caplog 收不到，手动挂 handler。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.mark.asyncio
+async def test_steer_files_commit_write_failures_log_warning_and_degrade():
+    """三通道写入失败：不阻断投递（仍 accepted），且每处失败都有 warning 日志。"""
+    import jiuwenswarm.agents.harness.common.multimodal as multimodal_module
+
+    control, _, agent, _ = session(mode="team")
+    metadata, _rail = _team_agent_with_round_metadata(agent, [])
+    multimodal_module.store_team_request_image_files(metadata, [])
+    # 注入两处失败：镜像写入抛异常 + rail 同步抛异常（find_rails 炸）。
+    def _raise_mirror(*args, **kwargs):
+        raise RuntimeError("mirror write boom")
+
+    monkeypatch_target = multimodal_module.store_current_multimodal_image_files_on_agent
+    original = monkeypatch_target
+    multimodal_module.store_current_multimodal_image_files_on_agent = _raise_mirror
+    agent.harness.find_rails = lambda rail_type: (_ for _ in ()).throw(
+        RuntimeError("find_rails boom")
+    )
+    handler = _ListLogHandler()
+    logging.getLogger("jiuwenswarm").addHandler(handler)
+    try:
+        result = await control.handle(control_request(files=_steer_files()), query=False)
+    finally:
+        multimodal_module.store_current_multimodal_image_files_on_agent = original
+        logging.getLogger("jiuwenswarm").removeHandler(handler)
+    assert result["status"] == "accepted"
+    warnings = [
+        record.getMessage() for record in handler.records if record.levelno >= logging.WARNING
+    ]
+    assert any("agent mirror write failed" in message for message in warnings)
+    assert any("bound-manifest sync failed" in message for message in warnings)
+    assert any("input-1" in message for message in warnings)
 
 
 @pytest.mark.asyncio
