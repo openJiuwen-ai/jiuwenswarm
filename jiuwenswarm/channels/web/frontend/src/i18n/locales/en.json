@@ -7,6 +7,18 @@
     "stale": "The local plugin has changed. Start installation again and confirm replacement.",
     "unknownVersion": "unknown"
   },
+  "userLogin": {
+    "language": "Interface language",
+    "title": "JiuwenSwarm Sign In",
+    "username": "Username",
+    "password": "Password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in…",
+    "enterprise": "Or use an enterprise account",
+    "signInWith": "Sign in with {{name}}",
+    "failed": "Sign-in failed. Please retry.",
+    "back": "Back to sign in"
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
     "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
@@ -2373,7 +2385,6 @@
       "apply": "Apply",
       "switching": "Switching...",
       "logout": "Log out",
-      "switchToManager": "Open manager",
       "customRequired": "bot_id, group_id, user_id and jiuwenclaw_id are required",
       "noMatch": "No matches",
       "pleaseSelect": "Select"

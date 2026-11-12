@@ -7,6 +7,18 @@
     "stale": "本地插件已发生变化，请重新安装并确认替换。",
     "unknownVersion": "未知"
   },
+  "userLogin": {
+    "language": "界面语言",
+    "title": "JiuwenSwarm 登录",
+    "username": "用户名",
+    "password": "密码",
+    "signIn": "登录",
+    "signingIn": "登录中…",
+    "enterprise": "或使用企业账号",
+    "signInWith": "使用 {{name}} 登录",
+    "failed": "登录失败，请重试。",
+    "back": "返回登录"
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity 未返回用户标识。",
     "noContext": "当前账号没有可用的 Agent，请先在管理面完成授权。",
@@ -2373,7 +2385,6 @@
       "apply": "应用",
       "switching": "正在切换...",
       "logout": "注销登录",
-      "switchToManager": "进入管理面",
       "customRequired": "请填写 bot_id、group_id、user_id、jiuwenclaw_id",
       "noMatch": "没有匹配项",
       "pleaseSelect": "请选择"
