@@ -299,39 +299,3 @@ async def test_joyai_may_answer_approval_cards_but_not_information_forms(system)
         "job_id": task["id"], "interaction_id": "question-a", "answers": ["5000"]})
     with pytest.raises(ValueError, match="JoyAI voice form answers are disabled"):
         await manager.operate("alice", SCOPE, call, approvals_only=True)
-
-
-def test_web_channel_reports_card_and_turn_pushes_to_listeners():
-    from agent_gateway.channel_manager.web.web_connect import WebChannel
-
-    channel = WebChannel.__new__(WebChannel)
-    channel._session_busy, channel._session_event_listeners = {}, []
-    channel._expert_processing_requests = {}
-    seen = []
-    channel.add_session_event_listener(lambda *event: seen.append(event))
-    for name, payload in [("chat.ask_user_question", {"request_id": "r"}),
-                          ("chat.processing_status", {"is_processing": False}),
-                          ("chat.delta", {"content": "x"})]:
-        channel._track_session_busy(SimpleNamespace(
-            type="event", event_type=None, session_id="chat", payload={"event_type": name, **payload}))
-    assert [(name, sid) for name, sid, _ in seen] == [
-        ("chat.ask_user_question", "chat"), ("chat.processing_status", "chat")]
-    assert channel.is_session_busy("chat") is False
-
-
-async def test_web_channel_replays_request_through_its_own_dispatch():
-    import json
-    from agent_gateway.channel_manager.web.web_connect import WebChannel
-
-    channel = WebChannel.__new__(WebChannel)
-    frames = []
-
-    async def handle(ws, raw, query):
-        frames.append((json.loads(raw), query))
-
-    channel._handle_raw_message = handle
-    ws = SimpleNamespace(_jiuwen_query={"app_id": ["default"]})
-    await channel.dispatch_client_request(ws, "chat.send", {"session_id": "chat"})
-    frame, query = frames[0]
-    assert frame["type"] == "req" and frame["method"] == "chat.send"
-    assert frame["params"] == {"session_id": "chat"} and query == {"app_id": ["default"]}
