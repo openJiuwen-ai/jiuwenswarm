@@ -976,7 +976,7 @@ def test_local_scope_rejects_external_or_symlinked_flow(local_web_sessions, tmp_
 
 
 @pytest.mark.parametrize("partition,allowed", [("", True), ("domain", False), ("infra", False)])
-def test_local_scope_uses_only_managed_personal_root(local_web_sessions, partition, allowed):
+def test_local_scope_uses_only_managed_partition(local_web_sessions, partition, allowed):
     from jiuwenswarm.common.utils import get_user_workspace_dir
 
     flow_root = get_user_workspace_dir() / partition / "agent" / "workspace" / "symphony" / "flow"

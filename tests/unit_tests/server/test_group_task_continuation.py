@@ -986,14 +986,15 @@ async def test_idle_after_the_reminder_falls_back_to_the_reply_with_output_files
 
     async def stream(child, inputs, *, session):
         key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
-        current = gc._private_runs[key]
-        execution_id = current["execution_id"]
+        run_state = gc._private_runs[key]
+        execution_id = run_state["execution_id"]
         outputs = tmp_path / "outputs"
         outputs.mkdir()
-        current["outputs_dir"] = str(outputs)
+        run_state["outputs_dir"] = str(outputs)
         note = outputs / "note.md"
         note.write_text("deliverable", encoding="utf-8")
-        written_at = current["started_at"] + 2
+        # Model an output from this run independently of filesystem timestamp resolution.
+        written_at = run_state["started_at"] + 1
         os.utime(note, (written_at, written_at))
         assert (await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})).success
         yield _leader("llm_output", content="Interim note.")
