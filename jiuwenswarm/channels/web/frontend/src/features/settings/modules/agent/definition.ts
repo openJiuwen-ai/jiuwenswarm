@@ -1,6 +1,7 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
-import { AgentMediaSettings, AgentSearchSettings, VideoGenSettings, VisualGenSettings } from './AgentSettings';
+import { AgentSearchSettings } from './AgentSettings';
+import { multimodalToolItems, MultimodalSettingsFeedback } from './MultimodalToolSettings';
 import { ExternalCliSettingsItem } from './ExternalCliAgentsSettings';
 
 export const agentModule: SettingsModuleDefinition = {
@@ -35,9 +36,12 @@ export const agentModule: SettingsModuleDefinition = {
       id: 'media-tools',
       titleKey: 'settingsPanel.agent.mediaTools',
       items: [
-        { id: 'media-tools-settings', component: 'custom', render: AgentMediaSettings },
-        { id: 'video-gen-settings', component: 'custom', render: VideoGenSettings },
-        { id: 'visual-gen-settings', component: 'custom', render: VisualGenSettings },
+        { id: 'multimodal-feedback', component: 'custom', render: MultimodalSettingsFeedback },
+        ...multimodalToolItems('vision'),
+        ...multimodalToolItems('audio'),
+        ...multimodalToolItems('video'),
+        ...multimodalToolItems('video_gen'),
+        ...multimodalToolItems('visual_gen'),
       ],
     },
     {

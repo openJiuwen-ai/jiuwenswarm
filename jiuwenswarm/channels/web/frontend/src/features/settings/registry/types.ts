@@ -5,7 +5,7 @@ export type SettingsModuleId =
   'general' | 'models' | 'agent' | 'browser' | 'channels' | 'personalContext' | 'archivedTasks' | 'security' | 'experimental' | (string & {});
 export type SettingsAccessLevel = 'hidden' | 'readOnly' | 'editable';
 export type SettingsCompositionMode = 'base' | 'extended';
-export type SettingsSource = 'config' | 'browser' | 'locale' | 'personalContext';
+export type SettingsSource = 'config' | 'browser' | 'locale' | 'personalContext' | 'multimodal';
 export type SettingValue = string | number | boolean;
 export type SettingsAccessNode =
   | { kind: 'module'; moduleId: string }
@@ -64,6 +64,8 @@ export type SettingItemDefinition =
       component: 'select';
       key: string;
       options: readonly SettingSelectOption[];
+      optionsFromSource?: boolean;
+      configure?: ComponentType<{ onClose: () => void }>;
     })
   | (SettingItemBase & {
       component: 'input';

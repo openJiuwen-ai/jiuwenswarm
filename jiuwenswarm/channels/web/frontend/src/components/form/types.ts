@@ -86,6 +86,7 @@ export interface FormInstance<TValues extends FormValues> {
   setValues(values: Partial<TValues>): void;
   validate(names?: keyof TValues | readonly (keyof TValues)[]): FormValidateResult<TValues>;
   clearValidate(names?: keyof TValues | readonly (keyof TValues)[]): void;
+  setErrors(errors: Partial<Record<keyof TValues, string>>): void;
   reset(nextValues?: TValues): void;
   hasUnsavedChanges(name?: keyof TValues): boolean;
 }

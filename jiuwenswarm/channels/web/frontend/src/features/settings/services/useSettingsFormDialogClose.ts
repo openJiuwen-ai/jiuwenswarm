@@ -9,6 +9,7 @@ type SettingsFormDialogCloseOptions<TValues extends FormValues> = {
   form: FormStore<TValues>;
   closeBlocked: boolean;
   onClose: () => void;
+  additionalChanges?: boolean;
 };
 
 type SettingsFormDialogClose = {
@@ -23,14 +24,15 @@ export function useSettingsFormDialogClose<TValues extends FormValues>({
   form,
   closeBlocked,
   onClose,
+  additionalChanges = false,
 }: SettingsFormDialogCloseOptions<TValues>): SettingsFormDialogClose {
   const { hasUnsavedChanges } = useFormState(form);
   const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
-  useUnsavedChanges(id, hasUnsavedChanges);
+  useUnsavedChanges(id, hasUnsavedChanges || additionalChanges);
 
   function requestClose(): void {
     if (closeBlocked) return;
-    if (hasUnsavedChanges) {
+    if (hasUnsavedChanges || additionalChanges) {
       setDiscardConfirmationOpen(true);
       return;
     }
