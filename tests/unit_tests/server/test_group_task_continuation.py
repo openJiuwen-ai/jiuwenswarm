@@ -1,6 +1,7 @@
 """Private-team background ownership, interaction, continuation and provenance."""
 
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -985,11 +986,15 @@ async def test_idle_after_the_reminder_falls_back_to_the_reply_with_output_files
 
     async def stream(child, inputs, *, session):
         key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
-        execution_id = gc._private_runs[key]["execution_id"]
+        current = gc._private_runs[key]
+        execution_id = current["execution_id"]
         outputs = tmp_path / "outputs"
         outputs.mkdir()
-        gc._private_runs[key]["outputs_dir"] = str(outputs)
-        (outputs / "note.md").write_text("deliverable", encoding="utf-8")
+        current["outputs_dir"] = str(outputs)
+        note = outputs / "note.md"
+        note.write_text("deliverable", encoding="utf-8")
+        written_at = current["started_at"] + 2
+        os.utime(note, (written_at, written_at))
         assert (await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})).success
         yield _leader("llm_output", content="Interim note.")
         yield IDLE
