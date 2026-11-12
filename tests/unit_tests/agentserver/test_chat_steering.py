@@ -786,6 +786,77 @@ async def test_steer_files_do_not_bind_manifest_on_unbound_rail():
     assert current_multimodal_image_files_from_agent(agent)[0]["path"] == "/tmp/new.png"
 
 
+@pytest.mark.asyncio
+async def test_steer_files_delivery_failure_leaves_manifest_untouched():
+    """投递异常（unknown）不落地清单：重试不被本轮去重吞掉。"""
+    control, _, agent, _ = session()
+    agent.steer_active = AsyncMock(side_effect=RuntimeError("transport died"))
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "unknown"
+    # 引用行随投递内容发出了（投递失败 ≠ 不应尝试），但清单零落地。
+    assert "[image #1] path=/tmp/new.png" in agent.steer_active.await_args.kwargs[
+        "content"
+    ]
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    assert not current_multimodal_image_files_from_agent(agent)
+
+
+@pytest.mark.asyncio
+async def test_steer_files_not_applied_leaves_manifest_untouched():
+    """not_applied 是确定未投递：同样不落地清单。"""
+    control, _, agent, _ = session()
+
+    async def not_applied(**kwargs):
+        return {
+            "input_id": kwargs["input_id"],
+            "status": "not_applied",
+            "reason": "not_active",
+        }
+
+    agent.steer_active = AsyncMock(side_effect=not_applied)
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "not_applied"
+    assert result["reason"] == "RUN_NOT_ACTIVE"
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    assert not current_multimodal_image_files_from_agent(agent)
+
+
+@pytest.mark.asyncio
+async def test_steer_files_retry_after_failure_delivers_and_materializes():
+    """失败后换 input_id 重试同图：清单未污染，引用行与落地完整走通（自愈）。"""
+    control, _, agent, _ = session()
+    agent.steer_active = AsyncMock(side_effect=RuntimeError("transport died"))
+    await control.handle(
+        control_request(input_id="input-1", client_message_id="client-1", files=_steer_files()),
+        query=False,
+    )
+    agent.steer_active = AsyncMock(
+        side_effect=lambda **kwargs: {
+            "input_id": kwargs["input_id"],
+            "status": "accepted",
+        }
+    )
+    result = await control.handle(
+        control_request(input_id="input-2", client_message_id="client-2", files=_steer_files()),
+        query=False,
+    )
+    assert result["status"] == "accepted"
+    assert "[image #1] path=/tmp/new.png" in agent.steer_active.await_args.kwargs[
+        "content"
+    ]
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    assert current_multimodal_image_files_from_agent(agent)[0]["path"] == "/tmp/new.png"
+
+
 @pytest.mark.parametrize(
     "files",
     [

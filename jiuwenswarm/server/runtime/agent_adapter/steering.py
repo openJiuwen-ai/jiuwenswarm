@@ -139,27 +139,20 @@ def _refresh_live_rail_bound_manifests(agent: Any, fresh: list[dict[str, Any]]) 
         pass
 
 
-def _apply_steer_image_files(
+def _plan_steer_image_files(
     runtime: Any, content: str, image_files: list[dict[str, Any]]
-) -> str:
-    """把 steer 携带的图片合并进活跃清单，并在 content 追加引用行。
+) -> tuple[str, list[dict[str, Any]]]:
+    """计算补充图片的引用行与待落地清单（纯计算，不写任何状态）。
 
-    清单三写（与普通消息的非首轮上传同一组通道，见 ``team_helpers``）：
-    - live harness ``request_metadata``：后续轮 NativeHarness 重建时 provider 从
-      同一 build context 构造 rail，读到合并后的清单（成员同样生效）；
-    - agent 实例镜像：未绑定清单的 rail（deep 单代理）实时读取，本轮即可物化；
-    - 活跃轮 rail 的绑定清单快照：team leader 的 rail 构造期已绑定快照，仅靠
-      前两处它本轮读不到——追加进快照后本轮即可物化（成员仍靠下一轮重建）。
-    引用行追加进 steer content：本轮执行中模型至少拿到文本引用行 + read_file 取回
-    通道。content 超出 inbox 的 32k 硬校验预算时仅保留清单、舍弃引用行。
+    落地必须等投递确认（见 ``_commit_steer_image_files``）：steer_active 失败
+    （异常 / not_applied / unknown）时若清单已写，本轮去重会把同一张图的重试
+    吞掉（fresh 恒空 → 引用行不再追加），用户「失败后重试」永远补不上，直到
+    下一轮 chat.send 覆盖清单才自愈。content 超出 inbox 的 32k 硬校验预算时
+    舍弃引用行、清单仍待落地（fresh 照常返回）。
     """
     from jiuwenswarm.agents.harness.common.multimodal import (
         build_image_reference_line,
         normalize_image_path,
-        store_current_multimodal_image_files_on_agent,
-    )
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-        _bind_round_image_files_to_agent,
     )
 
     existing = _live_manifest(runtime)
@@ -170,8 +163,49 @@ def _apply_steer_image_files(
         if normalize_image_path(str(image.get("path") or "")) not in seen
     ]
     if not fresh:
-        return content
-    merged = existing + fresh
+        return content, []
+    lines = [
+        build_image_reference_line(image, len(existing) + offset)
+        for offset, image in enumerate(fresh, start=1)
+    ]
+    enriched = content.rstrip() + "\n" + "\n".join(lines)
+    if len(enriched) > _STEER_CONTENT_LIMIT:
+        return content, fresh
+    return enriched, fresh
+
+
+def _commit_steer_image_files(runtime: Any, fresh: list[dict[str, Any]]) -> None:
+    """把补充图片落地进三个清单通道（仅在 steer_active 投递确认后调用）。
+
+    三写（与普通消息的非首轮上传同一组通道，见 ``team_helpers``）：
+    - live harness ``request_metadata``：后续轮 NativeHarness 重建时 provider 从
+      同一 build context 构造 rail，读到合并后的清单（成员同样生效）；
+    - agent 实例镜像：未绑定清单的 rail（deep 单代理）实时读取，本轮即可物化；
+    - 活跃轮 rail 的绑定清单快照：team leader 的 rail 构造期已绑定快照，仅靠
+      前两处它本轮读不到——追加进快照后本轮即可物化（成员仍靠下一轮重建）。
+    commit 时按当前清单重新去重（plan 与 commit 之间隔着投递 await），
+    重复落地幂等。
+    """
+    if not fresh:
+        return
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        normalize_image_path,
+        store_current_multimodal_image_files_on_agent,
+    )
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+        _bind_round_image_files_to_agent,
+    )
+
+    existing = _live_manifest(runtime)
+    seen = {normalize_image_path(str(image.get("path") or "")) for image in existing}
+    pending = [
+        image
+        for image in fresh
+        if normalize_image_path(str(image.get("path") or "")) not in seen
+    ]
+    if not pending:
+        return
+    merged = existing + pending
     try:
         store_current_multimodal_image_files_on_agent(runtime, merged)
     except Exception:  # pragma: no cover - 冻结实例等写入失败时仅靠 build context
@@ -180,15 +214,7 @@ def _apply_steer_image_files(
         _bind_round_image_files_to_agent(runtime, merged)
     except Exception:  # pragma: no cover - 非 team runtime 无 harness 时为 no-op
         pass
-    _refresh_live_rail_bound_manifests(runtime, fresh)
-    lines = [
-        build_image_reference_line(image, len(existing) + offset)
-        for offset, image in enumerate(fresh, start=1)
-    ]
-    enriched = content.rstrip() + "\n" + "\n".join(lines)
-    if len(enriched) > _STEER_CONTENT_LIMIT:
-        return content
-    return enriched
+    _refresh_live_rail_bound_manifests(runtime, pending)
 
 
 @dataclass
@@ -387,10 +413,17 @@ class SteeringSession:
             binding.inputs[input_id] = item
             binding.client_ids[client_id] = input_id
             # 幂等摘要仍按 wire 原文 content 计算；补充图片仅影响投递内容。
+            # 引用行先随 content 投递，清单在投递确认（accepted / consumed）后
+            # 才落地：steer_active 失败（异常 / not_applied / unknown）时若清单
+            # 已写，本轮去重会把同一张图的重试吞掉（fresh 恒空 → 引用行不再
+            # 追加），直到下一轮 chat.send 覆盖清单才自愈。
             content = params["content"]
             steer_images = _extract_steer_image_files(params.get("files"))
+            fresh_images: list[dict[str, Any]] = []
             if steer_images:
-                content = _apply_steer_image_files(runtime, content, steer_images)
+                content, fresh_images = _plan_steer_image_files(
+                    runtime, content, steer_images
+                )
             try:
                 result = normalize_result(
                     await runtime.steer_active(
@@ -403,4 +436,7 @@ class SteeringSession:
                 return {"input_id": input_id, "status": "unknown"}
             if result.get("status") == "not_applied":
                 item.receipt = result
+                return result
+            if fresh_images and result.get("status") in ("accepted", "consumed"):
+                _commit_steer_image_files(runtime, fresh_images)
             return result
