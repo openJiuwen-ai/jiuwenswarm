@@ -63,6 +63,35 @@ async def test_project_scan_leaves_front_loop_running(monkeypatch, method, loade
 
 
 @pytest.mark.asyncio
+async def test_unary_history_scan_preserves_loop_and_request_context(monkeypatch):
+    from jiuwenswarm.server.control import history_service
+
+    started, release = threading.Event(), threading.Event()
+    marker = ContextVar("history-query-context", default="unbound")
+    observed = []
+
+    def scan(_params):
+        observed.append((threading.get_ident(), marker.get()))
+        started.set()
+        release.wait(2)
+        return {"messages": [{"role": "user", "content": "history"}], "page_idx": 1, "total_pages": 1}
+
+    monkeypatch.setattr(history_service, "load_history_query", scan)
+    token = marker.set("original-request")
+    task = asyncio.create_task(history_service.handle_history_request(_request(ReqMethod.HISTORY_GET)))
+    try:
+        await _until(started.is_set)
+        assert not task.done(), "The history scan blocked the Front control loop"
+        assert observed == [(observed[0][0], "original-request")]
+        assert observed[0][0] != threading.get_ident()
+    finally:
+        release.set()
+        response = await task
+        marker.reset(token)
+    assert response.ok and response.payload["messages"][0]["content"] == "history"
+
+
+@pytest.mark.asyncio
 async def test_session_scan_and_projection_leave_front_loop_running(monkeypatch):
     started = threading.Event()
     release = threading.Event()

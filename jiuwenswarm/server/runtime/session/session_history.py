@@ -930,10 +930,12 @@ def read_history_index_page(
         WRITE_QUEUE.join()
         with FILE_LOCK:
             path = get_read_history_path(session_id, subagent_id=subagent_id)
-            return read_indexed_history(
-                path, session_id=session_id, page_idx=page_idx, page_size=page_size,
-                is_restorable=restorable_record,
-            )
+            source_stat = path.stat()
+    # Release global locks before scanning the committed prefix.
+    return read_indexed_history(
+        path, session_id=session_id, page_idx=page_idx, page_size=page_size,
+        is_restorable=restorable_record, source_stat=source_stat,
+    )
 
 
 def _encode_history_cursor(payload: dict[str, Any]) -> str:

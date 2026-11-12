@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
@@ -54,6 +55,7 @@ def read_indexed_history(
     page_idx: int,
     page_size: int,
     is_restorable: Callable[[dict[str, Any]], bool],
+    source_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
     """Count restorable rows while retaining only the requested newest-first page.
 
@@ -61,10 +63,21 @@ def read_indexed_history(
     Oversized diagnostic fields are validated and skipped by the legacy parser.
     Semantic fields and the retained page have explicit allocation budgets.
     """
-    before = path.stat()
+    before = path.stat() if source_stat is None else source_stat
     if before.st_size > _SCAN_BYTES:
         raise HistoryReplayError("History exceeds the page scan budget", code="HISTORY_RESTORE_LIMIT")
     deadline = time.monotonic() + _SCAN_SECONDS
+
+    def validate_source() -> None:
+        try:
+            after = path.stat()
+        except FileNotFoundError as exc:
+            raise HistoryReplayError("History disappeared during page scan", code="HISTORY_RESTORE_CHANGED") from exc
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino) or after.st_size < before.st_size:
+            raise HistoryReplayError("History changed during page scan", code="HISTORY_RESTORE_CHANGED")
+
+    if source_stat is not None:
+        validate_source()
 
     def check_time() -> None:
         if time.monotonic() > deadline:
@@ -135,9 +148,10 @@ def read_indexed_history(
                 records.reverse()
     except MemoryError as exc:
         raise HistoryReplayError("History page allocation failed", code="HISTORY_RESTORE_LIMIT") from exc
-    after = path.stat()
-    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino) or after.st_size < before.st_size:
-        raise HistoryReplayError("History changed during page scan", code="HISTORY_RESTORE_CHANGED")
+    except (HistoryReplayError, OSError):
+        validate_source()
+        raise
+    validate_source()
     total_pages = max(1, (total + page_size - 1) // page_size)
     if page_idx > total_pages:
         return None

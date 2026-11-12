@@ -749,6 +749,7 @@ from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import (
     apply_browser_runtime_security_profile,
 )
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
+from jiuwenswarm.server.runtime.agent_adapter.llm_usage_projection import LlmUsageProjection
 from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.runtime.cron import CronTargetChannel
@@ -20013,6 +20014,7 @@ class JiuWenSwarmDeepAdapter:
             "output_cost": 0.0,
             "total_cost": 0.0,
         }
+        usage_projection = LlmUsageProjection()
         emitted_ask_user_events: set[tuple[Any, ...]] = set()
         # The run's final answer for the OTel trace output, kept as the streamed
         # deltas plus the terminal chat.final — see ``_assemble_run_answer``.
@@ -20654,7 +20656,6 @@ class JiuWenSwarmDeepAdapter:
                 moa_stream = moa_progress.stream(interaction_stream)
                 runner_stream = moa_stream
             last_llm_prompt: str | None = None
-            last_llm_payload_refs: dict[str, Any] | None = None
             # Call-start time — anchors the chat.usage_metadata record so the LLM
             # Call card renders before the response text (recorded at completion).
             last_llm_start_ts: float | None = None
@@ -20667,6 +20668,10 @@ class JiuWenSwarmDeepAdapter:
                     chunk.get("event_type", chunk.get("type"))
                     if isinstance(chunk, dict) else getattr(chunk, "type", None)
                 )
+                if chunk_type == "answer":
+                    pending_usage = usage_projection.drain()
+                    if pending_usage is not None:
+                        yield pending_usage
                 if chunk_type == "chat.moa_status":
                     # A notice is not evidence of model output or a new round.
                     parsed = parse_common_stream_chunk(chunk)
@@ -20779,8 +20784,11 @@ class JiuWenSwarmDeepAdapter:
                 if chunk_type in ("llm_call_start", "llm_call_end"):
                     payload = chunk.payload if isinstance(chunk.payload, dict) else {}
                     if chunk_type == "llm_call_start":
-                        refs = payload.get("payload_refs")
-                        last_llm_payload_refs = refs if isinstance(refs, dict) else None
+                        pending_usage = usage_projection.start(payload)
+                        if pending_usage is not None:
+                            yield pending_usage
+                    else:
+                        pending_usage = usage_projection.end(payload)
                     forward: dict[str, Any] = {
                         "event_type": "chat." + chunk_type,
                         "member_name": payload.get("member_name"),
@@ -20808,6 +20816,8 @@ class JiuWenSwarmDeepAdapter:
                         payload=await note_chat_payload(forward),
                         is_complete=False,
                     )
+                    if chunk_type == "llm_call_end" and pending_usage is not None:
+                        yield pending_usage
                     continue
 
                 if chunk_type == "llm_usage":
@@ -20834,11 +20844,7 @@ class JiuWenSwarmDeepAdapter:
                             usage_meta = {**usage_meta, "prompt": last_llm_prompt}
                             if isinstance(chunk.payload, dict):
                                 chunk.payload["usage_metadata"] = usage_meta
-                        if last_llm_payload_refs:
-                            usage_meta = {**usage_meta, "payload_refs": last_llm_payload_refs}
-                            if isinstance(chunk.payload, dict):
-                                chunk.payload["usage_metadata"] = usage_meta
-                    yield AgentResponseChunk(
+                    ready_usage = usage_projection.accept(AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
                         payload={
@@ -20848,7 +20854,9 @@ class JiuWenSwarmDeepAdapter:
                             **({"llm_start_ts": last_llm_start_ts} if last_llm_start_ts is not None else {}),
                         },
                         is_complete=False,
-                    )
+                    ))
+                    if ready_usage is not None:
+                        yield ready_usage
                     continue
 
                 if chunk_type == "llm_reasoning":
@@ -21018,6 +21026,9 @@ class JiuWenSwarmDeepAdapter:
                         is_complete=False,
                     )
 
+            pending_usage = usage_projection.drain()
+            if pending_usage is not None:
+                yield pending_usage
             if accumulated_text:
                 # Same rule as _adapt_goal_intermediate_final: demote host
                 # flush only when the flushed text belonged to a goal round.
@@ -21166,6 +21177,9 @@ class JiuWenSwarmDeepAdapter:
                 _debug_logger.end_run(status="error", error=exc)
             if permission_prepare_rejected:
                 raise
+            pending_usage = usage_projection.drain()
+            if pending_usage is not None:
+                yield pending_usage
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,

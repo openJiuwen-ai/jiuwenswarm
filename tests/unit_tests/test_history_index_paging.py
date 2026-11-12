@@ -209,6 +209,47 @@ def test_indexed_page_rejects_changed_file_identity(stored, monkeypatch):
     assert error.value.code == "HISTORY_RESTORE_CHANGED"
 
 
+@pytest.mark.parametrize("source_format", ["json", "jsonl"])
+@pytest.mark.parametrize("change", ["replace", "truncate", "remove"])
+def test_indexed_snapshot_rejects_changes_before_or_during_parsing(stored, source_format, change):
+    path = stored.with_suffix("." + source_format)
+    write_rows(path, [{"role": "user", "content": "old committed question"}])
+    snapshot = path.stat()
+    if change == "replace":
+        replacement = path.with_name("replacement." + source_format)
+        write_rows(replacement, [{"role": "user", "content": "different question" * 200}])
+        replacement.replace(path)
+    elif change == "truncate":
+        path.write_bytes(b"[]" if source_format == "json" else b"")
+    else:
+        path.unlink()
+    with pytest.raises(HistoryReplayError) as error:
+        paging.read_indexed_history(
+            path, session_id="indexed", page_idx=1, page_size=50,
+            is_restorable=lambda _record: True, source_stat=snapshot,
+        )
+    assert error.value.code == "HISTORY_RESTORE_CHANGED"
+
+
+def test_indexed_snapshot_classifies_replacement_that_interrupts_parsing(stored, monkeypatch):
+    path = stored.with_suffix(".json")
+    write_rows(path, [{"role": "user", "content": "committed"}])
+    replacement = path.with_name("replacement.json")
+    write_rows(replacement, [{"role": "user", "content": "different question" * 200}])
+    original = paging.iter_history_rows
+
+    def changed_before_parse(*args, **kwargs):
+        replacement.replace(path)
+        yield from original(*args, **kwargs)
+
+    monkeypatch.setattr(paging, "iter_history_rows", changed_before_parse)
+    with pytest.raises(HistoryReplayError) as error:
+        paging.read_indexed_history(
+            path, session_id="indexed", page_idx=1, page_size=50, is_restorable=lambda _record: True,
+        )
+    assert error.value.code == "HISTORY_RESTORE_CHANGED"
+
+
 @pytest.mark.asyncio
 async def test_legacy_unary_page_returns_budget_error(stored, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
