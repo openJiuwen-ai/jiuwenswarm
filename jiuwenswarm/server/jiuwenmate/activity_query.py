@@ -164,11 +164,16 @@ def assemble_activity(
     conversation_titles: Mapping[tuple[str, str], str] | None = None,
     plan_names: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
-    """Fold stored rows into one member record per colleague. ``now`` must be timezone-aware."""
+    """Fold stored rows into one member record per colleague.
+
+    ``now`` must be timezone-aware; its zone decides which calendar day and hour
+    each request falls into, so the heatmaps line up with the viewer's clock.
+    """
     if now.tzinfo is None:
         raise PersistentAgentError("activity clock must be timezone-aware", code="ACTIVITY_INVALID")
+    zone = now.tzinfo
     moment = now.astimezone(timezone.utc)
-    today = moment.date()
+    today = now.date()
     titles = {} if conversation_titles is None else conversation_titles
     plans = {} if plan_names is None else plan_names
     by_session = {row["session_id"]: row for row in sessions}
@@ -185,7 +190,7 @@ def assemble_activity(
     members: list[dict[str, object]] = []
     for colleague in colleagues:
         agent_id = colleague["agent_id"]
-        created = _aware(colleague["created_at"]).date()
+        created = _aware(colleague["created_at"]).astimezone(zone).date()
         companion_days = max(1, (today - created).days + 1)
         tasks = replies = failures = calls_total = tokens_total = 0
         last_response: datetime | None = None
@@ -219,19 +224,20 @@ def assemble_activity(
                 running_task_started_ats.append(started.isoformat())
             ended = request["status"] == "ended" and request["updated_at"]
             spent = _minutes(started, _aware(str(request["updated_at"]))) if ended else 0
+            local = started.astimezone(zone)
+            day = local.date().isoformat()
             tasks += 1
             if ended:
-                day_finished_tasks[started.date().isoformat()] += 1
+                day_finished_tasks[day] += 1
             if outcome == "completed":
                 replies += 1
             elif outcome == "failed":
                 failures += 1
-                day_failures[started.date().isoformat()] += 1
-            day = started.date().isoformat()
+                day_failures[day] += 1
             day_tasks[day] += 1
             day_minutes[day] += spent
-            hour_minutes[(day, started.hour)] += spent
-            hour_tasks[(day, started.hour)] += 1
+            hour_minutes[(day, local.hour)] += spent
+            hour_tasks[(day, local.hour)] += 1
             source_ref = _optional(request, "source_ref") or ""
             kind = _work_kind(source_ref, session)
             title = _history_title(
@@ -292,11 +298,11 @@ def assemble_activity(
             calls_total += 1
             tokens_total += amount
             request_tokens[request_id] += amount
-            started = starts[request_id]
-            day = started.date().isoformat()
+            local = starts[request_id].astimezone(zone)
+            day = local.date().isoformat()
             day_calls[day] += 1
             day_tokens[day] += amount
-            hour_tokens[(day, started.hour)] += amount
+            hour_tokens[(day, local.hour)] += amount
             session = by_session.get(str(request["session_id"]))
             if session is not None:
                 transport_channel = _transport_channel(session, group_names)
