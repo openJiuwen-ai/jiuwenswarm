@@ -2979,6 +2979,11 @@
   width: min(560px, calc(100vw - 32px));
 }
 
+.jiuwenmate-schedule-dialog [role='alert'] {
+  color: var(--color-feedback-danger);
+  font-size: 13px;
+}
+
 .jiuwenmate-schedule-board {
   display: grid;
   align-content: start;

@@ -12,7 +12,6 @@ from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.runtime.cron.cron_job_mutations import (
     apply_cron_job_patch,
     build_new_cron_job,
-    ensure_proactive_deletable,
     migrate_work_mode_on_items,
     parse_cron_jobs,
 )
@@ -264,7 +263,6 @@ class EtcdCronJobStore:
         existing = await self.get_job(job_id)
         if existing is None:
             return False
-        ensure_proactive_deletable(existing, force=force)
         async with self._lock:
             try:
                 self._revision = await self._client.delete(self._job_key(job_id))

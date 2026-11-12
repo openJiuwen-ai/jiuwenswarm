@@ -41,7 +41,7 @@ Write English Markdown with these sections:
 - Shot-view coverage list (distinct cameras/angles needed)
 - Duration target and per-shot timing budget
 - Audio policy (speech vs music)
-- Production specs (style, axis, occupancy, wardrobe) — copy locks, do not drop them
+- Production specs (style, axis, occupancy, clothing) — copy locks, do not drop them
 - What to avoid
 Preserve every on-screen person, including unnamed groups that share one look, and every shot from the user prompt in FULL DETAIL. Output Markdown only.
 Explicit user facts and constraints are authoritative. For a sparse request, develop a coherent

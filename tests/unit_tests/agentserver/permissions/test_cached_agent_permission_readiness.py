@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 from __future__ import annotations
 
 import asyncio
@@ -10,11 +12,6 @@ from jiuwenswarm.agents.harness.common.tools.multi_session_toolkits import (
     MultiSessionToolkit,
     SessionTask,
     Status,
-)
-from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-from jiuwenswarm.server.runtime.proactive_adapter import (
-    ProactiveTriggerRequest,
-    trigger_main_agent,
 )
 
 
@@ -49,30 +46,6 @@ class _ReadinessManager:
         return self.agent
 
 
-class _Server:
-    def __init__(self, manager: _ReadinessManager) -> None:
-        self.manager = manager
-        self.pushes: list[dict] = []
-
-    def get_agent_manager(self) -> _ReadinessManager:
-        return self.manager
-
-    def get_agent(self):
-        return self.manager.agent
-
-    async def send_push(self, message: dict) -> None:
-        self.pushes.append(message)
-
-
-def _proactive_request() -> ProactiveTriggerRequest:
-    return ProactiveTriggerRequest(
-        session_id="session-1",
-        channel_id="web",
-        query="continue",
-        decision=SimpleNamespace(type="reminder", target="task"),
-    )
-
-
 def _multi_session_toolkit() -> MultiSessionToolkit:
     toolkit = MultiSessionToolkit(
         session_id="parent-session",
@@ -89,35 +62,6 @@ def _multi_session_toolkit() -> MultiSessionToolkit:
         )
     )
     return toolkit
-
-
-@pytest.mark.asyncio
-async def test_proactive_cached_agent_uses_existing_execution_entry_without_global_wait(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    agent = _CachedAgent()
-    manager = _ReadinessManager(agent)
-    server = _Server(manager)
-    monkeypatch.setattr(AgentWebSocketServer, "resolve_adapter", lambda _agent: None)
-
-    assert await trigger_main_agent(server, _proactive_request()) is True
-    await asyncio.wait_for(agent.executed.wait(), 1)
-    assert manager.lookups == 1
-    assert agent.executions == 1
-
-
-@pytest.mark.asyncio
-async def test_proactive_without_cached_agent_does_not_create_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    agent = _CachedAgent()
-    manager = _ReadinessManager(agent)
-    server = _Server(manager)
-    monkeypatch.setattr(AgentWebSocketServer, "resolve_adapter", lambda _agent: None)
-    manager.agent = None
-    assert await trigger_main_agent(server, _proactive_request()) is False
-    assert manager.lookups == 1
-    assert agent.executions == 0
 
 
 @pytest.mark.asyncio

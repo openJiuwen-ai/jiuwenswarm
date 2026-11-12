@@ -6,6 +6,7 @@
 
 import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
+import { mayProcessingTrueFrameRelight } from '../features/interruptSettleGuard';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
 import { isEnterprise } from '../edition';
@@ -115,7 +116,6 @@ import {
   crossSessionAssistantMessageId,
   generateUuidV4,
   prefixedMessageId,
-  proactiveAssistantMessageId,
 } from '../utils';
 import {
   findOverlappingFileExecutionEvent,
@@ -2279,6 +2279,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
+      // A fresh user send starts a new turn: the previous interrupt settle
+      // window no longer applies.
+      useChatStore.getState().clearInterruptSettled(sessionId);
       // 标记本地发起的发送，用于 processing_status 处理器区分"旧任务被打断"
       // 和"任务正常结束"——前者跳过自动排空
       localSendPendingRef.current.add(sessionId);
@@ -2525,6 +2528,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
+      useChatStore.getState().clearInterruptSettled(sessionId);
 
       const currentSessionState = useSessionStore.getState();
       const currentRuntime = currentSessionState.getRuntime(sessionId);
@@ -3145,13 +3149,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     []
   );
 
-  // 主动推荐来源的 chunk 是后台主 agent 跑指令式 query 产生的系统推送话术，
-  // 不是用户这一轮的思考流。若让它走正常 appendReasoning / closeReasoning /
-  // setProcessing / setThinking，会把 proactive 的思考段追加进 session 全局
-  // reasoningSegments（segment 无 messageId 绑定，按 startedAt 排序并入上一轮
-  // turn），进而污染上一条用户消息的思考状态（"已完成" → "已完成 N 次思考"
-  // streak chip）。proactive 流的 chunk 只负责把推荐正文落地为卡片，不参与
-  // 会话级思考状态机。
+  // Scheduled proactive recommendation payloads are ignored by the frontend UI.
+  // Keep this detector so live/history side-effects do not touch session state.
   const isProactiveRecommendationPayload = useCallback(
     (payload: Record<string, unknown>): boolean =>
       typeof payload.source === 'string' && payload.source === 'proactive_recommendation',
@@ -3165,12 +3164,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
         payload.source !== 'org_expert_direct' && payload.team_id) return;
       const runtime = useChatStore.getState().getRuntime(sessionId);
-      if (!isProactiveRecommendationPayload(payload) &&
-        !runtime?.isProcessing && !runtime?.isLoadingHistory && !runtime?.isPaused) {
+      if (!runtime?.isProcessing && !runtime?.isLoadingHistory && !runtime?.isPaused) {
         useChatStore.getState().setProcessing(sessionId, true);
       }
     },
-    [isProactiveRecommendationPayload],
+    [],
   );
 
   const clearThinkingForVisibleOutput = useCallback((sessionId: string) => {
@@ -3453,6 +3451,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.delta', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.delta', payload)) return;
+        if (isProactiveRecommendationPayload(payload)) return;
           const sessionId = resolveEventSessionId(payload, 'chat.delta');
           if (!sessionId) return;
 
@@ -3460,10 +3459,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         restoreForegroundProcessing(sessionId, payload);
 
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
-        const agentTemplateName =
-          !isProactiveRecommendationPayload(payload)
-            ? readAgentTemplateName(payload)
-            : undefined;
+        const agentTemplateName = readAgentTemplateName(payload);
         const content = unescapeLiteralNewlines(
           typeof payload.content === 'string' ? payload.content : ''
         );
@@ -3504,38 +3500,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return;
         }
 
-        // 主动推荐按 rec_id 固定气泡，不占用 currentStreamId。
-        // 否则后一条推荐的 delta/final 会追加或整段覆盖前一条，直播时只剩一张卡片；
-        // 重启走历史恢复才会按 rec_id 拆开，所以第二条要刷新后才出现。
-        if (isProactiveRecommendationPayload(payload)) {
-          if (!content) return;
-          const proactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
-          const proactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : undefined;
-          const assistantMsgId = proactiveAssistantMessageId(proactiveRecId);
-          const chatStore = useChatStore.getState();
-          const existing = chatStore
-            .getRuntime(sessionId)
-            ?.messages.find((message) => message.id === assistantMsgId);
-          if (existing) {
-            chatStore.updateMessage(sessionId, assistantMsgId, {
-              content: (existing.content || '') + content,
-            });
-          } else {
-            chatStore.addMessage(sessionId, {
-              id: assistantMsgId,
-              role: 'assistant',
-              content,
-              timestamp: normalizeEventTimestampIso(payload.timestamp),
-              isStreaming: true,
-              isProactiveRecommendation: true,
-              ...(proactiveType
-                ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
-                : {}),
-              ...(proactiveRecId ? { proactiveRecId } : {}),
-            });
-          }
-          return;
-        }
+        // Frontend no longer surfaces scheduled proactive recommendation cards.
+        if (isProactiveRecommendationPayload(payload)) return;
 
         if (isHiddenTeamTeammateMessagePayload(currentMode ?? 'agent', payload)) {
           const memberId = getTeamPayloadMemberName(payload);
@@ -3545,14 +3511,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return;
         }
         if (currentMode === 'team' && content) {
-          if (!isProactiveRecommendationPayload(payload)) {
-            clearThinkingForVisibleOutput(sessionId);
-            if (content.trim()) {
-              useChatStore.getState().bumpThinkingAnchor(sessionId);
-              useChatStore.getState().closeReasoning(sessionId, {
-                atMs: eventTimestampMs(payload),
-              });
-            }
+          clearThinkingForVisibleOutput(sessionId);
+          if (content.trim()) {
+            useChatStore.getState().bumpThinkingAnchor(sessionId);
+            useChatStore.getState().closeReasoning(sessionId, {
+              atMs: eventTimestampMs(payload),
+            });
           }
           const existingMsg = findActiveTeamLeaderMessage(sessionId, getPayloadRequestId(payload));
 
@@ -3604,19 +3568,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         let currentStreamId = useChatStore.getState().getRuntime(sessionId)?.currentStreamId;
-        if (!isProactiveRecommendationPayload(payload)) {
-          clearThinkingForVisibleOutput(sessionId);
-          if (content.trim()) {
-            useChatStore.getState().bumpThinkingAnchor(sessionId);
-            useChatStore.getState().closeReasoning(sessionId, {
-              atMs: eventTimestampMs(payload),
-            });
-          }
+        clearThinkingForVisibleOutput(sessionId);
+        if (content.trim()) {
+          useChatStore.getState().bumpThinkingAnchor(sessionId);
+          useChatStore.getState().closeReasoning(sessionId, {
+            atMs: eventTimestampMs(payload),
+          });
         }
         if (!currentStreamId && content) {
           const assistantMsgId = prefixedMessageId('assistant-');
-          const proactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : undefined;
-          const proactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : undefined;
           useChatStore.getState().addMessage(sessionId, {
             id: assistantMsgId,
             role: 'assistant',
@@ -3626,9 +3586,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             outputOrder: readOutputOrder(payload),
             isStreaming: true,
             ...(agentTemplateName ? { agentTemplateName } : {}),
-            ...(isProactiveRecommendationPayload(payload) ? { isProactiveRecommendation: true } : {}),
-            ...(proactiveType ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' } : {}),
-            ...(proactiveRecId ? { proactiveRecId } : {}),
           });
           useChatStore.getState().startStreaming(sessionId, assistantMsgId);
           currentStreamId = assistantMsgId;
@@ -3662,10 +3619,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
         restoreForegroundProcessing(sessionId, payload);
 
-        const agentTemplateName =
-          !isProactiveRecommendationPayload(payload)
-            ? readAgentTemplateName(payload)
-            : undefined;
+        const agentTemplateName = readAgentTemplateName(payload);
         const reasoningContent =
           typeof payload.content === 'string' ? payload.content : '';
         if (reasoningContent) {
@@ -3690,14 +3644,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
         const cronMeta = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
 
-        // 达上限通知不绑定具体会话（后端 _send_notification_cb 不带 session_id），
-        // 必须在下方 session 守卫（if (!sessionId) return）之前拦截，否则会被该守卫
-        // 挡掉、用户看不到任何提示。走顶部 toast，不进会话历史。
+        // Scheduled proactive notifications are no longer shown in the frontend.
         if (typeof payload.source === 'string' && payload.source === 'proactive_notification') {
-          const notifContent = normalizeFinalContent(payload);
-          if (notifContent) {
-            useHarnessStore.getState().setProactiveNotification(notifContent);
-          }
           return;
         }
 
@@ -3970,45 +3918,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return;
         }
 
-        // 与 delta 使用同一 rec_id。这里不能走普通 final 的 currentStreamId 收尾：
-        // 那会把后一条推荐写进前一条气泡，并 stopStreaming 打断用户正在进行的回答。
-        if (isProactiveRecommendationPayload(payload)) {
-          const proactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
-          const proactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : '';
-          const assistantMsgId = proactiveAssistantMessageId(proactiveRecId);
-          const chatStore = useChatStore.getState();
-          const existing = chatStore
-            .getRuntime(sessionId)
-            ?.messages.find((message) => message.id === assistantMsgId);
-          const completedAt = normalizeEventTimestampIso(payload.timestamp);
-          const proactivePatch: Partial<Message> = {
-            isStreaming: false,
-            completedAt,
-            isProactiveRecommendation: true,
-            ...(proactiveType
-              ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
-              : {}),
-            ...(proactiveRecId ? { proactiveRecId } : {}),
-          };
-          if (existing) {
-            chatStore.updateMessage(sessionId, assistantMsgId, {
-              ...(content.trim() ? { content } : {}),
-              ...proactivePatch,
-            });
-          } else if (content.trim()) {
-            chatStore.addMessage(sessionId, {
-              id: assistantMsgId,
-              role: 'assistant',
-              content,
-              timestamp: completedAt,
-              ...proactivePatch,
-            });
-          }
-          if (content.trim() && !content.includes('MEDIA:')) {
-            handleTtsPlayback(sessionId, assistantMsgId, content);
-          }
-          return;
-        }
+        // Frontend no longer surfaces scheduled proactive recommendation cards.
+        if (isProactiveRecommendationPayload(payload)) return;
 
         const teamLeaderMessageToFinalize =
           currentMode === 'team'
@@ -4120,15 +4031,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const assistantStreamSplit = Boolean(runtime?.assistantStreamSplit);
         useChatStore.getState().clearStreamSplit(sessionId);
 
-        const source = typeof payload.source === 'string' ? payload.source : '';
-        const isProactiveRecommendation = source === 'proactive_recommendation';
-        const proactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : '';
-        const agentTemplateName =
-          !isProactiveRecommendation
-            ? readAgentTemplateName(payload)
-            : undefined;
+        const agentTemplateName = readAgentTemplateName(payload);
         const agentIdentityPatch = agentTemplateName ? { agentTemplateName } : {};
-        const proactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
 
         const streamId = currentStreamId;
         const preferredSegmentId =
@@ -4174,7 +4078,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const cronMetaEarly = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
           const cronRunIdEarly =
             typeof cronMetaEarly?.run_id === 'string' ? cronMetaEarly.run_id.trim() : '';
-          if (!cronRunIdEarly && !cronMetaEarly && !isProactiveRecommendation) {
+          if (!cronRunIdEarly && !cronMetaEarly) {
             if (streamId) {
               useChatStore.getState().stopStreaming(sessionId);
             }
@@ -4204,7 +4108,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                   isStreaming: false,
                   completedAt: completedAtIso,
                   ...agentIdentityPatch,
-                  ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
                 });
                 if (!content.includes('MEDIA:')) {
                   handleTtsPlayback(sessionId, rewriteId, content);
@@ -4227,7 +4130,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             isStreaming: false,
             completedAt: completedAtIso,
             ...agentIdentityPatch,
-            ...(isProactiveRecommendation ? { isProactiveRecommendation, ...(proactiveType ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' } : {}), ...(proactiveRecId ? { proactiveRecId } : {}) } : {}),
           });
           useChatStore.getState().stopStreaming(sessionId);
           if (content && !content.includes('MEDIA:')) {
@@ -4254,7 +4156,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               isStreaming: false,
               completedAt: completedAtIso,
               ...agentIdentityPatch,
-              ...(isProactiveRecommendation ? { isProactiveRecommendation, ...(proactiveType ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' } : {}), ...(proactiveRecId ? { proactiveRecId } : {}) } : {}),
             });
             useChatStore.getState().stopStreaming(sessionId);
             if (!nextContent.includes('MEDIA:')) {
@@ -4266,7 +4167,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             isStreaming: false,
             completedAt: completedAtIso,
             ...agentIdentityPatch,
-            ...(isProactiveRecommendation ? { isProactiveRecommendation, ...(proactiveType ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' } : {}), ...(proactiveRecId ? { proactiveRecId } : {}) } : {}),
           });
           useChatStore.getState().stopStreaming(sessionId);
         }
@@ -4305,7 +4205,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 content,
                 isStreaming: false,
                 completedAt: completedAtIso,
-                ...(isProactiveRecommendation ? { isProactiveRecommendation, ...(proactiveType ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' } : {}), ...(proactiveRecId ? { proactiveRecId } : {}) } : {}),
               });
               if (!content.includes('MEDIA:')) {
                 handleTtsPlayback(sessionId, placeholderId, content);
@@ -4328,7 +4227,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 isStreaming: false,
                 completedAt: completedAtIso,
                 ...agentIdentityPatch,
-                ...(isProactiveRecommendation ? { isProactiveRecommendation, ...(proactiveType ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' } : {}), ...(proactiveRecId ? { proactiveRecId } : {}) } : {}),
               });
               return;
             }
@@ -4337,7 +4235,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               isStreaming: false,
               completedAt: completedAtIso,
               ...agentIdentityPatch,
-              ...(isProactiveRecommendation ? { isProactiveRecommendation, ...(proactiveType ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' } : {}), ...(proactiveRecId ? { proactiveRecId } : {}) } : {}),
             });
             if (!content.includes('MEDIA:')) {
               handleTtsPlayback(sessionId, messageId, content);
@@ -4385,7 +4282,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                   isStreaming: false,
                   completedAt: completedAtIso,
                   ...agentIdentityPatch,
-                  ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
                 });
                 if (!content.includes('MEDIA:')) {
                   handleTtsPlayback(sessionId, rewriteId, content);
@@ -4401,9 +4297,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               timestamp: completedAtIso,
               completedAt: completedAtIso,
               ...agentIdentityPatch,
-              isProactiveRecommendation,
-              ...(proactiveType ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' } : {}),
-              ...(proactiveRecId ? { proactiveRecId } : {}),
             });
             if (!remainder.includes('MEDIA:')) {
               handleTtsPlayback(sessionId, finalMsgId, remainder);
@@ -4426,7 +4319,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 isStreaming: false,
                 completedAt: completedAtIso,
                 ...agentIdentityPatch,
-                ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
               });
               if (!content.includes('MEDIA:')) {
                 handleTtsPlayback(sessionId, rewriteId, content);
@@ -4440,7 +4332,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               isStreaming: false,
               completedAt: completedAtIso,
               ...agentIdentityPatch,
-              ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
             });
             return;
           }
@@ -4451,9 +4342,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             timestamp: messageTimestampIso,
             completedAt: completedAtIso,
             ...agentIdentityPatch,
-            isProactiveRecommendation,
-            ...(proactiveType ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' } : {}),
-            ...(proactiveRecId ? { proactiveRecId } : {}),
           });
           if (!content.includes('MEDIA:')) {
             handleTtsPlayback(sessionId, messageId, content);
@@ -4574,18 +4462,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.tool_call', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.tool_call', payload)) return;
+        if (isProactiveRecommendationPayload(payload)) return;
         const sessionId = resolveEventSessionId(payload, 'chat.tool_call');
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
         restoreForegroundProcessing(sessionId, payload);
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
-        if (!isProactiveRecommendationPayload(payload)) {
-          clearThinkingForVisibleOutput(sessionId);
-          useChatStore.getState().closeReasoning(sessionId, {
-            atMs: eventTimestampMs(payload),
-          });
-        }
+        clearThinkingForVisibleOutput(sessionId);
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+        });
         const toolCall = normalizeToolCallPayload(payload);
         if (toolCall.name === 'subagent_send_input' || toolCall.name === 'subagent_spawn') {
           const subagentId = typeof toolCall.arguments.subagent_id === 'string'
@@ -4636,10 +4523,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const runtime = useChatStore.getState().getRuntime(sessionId);
         const currentStreamId = runtime?.currentStreamId;
         const toolRequestId = getPayloadRequestId(payload) || activeRequestIdRef.current;
-        const agentTemplateName =
-          !isProactiveRecommendationPayload(payload)
-            ? readAgentTemplateName(payload)
-            : undefined;
+        const agentTemplateName = readAgentTemplateName(payload);
         // 工具时间戳一律用事件自身时间，与 history 回放（item.at）对齐；勿绑气泡 timestamp。
         const toolStartedAt = normalizeEventTimestampIso(payload.timestamp);
         useChatStore.getState().addToolCall(sessionId, toolCall, {
@@ -5006,9 +4890,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
 
+        // A pause/cancel ack settled this turn; a synthetic resume event from
+        // webClient (no event_type — it is not a wire frame) must not relight
+        // processing. Genuine wire frames carry event_type and clear the
+        // marker below to let a real new round start.
+        if (isProcessingNow
+          && !mayProcessingTrueFrameRelight(
+            typeof payload.event_type === 'string',
+            useChatStore.getState().getRuntime(sessionId)?.interruptSettledEpoch != null,
+          )) {
+          return;
+        }
         // 后端确认 processing=true 时清除本地发送标记——新任务已由后端接管
         if (isProcessingNow) {
           localSendPendingRef.current.delete(sessionId);
+          useChatStore.getState().clearInterruptSettled(sessionId);
         }
         // 如果 interrupt_result 指示任务已完成，忽略 processing_status=true
         const interruptResult = useChatStore.getState().getRuntime(sessionId)?.interruptResult;
@@ -5444,6 +5340,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             clearPendingContextCompressionStart(sessionId);
             useChatStore.getState().setContextCompressionStatus(sessionId, undefined);
           }
+          // The ack authoritatively settled this turn. Until a new real
+          // processing_status(true) frame or a fresh user send arrives, a
+          // lagging runtime snapshot (session.get_metadata) must not relight
+          // processing (bug1112: pause ack + stale worker snapshot kept the
+          // stop button alive forever).
+          useChatStore.getState().markInterruptSettled(sessionId);
         }
 
         if (resultPayload.intent === 'pause') {

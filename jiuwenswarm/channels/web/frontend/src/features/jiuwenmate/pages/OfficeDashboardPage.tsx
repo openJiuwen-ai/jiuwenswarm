@@ -67,6 +67,7 @@ export interface OfficeDashboardHandlers {
   onUpdateSchedule: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
   onSetScheduleEnabled: (planId: string, enabled: boolean) => void | Promise<void>;
   onDeleteSchedule: (planId: string) => void | Promise<void>;
+  onRunSchedule: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory: (planId: string) => Promise<{ plan: Schedule; runs: ScheduleRun[] }>;
 }
 
@@ -702,6 +703,7 @@ function TasksTab({
         onUpdate={handlers.onUpdateSchedule}
         onSetEnabled={handlers.onSetScheduleEnabled}
         onDelete={handlers.onDeleteSchedule}
+        onRun={handlers.onRunSchedule}
         onLoadHistory={handlers.onLoadScheduleHistory}
       />
     </div>

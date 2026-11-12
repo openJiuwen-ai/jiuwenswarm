@@ -44,6 +44,7 @@ import {
   markCronOptimisticProcessing,
   shouldKeepLocalCronProcessing,
 } from './features/cron/cronProcessingGuard';
+import { maySnapshotRelightProcessing } from './features/interruptSettleGuard';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -572,9 +573,7 @@ function AppContent({
   const [restartSeenDisconnect, setRestartSeenDisconnect] = useState(false);
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
-  const [proactiveToastVisible, setProactiveToastVisible] = useState(false);
   const [authToastVisible, setAuthToastVisible] = useState(false);
-  const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
@@ -631,7 +630,8 @@ function AppContent({
     if (activeNav === 'chat') {
       const { defaultModelName, setSelectedModelName } = useSessionStore.getState();
       const runtime = useSessionStore.getState().getRuntime(sessionId);
-      if (defaultModelName && !runtime?.selectedModelName) {
+      const missingModelName = Boolean(defaultModelName && !runtime?.selectedModelName);
+      if (missingModelName && !runtime?.selectedModelSelection) {
         useSessionStore.getState().ensureRuntime(sessionId);
         setSelectedModelName(sessionId, defaultModelName);
       }
@@ -677,7 +677,6 @@ function AppContent({
 
   const restartAutoCloseTimerRef = useRef<number | null>(null);
   const saveToastTimerRef = useRef<number | null>(null);
-  const proactiveToastTimerRef = useRef<number | null>(null);
   const authToastTimerRef = useRef<number | null>(null);
   const settingsHasChangesRef = useRef(false);
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
@@ -1285,9 +1284,6 @@ function AppContent({
   const clearTodos = useTodoStore((s) => s.clearTodos);
   const extensionReady = useHarnessStore((s) => s.runtimes[sessionId]?.extensionReady ?? null);
   const resetHarnessStore = useHarnessStore((s) => s.reset);
-  const proactiveNotificationMessage = useHarnessStore((s) => s.proactiveNotificationMessage);
-  const setProactiveNotification = useHarnessStore((s) => s.setProactiveNotification);
-
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
   const toolPanelHasContent = useMemo(() => {
     // Electron 下工具面板始终可达（内置浏览器页签等桌面能力），但新建会话首页
@@ -2084,6 +2080,12 @@ function AppContent({
         const localProcessing = Boolean(
           useChatStore.getState().getRuntime(targetSessionId)?.isProcessing,
         );
+        // A pause/cancel ack just settled this turn; the worker snapshot can
+        // lag the teardown (bug1112: pause ack + stale snapshot re-lit the
+        // stop button in a loop). Ignore a busy snapshot until a new round
+        // starts (user send / processing_status(true) clears the marker).
+        const interruptSettled = useChatStore.getState()
+          .getRuntime(targetSessionId)?.interruptSettledEpoch != null;
         const trackedLastRun = Object.values(useCronStore.getState().lastRunSessionId).includes(
           targetSessionId,
         );
@@ -2098,6 +2100,7 @@ function AppContent({
         const metadataMaySettleProcessing = session.is_processing || allowDowngrade || !locallyBusy;
         if (
           metadataMaySettleProcessing
+          && maySnapshotRelightProcessing(session.is_processing, interruptSettled, allowDowngrade)
           && !shouldKeepLocalCronProcessing(targetSessionId, session.is_processing, localProcessing, {
             // 统一会话未必 cron_ 前缀，靠 cron_id / lastRun 放行
             hasCronMetadata: Boolean(session.cron_id) || trackedLastRun,
@@ -2308,13 +2311,6 @@ function AppContent({
     if (saveToastTimerRef.current != null) {
       window.clearTimeout(saveToastTimerRef.current);
       saveToastTimerRef.current = null;
-    }
-  }, []);
-
-  const clearProactiveToastTimer = useCallback(() => {
-    if (proactiveToastTimerRef.current != null) {
-      window.clearTimeout(proactiveToastTimerRef.current);
-      proactiveToastTimerRef.current = null;
     }
   }, []);
 
@@ -2600,22 +2596,8 @@ function AppContent({
     return () => {
       clearRestartAutoCloseTimer();
       clearSaveToastTimer();
-      clearProactiveToastTimer();
     };
-  }, [clearProactiveToastTimer, clearRestartAutoCloseTimer, clearSaveToastTimer]);
-
-  useEffect(() => {
-    const message = proactiveNotificationMessage?.trim();
-    if (!message) return;
-    setProactiveToastMessage(message);
-    setProactiveToastVisible(true);
-    clearProactiveToastTimer();
-    proactiveToastTimerRef.current = window.setTimeout(() => {
-      setProactiveToastVisible(false);
-      setProactiveNotification(null);
-      proactiveToastTimerRef.current = null;
-    }, 8000);
-  }, [clearProactiveToastTimer, proactiveNotificationMessage, setProactiveNotification]);
+  }, [clearRestartAutoCloseTimer, clearSaveToastTimer]);
 
   useEffect(() => {
     if (!isConnected || initialDataLoaded) {
@@ -5332,17 +5314,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-auth-toast">
           <div className="app-session-toast animate-rise" data-testid="app-auth-toast-message">
             {t('auth.huawei.loginSuccessToast')}
-          </div>
-        </div>
-      )}
-
-      {proactiveToastVisible && proactiveToastMessage && (
-        <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-proactive-notification-toast">
-          <div
-            className="max-w-[640px] whitespace-pre-line bg-warn-subtle text-warn px-4 py-3 rounded-lg shadow-lg animate-rise text-sm leading-5"
-            data-testid="app-proactive-notification-toast-message"
-          >
-            {proactiveToastMessage}
           </div>
         </div>
       )}

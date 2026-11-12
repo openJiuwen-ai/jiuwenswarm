@@ -87,6 +87,11 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
+from jiuwenswarm.common.observability_config import (
+    is_observability_scope_enabled,
+    observability_export_settings,
+    resolve_observability_section,
+)
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.observability.config import load_trajectory_store_settings
 from jiuwenswarm.observability.runtime import (
@@ -143,7 +148,7 @@ def sync_team_observability() -> None:
     """Synchronize observability state with current config.
 
     Called before each ``Runner.run_agent_team_streaming`` so that
-    hot-reloading the ``team_observability.enabled`` flag takes
+    hot-reloading the ``observability.team.enabled`` flag takes
     effect immediately:
 
     * disabled → enabled : ``init_observability()``
@@ -159,7 +164,8 @@ def sync_team_observability() -> None:
     """
     global _observability_active
     config = get_config()
-    cfg = config.get("team_observability", {}) or {}
+    section = resolve_observability_section(config)
+    cfg = observability_export_settings(section)
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = get_skill_evolution_enabled(
         config
@@ -169,7 +175,7 @@ def sync_team_observability() -> None:
     # the SQLite sink. ``trajectory_ui.enabled`` therefore also pulls the
     # provider up, mirroring ``sync_agent_observability``.
     want_enabled = (
-        bool(cfg.get("enabled", False))
+        is_observability_scope_enabled(section, "team")
         or trajectory_settings.enabled
         or evolution_requested
     )
@@ -1844,10 +1850,16 @@ class TeamManager:
                     if key in raw_selection
                 }
             )
+        selected_model_id = (
+            str(selection.id).strip()
+            if selection is not None and selection.type == "model"
+            else ""
+        )
         if selection is not None and selection.type == "model":
             # A single-model selection only names the page-selected model; the
             # pool keeps every configured model below so members can still be
             # assigned any of them. Resolving it also rejects a stale selection.
+            # ``model_id`` keeps a shared model_name on the chosen endpoint.
             requested_model_name = TeamManager._selected_model_name(
                 selection,
                 TeamManager._resolve_and_compile_team_selection(selection),
@@ -1857,6 +1869,7 @@ class TeamManager:
             config_base=config_base,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
+            model_id=selected_model_id or None,
             template_id=template_id,
             template_snapshot=template_snapshot,
             strict_template=strict_template,
@@ -1881,6 +1894,7 @@ class TeamManager:
             config_base,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
+            model_id=selected_model_id or None,
         )
         if effective_models:
             from openjiuwen.agent_teams.schema.team import ModelPoolEntry
@@ -2480,9 +2494,6 @@ class TeamManager:
             ).strip()
             or None,
         )
-        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
-
-        assign_shared_sandbox_sys_operation(spec, deep_agent)
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 

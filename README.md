@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/images/logo.svg" alt="JiuwenSwarm Logo" width="160" />
+  <img src="https://raw.gitcode.com/openJiuwen/jiuwenswarm/raw/develop/docs/assets/images/logo.svg" alt="JiuwenSwarm Logo" width="160" />
 </p>
 
 <h1 align="center">JiuwenSwarm</h1>
@@ -8,13 +8,13 @@
   <strong>Understands Your Intent, Evolves Autonomously — Swarm Collaboration for Complex Tasks</strong>
 </p>
 <p align="center">
-  <a href="README.md">English</a>
+  <a href="https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/README.md">English</a>
   ·
-  <a href="README_CN.md">Chinese</a>
+  <a href="https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/README_CN.md">Chinese</a>
   ·
-  <a href="docs/README_EN.md">Docs (EN)</a>
+  <a href="https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/README_EN.md">Docs (EN)</a>
   ·
-  <a href="docs/README.md">Docs</a>
+  <a href="https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/README.md">Docs</a>
   ·
   <a href="https://openjiuwen.com/en/">Website</a>
   ·
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE">
+  <a href="https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/LICENSE">
     <img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="License" />
   </a>
   <a href="https://github.com/openJiuwen-ai/jiuwenswarm/releases">
@@ -34,7 +34,7 @@
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20HarmonyOS-lightgrey.svg" alt="OS Support" />
 </p>
 
-[JiuwenSwarm_Introduction.mp4](docs/assets/videos/JiuwenSwarm_Introduction.mp4)
+[JiuwenSwarm_Introduction.mp4](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/assets/videos/JiuwenSwarm_Introduction.mp4)
 
 **JiuwenSwarm** is an Agent system that makes multi-agent collaboration truly work. Designed for developers and teams who need to automate complex tasks, it helps users drive multi-agent collaboration, Skill self-evolution, and tool invocation through natural language — delivering end-to-end from intent to result. It runs on a single machine or across a cluster, and you can reach it from a browser, a terminal, or the chat apps you already use.
 
@@ -96,7 +96,7 @@ uv venv
 uv pip install -e .
 ```
 
-> For detailed installation instructions, see: [Install Guide](docs/en/InstallGuide.md)
+> For detailed installation instructions, see: [Install Guide](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/InstallGuide.md)
 
 ## Quick Start
 
@@ -146,7 +146,7 @@ In IM channels and the TUI, the `/mode` command switches between finer-grained s
 
 By default, tools ask for approval before they run. If you would rather not confirm every step, adjust the policy in [Tool Permissions & Security](https://github.com/openJiuwen-ai/jiuwenswarm/blob/develop/docs/en/ToolPermissionsSecurity.md).
 
-> For detailed operation guide, see: [Quick Start](docs/en/Quickstart.md)
+> For detailed operation guide, see: [Quick Start](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/Quickstart.md)
 
 ## Channels
 
@@ -154,26 +154,26 @@ Enable a channel from the **Web UI**, or in `config.yaml` with `enabled: true` a
 
 | Region        | Channels                                                                                                                                                                                                                                                   |
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| China         | [Xiaoyi](docs/en/ChinaChannels.md#xiaoyi), [Feishu](docs/en/ChinaChannels.md#feishu-lark), [DingTalk](docs/en/ChinaChannels.md#dingtalk), [WeCom](docs/en/ChinaChannels.md#wecom-wechat-work), [Personal WeChat](docs/en/ChinaChannels.md#personal-wechat) |
-| International | [Telegram](docs/en/InternationalChannels.md#telegram), [Discord](docs/en/InternationalChannels.md#discord), [Slack](docs/en/InternationalChannels.md#slack), [WhatsApp](docs/en/InternationalChannels.md#whatsapp)                                         |
+| China         | [Xiaoyi](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/ChinaChannels.md#xiaoyi), [Feishu](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/ChinaChannels.md#feishu-lark), [DingTalk](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/ChinaChannels.md#dingtalk), [WeCom](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/ChinaChannels.md#wecom-wechat-work), [Personal WeChat](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/ChinaChannels.md#personal-wechat) |
+| International | [Telegram](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/InternationalChannels.md#telegram), [Discord](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/InternationalChannels.md#discord), [Slack](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/InternationalChannels.md#slack), [WhatsApp](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/InternationalChannels.md#whatsapp)                                         |
 
-Capabilities differ per platform. Xiaoyi and WhatsApp are private chat only; Feishu, WeCom, DingTalk, Telegram, Discord, and Slack also work in groups, usually by @mentioning the bot. Feishu and WeCom additionally support the Digital Avatar feature. See [Channels](docs/en/Channels.md).
+Capabilities differ per platform. Xiaoyi and WhatsApp are private chat only; Feishu, WeCom, DingTalk, Telegram, Discord, and Slack also work in groups, usually by @mentioning the bot. Feishu and WeCom additionally support the Digital Avatar feature. See [Channels](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/Channels.md).
 
 
 
 ## Documentation
 
-Full index: [Documentation](docs/README_EN.md)
+Full index: [Documentation](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/README_EN.md)
 
-- Install and first run: [Install Guide](docs/en/InstallGuide.md) · [Quick Start](docs/en/Quickstart.md)
-- The Web UI layout: [Page Overview](docs/en/Page-Overview.md)
-- Configure providers: [Configuration](docs/en/Configuration.md)
-- Build and evolve capabilities: [Skills](docs/en/Skills.md) · [Skill Self-Evolution](docs/en/SkillSelfEvolution.md)
-- Multi-agent and cluster: [Agent Team](docs/en/AgentTeam.md) · [Team Organization](docs/en/TeamOrganization.md) · [Distributed Team](docs/en/DistributedTeam.md)
-- Memory: [Memory](docs/en/Memory.md) · [Task Memory](docs/en/TaskMemory.md) · [Coding Memory](docs/en/CodingMemory.md)
-- Automation: [Scheduled Tasks](docs/en/ScheduledTasks.md)
-- Terminal: [Quick Start (TUI)](docs/en/Quickstart_tui.md) · [Slash Commands](docs/en/SlashCommands.md) · [SwarmFlow (TUI)](docs/en/TUISwarmFlowGuide.md)
-- Extend and integrate: [MCP Configuration](docs/en/MCPConfiguration.md) · [A2A](docs/en/A2A.md) · [E2A Protocol](docs/en/E2A-protocol.md)
+- Install and first run: [Install Guide](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/InstallGuide.md) · [Quick Start](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/Quickstart.md)
+- The Web UI layout: [Page Overview](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/Page-Overview.md)
+- Configure providers: [Configuration](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/Configuration.md)
+- Build and evolve capabilities: [Skills](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/Skills.md) · [Skill Self-Evolution](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/SkillSelfEvolution.md)
+- Multi-agent and cluster: [Agent Team](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/AgentTeam.md) · [Team Organization](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/TeamOrganization.md) · [Distributed Team](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/DistributedTeam.md)
+- Memory: [Memory](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/Memory.md) · [Task Memory](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/TaskMemory.md) · [Coding Memory](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/CodingMemory.md)
+- Automation: [Scheduled Tasks](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/ScheduledTasks.md)
+- Terminal: [Quick Start (TUI)](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/Quickstart_tui.md) · [Slash Commands](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/SlashCommands.md) · [SwarmFlow (TUI)](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/TUISwarmFlowGuide.md)
+- Extend and integrate: [MCP Configuration](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/MCPConfiguration.md) · [A2A](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/A2A.md) · [E2A Protocol](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/E2A-protocol.md)
 
 ## Latest Updates
 
@@ -186,7 +186,7 @@ Full notes for every version are on [GitHub Releases](https://github.com/openJiu
 
 ## FAQ
 
-For solutions to common issues, see: [FAQ](docs/en/FAQ.md).
+For solutions to common issues, see: [FAQ](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/FAQ.md).
 
 ## Contributing
 
@@ -196,7 +196,7 @@ We welcome developers to contribute to JiuwenSwarm. You can contribute in the fo
 - Submit code, documentation, or examples: [Pull Requests](https://github.com/openJiuwen-ai/jiuwenswarm/pulls)
 - Share Skills: [Swarm Skills Hub](https://swarmskills.openjiuwen.com/)
 
-Read the [Contributing Guide](docs/en/Contributing.md) first for the debugging workflow, code style, and commit conventions. The contribution map is on the [openJiuwen contribution page](https://openjiuwen.com/en/contribute).
+Read the [Contributing Guide](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/Contributing.md) first for the debugging workflow, code style, and commit conventions. The contribution map is on the [openJiuwen contribution page](https://openjiuwen.com/en/contribute).
 
 ### Contributors
 
@@ -212,7 +212,7 @@ Thanks to all developers who have contributed to JiuwenSwarm: [View Contributor 
 
 ## License
 
-This project is licensed under [Apache License 2.0](LICENSE).
+This project is licensed under [Apache License 2.0](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/LICENSE).
 
 This product serves solely as a workflow orchestration tool and does not embed any AI model capabilities. When users integrate AI models for specific business scenarios, they shall bear full responsibility for compliance obligations under the EU AI Act and other relevant regulatory frameworks.
 
