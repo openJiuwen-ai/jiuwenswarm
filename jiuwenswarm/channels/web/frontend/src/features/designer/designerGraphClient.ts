@@ -37,8 +37,10 @@ export type DesignerWorkspace = {
 };
 
 function stableModelPayload(selection?: ModelSelection | null): { model_selection: ModelSelection } | Record<string, never> {
-  if (!selection || selection.type !== 'model' || !selection.id.trim()) return {};
-  return { model_selection: { type: 'model', id: selection.id.trim() } };
+  if (!selection || selection.type !== 'model') return {};
+  const modelId = selection.id.trim();
+  if (!modelId) return {};
+  return { model_selection: { type: 'model', id: modelId } };
 }
 
 export const designerWorkspaceClient = {

@@ -154,7 +154,8 @@ export function DesignerChatPanel() {
     setChatModel(selectedModelName, selectedModelId);
   }, [selectedModelId, selectedModelName, sessionId, setChatModel]);
 
-  const chatBusy = isProcessing || sending || leaderRunActive;
+  const composerBusy = isProcessing || sending;
+  const chatBusy = composerBusy || leaderRunActive;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
   const ensureDuplexSession = useCallback(async () => {
     if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
