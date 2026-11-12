@@ -1435,7 +1435,7 @@ function RunNode({
   useLayoutEffect(() => {
     setExpanded(!ended);
   }, [ended]);
-  // Folded terminal runs compress to a single header row: the summary and the
+  // Folded terminal runs show only the compact header: the summary and the
   // result / error detail rows stay hidden until the card is expanded again.
   const compressed = ended && !expanded;
   // Control request in-flight flag: clicking pause/resume/stop immediately
@@ -1554,45 +1554,47 @@ function RunNode({
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-card/50" data-testid="team-area-swarmflow-run" data-variant={run.id}>
       <div
-        className={`flex items-center gap-2 px-3 ${compressed ? 'py-1' : 'py-2.5'} bg-secondary/30 cursor-pointer hover:bg-secondary/50 transition-colors`}
+        className={`flex flex-wrap items-center gap-x-2 gap-y-1 px-3 ${compressed ? 'py-1' : 'py-2.5'} bg-secondary/30 cursor-pointer hover:bg-secondary/50 transition-colors`}
         onClick={() => setExpanded((v) => !v)}
         data-testid="team-area-swarmflow-run-header"
         data-variant={run.id}
       >
-        {expanded ? (
-          <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
-        ) : (
-          <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
-        )}
-        <StatusIcon status={run.status} className="w-4 h-4 shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-text-strong truncate" title={run.name} data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
-              {run.name}
-            </span>
-            <span className="text-xs text-text-muted shrink-0" data-testid="team-area-swarmflow-run-status" data-variant={run.id}>
-              {statusText(run.status, t)}
-            </span>
-            {run.executor && (
-              <span
-                className="flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-text-muted"
-                title={t('swarmflow.executorTooltip', { name: run.executor })}
-                data-testid="team-area-swarmflow-run-executor"
-                data-variant={run.id}
-              >
-                <TeamMemberAvatar
-                  member={run.executor}
-                  className="h-3.5 w-3.5 rounded-full"
-                  imageClassName="rounded-full"
-                  alt={run.executor}
-                />
-                <span className="max-w-24 truncate">{run.executor}</span>
+        <div className="flex min-w-0 flex-[1_1_16rem] items-center gap-2">
+          {expanded ? (
+            <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
+          )}
+          <StatusIcon status={run.status} className="w-4 h-4 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-text-strong truncate" title={run.name} data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
+                {run.name}
               </span>
+              <span className="text-xs text-text-muted shrink-0" data-testid="team-area-swarmflow-run-status" data-variant={run.id}>
+                {statusText(run.status, t)}
+              </span>
+              {run.executor && (
+                <span
+                  className="flex min-w-0 max-w-[40%] items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-text-muted"
+                  title={t('swarmflow.executorTooltip', { name: run.executor })}
+                  data-testid="team-area-swarmflow-run-executor"
+                  data-variant={run.id}
+                >
+                  <TeamMemberAvatar
+                    member={run.executor}
+                    className="h-3.5 w-3.5 shrink-0 rounded-full"
+                    imageClassName="rounded-full"
+                    alt={run.executor}
+                  />
+                  <span className="max-w-24 truncate">{run.executor}</span>
+                </span>
+              )}
+            </div>
+            {!compressed && run.summary && (
+              <p className="text-xs text-text-muted truncate mt-0.5" data-testid="team-area-swarmflow-run-summary" data-variant={run.id}>{run.summary}</p>
             )}
           </div>
-          {!compressed && run.summary && (
-            <p className="text-xs text-text-muted truncate mt-0.5" data-testid="team-area-swarmflow-run-summary" data-variant={run.id}>{run.summary}</p>
-          )}
         </div>
         {waitingCount > 0 && (
           <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 shrink-0 animate-pulse" data-testid="team-area-swarmflow-run-waiting-badge" data-variant={run.id}>
