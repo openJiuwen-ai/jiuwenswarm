@@ -1101,12 +1101,15 @@ def _migrate_workspace_to_jiuwenclaw_workspace(workspace_dir: Path) -> None:
 
     Covers every tenant layout:
     - Personal: ``~/.jiuwenswarm/service_default/agent_default``
-    - Enterprise: ``~/.jiuwenswarm/workspace_{key}`` for each key bucket
+    - Multi-tenant: ``~/.jiuwenswarm/workspace_{key}`` for each key bucket
     - Legacy pre-tenant: ``~/.jiuwenswarm`` itself
 
     Args:
         workspace_dir: Path to workspace root (~/.jiuwenswarm).
     """
+    # 企业版工作区由平台统一创建，不存在旧版个人目录布局，无需迁移检查。
+    if is_enterprise():
+        return
 
     def _merge_one(tenant_root: Path) -> None:
         agent_root = tenant_root / "agent"
