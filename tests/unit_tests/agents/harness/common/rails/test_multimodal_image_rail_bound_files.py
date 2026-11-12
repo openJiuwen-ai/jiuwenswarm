@@ -69,6 +69,59 @@ def test_unbound_rail_without_agent_mirror_returns_none() -> None:
     assert rail._resolve_request_image_files() is None
 
 
+# ---------------------------------------------------------------------------
+# steer 补图第三通道：轮中途把补充图片追加进绑定快照（team leader 本轮生效）
+# ---------------------------------------------------------------------------
+
+_STEER_IMAGES = [
+    {"type": "image", "path": "/tmp/steer-1.jpg", "filename": "steer-1.jpg"},
+    {"type": "image", "path": "/tmp/steer-2.jpg", "filename": "steer-2.jpg"},
+]
+
+
+def test_append_round_image_files_extends_bound_manifest() -> None:
+    """追加进绑定快照后 ``_resolve_request_image_files`` 立即可见（本轮可物化）。"""
+
+    rail = MultimodalImageRail(image_files=list(_BOUND_IMAGES))
+
+    added = rail.append_round_image_files(_STEER_IMAGES)
+
+    assert added == 2
+    resolved = rail._resolve_request_image_files()
+    assert [item["path"] for item in resolved] == [
+        "/tmp/round-upload.jpg",
+        "/tmp/steer-1.jpg",
+        "/tmp/steer-2.jpg",
+    ]
+
+
+def test_append_round_image_files_is_idempotent_on_normalized_path() -> None:
+    """重复追加 / 归一化同路径（相对段形态）/ 空 path：不重复进快照。"""
+
+    rail = MultimodalImageRail(image_files=list(_BOUND_IMAGES))
+    rail.append_round_image_files(_STEER_IMAGES)
+
+    added = rail.append_round_image_files(
+        [
+            {"type": "image", "path": "/tmp/./steer-1.jpg"},
+            {"type": "image", "path": ""},
+            "not-a-dict",
+        ]
+    )
+
+    assert added == 0
+    assert len(rail._bound_image_files) == 3
+
+
+def test_append_round_image_files_never_binds_unbound_rail() -> None:
+    """未绑定清单的 rail（deep 单代理）不创建绑定：空清单是权威事实。"""
+
+    rail = MultimodalImageRail()
+
+    assert rail.append_round_image_files(_STEER_IMAGES) == 0
+    assert rail._bound_image_files is None
+
+
 class _RecordingPromptBuilder:
     """最小 PromptSection 容器：只记录 add/remove。"""
 

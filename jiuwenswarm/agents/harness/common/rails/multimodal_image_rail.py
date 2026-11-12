@@ -21,6 +21,7 @@ from jiuwenswarm.agents.harness.common.multimodal import (
     ensure_multimodal_image_filter_window_mutator,
     ensure_manifest_images_referenced,
     inject_image_content_from_references,
+    normalize_image_path,
     remove_multimodal_image_filter_window_mutator,
 )
 from jiuwenswarm.agents.harness.common.multimodal.image_history import (
@@ -114,6 +115,40 @@ class MultimodalImageRail(DeepAgentRail):
         if self._bound_image_files is not None:
             return [dict(item) for item in self._bound_image_files]
         return current_multimodal_image_files_from_agent(self._deep_agent)
+
+    def append_round_image_files(self, image_files: list[dict[str, Any]]) -> int:
+        """轮中途补充的图片追加进绑定清单（team steer 补图）。
+
+        绑定清单是构造期快照：steer 发生在轮进行中，当轮快照不含补充图片，
+        inject 的安全门（仅物化清单内路径，N12）会把引用行拒掉。此方法把
+        补充图片按归一化 path 去重后追加进快照，leader 本轮下一次模型调用
+        即可物化；未绑定清单的 rail（deep 单代理）实时读 agent 实例属性
+        镜像，不在此同步（也绝不能在此创建清单——空清单是权威事实）。
+        重复调用幂等。返回实际追加的条数。
+        """
+        if self._bound_image_files is None or not image_files:
+            return 0
+        seen = {
+            normalize_image_path(str(item.get("path") or ""))
+            for item in self._bound_image_files
+            if str(item.get("path") or "").strip()
+        }
+        added = 0
+        for image in image_files:
+            if not isinstance(image, dict):
+                continue
+            raw = str(image.get("path") or "").strip()
+            # 空 path 必须先于归一化判掉：realpath("") 会返回 cwd，空路径摇身
+            # 变成合法 key 混进清单。
+            if not raw:
+                continue
+            key = normalize_image_path(raw)
+            if key in seen:
+                continue
+            seen.add(key)
+            self._bound_image_files.append(dict(image))
+            added += 1
+        return added
 
     def _is_team_member_rail(self) -> bool:
         """是否是 team 成员（非 leader）的 rail：绑定清单且无 leader 分发提示。"""
