@@ -104,6 +104,92 @@ test('reconnect resends ready per consumer', async () => {
   handle.release();
 });
 
+test('a confirmed restore clears stale instances before ready and keeps the mounted consumers', async () => {
+  const { transport, runtime } = setup();
+  const owner = runtime.mountSlot('sess-1', DEMO_SLOT, { instanceKey: 'main' });
+  await owner.notifyReady();
+  transport.injectRenderFrame(demoRenderFrame({ revision: 8 }));
+  const oldVersion = runtime.getInstanceVersion(INSTANCE_KEY);
+  const atReady = [];
+  const dispatch = transport.dispatch;
+  transport.dispatch = (request) => {
+    atReady.push([request.target.instanceKey, runtime.getInstance(INSTANCE_KEY)]);
+    transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
+    return dispatch(request);
+  };
+  try {
+    const restoredAt = Date.now();
+    runtime.confirmSystemPluginRestore('restore-one', restoredAt);
+    assert.equal(runtime.getInstance(INSTANCE_KEY).revision, 8);
+    transport.setConnectionState('disconnected');
+    assert.equal(runtime.getInstance(INSTANCE_KEY).revision, 8);
+    transport.setConnectionState('connected');
+    assert.deepEqual(atReady, [['main', undefined]]);
+    assert.ok(runtime.getInstanceVersion(INSTANCE_KEY) > oldVersion);
+    assert.equal(runtime.getInstance(INSTANCE_KEY).revision, 1);
+    assert.equal(runtime.getScopeSnapshot('sess-1', DEMO_SLOT).mounted, true);
+
+    runtime.confirmSystemPluginRestore('restore-one', restoredAt);
+    transport.setConnectionState('disconnected');
+    transport.setConnectionState('connected');
+    assert.equal(atReady[1][1].revision, 1, 'ordinary reconnect keeps the new frame');
+  } finally {
+    owner.release();
+    runtime.dispose();
+  }
+});
+
+test('late confirmation handles an observed disconnect or reconnect without arming the next outage', (t) => {
+  let now = 0;
+  t.mock.method(Date, 'now', () => now);
+  for (const confirmWhileOffline of [true, false]) {
+    const { transport, runtime } = setup();
+    try {
+      transport.injectRenderFrame(demoRenderFrame({ revision: 8 }));
+      const restoredAt = Date.now();
+      now += 1000;
+      transport.setConnectionState('disconnected');
+      if (confirmWhileOffline) runtime.confirmSystemPluginRestore('restore-one', restoredAt);
+      transport.setConnectionState('connected');
+      if (!confirmWhileOffline) {
+        assert.equal(runtime.getInstance(INSTANCE_KEY).revision, 8);
+        runtime.confirmSystemPluginRestore('restore-one', restoredAt);
+      }
+      assert.equal(runtime.getInstance(INSTANCE_KEY), undefined);
+      transport.injectRenderFrame(demoRenderFrame());
+      transport.setConnectionState('disconnected');
+      transport.setConnectionState('connected');
+      assert.equal(runtime.getInstance(INSTANCE_KEY).revision, 1);
+    } finally {
+      runtime.dispose();
+    }
+  }
+});
+
+test('only the wait for a restore disconnect expires, not a slow backend restart', (t) => {
+  let now = 0;
+  t.mock.method(Date, 'now', () => now);
+  const { transport, runtime } = setup();
+  try {
+    transport.injectRenderFrame(demoRenderFrame({ revision: 8 }));
+    runtime.confirmSystemPluginRestore('first-restore', now);
+    now += 120_000;
+    transport.setConnectionState('disconnected');
+    transport.setConnectionState('connected');
+    assert.equal(runtime.getInstance(INSTANCE_KEY).revision, 8);
+
+    now += 1000;
+    runtime.confirmSystemPluginRestore('second-restore', now);
+    assert.equal(runtime.getInstance(INSTANCE_KEY).revision, 8, 'a disconnect before this restore does not count');
+    transport.setConnectionState('disconnected');
+    now += 120_000;
+    transport.setConnectionState('connected');
+    assert.equal(runtime.getInstance(INSTANCE_KEY), undefined);
+  } finally {
+    runtime.dispose();
+  }
+});
+
 function bindDisplayed(runtime, revision) {
   const owner = runtime.mountSlot('sess-1', DEMO_SLOT);
   const snapshot = runtime.getInstance(INSTANCE_KEY);

@@ -30,6 +30,8 @@ export * as splashModule from '../../src/features/webui/splash/index.ts';
 export { WebUISplashGate } from '../../src/features/webui/react/WebUISplashGate.tsx';
 export { MediaSurfacePolicyContext } from '../../src/features/webui/renderer/adapters/webuiMediaSurface/hostPolicy.ts';
 export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';
+export { ApplicationPresentationHost } from '../../src/features/webui/presentation/ApplicationPresentationHost.tsx';
+export { SystemPluginRecoverySettings } from '../../src/features/settings/modules/systemPluginRecovery/SystemPluginRecoverySettings.tsx';
 export { WebUISlotProvider } from '../../src/features/webui/react/WebUISlotProvider.tsx';
 export { WebUINavigationHost, WebUIPageHost } from '../../src/features/webui/react/WebUINavigation.tsx';
 export { WebUIThemeProvider, resolveWebUITheme } from '../../src/features/webui/react/WebUIThemeProvider.tsx';

@@ -64,6 +64,7 @@ const {
   WebUINavigationHost,
   WebUIPageHost,
   WebUIBackgroundHost,
+  ApplicationPresentationHost, SystemPluginRecoverySettings,
   WebUIAppearanceHost, appearanceModule, splashModule, WebUISplashGate,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
@@ -491,6 +492,65 @@ async function setup(tree, scope = target, transportOptions = {}, frameExtra = {
     async close() { await act(async () => root.unmount()); runtime.dispose(); container.remove(); },
   };
 }
+
+test('a confirmed restore in settings removes the application presentation launcher after reconnect', async (t) => {
+  const origin = 'http://127.0.0.1:8765';
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ url: origin + '/system-plugin-recovery' }));
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ catalog: componentCatalog, transport });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const path = window.location.href;
+  // Enter through the recovery route so navigation is already settled.
+  window.history.replaceState(null, '', '/system-plugin-recovery');
+  const render = (settings) => root.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+    createElement(ApplicationPresentationHost, { sessionId: 'sess-1', connected: true }),
+    settings && createElement(SystemPluginRecoverySettings)));
+  const scope = { scope: 'application', slot_id: 'application.presentation', package_id: 'forms', instance_key: 'form' };
+  const tree = { component: 'ApplicationSurface', props: { title: 'Form', src: '/extension-assets/forms/g1/index.html' } };
+  const launcher = () => container.querySelector('[data-testid="webui-presentation-launcher"]');
+  const reconnect = async () => act(async () => {
+    transport.setConnectionState('disconnected');
+    transport.setConnectionState('connected');
+  });
+  try {
+    await act(async () => render(true));
+    const source = container.querySelector('iframe').contentWindow;
+    const message = (type, data, from = source, fromOrigin = origin) =>
+      window.dispatchEvent(new window.MessageEvent('message', { origin: fromOrigin, source: from,
+        data: { type: 'jiuwenswarm.system-plugin-recovery.' + type, ...data } }));
+    await act(async () => transport.injectRenderFrame(frame(tree, 8, scope)));
+    assert.ok(launcher());
+    const failed = { recordId: 'untrusted', restoredAt: new Date().toISOString() };
+    await act(async () => {
+      message('selected-record', { restoring: true });
+      message('restart-requested', failed, source, 'http://localhost');
+      message('restart-requested', failed, window);
+      message('selected-record', { restoring: false });
+    });
+    await reconnect();
+    assert.ok(launcher(), 'an unsuccessful restore and unrelated messages keep the form');
+    const success = { recordId: 'restored', restoredAt: new Date().toISOString() };
+    await act(async () => {
+      message('selected-record', { restoring: true });
+      message('restart-requested', success);
+      message('restart-requested', success);
+      render(false);
+    });
+    assert.ok(launcher(), 'closing settings after success keeps the form until restart');
+    await reconnect();
+    assert.equal(launcher(), null);
+    await act(async () => transport.injectRenderFrame(frame(tree, 1, scope)));
+    assert.ok(launcher(), 'a provider active after restart can publish at revision one');
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+    window.history.replaceState(null, '', path);
+  }
+});
 
 test('Button opens only its own live panel after an accepted receipt; renders never navigate', async () => {
   const app = await setup(
