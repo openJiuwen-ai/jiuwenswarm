@@ -16,6 +16,7 @@ from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
 from jiuwenswarm.gateway.cron.models import (
     CRON_JOB_DESCRIPTION_MAX_LENGTH,
     CRON_JOB_NAME_MAX_LENGTH,
+    CRON_MODEL_SOURCE_CONFIG,
     CRON_MODEL_SOURCE_LOGIN,
     CronTargetChannel,
     cron_job_metadata,
@@ -25,7 +26,6 @@ from jiuwenswarm.gateway.cron.models import (
     normalize_cron_job_mode,
     normalize_target_channel_id,
     resolve_cron_model,
-    validate_cron_model,
 )
 from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
@@ -55,6 +55,20 @@ def _login_credential_ref_from_session(auth_session: str) -> str:
             "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
         ) from exc
     return credential_ref_for_user(session.user_id)
+
+
+def _resolve_cron_model(
+    raw: Any, zen_entries: list[dict[str, Any]] | None
+) -> tuple[str | None, str]:
+    """解析 cron 模型名；AgentOS 的模型配置在用户沙箱侧，本进程按沙箱已校验的名字原样接受。"""
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+
+    if is_agentos_runtime():
+        logging.getLogger(__name__).info(
+            "[cron] accept agent-validated model %r", raw
+        )
+        return str(raw or "").strip() or None, CRON_MODEL_SOURCE_CONFIG
+    return resolve_cron_model(raw, zen_entries=zen_entries)
 
 
 def _serialize_mutation(method):
@@ -351,9 +365,8 @@ class CronController:
             raise ValueError(
                 "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动创建"
             )
-        model_name, model_source = resolve_cron_model(
-            params.get("model_name"),
-            zen_entries=await self._zen_entries(),
+        model_name, model_source = _resolve_cron_model(
+            params.get("model_name"), await self._zen_entries()
         )
         model_selection = params.get("model_selection")
         if model_selection is not None:
@@ -488,9 +501,8 @@ class CronController:
                     "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动修改"
                 )
         if "model_name" in patch:
-            canonical, model_source = resolve_cron_model(
-                patch.get("model_name"),
-                zen_entries=await self._zen_entries(),
+            canonical, model_source = _resolve_cron_model(
+                patch.get("model_name"), await self._zen_entries()
             )
             patch["model_name"] = canonical
             # 模型来源变化时同步重算绑定：改选登录模型 → 绑定当前连接的华为
@@ -668,10 +680,11 @@ class CronController:
         if timeout_seconds is not None:
             params["timeout_seconds"] = timeout_seconds
         if model_name is not None and str(model_name).strip():
-            params["model_name"] = validate_cron_model(
-                model_name,
-                zen_entries=await self._zen_entries(),
+            canonical, _ = _resolve_cron_model(
+                model_name, await self._zen_entries()
             )
+            if canonical:
+                params["model_name"] = canonical
         if mcp is not None:
             params["mcp"] = mcp
         if project_dir is not None:
