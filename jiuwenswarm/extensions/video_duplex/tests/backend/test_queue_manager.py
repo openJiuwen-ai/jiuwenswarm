@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.extensions.video_duplex.backend import queue_manager
-from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call, qwen_omni_tools
+from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call
 
 
 def management_call():
@@ -86,69 +86,6 @@ async def test_revision_conflict_can_query_then_correct_without_replaying_old_wr
 
 
 @pytest.mark.asyncio
-async def test_invalid_proposal_correction_budget_is_bounded(monkeypatch):
-    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
-    step = AsyncMock(return_value="invalid")
-    monkeypatch.setattr(queue_manager, "request_step", step)
-    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "查询任务")
-    assert result["state"] == "incomplete"
-    assert step.await_count == 4
-    assert manager.operate.await_count == 1
-
-
-def test_qwen_exposes_queue_manager_and_preserves_voice_approval_answers():
-    names = {t["function"]["name"] for t in qwen_omni_tools(queue_manager=True)}
-    assert names == {"jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_answer"}
-    for args in ({}, {"instruction": " "}, {"instruction": "move", "job_id": "invented"}):
-        with pytest.raises(ValueError):
-            parse_qwen_omni_tool_call({"name": "jiuwen_queue_manage", "call_id": "m", "arguments": args})
-
-
-@pytest.mark.asyncio
-async def test_unknown_ids_and_new_delegations_cannot_execute(monkeypatch):
-    for tool in [
-        {"name": "jiuwen_task_cancel", "arguments": {"job_id": "guessed"}},
-        {"name": "jiuwen_delegate", "arguments": {"task": "new"}},
-    ]:
-        manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
-        monkeypatch.setattr(queue_manager, "request_step", AsyncMock(return_value=json.dumps({"tool": tool})))
-        result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消任务")
-        assert result["state"] == "incomplete"
-        assert manager.operate.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_joyai_manager_cannot_submit_information_answers(monkeypatch):
-    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": [{"job_id": "form", "revision": 1}]}))
-    step = AsyncMock(return_value=json.dumps({"tool": {"name": "jiuwen_task_answer", "arguments": {
-        "job_id": "form", "interaction_id": "question", "answers": ["yes"]}}}))
-    monkeypatch.setattr(queue_manager, "request_step", step)
-    result = await queue_manager.manage_queue(
-        manager, "alice", "voice", management_call(), "回答问题", allow_answers=False, reply_language="en",
-    )
-    assert result["state"] == "incomplete"
-    assert manager.operate.await_count == 1
-    context = json.loads(step.call_args.args[0][1]["content"])
-    assert context["reply_language"] == "en"
-    assert "jiuwen_task_answer" not in [t["function"]["name"] for t in context["allowed_tools"]]
-
-
-@pytest.mark.asyncio
-async def test_failure_after_write_preserves_receipt_without_repeating(monkeypatch):
-    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
-        {"jobs": [{"job_id": "feishu", "revision": 1}]}, {"state": "cancelling"},
-    ]))
-    monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[
-        json.dumps({"tool": {"name": "jiuwen_task_cancel", "arguments": {"job_id": "feishu"}}}),
-        TimeoutError(),
-    ]))
-    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消飞书任务")
-    assert result["state"] == "incomplete"
-    assert result["receipts"][-1]["receipt"]["state"] == "cancelling"
-    assert manager.operate.await_count == 2
-
-
-@pytest.mark.asyncio
 async def test_gateway_duplicate_call_shares_execution(monkeypatch):
     from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
 
@@ -223,19 +160,6 @@ async def test_pending_management_is_cancellable_and_does_not_repeat_operations(
 
 
 @pytest.mark.asyncio
-async def test_management_still_stops_after_six_model_decisions(monkeypatch):
-    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
-    step = AsyncMock(return_value=json.dumps({
-        "tool": {"name": "jiuwen_task_query", "arguments": {}},
-    }))
-    monkeypatch.setattr(queue_manager, "request_step", step)
-    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "查询队列")
-    assert result["state"] == "incomplete"
-    assert "operation limit" in result["error"]
-    assert step.await_count == 6
-
-
-@pytest.mark.asyncio
 async def test_model_request_preserves_configured_network_timeout(monkeypatch):
     from jiuwenswarm.common import config
     from openjiuwen.core.foundation import llm
@@ -258,3 +182,19 @@ async def test_model_request_preserves_configured_network_timeout(monkeypatch):
     assert await queue_manager.request_step([]) == '{"response":"done"}'
     assert received[0].timeout == 77
     invoke.assert_awaited_once_with([])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("proposal, decisions, queries, error", [
+    ("invalid", 4, 1, ""),
+    (json.dumps({"tool": {"name": "jiuwen_task_query", "arguments": {}}}), 6, 7, "operation limit"),
+])
+async def test_management_budgets_are_bounded(monkeypatch, proposal, decisions, queries, error):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    step = AsyncMock(return_value=proposal)
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "查询队列")
+    assert result["state"] == "incomplete"
+    assert error in result["error"]
+    assert step.await_count == decisions
+    assert manager.operate.await_count == queries

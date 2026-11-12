@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import until
+
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import LocalCheckpoint
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
@@ -19,12 +21,6 @@ from jiuwenswarm.extensions.video_duplex.backend.video_search import execute_cor
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import (
     parse_qwen_omni_tool_call,
 )
-
-
-async def until(predicate):
-    async with asyncio.timeout(3):
-        while not predicate():
-            await asyncio.sleep(0.005)
 
 
 def token(service, task):

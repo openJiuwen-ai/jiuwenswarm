@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import until
+
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import LocalCheckpoint, install_bridge
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
@@ -21,12 +23,6 @@ class TaskAdapter(SimpleNamespace):
     @property
     def task_execution_binding(self):
         return self._instance, self._voice_agent_task_rail
-
-
-async def until(predicate):
-    async with asyncio.timeout(3):
-        while not predicate():
-            await asyncio.sleep(0.005)
 
 
 class Executor:
@@ -1287,34 +1283,30 @@ async def test_failed_stop_waits_for_settlement_and_retains_capacity(tasks, monk
 
 
 @pytest.mark.asyncio
-async def test_recovery_dispatches_only_opened_owner_and_conversation(tmp_path):
-    store = TaskStore(tmp_path / "scoped-recovery.sqlite")
-    executor = Executor(store)
-    service = TaskService(store, executor)
+async def test_recovery_dispatches_only_opened_owner_and_conversation(tasks):
+    service, executor = tasks
+    store = service.store
     scopes = [("alice", "task-duplex:current"), ("alice", "task-duplex:other"),
               ("bob", "task-duplex:current")]
     queued = [service._new(owner, session, "pending", {}) for owner, session in scopes]
     with store.transaction() as db:
         for task in queued:
             store.put(db, task)
-    try:
-        service.snapshot(*scopes[0])
-        await until(lambda: len(executor.calls) == 1)
-        assert executor.calls[0]["id"] == queued[0]["id"]
-        executor.gates[queued[0]["id"]].set()
-        await until(lambda: not service.workers)
-        service.kick()
-        await asyncio.sleep(0)
-        assert len(executor.calls) == 1
-        assert all(store.read(task["id"])["status"] == "queued" for task in queued[1:])
+    service.snapshot(*scopes[0])
+    await until(lambda: len(executor.calls) == 1)
+    assert executor.calls[0]["id"] == queued[0]["id"]
+    executor.gates[queued[0]["id"]].set()
+    await until(lambda: not service.workers)
+    service.kick()
+    await asyncio.sleep(0)
+    assert len(executor.calls) == 1
+    assert all(store.read(task["id"])["status"] == "queued" for task in queued[1:])
 
-        # Opening another conversation activates it even after service startup.
-        service.snapshot(*scopes[1])
-        await until(lambda: len(executor.calls) == 2)
-        assert executor.calls[1]["id"] == queued[1]["id"]
-        assert store.read(queued[2]["id"])["status"] == "queued"
-    finally:
-        await service.close()
+    # Opening another conversation activates it even after service startup.
+    service.snapshot(*scopes[1])
+    await until(lambda: len(executor.calls) == 2)
+    assert executor.calls[1]["id"] == queued[1]["id"]
+    assert store.read(queued[2]["id"])["status"] == "queued"
 
 
 @pytest.mark.asyncio
