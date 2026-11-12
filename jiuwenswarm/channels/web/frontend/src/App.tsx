@@ -4813,6 +4813,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           }}
         />
         <LoginDialog />
+        <ToastStack />
       </>
     );
   }

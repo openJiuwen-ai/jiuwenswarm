@@ -42,6 +42,7 @@ import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { GroupSharingPermissions } from '../components/GroupSharingPermissions';
 import { EmptyState } from '../../../components/ui/EmptyState/EmptyState';
+import { toast } from '../../../components/ui/Toast/toastStore';
 import { errorMessage } from '../jiuwenmateApi';
 import type { GroupSharingApi } from '../groupSharingApi';
 import type {
@@ -678,6 +679,9 @@ export function ColleagueProfilePage({
         if (!saved) return;
         setEditing(false);
         if (edit.persona !== undefined) setSavedPersona(edit.persona);
+        if (edit.model && onSaveSettings) {
+          toast.open({ content: t('jiuwenmate.profile.modelPublished'), variant: 'success' });
+        }
       });
   };
   const changeGroupReplyMode = (mode: 'passive' | 'adaptive') => {
