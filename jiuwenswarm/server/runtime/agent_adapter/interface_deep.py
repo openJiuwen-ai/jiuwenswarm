@@ -3098,7 +3098,7 @@ class JiuWenSwarmDeepAdapter:
         if isinstance(v, str) and v != "":
             if not equipment.is_agent_template_installed(v):
                 return f"agent_template not installed: {v}"
-            from jiuwenswarm.enterprise.capabilities.experts.allowlist import allows
+            from jiuwenswarm.enterprise.capabilities.experts.request_packages import allows
 
             if not allows("agent_template", v):
                 return f"agent_template not allowed: {v}"
@@ -10239,9 +10239,9 @@ class JiuWenSwarmDeepAdapter:
             from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
                 RsiHarnessActivationStore,
             )
-            from jiuwenswarm.common.utils import get_infra_data_dir
+            from jiuwenswarm.common.utils import get_user_workspace_dir
 
-            store = RsiHarnessActivationStore(get_infra_data_dir() / "rsi" / "tasks")
+            store = RsiHarnessActivationStore(get_user_workspace_dir() / "rsi" / "tasks")
             active = store.get_active()
         except Exception as exc:  # noqa: BLE001 - startup must remain available
             logger.warning("[JiuWenSwarmDeepAdapter] RSI Harness state unavailable: %s", exc)
@@ -14329,10 +14329,10 @@ class JiuWenSwarmDeepAdapter:
 
             if rail is None:
                 try:
-                    from jiuwenswarm.common.utils import get_domain_data_dir
+                    from jiuwenswarm.common.utils import get_user_workspace_dir
 
                     rail = PersonalContextRail(
-                        get_domain_data_dir() / ".personal_context"
+                        get_user_workspace_dir() / ".personal_context"
                     )
                     await self._instance.register_rail(rail)
                 except Exception as exc:  # noqa: BLE001

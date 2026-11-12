@@ -29,7 +29,7 @@ import yaml
 from jiuwenswarm.common.utils import (
     get_agent_skills_dir,
     get_agent_workspace_dir,
-    get_domain_data_dir,
+    get_user_workspace_dir,
     mask_sensitive,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
@@ -1019,16 +1019,51 @@ def _equipment_workspace(agent_workspace: Path | None = None) -> Path:
     return agent_workspace if agent_workspace is not None else get_agent_workspace_dir()
 
 
+def _agent_group_catalog_bound() -> bool:
+    """False when enterprise has no tenant, so catalog reads stay empty.
+
+    Writes still call ``_agent_group_home`` and raise. Reads must not fall
+    back to the shared domain root.
+    """
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    if not is_enterprise():
+        return True
+    return TenantContext.current_tenant_root() is not None
+
+
+def _agent_group_home(*, agent_workspace: Path | None = None) -> Path:
+    """Home directory that owns ``.agent_teams/agent_groups``.
+
+    Personal edition keeps the data root. Enterprise uses the tenant
+    root already bound on this request. An unbound enterprise call must not
+    fall back to the shared data root or the default tenant key.
+    """
+    if agent_workspace is not None:
+        # ``agent_workspace`` is ``<home>/agent/workspace``.
+        return agent_workspace.parent.parent
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    if is_enterprise():
+        bound = TenantContext.current_tenant_root()
+        if bound is None:
+            raise AgentGroupPackageError(
+                "agent_group requires a bound tenant",
+                "AGENT_GROUP_TENANT_REQUIRED",
+            )
+        return bound
+    return get_user_workspace_dir()
+
+
 def _kind_root(kind: str, *, agent_workspace: Path | None = None) -> Path:
     if kind == _AGENT_GROUP_KIND:
-        if agent_workspace is not None:
-            # agent_workspace 即 <分区根>/agent/workspace，上溯两级即分区根
-            # （个人版 <root>/domain，企业版租户 domain/workspace_{tk}）；
-            # get_domain_data_dir() 恒为默认 domain，会丢租户归属，不可用。
-            home = agent_workspace.parent.parent
-        else:
-            home = get_domain_data_dir()
-        return home / ".agent_teams" / _AGENT_GROUP_KIND
+        return (
+            _agent_group_home(agent_workspace=agent_workspace)
+            / ".agent_teams"
+            / _AGENT_GROUP_KIND
+        )
     return _equipment_workspace(agent_workspace) / "plugins" / kind
 
 
@@ -1160,6 +1195,8 @@ def read_plugin_marketplace_entries() -> list[dict]:
 
 def read_agent_group_marketplace_entries() -> list[dict]:
     """Read AgentGroup marketplace entries."""
+    if not _agent_group_catalog_bound():
+        return []
     return _read_marketplace(_AGENT_GROUP_KIND)
 
 
@@ -1320,6 +1357,12 @@ def resolve_agent_template_dir(name: Any) -> Path:
 
 def get_agent_group_search_roots() -> list[tuple[str, Path | None]]:
     """Return AgentGroup roots in catalog search order."""
+    if not _agent_group_catalog_bound():
+        return [
+            ("local", None),
+            ("built_in", None),
+            ("resources", _resources_root(_AGENT_GROUP_KIND)),
+        ]
     return [
         ("local", get_local_root(_AGENT_GROUP_KIND)),
         ("built_in", _built_in_root(_AGENT_GROUP_KIND)),
@@ -1589,6 +1632,8 @@ def resolve_agent_group_leader_identity(name: Any) -> dict[str, Any] | None:
 
 def _resolve_agent_group_definition_dir(name: Any) -> tuple[Path, str] | None:
     """Resolve an AgentGroup definition for catalog and preview operations."""
+    if not _agent_group_catalog_bound():
+        return None
     return _resolve_show_package_dir(
         str(name or ""),
         kind_label="agent_group",
@@ -2410,6 +2455,8 @@ async def list_plugin_packages_with_hub(
 
 def list_agent_groups(params: dict | None = None) -> list[dict]:
     """List AgentGroup definitions from resources shelf and user storage."""
+    if not _agent_group_catalog_bound():
+        return []
     from openjiuwen.agent_teams.experts import load_agent_group_package
 
     resources = {path.name: path for path in _iter_resource_package_dirs(_AGENT_GROUP_KIND)}
@@ -2477,6 +2524,8 @@ async def list_agent_groups_with_hub(
     params: dict | None = None, *, hub_port: HubAssetPort | None = None
 ) -> list[dict]:
     """Combine local groups with the separately typed Hub group catalog."""
+    if not _agent_group_catalog_bound():
+        return []
     cards = list_agent_groups(None)
     by_id: dict[str, dict] = {}
     for card in cards:
@@ -2573,7 +2622,7 @@ async def list_agent_groups_with_hub(
 
 def _omit_enterprise_hidden_cards(cards: list[dict]) -> list[dict]:
     """企业版不展示依赖外部连接器的 Hub 包。保留 Hub 缓存标记。"""
-    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import (
         hidden_from_enterprise,
     )
 
@@ -2592,7 +2641,7 @@ def _omit_enterprise_hidden_cards(cards: list[dict]) -> list[dict]:
 
 def _filter_allowed_cards(kind: str, cards: list[dict]) -> list[dict]:
     """企业版按允许名单收目录。保留 Hub 缓存标记。"""
-    from jiuwenswarm.enterprise.capabilities.experts.allowlist import filter_cards
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import filter_cards
 
     filtered = filter_cards(kind, list(cards))
     cache = getattr(cards, "cache", None)
@@ -2604,13 +2653,13 @@ def _filter_allowed_cards(kind: str, cards: list[dict]) -> list[dict]:
 
 
 def _require_package_allowed(kind: str, package_id: str) -> None:
-    from jiuwenswarm.enterprise.capabilities.experts.allowlist import require_allowed
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import require_allowed
 
     require_allowed(kind, package_id)
 
 
 def _package_allowed(kind: str, package_id: str) -> bool:
-    from jiuwenswarm.enterprise.capabilities.experts.allowlist import allows
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import allows
 
     return allows(kind, package_id)
 
@@ -2784,7 +2833,7 @@ async def show_agent_group_with_hub(
     name: str, *, hub_port: HubAssetPort | None = None
 ) -> dict | None:
     """Return local group details or public Hub metadata before installation."""
-    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import (
         hidden_from_enterprise,
     )
 
@@ -3097,7 +3146,7 @@ async def _show_equipment_with_hub(
 async def show_agent_template_with_hub(
     name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> dict | None:
-    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import (
         hidden_from_enterprise,
     )
 
@@ -3346,7 +3395,7 @@ async def install_equipment_from_hub_gated(
 ) -> tuple[bool, dict[str, Any]]:
     kind_label = _hub_asset_kind(kind)
     requested_id = lifecycle_package_id(params, kind_label)
-    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import (
         hidden_from_enterprise,
     )
 
@@ -4657,8 +4706,12 @@ def ensure_builtin_agent_groups_installed() -> list[str]:
     ``.builtin_seeded``); an explicit uninstall is respected on later starts
     instead of being undone by the next startup. A broken shelf entry is
     logged, never raised, so one bad package cannot block startup; a local
-    package of the same name wins.
+    package of the same name wins. Enterprise has no tenant at process start,
+    so that call returns without touching the shared data root. Seeding still
+    runs once a tenant is bound.
     """
+    if not _agent_group_catalog_bound():
+        return []
     marker_path = _kind_root(_AGENT_GROUP_KIND) / ".builtin_seeded"
     try:
         seeded = set(marker_path.read_text(encoding="utf-8").split())
@@ -4690,7 +4743,7 @@ async def install_agent_group_with_hub(
 ) -> None:
     """Acquire a Hub group by its asset ID, then install its local runtime package."""
     requested_id = lifecycle_package_id(params, "agent_group")
-    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import (
         hidden_from_enterprise,
     )
 

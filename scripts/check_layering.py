@@ -73,7 +73,6 @@ KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {
     },
     "jiuwenswarm.common.local_env_config": {"jiuwenswarm.enterprise"},
     "jiuwenswarm.common.projectless_workspace": {"jiuwenswarm.enterprise"},
-    "jiuwenswarm.common.schema.message": {"jiuwenswarm.enterprise.edition"},
     "jiuwenswarm.common.utils": {
         "jiuwenswarm.enterprise",
         "jiuwenswarm.enterprise.tenant.tenant_context",

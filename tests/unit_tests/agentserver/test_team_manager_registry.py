@@ -796,7 +796,7 @@ async def test_team_manager_keeps_single_session_per_channel(monkeypatch: pytest
     class _FakeWorkspace:
         root_path = None
 
-    def fake_load_team_spec(session_id: str, **_kwargs: object):
+    def fake_load_team_spec(session_id: str):
         class _Spec:
             team_name = f"team-{session_id}"
             workspace = _FakeWorkspace()
@@ -836,7 +836,7 @@ async def test_create_team_does_not_run_global_runtime_cleanup(monkeypatch: pyte
     class _FakeWorkspace:
         root_path = None
 
-    def fake_load_team_spec(_session_id: str, **_kwargs: object):
+    def fake_load_team_spec(_session_id: str):
         class _Spec:
             team_name = "demo-team"
             workspace = _FakeWorkspace()
@@ -886,11 +886,7 @@ async def test_create_team_appends_session_id_to_team_name(monkeypatch: pytest.M
             created_team_names.append(self.team_name)
             return SimpleNamespace()
 
-    monkeypatch.setattr(
-        TeamManager,
-        "_load_team_spec",
-        staticmethod(lambda _session_id, **_kwargs: _Spec()),
-    )
+    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(lambda _session_id: _Spec()))
     # Provider assembly is covered by the swarm suite; stub it so this
     # session-management test runs on the minimal fake spec.
     monkeypatch.setattr(
@@ -921,11 +917,7 @@ async def test_create_team_appends_session_id_to_web_team_name(monkeypatch: pyte
             created_team_names.append(self.team_name)
             return SimpleNamespace()
 
-    monkeypatch.setattr(
-        TeamManager,
-        "_load_team_spec",
-        staticmethod(lambda _session_id, **_kwargs: _Spec()),
-    )
+    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(lambda _session_id: _Spec()))
     # Provider assembly is covered by the swarm suite; stub it so this
     # session-management test runs on the minimal fake spec.
     monkeypatch.setattr(
@@ -2167,7 +2159,6 @@ async def test_get_swarm_enriched_team_spec_uses_bound_stable_team_name(
             "session_id": "sess-bound",
             "template_id": "beta_template",
             "strict_template": True,
-            "config_base": {},
         }
     ]
     assert enrich_calls[0]["team_name"] == "custom_team"
@@ -2239,7 +2230,6 @@ async def test_get_swarm_enriched_team_spec_uses_bound_team_entity_snapshot(
                 "team_name": "template_team",
                 "leader": {"member_name": "snapshot_leader"},
             },
-            "config_base": {},
         }
     ]
 
@@ -2266,11 +2256,7 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
         lambda _session_id, cache_bust=False: {},
     )
     monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
-    monkeypatch.setattr(
-        TeamManager,
-        "_load_team_spec",
-        staticmethod(lambda _session_id, **_kwargs: _Spec()),
-    )
+    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(lambda _session_id: _Spec()))
     monkeypatch.setattr(
         "jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm",
         lambda spec, **kwargs: None,

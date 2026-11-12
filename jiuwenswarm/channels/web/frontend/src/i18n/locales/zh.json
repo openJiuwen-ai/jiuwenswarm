@@ -82,7 +82,6 @@
     "work": "任务",
     "agent": "专家",
     "design": "设计",
-    "teams": "团队",
     "experiments": "RSI",
     "sessions": "会话",
     "cron": "定时任务",
@@ -873,10 +872,6 @@
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
-      "proactive": "主动推荐",
-      "proactiveLimits": "推荐频率限制",
-      "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "multiModelCollaboration": "多模型协同",
       "toolOptimize": "工具检索优化",
       "designMode": "设计模式",
@@ -1222,20 +1217,6 @@
       "external_cli_agent_codex_cli_path": {
         "title": "Codex CLI 路径"
       },
-      "proactive_recommendation_enabled": {
-        "title": "启用主动推荐",
-        "description": "允许系统在满足条件时主动发送推荐。"
-      },
-      "proactive_recommendation_max_recommend_per_day": {
-        "title": "每日推荐上限",
-        "description": "每个用户每日主动推荐次数上限，防止打扰过多。默认值：10。",
-        "placeholder": "请输入 1–50 的整数"
-      },
-      "proactive_recommendation_max_rounds_per_tick": {
-        "title": "每次检查对话轮数",
-        "description": "每次检查时最多读取的近期对话轮数，用于推断推荐上下文。默认值：20。",
-        "placeholder": "请输入 1–50 的整数"
-      },
       "multi_model_collaboration_enabled": {
         "title": "多模型协同",
         "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。"
@@ -1573,47 +1554,8 @@
       "showTasks": "展开任务栏"
     }
   },
-  "teams": {
-    "title": "团队管理",
-    "subtitle": "查看已有团队，或停止、删除团队",
-    "teamList": "已有团队",
-    "count": "当前 {{count}} 个团队",
-    "quota": "已用 {{used}} / 上限 {{limit}}（默认 {{default}}）",
-    "orgQuota": "组织已用 {{used}} / 上限 {{limit}}",
-    "quotaUnavailable": "配额状态不可用",
-    "createUserFull": "创建失败，一个用户最多有{{limit}}个团队",
-    "createOrgFull": "创建失败，一个组织最多有{{limit}}个团队",
-    "sessionCount": "{{count}} 个会话",
-    "listLabel": "team 所在会话：{{title}}",
-    "untitledSession": "未命名会话",
-    "createdAt": "创建于 {{time}}",
-    "createdAtWithId": "创建于 {{time}} · …{{suffix}}",
-    "sessionSuffix": "…{{suffix}}",
-    "empty": "暂无团队",
-    "deleteTeam": "删除团队",
-    "deleting": "删除中...",
-    "deleteConfirm": "确认删除团队 {{team}} ?\n将删除团队运行时、关联会话及目录。",
-    "stopTeam": "停止",
-    "stopping": "停止中...",
-    "humanMembers": "{{count}} 位人类成员",
-    "status": {
-      "creating": "创建中",
-      "running": "运行中",
-      "paused": "已暂停",
-      "stopping": "停止中",
-      "stopped": "已停止",
-      "deleted": "已删除"
-    },
-    "errors": {
-      "loadTeams": "团队列表加载失败",
-      "deleteTeam": "删除团队失败：{{team}}",
-      "stopTeam": "停止团队失败"
-    }
-  },
   "team": {
     "members": "团队成员",
-    "quotaUsage": "团队 {{used}}/{{limit}}",
-    "orgQuotaUsage": "组织 {{used}}/{{limit}}",
     "membersTab": "团队",
     "statusTab": "状态",
     "filesTab": "文件",
@@ -2763,13 +2705,6 @@
         "failed": "安装失败",
         "running": "正在安装"
       }
-    },
-    "proactive": {
-      "typeLabel": {
-        "skill_recommend": "技能推荐",
-        "task_reminder": "任务提醒",
-        "need_exploration": "探索发现"
-      }
     }
   },
   "cron": {
@@ -2794,9 +2729,7 @@
     "disable": "停用",
     "loading": "正在加载任务列表...",
     "deleteConfirm": "确定要删除这个任务吗？",
-    "autoManaged": "自动维护",
-    "autoManagedHint": "此任务由主动推荐开关自动创建/删除；开关在设置→主动推荐。仅 Cron 表达式与时区可在此面板编辑，其余字段（名称/状态/描述/偏移/频道）不可改；删除请到设置关闭开关。",
-    "autoManagedToggleDisabled": "自动维护任务的开关由设置→主动推荐控制，不可在此切换。",
+    "autoManagedToggleDisabled": "此字段当前不可编辑。",
     "pageTitle": "定时任务",
     "pageSubtitle": "配置和管理按计划执行的自动化任务。",
     "actions": {
@@ -3035,8 +2968,7 @@
       "updated": "任务更新成功",
       "deleted": "任务删除成功",
       "statusUpdated": "任务状态更新成功",
-      "runNow": "任务已触发立即执行",
-      "proactiveRunNow": "推荐任务已在后台启动，将自动判断是否需要推荐，结果稍后提示。"
+      "runNow": "任务已触发立即执行"
     },
     "preview": {
       "loading": "正在加载下次触发时间...",
@@ -6522,7 +6454,7 @@
       "confirm": "确定",
       "executor": "执行者",
       "chooseExecutor": "请选择执行者",
-      "runNow": "立即运行",
+      "runNow": "立即执行",
       "history": "运行历史",
       "edit": "编辑",
       "delete": "删除",

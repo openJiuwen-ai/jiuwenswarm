@@ -82,7 +82,6 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
-    "teams": "Teams",
     "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -873,10 +872,6 @@
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
-      "proactive": "Proactive recommendations",
-      "proactiveLimits": "Recommendation limits",
-      "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
-      "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "multiModelCollaboration": "Multi-model collaboration",
       "toolOptimize": "Tool retrieval optimization",
       "designMode": "Design Mode",
@@ -1222,20 +1217,6 @@
       "external_cli_agent_codex_cli_path": {
         "title": "Codex CLI path"
       },
-      "proactive_recommendation_enabled": {
-        "title": "Enable proactive recommendations",
-        "description": "Allow recommendations to be sent when their conditions are met."
-      },
-      "proactive_recommendation_max_recommend_per_day": {
-        "title": "Daily recommendation limit",
-        "description": "Maximum proactive recommendations per user per day to avoid excessive interruption. Default: 10.",
-        "placeholder": "Enter an integer from 1 to 50"
-      },
-      "proactive_recommendation_max_rounds_per_tick": {
-        "title": "Conversation rounds per check",
-        "description": "Maximum recent conversation rounds read on each check to infer recommendation context. Default: 20.",
-        "placeholder": "Enter an integer from 1 to 50"
-      },
       "multi_model_collaboration_enabled": {
         "title": "Multi-model collaboration",
         "description": "In a single-agent conversation, select a model group to let its default model combine suggestions from the other members."
@@ -1573,47 +1554,8 @@
       "showTasks": "Show tasks"
     }
   },
-  "teams": {
-    "title": "Team Management",
-    "subtitle": "View existing teams, or stop and delete them",
-    "teamList": "Existing teams",
-    "count": "{{count}} team(s)",
-    "quota": "{{used}} used / {{limit}} limit (default {{default}})",
-    "orgQuota": "Org {{used}} used / {{limit}} limit",
-    "quotaUnavailable": "Quota status unavailable",
-    "createUserFull": "Create failed. A user can have at most {{limit}} teams",
-    "createOrgFull": "Create failed. An organization can have at most {{limit}} teams",
-    "sessionCount": "{{count}} session(s)",
-    "listLabel": "Session for this team: {{title}}",
-    "untitledSession": "Untitled session",
-    "createdAt": "Created {{time}}",
-    "createdAtWithId": "Created {{time}} · …{{suffix}}",
-    "sessionSuffix": "…{{suffix}}",
-    "empty": "No teams",
-    "deleteTeam": "Delete team",
-    "deleting": "Deleting...",
-    "deleteConfirm": "Delete team {{team}}?\nThis will delete the team runtime, linked sessions, and directory.",
-    "stopTeam": "Stop",
-    "stopping": "Stopping...",
-    "humanMembers": "{{count}} human member(s)",
-    "status": {
-      "creating": "Creating",
-      "running": "Running",
-      "paused": "Paused",
-      "stopping": "Stopping",
-      "stopped": "Stopped",
-      "deleted": "Deleted"
-    },
-    "errors": {
-      "loadTeams": "Failed to load teams",
-      "deleteTeam": "Failed to delete team: {{team}}",
-      "stopTeam": "Failed to stop team"
-    }
-  },
   "team": {
     "members": "Team Members",
-    "quotaUsage": "Teams {{used}}/{{limit}}",
-    "orgQuotaUsage": "Org {{used}}/{{limit}}",
     "membersTab": "Team",
     "statusTab": "Status",
     "filesTab": "Files",
@@ -2763,13 +2705,6 @@
         "failed": "Installation failed",
         "running": "Installing"
       }
-    },
-    "proactive": {
-      "typeLabel": {
-        "skill_recommend": "Skill Recommend",
-        "task_reminder": "Task Reminder",
-        "need_exploration": "Explore"
-      }
     }
   },
   "cron": {
@@ -2794,9 +2729,7 @@
     "disable": "Disable",
     "loading": "Loading scheduled tasks...",
     "deleteConfirm": "Are you sure you want to delete this task?",
-    "autoManaged": "Auto-managed",
-    "autoManagedHint": "This task is auto-created/deleted by the proactive recommendation toggle (Settings → Proactive Recommendation). Only the cron expression and timezone can be edited here; other fields (name/status/description/offset/channel) are read-only. To remove it, turn off the toggle in Settings.",
-    "autoManagedToggleDisabled": "The toggle of an auto-managed task is controlled by Settings → Proactive Recommendation and cannot be switched here.",
+    "autoManagedToggleDisabled": "This field cannot be edited right now.",
     "pageTitle": "Scheduled Tasks",
     "pageSubtitle": "Configure automated tasks that run on schedule.",
     "actions": {
@@ -3035,8 +2968,7 @@
       "updated": "Task updated successfully",
       "deleted": "Task deleted successfully",
       "statusUpdated": "Task status updated successfully",
-      "runNow": "Task triggered successfully",
-      "proactiveRunNow": "Recommendation check started in the background. It will decide whether to recommend anything and notify you of the result."
+      "runNow": "Task triggered successfully"
     },
     "preview": {
       "loading": "Loading next runs...",

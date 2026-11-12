@@ -620,12 +620,8 @@ test('default model hint tracks catalog state, hides once a model is picked, and
   });
 });
 
-test('locked task models cannot be changed; disabling an open picker closes it', async () => {
+test('disabling an open picker closes it', async () => {
   await withFixture(async ({ mount, click, byId }) => {
-    await mount(cronDrawer({ proactiveLocked: true }));
-    assert.equal(byId('cron-model-picker-trigger').disabled, true);
-    await click(byId('cron-model-picker-trigger'));
-    assert.equal(byId('cron-model-picker-menu'), null);
     const picker = (disabled) => createElement(ModelPicker, { value: null, onChange() {}, disabled });
     await mount(picker(false));
     await click(byId('model-picker-trigger'));

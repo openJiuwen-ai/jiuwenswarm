@@ -3,7 +3,6 @@ import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
   ExternalCliCustomAgentsItem,
-  ProactiveLimitsSetting,
   RSISetting,
   TaskAsrSetting,
   TaskFullDuplexSetting,
@@ -101,22 +100,6 @@ export const experimentalModule: SettingsModuleDefinition = {
               { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
               { id: 'team-member-subtasks-enabled', component: 'switch', key: 'team_member_subtasks_enabled' },
             ],
-          },
-        },
-      ],
-    },
-    {
-      id: 'proactive-recommendation',
-      titleKey: 'settingsPanel.experimental.proactive',
-      items: [
-        {
-          id: 'proactive-recommendation',
-          component: 'switch',
-          key: 'proactive_recommendation_enabled',
-          subItems: {
-            show: 'always',
-            disabled: 'when-parent-unchecked',
-            items: [{ id: 'proactive-limits', component: 'custom', render: ProactiveLimitsSetting }],
           },
         },
       ],
