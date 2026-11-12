@@ -1107,7 +1107,8 @@
       },
       "cua_agent_enabled": {
         "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
+        "unavailableDescription": "Computer control is unavailable in this environment."
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
@@ -1197,11 +1198,6 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
-      },
-      "cua_agent_enabled": {
-        "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
-        "unavailableDescription": "Computer control is unavailable in this environment."
       }
     },
     "validation": {
@@ -4078,7 +4074,15 @@
       "Engineering": "Engineering",
       "Life": "Life",
       "Custom": "Custom",
-      "Other": "Other"
+      "Other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "actions": {
       "working": "Working",
@@ -5067,7 +5071,15 @@
       "communication": "Communication",
       "Engineering": "Engineering",
       "Design": "Design",
-      "other": "Other"
+      "other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "search": {
       "plugin": "Search plugins",
