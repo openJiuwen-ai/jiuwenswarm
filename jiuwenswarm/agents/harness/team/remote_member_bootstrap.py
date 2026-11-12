@@ -2389,6 +2389,212 @@ async def _initialize_team_agent_db(
         return False
 
 
+# Teams already covered by the one-time enterprise known-boundary note (KD7).
+# Per-process (deliberate): this gate runs on the teammate process while the
+# leader-side note lives in swarm.assembly's own set — each side logs once.
+_ENTERPRISE_BOUNDARY_NOTED: set[str] = set()
+
+
+def _rebuild_member_sandbox_gate(
+    spec: Any, *, session_id: str, project_dir: str | None = None
+) -> None:
+    """Re-encode team entry sandbox specs against THIS node's config (KD6).
+
+    The leader-side enrich built every entry's ``SysOperationSpec`` from the
+    LEADER's sandbox endpoint; serialized as-is, a remote teammate would point
+    its members at the leader's jiuwenbox. This gate runs on the teammate
+    process right before the spawn payload is cut: entry ids stay on the same
+    deterministic derivation (same team, same entry names) while
+    ``base_url``/mounts re-resolve locally, so each node runs its own
+    containers (registry and provider cache are process-local; equal ids never
+    collide across nodes).
+
+    Degradation matrix mirrors the leader side (design KD7): ``enabled=false``
+    silent; enterprise known-boundary info once per team; endpoint unresolved
+    or unsupported type → loud warning, members stay LOCAL — or, when
+    ``sandbox.team_fail_closed`` is set, the member is rejected instead.
+
+    Args:
+        project_dir: The request's project directory, mounted rw into every
+            rebuilt entry (same as the leader-side enrich). Without it the
+            policy builder falls back to the agent-server cwd — not what the
+            members work on. A dir that does not exist on THIS node is simply
+            not mounted (the builder's project-dir resolution skips it).
+
+    Idempotent: re-running only recomputes the same values.
+    """
+    from jiuwenswarm.common.config import (
+        get_sandbox_endpoint,
+        get_sandbox_runtime,
+        get_sandbox_team_fail_closed,
+    )
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    runtime = get_sandbox_runtime()
+    if not runtime.get("enabled"):
+        return  # expected configuration: silent
+    if is_enterprise():
+        team_name = str(getattr(spec, "team_name", "") or "")
+        if team_name not in _ENTERPRISE_BOUNDARY_NOTED:
+            _ENTERPRISE_BOUNDARY_NOTED.add(team_name)
+            logger.info(
+                "[RemoteMemberBootstrap] team members stay LOCAL: enterprise "
+                "sandbox isolation is a known boundary (team=%s)",
+                team_name,
+            )
+        return
+
+    endpoint = get_sandbox_endpoint()
+    sandbox_url = str(endpoint.get("url") or "").strip()
+    sandbox_type = str(endpoint.get("type") or "").strip().lower()
+    if not sandbox_url or not sandbox_type or sandbox_type != "jiuwenbox":
+        reason = (
+            f"endpoint unresolved (type={sandbox_type}, url={sandbox_url})"
+            if not sandbox_url or not sandbox_type
+            else f"sandbox type {sandbox_type} not supported for team members yet"
+        )
+        if get_sandbox_team_fail_closed():
+            raise RuntimeError(
+                f"teammate refuses unsandboxed members (sandbox.team_fail_closed=true): {reason}"
+            )
+        logger.warning(
+            "[RemoteMemberBootstrap] team members stay LOCAL: %s (team=%s)",
+            reason,
+            getattr(spec, "team_name", ""),
+        )
+        return
+
+    from jiuwenswarm.agents.swarm.assembly import _entry_sandbox_slug
+    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+        _team_context_from_spec,
+        create_sandbox_sysop_card,
+    )
+    from openjiuwen.core.sys_operation import OperationMode
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    team_ctx = _team_context_from_spec(spec)
+    if team_ctx is None:
+        # Mirror the leader side: an unresolvable team context skips the 4
+        # team mounts but NEVER cancels sandboxing — members stay sandboxed
+        # with project_dir / agent workspace / files.* mounts. fail_closed is
+        # not consulted here because members are NOT left unsandboxed.
+        logger.warning(
+            "[RemoteMemberBootstrap] team mounts skipped: team context "
+            "unresolvable, members stay sandboxed without team mounts "
+            "(team=%s)",
+            getattr(spec, "team_name", ""),
+        )
+        team_ctx = None  # explicit: intent(None) == [] (no team mounts)
+    else:
+        team_ctx["session_id"] = str(session_id or "")
+
+    failed_entries: list[str] = []
+    for entry_name, agent_spec in list(spec.agents.items()):
+        entry_slug = _entry_sandbox_slug(str(getattr(spec, "team_name", "")), entry_name)
+        card = create_sandbox_sysop_card(
+            sandbox_url,
+            "jiuwenbox",
+            files_runtime=runtime.get("files"),
+            excluded_commands=runtime.get("excluded_commands"),
+            idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
+            idle_check_interval=runtime.get("idle_check_interval"),
+            fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
+            isolation_custom_id=entry_slug,
+            team_context=team_ctx,
+            project_dir=project_dir,
+        )
+        if card is None:
+            failed_entries.append(entry_name)
+            continue
+        spec.agents[entry_name] = agent_spec.model_copy(
+            update={
+                "sys_operation": SysOperationSpec(
+                    id=f"sandbox.{entry_slug}",
+                    mode=OperationMode.SANDBOX,
+                    gateway_config=card.gateway_config,
+                ),
+            }
+        )
+    if failed_entries and get_sandbox_team_fail_closed():
+        raise RuntimeError(
+            "teammate refuses unsandboxed members (sandbox.team_fail_closed=true): "
+            f"entry card build failed for {failed_entries}"
+        )
+
+    # The reviewer rides the teammate entry (design KD2); after a local rebuild
+    # the teammate's sysop object is fresh, so re-share it to keep the
+    # shared-id invariant intact on the distributed path.
+    teammate_sysop = (spec.agents.get("teammate").sys_operation
+                      if spec.agents.get("teammate") is not None else None)
+    if teammate_sysop is not None and getattr(spec, "reviewer_agent", None) is not None:
+        spec.reviewer_agent = spec.reviewer_agent.model_copy(
+            update={"sys_operation": teammate_sysop}
+        )
+
+    # KD7 parity with the leader side (assembly logs failed entries at
+    # warning): partial degradation on the teammate node must be as visible.
+    if failed_entries:
+        logger.warning(
+            "[RemoteMemberBootstrap] team members stay LOCAL: entry card "
+            "build failed for %s (team=%s)",
+            failed_entries,
+            getattr(spec, "team_name", ""),
+        )
+    logger.info(
+        "[RemoteMemberBootstrap] rebuilt team entry sandbox specs from local "
+        "config (entries=%d, failed=%s, team=%s)",
+        len(spec.agents) - len(failed_entries),
+        failed_entries,
+        getattr(spec, "team_name", ""),
+    )
+
+
+async def _apply_member_sandbox_gate_with_cleanup(
+    *,
+    spec_obj: Any,
+    team_manager: Any,
+    sid: str,
+    leader_team_agent: Any,
+    leader_member_name: str,
+    member: str,
+    assembly_project_dir: str = "",
+) -> bool:
+    """Run the local sandbox rebuild gate with fail-closed-safe cleanup.
+
+    Wraps ``_rebuild_member_sandbox_gate`` so a ``team_fail_closed`` rejection
+    (RuntimeError) is NOT swallowed by the caller loop's broad ``except``:
+    the same cleanup the normal path runs (discard the auxiliary team agent,
+    clean the auxiliary leader workspace, stop the stale member agent) executes
+    first, an explicit "sandbox rejected" warning is logged, and the caller
+    receives ``False`` to stop adoption. Any other exception propagates.
+
+    Returns:
+        True when the gate passed (caller proceeds); False when the member was
+        rejected (caller must abort adoption).
+    """
+    try:
+        _rebuild_member_sandbox_gate(
+            spec_obj, session_id=sid, project_dir=assembly_project_dir or None
+        )
+    except RuntimeError as exc:
+        await _discard_auxiliary_team_agent(team_manager, sid, leader_team_agent)
+        _cleanup_auxiliary_leader_workspace(
+            str(getattr(spec_obj, "team_name", "") or ""),
+            leader_member_name,
+        )
+        await _stop_dynamic_member_agent(sid, member)
+        logger.warning(
+            "[RemoteMemberBootstrap] sandbox rejected (team_fail_closed): "
+            "member=%s session_id=%s cleaned up auxiliary agent/workspace, "
+            "adoption aborted (%s)",
+            member,
+            sid,
+            exc,
+        )
+        return False
+    return True
+
+
 async def _ensure_dynamic_member_execution_loop(
     *,
     session_id: str,
@@ -2531,6 +2737,21 @@ async def _ensure_dynamic_member_execution_loop(
         if not leader_member_name:
             leader_spec = getattr(spec_obj, "leader", None)
             leader_member_name = str(getattr(leader_spec, "member_name", "") or "").strip()
+        # Re-encode the serialized leader-side sandbox specs against THIS
+        # process' config before the payload crosses into the member loop
+        # (design D-20261105-1041 KD6): each entry keeps the deterministic
+        # entry id (same derivation on both nodes) while base_url and mounts
+        # resolve locally, so the member runs in a container on its own node.
+        if not await _apply_member_sandbox_gate_with_cleanup(
+            spec_obj=spec_obj,
+            team_manager=team_manager,
+            sid=sid,
+            leader_team_agent=leader_team_agent,
+            leader_member_name=leader_member_name,
+            member=member,
+            assembly_project_dir=assembly_project_dir,
+        ):
+            return False, False
         payload = {
             "spec": spec_obj.model_dump(mode="json"),
             "context": teammate_ctx.model_dump(mode="json"),
