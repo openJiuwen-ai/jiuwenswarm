@@ -999,7 +999,8 @@
 }
 
 .jiuwenmate-field input,
-.jiuwenmate-field textarea {
+.jiuwenmate-field textarea,
+.jiuwenmate-schedule-dialog__executor {
   width: 100%;
   min-height: 32px;
   padding: 6px 10px;
@@ -1013,7 +1014,8 @@
 }
 
 .jiuwenmate-field input:focus,
-.jiuwenmate-field textarea:focus {
+.jiuwenmate-field textarea:focus,
+.jiuwenmate-schedule-dialog__executor:focus {
   border-color: var(--jm-text-2);
 }
 
@@ -2990,8 +2992,25 @@
   width: min(560px, calc(100vw - 32px));
 }
 
+.jiuwenmate-schedule-dialog__executor {
+  resize: none;
+}
+
+.jiuwenmate-schedule-dialog input[aria-invalid='true'],
+.jiuwenmate-schedule-dialog textarea[aria-invalid='true'],
+.jiuwenmate-schedule-dialog select[aria-invalid='true'] {
+  border-color: var(--color-feedback-danger, var(--jm-danger));
+}
+
+.jiuwenmate-schedule-dialog input[aria-invalid='true']:focus,
+.jiuwenmate-schedule-dialog textarea[aria-invalid='true']:focus,
+.jiuwenmate-schedule-dialog select[aria-invalid='true']:focus {
+  outline: 2px solid var(--color-feedback-danger, var(--jm-danger));
+  outline-offset: 2px;
+}
+
 .jiuwenmate-schedule-dialog [role='alert'] {
-  color: var(--color-feedback-danger);
+  color: var(--color-feedback-danger, var(--jm-danger));
   font-size: 13px;
 }
 
