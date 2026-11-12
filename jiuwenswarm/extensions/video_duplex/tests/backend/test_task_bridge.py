@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import routed_task_fixture
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import agent_client
 from agent_gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from agent_gateway.message_handler.message_handler import MessageHandler
+
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import agent_client, routed_task_fixture
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields

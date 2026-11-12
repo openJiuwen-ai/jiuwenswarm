@@ -10,18 +10,13 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import run_queue, tool_proposal, until
-
-from jiuwenswarm.extensions.video_duplex.backend import video_search
+from jiuwenswarm.extensions.video_duplex.backend import queue_manager, video_search
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call, qwen_omni_tools
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import task_identity
 from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import QueueVersionConflict, TaskRevisionConflict
-
-from unittest.mock import AsyncMock
-
-from jiuwenswarm.extensions.video_duplex.backend import queue_manager
-
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import management_call, run_queue, tool_proposal
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
+    management_call, run_queue, tool_proposal, until,
+)
 
 
 def test_voice_query_excludes_unbounded_progress_and_preserves_control_identity():
@@ -1021,7 +1016,7 @@ async def test_text_manager_changes_real_queue_order(tmp_path, monkeypatch):
 
     service = TaskService(TaskStore(tmp_path / "tasks.sqlite"), None)
     service.started = True
-    service.kick = lambda: None
+    service.kick = Mock()
     wechat = service.submit("alice", "voice", "create-wechat", "打开微信")
     feishu = service.submit("alice", "voice", "create-feishu", "打开飞书")
     manager = VideoSearchManager(None, None, log_event=lambda *a, **k: None, qwen_active=lambda: True)

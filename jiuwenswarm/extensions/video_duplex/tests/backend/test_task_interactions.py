@@ -980,9 +980,9 @@ async def test_voice_answer_on_managed_card_then_queued_task_runs(approval_syste
     repeated = await service.answer("alice", SCOPE, first["id"], "voice-again", interaction_id, answers=[spoken])
     assert repeated["state"] == "already_answered" and repeated["task_state"] == "completed"
     assert repeated["applied"] is False
-    for token, answer in [(interaction_id, "拒绝" if spoken == "允许" else "允许"), ("different", spoken)]:
+    for answer_token, answer in [(interaction_id, "拒绝" if spoken == "允许" else "允许"), ("different", spoken)]:
         with pytest.raises(ValueError, match="no longer pending"):
-            await service.answer("alice", SCOPE, first["id"], "bad-" + token, token, answers=[answer])
+            await service.answer("alice", SCOPE, first["id"], "bad-" + answer_token, answer_token, answers=[answer])
     assert len(core.runs) == 3, "repeated and stale answers must not execute again"
 
 
@@ -1028,12 +1028,12 @@ class FakeChannel:
             listener(event, "chat", payload)
 
 
-def manager_for(service, core, channel):
+def manager_for(service, core, channel, monkeypatch):
     manager = video_search.VideoSearchManager(
         channel, None, log_event=lambda _: None, qwen_active=lambda: True,
         authorize=lambda ws, scope: ("alice", scope),
     )
-    manager._service = service
+    monkeypatch.setattr(manager, "_service", service, raising=False)
 
     async def query(client, method, params, session, owner):
         assert session == "chat" and owner == "alice"
@@ -1049,7 +1049,7 @@ async def test_voice_answers_typed_card_through_click_path(approval_system, monk
 
     service, core, store = approval_system
     channel = FakeChannel()
-    manager, query = manager_for(service, core, channel)
+    manager, query = manager_for(service, core, channel, monkeypatch)
     monkeypatch.setattr(task_adapter, "task_agent_query", query)
     ws = object()
     manager.subscribers[("alice", SCOPE, id(ws))] = ws
@@ -1067,7 +1067,7 @@ async def test_voice_answers_typed_card_through_click_path(approval_system, monk
         name="jiuwen_task_query", arguments={}, call_id="q"))
     card = receipt["chat_approval"]
     assert card["job_id"] == "" and card["interaction_id"] == "typed-approval"
-    assert [o["label"] for o in card["interaction"]["questions"][0]["options"]] == ["允许", "拒绝"]
+    assert [option["label"] for option in card["interaction"]["questions"][0]["options"]] == ["允许", "拒绝"]
 
     answer = SimpleNamespace(name="jiuwen_task_answer", call_id="a", arguments={
         "job_id": "", "interaction_id": "typed-approval", "answers": ["可以吧"]})
@@ -1093,10 +1093,10 @@ async def test_voice_answers_typed_card_through_click_path(approval_system, monk
     assert (await manager.chat_card("alice", SCOPE)) is None
 
 
-async def test_joyai_may_answer_approval_cards_but_not_information_forms(approval_system):
+async def test_joyai_may_answer_approval_cards_but_not_information_forms(approval_system, monkeypatch):
     service, core, store = approval_system
     manager = object.__new__(video_search.VideoSearchManager)
-    manager._service = service
+    monkeypatch.setattr(manager, "_service", service, raising=False)
     service.start()
     task = submit_approval(service, "trip", "规划行程")
     service.store.update(task["id"], lambda t: t.update(status="waiting_user", interaction={
