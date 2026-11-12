@@ -435,9 +435,9 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 
 ## 历史原文引用与分块读取
 
-大型工具结果保留短预览，并可携带 `payload_refs`。主智能体的 `chat.llm_call_start` 只携带调用前预览；Core 完成系统提示词注入和上下文处理后的完整模型输入（messages 和 tools），在 `chat.llm_call_end.payload_refs.prompt` 中引用。子代理在模型输入回调中采集的完整输入仍可随 `chat.llm_call_start` 引用。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径；路径供宿主使用，客户端通过会话和摘要读取原文。
+大型工具结果保留短预览，并可携带 `payload_refs`。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径；路径供宿主使用，客户端通过会话和摘要读取原文。已有模型输入工件仍可通过相同接口读取。
 
-`text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，模型/工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
+`text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
 
 使用非流式 `history.get` 请求，传入以下 `params`：
 
@@ -448,3 +448,16 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 响应 payload 包含 `content`、`offset`、`next_offset`、`eof`、`bytes` 和 `sha256`。会话优先取 `params.session_id`，缺失时使用请求 envelope 的 `session_id`。offset 为 UTF-8 字节位置，必须落在字符边界；每次最多 64 KiB。客户端使用返回的 `next_offset` 继续读取，直到 `eof=true`。摘要限定在该会话目录内，接口不接受任意文件路径。无效摘要、范围、编码边界或缺失工件返回 `HISTORY_ARTIFACT_FAILED`。
 
 省略 `artifact_sha256` 时仍使用原历史分页/流式读取行为；E2A envelope 和协议版本不变。
+
+## 模型调用状态与增量历史
+
+`chat.llm_call_start` 与 `chat.llm_call_end` 记录模型调用生命周期，携带成员和角色等关联信息。
+调用开始事件可在正文为空时持久化。`llm_start_ts` 在每次调用开始时生成，用于关联开始与用量事件。
+
+会话历史按新增消息和事件追加。主智能体与子智能体的调用事件省略完整输入 `prompt`，也不生成完整模型输入工件，
+用户消息、工具调用、工具结果与回复分别通过各自事件保存。
+客户端应允许调用事件缺少 `prompt`，调用详情中的完整输入展示据此降级。
+
+`chat.usage_metadata` 的输入、输出、缓存 token、费用和耗时统计继续上报。
+上下文占用使用 `context.usage`，累计用量使用既有 session usage 快照。
+历史读取兼容已保存的含 `prompt` 记录。

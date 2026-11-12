@@ -1193,30 +1193,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if self._role:
             payload["role"] = self._role
         try:
-            if phase == "llm_call_start":
-                # Core rebuilds the system prompt and context window after all
-                # before_model_call rails. These inputs are only a preview.
-                prompt_preview = self._summarize_call_prompt(ctx, max_chars=2048)
-                if prompt_preview:
-                    payload["prompt"] = prompt_preview
-            elif phase == "llm_call_end":
-                from jiuwenswarm.server.runtime.session.history_artifacts import put_prompt
-                from jiuwenswarm.server.runtime.session.history_io import run_history_io
-
-                # AFTER_MODEL_CALL exposes the final messages/tools sent to the
-                # model, including injected rules and context processing.
-                if getattr(ctx.inputs, "messages", None):
-                    try:
-                        payload["payload_refs"] = {"prompt": await run_history_io(
-                            put_prompt, self._artifact_session_scope(session, self._resolve_sid(ctx, session)),
-                            getattr(ctx.inputs, "messages", None) or [],
-                            getattr(ctx.inputs, "tools", None) or [],
-                        )}
-                    except OSError:
-                        logger.warning(
-                            "[StreamEventRail] prompt artifact unavailable; emitting call end",
-                            exc_info=True,
-                        )
+            if phase == "llm_call_end":
                 response_text = self._extract_response_text(ctx)
                 if response_text:
                     payload["content"] = response_text
@@ -1275,48 +1252,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             if isinstance(ptext, str) and ptext.strip():
                 return ptext.strip()
         return None
-
-    @staticmethod
-    def _summarize_call_prompt(ctx: AgentCallbackContext, max_chars: int | None = None) -> str | None:
-        """Format the available input preview for ``llm_call_start``.
-
-        Core finalizes the prompt after the before-model rails. The exact input
-        is externalized separately on ``llm_call_end``. Inline base64 images
-        are replaced with ``[image]`` to keep the preview readable.
-        """
-        messages = getattr(ctx.inputs, "messages", None) or []
-        if not messages:
-            return None
-        parts: list[str] = []
-        total = 0
-        for msg in messages:
-            if isinstance(msg, dict):
-                role = str(msg.get("role") or "?")
-                content = msg.get("content")
-            else:
-                role = str(getattr(msg, "role", None) or "?")
-                content = getattr(msg, "content", None)
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                text = "\n".join(
-                    str(part.get("text", ""))
-                    for part in content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                )
-            else:
-                text = str(content) if content else ""
-            if "data:image" in text:
-                text = "[image]"
-            if max_chars is not None:
-                text = text[:max(0, max_chars - total) + 1]
-            segment = f"<{role}>\n{text}"
-            if max_chars is not None and total + len(segment) > max_chars:
-                parts.append(segment[: max(0, max_chars - total)] + "\n… (truncated)")
-                break
-            parts.append(segment)
-            total += len(segment)
-        return "\n\n".join(parts)
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         sid = self._resolve_sid(ctx, ctx.session)
