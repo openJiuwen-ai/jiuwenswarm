@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+    _sound_line,
     compose_practice_prompt,
     film_scored_by_music_node,
 )
@@ -79,3 +80,13 @@ def test_clip_prompt_names_diegetic_cues_and_stays_silent_on_request() -> None:
     silent_prompt = compose_practice_prompt(cfg=silent, graph=_SCORED_GRAPH, action=silent["clip_action"])
     assert "silent" in silent_prompt.lower()
     assert "no music" in silent_prompt
+
+
+def test_a_shot_without_speech_forbids_invented_dialogue() -> None:
+    prompt = compose_practice_prompt(cfg=_MUSIC_CFG, graph={}, action=_MUSIC_CFG["clip_action"])
+    assert "No one speaks" in prompt
+    spoken = {**_MUSIC_CFG, "speech_by_character": {"char_1": "hello"}}
+    spoken_prompt = compose_practice_prompt(cfg=spoken, graph={}, action=spoken["clip_action"])
+    assert "No one speaks" not in spoken_prompt
+    assert "人物没有台词、对白或独白" in _sound_line(_MUSIC_CFG, "zh")
+    assert "人物没有台词" not in _sound_line(spoken, "zh")

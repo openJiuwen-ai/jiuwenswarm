@@ -902,6 +902,7 @@ export function JiuwenMateApp({
             onUpdateSchedule={updateSchedule}
             onSetScheduleEnabled={setScheduleEnabled}
             onDeleteSchedule={removeSchedule}
+            onRunSchedule={runSchedule}
             onLoadScheduleHistory={loadScheduleHistory}
           />
         );
@@ -988,6 +989,7 @@ export function JiuwenMateApp({
             onUpdateSchedule={updateSchedule}
             onSetScheduleEnabled={setScheduleEnabled}
             onDeleteSchedule={removeSchedule}
+            onRunSchedule={runSchedule}
             onLoadScheduleHistory={loadScheduleHistory}
             channelApi={api}
             modelCatalog={modelCatalog}

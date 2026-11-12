@@ -357,7 +357,7 @@ async def test_first_line_starts_before_eof_and_result_follows_cleanup_with_stdi
         assert final.output == "entry done"
         assert final.sequence == 3
         assert stderr == b""
-        logs = list((tmp_path / "infra" / "logs" / "process_cli").glob("*.log"))
+        logs = list((tmp_path / "agent" / "process_cli_logs").glob("*.log"))
         assert len(logs) == 1
         diagnostics = logs[0].read_bytes()
         assert b"FAKE_CLIENT:runtime-closed" in diagnostics

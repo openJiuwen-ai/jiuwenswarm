@@ -8,8 +8,8 @@ logger = logging.getLogger(__name__)
 
 
 def reset_harness_packages_state(path: Path | None = None) -> None:
-    from jiuwenswarm.common.utils import get_infra_data_dir
-    path = path or get_infra_data_dir() / "auto-harness" / "harness-packages.json"
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+    path = path or get_user_workspace_dir() / "auto-harness" / "harness-packages.json"
     try:
         if not path.exists():
             return

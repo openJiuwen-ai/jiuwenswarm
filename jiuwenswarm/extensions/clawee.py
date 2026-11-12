@@ -135,7 +135,6 @@ async def _ensure_server_initialized_async() -> None:
     - ExtensionRegistry / ExtensionManager 先加载（_handle_message dispatch 前调 trigger）
     - AgentWebSocketServer.get_instance() 拿单例
     - ensure_persistent_checkpointer / reset_harness_packages_state
-    - proactive engine 初始化（参照 app_agentserver.py 的 init_proactive_engine 调用）
     - 跳过 legacy.serve 端口监听（faas 是被动 invoke）
     """
     global _server_initialized
@@ -178,20 +177,6 @@ async def _ensure_server_initialized_async() -> None:
         ensure_persistent_checkpointer,
     )
     await ensure_persistent_checkpointer()
-
-    # ---------- ProactiveEngine 初始化 ----------
-    try:
-        from jiuwenswarm.common.config import get_config
-        from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
-        full_cfg = get_config()
-        proactive_config = (
-            full_cfg.get("proactive_recommendation", {})
-            if isinstance(full_cfg, dict)
-            else {}
-        )
-        await init_proactive_engine(server, proactive_config)
-    except Exception as exc:
-        logger.warning("[clawee] proactive engine init failed: %s", exc)
 
     _server_initialized = True
     logger.info("[clawee] AgentWebSocketServer initialized (faas mode) ready")

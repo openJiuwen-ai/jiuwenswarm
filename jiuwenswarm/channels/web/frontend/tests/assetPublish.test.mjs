@@ -6,6 +6,8 @@ import {
   localRecordState,
   isSubmissionLocked,
   canStartNewVersion,
+  canRetrySkillPack,
+  definitiveCommitRejection,
   validateMetadata,
   createCommitAttempt,
 } from '../node_modules/.cache/asset-publish/assetPublishState.js';
@@ -189,4 +191,21 @@ test('records expose only locally confirmed states', () => {
   assert.equal(localRecordState({ execution_status: 'completed', result: { publish_result: 'pending_moderation' } }), 'submitted');
   assert.equal(localRecordState({ execution_status: 'completed', result: { publish_result: 'published' } }), 'submitted');
   assert.equal(localRecordState({ execution_status: 'unknown' }), 'unconfirmed');
+});
+
+test('a disabled new SkillPack confirmation is a definitive rejection, not an uncertain upload', () => {
+  assert.equal(definitiveCommitRejection({ code: 'SKILLPACK_DISABLED' }), 'rejected');
+  assert.equal(definitiveCommitRejection({ message: 'SKILLPACK_DISABLED' }), 'rejected');
+  assert.equal(definitiveCommitRejection({ message: 'request timeout' }), null);
+  assert.equal(definitiveCommitRejection({ code: 'SKILLPACK_HUB_CHECK_FAILED' }), null);
+});
+
+test('an older confirmed SkillPack blocked by the toggle can request server-side recovery', () => {
+  for (const code of ['SKILLPACK_DISABLED', 'SKILLPACK_HUB_CHECK_FAILED']) {
+    const record = { stage: 'blocked', execution_status: 'failed', error: { code } };
+    assert.equal(canRetrySkillPack(record), true);
+    assert.equal(isSubmissionLocked(record), false);
+  }
+  assert.equal(canRetrySkillPack({ stage: 'blocked', error: { code: 'MEMBER_TYPE_NOT_ALLOWED' } }), false);
+  assert.equal(canRetrySkillPack({ stage: 'completed', error: { code: 'SKILLPACK_DISABLED' } }), false);
 });

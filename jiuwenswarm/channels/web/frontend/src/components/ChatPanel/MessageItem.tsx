@@ -48,7 +48,6 @@ import { memberNameFromMessageId } from '../../features/teamLeaderMessages';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { AgentAvatar } from '../AgentAvatar';
-import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
@@ -765,25 +764,6 @@ export const MessageItem = memo(function MessageItem({
     });
   }, [stopGeneratedAudio, stop]);
 
-  // 主动推荐消息 - 使用特殊卡片样式。外层沿用正常 agent 回复的布局（avatar 占位
-  // + gap + chat-bubble-wrapper），使卡片左右边缘与回复正文气泡对齐，避免卡片
-  // 左缘超出回复列。
-  if (message.isProactiveRecommendation) {
-    const withAssistantAvatar = enableAssistantAvatar;
-    return (
-      <div className={clsx('flex animate-rise justify-start', withAssistantAvatar && 'assistant-row')} data-testid="chat-panel-proactive-row">
-        {withAssistantAvatar && (
-          <div className="assistant-row__avatar" aria-hidden={!showAvatar} data-testid="chat-panel-proactive-avatar">
-            {showAvatar ? <TeamMemberAvatar member="team_leader" /> : null}
-          </div>
-        )}
-        <div className="chat-bubble-wrapper  min-w-0 flex-1" data-testid="chat-panel-proactive-bubble-wrapper">
-          <ProactiveRecommendationCard message={message} />
-        </div>
-      </div>
-    );
-  }
-
   // 工具调用/结果消息
   if (role === 'tool') {
     return (
@@ -1401,12 +1381,8 @@ export function FileDownloadList({
   }, [files]);
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
-    const pathHref = isEnterprise() && file.path
-      ? `/file-api/raw-file?path=${encodeURIComponent(file.path)}`
-      : '';
-    const href = file.download_url || pathHref;
-    if (expiredSet.has(index) || !href) return;
-    if (file.download_url && isEnterprise() && !(await prepareFileDownload(file.download_url))) {
+    if (expiredSet.has(index) || !file.download_url) return;
+    if (isEnterprise() && !(await prepareFileDownload(file.download_url))) {
       window.alert(t('artifacts.downloadFailed', { name: file.name }));
       return;
     }
@@ -1414,7 +1390,7 @@ export function FileDownloadList({
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
       const outcome = await executeDesktopSave(() =>
-        pywebviewApi.download_file!(href, file.name || 'download')
+        pywebviewApi.download_file!(file.download_url, file.name || 'download')
       );
       if (outcome === 'failed') {
         window.alert(t('artifacts.downloadFailed', { name: file.name }));
@@ -1422,7 +1398,7 @@ export function FileDownloadList({
       return;
     }
     const link = document.createElement('a');
-    link.href = href;
+    link.href = file.download_url;
     link.download = file.name || '';
     document.body.appendChild(link);
     link.click();

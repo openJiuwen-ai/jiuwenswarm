@@ -143,15 +143,15 @@ async def test_real_worker_exit_before_ipc_recovers_without_config_reload(monkey
     monkeypatch.setattr(module, "_RECOVERY_BACKOFF_INITIAL", .3)
     readiness = Readiness()
     supervisor = RuntimeSupervisor(readiness, stub=True, socket_path=str(tmp_path / "runtime.pipe"),
-        max_restarts=1, connect_timeout=5)
+        max_restarts=1, connect_timeout=1.5)
     try:
         with pytest.raises(RuntimeError):
-            await asyncio.wait_for(supervisor.run_until_ipc_ready(), 20)
+            await asyncio.wait_for(supervisor.run_until_ipc_ready(), 12)
         assert readiness.state is ReadinessState.FAILED
         failed = [int(pid) for pid in attempts.read_text().splitlines()]
         assert len(failed) == 2 and all(not psutil.pid_exists(pid) for pid in failed)
         blocked.unlink()
-        async with asyncio.timeout(40):
+        async with asyncio.timeout(20):
             while not readiness.snapshot()["agent_ready"]:
                 await asyncio.sleep(.01)
         assert supervisor.worker_pid not in failed

@@ -5,7 +5,6 @@
  * 组件通过 activeSessionId 读取当前会话的运行态。
  */
 
-import { foldEnterpriseStreamText } from '../features/enterpriseStreamText';
 import { create } from 'zustand';
 import { mergeUniqueMessages, toOwnerTeamMessage } from '../components/ChatPanel/teamEventUtils';
 import { subscribeWithSelector } from 'zustand/middleware';
@@ -258,6 +257,13 @@ export interface ChatRuntime {
   evolutionStatusClearTimer: ReturnType<typeof setTimeout> | null;
   /** interruptResult 自动清除定时器，按 session 隔离 */
   interruptResultClearTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Epoch of the last successful pause/cancel ack that settled this turn.
+   * While set, a lagging runtime-snapshot (session.get_metadata) or a synthetic
+   * resume processing event must not relight foreground processing; the next
+   * real processing_status(true) frame or a new user send clears it.
+   */
+  interruptSettledEpoch: number | null;
 }
 
 function createEmptyRuntime(): ChatRuntime {
@@ -276,6 +282,7 @@ function createEmptyRuntime(): ChatRuntime {
     isPaused: false,
     pausedTask: null,
     interruptResult: null,
+    interruptSettledEpoch: null,
     switchingMode: false,
     isNewSession: false,
     currentStreamContent: '',
@@ -415,6 +422,8 @@ interface ChatState {
     messages: QueuedSessionMessage[]
   ) => void;
   setInterruptResult: (sessionId: string, result: InterruptResultPayload | null) => void;
+  markInterruptSettled: (sessionId: string) => void;
+  clearInterruptSettled: (sessionId: string) => void;
   setSwitchingMode: (sessionId: string, switching: boolean) => void;
   setNewSession: (sessionId: string, isNew: boolean) => void;
   addToolCall: (
@@ -686,7 +695,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime || !runtime.currentStreamId) return state;
 
       const existingBuffer = runtime.streamBuffers.get(streamKey) || '';
-      const nextContent = foldEnterpriseStreamText(existingBuffer, content);
+      const nextContent = existingBuffer + content;
 
       return {
         runtimes: {
@@ -1353,6 +1362,32 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: nextRuntime,
+        },
+      };
+    });
+  },
+
+  markInterruptSettled: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, interruptSettledEpoch: Date.now() },
+        },
+      };
+    });
+  },
+
+  clearInterruptSettled: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.interruptSettledEpoch === null) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, interruptSettledEpoch: null },
         },
       };
     });
