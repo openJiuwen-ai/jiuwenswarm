@@ -5799,6 +5799,8 @@
     "clickToViewDetail": "Click to view details",
     "runIdTooltip": "Run ID: {{id}}",
     "executorTooltip": "currently hosted by {{name}}",
+    "forkFromSession": "Forked from session {{name}}",
+    "forkChildSession": "Forked child session",
     "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
     "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
   },
