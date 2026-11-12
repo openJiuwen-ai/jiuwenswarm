@@ -50,6 +50,8 @@ files:
   - tests/unit_tests/test_release_dependencies.py
   - pyproject.toml
   - uv.lock
+  - MANIFEST.in
+  - Makefile
 designs: []
 design_note: 用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。
 ---
@@ -486,6 +488,39 @@ SDK/Worker 行为、超时或断言。第一次修复后同组 **383 passed、2 
 未运行全仓 UT、Linux CI、完整桌面构建或真实搜索 E2E；主工作区、主环境和用户服务不变。
 远端五项 UT 是否为相同根因仍需新 CI 回执，不能把本机复现等同于取得了 CI 子进程 stderr。
 Gateway pin 前移后仍须重锁并重新验证普通 pip 安装。
+
+## 采用 Gateway 单一 SDK 来源（2026-11-12）
+
+用户随后明确改为由 Gateway 传递 SDK，接受等待 Gateway 后续更新。本节替代上一节的
+"暂时保留 SDK 直接 pin" 决策，不改写之前使用 Core `2dc7477a` 的验证事实。
+
+- 移除 Swarm 主依赖中的 Core 直链、五个 SDK uv override 及 SDK source；Harmony 改为
+  `openjiuwen>=0.1.20`，其余 SDK extras 保留。Gateway 固定来源仍为官方 `54e5330d`。
+- 不修改 Gateway 仓库、搜索实现、缺失能力的显式错误或已有搜索测试；不以跳过用例掩盖 SDK 差距。
+- `MANIFEST.in` 将 uv.lock 放入 sdist，使仅有传递 SDK 时，从 sdist 重建 wheel 仍可通过原有
+  官方依赖门禁；不放宽门禁，也不将锁文件装入 wheel。增加真实 sdist -> wheel 回归，检查 wheel
+  元数据仅通过 Gateway 获取基础 SDK，保留可选 extras。
+- 后续 Gateway 更新 SDK 后，还需要更新 Swarm 的 Gateway SHA 并重新锁定，不能把当前
+  传递依赖调整表述为已经使用最新 Core。
+
+验证：
+
+- `uv lock --check --offline` 通过；333 个包中只有 workswarm 与 openjiuwen 的声明改变，
+  其他包版本、包内容与平台 marker 均保持原样。SDK 当前为 Gateway 指定的 `f3f8f576`。
+- `uv sync --locked --all-extras --offline --dry-run` 通过。另建独立
+  `.tmp/pr9841-transitive-venv`，实际执行 `uv sync --locked --no-default-groups --group test --offline`，
+  成功安装 280 个包；`uv pip check` 通过。没有使用 SDK override 或本地源码替换。
+  下载该 SDK 的 Git 缓存获取失败后，仅从本机既有 Git 仓补入相同官方完整 SHA 对象再构建。
+- 发布依赖与 build config 的两个测试文件在已有环境和上述真实锁定环境均为 **74 passed**，
+  覆盖原生 editable 元数据、官方来源检查、保留 extras、旧 setuptools 入口与 sdist -> wheel。
+- 在新锁定环境追加 `test_trusted_web_search.py` 后为 **74 passed、31 errors**。
+  31 项均在 fixture 初始化读取 `free_search.resolve_search_model` 时失败，旧 SDK 未提供该接口；
+  测试正文尚未执行，不把它们表述成 31 个独立业务回归，也不跳过测试。
+  JUnit 在本地 `.tmp/ut9841-transitive-sdk-20261112.xml`，不提交运行产物。
+
+这次消除了 Swarm 与 Gateway 对 Core 的两个不同直链声明；未运行远端 st_gateway 或声称
+整套 CI 已通过。Gateway 官方固定提交前移后，需重锁并重跑搜索及 ST，才能交付本 PR 的完整搜索能力。
+主工作区环境和已有三个未提交索引不纳入本次提交。
 
 ## 残余限制
 

@@ -59,9 +59,8 @@ update-deps: ## Upgrade all locked dependencies to their latest allowed version
 	$(UV) sync
 
 # ----------------------------------------------------------------------
-# Gateway owns the SDK pin after dependency convergence. This search branch
-# temporarily retains its required Core override until Gateway !76 lands;
-# re-pinning Gateway alone does not remove that override.
+# Gateway owns the SDK pin. Update its official revision in pyproject.toml
+# before re-locking to adopt a newer transitive openjiuwen dependency.
 # ----------------------------------------------------------------------
 
 update-agent-gateway: ## Re-lock after re-pinning agent-gateway (carries openjiuwen)

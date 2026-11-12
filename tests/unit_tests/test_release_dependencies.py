@@ -9,6 +9,8 @@ import runpy
 import shutil
 import subprocess
 import sys
+import tarfile
+from email.parser import Parser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -21,6 +23,7 @@ from packaging.requirements import Requirement
 
 ROOT = Path(__file__).resolve().parents[2]
 OFFICIAL = "https://gitcode.com/openJiuwen/agent-core.git"
+GATEWAY = "https://gitcode.com/openJiuwen/agent-gateway.git"
 CANDIDATE = "https://gitcode.com/example/agent-core.git"
 REVISION = "a" * 40
 validate_release_dependencies = runpy.run_path(str(ROOT / "scripts/release_dependencies.py"))[
@@ -62,6 +65,88 @@ def _project(root: Path, repository: str = OFFICIAL) -> None:
         "include scripts/*.py\ninclude jiuwenswarm/common/worker_build_identity.py\n",
         encoding="utf-8",
     )
+
+
+def _transitive_project(root: Path, repository: str = OFFICIAL) -> None:
+    _project(root)
+    config = root / "pyproject.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            f"openjiuwen @ git+{OFFICIAL}@{REVISION}",
+            f"agent-gateway @ git+{GATEWAY}@{REVISION}",
+        ),
+        encoding="utf-8",
+    )
+    (root / "uv.lock").write_text(
+        '[[package]]\nname = "agent-gateway"\n'
+        f'source = {{ git = "{GATEWAY}?rev={REVISION}#{REVISION}" }}\n'
+        'dependencies = [{ name = "openjiuwen" }]\n'
+        '[[package]]\nname = "openjiuwen"\n'
+        f'source = {{ git = "{repository}?rev={REVISION}#{REVISION}" }}\n',
+        encoding="utf-8",
+    )
+    manifest = root / "MANIFEST.in"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8") + (ROOT / "MANIFEST.in").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("repository", [OFFICIAL, CANDIDATE, None])
+def test_release_checks_transitive_sdk_from_lock(tmp_path, repository):
+    _transitive_project(tmp_path, repository or OFFICIAL)
+    if repository is None:
+        (tmp_path / "uv.lock").unlink()
+    if repository == OFFICIAL:
+        validate_release_dependencies(tmp_path)
+    else:
+        with pytest.raises(ValueError, match="Release blocked"):
+            validate_release_dependencies(tmp_path)
+
+
+def test_transitive_release_can_build_wheel_from_sdist(tmp_path):
+    project = tmp_path / "src"
+    project.mkdir()
+    _transitive_project(project)
+    (project / "dist").mkdir()
+    env = os.environ.copy()
+    env.update(TEMP=str(tmp_path), TMP=str(tmp_path), TMPDIR=str(tmp_path))
+    result = subprocess.run(
+        [sys.executable, "-c", "import setuptools.build_meta as b; b.build_sdist('dist')"],
+        cwd=project, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False, timeout=60, env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    unpacked = tmp_path / "unpacked"
+    unpacked.mkdir()
+    with tarfile.open(next((project / "dist").glob("*.tar.gz"))) as archive:
+        for member in archive.getmembers():
+            destination = (unpacked / member.name).resolve()
+            assert destination.is_relative_to(unpacked.resolve())
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            assert member.isfile()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.extractfile(member) as source, destination.open("wb") as target:
+                shutil.copyfileobj(source, target)
+    restored = next(unpacked.iterdir())
+    assert (restored / "uv.lock").read_bytes() == (project / "uv.lock").read_bytes()
+    (restored / "dist").mkdir()
+    result = subprocess.run(
+        [sys.executable, "-c", "import setuptools.build_meta as b; b.build_wheel('dist')"],
+        cwd=restored, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False, timeout=60, env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    with ZipFile(next((restored / "dist").glob("*.whl"))) as wheel:
+        metadata_name = next(name for name in wheel.namelist() if name.endswith(".dist-info/METADATA"))
+        metadata = Parser().parsestr(wheel.read(metadata_name).decode("utf-8"))
+        assert "uv.lock" not in wheel.namelist()
+    requirements = [Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])]
+    assert len(requirements) == 1
+    assert requirements[0].name == "agent-gateway"
+    assert requirements[0].url == f"git+{GATEWAY}@{REVISION}"
 
 
 @pytest.mark.parametrize("location", ["dependencies", "harmony", "override", "source", "lock"])
@@ -271,6 +356,12 @@ def test_repository_editable_metadata_uses_actual_configuration(tmp_path):
     metadata = list((tmp_path / "metadata").glob("*.dist-info/METADATA"))
     assert len(metadata) == 1
     assert "Name: workswarm" in metadata[0].read_text(encoding="utf-8")
+    parsed = Parser().parsestr(metadata[0].read_text(encoding="utf-8"))
+    requirements = [Requirement(raw) for raw in parsed.get_all("Requires-Dist", [])]
+    sdk_requirements = [item for item in requirements if item.name == "openjiuwen"]
+    assert sdk_requirements
+    assert all(item.url is None and item.marker is not None for item in sdk_requirements)
+    assert any(item.name == "agent-gateway" and item.url for item in requirements)
 
 
 @pytest.mark.parametrize("hook", ["build_wheel", "build_sdist", "build_editable"])
@@ -303,30 +394,31 @@ def test_build_hooks_block_candidate_releases_but_allow_editable_installs(tmp_pa
                 assert len(identity.get(key, "")) == 64
 
 
-def test_sdk_overrides_and_lock_preserve_opt_in_extras_on_one_revision():
+def test_gateway_supplies_sdk_without_losing_opt_in_extras():
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     sdk = next(package for package in lock["package"] if package["name"] == "openjiuwen")
+    gateway = next(package for package in lock["package"] if package["name"] == "agent-gateway")
     swarm = next(package for package in lock["package"] if package["name"] == "workswarm")
     overrides = [Requirement(raw) for raw in config["tool"]["uv"]["override-dependencies"]]
-    sdk_overrides = [requirement for requirement in overrides if requirement.name == "openjiuwen"]
-    source = config["tool"]["uv"]["sources"]["openjiuwen"]
+    assert all(requirement.name != "openjiuwen" for requirement in overrides)
+    assert "openjiuwen" not in config["tool"]["uv"]["sources"]
+    source = config["tool"]["uv"]["sources"]["agent-gateway"]
     expected_url = f"git+{source['git']}@{source['rev']}"
-    assert {requirement.url for requirement in sdk_overrides} == {expected_url}
-    declarations = config["project"]["dependencies"] + config["project"]["optional-dependencies"]["harmony"]
-    for declaration in declarations:
-        requirement = Requirement(declaration)
-        if requirement.name == "openjiuwen":
-            assert requirement.url == expected_url
+    requirements = [Requirement(raw) for raw in config["project"]["dependencies"]]
+    assert all(item.name != "openjiuwen" for item in requirements)
+    assert next(item.url for item in requirements if item.name == "agent-gateway") == expected_url
     expected_lock_url = f"{source['git']}?rev={source['rev']}"
-    assert sdk["source"]["git"] == f"{expected_lock_url}#{source['rev']}"
-    lock_overrides = [item for item in lock["manifest"]["overrides"] if item["name"] == "openjiuwen"]
-    assert {item["git"] for item in lock_overrides} == {expected_lock_url}
+    assert gateway["source"]["git"] == f"{expected_lock_url}#{source['rev']}"
+    assert all(item["name"] != "openjiuwen" for item in lock["manifest"]["overrides"])
+    assert all(item["name"] != "openjiuwen" for item in swarm["dependencies"])
+    assert any(item["name"] == "openjiuwen" for item in gateway["dependencies"])
     for extra, expected in {
         "claude": {"claude"}, "codex": {"codex"}, "cua": {"cua"}, "distribute": {"postgres", "zmq"},
     }.items():
-        active = [item for item in sdk_overrides if item.marker is None or item.marker.evaluate({"extra": extra})]
-        assert set().union(*(item.extras for item in active)) == expected
+        requirement = Requirement(config["project"]["optional-dependencies"][extra][0])
+        assert requirement.name == "openjiuwen" and requirement.url is None
+        assert requirement.extras == expected
         dependency = next(item for item in swarm["optional-dependencies"][extra] if item["name"] == "openjiuwen")
         assert set(dependency["extra"]) == expected
         assert expected <= sdk["optional-dependencies"].keys()

@@ -35,6 +35,8 @@ files:
   - scripts/build.ps1
   - setup.py
   - pyproject.toml
+  - uv.lock
+  - MANIFEST.in
 ---
 
 # SDK Web 检索接入
@@ -69,8 +71,12 @@ files:
   `setup.py` 的更早期 editable 元数据入口在仅缺少 `setuptools.command.bdist_wheel` 时使用
   `wheel.bdist_wheel`；其他模块导入错误仍抛出。wheel 也在 build-system 中直接声明，避免依赖探测
   尚未结束时先因构建命令导入失败。两条后端路径均保留 wheel/sdist 的官方依赖发布门禁。
-  uv override 仅约束 uv 项目解析，不能改写 Gateway 的发布依赖；它不证明 wheel 的 pip 安装兼容。
-  发布前仍需让 Swarm 与 Gateway 的 SDK 直链固定版本一致，并分别验证 uv 和 pip 安装入口。
+- Swarm 不直接固定 Core 的 Git URL，也不配置 SDK uv source/override；SDK 修订唯一由官方
+  Gateway 传递。Harmony 仅保留版本下限，claude/codex/cua/distribute 仅声明所需 SDK extras。
+  Gateway 更新其 SDK 后，仍须将 Swarm 的 Gateway 固定提交前移并重新生成 uv.lock；
+  不会因 Gateway 远端有新提交而自动改变已有锁定环境。
+  sdist 包含 uv.lock，保证从源码包构建 wheel 时仍可校验传递 SDK 的官方来源与固定版本，
+  锁文件不作为 wheel 的运行时资源。依赖可解析不等于具备配套搜索能力，仍须分别验证。
 - 两个默认 rail builder 都包含一份 `WebResearchBudgetRail`；Code 动态配置对该 Rail 去重。
   新 invocation、新并发会话有独立预算；同一 invocation 的模型轮次和并行工具共享。
 - 免费来源仅支持 DDG（含 reader 入口）与 Bing；环境模板提供独立开关和检索预算。
