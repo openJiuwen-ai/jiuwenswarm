@@ -5135,6 +5135,31 @@ async def _consume_stream_with_query(
                     )
                     terminal_broadcasted = True
                     continue
+                elif parsed.get("event_type") == "team.goal.blocked":
+                    # Core keeps the resident stream open for later user input.
+                    # End this request's processing state without completing its tasks.
+                    fallback = (
+                        "The leader goal is blocked. Add input to continue."
+                        if str(getattr(team_spec, "language", "cn")) == "en"
+                        else "领导目标已阻塞，请补充输入后继续。"
+                    )
+                    await _deliver({
+                        "event_type": "chat.error",
+                        "error": str(parsed.get("reason") or fallback),
+                        "code": "TEAM_GOAL_BLOCKED",
+                        "session_id": session_id,
+                        "rid": round_id,
+                    })
+                    await _deliver({
+                        "event_type": "chat.processing_status",
+                        "session_id": session_id,
+                        "rid": round_id,
+                        "is_processing": False,
+                        "is_complete": True,
+                        "reason": "team.goal.blocked",
+                    })
+                    terminal_broadcasted = True
+                    continue
                 elif parsed.get("event_type") == "team.completed":
                     # Team completed this round — broadcast a single
                     # round-complete signal that also carries team stats.

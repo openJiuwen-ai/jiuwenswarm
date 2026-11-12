@@ -2104,6 +2104,9 @@ class TeamManager:
                 spec.enable_task_verification = False
                 spec.enable_member_messaging = False
                 spec.max_subtask_depth = 0
+        if spec.dispatch_mode != "scheduled":
+            # Session dispatch overrides must not revive a template leader goal.
+            spec.leader.goal = None
         if bootstrap_mode is not None:
             spec.bootstrap_mode = bootstrap_mode
         if spec.bootstrap_mode == "framework" and spec.dispatch_mode != "scheduled":

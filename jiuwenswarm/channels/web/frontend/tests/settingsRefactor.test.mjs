@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -1161,6 +1163,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'team_task_verification_enabled',
       'team_member_messaging_enabled',
       'team_member_subtasks_enabled',
+      'team_leader_goal_enabled',
       'proactive_recommendation_enabled',
       'progressive_tool_optimize',
     ].sort(),
@@ -1198,6 +1201,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'symphony_evolution_enabled',
     'task_asr_enabled',
     'task_full_duplex_enabled',
+    'team_leader_goal_enabled',
     'team_member_messaging_enabled',
     'team_member_subtasks_enabled',
     'team_organization_ui_enabled',

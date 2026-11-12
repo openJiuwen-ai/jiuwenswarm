@@ -21,6 +21,7 @@ import yaml
 from dotenv import dotenv_values
 
 from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
+from jiuwenswarm.common.team_goal_config import leader_goal_enabled
 from jiuwenswarm.common.browser_settings import project_browser_decision
 from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
@@ -479,6 +480,9 @@ def get_panel() -> dict[str, Any]:
         payload["swarmflow_enabled"] = _bool_text(
             _nested(raw, _SWARMFLOW_ENABLED_PATH, False)
         )
+        payload["team_leader_goal_enabled"] = (
+            "true" if leader_goal_enabled(_nested(raw, ("modes", "team", "jiuwen_team"), {})) else "false"
+        )
         payload["team_scheduled_dispatch_enabled"] = (
             "true" if str(_nested(raw, _TEAM_DISPATCH_MODE_PATH, "autonomous")).strip() == "scheduled" else "false"
         )
@@ -539,6 +543,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("team_task_verification_enabled", "false")
         payload.setdefault("team_member_messaging_enabled", "false")
         payload.setdefault("team_member_subtasks_enabled", "false")
+        payload.setdefault("team_leader_goal_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("proactive_recommendation_enabled", "false")

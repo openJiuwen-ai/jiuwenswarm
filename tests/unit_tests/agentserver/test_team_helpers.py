@@ -9537,3 +9537,57 @@ async def test_voice_design_canvas_events_reach_web_session(monkeypatch, event, 
     assert frame["session_id"] == "design-chat"
     assert frame["request_id"] == "original-turn"
     assert frame["payload"] is payload
+
+
+@pytest.mark.anyio
+async def test_leader_goal_blocked_ends_request_without_ending_resident_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broadcasted: list[dict] = []
+    terminal = asyncio.Event()
+    keep_open = asyncio.Event()
+
+    async def stream(
+        *, agent_team: Any, inputs: dict, session: Any, envs: dict,
+        stream_logger: Any, background_task_controller: Any,
+    ):
+        yield SimpleNamespace(
+            type="message", role=TeamRole.LEADER,
+            payload={"event_type": "team.goal.blocked", "reason": "attempt limit reached"},
+        )
+        await keep_open.wait()
+
+    class FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
+            pass
+
+    manager = FakeManager()
+    record = _broadcast_recorder(broadcasted, manager)
+
+    async def broadcast(channel_id: str, session_id: str, payload: dict) -> None:
+        await record(channel_id, session_id, payload)
+        if payload.get("reason") == "team.goal.blocked":
+            terminal.set()
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", stream)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel: manager)
+    monkeypatch.setattr(team_helpers, "_broadcast_event", broadcast)
+    task = asyncio.create_task(_TeamHelpersTestApi.consume_stream_with_query(
+        "web", "goal-blocked-session", SimpleNamespace(team_name="goal-team"), "ship it",
+    ))
+    try:
+        await asyncio.wait_for(terminal.wait(), timeout=2)
+        assert not task.done()
+        error = next(event for event in broadcasted if event.get("code") == "TEAM_GOAL_BLOCKED")
+        assert error["error"] == "attempt limit reached"
+        assert any(event.get("is_processing") is False for event in broadcasted)
+        assert not any(event["event_type"] == "team.completed" for event in broadcasted)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

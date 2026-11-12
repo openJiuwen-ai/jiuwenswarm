@@ -1678,3 +1678,56 @@ def test_leader_from_top_level_reference_is_unbounded():
     assert spec["agents"]["leader"]["max_iterations"] is None
     assert spec["agents"]["leader"]["completion_timeout"] == 6000.0
     assert config["agents"]["agent_leader"]["max_iterations"] == 200
+
+
+@pytest.mark.parametrize("mode,enabled", [("scheduled", True), ("autonomous", False)])
+def test_leader_goal_only_applies_to_scheduled_templates(mode: str, enabled: bool) -> None:
+    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+
+    config = _config_with_team({"leader": {}, "teammate": {}})
+    team = config["modes"]["team"]["demo_team"]
+    team["dispatch_mode"] = mode
+    team["leader"] = {"display_name": "Goal Leader", "goal": {}}
+    original = deepcopy(config)
+    loaded = load_team_spec_dict(config_base=config)
+    spec = TeamAgentSpec.model_validate(loaded)
+    assert (spec.leader.goal is not None) == enabled
+    if enabled:
+        assert spec.leader.goal.max_attempts == 10
+        assert spec.leader.goal.strategy == "hybrid"
+        assert spec.leader.goal.token_budget is None
+    assert spec.member_goal is None
+    assert config == original
+
+
+def test_goal_template_snapshot_takes_precedence_over_global_settings() -> None:
+    config = _config_with_team({"leader": {}, "teammate": {}})
+    snapshot = deepcopy(config["modes"]["team"]["demo_team"])
+    snapshot.update({"dispatch_mode": "scheduled", "leader": {"goal": {"max_attempts": 3}}})
+    config["modes"]["team"]["demo_team"]["leader"] = {"goal": None}
+    loaded = load_team_spec_dict(config_base=config, template_snapshot=snapshot)
+    assert loaded["leader"]["goal"]["max_attempts"] == 3
+    assert snapshot["leader"]["goal"] == {"max_attempts": 3}
+
+
+def test_member_goal_remains_yaml_only_and_leader_cli_is_rejected() -> None:
+    config = _config_with_team({"leader": {}, "teammate": {}})
+    team = config["modes"]["team"]["demo_team"]
+    team["member_goal"] = {"max_attempts": 2}
+    loaded = load_team_spec_dict(config_base=config)
+    assert loaded["member_goal"] == {"strategy": "hybrid", "max_attempts": 2}
+    assert loaded["leader"]["goal"] is None
+    team.update({"dispatch_mode": "scheduled", "leader": {"goal": {}, "cli_agent": "codex"}})
+    with pytest.raises(ValueError, match="CLI leader"):
+        load_team_spec_dict(config_base=config)
+
+
+def test_goal_enablement_rejects_an_old_core_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openjiuwen.agent_teams.schema.blueprint import LeaderSpec
+
+    config = _config_with_team({"leader": {}})
+    team = config["modes"]["team"]["demo_team"]
+    team.update({"dispatch_mode": "scheduled", "leader": {"goal": {}}})
+    monkeypatch.setattr(LeaderSpec, "__pydantic_fields__", {})
+    with pytest.raises(ValueError, match="updated openjiuwen"):
+        load_team_spec_dict(config_base=config)

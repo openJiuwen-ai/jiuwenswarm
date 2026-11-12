@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import type { ModelEntry } from '../../../types';
 
 export const SETTINGS_CONFIG_CHANGED_EVENT = 'jiuwen:settings-config-changed';
@@ -165,6 +167,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('trajectory_ui_diagnosis_enabled', 'experimental', 'boolean', 'trajectory_ui.diagnosis_enabled'),
   yamlField('team_organization_ui_enabled', 'experimental', 'boolean', 'experimental.team_organization_ui_enabled'),
   yamlField('comfyui_workflow_enabled', 'experimental', 'boolean', 'experimental.comfyui_workflow_enabled'),
+  yamlField('team_leader_goal_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.leader.goal'),
   yamlField('team_scheduled_dispatch_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.dispatch_mode'),
   yamlField(
     'team_task_verification_enabled',

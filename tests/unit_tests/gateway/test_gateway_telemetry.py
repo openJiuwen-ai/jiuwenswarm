@@ -88,7 +88,14 @@ def test_unsampled_context_still_propagates():
     with telemetry.bind_request_trace(operation):
         envelope = SimpleNamespace(request_id="r", channel_context={})
         telemetry.inject_request_trace(envelope)
-    assert envelope.traceparent.endswith("-00")
+    remote = trace.get_current_span(
+        TraceContextTextMapPropagator().extract({"traceparent": envelope.traceparent})
+    ).get_span_context()
+    # New SDKs can set the random-trace-id bit even when sampling is disabled.
+    assert remote.is_valid
+    assert not remote.trace_flags.sampled
+    assert remote.trace_id == operation.span.get_span_context().trace_id
+    assert remote.span_id == operation.span.get_span_context().span_id
     assert envelope.channel_context == {}
     provider.shutdown()
 
@@ -393,7 +400,14 @@ def test_browser_sampled_flag_does_not_override_server_policy(monkeypatch, sampl
     with telemetry.bind_request_trace(operation):
         envelope = SimpleNamespace(request_id="r", channel_context={})
         telemetry.inject_request_trace(envelope)
-    assert envelope.traceparent.endswith("-00")
+    remote = trace.get_current_span(
+        TraceContextTextMapPropagator().extract({"traceparent": envelope.traceparent})
+    ).get_span_context()
+    # New SDKs can set the random-trace-id bit even when sampling is disabled.
+    assert remote.is_valid
+    assert not remote.trace_flags.sampled
+    assert remote.trace_id == operation.span.get_span_context().trace_id
+    assert remote.span_id == operation.span.get_span_context().span_id
     assert envelope.channel_context == {}
     operation.finish("success")
 
