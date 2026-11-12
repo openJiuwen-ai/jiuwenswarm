@@ -1161,7 +1161,8 @@
       },
       "cua_agent_enabled": {
         "title": "启用电脑操控",
-        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
+        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
+        "unavailableDescription": "当前环境不支持电脑操控。"
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
@@ -1255,11 +1256,6 @@
         "title": "API Key",
         "description": "JEV 服务的密钥。",
         "placeholder": "输入 API Key"
-      },
-      "cua_agent_enabled": {
-        "title": "启用电脑操控",
-        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
-        "unavailableDescription": "当前环境不支持电脑操控。"
       }
     },
     "validation": {
@@ -4132,7 +4128,15 @@
       "Engineering": "产品研发",
       "Life": "生活方式",
       "Custom": "自定义",
-      "Other": "其他"
+      "Other": "其他",
+      "Office Productivity": "办公效率",
+      "Software Development": "软件开发",
+      "Data Science & Research": "数据与科研",
+      "Multimodal & Media": "多模态媒体",
+      "Content Creation": "内容创作",
+      "Lifestyle & Health": "生活与健康",
+      "Finance & Wealth Management": "金融与理财",
+      "Compliance & Legal": "合规与法律"
     },
     "actions": {
       "working": "处理中",
@@ -5122,7 +5126,15 @@
       "communication": "通话沟通",
       "Engineering": "工程开发",
       "Design": "设计创意",
-      "other": "其他"
+      "other": "其他",
+      "Office Productivity": "办公效率",
+      "Software Development": "软件开发",
+      "Data Science & Research": "数据与科研",
+      "Multimodal & Media": "多模态媒体",
+      "Content Creation": "内容创作",
+      "Lifestyle & Health": "生活与健康",
+      "Finance & Wealth Management": "金融与理财",
+      "Compliance & Legal": "合规与法律"
     },
     "search": {
       "plugin": "搜索插件",
