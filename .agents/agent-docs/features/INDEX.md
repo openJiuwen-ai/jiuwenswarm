@@ -1,7 +1,7 @@
 ---
 title: 实施与决策 F索引
-author: yzdnh123
-author_email: yzdnh123@gmail.com
+author: xinyang_bali
+author_email: 835397263@qq.com
 generated: true
 ---
 
