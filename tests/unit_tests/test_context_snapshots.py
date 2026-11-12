@@ -213,6 +213,25 @@ def test_giant_prompt_is_skipped_with_bounded_allocations(stored):
 
 
 @pytest.mark.parametrize("source_format", ["json", "jsonl"])
+def test_context_projection_keeps_diagnostic_omission_bounded(stored, source_format):
+    path = stored.path.with_suffix("." + source_format)
+    record = {"role": "assistant", "event_type": "chat.tool_result", "rendered_result": "context result",
+              "event_payload": {"duplicate_audit": "x" * (5 * 1024 * 1024)},
+              "usage": {"total_tokens": 168}, "session_usage": {"total_tokens": 336}}
+    path.write_text(json.dumps([record] if source_format == "json" else record), encoding="utf-8")
+    tracemalloc.start()
+    try:
+        rows = list(streaming.iter_history_rows(path, session_id=stored.sid))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert [row.record for row in rows] == [
+        {"role": "assistant", "event_type": "chat.tool_result", "rendered_result": "context result"},
+    ]
+    assert peak < 2 * 1024 * 1024
+
+
+@pytest.mark.parametrize("source_format", ["json", "jsonl"])
 def test_streaming_scan_budget_pauses_for_consumer(stored, monkeypatch, source_format):
     rows = [user("first", "first question"), user("second", "second question")]
     path = stored.path.with_suffix("." + source_format)

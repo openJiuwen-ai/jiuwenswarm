@@ -515,3 +515,5 @@ Omitting `artifact_sha256` preserves existing history paging/streaming behavior.
 Legacy `page_idx` paging scans history in blocks and retains only the requested page, preserving newest-first order and exact `total_pages`. Old JSON arrays are also streamed. Each scan is limited to 8 GiB / 120 seconds, and the retained page to 16 MiB; giant diagnostic fields are not loaded in full. Budget or allocation failures return an explicit `HISTORY_RESTORE_LIMIT`; replacement or truncation returns `HISTORY_RESTORE_CHANGED`, rather than a successful empty history.
 
 Legacy context recovery retains its scan budget. Time spent waiting for model compression between recovery batches does not consume scanning time; actual disk reads and parsing remain time-limited.
+
+Legacy page reads preserve `event_payload`, `usage`, and `session_usage` for tool replay and usage summaries. These fields remain subject to semantic-field and page budgets; context recovery keeps its separate diagnostic projection.

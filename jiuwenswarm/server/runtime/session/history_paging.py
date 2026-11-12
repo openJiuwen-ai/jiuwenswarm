@@ -77,6 +77,8 @@ def read_indexed_history(
         for row in iter_history_rows(
             path, session_id=session_id, start=start, end=end,
             max_seconds=max(0, deadline - time.monotonic()), include_record=include_record,
+            # Page replay needs tool payloads and usage; recovery omits them by default.
+            omit_fields=frozenset({"prompt"}),
         ):
             check_time()
             yield row.record

@@ -12,6 +12,7 @@ from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.server.front.server import AgentServerFront
 from jiuwenswarm.server.runtime.session.history_artifacts import put_text
 from tests.unit_tests.test_context_snapshots import stored, user
+from tests.unit_tests.test_history_index_paging import semantic_records
 
 
 async def _request(socket, session_id, params, *, stream=False):
@@ -27,6 +28,58 @@ async def _request(socket, session_id, params, *, stream=False):
             data = json.loads(await socket.recv())
             if data.get("request_id") == identity:
                 return parse_agent_server_wire_unary(data)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_format", ["json", "jsonl"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_front_history_page_retains_tool_payload_and_usage(stored, semantic_records, source_format, stream):
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+
+    path = stored.path.with_suffix("." + source_format)
+    if path != stored.path:
+        stored.path.unlink()
+    text = json.dumps(semantic_records) if source_format == "json" else "".join(
+        json.dumps(record) + "\n" for record in semantic_records
+    )
+    path.write_text(text, encoding="utf-8")
+    original = path.read_bytes()
+    front = AgentServerFront(port=0)
+    await front.start()
+    try:
+        port = front._server.sockets[0].getsockname()[1]
+        async with websockets.connect(f"ws://127.0.0.1:{port}") as socket:
+            await socket.recv()
+            if stream:
+                rid = uuid4().hex
+                await socket.send(json.dumps({
+                    "protocol_version": "1.0", "request_id": rid, "channel": "web",
+                    "session_id": stored.sid, "user_id": "paging-test-owner", "identity_origin": "user",
+                    "method": "history.get", "is_stream": True,
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "params": {"session_id": stored.sid, "page_idx": 1},
+                }))
+                messages = []
+                async with asyncio.timeout(10):
+                    while True:
+                        raw = json.loads(await socket.recv())
+                        if raw.get("request_id") != rid:
+                            continue
+                        reply = parse_agent_server_wire_chunk(raw)
+                        assert not reply.payload.get("error"), reply.payload
+                        if "message" in reply.payload:
+                            messages.append(reply.payload["message"])
+                        if reply.is_complete:
+                            assert reply.payload["status"] == "done"
+                            break
+            else:
+                reply = await _request(socket, stored.sid, {"session_id": stored.sid, "page_idx": 1})
+                assert reply.ok, reply.payload
+                messages = reply.payload["messages"]
+            assert messages == list(reversed(semantic_records))
+    finally:
+        await front.stop()
+    assert path.read_bytes() == original
 
 
 @pytest.mark.asyncio
