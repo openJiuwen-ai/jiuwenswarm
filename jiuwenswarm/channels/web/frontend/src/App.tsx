@@ -44,6 +44,7 @@ import {
   markCronOptimisticProcessing,
   shouldKeepLocalCronProcessing,
 } from './features/cron/cronProcessingGuard';
+import { maySnapshotRelightProcessing } from './features/interruptSettleGuard';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -2078,6 +2079,12 @@ function AppContent({
         const localProcessing = Boolean(
           useChatStore.getState().getRuntime(targetSessionId)?.isProcessing,
         );
+        // A pause/cancel ack just settled this turn; the worker snapshot can
+        // lag the teardown (bug1112: pause ack + stale snapshot re-lit the
+        // stop button in a loop). Ignore a busy snapshot until a new round
+        // starts (user send / processing_status(true) clears the marker).
+        const interruptSettled = useChatStore.getState()
+          .getRuntime(targetSessionId)?.interruptSettledEpoch != null;
         const trackedLastRun = Object.values(useCronStore.getState().lastRunSessionId).includes(
           targetSessionId,
         );
@@ -2092,6 +2099,7 @@ function AppContent({
         const metadataMaySettleProcessing = session.is_processing || allowDowngrade || !locallyBusy;
         if (
           metadataMaySettleProcessing
+          && maySnapshotRelightProcessing(session.is_processing, interruptSettled, allowDowngrade)
           && !shouldKeepLocalCronProcessing(targetSessionId, session.is_processing, localProcessing, {
             // 统一会话未必 cron_ 前缀，靠 cron_id / lastRun 放行
             hasCronMetadata: Boolean(session.cron_id) || trackedLastRun,
