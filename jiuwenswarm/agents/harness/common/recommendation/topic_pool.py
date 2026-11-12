@@ -29,7 +29,8 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
 
 POLICY_ID = "topic-starter-mvp-v5"
 PAYLOAD_VERSION = "topic-starter-pool-v1"
-BACKGROUND_GENERATION_DEADLINE_SECONDS = 180.0
+# None = wait until generate() finishes; per-call HTTP timeouts still apply.
+BACKGROUND_GENERATION_DEADLINE_SECONDS: float | None = None
 
 _PROMPT_IDS = frozenset({"i1", "i2", "i3", "i4", "i5"})
 _CARD_REQUIRED_FIELDS = frozenset(
@@ -608,7 +609,7 @@ class BackgroundGenerationCoordinator:
         self,
         store: TopicStarterStore,
         *,
-        deadline_seconds: float = BACKGROUND_GENERATION_DEADLINE_SECONDS,
+        deadline_seconds: float | None = BACKGROUND_GENERATION_DEADLINE_SECONDS,
         pool_writer: Callable[..., Any] = write_starter_pool,
         policy_id: str = POLICY_ID,
     ) -> None:
@@ -757,25 +758,28 @@ class BackgroundGenerationCoordinator:
                 generation_task = asyncio.ensure_future(generate())
             finally:
                 _GENERATION_ATTEMPT_ID.reset(context_token)
-            done, _ = await asyncio.wait(
-                {generation_task}, timeout=self.deadline_seconds
-            )
-            if generation_task not in done:
-                generation_task.cancel()
-                try:
-                    await generation_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:  # noqa: BLE001
-                    pass
-                self.record_generation_event(
-                    "background_generation_deadline",
-                    trigger_key,
-                    generation_attempt_id=generation_attempt_id,
-                )
-                return "background_generation_deadline"
             try:
-                result = generation_task.result()
+                if self.deadline_seconds is None:
+                    result = await generation_task
+                else:
+                    done, _ = await asyncio.wait(
+                        {generation_task}, timeout=self.deadline_seconds
+                    )
+                    if generation_task not in done:
+                        generation_task.cancel()
+                        try:
+                            await generation_task
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:  # noqa: BLE001
+                            pass
+                        self.record_generation_event(
+                            "background_generation_deadline",
+                            trigger_key,
+                            generation_attempt_id=generation_attempt_id,
+                        )
+                        return "background_generation_deadline"
+                    result = generation_task.result()
             except Exception:  # noqa: BLE001
                 self.record_generation_event(
                     "background_generation_failed",

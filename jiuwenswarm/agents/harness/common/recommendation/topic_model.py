@@ -323,12 +323,14 @@ def _default_model_factory(config: ArkBackgroundConfig) -> Any:
 
     from jiuwenswarm.common.reasoning_config import effective_endpoint_profile
 
+    # Align with Designer structured calls (1200). A previous 120s hard-code
+    # aborted long JSON stages; core ModelClientConfig requires timeout > 0.
     client_kwargs: dict[str, Any] = {
         "client_id": "topic-recommendation",
         "client_provider": config.client_provider,
         "api_key": config.api_key,
         "api_base": config.base_url,
-        "timeout": 120.0,
+        "timeout": 1200.0,
         "max_retries": 0,
     }
     profile = effective_endpoint_profile(config.base_url, config.endpoint_profile)
