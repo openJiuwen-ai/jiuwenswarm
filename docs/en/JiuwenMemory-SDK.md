@@ -58,6 +58,15 @@ SDK mode auto-assembles the memory kernel in-process. The three backends answer 
 
 ---
 
+### 1.4 Import video into memory from Web chat
+
+Enable the built-in JiuwenMemory SDK (`memory.engine: builtin`, `memory.builtin.provider: jiuwen`, and `memory.builtin.jiuwen.mode: sdk`) and turn on the agent's memory. Use a version of agent-memory with the automatic video assembly from `config_dict` introduced in commit `92e8624`.
+
+1. In **Settings → Agent → Tools**, configure and enable **Video Understanding** and **Audio Processing** for the capabilities your deployment does not already provide. Save the model, API URL, and API key for each. The video endpoint must support OpenAI-compatible vision chat. The audio endpoint must support OpenAI-compatible transcription with segment timestamps.
+2. Put the video in a deployment-configured import directory. If the deployment has no import directories, confirm **Full access** in a local Web chat in Work mode and use the current project directory or session workspace. Ask the agent to remember the video.
+
+Swarm forwards each enabled, complete model configuration under any permission profile. If the deployment already configures one model, set the other in the Web UI. Automatic workspace grants are bound to the current memory identity. Model and effective directory changes apply to subsequent turns. With the SDK's default in-memory job store, old video job IDs become unavailable after the memory rail is rebuilt.
+
 ## 2. Built-in Memory vs. JiuwenMemory
 
 JiuwenSwarm defaults to **built-in memory** (`memory.engine: builtin`), based on local Markdown files; switching to JiuwenMemory uses remote structured backends. The key difference is not "tool names" but **how memory is triggered**:
