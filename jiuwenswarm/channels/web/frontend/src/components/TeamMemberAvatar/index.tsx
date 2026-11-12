@@ -1,11 +1,13 @@
 import clsx from 'clsx';
-import { resolveTeamMemberAvatar } from '../../utils/teamMemberAvatar';
+import { resolveTeamMemberAvatar, type TeamMemberIdentity } from '../../utils/teamMemberAvatar';
 
 interface TeamMemberAvatarProps {
   member?: string;
   className?: string;
   imageClassName?: string;
   alt?: string;
+  /** SwarmFlow 节点可传入；当前头像解析未消费，保留以兼容树/图视图。 */
+  identity?: TeamMemberIdentity;
 }
 
 export function TeamMemberAvatar({
@@ -13,6 +15,7 @@ export function TeamMemberAvatar({
   className,
   imageClassName,
   alt,
+  identity: _identity,
 }: TeamMemberAvatarProps): JSX.Element {
   const avatar = resolveTeamMemberAvatar(member);
   const defaultImageRadius = avatar.kind === 'user' ? 'rounded-xl' : 'rounded-2xl';

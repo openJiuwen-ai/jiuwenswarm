@@ -1799,6 +1799,9 @@ modes:
       teammate_mode: build_mode
       spawn_mode: inprocess
       enable_swarmflow: false
+      # Optional session/token budget ceiling for SwarmFlow (positive int).
+      # Omitted/null = no budget rail. Only effective when enable_swarmflow is true.
+      # swarmflow_budget:
       # Per-teammate soft ceiling for debate messages; task-board collaboration is excluded.
       max_debate_rounds: 3
 

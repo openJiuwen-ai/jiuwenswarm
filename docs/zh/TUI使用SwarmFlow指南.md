@@ -66,7 +66,7 @@ jiuwenswarm-tui
 
 ## 启用 SwarmFlow
 
-SwarmFlow 默认在 Team 模式配置中启用。配置文件位于 `~/.jiuwenswarm/config/config.yaml`。
+出厂模板默认**关闭** SwarmFlow（`enable_swarmflow: false`）。配置文件位于 `~/.jiuwenswarm/config/config.yaml`。
 
 ### 配置项
 
@@ -80,7 +80,8 @@ modes:
       lifecycle: persistent
       teammate_mode: build_mode
       spawn_mode: inprocess
-      enable_swarmflow: true    # 设为 true 启用 SwarmFlow， 默认为True
+      enable_swarmflow: false    # 设为 true 启用 SwarmFlow；默认为 false
+      # swarmflow_budget: 500000  # 可选：Team 共享 token 上限
 
       leader:
         member_name: team-leader
@@ -104,27 +105,34 @@ modes:
 
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
-| `enable_swarmflow` | 是否启用 SwarmFlow 工作流 | `true` |
+| `enable_swarmflow` | 是否启用 SwarmFlow 工作流 | `false` |
+| `swarmflow_budget` | Team 共享 token 上限；正整数启用，未设置或 `null` 表示无硬上限 | 未设置 |
 | `team_name` | 团队名称 | `jiuwen_team` |
 | `lifecycle` | 团队生命周期：`persistent`（持久）/ `temporary`（临时） | `persistent` |
 | `teammate_mode` | 成员构建模式：`build_mode` | `build_mode` |
 | `spawn_mode` | 进程模式：`inprocess`（单机）/ 分布式见 [分布式Team](分布式Team.md) | `inprocess` |
 
-> **注意**：修改配置后需重启 JiuwenSwarm 后端服务（`jiuwenswarm-start`）使配置生效。
+> **注意**：修改 `config.yaml` 后需重启 JiuwenSwarm 后端服务（`jiuwenswarm-start`）使配置生效。TUI `/swarmflow` 写入后对**新 session** 生效，可用 `/new` 立即应用。
 
 ---
 
 ## 使用 SwarmFlow
 
-### 步骤一：切换到 Team 模式
+### 步骤一：启用并进入 Team
 
-在 TUI 中输入以下命令切换到 Team 模式：
+推荐用 TUI 命令一次完成「开 SwarmFlow + 进 team」：
 
 ```
-/mode team
+/swarmflow on
+/swarmflow          # 确认：swarmflow: on · mode: team · budget: ...
 ```
 
-切换成功后，TUI 界面会显示当前模式为 `team`，Leader Agent 将负责协调团队任务。
+也可手动 `/mode team`，并保证配置里 `enable_swarmflow: true`。可选预算：
+
+```
+/swarmflow on --budget 500000
+/swarmflow on --budget none
+```
 
 ### 步骤二：发起任务
 
@@ -190,7 +198,7 @@ up/down select - Enter view - r refresh - Esc close
 
 | 信息 | 说明 |
 |------|------|
-| 状态图标 | `●` running / `○` pending / `◎` planned / `✓` completed / `✗` failed / `■` stopped |
+| 状态图标 | `●` running / `○` pending / `◎` planned / `✓` completed / `✗` failed / `■` stopped / `‖` paused |
 | 工作流名称 | 由 `SwarmflowTool` 启动时设定 |
 | Agent 进度 | `已完成/总计` 格式 |
 
@@ -200,6 +208,9 @@ up/down select - Enter view - r refresh - Esc close
 |------|------|
 | `↑` / `↓` | 在工作流列表间移动焦点 |
 | `Enter` | 进入选中工作流的阶段详情 |
+| `Shift+B` | 查看 Team / Run budget |
+| `Shift+P` | 暂停/恢复选中工作流（`swarmflow.pause` / `swarmflow.resume`） |
+| `Shift+S` | 停止选中工作流（`swarmflow.stop`） |
 | `r` | 刷新工作流列表 |
 | `Esc` | 关闭查看器，返回对话 |
 
@@ -235,6 +246,9 @@ up/down select phase · Enter show agents · Tab/Right agents · Esc back
 | `Tab` / `→` | 在 **阶段（Phases）** 和 **Agent** 列表间切换焦点 |
 | `←` | 返回工作流列表 |
 | `l` | 查看工作流完整日志（进入文件查看器） |
+| `Shift+B` | 查看 Team / Run budget |
+| `Shift+P` | 暂停/恢复当前工作流 |
+| `Shift+S` | 停止当前工作流 |
 | `r` | 刷新 |
 | `Esc` | 返回工作流列表 |
 
@@ -288,10 +302,11 @@ Esc/← back
 | 状态 | 说明 |
 |------|------|
 | `running` | 工作流正在执行中 |
+| `paused` | 工作流已暂停，可用 `Shift+P` 恢复 |
 | `pending` | 工作流已创建，等待执行 |
 | `planned` | 工作流已规划，尚未启动 |
 | `completed` | 工作流所有阶段执行完毕 |
-| `failed` | 工作流执行过程中出错 |
+| `failed` | 工作流执行过程中出错（含 token budget 超限） |
 | `stopped` | 工作流被用户中断或停止 |
 
 ### 阶段状态

@@ -907,6 +907,33 @@ def _resolve_enable_permissions(config_base: dict[str, Any], team_raw: dict[str,
     return global_enabled and team_enabled
 
 
+def _apply_swarmflow_budget(spec_dict: dict[str, Any], raw_value: Any) -> None:
+    """Validate and apply ``swarmflow_budget`` to *spec_dict* in-place.
+
+    Only positive integers are accepted. Invalid / non-positive values are
+    logged and silently dropped (the key is removed from *spec_dict*).
+    """
+    if raw_value is None:
+        return
+    try:
+        budget_value = int(raw_value)
+    except (ValueError, TypeError):
+        logger.warning(
+            "[TeamConfigLoader] invalid swarmflow_budget %r, ignored",
+            raw_value,
+        )
+        spec_dict.pop("swarmflow_budget", None)
+        return
+    if budget_value <= 0:
+        logger.warning(
+            "[TeamConfigLoader] swarmflow_budget must be positive, got %r, ignored",
+            raw_value,
+        )
+        spec_dict.pop("swarmflow_budget", None)
+        return
+    spec_dict["swarmflow_budget"] = budget_value
+
+
 def load_team_spec_dict(
     config_base: dict[str, Any] | None = None,
     *,
@@ -971,6 +998,12 @@ def load_team_spec_dict(
     spec_dict["max_total_rounds"] = team_raw.get("max_total_rounds")
     spec_dict["max_total_messages"] = team_raw.get("max_total_messages")
     spec_dict["token_budget"] = team_raw.get("token_budget")
+    _apply_swarmflow_budget(spec_dict, team_raw.get("swarmflow_budget"))
+    # Team-level key forcing swarmflow workers into progressive exposure; the
+    # spec field is named progressive_tool on the engine side. Leader /
+    # teammate members (and, through the teammate base spec, workers) follow
+    # the top-level progressive_tool_enabled switch in config_specs instead.
+    spec_dict["progressive_tool"] = bool(spec_dict.pop("swarmflow_progressive_tool", False))
     language = _normalize_prompt_language(config_base.get("preferred_language"))
     spec_dict["leader"] = _build_leader_spec(team_raw, language=language)
     spec_dict["agents"] = agents

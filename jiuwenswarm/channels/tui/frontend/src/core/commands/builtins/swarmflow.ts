@@ -4,6 +4,9 @@ import { CommandKind, type SlashCommand } from "../types.js";
 
 export type SwarmflowToggleTarget = "on" | "off";
 
+/** Budget value: null = unbounded (none), number = token ceiling. */
+type BudgetValue = number | null;
+
 export interface SwarmflowTogglePlan {
   /** Whether to call config.set. */
   writeConfig: boolean;
@@ -19,6 +22,21 @@ function parseSwarmflowEnabled(payload: Record<string, unknown> | null): boolean
   if (value === "true" || value === true) return true;
   if (value === "false" || value === false) return false;
   return null;
+}
+
+/** Parse swarmflow_budget from config payload → BudgetValue (null = unbounded). */
+function parseSwarmflowBudget(payload: Record<string, unknown> | null): BudgetValue {
+  if (!payload) return null;
+  const raw = payload.swarmflow_budget;
+  if (raw == null || raw === "") return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return num;
+}
+
+/** "unbounded" or "N,NNN tokens" — for from/to display in change messages. */
+function budgetLabel(budget: BudgetValue): string {
+  return budget === null ? "unbounded" : `${budget.toLocaleString()} tokens`;
 }
 
 /** Pure toggle planner — mirrors design state matrix for tests and command action. */
@@ -100,14 +118,36 @@ export function planSwarmflowToggle(input: {
 export function createSwarmflowCommand(): SlashCommand {
   return {
     name: "swarmflow",
-    description: "Toggle swarmflow human-in-the-loop mode (on/off) or show status",
-    usage: "/swarmflow [on|off]",
-    example: "/swarmflow on",
+    description:
+      "Toggle swarmflow human-in-the-loop mode (on/off) or show status. Use --budget <tokens|none> to set or clear the team token ceiling.",
+    usage: "/swarmflow [on|off] [--budget <tokens|none>]",
+    example: "/swarmflow on --budget 500000",
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
-    completion: async () => ["on", "off"],
+    completion: async (_ctx, remainingArgs: string) => {
+      const trimmed = (remainingArgs ?? "").trim().toLowerCase();
+      // After "on" is typed, offer "--budget" (value includes "on" so Tab keeps it)
+      if (trimmed === "on") return ["on", "on --budget "];
+      if (trimmed === "off" || /\boff\b/.test(trimmed)) return [];
+      if (/--budget/i.test(trimmed)) return [];
+      return ["on", "off"];
+    },
     action: async (ctx, args) => {
-      const sub = args.trim().toLowerCase();
+      const hasBudgetFlag = /--budget/i.test(args);
+      const clearBudget = /--budget\s+none/i.test(args);
+      const budgetMatch = args.match(/--budget\s+(\d+)/i);
+      const budget = budgetMatch ? parseInt(budgetMatch[1], 10) : null;
+      const sub = args.replace(/--budget(\s+\S+)?/i, "").trim().toLowerCase();
+
+      if (hasBudgetFlag && budget === null && !clearBudget) {
+        ctx.addItem(addError(ctx.sessionId, "Usage: /swarmflow on --budget <tokens|none>"));
+        return;
+      }
+
+      if (budget !== null && budget <= 0) {
+        ctx.addItem(addError(ctx.sessionId, "Budget must be a positive integer"));
+        return;
+      }
 
       if (!sub) {
         const modeLabel = ctx.mode ?? "unknown";
@@ -115,8 +155,13 @@ export function createSwarmflowCommand(): SlashCommand {
           .request<Record<string, unknown>>("config.get", {})
           .catch(() => null);
         const enabled = parseSwarmflowEnabled(payload) === true;
+        const budgetValue = parseSwarmflowBudget(payload);
+        const budgetInfo = ` · budget: ${budgetLabel(budgetValue)}`;
+        const stateLabel = enabled
+          ? isTeamMode(ctx.mode) ? "on" : "on (not running in non-team mode)"
+          : "off";
         ctx.addItem(
-          addInfo(ctx.sessionId, `swarmflow: ${enabled ? "on" : "off"} · mode: ${modeLabel}`, "i"),
+          addInfo(ctx.sessionId, `swarmflow: ${stateLabel} · mode: ${modeLabel}${budgetInfo}`, "i"),
         );
         return;
       }
@@ -127,24 +172,53 @@ export function createSwarmflowCommand(): SlashCommand {
       }
 
       const target = sub as SwarmflowToggleTarget;
+      if (target === "off" && (budget !== null || clearBudget)) {
+        ctx.addItem(addError(ctx.sessionId, "--budget is only valid with /swarmflow on"));
+        return;
+      }
+
       const payload = await ctx
         .request<Record<string, unknown>>("config.get", {})
         .catch(() => null);
       const currentEnabled = parseSwarmflowEnabled(payload);
+      const currentBudget = parseSwarmflowBudget(payload);
       const plan = planSwarmflowToggle({
         target,
         currentEnabled,
         mode: ctx.mode ?? "unknown",
       });
 
-      if (plan.writeConfig) {
+      // newBudget: null = unbounded, number = ceiling, undefined = no budget op.
+      let newBudget: BudgetValue | undefined;
+      if (target === "on") {
+        if (budget !== null) {
+          newBudget = budget;
+        } else if (clearBudget) {
+          newBudget = null;
+        }
+      }
+
+      const budgetChanged = newBudget !== undefined && newBudget !== currentBudget;
+      const writeEnable = plan.writeConfig;
+      const writeBudget =
+        budgetChanged &&
+        (plan.writeConfig
+          ? true
+          : target === "on" && (budget !== null || clearBudget));
+
+      if (writeEnable || writeBudget) {
         try {
-          await ctx.request("config.set", {
-            enable_swarmflow: target === "on" ? "true" : "false",
-          });
+          const values: Record<string, string | number> = {};
+          if (writeEnable) {
+            values["enable_swarmflow"] = target === "on" ? "true" : "false";
+          }
+          if (writeBudget) {
+            values["swarmflow_budget"] = newBudget === null ? "none" : String(newBudget);
+          }
+          await ctx.request("config.set", values);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          ctx.addItem(addError(ctx.sessionId, `config.set enable_swarmflow failed: ${message}`));
+          ctx.addItem(addError(ctx.sessionId, `config.set failed: ${message}`));
           return;
         }
       }
@@ -159,7 +233,27 @@ export function createSwarmflowCommand(): SlashCommand {
         }
       }
 
-      ctx.addItem(addInfo(ctx.sessionId, plan.message, "i"));
+      let message = plan.message;
+      if (target === "on" && newBudget !== undefined) {
+        if (budgetChanged) {
+          const budgetPart = `Budget changed from ${budgetLabel(currentBudget)} to ${budgetLabel(newBudget)}.`;
+          const base = message
+            .replace(/ No changes were made\.$/, "")
+            .replace(/ No changes\.$/, "");
+          if (/use \/new to apply/i.test(base)) {
+            message = `${base.replace(/\s*—?\s*use \/new to apply immediately\./i, ".")} ${budgetPart} Use /new to apply.`;
+          } else {
+            message = `${base} ${budgetPart} Use /new to apply.`;
+          }
+        } else {
+          const budgetPart = `Budget remains ${budgetLabel(newBudget)}.`;
+          const base = message
+            .replace(/ No changes were made\.$/, "")
+            .replace(/ No changes\.$/, "");
+          message = `${base} ${budgetPart} No changes.`;
+        }
+      }
+      ctx.addItem(addInfo(ctx.sessionId, message, "i"));
     },
   };
 }
