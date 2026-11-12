@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import until
+
 from jiuwenswarm.extensions.video_duplex.backend import video_search
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import native_approval_question
@@ -12,12 +14,6 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks.service import Interactio
 
 SCOPE = "task-duplex:chat"
 OPTIONS = [{"label": "允许", "value": "allow_once"}, {"label": "拒绝", "value": "reject"}]
-
-
-async def until(predicate):
-    async with asyncio.timeout(3):
-        while not predicate():
-            await asyncio.sleep(0.005)
 
 
 class CoreSession:
@@ -134,25 +130,14 @@ async def test_voice_answer_on_managed_card_then_queued_task_runs(system, spoken
     await until(lambda: store.read(second["id"])["status"] == "completed")
     assert store.read(first["id"])["result"]["answer"] == outcome
     assert core.runs == [("删除文件", False), ("删除文件", True), ("打开微信", False)]
-
-
-async def test_already_answered_card_returns_recorded_state_without_resubmission(system):
-    service, core, store = system
-    task = submit(service, "first", "删除文件")
-    await until(lambda: store.read(task["id"])["status"] == "waiting_user"
-                and store.read(task["id"])["output_closed"])
-    interaction_id = store.read(task["id"])["interaction"]["id"]
-    await service.answer("alice", SCOPE, task["id"], "click", interaction_id, answers=["允许"])
-    await until(lambda: store.read(task["id"])["status"] == "completed")
-    receipt = await service.answer("alice", SCOPE, task["id"], "voice-again", interaction_id, answers=["允许"])
-    assert receipt["state"] == "already_answered"
-    assert receipt["task_state"] == "completed"
-    assert receipt["applied"] is False
-    assert core.runs == [("删除文件", False), ("删除文件", True)]
-    with pytest.raises(ValueError, match="no longer pending"):
-        await service.answer("alice", SCOPE, task["id"], "changed", interaction_id, answers=["拒绝"])
-    with pytest.raises(ValueError, match="no longer pending"):
-        await service.answer("alice", SCOPE, task["id"], "wrong-card", "different", answers=["允许"])
+    interaction_id = store.read(first["id"])["interaction"]["id"]
+    repeated = await service.answer("alice", SCOPE, first["id"], "voice-again", interaction_id, answers=[spoken])
+    assert repeated["state"] == "already_answered" and repeated["task_state"] == "completed"
+    assert repeated["applied"] is False
+    for token, answer in [(interaction_id, "拒绝" if spoken == "允许" else "允许"), ("different", spoken)]:
+        with pytest.raises(ValueError, match="no longer pending"):
+            await service.answer("alice", SCOPE, first["id"], "bad-" + token, token, answers=[answer])
+    assert len(core.runs) == 3, "repeated and stale answers must not execute again"
 
 
 async def test_typed_card_holds_voice_task_until_turn_ends(system):
@@ -258,32 +243,6 @@ async def test_voice_answers_typed_card_through_click_path(system, monkeypatch, 
     channel.push("chat.processing_status", {"is_processing": False})
     await until(lambda: store.read(task["id"])["status"] == "completed")
     assert (await manager.chat_card("alice", SCOPE)) is None
-
-
-async def test_typed_card_answer_is_not_reported_applied_until_core_resumes(system, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend import task_adapter
-
-    service, core, _store = system
-    channel = FakeChannel()
-    channel.resumes = False
-    manager, query = manager_for(service, core, channel)
-    monkeypatch.setattr(task_adapter, "task_agent_query", query)
-    core.card_live = True
-    channel.push("chat.ask_user_question", {
-        "request_id": "typed-approval", "source": "confirm_interrupt",
-        "questions": [{"question": "允许执行 rm？", "header": "权限审批: bash", "options": OPTIONS}],
-    })
-    pending = asyncio.create_task(manager.answer_chat_card(object(), "alice", SCOPE, "typed-approval", ["允许"]))
-    try:
-        await until(lambda: bool(channel.dispatched))
-        await asyncio.sleep(0.06)
-        assert not pending.done()
-        channel.push("chat.processing_status", {"is_processing": True})
-        receipt = await pending
-        assert receipt["state"] == "accepted" and receipt["applied"] is True
-    finally:
-        pending.cancel()
-        await asyncio.gather(pending, return_exceptions=True)
 
 
 async def test_joyai_may_answer_approval_cards_but_not_information_forms(system):

@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import until
+
 from jiuwenswarm.extensions.video_duplex.backend import queue_manager, video_search
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call, qwen_omni_tools
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import task_identity
@@ -48,12 +50,6 @@ def test_voice_job_has_a_total_bound_even_with_many_large_fields():
     assert result["job_id"] == "a"
     assert result["details_omitted"] is True
     assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) < 12000
-
-
-async def until(predicate):
-    async with asyncio.timeout(3):
-        while not predicate():
-            await asyncio.sleep(0.005)
 
 
 @pytest.fixture
