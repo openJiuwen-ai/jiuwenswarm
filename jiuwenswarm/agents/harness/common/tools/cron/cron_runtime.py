@@ -998,6 +998,10 @@ class CronRuntimeBridge:
     def __init__(self) -> None:
         self._backend_override: CronToolBackend | None = None
         self._resolved_backend: CronToolBackend | None = None
+        # 后台调度器启动 Task 的强引用集合：CPython 对未引用 Task 只持弱引用，
+        # 不持有会被 GC 提前回收（"Task was destroyed but it is pending"），
+        # 调度器未完成启动、定时任务到点无人调度。完成后经 done 回调移除，不泄漏。
+        self._scheduler_start_tasks: set[asyncio.Task] = set()
 
     def set_backend(self, backend: CronToolBackend | None) -> None:
         self._backend_override = backend
@@ -1019,18 +1023,39 @@ class CronRuntimeBridge:
         backend = self.get_backend()
         if backend is None:
             return
-        
+
         if not isinstance(backend, _CronToolsCronBackend):
             return
-        
+
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.create_task(backend.ensure_scheduler_started())
+                task = asyncio.create_task(
+                    self._start_scheduler_guarded(backend.ensure_scheduler_started())
+                )
+                # 持有强引用直到完成，避免被 GC 提前回收。
+                self._scheduler_start_tasks.add(task)
+                task.add_done_callback(self._scheduler_start_tasks.discard)
             else:
                 loop.run_until_complete(backend.ensure_scheduler_started())
         except Exception as exc:
             logger.warning("[CronRuntimeBridge] Failed to start scheduler: %s", exc)
+
+    @staticmethod
+    async def _start_scheduler_guarded(coro: Any) -> None:
+        """运行后台调度器启动协程并记录其内部异常。
+
+        asyncio.create_task 外层的 try/except 只能捕获创建 Task 的同步异常；
+        协程内部异常若不在此捕获，只会变成 "Task exception was never retrieved"，
+        调用方（build_tools）完全无感知，表现为静默失败。
+        """
+        try:
+            await coro
+        except Exception:
+            logger.warning(
+                "[CronRuntimeBridge] Background scheduler start failed",
+                exc_info=True,
+            )
 
     def build_tools(
         self,
