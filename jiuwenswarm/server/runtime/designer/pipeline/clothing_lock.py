@@ -88,7 +88,10 @@ CLOTHING_PARTS_RULE = (
     "color, written in content_language; leave a slot empty when it does not apply. "
     "description locks face, age, hair, and body; clothing_parts is the wardrobe authority. "
 )
-_SLOT_LABEL_RE = re.compile(r"\b(?:top|bottom|outfit|footwear|outerwear|accessories)\s*=\s*")
+_SLOT_LABEL_RE = re.compile(
+    r"(?i)\b(?:top|bottom|outfit|foot\s*wear|outer\s*wear|under\s*wear|accessor(?:y|ies))"
+    r"\s*(?:=|:|：)\s*",
+)
 
 
 def _has_clothing_slots(text: str) -> bool:

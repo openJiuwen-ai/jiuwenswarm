@@ -1362,6 +1362,10 @@ def build_smart_video_graph(
             shot["action"] = action
         action = action[:800]
         costume_lock = _costume_lock_for_ids(characters, focus_cids)
+        from jiuwenswarm.server.runtime.designer.pipeline.wardrobe_plan import (
+            wardrobe_by_character,
+        )
+
         from jiuwenswarm.server.runtime.designer.pipeline.clip_staging_lock import (
             enrich_clip_staging,
             staging_lock_clause,
@@ -1624,6 +1628,7 @@ def build_smart_video_graph(
             "cast_names": focus_names,
             "identity_refs": identity_refs,
             "costume_lock": costume_lock,
+            "costume_by_id": wardrobe_by_character(shot) or None,
             "positioning_lock": staging.get("positioning_lock"),
             "action_lock": staging.get("action_lock"),
             "relationship_lock": staging.get("relationship_lock"),

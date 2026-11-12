@@ -65,6 +65,11 @@ _PHRASES: dict[str, dict[str, str]] = {
         "offscreen_heard": "{who}{wearing} is in the scene from {scene_word}, outside this camera frame, and is heard.",
         "offscreen_wearing": ", wearing {wardrobe},",
         "cast_from": "{who} from {image_word}",
+        "cast_named": "{who}",
+        "match_reference_look": "Faces, wardrobe and set match the attached reference images",
+        "match_reference_look_with": (
+            "Faces, wardrobe and set match the attached reference images — {look}"
+        ),
         "cast_wearing": "wearing {wardrobe}",
         "group_variation": (
             "Within the group, each person differs in gesture, timing, and attention; "
@@ -102,6 +107,9 @@ _PHRASES: dict[str, dict[str, str]] = {
         "offscreen_heard": "{who}{wearing}位于 {scene_word} 的场景中，在本镜头画框之外，只闻其声。",
         "offscreen_wearing": "（身穿{wardrobe}）",
         "cast_from": "{who}（{image_word}）",
+        "cast_named": "{who}",
+        "match_reference_look": "面部、服装与场景与所附参考图一致",
+        "match_reference_look_with": "面部、服装与场景与所附参考图一致——{look}",
         "cast_wearing": "身穿{wardrobe}",
         "group_variation": "组内每个人的手势、节奏与注意力各不相同，没有两个人是同一姿势。",
         "cast_seat": "{seat}，位于 {scene_word} 的场景中",
@@ -463,12 +471,20 @@ def _language_sentence(cfg: dict[str, Any], content_lang: str = "en") -> str:
     return phrase(_PHRASES, content_lang, "dialogue_language", name=name)
 
 
+def _visual_only(text: str) -> str:
+    """Drop planner instructions from a lighting phrase; keep the light an image can show."""
+    body = re.split(r"(?i)\b(?:do not|don't|never|forbid)\b", str(text or ""), maxsplit=1)[0]
+    body = re.sub(r"(?i)\s*;?\s*keep\s+[\w /+-]+\s+across\s+same-setting\s+shots", "", body)
+    body = re.sub(r"(?i)\s*;?\s*no relight mid-scene", "", body)
+    return body.strip(" ,;.—-")
+
+
 def _time_of_day_payload(cfg: dict[str, Any]) -> dict[str, str]:
     tod = cfg.get("time_of_day_lock") if isinstance(cfg.get("time_of_day_lock"), dict) else {}
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
     label = str((tod or {}).get("time_of_day") or bible.get("time_of_day") or "").strip()
-    lighting = _scrub_lock_phrase(
-        str((tod or {}).get("lighting") or bible.get("lighting") or "")
+    lighting = _visual_only(
+        _scrub_lock_phrase(str((tod or {}).get("lighting") or bible.get("lighting") or ""))
     )
     return {"time_of_day": label, "lighting": lighting}
 
@@ -716,14 +732,51 @@ def _continuity_story_lines(cfg: dict[str, Any], lang: str = "en") -> list[str]:
     return lines
 
 
+def _costume_for_setting(token: str, name: str, cfg: dict[str, Any]) -> str:
+    """Per-scene wardrobe so a character can change clothes between settings."""
+    table = cfg.get("costume_by_setting")
+    if not isinstance(table, dict) or not table:
+        return ""
+    setting = str(cfg.get("scene_node_id") or cfg.get("setting_id") or "").strip()
+    if not setting:
+        return ""
+    entry = table.get(setting)
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get(token) or entry.get(name) or "").strip()
+
+
+def _costume_blocks(lock: str) -> list[tuple[str, str]]:
+    """Split "Name: top=…; bottom=…; Other: …" into [(name, "top=…; bottom=…")].
+
+    Garment slots are separated by the same semicolon that separates cast
+    members, so a naive split hands a character a single garment.
+    """
+    blocks: list[tuple[str, list[str]]] = []
+    for chunk in re.split(r"[;；\n]+", str(lock or "")):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        head = re.match(r"^([^:：=]{1,40})[:：]\s*(.*)$", chunk)
+        if head:
+            blocks.append((head.group(1).strip(), [head.group(2).strip()]))
+        elif blocks:
+            blocks[-1][1].append(chunk)
+        else:
+            return []
+    return [(name, "; ".join(part for part in parts if part)) for name, parts in blocks]
+
+
 def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None, lang: str = "en") -> str:
     """Short wearable phrase for one cast member — from costume_lock / analysis."""
     name = _name_for_id(token, graph) or str(token or "").strip()
     if not name:
         return ""
-    # Per-id map if present.
-    by_id = cfg.get("costume_by_id") if isinstance(cfg.get("costume_by_id"), dict) else {}
-    raw = str(by_id.get(token) or by_id.get(name) or "").strip()
+    raw = _costume_for_setting(token, name, cfg)
+    if not raw:
+        # Per-id map if present.
+        by_id = cfg.get("costume_by_id") if isinstance(cfg.get("costume_by_id"), dict) else {}
+        raw = str(by_id.get(token) or by_id.get(name) or "").strip()
     if not raw:
         # The identity plate is the source of truth: a costume edited on the
         # character node outranks the lock stamped when the graph was authored.
@@ -734,18 +787,10 @@ def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None,
         raw = str(spec_costume_by_character(graph).get(token) or "").strip()
     if not raw:
         lock = str(cfg.get("costume_lock") or "").strip()
-        # "Mother: dusty rose…; Young Child: pale yellow…"
-        for chunk in re.split(r"[;；\n]+", lock):
-            chunk = chunk.strip()
-            if not chunk:
-                continue
-            if ":" in chunk or "：" in chunk:
-                who, rest = re.split(r"[:：]", chunk, maxsplit=1)
-                if who.strip().casefold() == name.casefold() or who.strip() == token:
-                    raw = rest.strip()
-                    break
-            elif name.casefold() in chunk.casefold():
-                raw = chunk
+        # "Mother: top=…; bottom=…; Young Child: pale yellow…"
+        for who, block in _costume_blocks(lock):
+            if who.casefold() == name.casefold() or who == token:
+                raw = block
                 break
         if not raw and lock and len(on_screen_names(cfg, graph)) <= 1:
             raw = lock
@@ -761,7 +806,25 @@ def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None,
         return ""
     from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import wearable_phrase
 
-    return wearable_phrase(raw, name=name, lang=lang)[:160]
+    return _fit_wardrobe(wearable_phrase(raw, name=name, lang=lang))
+
+
+_WARDROBE_LIMIT = 220
+
+
+def _fit_wardrobe(text: str, limit: int = _WARDROBE_LIMIT) -> str:
+    """Trim a garment phrase at a clause boundary instead of mid-word."""
+    value = re.sub(r"\s*,\s*(?:,\s*)+", ", ", str(text or ""))
+    value = value.strip(" ,，;；")
+    if len(value) <= limit:
+        return value
+    cut = value[:limit]
+    for separator in (", ", "; ", "，", "；"):
+        at = cut.rfind(separator)
+        if at >= limit // 2:
+            return cut[:at].strip(" ,，;；")
+    space = cut.rfind(" ")
+    return (cut[:space] if space >= limit // 2 else cut).strip(" ,，;；")
 
 
 _SEAT_ZONES: dict[str, dict[str, str]] = {
@@ -934,6 +997,18 @@ def _cast_form_for(token: str, name: str, graph: dict[str, Any] | None) -> str:
     return ""
 
 
+def _look_sentence(cfg: dict[str, Any], lang: str, *, has_refs: bool) -> str:
+    """Style sentence: anchored on the attached refs when present, else the style words."""
+    look = _style_phrase(cfg)
+    if has_refs:
+        if look and len(look) <= 90 and not _BAD_DIRECTIVE.search(look):
+            return phrase(_PHRASES, lang, "match_reference_look_with", look=look)
+        return sentence(phrase(_PHRASES, lang, "match_reference_look"), lang)
+    if look and not _BAD_DIRECTIVE.search(look):
+        return sentence(look, lang)
+    return ""
+
+
 def _story_cast_sentence(
     *,
     who: str,
@@ -953,7 +1028,11 @@ def _story_cast_sentence(
     glued onto an auxiliary verb whose tense would corrupt it.
     """
     zh = lang == "zh"
-    bits = [phrase(_PHRASES, lang, "cast_from", who=who, image_word=image_word)]
+    if image_word:
+        bits = [phrase(_PHRASES, lang, "cast_from", who=who, image_word=image_word)]
+    else:
+        # No plate attached to this call: name the face, never invent an Image N.
+        bits = [phrase(_PHRASES, lang, "cast_named", who=who)]
     if wardrobe:
         bits.append(phrase(_PHRASES, lang, "cast_wearing", wardrobe=wardrobe))
     if visibility == "full":
@@ -1006,7 +1085,29 @@ def compose_practice_prompt(
     zh = lang == "zh"
     place = _scene_name(cfg, lang)
     extra_labels = [str(item).strip() for item in (extra_image_labels or []) if str(item).strip()]
-    scene_index = max(1, len(tokens) + len(extra_labels) + 1)
+    from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
+        resolve_reference_slots,
+    )
+
+    binding = cfg.get("reference_binding") if isinstance(cfg.get("reference_binding"), dict) else {}
+    if binding:
+        cast_slots = binding.get("cast") if isinstance(binding.get("cast"), dict) else {}
+        unbound = {str(x) for x in (binding.get("unbound") or [])}
+        extra_slots = [s for s in (binding.get("extra") or []) if isinstance(s, int) and s > 0]
+        if len(extra_slots) != len(extra_labels):
+            # No provenance for the stills: keep the positional fallback.
+            extra_slots = [len(tokens) + 1 + i for i in range(len(extra_labels))]
+        scene_slot = binding.get("scene") if isinstance(binding.get("scene"), int) else 0
+    else:
+        # No attached-reference report (prompt built before the clips run): predict
+        # the slots from the same cap the call applies, never from raw counts.
+        slots = resolve_reference_slots(len(tokens), len(extra_labels))
+        cast_slots = {str(token): pos for token, pos in zip(tokens, slots["cast"])}
+        unbound = {str(token) for token in tokens if str(token) not in cast_slots}
+        extra_slots = list(slots["extra"])
+        scene_slot = int(slots["scene"])
+    has_refs = bool(cast_slots or extra_slots)
+    scene_index = scene_slot or 1
     scene_word = _image_word(scene_index, family)
     sentences: list[str] = []
 
@@ -1055,10 +1156,13 @@ def compose_practice_prompt(
         who = _name_for_id(token, graph) or str(token)
         if who.casefold() in gone_names:
             continue
+        slot = cast_slots.get(str(token))
+        if not isinstance(slot, int) or slot <= 0:
+            slot = 0 if str(token) in unbound else index
         sentences.append(
             _story_cast_sentence(
                 who=who,
-                image_word=_image_word(index, family),
+                image_word=_image_word(slot, family) if slot else "",
                 wardrobe=_wardrobe_for(token, cfg, graph, lang),
                 seat=_seat_for(token, cfg, graph, lang),
                 doing=_action_for(token, cfg, graph, action),
@@ -1070,8 +1174,8 @@ def compose_practice_prompt(
             )
         )
 
-    for offset, label in enumerate(extra_labels, start=len(tokens) + 1):
-        word = _image_word(offset, family)
+    for label, slot in zip(extra_labels, extra_slots):
+        word = _image_word(slot, family)
         sentences.append(phrase(_PHRASES, lang, "connected_still", word=word, label=label))
 
     for who in _partial_names(cfg, graph):
@@ -1126,9 +1230,9 @@ def compose_practice_prompt(
     sound = _sound_line(cfg, lang)
     if sound:
         sentences.append(sound)
-    look = _style_phrase(cfg)
+    look = _look_sentence(cfg, lang, has_refs=has_refs)
     if look and not _BAD_DIRECTIVE.search(look):
-        sentences.append(sentence(look, lang))
+        sentences.append(look)
 
     text = join_sentences([s for s in sentences if s and not _BAD_DIRECTIVE.search(s)], lang)
     text = re.sub(r"[ \s]+", " ", text)
