@@ -454,3 +454,189 @@ class PlainRail(DeepAgentRail):
     assert adapter._instance.find_rail_by_name("PlainRail") is None
 
 
+
+
+@pytest.mark.asyncio
+async def test_plugin_replacement_waits_for_entire_nonstream_turn():
+    from jiuwenswarm.server.runtime.plugin_package_lifecycle import PluginPackageBusy, replace_plugin
+
+    adapter = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
+    adapter._current_plugin_names = lambda: []
+    request = SimpleNamespace(params={"plugin_names": ["ttse"]}, session_id="")
+    async def execute(request, inputs):
+        with pytest.raises(PluginPackageBusy):
+            with replace_plugin("ttse"):
+                pytest.fail("active turn must reserve its selected plugin")
+        return "completed"
+    adapter._process_message_with_plugin_reservation = execute
+    assert await adapter.process_message_impl(request, {}) == "completed"
+    with replace_plugin("ttse"):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_plugin_stream_reservation_covers_cleanup_and_releases_on_close():
+    from jiuwenswarm.server.runtime.plugin_package_lifecycle import PluginPackageBusy, replace_plugin
+
+    adapter = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
+    adapter._current_plugin_names = lambda: []
+    request = SimpleNamespace(params={"plugin_names": ["ttse"]}, session_id="")
+    cleaned = []
+    async def execute(request, inputs):
+        try:
+            yield "chunk"
+        finally:
+            with pytest.raises(PluginPackageBusy):
+                with replace_plugin("ttse"):
+                    pytest.fail("stream cleanup must still hold its reservation")
+            cleaned.append(True)
+    adapter._process_stream_with_plugin_reservation = execute
+    stream = adapter.process_message_stream_impl(request, {})
+    assert await anext(stream) == "chunk"
+    with pytest.raises(PluginPackageBusy):
+        with replace_plugin("ttse"):
+            pytest.fail("open stream must block replacement")
+    await stream.aclose()
+    assert cleaned == [True]
+    with replace_plugin("ttse"):
+        pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_abandoned_plugin_stream_closes_when_consumer_task_ends(cancel):
+    from jiuwenswarm.server.runtime.plugin_package_lifecycle import PluginPackageBusy, replace_plugin
+
+    adapter = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
+    adapter._current_plugin_names = lambda: []
+    request = SimpleNamespace(params={"plugin_names": ["ttse"]}, session_id="")
+    cleaned, yielded, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    streams = []
+
+    async def execute(request, inputs):
+        try:
+            yield "chunk"
+        finally:
+            with pytest.raises(PluginPackageBusy):
+                with replace_plugin("ttse"):
+                    pytest.fail("cleanup must finish before replacement")
+            cleaned.set()
+
+    async def consume():
+        stream = adapter.process_message_stream_impl(request, {})
+        streams.append(stream)
+        assert await anext(stream) == "chunk"
+        yielded.set()
+        await finish.wait()
+
+    adapter._process_stream_with_plugin_reservation = execute
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(yielded.wait(), 2)
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            finish.set()
+            await task
+        await asyncio.wait_for(cleaned.wait(), 2)
+        with replace_plugin("ttse"):
+            pass
+    finally:
+        finish.set()
+        await streams[0].aclose()
+    with replace_plugin("ttse"):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_failed_replacement_restores_runtime_plugin_in_all_sessions(environment):
+    env = environment
+    root = await env.make_adapter("root")
+    child = await env.make_adapter("child")
+    assert await env.select(root, ["ttse"]) is None
+    assert await env.select(child, ["ttse"]) is None
+    root._session_adapters = {"child": child}
+    old_rails = [_rail(root), _rail(child)]
+
+    restore = await root.prepare_plugin_replacement("ttse")
+
+    for adapter in (root, child):
+        assert "ttse" not in adapter._loaded_plugins
+        assert "ttse" not in adapter._plugin_runtime_manager.bindings
+    await restore()
+    for adapter, old_rail in zip((root, child), old_rails):
+        binding = adapter._plugin_runtime_manager.bindings["ttse"]
+        assert binding.record is adapter._loaded_plugins["ttse"][0]
+        assert binding.state == "active"
+        assert _rail(adapter) is not old_rail
+        assert adapter._instance.find_rail_by_name(type(_rail(adapter)).__name__) is _rail(adapter)
+
+
+@pytest.mark.asyncio
+async def test_partial_session_detach_failure_restores_previous_sessions(environment, monkeypatch):
+    env = environment
+    root = await env.make_adapter("root")
+    child = await env.make_adapter("child")
+    assert await env.select(root, ["ttse"]) is None
+    assert await env.select(child, ["ttse"]) is None
+    root._session_adapters = {"child": child}
+    monkeypatch.setattr(child, "unload_equipment_if_loaded", AsyncMock(side_effect=RuntimeError("detach failed")))
+
+    with pytest.raises(RuntimeError, match="detach failed"):
+        await root.prepare_plugin_replacement("ttse")
+
+    for adapter in (root, child):
+        binding = adapter._plugin_runtime_manager.bindings["ttse"]
+        assert binding.record is adapter._loaded_plugins["ttse"][0]
+        assert binding.state == "active"
+
+
+@pytest.mark.asyncio
+async def test_abandoned_nested_stream_releases_root_and_child_reservations():
+    from contextlib import aclosing
+    from jiuwenswarm.server.runtime.plugin_package_lifecycle import replace_plugin
+
+    adapters = [object.__new__(interface_deep.JiuWenSwarmDeepAdapter) for _ in range(2)]
+    for adapter in adapters:
+        adapter._current_plugin_names = lambda: []
+    root, child = adapters
+    request = SimpleNamespace(params={"plugin_names": ["ttse"]}, session_id="")
+    cleaned = asyncio.Event()
+    streams = []
+    loop = asyncio.get_running_loop()
+    original_handler = loop.get_exception_handler()
+    cleanup_errors = []
+    loop.set_exception_handler(lambda loop, context: cleanup_errors.append(context))
+
+    async def execute(request, inputs):
+        try:
+            yield "chunk"
+        finally:
+            await asyncio.sleep(0)
+            cleaned.set()
+
+    async def delegate(request, inputs):
+        async with aclosing(child.process_message_stream_impl(request, inputs)) as stream:
+            async for chunk in stream:
+                yield chunk
+
+    async def consume():
+        stream = root.process_message_stream_impl(request, {})
+        streams.append(stream)
+        assert await anext(stream) == "chunk"
+
+    root._process_stream_with_plugin_reservation = delegate
+    child._process_stream_with_plugin_reservation = execute
+    await asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(cleaned.wait(), 2)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        with replace_plugin("ttse"):
+            pass
+        assert cleanup_errors == []
+    finally:
+        await streams[0].aclose()
+        loop.set_exception_handler(original_handler)

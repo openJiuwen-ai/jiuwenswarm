@@ -309,3 +309,54 @@ English summary: Verified read-only snapshots remove SQLite writer-lock contenti
 
 
 继续优化（2026-10-31）：线上历史仍约15秒。对真实数据库完整_read_view性能采样显示69条请求打开556次连接、执行2091次SQL，独立读取3.1秒。补充sqlite_store.py显式只读批次上下文，按线程和数据库路径复用查询连接；每个既有只读事务仍独立BEGIN/COMMIT，不跨全量历史保留共享锁。agent_manager.py只在批量视图读取范围使用，不改变写事务、缓存正文、权限或产物核验。新增连接复用、写者可提交、嵌套/异常关闭与线程隔离验证，尚在实施。
+
+
+## 2026-11-01：新员工立即显示会话及模板能力展示修正
+
+问题：创建员工后跳转私聊，但 `web_conversations` 原先只在首条消息受理时登记，导致左侧没有新员工。另有预置模板把岗位能力介绍写入前端 `skills`，详情页将其显示为真实技能，但创建时技能配置为空。
+
+最小方案：Web 员工创建成功后，复用 `WebConversationStore.adopt` 登记一条持久空会话，再返回创建结果。会话仍通过既有列表接口读取；不提交聊天消息、不创建执行请求、不启动模型，不改个人版。仅创建时登记，查看员工不会重新生成已删除会话。预置模板的岗位说明移至 `coreAbilities` 并独立展示；实际 Skill 保留在 `skills`，无配置时明确展示“暂无技能”，已安装专家的真实自带技能继续显示。
+
+2026-11-04 补充修复（已实现，本地回归通过）：上述创建入口遗漏了 `colleague.ensure_default`，全新初始化的小九因此没有会话。默认员工初始化和手动创建共用会话存储的原子首次登记：仅当该员工没有任何会话记录（含已删除记录）时插入一条空会话，已有员工缺失会话可补齐；刷新、并发初始化、已有会话或用户删除后的会话不重复新增。未配置模型同样可登记，不改变发布、消息受理或个人版行为。修改 `web_adapter.py`、`web_conversations.py` 和已有适配器测试；不新增表或生命周期字段。新增 7 项参数化用例先复现 4 项失败、3 项通过，修复后连同原手动创建回归共 8 项通过；覆盖首次初始化、有／无模型、重启持久化、并发、已有／已删会话和已删除默认员工。完整私聊与适配器回归 66 项通过，3 项既有失败（RPC 清单、WeLink 邮箱绑定、共享文件 Session 夹具）与已核对的基线一致；前端页面回归 60 项通过，独立代码复核未发现阻塞问题。按用户要求合并回原“创建员工立即显示会话”提交，不增加独立修复提交。JM-10 整项状态与真实模型验收范围不变。
+
+English (2026-11-04, implemented and locally verified): Include the default employee initialization path in the initial conversation registration. Atomically insert one empty conversation only when no conversation records exist for that employee, including deleted records. Preserve existing and deleted chats, support initialization without a model, and avoid executing messages. The seven new cases initially reproduced four failures; all eight focused cases, including custom creation, now pass. Broader checks passed 66 backend and 60 frontend cases, with three previously verified backend failures unchanged. Fold this correction into the original employee conversation commit as requested, keeping the overall JM-10 acceptance scope unchanged.
+
+验证结果：前端相关回归 75 项通过，后端相关回归 55 项通过；扩展检查发现的 RPC 清单和共享文件夹具两项失败，在未修改的后端代码中同样复现。`npm run build` 成功，源码服务已重启并确认 worker 就绪。实际通过页面创建临时员工，未发送消息即在左侧出现会话；刷新后仍保留同一空会话，历史接口返回零条请求。详情页已显示独立的“核心能力”和“调用技能”，未配置时显示“暂无技能”。临时验证员工已清理。
+
+English: Register one durable empty Web conversation when employee creation succeeds, without submitting messages or starting an execution. Show curated role abilities separately from actual skills, preserving installed experts’ bundled skills. Reopening an employee must not recreate a deleted conversation. Validation: 75 frontend checks and 55 backend checks passed; two unrelated expanded-suite failures reproduce on the unchanged backend. The production build passed and the source service was restarted. UI verification confirmed the new employee appears in the conversation list before any message, retains the same empty conversation after refresh, and has zero message requests. The temporary validation employee was removed.
+
+## 2026-11-02：定时任务被误报为服务重启中断
+
+根因与证据：Web 与 IM 的 AgentManager 共用请求数据库，但运行集合和事件观察器各自独立。两者原先都会扫描定时计划，自动任务被 IM 接走后，Web 历史查询持续返回 dispatched/running=false，前端据此误报服务重启。16:07 自动触发的 `req_3db39df8bf654d85930120d9a0c6d901` 连续多次复现，最终仍正常 completed，期间 worker 未重启。此前仅验证手动“立即运行”不足以覆盖该问题，因为手动操作由 Web 运行时接收。
+
+实现：AgentManager 新增默认为真的 `schedules_enabled` 构造参数；生产 IM 工厂关闭自动计划扫描，Web 统一负责。AgentServer 启动阶段主动启动 Web 适配器，避免依赖浏览器首次请求；浏览器并发请求及重启继续复用已有启动锁。IM 消息执行与恢复保持原有渠道归属，不更改 core、数据库结构、前端状态协议或用户计划时间。
+
+同时修复两个运行视图竞态：派发写入数据库前先登记既有运行项，失败时移除；准备中排空等待派发锁，避免事件循环忙等。对 dispatched/running=false 复读请求，以反映已提交的完成结果；真实孤立派发仍按中断显示，不用强制 running 掩盖异常。
+
+验证：IM 工厂回归在原实现失败（扫描被调用一次），修复后通过。共享数据库的两个运行时自动到点测试确认仅 Web 执行，运行期间可查询 running=true，完成后为 ended/completed；另有无浏览器启动、服务重启接线、派发失败、准备中排空、完成查询竞态及真实孤立派发回归。六个相关文件共 290 项通过，3 项已有失败单独排除并记录核对：共享文件下载 Session 路径夹具、恢复渠道预期及 WeLink 对账投递。
+
+真实联调：源码服务于 16:13:07 启动，worker PID 73542 于 16:13:34 就绪。新建一次性临时计划，等待真正到点自动接收，未调用 schedule.run。请求 `req_01ccd406bcbc4f7ea4ed8dd4d5fbdba6` 的 Web 历史采样为 dispatched/running=true → ended/completed，无中断状态；计划历史确认只有一次自动运行且 completed。验证后已删除临时计划，原有两个暂停计划保持暂停。本次仅涉及后端，无新增前端改动。
+
+English: Both Web and IM managers previously scanned the same schedule store while maintaining separate running sets and event observers. Automatic work claimed by IM therefore appeared interrupted through Web, although it completed normally. Manual-run verification did not cover this path. Disable schedule sweeping in the production IM factory and eagerly start the Web adapter during AgentServer startup, preserving browser-independent scheduling and existing IM recovery ownership. Also close dispatch-registration and completion-read races without hiding genuine orphaned requests. The six-file regression run passed 290 checks with three existing failures excluded and investigated separately. After restarting the source service, a one-shot plan fired automatically without schedule.run; request `req_01ccd406bcbc4f7ea4ed8dd4d5fbdba6` was observed running and then completed through the Web history API. Its plan history contained one completed automatic run. The temporary plan was deleted and existing paused plans were preserved. No new frontend changes or schema migrations.
+
+## 2026-11-02：员工产物列表读取已有输出（源发布分支记录）
+
+问题：原产物面板仅从当前私聊请求的最终交付文件聚合，未登记或其他会话生成的文件不可见。真实个人理财专家已经生成三个 output 文件，但 full_access 下 share_file 返回 unknown，未生成附件候选。员工所有者查看本地产物不应依赖向对话或 IM 成功交付。
+
+实现：新增本地所有者 RPC `jiuwenmate.artifact.list`，参数 `agent_id`，返回 `{files: [...]}`，沿用已有文件展示字段和签名下载链接。验证员工存在后，仅枚举该员工 `sessions/<id>/output/` 下的普通文件；排除草稿、其他员工目录和符号链接，不扫描整个磁盘，不改历史执行事件或伪造分享成功。前端打开产物面板时读取员工及其已绑定 IM Agent 的文件，合并现有交付项，以实际文件视图更新同路径信息；切换员工、重连或当前执行结束后重新读取。列表查询失败可见，不伪装为空。
+
+边界：这是 Web 所有者的员工产物查询，不改变 Agent 跨群读取权限、IM 投递、core 的 share_file 实现或分享登记状态。已有生成文件无需重新执行任务即可展示。
+
+English: The artifact panel previously aggregated only successfully handed-off files from the active private conversation. Add owner-scoped `jiuwenmate.artifact.list` to enumerate existing regular files under an employee's Session output directories, including bound IM agents through the UI. Return signed download links using the existing file view shape. Exclude drafts, foreign employee paths and symlinks. Refresh on panel opening, employee changes, reconnect and private-request status changes; merge with conversation handoffs and show query errors. Existing files require no regeneration. This owner inventory does not change Agent sharing authorization or claim failed handoffs succeeded.
+
+验证：两个产物枚举回归在修改前均失败，修改后与 RPC 现有文件/不存在员工回归共 3 项通过；前端 API 32 项、页面与详情 41 项通过，npm run build 成功。扩展后端检查 50 项通过，另有旧 output 路径夹具导致的 10 个 setup error 和一个投递失败；加载未修改 HEAD 的 output_files 后，代表性夹具与投递失败同样复现，未扩大本次修改。源码服务于 17:18:25 启动，worker 于 17:18:57 就绪。真实 WebSocket RPC 返回个人理财专家的两个 Markdown 文件及一个 Word 文件；三个签名下载均返回 HTTP 200 且字节数与元数据一致。最新构建的真实团队版页面中打开个人理财专家“所有产物”，三个文件均已可见。
+
+Validation: Both enumeration regressions failed before implementation. Three focused backend checks, 32 API checks and 41 UI checks passed, as did npm run build. The wider backend run passed 50 checks; existing legacy output-path fixture and delivery failures were reproduced on unchanged HEAD for representative cases. After the source restart, the live employee RPC returned three existing files; all three downloads returned HTTP 200 with matching sizes. The actual rebuilt Web UI displayed all three in the employee artifact panel.
+
+### 2026-11-09 拆仓迁移
+
+独立仓 `agent-gateway` 通过 `agent_gateway/common/protocol_compat.py` 注册 `jiuwenmate.artifact.list`，并在 `agent_gateway/channel_manager/web/app_web_handlers.py` 将该方法转发给 AgentServer。Swarm 保留员工身份校验、输出目录枚举和签名链接生成。拆仓后的 Gateway 与 Swarm AgentServer 均需加载此次迁移才能处理该请求。
+
+迁移验证覆盖 Swarm 后端及下载 99 项、独立 Gateway 218 项和前端 107 项，前端构建通过。临时工作区生成的签名链接通过真实本地 HTTP 验证，下载返回 200，范围预览返回 206，内容一致。当前运行实例的浏览器联调待重启后进行。
+
+The standalone Gateway registers and forwards `jiuwenmate.artifact.list`. Swarm validates the employee, lists Session output files, and signs download links. The port passed 99 Swarm backend and download tests, 218 Gateway tests, 107 frontend tests, and a frontend build. An isolated local HTTP smoke check verified download status 200 and preview status 206 with the expected bytes. Browser verification on the running instance remains pending a restart.

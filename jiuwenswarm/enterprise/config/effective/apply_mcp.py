@@ -79,6 +79,20 @@ def mcp_entity_to_server_entry(entity: dict[str, Any]) -> dict[str, Any] | None:
         normalized["transport"] = transport
     # 运行时 servers[] 仍需要 enabled 字段；企业侧开关已由模板行决定
     normalized["enabled"] = True
+    # 下发链路首站：确认管理面 mcp_entry 里 ssl_verify 的真实值与类型（字符串
+    # "false" 不会被运行时采信，只有 JSON 布尔 false 生效）。
+    if str(normalized.get("dynamic_token_url") or "").strip():
+        from jiuwenswarm.common.mcp_dynamic_token_patch import SSL_VERIFY_ENTRY_KEY
+
+        ssl_verify = normalized.get(SSL_VERIFY_ENTRY_KEY)
+        logger.debug(
+            "[enterprise_mcp] template_id=%s name=%s dynamic_token_url=set "
+            "ssl_verify=%r (type=%s)",
+            template_id,
+            name,
+            ssl_verify,
+            type(ssl_verify).__name__,
+        )
     return normalized
 
 

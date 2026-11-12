@@ -2,7 +2,7 @@ import { ChevronDown, Send, ShieldUser, Square } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type JiuwenMateModelCatalog } from '../jiuwenmateApi';
-import { ModelLabel } from './ModelLabel';
+import { ColleagueModelPicker } from './ColleagueModelPicker';
 
 interface ConversationComposerProps {
   value: string;
@@ -18,6 +18,11 @@ interface ConversationComposerProps {
   modelCatalog: JiuwenMateModelCatalog;
   /** The model saved on the colleague. Empty means the server default. */
   modelId: string;
+  /** Updates the employee configuration shared with employee management. */
+  onModelChange?: (modelId: string) => void;
+  modelSaving?: boolean;
+  modelPending?: boolean;
+  onOpenModelSettings?: () => void;
   /** The permission profile saved on the colleague. */
   permissionProfile: 'default' | 'automatic' | 'full_access';
   /** Saves and publishes a new colleague permission profile. */
@@ -34,6 +39,10 @@ export function ConversationComposer({
   stopping = false,
   modelCatalog,
   modelId,
+  onModelChange,
+  modelSaving = false,
+  modelPending = false,
+  onOpenModelSettings,
   permissionProfile,
   onPermissionProfileChange,
   permissionProfileSaving = false,
@@ -111,9 +120,14 @@ export function ConversationComposer({
           </div>
         </div>
         <span className="jiuwenmate-composer__right">
-          <span className="jiuwenmate-composer__model" data-testid="jiuwenmate-composer-model">
-            <ModelLabel catalog={modelCatalog} modelId={modelId} />
-          </span>
+          <ColleagueModelPicker
+            catalog={modelCatalog}
+            modelId={modelId}
+            pending={modelPending}
+            saving={modelSaving}
+            onChange={onModelChange}
+            onAddModel={onOpenModelSettings}
+          />
           {onStop ? (
             <button
               type="button"

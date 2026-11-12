@@ -118,7 +118,7 @@ def analysis_prompt_with_references(prompt: str, refs: list[dict[str, Any]] | No
     prefix = text or "根据参考素材创作"
     return (
         f"{prefix}\n\n"
-        "REFERENCE_MEDIA (not a story beat; do not turn into a shot):\n"
+        "REFERENCE_MEDIA (not a story event; do not turn into a shot):\n"
         "Original files are the authority; do not reduce them to a style-only summary. "
         "Slots in attachment order:\n"
         f"{roster}"
@@ -803,7 +803,7 @@ def attach_user_reference_nodes(graph: dict[str, Any]) -> list[str]:
                     cfg["character_source_reference"] = ref_id
                     hint = (
                         " A user reference image of this person is wired in. "
-                        "Derive the character sheet from it (face, wardrobe, palette) "
+                        "Derive the character sheet from it (face, clothing, palette) "
                         "instead of inventing a look."
                     )
                 elif target in scene_ids:
