@@ -24,12 +24,25 @@ interface DesignerModelChoice {
 /**
  * Resolve the chat model picked for ``sessionId``; without one, the shared
  * composer draft (the design landing) is the source of truth.
+ *
+ * A stable ``model_id`` wins over the display name. Several custom models can
+ * share ``model_name``, and the name lookup returns the first row, which is
+ * the Settings default.
  */
 function resolveDesignerModelChoice(sessionId?: string): DesignerModelChoice {
   const activeSessionId = useChatStore.getState().activeSessionId;
   const sessionState = useSessionStore.getState();
   const sourceId = sessionId ?? activeSessionId ?? '';
   const runtime = sessionState.runtimes[sourceId];
+  const selection = runtime?.selectedModelSelection?.type === 'model'
+    ? runtime.selectedModelSelection
+    : null;
+  const byId = selection
+    ? sessionState.chatAvailableModels.find((model) => model.model_id === selection.id)
+    : undefined;
+  if (byId?.model_name) {
+    return { name: byId.model_name, selection };
+  }
   const selected = resolveChatModelSelection(
     sessionState.chatAvailableModels,
     runtime?.selectedModelName ?? null,
@@ -37,7 +50,7 @@ function resolveDesignerModelChoice(sessionId?: string): DesignerModelChoice {
   );
   return {
     name: selected?.model_name,
-    selection: runtime?.selectedModelSelection ?? null,
+    selection,
   };
 }
 
@@ -97,11 +110,13 @@ export async function sendDesignerLeaderMessage(params: {
   sessionId: string;
   prompt: string;
   errorText?: string;
+  /** Choice captured before session metadata can replace the landing selection. */
+  modelChoice?: DesignerModelChoice;
 }): Promise<void> {
   const { sessionId, prompt } = params;
   const chat = useChatStore.getState();
   bindDesignerChatSession(sessionId);
-  const modelChoice = resolveDesignerModelChoice(sessionId);
+  const modelChoice = params.modelChoice ?? resolveDesignerModelChoice(sessionId);
   chat.addMessage(sessionId, {
     id: `designer-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     role: 'user',
@@ -196,6 +211,7 @@ export async function submitDesignComposer(params: {
     sessionId,
     prompt: leaderPrompt,
     modelName: modelChoice.name,
+    modelSelection: modelChoice.selection,
     references: checked.refs,
   });
   useDesignerStore.getState().applyGraph(workspace.graph);
@@ -203,7 +219,7 @@ export async function submitDesignComposer(params: {
     workspace.graph.graph_id,
     workspace.messages,
   );
-  void sendDesignerLeaderMessage({ sessionId, prompt: leaderPrompt });
+  void sendDesignerLeaderMessage({ sessionId, prompt: leaderPrompt, modelChoice });
   return { projectId, sessionId };
 }
 
@@ -219,6 +235,7 @@ export async function composeDesignerSession(params: {
   const references = params.references || [];
   if (!prompt && references.length === 0) return;
   const leaderPrompt = prompt || '根据参考素材创作';
+  const modelChoice = resolveDesignerModelChoice(params.sessionId);
   try {
     // Same design landing gate as ``submitDesignComposer``: the first message
     // on an empty canvas must fail before the director builds the graph.
@@ -230,7 +247,8 @@ export async function composeDesignerSession(params: {
       projectId: params.projectId,
       sessionId: params.sessionId,
       prompt: leaderPrompt,
-      modelName: resolveDesignerModelChoice(params.sessionId).name,
+      modelName: modelChoice.name,
+      modelSelection: modelChoice.selection,
       references,
     });
     useDesignerStore.getState().applyGraph(workspace.graph);
@@ -249,5 +267,6 @@ export async function composeDesignerSession(params: {
     sessionId: params.sessionId,
     prompt: leaderPrompt,
     errorText: params.errorText,
+    modelChoice,
   });
 }

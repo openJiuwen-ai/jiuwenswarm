@@ -1,4 +1,5 @@
 import { webRequest } from '../../services/webClient';
+import type { ModelSelection } from '../../types';
 import type {
   DesignerExecutionGraph,
   DesignerExecutionRun,
@@ -35,11 +36,17 @@ export type DesignerWorkspace = {
   sessions?: DesignerSessionSummary[];
 };
 
+function stableModelPayload(selection?: ModelSelection | null): { model_selection: ModelSelection } | Record<string, never> {
+  if (!selection || selection.type !== 'model' || !selection.id.trim()) return {};
+  return { model_selection: { type: 'model', id: selection.id.trim() } };
+}
+
 export const designerWorkspaceClient = {
   create: (params: {
     prompt: string;
     createToken: string;
     modelName?: string;
+    modelSelection?: ModelSelection | null;
     references?: Array<Record<string, unknown>>;
   }) =>
     webRequest<DesignerWorkspace>(
@@ -48,6 +55,7 @@ export const designerWorkspaceClient = {
         prompt: params.prompt,
         create_token: params.createToken,
         ...(params.modelName ? { model_name: params.modelName } : {}),
+        ...stableModelPayload(params.modelSelection),
         ...(params.references?.length ? { references: params.references } : {}),
       },
       { timeoutMs: 60_000 },
@@ -67,6 +75,7 @@ export const designerWorkspaceClient = {
     sessionId: string;
     prompt: string;
     modelName?: string;
+    modelSelection?: ModelSelection | null;
     references?: Array<Record<string, unknown>>;
   }) =>
     webRequest<DesignerWorkspace>(
@@ -76,6 +85,7 @@ export const designerWorkspaceClient = {
         session_id: params.sessionId,
         prompt: params.prompt,
         ...(params.modelName ? { model_name: params.modelName } : {}),
+        ...stableModelPayload(params.modelSelection),
         ...(params.references?.length ? { references: params.references } : {}),
       },
       { timeoutMs: 60_000 },
