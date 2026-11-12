@@ -13674,22 +13674,12 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    def _recommendation_active_request_ids(self) -> frozenset[str]:
-        runtime = self._execution_runtime()
-        pending = getattr(runtime, "_pending_chat_requests", None) or {}
-        return frozenset(
-            request_id
-            for bucket in pending.values()
-            for request_id in bucket
-        )
-
     def _recommendation_host_instance(self) -> Any:
         from jiuwenswarm.server.runtime.recommendation_host import RecommendationHost
 
         host = getattr(self, "_recommendation_host", None)
         if host is None:
             host = RecommendationHost()
-            host.bind_active_requests(self._recommendation_active_request_ids)
             host.bind_push(self._push_recommendation_event)
             self._recommendation_host = host
         return host
