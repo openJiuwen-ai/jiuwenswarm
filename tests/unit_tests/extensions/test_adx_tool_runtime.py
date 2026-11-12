@@ -26,7 +26,7 @@ def test_adx_tool_card_uses_shared_agentos_workspace(monkeypatch, tmp_path):
     assert launch.extra_params['user'] == '1000'
     assert launch.extra_params['group'] == '1000'
     assert launch.extra_params['mounts'] == [
-        {'host_path': '/home/agentos/users/alice/.jiuwenswarm/domain/agent/workspace',
+        {'host_path': '/home/agentos/users/alice/.jiuwenswarm/agent/workspace',
          'target': '/home/agentos/.jiuwenswarm/agent/workspace', 'options': ['rw']},
         {'host_path': '/home/agentos/users/alice/Documents/JiuwenSwarm',
          'target': str(tmp_path / 'agentos/Documents/JiuwenSwarm'), 'options': ['rw']},

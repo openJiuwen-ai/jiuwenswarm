@@ -47,6 +47,9 @@ class DispatchRecord:
     last_sequence: int = 0
     last_execution_id: str = ""
     is_processing: bool = False
+    # Set only by events carrying an explicit is_processing payload; distinguishes
+    # the stream's own processing claim from busy flags set by other bookkeeping.
+    stream_processing_claim: bool = False
     entered_at_ns: int | None = None
     interactions: dict[str, dict[str, Any]] = field(default_factory=dict)
     terminal: dict[str, Any] | None = None
@@ -133,6 +136,7 @@ class WorkerEventStore:
         if record is None:
             return
         record.is_processing = False
+        record.stream_processing_claim = False
         record.interactions.clear()
         record.terminal = {"event_type": "runtime.completed", "state": state, "error": error}
         self.finish(dispatch_id)
@@ -215,6 +219,10 @@ class WorkerEventStore:
                 record.last_execution_id = str(body.get("execution_id") or record.last_execution_id)
                 if "is_processing" in body:
                     record.is_processing = bool(body["is_processing"])
+                    # The stream's own claim survives ledger pruning in
+                    # dispatcher._reconcile_execution_state; only the stream's
+                    # false or a terminal event retires it.
+                    record.stream_processing_claim = bool(body["is_processing"])
                 event = str(body.get("event_type") or wire.get("response_kind") or "")
                 interaction = str(body.get("interaction_id") or body.get("control_id")
                                   or (body.get("request_id") if "ask_user" in event else "") or "")
@@ -227,6 +235,7 @@ class WorkerEventStore:
                 if "runtime.completed" in event or "chat.error" in event or final_segment:
                     record.terminal = copy.deepcopy(body)
                     record.is_processing = False
+                    record.stream_processing_claim = False
                     record.interactions.clear()
                     if not record.active:
                         self.finish(dispatch_id)
@@ -292,6 +301,7 @@ class WorkerEventStore:
                 continue
             record.interactions.clear()
             record.is_processing = False
+            record.stream_processing_claim = False
             if not record.active:
                 retired.append(record.dispatch_id)
         # finish() may trim self.records, so it runs after the iteration;

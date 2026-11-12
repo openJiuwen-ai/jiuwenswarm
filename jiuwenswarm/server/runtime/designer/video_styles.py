@@ -78,7 +78,7 @@ VIDEO_STYLES: dict[str, dict[str, Any]] = {
         "duration_hint_sec": "flexible",
         "min_shots": 0,
         "summary": (
-            "Standard storyboarded cinematic short: beat-driven shots, "
+            "Standard storyboarded cinematic short: story-driven shots, "
             "continuity locks, R2V clips from on-screen character specs + scene specs."
         ),
         "cues": (),
@@ -297,12 +297,12 @@ def video_style_clause(style_id: str, *, for_clip: bool = False) -> str:
             "that ENDS on the user reference / classic image. Animate toward that final "
             "composition — do not orbit a finished pose. Prefer decisive motion early; "
             "if this is a late shot, decelerate and settle. Use motif-motivated continuity "
-            "from the prior beat (cloth/smoke/light/reflection wipe). "
+            "from the prior shot (cloth/smoke/light/reflection wipe). "
             "No turntable showcase. No subtitles."
         )
     return (
         "VIDEO STYLE LOCK (final_frame_reverse): Reference image = final 1s endpoint. "
-        "Author beats that reverse-form that framing; pseudo-oner + key close-ups; "
+        "Author shots that reverse-form that framing; pseudo-oner + key close-ups; "
         "motif transitions; speed→settle→freeze on reference composition."
     )
 

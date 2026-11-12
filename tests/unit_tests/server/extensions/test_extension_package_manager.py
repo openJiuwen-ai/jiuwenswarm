@@ -241,20 +241,20 @@ class TestPrepareWorkspaceAndMarketplace:
     def test_prepare_creates_dirs_without_seeding(self, tmp_path: Path) -> None:
         result = utils.prepare_workspace(overwrite=True, workspace_dir=tmp_path)
         assert result is not None
-        plugins = tmp_path / "domain" / "agent" / "workspace" / "plugins"
+        plugins = tmp_path / "agent" / "workspace" / "plugins"
         for kind in _KINDS:
             assert (plugins / kind / "built_in").is_dir()
             assert (plugins / kind / "local").is_dir()
             assert not (plugins / kind / "marketplace.json").exists()
             assert not any((plugins / kind / "built_in").iterdir())
             assert not any((plugins / kind / "local").iterdir())
-        groups = tmp_path / "domain" / ".agent_teams" / AGENT_GROUPS
+        groups = tmp_path / ".agent_teams" / AGENT_GROUPS
         assert (groups / "built_in").is_dir()
         assert (groups / "local").is_dir()
 
     def test_prepare_overwrite_true_resets_false_keeps_built_in(self, tmp_path: Path) -> None:
         utils.prepare_workspace(overwrite=True, workspace_dir=tmp_path)
-        kind_root = tmp_path / "domain" / "agent" / "workspace" / "plugins" / AGENT_TEMPLATES
+        kind_root = tmp_path / "agent" / "workspace" / "plugins" / AGENT_TEMPLATES
         built_in = kind_root / "built_in" / "kept"
         built_in.mkdir(parents=True)
         (built_in / "manifest.json").write_text(
