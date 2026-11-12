@@ -1964,6 +1964,9 @@ def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, A
 
     remaining = []
     removed_default = False
+    # Unset template variables resolve to empty strings.
+    placeholder_api_bases = PLACEHOLDER_API_BASES | {""}
+    placeholder_api_keys = PLACEHOLDER_API_KEYS | {""}
     for current in models["defaults"]:
         # Preserve existing model group routes, even if they point at the example.
         if current is saved or current.get("model_id") in referenced_ids:
@@ -1977,12 +1980,10 @@ def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, A
         model_name = str(config.get("model_name") or "").strip()
         api_base = str(config.get("api_base") or "").strip()
         api_key = str(config.get("api_key") or "").strip()
-        # Unset template variables resolve to empty strings. A real endpoint
-        # or credential is enough to preserve the existing entry.
         if (
             model_name in PLACEHOLDER_MODEL_NAMES
-            and (not api_base or api_base in PLACEHOLDER_API_BASES)
-            and (not api_key or api_key in PLACEHOLDER_API_KEYS)
+            and api_base in placeholder_api_bases
+            and api_key in placeholder_api_keys
         ):
             removed_default = removed_default or current.get("is_default") is True
         else:
