@@ -204,12 +204,50 @@ test('the persona save button stays mounted after saving and permits retry after
     assert.deepEqual(saved, [{ persona: '更新后的人设' }]);
     assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), button);
     assert.equal(button.disabled, true);
+    assert.equal(button.previousElementSibling?.dataset.testid, 'jiuwenmate-profile-saved-notice');
     fail = true;
     await changePersona('再次修改的人设');
     await act(async () => button.click());
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-profile-saved-notice"]'), null);
     assert.equal(button.disabled, false);
     assert.match(view.find('settings-error').textContent, /Persona save failed/);
     assert.equal(view.container.querySelector('.jiuwenmate-profile__persona-editor textarea').value, '再次修改的人设');
+  } finally {
+    await view.close();
+  }
+});
+
+test('starter prompts are edited on the persona page with a limit of three and duplicate hints', async () => {
+  const saved = [];
+  const view = await mountProfile({
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, starterPrompts: ['写周报'] } },
+    initialSection: 'persona',
+    onSaveSettings: async (edit) => { saved.push(edit); },
+  });
+  const inputs = () => [...view.container.querySelectorAll('[data-testid="jiuwenmate-starter-prompt-input"]')];
+  const type = async (input, value) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+  };
+  const add = () => view.container.querySelector('[data-testid="jiuwenmate-starter-prompts-add"]');
+  const save = () => view.container.querySelector('.jiuwenmate-profile__save-button');
+  try {
+    assert.deepEqual(inputs().map((input) => input.value), ['写周报']);
+    await act(async () => add().click());
+    await type(inputs()[1], ' 写周报 ');
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'));
+    assert.equal(save().disabled, true, 'A duplicate that collapses to the saved list is not a change');
+
+    await type(inputs()[1], '写月报');
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'), null);
+    await act(async () => add().click());
+    await type(inputs()[2], '总结会议');
+    assert.equal(add().disabled, true);
+    assert.equal(save().disabled, false);
+    await act(async () => save().click());
+    assert.deepEqual(saved.at(-1)?.starterPrompts, ['写周报', '写月报', '总结会议']);
   } finally {
     await view.close();
   }
@@ -234,6 +272,16 @@ test('the overview keeps DingTalk setup until DingTalk is also configured', () =
   assert.doesNotMatch(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="feishu"/);
   assert.match(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="welink"/);
   assert.match(channels, />取消授权</);
+
+  const withNotice = renderProfile({
+    initialSection: 'channels',
+    colleague: authorized,
+    imNotice: { platform: 'feishu', text: '解除连接成功' },
+  });
+  assert.match(
+    withNotice,
+    /data-testid="jiuwenmate-profile-im-notice"[^>]*data-variant="feishu"[^>]*>解除连接成功<\/small>\s*<button[^>]*data-testid="jiuwenmate-profile-im-authorize"/,
+  );
 
   const pendingDingTalk = renderProfile({ colleague: authorized });
   assert.match(pendingDingTalk, /data-testid="jiuwenmate-profile-quick-im"/);
@@ -1324,6 +1372,8 @@ test('the pencil edits the current page and stays there', () => {
   assert.match(overview, /aria-label="编辑人设"/);
   assert.match(overview, /data-testid="jiuwenmate-profile-name-input"/);
   assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-detail"/);
+  assert.doesNotMatch(overview, /class="jiuwenmate-profile__description"/);
+  assert.match(renderProfile({ initialSection: 'overview' }), /class="jiuwenmate-profile__description"/);
 
   const model = renderProfile({
     initialSection: 'model',
