@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
+import { useEffect, useId, useMemo, useState, type FocusEvent, type KeyboardEvent } from 'react';
 import {
   filterEditableComboboxOptions,
   resolveEditableComboboxCommit,
@@ -15,10 +15,6 @@ interface EditableComboboxProps {
   value: string;
 }
 
-const LIST_MAX_HEIGHT = 178;
-const LIST_GAP = 4;
-const VIEWPORT_MARGIN = 8;
-
 export function EditableCombobox({
   ariaLabel,
   disabled = false,
@@ -34,47 +30,7 @@ export function EditableCombobox({
   const [inputValue, setInputValue] = useState(selectedLabel);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const [listLayout, setListLayout] = useState({ side: 'bottom', maxHeight: LIST_MAX_HEIGHT });
   const filteredOptions = useMemo(() => filterEditableComboboxOptions(options, inputValue, selectedLabel), [inputValue, options, selectedLabel]);
-
-  useLayoutEffect(() => {
-    if (!open || disabled) return;
-    const reposition = () => {
-      const container = containerRef.current;
-      const list = listRef.current;
-      if (!container || !list) return;
-      const rect = container.getBoundingClientRect();
-      // Keep the panel inside the viewport, including its border and padding.
-      const above = Math.max(0, rect.top - LIST_GAP - VIEWPORT_MARGIN);
-      const below = Math.max(0, window.innerHeight - rect.bottom - LIST_GAP - VIEWPORT_MARGIN);
-      const desiredHeight = Math.min(LIST_MAX_HEIGHT, list.scrollHeight + 2);
-      const side = below >= desiredHeight || below >= above ? 'bottom' : 'top';
-      const maxHeight = Math.min(LIST_MAX_HEIGHT, side === 'top' ? above : below);
-      setListLayout(previous => previous.side === side && previous.maxHeight === maxHeight
-        ? previous
-        : { side, maxHeight });
-    };
-    reposition();
-    window.addEventListener('resize', reposition);
-    window.addEventListener('scroll', reposition, true);
-    return () => {
-      window.removeEventListener('resize', reposition);
-      window.removeEventListener('scroll', reposition, true);
-    };
-  }, [open, disabled, filteredOptions]);
-
-  useLayoutEffect(() => {
-    const list = listRef.current;
-    const option = list?.children[activeIndex] as HTMLElement | undefined;
-    if (!list || !option) return;
-    // Scroll only the options, without moving the page or the user popover.
-    if (option.offsetTop < list.scrollTop) list.scrollTop = option.offsetTop;
-    else if (option.offsetTop + option.offsetHeight > list.scrollTop + list.clientHeight) {
-      list.scrollTop = option.offsetTop + option.offsetHeight - list.clientHeight;
-    }
-  }, [open, activeIndex, filteredOptions, listLayout.maxHeight]);
 
   useEffect(() => {
     if (!open) setInputValue(selectedLabel);
@@ -142,14 +98,8 @@ export function EditableCombobox({
   };
 
   return (
-    <div
-      ref={containerRef}
-      data-testid="session-sidebar-editable-combobox"
-      className={`editable-combobox${open ? ' editable-combobox--open' : ''}`}
-      onBlur={handleBlur}
-    >
+    <div className={`editable-combobox${open ? ' editable-combobox--open' : ''}`} onBlur={handleBlur}>
       <input
-        data-testid="session-sidebar-editable-combobox-input"
         type="text"
         role="combobox"
         aria-label={ariaLabel}
@@ -174,7 +124,6 @@ export function EditableCombobox({
         onKeyDown={handleKeyDown}
       />
       <button
-        data-testid="session-sidebar-editable-combobox-toggle"
         type="button"
         className="editable-combobox__toggle"
         aria-label={`${ariaLabel}选项`}
@@ -191,20 +140,10 @@ export function EditableCombobox({
         </svg>
       </button>
       {open && !disabled && (
-        <div
-          ref={listRef}
-          id={listboxId}
-          data-testid="session-sidebar-editable-combobox-list"
-          data-side={listLayout.side}
-          style={{ maxHeight: listLayout.maxHeight }}
-          className="editable-combobox__list"
-          role="listbox"
-        >
+        <div id={listboxId} className="editable-combobox__list" role="listbox">
           {filteredOptions.length > 0 ? (
             filteredOptions.map((option, index) => (
               <button
-                data-testid="session-sidebar-editable-combobox-option"
-                data-variant={option.value}
                 id={`${listboxId}-option-${index}`}
                 key={option.value}
                 type="button"
