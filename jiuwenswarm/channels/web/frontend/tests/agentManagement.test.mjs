@@ -11,6 +11,33 @@ import {
   normalizeAgentGroupListItem,
 } from '../node_modules/.cache/agent-management/adapter.js';
 
+test('keeps signed avatar URLs for group and member images', () => {
+  const avatar = '/file-api/download?token=signed&inline=1';
+  const item = normalizeAgentGroupListItem({
+    id: 'group', avatar, members: [{ id: 'leader', avatar }],
+  }, 'en');
+  assert.equal(item.avatarUrl, avatar);
+  assert.equal(item.members[0].avatarUrl, avatar);
+});
+
+test('routes signed avatar requests through the desktop API with the current user', () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = {
+    jiuwenDesktop: { apiBase: 'http://127.0.0.1:5173' },
+    location: { search: '?user_id=user%2B1' },
+  };
+  try {
+    const item = normalizeAgentGroupListItem({
+      id: 'group', avatar: '/file-api/download?token=signed&inline=1',
+    }, 'en');
+    assert.equal(item.avatarUrl,
+      'http://127.0.0.1:5173/file-api/download?token=signed&inline=1&user_id=user%2B1');
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
 test('keeps Hub Expert Teams distinct from local groups', () => {
   const item = normalizeAgentGroupListItem({
     id: 'group-asset-id', name: 'runtime-group', source: 'hub', installed: false,

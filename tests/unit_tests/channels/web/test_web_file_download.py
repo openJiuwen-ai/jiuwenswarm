@@ -187,6 +187,27 @@ def test_valid_token_is_accepted() -> None:
     assert payload["sid"] == "session-1"
 
 
+def test_package_avatar_url_downloads_original_image(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from jiuwenswarm.server.runtime.package_avatars import resolve_package_avatar_url
+
+    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", tmp_path)
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", WebFileDownloadManager(secret="s" * 32))
+    monkeypatch.delenv("JIUWENSWARM_AGENT_DOWNLOAD_HTTP_BASE", raising=False)
+    monkeypatch.delenv("JIUWENSWARM_AGENT_HTTP_BASE", raising=False)
+    monkeypatch.setattr(app_web, "_uses_agentos_routing", lambda: False)
+    image = b"\x89PNG\r\n\x1a\noriginal-avatar"
+    url = resolve_package_avatar_url("data:image/png;base64," + base64.b64encode(image).decode("ascii"))
+    query = {key: values[0] for key, values in parse_qs(urlsplit(url).query).items()}
+    handler = _DownloadHandlerStub(command="GET")
+
+    _SpaStaticHandler._handle_file_download(handler, query)
+
+    assert handler.status == 200
+    assert handler.response_headers["Content-Type"] == "image/png"
+    assert handler.response_headers["Content-Disposition"].startswith("inline;")
+    assert handler.wfile.getvalue() == image
+
+
 def test_non_expiring_token_omits_exp() -> None:
     """send_file_to_user 交付产物应签发不过期令牌（payload 无 exp）。"""
     manager = WebFileDownloadManager(secret="s" * 32)
