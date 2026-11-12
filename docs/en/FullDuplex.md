@@ -356,3 +356,5 @@ correlate requests, cancellation settlement, queue versions and interface update
 Full duplex adds no deadline to tool calls, queue operations, card answers, execution settlement, or cancellation acknowledgement. Core lifecycle and actual receipts govern tasks and cards. Connection protection and configured model timeouts still apply.
 
 On tool failure, the tool card shows supplied error details, error codes, exit codes and stderr with sensitive values masked. Successful acceptance, results and stop confirmations update the interface and context silently. Failures, questions requiring user input and explicit queries can still trigger a voice response. Stop receipts prefer the task display title.
+
+While a duplex task is running, its chat elapsed time updates from a local clock independently of progress messages. The display freezes after completion, failure or confirmed cancellation. This clock changes presentation only; it does not change task state, timeouts or cancellation.
