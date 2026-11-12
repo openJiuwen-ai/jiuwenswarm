@@ -6,6 +6,8 @@ import { useSettingsServices } from './SettingsServicesProvider';
 import { serializeConfigSettingValue } from './settingsSourceContract';
 import { useSettingsConfig } from './useSettingsConfig';
 import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../desktopBrowserDisplay';
+import { usePersonalContextStore } from '../../../stores/personalContextStore';
+import { parseContextCapacity } from '../modules/personalContext/capacitySetting';
 
 export type SettingsSourceController = {
   values: Readonly<Record<string, unknown>>;
@@ -269,9 +271,31 @@ function LocaleSourceProvider({ children }: { children: ReactNode }) {
   return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
 }
 
+function PersonalContextSourceProvider({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
+  const config = usePersonalContextStore((state) => state.config);
+  const pending = usePersonalContextStore((state) => state.pendingWrites);
+  const setMaxContextSize = usePersonalContextStore((state) => state.setMaxContextSize);
+  const save = useCallback(async (updates: Record<string, SettingValue>) => {
+    const size = parseContextCapacity(updates.max_context_size_mb);
+    if (Object.keys(updates).length !== 1 || size === null) {
+      throw new Error(t('settingsPanel.fields.max_context_size_mb.invalid'));
+    }
+    await setMaxContextSize(size);
+  }, [setMaxContextSize, t]);
+  const value = useMemo<SettingsSourceController>(() => ({
+    values: { max_context_size_mb: config.max_context_size_mb ?? 50 },
+    savingKeys: new Set(Object.keys(pending).filter((key) => pending[key])),
+    save,
+    patchLocal: () => undefined,
+  }), [config.max_context_size_mb, pending, save]);
+  return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
+}
+
 export function SettingsSourceProvider({ source, children }: { source?: SettingsSource; children: ReactNode }) {
   if (source === 'config') return <ConfigSourceProvider>{children}</ConfigSourceProvider>;
   if (source === 'browser') return <BrowserSourceProvider>{children}</BrowserSourceProvider>;
   if (source === 'locale') return <LocaleSourceProvider>{children}</LocaleSourceProvider>;
+  if (source === 'personalContext') return <PersonalContextSourceProvider>{children}</PersonalContextSourceProvider>;
   return children;
 }

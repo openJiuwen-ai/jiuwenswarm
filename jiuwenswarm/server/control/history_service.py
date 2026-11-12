@@ -229,6 +229,25 @@ def load_history_query(params: dict[str, Any]) -> dict[str, Any] | None:
 
 async def handle_history_request(request: AgentRequest) -> AgentResponse:
     params = request.params if isinstance(request.params, dict) else {}
+    if "artifact_sha256" in params:
+        from jiuwenswarm.server.runtime.session.history_artifacts import read_artifact_chunk
+        from jiuwenswarm.server.runtime.session.history_io import run_history_io
+        from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
+
+        session_id = params.get("session_id") or request.session_id
+        try:
+            if request.is_stream or not is_valid_session_id(session_id):
+                raise ValueError("Artifact retrieval requires a valid session and unary request")
+            data = await run_history_io(
+                read_artifact_chunk, session_id, params["artifact_sha256"],
+                offset=params.get("offset", 0), max_bytes=params.get("max_bytes", 65536),
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            return build_error_response(request, str(exc), code="HISTORY_ARTIFACT_FAILED")
+        return AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id,
+            ok=True, payload=data, metadata=request.metadata,
+        )
     try:
         data = load_history_query(params)
     except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:

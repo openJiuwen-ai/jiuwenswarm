@@ -76,6 +76,27 @@ function sourceFilesUnder(path) {
 const zh = JSON.parse(source('src/i18n/locales/zh.json'));
 const en = JSON.parse(source('src/i18n/locales/en.json'));
 
+test('DDG and Bing retain independent persisted switches after removing 360', () => {
+  for (const name of ['ddg', 'bing']) {
+    const key = `free_search_${name}_enabled`;
+    assert.deepEqual(SETTINGS_CONFIG_FIELDS.find((item) => item.key === key), {
+      key, category: 'agent', kind: 'boolean', persistence: '.env', path: `FREE_SEARCH_${name.toUpperCase()}_ENABLED`,
+    });
+    for (const enabled of ['true', 'false']) {
+      assert.deepEqual(buildConfigSavePayload({ [key]: enabled }), { config: { [key]: enabled } });
+    }
+  }
+  assert.equal(SETTINGS_CONFIG_FIELDS.some((item) => item.key === 'free_search_360_enabled'), false);
+  assert.throws(() => buildConfigSavePayload({ free_search_360_enabled: 'true' }), /Unknown settings config key/);
+  for (const locale of [zh, en]) {
+    assert.equal(locale.settingsPanel.fields.free_search_360_enabled, undefined);
+    assert.ok(locale.settingsPanel.fields.free_search_ddg_enabled.title.includes('DuckDuckGo'));
+    assert.ok(locale.settingsPanel.fields.free_search_bing_enabled.title.includes('Bing'));
+  }
+  const definition = source('src/features/settings/modules/agent/definition.ts');
+  assert.doesNotMatch(definition, /free_search_360_enabled|360-search/);
+});
+
 function leafKeys(value, prefix = '') {
   return Object.entries(value).flatMap(([key, child]) => {
     const path = prefix ? `${prefix}.${key}` : key;
@@ -478,7 +499,7 @@ test('simple Settings definitions reject unknown sources and derive required i18
               {
                 id: 'enabled',
                 component: 'switch',
-                key: 'proactive_recommendation_enabled',
+                key: 'topic_recommendation_enabled',
                 subItems: {
                   show: 'sometimes',
                   disabled: 'never',
@@ -1034,12 +1055,12 @@ test('settings contract rejects unknown keys and normalizes supported values', (
   assert.deepEqual(
     normalizeSettingsConfigUpdates({
       external_cli_agent_claude_cli_path: '  /usr/bin/claude  ',
-      proactive_recommendation_max_recommend_per_day: ' 10 ',
+      moa_verifier_interval: ' 7 ',
       permissions_enabled: 'true',
     }),
     {
       external_cli_agent_claude_cli_path: '/usr/bin/claude',
-      proactive_recommendation_max_recommend_per_day: '10',
+      moa_verifier_interval: '7',
       permissions_enabled: 'true',
     },
   );
@@ -1161,7 +1182,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'team_task_verification_enabled',
       'team_member_messaging_enabled',
       'team_member_subtasks_enabled',
-      'proactive_recommendation_enabled',
       'progressive_tool_optimize',
     ].sort(),
   );
@@ -1184,9 +1204,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'moa_jev_enabled',
     'moa_verifier_interval',
     'multi_model_collaboration_enabled',
-    'proactive_recommendation_enabled',
-    'proactive_recommendation_max_recommend_per_day',
-    'proactive_recommendation_max_rounds_per_tick',
     'progressive_tool_optimize',
     'rsi_enabled',
     'symphony_evolution_enabled',
@@ -1301,7 +1318,6 @@ test('Settings form dialogs share the same dirty-close contract without disablin
 
   for (const { path, id } of [
     { path: 'src/features/settings/modules/agent/AgentSettings.tsx', id: 'agent-config-dialog' },
-    { path: 'src/features/settings/modules/experimental/ExperimentalSettings.tsx', id: 'proactive-limits-dialog' },
     { path: 'src/features/settings/modules/models/ModelDialog.tsx', id: 'model-dialog' },
   ]) {
     const module = source(path);
@@ -1434,6 +1450,7 @@ test('multimodal dialogs reuse provider-first model configuration; topic probes 
   assert.match(dialog, /probeBeforeSave = modality === 'topic'/);
   assert.match(dialog, /'config\.validate_model'/);
   assert.match(mediaConfig, /buildMediaModelValidationPayload/);
+  assert.match(mediaConfig, /buildSavedTopicModelValidationPayload/);
   assert.doesNotMatch(dialog, /OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/);
 });
 
@@ -2064,7 +2081,6 @@ test('legacy page translations and Harness package state are removed without del
     'keyHelp',
     'modelList',
     'openaiAccount',
-    'proactive',
   ];
 
   for (const locale of [zh, en]) {

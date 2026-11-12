@@ -67,7 +67,6 @@ from jiuwenswarm.common.config import (
     update_memory_forbidden_enabled_in_config,
     update_permissions_profile_in_config,
     update_progressive_tool_optimize_in_config,
-    update_proactive_recommendation_in_config,
     update_rsi_enabled_in_config,
     update_setup_guide_enabled_in_config,
     update_skill_evolution_enabled_in_config,
@@ -148,6 +147,7 @@ class ConfigPanelInternalError(RuntimeError):
 WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
 SEARCH_RELOAD_ENV_KEYS = {
     "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
+    "FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED",
 }
 MODEL_RELOAD_ENV_KEYS = {
     "MODEL_PROVIDER",
@@ -236,8 +236,6 @@ class ConfigChangeSet:
                 scopes.add("team")
             elif key_text.startswith("permissions"):
                 scopes.add("permissions")
-            elif key_text.startswith("proactive_recommendation"):
-                scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
             elif key_text == "trajectory_ui_diagnosis_enabled":
@@ -399,9 +397,6 @@ CONFIG_YAML_KEYS = frozenset({
     "task_asr_enabled",
     "topic_recommendation_enabled",
     "prompt_suggestion_enabled",
-    "proactive_recommendation_enabled",
-    "proactive_recommendation_max_recommend_per_day",
-    "proactive_recommendation_max_rounds_per_tick",
     "swarmflow_enabled",
     "swarmflow_budget",
     "team_scheduled_dispatch_enabled",
@@ -450,7 +445,6 @@ AGENT_RELOAD_SCOPES = frozenset({
     "team",
     "permissions",
     "agent_runtime",
-    "proactive",
 })
 
 
@@ -1324,28 +1318,6 @@ def persist_env_updates(updates: dict[str, str]) -> None:
         logger.warning("[config.set] 写回 .env 失败: %s", e)
 
 
-def validate_proactive_int(
-    val: Any, *, name: str, lo: int = 1, hi: int = 50,
-) -> int:
-    """校验 proactive 数值配置项：必须是 [lo, hi] 的正整数字符串。
-
-    挡住负数、零、浮点数(3.5)、字符串(abc)、科学计数(1e5)、空值。
-    校验失败抛 ConfigPanelBadRequest（携带中文提示），由外层返回前端。
-    """
-    raw = str(val if val is not None else "").strip()
-    if not raw:
-        raise ConfigPanelBadRequest(f"{name} 不能为空，需为 {lo}-{hi} 的正整数")
-    # 正则一次挡住浮点、负数、科学计数、非数字
-    if not re.fullmatch(r"[0-9]+", raw):
-        raise ConfigPanelBadRequest(
-            f"{name} 必须是正整数（{lo}-{hi}），当前值无效：{raw!r}"
-        )
-    n = int(raw)
-    if n < lo or n > hi:
-        raise ConfigPanelBadRequest(f"{name} 需为 {lo}-{hi} 的正整数，当前：{n}")
-    return n
-
-
 def parse_config_bool(value: Any) -> bool:
     return parse_kvc_bool(value)
 
@@ -1689,14 +1661,13 @@ def apply_config_payload(
                 save_recommendation_switches(topic_enabled=parsed, now=time.time())
             elif param_key == "prompt_suggestion_enabled":
                 save_recommendation_switches(prompt_enabled=parsed, now=time.time())
-            elif param_key == "proactive_recommendation_enabled":
-                update_proactive_recommendation_in_config({"enabled": parsed})
-            elif param_key == "proactive_recommendation_max_recommend_per_day":
-                n = validate_proactive_int(val, name="每日推荐上限(max_recommend_per_day)")
-                update_proactive_recommendation_in_config({"max_recommend_per_day": n})
-            elif param_key == "proactive_recommendation_max_rounds_per_tick":
-                n = validate_proactive_int(val, name="每次检查对话轮数(max_rounds_per_tick)")
-                update_proactive_recommendation_in_config({"max_rounds_per_tick": n})
+            elif param_key in (
+                "proactive_recommendation_enabled",
+                "proactive_recommendation_max_recommend_per_day",
+                "proactive_recommendation_max_rounds_per_tick",
+            ):
+                # Ignored: proactive recommendation removed.
+                pass
             yaml_updated.append(param_key)
         except ConfigPanelBadRequest:
             # proactive 数值校验等：直接返回前端，不被外层吞成 warning
@@ -1935,12 +1906,6 @@ async def config_get_handler(
         payload.update(flatten_modes_team_for_config_panel(raw))
         # Proactive recommendation — use resolved config (env vars expanded)
         resolved = get_config()
-        proactive_cfg = resolved.get("proactive_recommendation") or {}
-        payload["proactive_recommendation_enabled"] = "true" if proactive_cfg.get("enabled", False) else "false"
-        payload["proactive_recommendation_max_recommend_per_day"] = str(
-            proactive_cfg.get("max_recommend_per_day", 10))
-        payload["proactive_recommendation_max_rounds_per_tick"] = str(
-            proactive_cfg.get("max_rounds_per_tick", 20))
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
     except Exception:  # noqa: BLE001
@@ -1988,11 +1953,8 @@ async def config_get_handler(
             payload.setdefault(key, default_text)
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
-        payload.setdefault("proactive_recommendation_enabled", "false")
         payload.setdefault("topic_recommendation_enabled", "false")
         payload.setdefault("prompt_suggestion_enabled", "false")
-        payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
-        payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "false")
     await channel.send_response(ws, req_id, ok=True, payload=payload)
 

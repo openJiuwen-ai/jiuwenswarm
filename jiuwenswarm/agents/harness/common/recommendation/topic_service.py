@@ -584,8 +584,8 @@ class TopicService:
         """
 
         expected_serving = build_serving_compatibility_key(trigger_key)
-        # Match serving keys in Python so rows that still embed model id remain
-        # successors after a recommendation-model change.
+        # Match serving keys in Python so rows that still embed model id or
+        # generation_config_version remain successors after a connection change.
         rows = self.store.query_events(
             event_type="starter_slate_manifest",
             policy_id=POLICY_ID,
@@ -627,6 +627,7 @@ class TopicService:
             "input_revision_receipt",
             "negative_preference_version",
             "model",
+            "generation_config_version",
         }
         accepted_trigger = {
             key: value
@@ -1709,6 +1710,10 @@ class TopicService:
             }
 
         normalized_work_mode = normalize_topic_work_mode(work_mode)
+        try:
+            self.store.prune(now=self._now())
+        except Exception:  # noqa: BLE001 - serving must not fail on maintenance
+            logger.warning("[Topic] store prune failed", exc_info=True)
         _, feedback = self._scope_state(context_scope=context_scope, project_id=project_id)
         trigger_key = self._trigger_key(
             context_scope=context_scope,

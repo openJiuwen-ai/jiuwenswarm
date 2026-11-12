@@ -563,6 +563,7 @@ from jiuwenswarm.agents.harness.common.a4p.execution_context import (
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 from jiuwenswarm.server.runtime import extension_package_manager as equipment
 
 # Goal 用户历史：忙碌插队时先挂起，等上一轮→goal 边界（或流结束）再落盘，
@@ -4559,6 +4560,8 @@ class JiuWenSwarmDeepAdapter:
                 if history_preparation is not None:
                     try:
                         history_snapshot = await history_preparation
+                    except HistoryReplayError:
+                        raise
                     except Exception as exc:
                         logger.debug(
                             "session history preparation failed for %s: %s", sid, exc
@@ -4583,7 +4586,7 @@ class JiuWenSwarmDeepAdapter:
                     if restoring_permission and not restored:
                         raise RootPermissionQueueError("permission_continuation_context_missing")
                 except Exception as exc:
-                    if restoring_permission:
+                    if restoring_permission or isinstance(exc, (HistoryReplayError, MemoryError)):
                         raise
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] session context warmup failed: "
@@ -4600,12 +4603,17 @@ class JiuWenSwarmDeepAdapter:
                         sid, adapter, host_external_input=host_external_input, freshly_built=True,
                     )
                     self._session_adapters[sid] = adapter
-            except BaseException:
+            except BaseException as exc:
                 if restoring_permission:
                     await adapter._isolate_permission_instance()  # pylint: disable=protected-access
                     # Publish only an isolated owner, then use the existing cleanup gate.
                     self._session_adapters[sid] = adapter
                     await self._evict_failed_permission_session_adapter(sid, adapter)
+                elif isinstance(exc, (HistoryReplayError, MemoryError, asyncio.CancelledError)):
+                    # A partially restored child must never become a warm cache hit.
+                    if self._session_adapters.get(sid) is adapter:
+                        self._session_adapters.pop(sid, None)
+                    await adapter.cleanup()
                 raise
             finally:
                 await self._drain_history_preparation(history_preparation)
@@ -11325,6 +11333,18 @@ class JiuWenSwarmDeepAdapter:
     def _build_session_messaging_route_rail() -> SessionMessagingRouteRail:
         return SessionMessagingRouteRail()
 
+    @staticmethod
+    def _build_web_research_budget_rail() -> Any | None:
+        try:
+            from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
+
+            return WebResearchBudgetRail()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] WebResearchBudgetRail create failed: %s", exc
+            )
+            return None
+
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
         try:
@@ -11780,6 +11800,7 @@ class JiuWenSwarmDeepAdapter:
 
         rail_infos = [
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
+            _RailBuildInfo("_web_research_budget_rail", self._build_web_research_budget_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo(
                 "_multimodal_image_rail",
@@ -20478,6 +20499,7 @@ class JiuWenSwarmDeepAdapter:
                 moa_stream = moa_progress.stream(interaction_stream)
                 runner_stream = moa_stream
             last_llm_prompt: str | None = None
+            last_llm_payload_refs: dict[str, Any] | None = None
             # Call-start time — anchors the chat.usage_metadata record so the LLM
             # Call card renders before the response text (recorded at completion).
             last_llm_start_ts: float | None = None
@@ -20601,12 +20623,17 @@ class JiuWenSwarmDeepAdapter:
 
                 if chunk_type in ("llm_call_start", "llm_call_end"):
                     payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+                    if chunk_type == "llm_call_start":
+                        refs = payload.get("payload_refs")
+                        last_llm_payload_refs = refs if isinstance(refs, dict) else None
                     forward: dict[str, Any] = {
                         "event_type": "chat." + chunk_type,
                         "member_name": payload.get("member_name"),
                         "role": payload.get("role"),
                     }
                     prompt = payload.get("prompt")
+                    if isinstance(payload.get("payload_refs"), dict):
+                        forward["payload_refs"] = payload["payload_refs"]
                     if prompt:
                         forward["prompt"] = prompt
                         if chunk_type == "llm_call_start":
@@ -20650,6 +20677,10 @@ class JiuWenSwarmDeepAdapter:
                         # prompt stays available for the LLM call.
                         if last_llm_prompt and not usage_meta.get("prompt"):
                             usage_meta = {**usage_meta, "prompt": last_llm_prompt}
+                            if isinstance(chunk.payload, dict):
+                                chunk.payload["usage_metadata"] = usage_meta
+                        if last_llm_payload_refs:
+                            usage_meta = {**usage_meta, "payload_refs": last_llm_payload_refs}
                             if isinstance(chunk.payload, dict):
                                 chunk.payload["usage_metadata"] = usage_meta
                     yield AgentResponseChunk(
@@ -21690,6 +21721,8 @@ class JiuWenSwarmDeepAdapter:
                                 result_payload["raw_output"] = raw_output
                             for key in (
                                 "rendered_result",
+                                "payload_refs",
+                                "raw_output_truncated",
                                 "status",
                                 "success",
                                 "is_error",
@@ -22323,6 +22356,15 @@ class JiuWenSwarmDeepAdapter:
         if result == "compressed":
             context = context_engine.get_context(session_id=session_id)
             if context:
+                from jiuwenswarm.server.runtime.session.context_snapshot import save_context_snapshot
+                from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
+
+                effective_session = session or resolve_live_agent_session(self._instance, session_id)
+                if effective_session is None:
+                    effective_session = context.get_session_ref()
+                if effective_session is None:
+                    raise RuntimeError("The compacted context has no persistent session")
+                await save_context_snapshot(context_engine=context_engine, session=effective_session)
                 total_tokens = await self._count_full_context_tokens(
                     context, react_agent, session_id
                 )

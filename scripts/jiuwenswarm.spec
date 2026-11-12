@@ -24,6 +24,8 @@ block_cipher = None
 
 SPEC_DIR = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
 project_root = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
+release_dependencies = runpy.run_path(os.path.join(project_root, "scripts", "release_dependencies.py"))
+release_dependencies["validate_release_dependencies"](Path(project_root))
 build_config_module = runpy.run_path(os.path.join(project_root, "scripts", "build_config.py"))
 build_config = build_config_module["load_build_config"](Path(project_root))
 computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
@@ -146,6 +148,9 @@ datas = webview_datas + [
 datas += computer_use_datas
 if sys.platform in ("darwin", "win32"):
     datas += collect_data_files("computer_use", includes=["*.pyi", "py.typed"])
+if sys.platform == "darwin":
+    # The SDK launches this helper by file path to forward inherited descriptors.
+    datas += collect_data_files("computer_use", include_py_files=True, includes=["native/driver_exec.py"])
 # Every actual frozen backend build gets a distinct, bundled identity.
 _identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
 _identity_file = Path(_identity_directory.name, "_worker_build_identity.json")

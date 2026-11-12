@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable
@@ -13,6 +14,8 @@ from jiuwenswarm.server.runtime.session.session_history import (
     SessionCompletionBoundary,
 )
 
+logger = logging.getLogger(__name__)
+
 TERMINAL_CONTRACT_VERSION = "topic-starter-v6-terminal-v2"
 COMPONENT_RECEIPT_SCHEMA_VERSION = "topic-starter-v6-component-receipt-v2"
 SESSION_SUMMARY_SCHEMA_VERSION = "topic-starter-v6-session-summary-v2"
@@ -20,7 +23,7 @@ LONG_TERM_PROFILE_INTEREST_SCHEMA_VERSION = (
     "topic-starter-v6-long-term-profile-interest-v1"
 )
 RID_RESULT_SCHEMA_VERSION = "topic-starter-v6-rid-result-v2"
-RID_API_PROMPT_VERSION = "topic-starter-v6-rid-api-proxy-v21"
+RID_API_PROMPT_VERSION = "topic-starter-v6-rid-api-proxy-v23"
 RID_COMPONENT_ID = "icebreaker_rid"
 
 # Hand-typed turns and composer prompt-suggestion accepts both feed RID / revisit.
@@ -44,8 +47,8 @@ Topic Starter RID ({RID_API_PROMPT_VERSION}). Decide quickly; return JSON only.
 
 Select which supplied long-term profile interests and session summaries are
 trigger interests the user would willingly reopen today. Host treats omitted
-inputs as rejected. Select 0..N of N inputs; empty decisions only when none
-qualify.
+inputs as rejected, so listing only selected items is enough. Select 0..N of N
+inputs; empty decisions only when none qualify.
 
 Select a user's own live subject: activity, study, project or curiosity with
 revisit evidence, or one they are clearly inside. Do not select: errands for
@@ -67,13 +70,21 @@ still several when several exist. Use host activity_group and threshold_version.
 When short_delta_lineage_required, include the listed summary that best names a
 live subject plus sustained subjects it connects to; leave context-only/not-now
 unselected. Negative preference withholds only its named direction_anchor.
-Rank selected profile interests and summaries in one 1..N order: strongest
-revisit first, then newer, then supplied order. One subject across many
-summaries: newest plus distinct facets only.
+Rank selected profile interests and summaries in one contiguous 1..N order:
+strongest revisit first, then newer, then supplied order. One subject across
+many summaries: newest plus distinct facets only.
 
-Return exactly {{"decisions":[{{"interest_summary_id":"...","selected":true,
-"rank":1,"resonance_score_nullable":null}}]}}. IDs from inputs only, each once;
-unselected rank null; resonance_score_nullable always null.
+Return only {{"decisions":[...]}}. Each decision object has exactly these keys:
+interest_summary_id (from inputs, once), selected (boolean), rank (1..N when
+selected, otherwise null), resonance_score_nullable (always null). No extra
+keys, scores, or commentary. Prefer listing only selected:true items.
+
+Demo only, not this user's facts: inputs pi-guitar, ss-pause-tonight,
+ss-friend-child-japanese. Select pi-guitar as rank 1; leave the one-evening
+pause and the errand for someone else unselected (omit them or selected:false
+with rank null). Enough output:
+{{"decisions":[{{"interest_summary_id":"pi-guitar","selected":true,"rank":1,
+"resonance_score_nullable":null}}]}}.
 """
 
 _COMPONENT_IDS = frozenset(
@@ -557,6 +568,105 @@ def _finite_nullable(value: Any) -> tuple[bool, float | None]:
     return True, float(value)
 
 
+def _coerce_rid_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+    if _plain_int(value):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    return None
+
+
+def _coerce_rid_rank(value: Any) -> int | None:
+    if value is None:
+        return None
+    if _plain_int(value) and value >= 1:
+        return value
+    if isinstance(value, float) and value.is_integer() and value >= 1:
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        number = int(value.strip())
+        if number >= 1:
+            return number
+    return None
+
+
+def _coerce_rid_response(response: Any, known_ids: set[str]) -> Any:
+    """Repair Flash-typical RID slips before the strict decision validator.
+
+    Extra top-level or per-decision keys are dropped. Omitted inputs stay
+    rejected by the host. Selected ranks are renormalized to contiguous 1..N
+    in the model's relative order. Proxy scores are forced to null.
+
+    A non-empty decisions list that yields zero recoverable rows is returned as
+    ``None`` so the caller can contract-fail. That must not be confused with a
+    legitimate empty ``decisions: []`` (model fully abstained).
+    """
+
+    if not isinstance(response, dict):
+        return response
+    decisions = response.get("decisions")
+    if not isinstance(decisions, list):
+        return response
+
+    coerced: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in decisions:
+        if not isinstance(raw, dict):
+            continue
+        summary_id = raw.get("interest_summary_id")
+        if (
+            not isinstance(summary_id, str)
+            or summary_id not in known_ids
+            or summary_id in seen
+        ):
+            continue
+        selected = _coerce_rid_bool(raw.get("selected"))
+        if selected is None:
+            continue
+        if selected:
+            rank = _coerce_rid_rank(raw.get("rank"))
+            if rank is None:
+                rank = len(coerced) + 1
+            coerced.append(
+                {
+                    "interest_summary_id": summary_id,
+                    "selected": True,
+                    "rank": rank,
+                    "resonance_score_nullable": None,
+                }
+            )
+        else:
+            coerced.append(
+                {
+                    "interest_summary_id": summary_id,
+                    "selected": False,
+                    "rank": None,
+                    "resonance_score_nullable": None,
+                }
+            )
+        seen.add(summary_id)
+
+    if decisions and not coerced:
+        return None
+
+    selected_items = [item for item in coerced if item["selected"]]
+    selected_items.sort(
+        key=lambda item: (int(item["rank"]), coerced.index(item)),
+    )
+    for index, item in enumerate(selected_items, start=1):
+        item["rank"] = index
+    return {"decisions": coerced}
+
+
 async def distill_trigger_interests(
     *,
     user_profile: dict[str, Any],
@@ -657,6 +767,13 @@ async def distill_trigger_interests(
     except Exception:  # noqa: BLE001 - provider failures are closed results
         return None, "rid_distillation_failed"
 
+    response = _coerce_rid_response(response, set(input_by_id))
+    if response is None:
+        logger.warning(
+            "[TopicRID] coerce dropped every decision row; treating as "
+            "rid_output_contract_failed (not a legitimate empty abstention)"
+        )
+        return None, "rid_output_contract_failed"
     if not isinstance(response, dict):
         return None, "rid_output_contract_failed"
     if set(response) != {"decisions"}:

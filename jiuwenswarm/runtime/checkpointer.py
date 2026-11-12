@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from typing import Any
 
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig
@@ -20,6 +21,7 @@ _PERSISTENT_CHECKPOINTER_LOCK: asyncio.Lock | None = None
 _PERSISTENT_CHECKPOINTER_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 _PERSISTENT_CHECKPOINTER_LOCK_INIT = threading.Lock()
 _PERSISTENT_CHECKPOINTER_READY = False
+_shared_checkpointer: Any = None
 
 
 def _running_loop() -> asyncio.AbstractEventLoop | None:
@@ -72,9 +74,11 @@ async def _get_persistent_checkpointer_lock() -> asyncio.Lock:
 
 async def ensure_persistent_checkpointer() -> None:
     """Ensure the process-wide default checkpointer uses sqlite persistence."""
-    global _PERSISTENT_CHECKPOINTER_READY
+    global _PERSISTENT_CHECKPOINTER_READY, _shared_checkpointer
 
     if _PERSISTENT_CHECKPOINTER_READY:
+        if _shared_checkpointer is not None:
+            CheckpointerFactory.set_default_checkpointer(_shared_checkpointer)
         return
 
     lock = await _get_persistent_checkpointer_lock()
@@ -93,6 +97,8 @@ async def ensure_persistent_checkpointer() -> None:
             raise
         acquired = True
         if _PERSISTENT_CHECKPOINTER_READY:
+            if _shared_checkpointer is not None:
+                CheckpointerFactory.set_default_checkpointer(_shared_checkpointer)
             return
 
         try:
@@ -112,6 +118,10 @@ async def ensure_persistent_checkpointer() -> None:
                     conf=conf,
                 ),
             )
+            from jiuwenswarm.runtime.context_checkpointer import ContextCheckpointer
+
+            checkpointer = ContextCheckpointer(checkpointer)
+            _shared_checkpointer = checkpointer
             CheckpointerFactory.set_default_checkpointer(checkpointer)
             _PERSISTENT_CHECKPOINTER_READY = True
             logger.info(
@@ -131,7 +141,7 @@ async def ensure_persistent_checkpointer() -> None:
 
 async def close_persistent_checkpointer() -> None:
     """Dispose the process-owned persistent checkpointer connection pool."""
-    global _PERSISTENT_CHECKPOINTER_READY
+    global _PERSISTENT_CHECKPOINTER_READY, _shared_checkpointer
 
     if not _PERSISTENT_CHECKPOINTER_READY:
         return
@@ -161,6 +171,7 @@ async def close_persistent_checkpointer() -> None:
             # Runtime startup through initialization instead of reusing a
             # potentially closed pool.
             _PERSISTENT_CHECKPOINTER_READY = False
+            _shared_checkpointer = None
 
         if dispose_error is not None:
             if reset_error is not None:

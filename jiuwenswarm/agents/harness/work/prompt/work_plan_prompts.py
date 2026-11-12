@@ -207,6 +207,7 @@ WORK_PLAN_ALLOWED_TOOLS: tuple[str, ...] = (
     # 只读文件与检索
     "read_file",
     "pcs_search",
+    "pcs_read",
     "grep",
     "list_files",
     "glob",

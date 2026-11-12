@@ -823,10 +823,6 @@
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
-      "proactive": "主动推荐",
-      "proactiveLimits": "推荐频率限制",
-      "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "multiModelCollaboration": "多模型协同",
       "toolOptimize": "工具检索优化",
       "designMode": "设计模式",
@@ -880,6 +876,12 @@
       "preferred_language": {
         "title": "Language",
         "description": "设置应用程序界面的显示语言。"
+      },
+      "max_context_size_mb": {
+        "title": "知识容量上限（MB）",
+        "description": "采集后超限时，回收至上限的60%。",
+        "placeholder": "10 至 10000，默认 50",
+        "invalid": "请输入 10 至 10000 之间的整数 MB。"
       },
       "chrome_path": {
         "title": "浏览器路径",
@@ -1168,20 +1170,6 @@
       },
       "external_cli_agent_codex_cli_path": {
         "title": "Codex CLI 路径"
-      },
-      "proactive_recommendation_enabled": {
-        "title": "启用主动推荐",
-        "description": "允许系统在满足条件时主动发送推荐。"
-      },
-      "proactive_recommendation_max_recommend_per_day": {
-        "title": "每日推荐上限",
-        "description": "每个用户每日主动推荐次数上限，防止打扰过多。默认值：10。",
-        "placeholder": "请输入 1–50 的整数"
-      },
-      "proactive_recommendation_max_rounds_per_tick": {
-        "title": "每次检查对话轮数",
-        "description": "每次检查时最多读取的近期对话轮数，用于推断推荐上下文。默认值：20。",
-        "placeholder": "请输入 1–50 的整数"
       },
       "multi_model_collaboration_enabled": {
         "title": "多模型协同",
@@ -2670,13 +2658,6 @@
         "failed": "安装失败",
         "running": "正在安装"
       }
-    },
-    "proactive": {
-      "typeLabel": {
-        "skill_recommend": "技能推荐",
-        "task_reminder": "任务提醒",
-        "need_exploration": "探索发现"
-      }
     }
   },
   "cron": {
@@ -2701,9 +2682,7 @@
     "disable": "停用",
     "loading": "正在加载任务列表...",
     "deleteConfirm": "确定要删除这个任务吗？",
-    "autoManaged": "自动维护",
-    "autoManagedHint": "此任务由主动推荐开关自动创建/删除；开关在设置→主动推荐。仅 Cron 表达式与时区可在此面板编辑，其余字段（名称/状态/描述/偏移/频道）不可改；删除请到设置关闭开关。",
-    "autoManagedToggleDisabled": "自动维护任务的开关由设置→主动推荐控制，不可在此切换。",
+    "autoManagedToggleDisabled": "此字段当前不可编辑。",
     "pageTitle": "定时任务",
     "pageSubtitle": "配置和管理按计划执行的自动化任务。",
     "actions": {
@@ -2942,8 +2921,7 @@
       "updated": "任务更新成功",
       "deleted": "任务删除成功",
       "statusUpdated": "任务状态更新成功",
-      "runNow": "任务已触发立即执行",
-      "proactiveRunNow": "推荐任务已在后台启动，将自动判断是否需要推荐，结果稍后提示。"
+      "runNow": "任务已触发立即执行"
     },
     "preview": {
       "loading": "正在加载下次触发时间...",
@@ -3181,6 +3159,8 @@
       "createdNodes": "本次新增 {{nodes}} 个节点（{{files}} 个文件）",
       "updatedNodes": "已更新 {{count}} 个节点",
       "noNewContent": "无新增内容",
+      "capacityRemoved": "容量维护已回收 {{count}} 个正文文件",
+      "capacityIncomplete": "容量维护未完成，知识库可能仍超出上限",
       "collectionDisabledHint": "请先在上下文设置中开启总开关和内容采集，再立即采集。",
       "collectionStoppingHint": "正在停止采集，请等待停止完成后重试。",
       "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
@@ -5907,6 +5887,11 @@
     "chat": {
       "title": "私聊",
       "failed": "消息处理失败：{{reason}}",
+      "modelNotConfigured": "请先在「设置 → 模型」中配置可用模型，配置完成后即可与该员工对话。",
+      "modelPending": "待生效",
+      "modelUnavailable": "请选择模型",
+      "modelUnavailableHint": "原模型已删除或不可用，请为该员工重新选择并保存可用模型后再发送消息。",
+      "notPublished": "请先在员工管理中保存并发布配置，再与该员工对话。",
       "noReply": "员工没有回复消息",
       "file": {
         "download": "下载",
@@ -6062,6 +6047,7 @@
       "clientId": "Client ID",
       "dingtalkHint": "绑定后可通过钉钉单聊分派任务，当前支持文本消息。",
       "isolationHint": "Web、飞书和钉钉共用同一员工与工作空间；各会话独立，跨群分享须按授权处理。",
+      "channelAlreadyBound": "该渠道已绑定其他员工，请先解除原绑定。",
       "robotCode": "Robot Code（可选）",
       "robotCodePlaceholder": "按应用配置填写，留空沿用 Client ID",
       "welinkTitle": "绑定 WeLink",
@@ -6141,28 +6127,31 @@
       "resourcesHint": "从本机已安装的技能和已连接的连接器中选择。保存并发布后，该员工之后的新任务才会使用这次选择。",
       "saveResources": "保存并发布",
       "savingResources": "正在保存",
+      "saveSettingsFailed": "配置保存或发布失败，请重试。",
+      "modelEmptyHint": "请先在「设置 → 模型」中添加模型。",
+      "modelUnavailableHint": "原配置的模型已删除或不可用，请重新选择模型并保存。",
       "catalogLoading": "正在读取已安装资源",
       "catalogFailed": "已安装资源加载失败，仍可移除当前选择",
       "catalogEmptySkills": "没有可装载的已安装技能",
       "catalogEmptyConnectors": "没有可装载的已连接连接器",
       "catalogEmptyPlugins": "没有可装载的已安装插件",
-      "catalogEmptyKnowledge": "没有可装载的已发布知识页面。请先在左侧「知识」中添加内容并完成发布。",
+      "catalogEmptyKnowledge": "没有可装载的已发布知识页面。请先在左侧「资产」中添加内容并完成发布。",
       "modelSelection": "选择模型",
       "knowledgeSource": "来源",
       "knowledgeUpdatedAt": "更新时间",
       "knowledgeHint": "从个人上下文已发布的页面中选择。保存并发布后，所选页面会复制到该员工的办公目录，之后的新任务才能读取。未选择的页面不会进入该员工。",
       "joinedAt": "入职时间：{{time}}",
       "mail": {
-        "title": "腾讯 Agent Mail",
-        "description": "为该员工单独连接腾讯邮箱，授权后即可在新对话中使用。",
+        "title": "Agent Mail",
+        "description": "为该员工单独连接邮箱，授权后即可在新对话中使用。",
         "mailboxAddress": "绑定邮箱：",
         "isolationHint": "本机未找到可用的 Node.js npx，无法启动 Agent Mail CLI。",
-        "start": "连接腾讯邮箱",
+        "start": "连接邮箱",
         "authorizing": "等待完成授权…",
         "disconnect": "解除邮箱连接",
         "cancel": "取消授权",
         "popupBlocked": "请允许弹出窗口后重试邮箱授权。",
-        "preparing": "正在准备腾讯邮箱授权…",
+        "preparing": "正在准备邮箱授权…",
         "status": {
           "loading": "正在检查邮箱连接…",
           "unavailable": "本机未找到可用的 Node.js npx，无法启动 Agent Mail CLI。",
@@ -6174,9 +6163,12 @@
       },
       "dingtalkAuth": {
         "title": "钉钉用户账号授权",
-        "description": "为该员工单独授权钉钉用户账号，用于读取已接入群消息、操作在线文档及管理日历日程。实际可用范围取决于账号和组织权限。",
+        "description": "通过钉钉 CLI 发起账号授权，授权信息按员工独立保存。授权后，员工可在账号及组织权限允许的范围内读取已接入群消息、操作在线文档和管理日历日程。",
+        "prerequisite": "首次授权前，请联系组织管理员在钉钉开放平台的「CLI 设置」中开通 CLI 访问，添加该员工绑定的应用，并允许当前授权账号使用。仅创建并发布机器人应用不代表已开通 CLI。",
         "begin": "授权钉钉账号",
         "beginPending": "正在发起授权…",
+        "popupBlocked": "授权页未自动打开或已关闭，请使用下方链接继续本次授权，无需重新发起。",
+        "waitDescription": "正在连接钉钉，获取链接后会自动跳转。首次使用可能需要准备钉钉 CLI，请勿重复点击。",
         "cancel": "取消授权",
         "disconnect": "断开账号",
         "open": "重新打开授权页",
@@ -6186,6 +6178,15 @@
         "accountUnavailable": "账号名暂不可用",
         "organizationUnavailable": "组织名称暂不可用",
         "organization": "所属组织",
+        "groupMonitor": {
+          "discovering": "正在自动发现该员工机器人所在的群并启动监听…",
+          "listening": "正在监听 {{count}} 个群的普通消息，无需先 @。",
+          "no_groups": "未发现该账号和员工机器人共同所在的群，请确认机器人已加入工作群。",
+          "error": "群消息发现或读取暂时异常，正在重试。",
+          "disabled": "员工已停用，普通群消息监听已暂停。",
+          "mentions_only": "当前为被动回复模式，仅处理 @ 员工的群消息。",
+          "unavailable": "群消息监听服务尚未就绪，正在等待启动。"
+        },
         "openAdmin": "前往钉钉开放平台（CLI设置）",
         "failures": {
           "org_access_denied": "钉钉账号已确认，但所选组织未授权此账号通过 CLI 访问数据。请联系组织主管理员开通权限后重新授权，或选择已有权限的组织。",
@@ -6406,7 +6407,7 @@
       "confirm": "确定",
       "executor": "执行者",
       "chooseExecutor": "请选择执行者",
-      "runNow": "立即运行",
+      "runNow": "立即执行",
       "history": "运行历史",
       "edit": "编辑",
       "delete": "删除",
@@ -6446,10 +6447,11 @@
         "paused": "已暂停",
         "failed": "运行失败",
         "completed": "已完成",
-        "queued": "排队中"
+        "queued": "排队中",
+        "expired": "已过期"
       },
       "run": {
-        "success": "运行成功",
+        "success": "已完成",
         "failed": "运行失败",
         "stopped": "停止运行",
         "running": "运行中"

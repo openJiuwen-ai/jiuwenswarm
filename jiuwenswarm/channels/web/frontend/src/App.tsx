@@ -567,9 +567,7 @@ function AppContent({
   const [restartSeenDisconnect, setRestartSeenDisconnect] = useState(false);
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
-  const [proactiveToastVisible, setProactiveToastVisible] = useState(false);
   const [authToastVisible, setAuthToastVisible] = useState(false);
-  const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
@@ -672,7 +670,6 @@ function AppContent({
 
   const restartAutoCloseTimerRef = useRef<number | null>(null);
   const saveToastTimerRef = useRef<number | null>(null);
-  const proactiveToastTimerRef = useRef<number | null>(null);
   const authToastTimerRef = useRef<number | null>(null);
   const settingsHasChangesRef = useRef(false);
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
@@ -701,6 +698,11 @@ function AppContent({
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
+  // 断线重连后的首次元数据快照允许纠正运行态：断线期间终态事件可能已经丢失。
+  // 其余场景下快照只能把运行态拉起来，不能把正在跑的轮次压回空闲——worker 的
+  // 运行态快照会滞后于事件流，用滞后快照回落会让发送按钮和任务转圈闪回空闲
+  // （#6196 新建会话首条消息、#6154 code 模式首条消息空白、#6155 切回会话不转圈）。
+  const metadataDowngradeAllowedRef = useRef(new Set<string>());
   const sessionViewIdRef = useRef(generateUuidV4());
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
@@ -1275,9 +1277,6 @@ function AppContent({
   const clearTodos = useTodoStore((s) => s.clearTodos);
   const extensionReady = useHarnessStore((s) => s.runtimes[sessionId]?.extensionReady ?? null);
   const resetHarnessStore = useHarnessStore((s) => s.reset);
-  const proactiveNotificationMessage = useHarnessStore((s) => s.proactiveNotificationMessage);
-  const setProactiveNotification = useHarnessStore((s) => s.setProactiveNotification);
-
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
   const toolPanelHasContent = useMemo(() => {
     // Electron 下工具面板始终可达（内置浏览器页签等桌面能力），但新建会话首页
@@ -2067,10 +2066,18 @@ function AppContent({
       // session 的运行态并覆盖，不是磁盘 metadata 的历史值。刷新页面时用这条
       // 明确状态恢复停止按钮；之后同一 WebSocket 上的 processing_status 事件
       // 继续按发送顺序推进状态机。
+      // 但 worker 的运行态快照会滞后于事件流：新建会话刚发出、切走再切回时，
+      // 快照可能仍报告未运行。允许这种滞后快照把运行态压回空闲，会让发送按钮
+      // 和任务转圈闪回空闲，所以只有断线重连后的首次快照才允许它回落，其余情况
+      // 运行态的结束交给终态事件（processing_status(false) / chat.final）。
       if (typeof session.is_processing === 'boolean') {
-        setProcessing(targetSessionId, session.is_processing);
-        if (!session.is_processing) {
-          setThinking(targetSessionId, false);
+        const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
+        const locallyBusy = useChatStore.getState().getRuntime(targetSessionId)?.foregroundIsProcessing === true;
+        if (session.is_processing || allowDowngrade || !locallyBusy) {
+          setProcessing(targetSessionId, session.is_processing);
+          if (!session.is_processing) {
+            setThinking(targetSessionId, false);
+          }
         }
       }
       if (session.session_equipment && typeof session.session_equipment === 'object') {
@@ -2268,13 +2275,6 @@ function AppContent({
     if (saveToastTimerRef.current != null) {
       window.clearTimeout(saveToastTimerRef.current);
       saveToastTimerRef.current = null;
-    }
-  }, []);
-
-  const clearProactiveToastTimer = useCallback(() => {
-    if (proactiveToastTimerRef.current != null) {
-      window.clearTimeout(proactiveToastTimerRef.current);
-      proactiveToastTimerRef.current = null;
     }
   }, []);
 
@@ -2560,22 +2560,8 @@ function AppContent({
     return () => {
       clearRestartAutoCloseTimer();
       clearSaveToastTimer();
-      clearProactiveToastTimer();
     };
-  }, [clearProactiveToastTimer, clearRestartAutoCloseTimer, clearSaveToastTimer]);
-
-  useEffect(() => {
-    const message = proactiveNotificationMessage?.trim();
-    if (!message) return;
-    setProactiveToastMessage(message);
-    setProactiveToastVisible(true);
-    clearProactiveToastTimer();
-    proactiveToastTimerRef.current = window.setTimeout(() => {
-      setProactiveToastVisible(false);
-      setProactiveNotification(null);
-      proactiveToastTimerRef.current = null;
-    }, 8000);
-  }, [clearProactiveToastTimer, proactiveNotificationMessage, setProactiveNotification]);
+  }, [clearRestartAutoCloseTimer, clearSaveToastTimer]);
 
   useEffect(() => {
     if (!isConnected || initialDataLoaded) {
@@ -2628,10 +2614,18 @@ function AppContent({
     };
   }, [initialDataLoaded, isConnected, loadProjects]);
 
+  // 记录连接状态跃迁：断线期间终态事件可能丢失，重连后允许用一次元数据快照
+  // 把残留的运行态纠正回空闲。
+  const prevConnectedRef = useRef(isConnected);
   useEffect(() => {
+    const reconnected = isConnected && prevConnectedRef.current === false;
+    prevConnectedRef.current = isConnected;
     if (!isConnected || !routeSessionId) {
       setMissingSessionId(null);
       return;
+    }
+    if (reconnected) {
+      metadataDowngradeAllowedRef.current.add(routeSessionId);
     }
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
@@ -4766,22 +4760,25 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
 
   if (isJiuwenMate) {
     return (
-      <JiuwenMateApp
-        onExit={() => {
-          setIsJiuwenMate(false);
-          if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
-        }}
-        groupId={route.kind === 'group-chat' ? route.groupId : undefined}
-        onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
-        renderExistingPage={renderJiuwenMateExistingPage}
-        useInstalledExpertRef={openInstalledExpertRef}
-        confirmDiscardSettings={() => {
-          if (!settingsHasChangesRef.current) return true;
-          if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
-          setRequestedSettingsModuleId(null);
-          return true;
-        }}
-      />
+      <>
+        <JiuwenMateApp
+          onExit={() => {
+            setIsJiuwenMate(false);
+            if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
+          }}
+          groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+          onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
+          renderExistingPage={renderJiuwenMateExistingPage}
+          useInstalledExpertRef={openInstalledExpertRef}
+          confirmDiscardSettings={() => {
+            if (!settingsHasChangesRef.current) return true;
+            if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
+            setRequestedSettingsModuleId(null);
+            return true;
+          }}
+        />
+        <LoginDialog />
+      </>
     );
   }
 
@@ -5273,17 +5270,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-auth-toast">
           <div className="app-session-toast animate-rise" data-testid="app-auth-toast-message">
             {t('auth.huawei.loginSuccessToast')}
-          </div>
-        </div>
-      )}
-
-      {proactiveToastVisible && proactiveToastMessage && (
-        <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-proactive-notification-toast">
-          <div
-            className="max-w-[640px] whitespace-pre-line bg-warn-subtle text-warn px-4 py-3 rounded-lg shadow-lg animate-rise text-sm leading-5"
-            data-testid="app-proactive-notification-toast-message"
-          >
-            {proactiveToastMessage}
           </div>
         </div>
       )}

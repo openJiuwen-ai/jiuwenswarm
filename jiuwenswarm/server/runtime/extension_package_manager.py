@@ -33,6 +33,7 @@ from jiuwenswarm.common.utils import (
     mask_sensitive,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
+from jiuwenswarm.server.runtime.package_avatars import resolve_package_avatar_url
 from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
     install_hub_asset_package,
 )
@@ -2537,7 +2538,7 @@ async def list_agent_groups_with_hub(
                 "displayName": _i18n(item.display_name, item.package_name or item.asset_id),
                 "displayDescription": _i18n(item.short_description),
                 "category": item.category_name or existing.get("category", ""),
-                "avatar": item.icon_uri,
+                "avatar": resolve_package_avatar_url(item.icon_uri),
                 "tags": [_i18n(tag, tag) for tag in item.tags],
                 "version": item.public_latest_version,
             }
@@ -2550,7 +2551,7 @@ async def list_agent_groups_with_hub(
             "category": item.category_name,
             "source": "hub",
             "installed": False,
-            "avatar": item.icon_uri,
+            "avatar": resolve_package_avatar_url(item.icon_uri),
             "tags": [_i18n(tag, tag) for tag in item.tags],
             "version": item.public_latest_version,
             "memberCount": 0,
@@ -2652,7 +2653,7 @@ def _build_agent_group_card(
                 "displayName": _i18n(raw_display_name, display_name_fallback),
                 "displayDescription": _i18n(template.agent_card.description),
                 "role": "leader" if member_id == "leader" else "member",
-                "avatar": _safe_avatar_reference(
+                "avatar": resolve_package_avatar_url(
                     member_card.avatar if member_card is not None else None,
                     package_dir=package_dir / "agents" / member_id,
                 ),
@@ -2692,7 +2693,7 @@ def _build_agent_group_card(
         "tags": tags if isinstance(tags, list) else [],
         "source": source,
         "installed": installed,
-        "avatar": _safe_avatar_reference(manifest.get("avatar"), package_dir=package_dir),
+        "avatar": resolve_package_avatar_url(manifest.get("avatar"), package_dir=package_dir),
         "memberCount": len(members),
         "members": members,
         "skills": skills,
@@ -2809,7 +2810,7 @@ async def show_agent_group_with_hub(
         "category": "",
         "source": "hub",
         "installed": False,
-        "avatar": detail.icon_uri,
+        "avatar": resolve_package_avatar_url(detail.icon_uri),
         "tags": [_i18n(tag, tag) for tag in detail.tags],
         "version": detail.version,
         "memberCount": 0,
