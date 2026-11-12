@@ -639,6 +639,8 @@
 }
 
 .jiuwenmate-menu__list {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   position: absolute;
   z-index: 40;
   top: calc(100% + 4px);
@@ -997,7 +999,8 @@
 }
 
 .jiuwenmate-field input,
-.jiuwenmate-field textarea {
+.jiuwenmate-field textarea,
+.jiuwenmate-schedule-dialog__executor {
   width: 100%;
   min-height: 32px;
   padding: 6px 10px;
@@ -1011,7 +1014,8 @@
 }
 
 .jiuwenmate-field input:focus,
-.jiuwenmate-field textarea:focus {
+.jiuwenmate-field textarea:focus,
+.jiuwenmate-schedule-dialog__executor:focus {
   border-color: var(--jm-text-2);
 }
 
@@ -2988,6 +2992,28 @@
   width: min(560px, calc(100vw - 32px));
 }
 
+.jiuwenmate-schedule-dialog__executor {
+  resize: none;
+}
+
+.jiuwenmate-schedule-dialog input[aria-invalid='true'],
+.jiuwenmate-schedule-dialog textarea[aria-invalid='true'],
+.jiuwenmate-schedule-dialog select[aria-invalid='true'] {
+  border-color: var(--color-feedback-danger, var(--jm-danger));
+}
+
+.jiuwenmate-schedule-dialog input[aria-invalid='true']:focus,
+.jiuwenmate-schedule-dialog textarea[aria-invalid='true']:focus,
+.jiuwenmate-schedule-dialog select[aria-invalid='true']:focus {
+  outline: 2px solid var(--color-feedback-danger, var(--jm-danger));
+  outline-offset: 2px;
+}
+
+.jiuwenmate-schedule-dialog [role='alert'] {
+  color: var(--color-feedback-danger, var(--jm-danger));
+  font-size: 13px;
+}
+
 .jiuwenmate-schedule-board {
   display: grid;
   align-content: start;
@@ -3216,6 +3242,10 @@
 
 .jiuwenmate-schedule-board__status {
   gap: 6px;
+}
+
+.jiuwenmate-schedule-board__status[data-tone='expired'] i {
+  background: var(--jm-text-3);
 }
 
 .jiuwenmate-schedule-board__status[data-tone='completed'] i {
