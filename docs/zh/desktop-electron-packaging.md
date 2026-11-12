@@ -76,7 +76,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
        node_modules/           ← 内置 @playwright/mcp 运行时（见 §5）
      backend/                  ← PyInstaller COLLECT 产物（workswarm.exe + _internal）
    ```
-6. Inno Setup `scripts/installer-electron.iss`：版本与后端 exe 名经 `/DMyAppVersion=` / `/DBackendExecutableName=` 传入（`#ifndef` 兜底）；`PrivilegesRequired=lowest` per-user 安装、`AppMutex` 四互斥体（运行中拒绝安装/卸载，同 installer.iss）、卸载执行 `--desktop-reset-external-cli-config` 并清理 `{app}\resources`（FrontendOnly 无后端，跳过该步）
+6. Inno Setup `scripts/installer-electron.iss`：版本与后端 exe 名经 `/DMyAppVersion=` / `/DBackendExecutableName=` 传入（`#ifndef` 兜底）；`PrivilegesRequired=lowest` per-user 安装、`AppMutex` 四互斥体（运行中拒绝安装/卸载，同 installer.iss）、卸载执行 `--desktop-reset-external-cli-config` 并清理 `{app}\resources`（FrontendOnly 无后端，跳过该步）。编译器优先 Inno Setup 7（支持扩展长度路径，不受 `MAX_PATH` 限制），未安装时回退 Inno Setup 6；两者都缺失时复用 `scripts/build-inno-setup.psm1` 中带 SHA-256 校验的流程安装 7.1.1。
 
 版本号硬编码位置已全部消除：ps1/iss/组装 package.json 均来自 `build_config.py`（即 pyproject.toml）。
 

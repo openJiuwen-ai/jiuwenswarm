@@ -305,6 +305,10 @@ if ($DoSign) {
     Write-Host "Signing: skipped because no usable code-signing certificate was found; output is for local testing only" -ForegroundColor Yellow
 }
 
+# Inno Setup 编译器发现与 SHA-256 校验后的安装函数在共享模块
+# build-inno-setup.psm1，与 build-electron-exe.ps1 单一来源。
+Import-Module (Join-Path $PSScriptRoot "build-inno-setup.psm1") -Force
+
 # node/uv 运行时的解析与绑定函数在共享模块 build-runtimes.psm1，与
 # build-electron-exe.ps1 单一来源；契约测试 test_desktop_electron_contract.py 钉住两侧同步。
 Import-Module (Join-Path $PSScriptRoot "build-runtimes.psm1") -Force
@@ -459,32 +463,21 @@ if (Test-Truthy $BundleNode) {
 
 # 4. Build installer (Inno Setup)
 Write-Host "`n[4/4] Building installer (Inno Setup)..." -ForegroundColor Yellow
-$IsccPaths = @(
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-    "C:\Program Files\Inno Setup 6\ISCC.exe"
-)
-$Iscc = $IsccPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+$Iscc = Resolve-InnoSetupCompiler
 if (-not $Iscc) {
-    $Iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-}
-if (-not $Iscc) {
-    Write-Host "Downloading Inno Setup 6..." -ForegroundColor Yellow
-    $InnoUrl = "https://jrsoftware.org/download.php/is.exe"
-    $InnoExe = "$env:TEMP\innosetup-6.7.1.exe"
-    Invoke-WebRequest -Uri $InnoUrl -OutFile $InnoExe -UseBasicParsing
-    Write-Host "Installing Inno Setup 6 (silent)..." -ForegroundColor Yellow
-    Start-Process `
-        -FilePath $InnoExe `
-        -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" `
-        -Wait `
-        -NoNewWindow
-    $Iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-    if (-not (Test-Path $Iscc)) {
-        Write-Host "ERROR: Inno Setup installation failed" -ForegroundColor Red
-        exit 1
+    Install-InnoSetup7
+    $Iscc = Resolve-InnoSetupCompiler
+    if (-not $Iscc) {
+        throw "ISCC.exe was not found after installing Inno Setup 7. Install Inno Setup 7 and rerun the build."
     }
 }
+if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
+    Write-Host (
+        "Warning: Inno Setup 7 was not detected; Inno Setup 6 cannot handle paths longer than " +
+        "MAX_PATH. Install Inno Setup 7 when the build tree uses long paths."
+    ) -ForegroundColor Yellow
+}
+Write-Host "Using ISCC: $Iscc" -ForegroundColor Gray
 $InnoDefines = @(
     "/DBuildDisplayName=$BuildDisplayName",
     "/DBuildVersion=$BuildVersion",

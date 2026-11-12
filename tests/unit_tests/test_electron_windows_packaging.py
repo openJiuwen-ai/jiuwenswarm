@@ -21,49 +21,51 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.skipif(sys.platform != "win32", reason="executes PowerShell installer discovery")
 @pytest.mark.parametrize("scenario, expected", [
-    ("existing", "compiler ready"),
+    ("existing7", "compiler ready"),
+    ("existing6", "compiler ready"),
     ("install", "compiler ready"),
-    ("missing", "winget is unavailable"),
-    ("failed", "winget exit code: 7"),
+    ("install-failed", "installation failed"),
     ("absent", "ISCC.exe was not found"),
 ])
-def test_inno_setup_bootstrap_fails_closed(tmp_path, scenario, expected):
+def test_inno_setup_bootstrap_reuses_shared_installer(tmp_path, scenario, expected):
     source = (ROOT / "scripts/build-electron-exe.ps1").read_text(encoding="utf-8")
-    start = source.index("$IsccPaths = @(")
+    start = source.index("$Iscc = Resolve-InnoSetupCompiler")
     fragment = source[start:source.index('Write-Host "Using ISCC: $Iscc"', start)]
-    assert "Invoke-WebRequest" not in fragment
-    assert "Start-Process" not in fragment
+    assert "Install-InnoSetup7" in fragment
     script = tmp_path / "bootstrap.ps1"
     script.write_text(
         "$ErrorActionPreference = 'Stop'\n"
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()\n"
         f"$scenario = '{scenario}'\n"
-        "$script:installed = $scenario -eq 'existing'\n"
-        "$script:called = $false\n"
-        "function Test-Path { param($Path) return $script:installed }\n"
-        "function Get-Command {\n"
-        "param($Name, $CommandType, $ErrorAction)\n"
-        "if ($Name -eq 'winget' -and $scenario -ne 'missing') {\n"
-        "[pscustomobject]@{ Source = 'Invoke-TestWinget' }\n"
-        "}\n}\n"
-        "function Invoke-TestWinget {\n"
-        "$script:called = $true\n"
-        "$expected = 'install --id JRSoftware.InnoSetup --exact --version 6.7.1 --source winget --scope user --silent --disable-interactivity --accept-package-agreements --accept-source-agreements'\n"
-        "if (($args -join ' ') -cne $expected) { throw 'unexpected installer arguments' }\n"
-        "$script:installed = $scenario -ne 'absent'\n"
-        "$global:LASTEXITCODE = if ($scenario -eq 'failed') { 7 } else { 0 }\n"
-        "}\ntry {\n" + fragment +
+        "$script:installCalls = 0\n"
+        "function Resolve-InnoSetupCompiler {\n"
+        "if ($scenario -eq 'existing7') { return 'C:\\Program Files\\Inno Setup 7\\ISCC.exe' }\n"
+        "if ($scenario -eq 'existing6') { return 'C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe' }\n"
+        "if (($scenario -eq 'install') -and ($script:installCalls -gt 0)) {\n"
+        "return 'C:\\Program Files\\Inno Setup 7\\ISCC.exe'\n"
+        "}\n"
+        "return $null\n"
+        "}\n"
+        "function Install-InnoSetup7 {\n"
+        "$script:installCalls++\n"
+        "if ($scenario -eq 'install-failed') { throw 'Inno Setup 7.1.1 installation failed (exit code 7).' }\n"
+        "}\n"
+        "function Test-InnoSetup7OrNewer { param($IsccPath) return $true }\n"
+        "try {\n" + fragment +
         "\nif (-not $Iscc) { throw 'missing compiler' }\n"
-        "if (($scenario -eq 'existing') -and $script:called) { throw 'unnecessary install' }\n"
-        "if (($scenario -eq 'install') -and -not $script:called) { throw 'installer not invoked' }\n"
+        "if (($scenario -eq 'existing7') -and ($Iscc -notmatch 'Inno Setup 7')) { throw 'did not prefer Inno Setup 7' }\n"
+        "if (($scenario -eq 'existing6') -and ($Iscc -notmatch 'Inno Setup 6')) { throw 'did not fall back to Inno Setup 6' }\n"
+        "if (($scenario -eq 'existing7' -or $scenario -eq 'existing6') -and $script:installCalls -ne 0) { throw 'unnecessary install' }\n"
+        "if (($scenario -eq 'install' -or $scenario -eq 'absent') -and $script:installCalls -ne 1) { throw 'installer not invoked once' }\n"
         "Write-Output 'compiler ready'\n"
-        "} catch { Write-Output $_; exit 1 }\n",
+        "} catch { Write-Output $_.Exception.Message; exit 1 }\n",
         encoding="utf-8",
     )
     result = subprocess.run(
         [shutil.which("pwsh") or "powershell", "-NoProfile", "-File", str(script)],
         capture_output=True, text=True, encoding="utf-8", check=False,
     )
-    assert result.returncode == (0 if scenario in {"existing", "install"} else 1), result.stdout + result.stderr
+    assert result.returncode == (0 if scenario in {"existing7", "existing6", "install"} else 1), result.stdout + result.stderr
     assert expected in result.stdout
 
 

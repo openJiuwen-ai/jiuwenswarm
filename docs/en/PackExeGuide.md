@@ -92,6 +92,7 @@ Output: `dist/jiuwenswarm/`, main binary `dist/jiuwenswarm/jiuwenswarm.exe`.
 
 ## Inno Setup notes
 
+- `scripts/build-exe.ps1` prefers Inno Setup 7 (extended-length path support, no `MAX_PATH` limit) and falls back to Inno Setup 6. If neither is installed, it downloads and verifies Inno Setup 7.1.1 x64 before a silent install.
 - Package the whole `dist/jiuwenswarm/` directory.
 - Entry point: `dist/jiuwenswarm/jiuwenswarm.exe`.
 - Run `jiuwenswarm.exe init` from the installer finish page if needed.
