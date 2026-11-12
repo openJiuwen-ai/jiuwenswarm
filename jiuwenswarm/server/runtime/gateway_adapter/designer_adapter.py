@@ -720,7 +720,9 @@ def _design_chat_model_selection(params: dict[str, Any]):
     so the legacy name path is unchanged.
     """
     raw = params.get("model_selection")
-    if not isinstance(raw, dict) or raw.get("type") != "model":
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("type") != "model":
         return None
     from agent_gateway.common.model_selection import ModelSelection
     from pydantic import ValidationError
@@ -729,7 +731,10 @@ def _design_chat_model_selection(params: dict[str, Any]):
         selection = ModelSelection.model_validate(raw)
     except (ValidationError, ValueError):
         return None
-    if selection.type != "model" or not str(selection.id or "").strip():
+    if selection.type != "model":
+        return None
+    selected_id = str(selection.id or "").strip()
+    if not selected_id:
         return None
     return selection
 
