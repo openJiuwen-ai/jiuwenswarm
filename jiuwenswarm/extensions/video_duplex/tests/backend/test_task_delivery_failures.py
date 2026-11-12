@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from functools import partial
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import until as bounded_wait
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until as bounded_wait
 
 until = partial(bounded_wait, timeout=5)
 from openjiuwen.core.runner.callback.errors import AbortError

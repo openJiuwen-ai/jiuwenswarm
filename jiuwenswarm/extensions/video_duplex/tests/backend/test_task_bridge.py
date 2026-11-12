@@ -9,7 +9,7 @@ import pytest
 
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import routed_task_fixture
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import agent_client
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import agent_client
 from agent_gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from agent_gateway.message_handler.message_handler import MessageHandler
 

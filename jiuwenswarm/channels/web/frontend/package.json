@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test:video-duplex": "node ../../../extensions/video_duplex/tests/frontend/runTests.mjs",
+    "test:video-duplex": "node ../../../extensions/video_duplex/tests/frontend/testSupport.mjs",
     "test:ttse-work-mode": "node scripts/test-ttse-work-mode.mjs",
     "test:plugin-replacement": "node --test tests/pluginReplacement.test.mjs",
     "test:designer-entry": "node --test tests/designerEntry.test.mjs tests/appDesignerMoaRouting.test.mjs",
