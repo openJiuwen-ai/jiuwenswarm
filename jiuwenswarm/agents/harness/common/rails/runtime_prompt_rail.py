@@ -956,6 +956,10 @@ class RuntimePromptRail(DeepAgentRail):
         ctx: AgentCallbackContext,
     ) -> None:
         section = "a4p.intent_authorization"
+        if self._request_metadata.get("cron"):
+            await self._clear_prompt_attachment(ctx, section=section)
+            self._log_a4p_prompt_injection(ctx, injected=False, reason="cron_execution")
+            return
         if self._channel != "web" or not self._a4p_authorizer_available:
             await self._clear_prompt_attachment(ctx, section=section)
             self._log_a4p_prompt_injection(
