@@ -929,6 +929,12 @@
         "title": "Language",
         "description": "Set the display language for the application interface."
       },
+      "max_context_size_mb": {
+        "title": "Knowledge capacity (MB)",
+        "description": "After collection, trim over-limit content to 60%.",
+        "placeholder": "10 to 10000, default 50",
+        "invalid": "Enter a whole number from 10 to 10000 MB."
+      },
       "chrome_path": {
         "title": "Browser path",
         "description": "Specify the browser executable path, or leave it empty for automatic detection.",
@@ -3237,6 +3243,8 @@
       "createdNodes": "Added {{nodes}} nodes ({{files}} files) in this run",
       "updatedNodes": "Updated {{count}} nodes",
       "noNewContent": "No new content",
+      "capacityRemoved": "Capacity maintenance removed {{count}} content files",
+      "capacityIncomplete": "Capacity maintenance is incomplete. Knowledge may still exceed the limit",
       "collectionDisabledHint": "Enable Personal Context and content collection in settings before fetching now.",
       "collectionStoppingHint": "Collection is stopping. Wait until it has stopped and try again.",
       "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
