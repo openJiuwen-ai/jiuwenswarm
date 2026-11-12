@@ -18,10 +18,15 @@ request_id)`，request_id 即审批 interrupt 的 tool_call id；进程内记账
 
 登记后进入 ~3s grace window：窗口内该会话到达非 interrupt-resume 的普通 `chat.send`
 即取消续跑，由该消息充当执行消息——兼容滚动发布期旧前端缓存包的补发，零双发。取消
-面还包括 session delete 与 rewind（同 `_plan_exited_sessions` 清理位点）；客户端断连
-**不**取消（服务端兜底正是为此）。窗口期满未取消则代发：合成
-`AgentRequest(is_stream=True)`，mode 取 `resolve_request_runtime_mode(原请求).normal_mode`，
-project_dir/work_mode/agent_scope 抄自原请求，query/display_query 为服务端双语执行文案
+面还包括显式中断 `chat.interrupt`（cancel/supplement 意图，`handlers/chat.py` 挂点，
+评审 CR-3）与 session delete / rewind（同 `_plan_exited_sessions` 清理位点）；客户端
+断连**不**取消（服务端兜底正是为此）。已领取未代发的竞态窗口由取消墓碑在代发前
+复核拦下（双保险，同 CR-3）。窗口期满未
+取消则代发：合成 `AgentRequest(is_stream=True)`，mode 取
+`resolve_request_runtime_mode(原请求).normal_mode`，project_dir/work_mode/agent_scope
+抄自原请求，身份/记忆白名单键（顶层 user_id + routing 三元组 + enable_memory）与
+thread_id/chat_id 归档维度一并抄送（评审 CR-2：不抄则配额策略回退 fallback 额度、
+记忆开关失真、归档维度丢失），query/display_query 为服务端双语执行文案
 （`plan_approval.PLAN_EXECUTE_PROMPT_OUTPUT`，与前端 i18n `plan.executePrompt` 逐字一致，
 语言沿 agent 配置）；`source=plan_execute_continuation` 标记来源（不进入
 `_should_record_user_history` 跳过名单，用户历史照常落盘，重连/刷新经历史恢复可见）。
@@ -41,6 +46,6 @@ TUI 不受影响（纯 approve 同轮继续）；不新增协议方法与请求�
 
 契约见[计划审批规约](../../agents/harness/docs/specs/S_04_plan-approval.md)（N3/P1）。
 本地验证：`tests/unit_tests/agentserver/test_plan_execute_continuation.py`（识别真值表/
-幂等/状态隔离/grace 取消/合成请求字段/busy 避让）+ 前端回显与撤发源断言
+幂等/状态隔离/grace 取消/合成请求字段/身份抄送/中断取消墓碑/busy 避让）+ 前端回显与撤发源断言
 （`channels/web/frontend/tests/planExecuteContinuation.test.mjs`）；手工 E2E 覆盖断网
 重连、审批延迟、双标签页。
