@@ -1768,23 +1768,40 @@ async function mountDashboard(extra = {}) {
   };
 }
 
-test('creating a task center schedule without an executor explains why nothing was saved', async () => {
-  const created = [];
-  const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
-  try {
-    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
-    await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
-    await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
-    assert.deepEqual(created, []);
-    assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]')?.textContent, '请选择执行者');
-    const executor = view.find('[data-testid="jiuwenmate-schedule-executor"]');
-    await act(async () => {
-      executor.value = 'agent-1';
-      executor.dispatchEvent(new window.Event('change', { bubbles: true }));
-    });
-    assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
-  } finally { await view.close(); }
-});
+for (const [language, message] of [
+  ['zh', '请选择执行此任务的员工'],
+  ['en', 'Select an AI employee to run this task.'],
+]) {
+  test(`a missing schedule executor shows a focused field error and clears after selection in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const created = [];
+    const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+      const executor = view.find('[data-testid="jiuwenmate-schedule-executor"]');
+      assert.equal(executor.getAttribute('aria-invalid'), null);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.deepEqual(created, []);
+      const error = view.find('[data-testid="jiuwenmate-schedule-executor-error"]');
+      assert.ok(error, 'The missing executor error must be attached to its field');
+      assert.equal(error.textContent, message);
+      assert.equal(error.getAttribute('role'), 'alert');
+      assert.equal(error.parentElement, executor.parentElement);
+      assert.equal(executor.getAttribute('aria-invalid'), 'true');
+      assert.equal(executor.getAttribute('aria-describedby'), error.id);
+      assert.equal(executor.ownerDocument.activeElement, executor);
+      assert.equal(view.container.querySelectorAll('[role="alert"]').length, 1);
+      await act(async () => {
+        executor.value = 'agent-1';
+        executor.dispatchEvent(new window.Event('change', { bubbles: true }));
+      });
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-executor-error"]'), null);
+      assert.equal(executor.getAttribute('aria-invalid'), null);
+      assert.equal(executor.getAttribute('aria-describedby'), null);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}
 
 test('the task center runs the scheduled task whose menu was opened', async () => {
   const runs = [];
@@ -1820,3 +1837,92 @@ test('a floating schedule menu closes on resize without treating Window as a Nod
     assert.equal(view.find('[role="menu"]'), null);
   } finally { await view.close(); }
 });
+
+
+async function changeScheduleField(view, selector, value) {
+  const field = view.find(selector);
+  assert.ok(field, `Missing schedule field ${selector}`);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), 'value').set.call(field, value);
+    const Event = field.ownerDocument.defaultView.Event;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+for (const language of ['zh', 'en']) {
+  test(`schedule required fields highlight and independently clear on correction in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const created = [];
+    const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+      const name = view.find('[data-testid="jiuwenmate-schedule-name"]');
+      const prompt = view.find('[data-testid="jiuwenmate-schedule-prompt"]');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(name.getAttribute('aria-invalid'), 'true');
+      assert.equal(prompt.getAttribute('aria-invalid'), 'true');
+      assert.equal(name.ownerDocument.activeElement, name);
+      const nameError = name.ownerDocument.getElementById(name.getAttribute('aria-describedby'));
+      const promptError = prompt.ownerDocument.getElementById(prompt.getAttribute('aria-describedby'));
+      assert.equal(nameError.textContent, language === 'zh' ? '请输入任务名称' : 'Enter a task name.');
+      assert.equal(promptError.textContent, language === 'zh' ? '请输入任务描述' : 'Enter a task description.');
+      assert.equal(nameError.parentElement, name.parentElement);
+      assert.equal(promptError.parentElement, prompt.parentElement);
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', '   ');
+      assert.equal(name.getAttribute('aria-invalid'), 'true');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Drink water');
+      assert.equal(name.getAttribute('aria-invalid'), null);
+      assert.equal(prompt.getAttribute('aria-invalid'), 'true');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a short break');
+      assert.equal(prompt.getAttribute('aria-invalid'), null);
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+      assert.deepEqual(created, []);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(created.length, 1);
+      assert.equal(created[0][0], 'agent-1');
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+
+  test(`schedule effective range stays highlighted until a valid or open-ended range is entered in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const created = [];
+    const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Drink water');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a short break');
+      const startSelector = 'input[aria-label="' + i18n.t('jiuwenmate.schedule.startsOn') + '"]';
+      const endSelector = 'input[aria-label="' + i18n.t('jiuwenmate.schedule.endsOn') + '"]';
+      const start = view.find(startSelector);
+      const end = view.find(endSelector);
+      await changeScheduleField(view, startSelector, '2030-02-02');
+      await changeScheduleField(view, endSelector, '2030-02-01');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(start.getAttribute('aria-invalid'), 'true');
+      assert.equal(end.getAttribute('aria-invalid'), 'true');
+      assert.equal(end.ownerDocument.activeElement, end);
+      const error = end.ownerDocument.getElementById(end.getAttribute('aria-describedby'));
+      assert.equal(error.textContent, i18n.t('jiuwenmate.schedule.error.rangeInvalid'));
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Updated reminder');
+      assert.equal(end.getAttribute('aria-invalid'), 'true', 'Unrelated edits must not hide an invalid range');
+      await changeScheduleField(view, startSelector, '2030-01-31');
+      assert.equal(start.getAttribute('aria-invalid'), null);
+      assert.equal(end.getAttribute('aria-invalid'), null);
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+      await changeScheduleField(view, endSelector, '2029-12-31');
+      assert.equal(end.getAttribute('aria-invalid'), 'true');
+      await changeScheduleField(view, endSelector, '');
+      assert.equal(end.getAttribute('aria-invalid'), null, 'An omitted optional end remains valid');
+      await changeScheduleField(view, endSelector, '2030-01-31');
+      assert.equal(end.getAttribute('aria-invalid'), null, 'The same calendar day ends at 23:59');
+      assert.deepEqual(created, []);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(created.length, 1);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}
