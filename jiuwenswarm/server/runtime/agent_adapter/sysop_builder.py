@@ -367,8 +367,7 @@ def _build_agentos_yuanrong_mounts() -> tuple[list[dict[str, Any]], str]:
     real_project = None
     user_dir = os.environ.get("JIUWENSWARM_USER_DIRECTORY", None)
     if user_dir:
-        real_workspace = (Path(user_dir) / ".jiuwenswarm" / "domain"
-                          / "agent" / "workspace")
+        real_workspace = Path(user_dir) / ".jiuwenswarm" / "agent" / "workspace"
         real_project = Path(user_dir) / "workspace"
 
     workspace_str = str(workspace)

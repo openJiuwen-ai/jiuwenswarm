@@ -46,7 +46,7 @@ symphony:
 
   fingerprint:
     scan:
-      max_depth:
+      max_depth: 1
     extraction:
       workers: 4
       batch_size: 2
@@ -331,11 +331,6 @@ memory:
         # 可选覆盖（缺省复用顶层 embed 配置）
         embedder_dim: ${JIUWEN_EMBEDDER_DIM:-1024}     # 须与向量库 dim 一致
 
-proactive_recommendation:
-  enabled: false                # 总开关
-  max_recommend_per_day: 10               # 每天最多推荐次数
-  max_rounds_per_tick: 20                # 每次 Tick 读取最近几轮对话
-
 # 自建网关方言覆盖表：api_base 的 host -> agent-core endpoint_profile。
 # 自建推理服务（如 vLLM/SGLang 起的 DashScope 风格服务，思考开关认
 # enable_thinking / thinking_budget、忽略官方 thinking.type）无法从域名
@@ -578,54 +573,33 @@ telemetry:
     headers:                        # metrics headers，默认回退到 telemetry.headers；留空而非 {}，理由同上
 
 # ============================================================
-# Team 可观测性配置（OTel + Langfuse）
+# 可观测性配置（OTel；Team 与单 Agent / Coding Agent 共用）
 # ============================================================
-# 与 telemetry 不同，team_observability 专门用于 TeamAgent 的
-# 可观测性追踪，包括 team/member/task/message 级别的 span。
-# 启用后会自动将 OtelTeamMonitorHandler 注册到 TeamAgent，
-# 将事件转为 OTel span 导出到 Langfuse / OTLP Collector。
+# 与 telemetry 不同，本段专门用于 Agent 运行轨迹的 OTel span 采集：
+#   - team.enabled  ：TeamAgent 路径，产生 team/member/task/message 级 span
+#                     （自动注册 OtelTeamMonitorHandler）
+#   - agent.enabled ：非 team 路径（Runner.run_agent / run_agent_streaming，
+#                     即 agent.* 与 code.* 模式），为 LLM 调用与工具调用生成 span
+# 其余字段是两条路径共用的导出配置。OTel 一个进程只允许一个全局
+# TracerProvider，所以导出配置只有一份；两个开关各自登记 demand，
+# 一方关闭不会拆掉另一方仍在使用的 provider。
 #
-# 前置条件：
-#   1. 启动 OTel Collector + Langfuse
-#   2. 在用户配置中设置 team_observability.enabled: true
-# ============================================================
-team_observability:
-  enabled: true                    # Team observability 总开关
-  exporter: file                    # otlp_grpc / otlp_http / file
-  endpoint: http://localhost:4317   # OTLP gRPC endpoint（file 模式不需要）
-  service_name: jiuwenswarm         # 服务名称（OTel resource service.name）
-  sample_rate: 1.0                  # 采样率 (0.0-1.0)
-  redact_prompts: false             # 是否脱敏 prompt 内容
-  redact_completions: false         # 是否脱敏 completion 内容
-  attribute_value_max_length: 10240 # OTel attribute value 最大长度
-  langfuse_public_key: ""           # Langfuse OTLP 认证 public key（可选）
-  langfuse_secret_key: ""           # Langfuse OTLP 认证 secret key（可选）
-  traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
-  file_retention_days: 7            # file exporter 文件保留天数
-
-# ============================================================
-# 单 Agent / Coding Agent 可观测性配置
-# ============================================================
-# 与 team_observability 对应，但作用于非 team 的运行路径
-#（Runner.run_agent / Runner.run_agent_streaming，即 agent.* 与 code.* 模式）。
-# 启用后会调用 init_observability() 注册全局 OtelCallbackHandler，
-# 自动为 LLM 调用与工具调用生成 span（不含 team/member/task 级 span，
-# 那是 team 模式专属）。
+# 旧版的 team_observability / agent_observability 两段会在升级时自动迁移到
+# 本段（各自的 enabled 迁到 team.enabled / agent.enabled）。
 #
-# 注意：OTel 一个进程只允许一个全局 TracerProvider。若本进程内 team 与
-# agent 可观测性同时开启，先初始化的一方生效，另一方复用同一个 provider
-#（其 exporter/endpoint 会被忽略）。代码层面用 demand 状态保证
-# 关闭时不会误拆对方依赖的 provider。
-#
-# 前置条件（otlp 模式）：启动 OTel Collector + Langfuse。
+# 前置条件（otlp 模式）：启动 OTLP 后端（OTel Collector + Langfuse，或
+# 直接使用 Jaeger 等原生支持 OTLP 的后端）。
 # skill_evolution / symphony evolution / react.ttse.enabled 任一开启时，
-# 即使本开关为 false，也会自动 acquire 以采集演进所需轨迹 span。
+# 即使 agent.enabled 为 false，也会自动 acquire 以采集演进所需轨迹 span。
 # ============================================================
-agent_observability:
-  enabled: false                    # 单 agent 可观测性总开关
-  exporter: file                    # otlp_grpc / otlp_http / file
-  endpoint: http://localhost:4317   # OTLP gRPC endpoint（file 模式不需要）
-  service_name: jiuwenswarm-agent   # 服务名称（OTel resource service.name）
+observability:
+  team:
+    enabled: true                   # Team 可观测性开关
+  agent:
+    enabled: false                  # 单 Agent / Coding Agent 可观测性开关
+  exporter: file                    # otlp_grpc / otlp_http / langfuse / console / file
+  endpoint: http://localhost:4317   # OTLP endpoint（file 模式不需要）
+  service_name: jiuwenswarm         # 服务名称（OTel resource service.name）
   sample_rate: 1.0                  # 采样率 (0.0-1.0)
   redact_prompts: false             # 是否脱敏 prompt 内容
   redact_completions: false         # 是否脱敏 completion 内容
@@ -644,7 +618,7 @@ session_cleanup:
 # 单 Agent 轨迹观测 Web 数据面
 # ============================================================
 # enabled=true 会作为 Agent / Team OTel provider 的额外 demand，但仍完整复用
-# agent_observability / team_observability 的 exporter、采样、脱敏、字段长度
+# observability 段的 exporter、采样、脱敏、字段长度
 # 与 Langfuse 配置。Processor 后的数据由 AgentServer 有界队列写入 SQLite；
 # Gateway 只读查询。Agent 与 Team 会话均向 Web 暴露轨迹。
 # auto_harness 不向 Web 暴露轨迹。
@@ -678,14 +652,14 @@ experimental:
 #   debug_enabled = 请求带 /debug OR debug_trace.<mode>.enabled
 #   dump_enabled  = debug_enabled AND debug_trace.<mode>.dump_enabled != false
 # dump 写入 ~/.jiuwenswarm/.agent/traces/ 或 .code/traces/（按模式）。
-# 与 agent_observability（OTel span）相互独立：本块只管本地文本 dump，
+# 与 observability（OTel span）相互独立：本块只管本地文本 dump，
 # OTel 接入在后续阶段。
 # ============================================================
 debug_trace:
   agent:                            # agent 模式（agent.plan / agent.fast …）
     enabled: false                  # 仅 agent 模式开关
     dump_enabled: true              # debug 开启时是否写本地 dump
-    otel_enabled: false             # debug 时是否顺带 force-enable agent_observability（产 OTel span）
+    otel_enabled: false             # debug 时是否顺带 force-enable observability.agent（产 OTel span）
     include_model_output: true      # 记录模型文本输出
     include_reasoning: true         # 记录推理片段
     include_tool_args: true         # 记录工具参数
@@ -694,7 +668,7 @@ debug_trace:
   code:                             # code 模式（code.normal / code.plan …）
     enabled: false
     dump_enabled: true
-    otel_enabled: false             # debug 时是否顺带 force-enable agent_observability（产 OTel span）
+    otel_enabled: false             # debug 时是否顺带 force-enable observability.agent（产 OTel span）
     include_model_output: true
     include_reasoning: true
     include_tool_args: true
@@ -843,7 +817,7 @@ react:
   # 默认关闭；enabled 只控制 agent/work 的内置 TTSE；code 只通过会话插件挂载。
   # dream_interval /
   # dream_min_hours / dream_ttl_days 由实现固定（50 / 24.0 / 90），不对用户开放。
-  # enabled=true 时 Host 会自动拉起 agent_observability（轨迹采集依赖 LLM/工具 span）。
+  # enabled=true 时 Host 会自动拉起单 Agent 可观测性（轨迹采集依赖 LLM/工具 span）。
   ttse:
     enabled: false           # 仅控制 agent/work 内置 TTSE，不在 code 注入 Rail
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP

@@ -1,4 +1,4 @@
-import { ChevronDown, CircleAlert, CirclePlay, History, ListChecks, Search, Timer } from 'lucide-react';
+import { ChevronDown, CircleAlert, CirclePlay, History, ListChecks, Play, Search, Timer, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActionMenu } from '../components/ActionMenu';
@@ -30,6 +30,7 @@ export function ScheduleBoard({
   onUpdate,
   onSetEnabled,
   onDelete,
+  onRun,
   onLoadHistory,
 }: {
   schedules: readonly Schedule[];
@@ -40,6 +41,7 @@ export function ScheduleBoard({
   onUpdate: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
   onSetEnabled: (planId: string, enabled: boolean) => void | Promise<void>;
   onDelete: (planId: string) => void | Promise<void>;
+  onRun: (planId: string) => void | Promise<void>;
   onLoadHistory: (planId: string) => Promise<{ plan: Schedule; runs: ScheduleRun[] }>;
 }) {
   const { t } = useTranslation();
@@ -153,7 +155,7 @@ export function ScheduleBoard({
               const colleague = colleagueOf(plan.agentId);
               const nextExecution = plan.nextFireAt ?? (plan.scheduleKind === 'once' ? plan.runAt : null);
               return (
-                <tr key={plan.id}>
+                <tr key={plan.id} data-testid="jiuwenmate-schedule-board-row" data-variant={plan.id}>
                   <td>{plan.name}</td>
                   <td>
                     <span className="jiuwenmate-schedule-board__executor">
@@ -195,6 +197,7 @@ export function ScheduleBoard({
                       <ActionMenu
                         label={t('jiuwenmate.schedule.more')}
                         align="end"
+                        floating
                         className="jiuwenmate-schedule-board__more"
                         trigger={(
                           <>
@@ -203,7 +206,8 @@ export function ScheduleBoard({
                           </>
                         )}
                         items={[
-                          { key: 'delete', label: t('jiuwenmate.schedule.delete'), onSelect: () => void onDelete(plan.id) },
+                          { key: 'run', label: t('jiuwenmate.schedule.runNow'), icon: Play, onSelect: () => void onRun(plan.id) },
+                          { key: 'delete', label: t('jiuwenmate.schedule.delete'), icon: Trash2, onSelect: () => void onDelete(plan.id) },
                           { key: 'history', label: t('jiuwenmate.schedule.history'), icon: History, onSelect: () => void onLoadHistory(plan.id).then(setHistory).catch(() => undefined) },
                         ]}
                       />

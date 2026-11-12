@@ -20,9 +20,6 @@ from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
     narrative_from_wan_prompt,
 )
 from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import apply_wan_call_locks
-from jiuwenswarm.server.runtime.designer.pipeline.wan_reference_binding import (
-    build_wan_reference_binding,
-)
 
 
 def test_child_walk_away_is_finished_event_not_replayed() -> None:
@@ -148,8 +145,6 @@ def test_wan_api_clause_does_not_paste_prior_prompt_marker() -> None:
     assert "do not" not in wan.lower()
     assert "R2V CAST LOCK" not in wan
     assert "animate ONLY people already in Image 1" not in wan
-    bind = build_wan_reference_binding(cfg=c2, graph=graph, prior_last_frame=True, prior_last_frame_count=1)
-    assert "NOT attached" in bind or "not attached" in bind.lower()
     clause = handoff_clause_for_prompt(
         [{"clip_index": 1, "clip_action": "child walked away", "wan_prompt": marker * 8}],
         this_clip_index=2,
@@ -291,10 +286,6 @@ async def test_clip_execute_does_not_attach_prior_last_frame(
         "jiuwenswarm.server.runtime.designer.handlers.clip.generate_clip_video",
         fake_generate,
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff.extract_last_frame",
-        lambda *a, **k: None,
-    )
     clip = next(n for n in graph["nodes"] if n["id"] == "n_clip_2")
     await ClipNodeHandler().execute(clip, ctx)
     refs = [Path(x).resolve() for x in (seen.get("reference_images") or [])]
@@ -404,10 +395,6 @@ async def test_first_clip_uses_character_specs_and_scene_spec_not_first_frame(
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.designer.handlers.clip.generate_clip_video",
         fake_generate,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff.extract_last_frame",
-        lambda *a, **k: None,
     )
     clip = next(n for n in graph["nodes"] if n["id"] == "n_clip_1")
     await ClipNodeHandler().execute(clip, ctx)

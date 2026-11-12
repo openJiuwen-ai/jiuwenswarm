@@ -84,7 +84,7 @@ def _get_user_workspace_dir() -> Path:
 
 
 def _get_agent_root_dir() -> Path:
-    return (_get_user_workspace_dir() / "domain" / "agent").resolve()
+    return _get_user_workspace_dir() / "agent"
 
 
 def _get_agent_sessions_dir() -> Path:
@@ -92,9 +92,7 @@ def _get_agent_sessions_dir() -> Path:
 
 
 def _get_logs_dir() -> Path:
-    from jiuwenswarm.common.utils import get_logs_dir
-
-    return (get_logs_dir() / "agent").resolve()
+    return _get_agent_root_dir() / ".logs"
 
 
 def _get_ssl_verify() -> bool:
@@ -164,12 +162,12 @@ def _parse_single_byte_range(
 def _get_agent_teams_root(project_root: Path) -> Path:
     """Return the team state root without importing the agent runtime.
 
-    ``configure_agent_teams_home`` in AgentServer resolves this exact
-    directory.  The static server only performs bounded file operations
+    ``configure_agent_teams_home(project_root)`` in AgentServer resolves this
+    exact directory.  The static server only performs bounded file operations
     under it, so importing OpenJiuwen solely to calculate the same path adds
     startup work without providing any Web-side behaviour.
     """
-    return (project_root / "domain" / ".agent_teams").resolve()
+    return (project_root / ".agent_teams").resolve()
 
 
 def _get_package_dir() -> Path:
@@ -213,9 +211,9 @@ def _normalize_lang_suffix(name: str) -> str:
     return f"{stem}.{suffix}" if stem else name
 
 
-def _generate_agent_data() -> None:
+def _generate_agent_data(project_root: Path) -> None:
     """Generate agent/workspace/agent-data.json from agent tree."""
-    agent_root = _get_agent_root_dir()
+    agent_root = (project_root / "agent").resolve()
     workspace_root = (agent_root / "workspace").resolve()
     output_path = (workspace_root / "agent-data.json").resolve()
     root_folder_key = "__root__"
@@ -342,11 +340,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     workspace_root = _get_agent_root_dir()
     agent_teams_root = _get_agent_teams_root(project_root)
     logs_root = _get_logs_dir()
-    auto_harness_root = project_root / "infra" / "auto-harness"
+    auto_harness_root = project_root / "auto-harness"
     # Team-organization summaries live under <home>/.organizations, outside
     # .agent_teams. Without this root, a delivered group attachment 403s and
     # the chat card labels the existing file expired.
-    organizations_root = project_root / "domain" / ".organizations"
+    organizations_root = project_root / ".organizations"
     # Projectless tasks (no bound project_dir) write their generated media under
     # <Documents>/JiuwenSwarm/<date>/chat-<n>/outputs/, outside workspace_root —
     # without this, any @-referenced or inline-rendered media from a projectless
@@ -636,12 +634,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _proxy_http(self) -> None:
+    def _proxy_http(
+        self, *, target: str | None = None, path: str | None = None,
+        stream_sse: bool = False, login_surface: str | None = None,
+    ) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
             self._write_proxy_error(400, "invalid Host header")
             return
-        parsed = urlparse(self.api_target)
+        parsed = urlparse(target or self.api_target)
         if parsed.scheme == "https":
             ssl_ctx = None if _get_ssl_verify() else _get_insecure_ssl_context()
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
@@ -670,22 +671,43 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 if normalized_key == "host":
                     continue
+                if login_surface and normalized_key == "x-jiuwen-web-surface":
+                    continue
                 if normalized_key in self._UNTRUSTED_FORWARDED_HOST_HEADERS:
                     continue
                 forward_headers[key] = value
             forward_headers["Host"] = outer_host
 
-            conn.request(self.command, self.path, body=body, headers=forward_headers)
+            if login_surface:
+                forward_headers["X-Jiuwen-Web-Surface"] = login_surface
+            conn.request(self.command, path or self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
-            resp_body = resp.read()
+            streaming = (
+                stream_sse
+                and self.command != "HEAD"
+                and resp.getheader("Content-Type", "").startswith("text/event-stream")
+            )
+            resp_body = b"" if streaming else resp.read()
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
                 if key.lower() in self._HOP_BY_HOP_HEADERS:
                     continue
                 self.send_header(key, value)
+            if streaming:
+                self.close_connection = True
+                self.send_header("Connection", "close")
             self.end_headers()
-            if self.command != "HEAD":
+            if streaming:
+                try:
+                    chunk = resp.read1(65536)
+                    while chunk:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                        chunk = resp.read1(65536)
+                except (OSError, http.client.HTTPException):
+                    return
+            elif self.command != "HEAD":
                 self.wfile.write(resp_body)
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
@@ -693,8 +715,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _proxy_websocket_tunnel(self) -> None:
-        parsed = urlparse(self.ws_target)
+    def _proxy_websocket_tunnel(self, *, target: str | None = None) -> None:
+        parsed = urlparse(target or self.ws_target)
         if parsed.scheme not in ("ws", "wss", "http", "https"):
             self.send_error(500, "ws proxy target must be ws/wss/http/https")
             return
@@ -1000,6 +1022,89 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._send_desktop_forbidden()
         return True
 
+    def _resolve_enterprise_upstream(self) -> tuple[str, str] | None:
+        target = os.getenv("USER_WEB_MANAGER_TARGET", "").rstrip("/")
+        if not target:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        authorization = self.headers.get("Authorization")
+        if not authorization:
+            token = self._get_auth_cookie("openjiuwen_user_access_token")
+            if not token:
+                self._write_proxy_error(401, "not authenticated")
+                return None
+            authorization = f"Bearer {token}"
+
+        import httpx
+
+        try:
+            response = httpx.get(
+                f"{target}/api/v1/user-console/user-face-upstream",
+                headers={
+                    "Authorization": authorization,
+                    "Cookie": self.headers.get("Cookie", ""),
+                },
+                timeout=5,
+                trust_env=False,
+            )
+        except httpx.HTTPError:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        if response.status_code in (401, 403):
+            self._write_proxy_error(response.status_code, "user access denied")
+            return None
+        if response.status_code != 200:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        http_target = response.headers.get("X-Gateway-Http-Upstream")
+        ws_target = response.headers.get("X-Gateway-Ws-Upstream")
+        if not http_target or not ws_target:
+            self._write_proxy_error(502, "incomplete user upstream")
+            return None
+        return http_target, ws_target
+
+    def _dispatch_enterprise(self) -> bool:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return False
+        path = urlparse(self.path).path
+        if path.startswith("/idp/"):
+            target = os.getenv("USER_WEB_IDP_TARGET", "")
+            if target:
+                self._proxy_http(target=target, path=self.path.removeprefix("/idp"), login_surface="user")
+            else:
+                self._write_proxy_error(503, "identity service is unavailable")
+            return True
+        if path == "/manager-api" or path.startswith("/manager-api/"):
+            if not path.startswith("/manager-api/v1/user-console/"):
+                self._write_proxy_error(404, "not found")
+                return True
+            target = os.getenv("USER_WEB_MANAGER_TARGET", "")
+            if target:
+                self._proxy_http(target=target, path=self.path.replace("/manager-api", "/api", 1))
+            else:
+                self._write_proxy_error(503, "manager service is unavailable")
+            return True
+        gateway_api = path == "/gateway-api" or path.startswith("/gateway-api/")
+        ws = self._is_ws_route()
+        if not (gateway_api or ws or self._is_api_route() or self._is_file_api_route()
+                or self._is_share_api_route()):
+            return False
+        upstream = self._resolve_enterprise_upstream()
+        if upstream is None:
+            return True
+        http_target, ws_target = upstream
+        if ws:
+            if self._is_websocket_upgrade():
+                self._proxy_websocket_tunnel(target=ws_target)
+            else:
+                self.send_error(400, "expected websocket upgrade")
+        else:
+            forward_path = self.path.replace("/gateway-api", "/api", 1) if gateway_api else self.path
+            self._proxy_http(target=http_target, path=forward_path, stream_sse=True)
+        return True
+
     def _dispatch_proxy(self) -> bool:
         if self._is_api_route():
             self._proxy_http()
@@ -1083,10 +1188,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         """
         if "\x00" in rel_path:
             raise _BadRequestError("invalid_path")
-        # 前端 file-api 契约沿用平铺相对路径（agent/...）；分区后 agent 树落 domain/agent
-        normalized = rel_path.replace("\\", "/")
-        if normalized == "agent" or normalized.startswith("agent/"):
-            rel_path = f"domain/{normalized}"
         try:
             return (self.project_root / rel_path).resolve()
         except (OSError, ValueError) as exc:
@@ -1564,7 +1665,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not full_path.exists():
                 if file_arg.replace("\\", "/") == "agent/workspace/agent-data.json":
                     try:
-                        _generate_agent_data()
+                        _generate_agent_data(self.project_root)
                     except Exception as exc:  # noqa: BLE001
                         self._write_json(500, {"error": "generate_failed", "detail": str(exc)})
                         return
@@ -2120,7 +2221,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/file-api/rebuild-agent-data":
             try:
-                _generate_agent_data()
+                _generate_agent_data(self.project_root)
             except Exception as exc:  # noqa: BLE001
                 self._write_json(500, {"error": "rebuild_failed", "detail": str(exc)})
                 return
@@ -2320,6 +2421,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._write_json(status, payload)
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/oauth/hub/callback":
             from jiuwenswarm.channels.web.hub_oauth import complete
@@ -2362,6 +2465,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
             from jiuwenswarm.channels.web.hub_oauth import result, start
@@ -2407,26 +2512,36 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self.send_error(405, "method not allowed")
 
     def do_PUT(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_PATCH(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_HEAD(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)
@@ -2750,7 +2865,7 @@ def main() -> None:
         raise SystemExit(str(exc)) from exc
 
     project_root = _get_user_workspace_dir()
-    workspace_root = _get_agent_root_dir()
+    workspace_root = (project_root / "agent").resolve()
     agent_teams_root = _get_agent_teams_root(project_root)
     logs_root = _get_logs_dir().resolve()
     # Start with the process logger.  The file handler and diagnostic hook are
@@ -2811,9 +2926,7 @@ def main() -> None:
         )
         logger.info("[jiuwenswarm-web] /file-api roots -> %s, %s, %s", workspace_root, agent_teams_root, logs_root)
 
-        from jiuwenswarm.common.utils import get_infra_data_dir
-
-        _web_info_path = (get_infra_data_dir() / ".updates").resolve()
+        _web_info_path = (_get_user_workspace_dir() / ".updates").resolve()
         _web_info_path.mkdir(parents=True, exist_ok=True)
         _web_info_file = _web_info_path / "web_process.json"
         try:

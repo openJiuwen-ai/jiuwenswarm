@@ -440,6 +440,53 @@ Gateway 引用跟随官方 Swarm 更新为 `54e5330d3ea6be972aa38de4c42a898ea73f
 核对时官方 Gateway develop 为 `127851ab`，SDK pin 仍是 `f3f8f576`，依赖对齐 PR !76 未合入。
 因此 Gateway 代码虽已前移，pip 的两个 Core 直链冲突仍存在；不能将 Core 降级来隐藏问题。
 
+## 再次同步官方 develop（2026-11-12）
+
+用户授权合并官方 `737041a075c79c1bb0b10aa8e27252ca0df670ac` 并推送 !9841；
+源分支基线为 `8752a4011de9d0472ea6b7dac8dee5853421c48a`。保留本轮之前已提交的搜索、构建和
+群锁取消修复，合并官方其他更新；原有三个未提交文档索引单独备份，不作为本轮新增实现提交。
+
+官方 !9918 已移除母仓对 Core 的直接依赖及 uv override，解决的是 wheel/pip 中同名 SDK 的
+双 Git URL 约束。但该变更仍经 Gateway `54e5330d` 选择 Core `f3f8f576`，不是 SDK 升级。
+核对官方 Gateway develop 的 pyproject 仍使用该 Core，Gateway !76 仍未合入；
+`f3f8f576` 中不存在本 PR 所需的 `openjiuwen/harness/rails/web_research_rail.py`。
+用户明确选择本次更新先保留 Core `2dc7477a` 及配套 override/source，待 Gateway 官方 pin 前移后
+再删除直接 SDK pin，采用 !9918 的单一传递来源。不能以降级搜索能力换取安装阶段通过。
+本轮不修改 Gateway 业务代码，不采用个人 fork 依赖，也不声称 pip 的 st_gateway 冲突已经修复。
+
+群锁冲突继续使用 `_finish_group_lock_io` 等待获取/释放完成后传递取消，保留上一轮回归覆盖，
+而不是恢复为未完成的后台释放回调。文档索引按合并后的源文档重新生成，不手工选择丢弃一边。
+
+合并候选验证使用独立 `.tmp/pr9841-merge-venv`，Core 为官方 `2dc7477a`，无本地 SDK 覆盖：
+
+- 12 个后端文件：**379 passed、6 failed、1 skipped**，未新增跳过。
+  搜索、构建、配置、推荐、群锁和续跑用例均通过；失败全部为真实 Worker 启动后的 IPC 等待超时。
+  本地子进程 stderr 明确记录 `Worker source changed after the parent validated it` /
+  `Invalid Worker parent identity`。这定位到父子身份校验，但不能据此替代缺少子进程日志的 Linux CI 根因证据。
+- 单独运行 recovery 失败用例，附只读父子指纹诊断：**1 passed**；代码和环境指纹均一致。
+  收集相同 12 个文件但只运行该用例也通过，进一步将本地问题缩小到先前用例的执行副作用；
+  不提高 timeout、不关闭身份校验。
+- `npm run test:settings-panel`：**67 passed、1 failed**，仍为上轮记录的模型删除错误码源码断言。
+  直接运行旧 fixture 缓存曾出现设置键不一致，重新通过 npm 脚本构建 fixture 后该项通过，
+  不将缓存不一致误报为产品回归。
+
+进一步确认 `test_setup_selects_the_available_wheel_backend` 在 pytest 进程导入 `setuptools`，
+后者将自身 `_vendor` 加入 `sys.path`。独立复现中，该导入不修改安装包或源码，却使
+`environment_identity()` 从 `7656803f` 变为 `6013c38f`，多枚举 12 个 vendor distribution。
+Worker 新进程没有该导入副作用，启动校验因此拒绝运行；这解释了单独通过、组合失败的本地现象。
+
+本轮追加最小测试隔离：只在 `test_release_dependencies.py` 的 autouse fixture 为每个用例提供
+独立 `sys.path` 列表，pytest monkeypatch 退出时恢复原对象。不修改生产 dependency identity、
+SDK/Worker 行为、超时或断言。第一次修复后同组 **383 passed、2 failed、1 skipped**，Worker
+用例全部通过；两项 editable 构建失败为新临时目录过长触发 WinError 206。
+最终使用 `.tmp/t9841a` 重跑同一完整组合：**385 passed、1 skipped**，包括原报告五项 Worker
+失败用例及本地额外复现的第六项。JUnit 为本地 `.tmp/ut9841-update-final-20261112.xml`，不提交。
+`uv lock --check --offline` 通过，锁文件内容仍与合并前一致，没有修改已有包版本或 marker。
+
+未运行全仓 UT、Linux CI、完整桌面构建或真实搜索 E2E；主工作区、主环境和用户服务不变。
+远端五项 UT 是否为相同根因仍需新 CI 回执，不能把本机复现等同于取得了 CI 子进程 stderr。
+Gateway pin 前移后仍须重锁并重新验证普通 pip 安装。
+
 ## 残余限制
 
 语义评估仍可能误判或不可用，不能把所有相关搜索结果变成实时证据。剩余搜索源和页面布局也可能变动。

@@ -28,6 +28,13 @@ validate_release_dependencies = runpy.run_path(str(ROOT / "scripts/release_depen
 ]
 
 
+@pytest.fixture(autouse=True)
+def isolate_build_backend_import_path(monkeypatch):
+    # Setuptools adds vendored distributions to sys.path during import. Keep
+    # build probes from changing later parent/Worker dependency identities.
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+
 def test_repository_dependencies_pass_the_release_gate():
     validate_release_dependencies(ROOT)
 

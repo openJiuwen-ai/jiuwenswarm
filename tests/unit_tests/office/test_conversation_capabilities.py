@@ -178,9 +178,8 @@ def _task_pane_requests(events: list[dict]) -> list[tuple[str, str]]:
 async def test_a_powerpoint_tool_call_passes_the_permission_rules_before_the_task_pane_gets_it(
         server, attach_pane, monkeypatch, rule) -> None:
     update_config(lambda config: {**config, "permissions": {**config["permissions"], "enabled": True}})
-    assert permissions_layers.save_user_permissions(
-        {f"{rule}_tools": ["read_presentation_context"]}
-    )
+    monkeypatch.setattr(permissions_layers, "load_user_permissions",
+                        lambda: {f"{rule}_tools": ["read_presentation_context"]})
     attach_pane("deck-a", sorted(OFFICE_TOOLS))
     server.create("deck-a", CLIENT_APP)
     await server.turn("deck-a")  # the first turn also checks what the model can see

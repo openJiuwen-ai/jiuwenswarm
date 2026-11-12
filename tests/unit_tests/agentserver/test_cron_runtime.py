@@ -84,7 +84,8 @@ class _FakeCronTools:
 
     async def run_now(self, job_id: str):
         _ = job_id
-        return {"run_id": "r-1"}
+        # 与 CronTools.run_now 的真实 ack 形状一致，不要用扁平形状掩盖适配层的取值错误。
+        return {"action": "run_now", "status": "ok", "data": {"run_id": "run-1"}}
 
 
 class _FakeGatewayPush:
@@ -663,6 +664,43 @@ async def test_cron_backend_uses_bound_context_for_operations_without_context() 
         assert route.session_id == "sess-bound"
         assert route.user_id == "user-42"
     assert len(cron_tools.reset_tokens) == 6
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_run_now_reads_nested_gateway_run_id() -> None:
+    """Gateway ack 的 run_id 在 data 里，适配层不能读顶层导致永远回空串。"""
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+
+    assert await backend.run_now("job-1") == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_run_now_stays_empty_without_ack_payload() -> None:
+    """未等到 ack（status=submitted、data=None）时保持空串，不算失败。"""
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+
+    async def _submitted(job_id: str):
+        _ = job_id
+        return {"action": "run_now", "status": "submitted", "data": None}
+
+    cron_tools.run_now = _submitted
+    assert await backend.run_now("job-1") == ""
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_run_now_keeps_legacy_flat_shape_compatible() -> None:
+    """顶层 run_id 的旧形状仍要能取到，兼容其他 CronTools 实现。"""
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+
+    async def _flat(job_id: str):
+        _ = job_id
+        return {"run_id": "legacy-1"}
+
+    cron_tools.run_now = _flat
+    assert await backend.run_now("job-1") == "legacy-1"
 
 
 @pytest.mark.asyncio
