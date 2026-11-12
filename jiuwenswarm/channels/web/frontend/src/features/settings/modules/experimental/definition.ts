@@ -75,6 +75,8 @@ export const experimentalModule: SettingsModuleDefinition = {
           id: 'kv-cache-affinity-enabled',
           component: 'switch',
           key: 'kv_cache_affinity_enabled',
+          optimistic: false,
+          errorDisplay: 'toast',
         },
       ],
     },

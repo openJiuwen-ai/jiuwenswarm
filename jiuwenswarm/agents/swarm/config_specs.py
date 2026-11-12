@@ -67,9 +67,7 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    build_kv_cache_affinity_config,
-    get_kv_cache_control_model_client_config,
-    get_kv_cache_control_model_provider,
+    build_application_kv_cache_affinity_config,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -90,11 +88,7 @@ _CODE_MODES: frozenset[str] = frozenset(
 
 
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
-    return build_kv_cache_affinity_config(
-        config,
-        provider=get_kv_cache_control_model_provider(config),
-        model_client_config=get_kv_cache_control_model_client_config(config),
-    )
+    return build_application_kv_cache_affinity_config(config)
 
 
 # Rails common to both roles, in mount order. Each entry is a ``swarm.*``
