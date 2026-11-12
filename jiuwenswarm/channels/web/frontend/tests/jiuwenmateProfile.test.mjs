@@ -204,9 +204,11 @@ test('the persona save button stays mounted after saving and permits retry after
     assert.deepEqual(saved, [{ persona: '更新后的人设' }]);
     assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), button);
     assert.equal(button.disabled, true);
+    assert.equal(button.previousElementSibling?.dataset.testid, 'jiuwenmate-profile-saved-notice');
     fail = true;
     await changePersona('再次修改的人设');
     await act(async () => button.click());
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-profile-saved-notice"]'), null);
     assert.equal(button.disabled, false);
     assert.match(view.find('settings-error').textContent, /Persona save failed/);
     assert.equal(view.container.querySelector('.jiuwenmate-profile__persona-editor textarea').value, '再次修改的人设');
@@ -1334,6 +1336,8 @@ test('the pencil edits the current page and stays there', () => {
   assert.match(overview, /aria-label="编辑人设"/);
   assert.match(overview, /data-testid="jiuwenmate-profile-name-input"/);
   assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-detail"/);
+  assert.doesNotMatch(overview, /class="jiuwenmate-profile__description"/);
+  assert.match(renderProfile({ initialSection: 'overview' }), /class="jiuwenmate-profile__description"/);
 
   const model = renderProfile({
     initialSection: 'model',

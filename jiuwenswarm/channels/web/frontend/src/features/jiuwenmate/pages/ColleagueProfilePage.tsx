@@ -674,12 +674,20 @@ export function ColleagueProfilePage({
       return false;
     }
   };
+  const [savedNotice, setSavedNotice] = useState(false);
+  useEffect(() => {
+    if (!savedNotice) return undefined;
+    const timer = window.setTimeout(() => setSavedNotice(false), 3000);
+    return () => window.clearTimeout(timer);
+  }, [savedNotice]);
   const saveSettings = (edit: ColleagueSettingsEdit) => {
+    setSavedNotice(false);
     void persistSettings(edit)
       .then((saved) => {
         if (!saved) return;
         setEditing(false);
         if (edit.persona !== undefined) setSavedPersona(edit.persona);
+        setSavedNotice(true);
       });
   };
   const changeGroupReplyMode = (mode: 'passive' | 'adaptive') => {
@@ -697,6 +705,7 @@ export function ColleagueProfilePage({
   };
   const openSection = (next: JiuwenMateProfileSection) => {
     setSettingsError(null);
+    setSavedNotice(false);
     setSection(next);
     setEditing(false);
   };
@@ -759,6 +768,7 @@ export function ColleagueProfilePage({
             ) : null}
             {colleague.disabled ? <em className="jiuwenmate-badge" data-tone="muted">{t('jiuwenmate.office.disabledBadge')}</em> : null}
             <span className="jiuwenmate-profile__header-actions">
+              <SavedNote visible={savedNotice && section === 'overview'} />
               <ActionMenu
                 label={t('jiuwenmate.workspace.more')}
                 items={[
@@ -799,6 +809,7 @@ export function ColleagueProfilePage({
                 colleague={colleague}
                 activity={activity}
                 today={today}
+                editing={editing}
                 onConfigureIm={(platform) => onConfigureIm(undefined, platform)}
                 onConfigureWelink={onConfigureWelink}
                 onRevokeChannel={setRevokePlatform}
@@ -830,6 +841,7 @@ export function ColleagueProfilePage({
               onPluginsChange={setPlugins}
               onKnowledgeChange={setKnowledge}
               onSaveSettings={saveSettings}
+              savedNotice={savedNotice}
               onOpenModelSettings={onOpenModelSettings}
               onGroupReplyModeChange={changeGroupReplyMode}
               onPermissionProfileChange={changePermissionProfile}
@@ -994,12 +1006,14 @@ function ProfileOverview({
   colleague,
   activity,
   today,
+  editing = false,
   onConfigureIm,
   onConfigureWelink,
 }: {
   colleague: JiuwenMateColleague;
   activity: JiuwenMateActivityMember | null;
   today: Date;
+  editing?: boolean;
   onConfigureIm: (platform: JiuwenMateImPlatform) => void;
   onConfigureWelink: () => void;
   onRevokeChannel?: (platform: 'feishu' | 'welink') => void;
@@ -1054,7 +1068,7 @@ function ProfileOverview({
 
   return (
     <>
-      <p className="jiuwenmate-profile__description">{colleague.description}</p>
+      {editing ? null : <p className="jiuwenmate-profile__description">{colleague.description}</p>}
       <p className="jiuwenmate-profile__joined">
         {t('jiuwenmate.profile.joinedAt', { time: formatJoinedAt(colleague.joinedAt) })}
       </p>
@@ -1288,6 +1302,15 @@ function sameNames(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
+function SavedNote({ visible }: { visible: boolean }) {
+  const { t } = useTranslation();
+  return visible ? (
+    <small className="jiuwenmate-profile__im-notice" role="status" data-testid="jiuwenmate-profile-saved-notice">
+      {t('jiuwenmate.profile.saveSuccess')}
+    </small>
+  ) : null;
+}
+
 function IdentityEditor({
   name,
   description,
@@ -1368,6 +1391,7 @@ function ProfileSectionDetail({
   onPluginsChange,
   onKnowledgeChange,
   onSaveSettings,
+  savedNotice = false,
   onOpenModelSettings,
   onGroupReplyModeChange,
   onPermissionProfileChange,
@@ -1423,6 +1447,7 @@ function ProfileSectionDetail({
   onPluginsChange: (items: string[]) => void;
   onKnowledgeChange: (items: string[]) => void;
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
+  savedNotice?: boolean;
   onOpenModelSettings?: () => void;
   onGroupReplyModeChange: (mode: 'passive' | 'adaptive') => void;
   onPermissionProfileChange: (profile: 'default' | 'automatic' | 'full_access') => void;
@@ -1491,6 +1516,7 @@ function ProfileSectionDetail({
           />
         </label>
         <div className="jiuwenmate-profile__resource-actions" data-testid="jiuwenmate-profile-persona-actions">
+          <SavedNote visible={savedNotice} />
           <button
             type="button"
             className="jiuwenmate-dark-button jiuwenmate-profile__save-button"
@@ -1574,6 +1600,7 @@ function ProfileSectionDetail({
           ))}
         </div>
         <div className="jiuwenmate-profile__resource-actions">
+          <SavedNote visible={savedNotice} />
           <button
             type="button"
             className="jiuwenmate-dark-button jiuwenmate-profile__save-button"
@@ -2014,6 +2041,7 @@ function ProfileSectionDetail({
           </div>
         ) : null}
         <div className="jiuwenmate-profile__resource-actions">
+          <SavedNote visible={savedNotice} />
           <button
             type="button"
             className="jiuwenmate-dark-button jiuwenmate-profile__save-button"

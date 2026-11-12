@@ -6142,6 +6142,7 @@
       "editResources": "Edit skills and connectors",
       "resourcesHint": "Choose from skills installed on this machine and connectors that are already connected. A new task uses the selection after it is saved and published.",
       "saveResources": "Save and publish",
+      "saveSuccess": "Saved",
       "savingResources": "Saving",
       "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
       "modelEmptyHint": "Add a model in Settings → Models.",
