@@ -332,6 +332,8 @@ leader:
 member_goal: null
 ```
 
+With trajectory diagnosis enabled, newly captured independent Goal model assessments appear in a separate collapsible section under the leader. It shows the attempt, model verdict, tokens, duration and complete request details. Goal-driven execution rounds remain on the leader trajectory. Historical records without purpose metadata retain their original presentation.
+
 Missing or `null` policies disable the feature; `{}` uses the default strategy and attempt limit. Strategies are `agent_report`, `transcript`, and `hybrid`. The attempt limit accepts a positive integer, or explicit `null` for unlimited attempts. The settings page exposes only the leader switch and preserves existing manual strategy and attempt values while enabled. Member policies are YAML/template only and disabled by default. Configuration rejects `token_budget` and other unknown policy fields.
 
 ---

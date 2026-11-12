@@ -1562,6 +1562,20 @@
     }
   },
   "trajectory": {
+    "goalAssessment": {
+      "label": "Goal assessments",
+      "title": "Goal assessment · Attempt {{attempt}}",
+      "summary": "Independent assessments: {{count}} calls · {{tokens}} tokens",
+      "isolated": "Goal verification only; separate from the execution conversation",
+      "status": {
+        "running": "Assessing",
+        "complete": "Complete",
+        "continue": "Continue execution",
+        "blocked": "Blocked",
+        "error": "Failed",
+        "unknown": "No valid verdict"
+      }
+    },
     "loading": "Loading trajectory UI…",
     "tabs": {
       "aria": "Agent and Team content view",
