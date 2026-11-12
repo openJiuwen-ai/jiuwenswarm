@@ -3,8 +3,12 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 
-import { RealtimeDuplexSession } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/realtimeDuplex.mjs';
-import { SpeechGate } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/speechGate.mjs';
+import { loadModules, webSource } from './testSupport.mjs';
+const { RealtimeDuplexSession, SpeechGate } = await loadModules([
+  "VideoLivePanel/qwenOmniSession.ts",
+  webSource("utils/speechDetection/speechGate.ts"),
+]);
+
 
 test('tool output diagnostics distinguish sending from provider acknowledgement without result text', () => {
   const { session, diagnostics, sent } = createSession();

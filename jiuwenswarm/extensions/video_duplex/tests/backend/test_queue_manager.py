@@ -8,81 +8,57 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.extensions.video_duplex.backend import queue_manager
-from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call
-
-
-def management_call():
-    return parse_qwen_omni_tool_call({
-        "name": "jiuwen_queue_manage", "call_id": "manage-1",
-        "arguments": {"instruction": "先打开飞书，再打开微信"},
-    })
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import management_call, run_queue, tool_proposal
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid", ["", "not json", '{"tool":{"name":[],"arguments":{}}}',
     '{"tool":{"name":"jiuwen_task_modify","arguments":{"job_id":"a","revision":0,"instruction":"change"}}}'])
 async def test_invalid_proposal_is_corrected_without_user_error(monkeypatch, invalid):
-    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": [{"job_id": "a", "revision": 1}]}))
-    step = AsyncMock(side_effect=[invalid, '{"response":"已查询当前任务。"}'])
-    monkeypatch.setattr(queue_manager, "request_step", step)
-    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "查询任务")
+    result, operate, step = await run_queue(monkeypatch, [invalid, '{"response":"已查询当前任务。"}'],
+                                          {"jobs": [{"job_id": "a", "revision": 1}]})
     assert "error" not in result
     assert result["response"] == "已查询当前任务。"
-    assert manager.operate.await_count == 1
+    assert operate.await_count == 1
     assert json.loads(step.call_args.args[0][-1]["content"])["applied"] is False
 
 
 @pytest.mark.asyncio
 async def test_duplicate_write_reuses_receipt_without_dispatch(monkeypatch):
-    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
-        {"jobs": [{"job_id": "a", "revision": 1}]}, {"state": "cancelling"},
-    ]))
-    write = json.dumps({"tool": {"name": "jiuwen_task_cancel", "arguments": {"job_id": "a"}}})
-    monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[write, write, '{"response":"正在停止。"}']))
-    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消任务")
+    write = tool_proposal("jiuwen_task_cancel", {"job_id": "a"})
+    result, operate, _ = await run_queue(monkeypatch, [write, write, '{"response":"正在停止。"}'],
+                                        [{"jobs": [{"job_id": "a", "revision": 1}]}, {"state": "cancelling"}])
     assert "error" not in result
-    assert manager.operate.await_count == 2
+    assert operate.await_count == 2
     assert result["receipts"][1]["receipt"] == result["receipts"][2]["receipt"]
 
 
 @pytest.mark.asyncio
 async def test_operational_exception_is_not_replayed_as_validation_error(monkeypatch):
-    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
-        {"jobs": [{"job_id": "a", "revision": 1}]}, RuntimeError("connection lost after dispatch"),
-    ]))
-    step = AsyncMock(return_value=json.dumps({"tool": {
-        "name": "jiuwen_task_cancel", "arguments": {"job_id": "a"},
-    }}))
-    monkeypatch.setattr(queue_manager, "request_step", step)
-    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消任务")
+    result, operate, step = await run_queue(monkeypatch, tool_proposal("jiuwen_task_cancel", {"job_id": "a"}),
+        [{"jobs": [{"job_id": "a", "revision": 1}]}, RuntimeError("connection lost after dispatch")])
     assert result["state"] == "incomplete"
     assert result["error"] == "connection lost after dispatch"
-    assert manager.operate.await_count == 2
+    assert operate.await_count == 2
     assert step.await_count == 1
 
 
 @pytest.mark.asyncio
 async def test_revision_conflict_can_query_then_correct_without_replaying_old_write(monkeypatch):
-    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
+    def modification(revision):
+        return tool_proposal("jiuwen_task_modify", {"job_id": "a", "revision": revision, "instruction": "change"})
+
+    result, operate, _ = await run_queue(monkeypatch, [
+        modification(1), tool_proposal("jiuwen_task_query", {}), modification(2), '{"response":"修改已受理。"}',
+    ], [
         {"jobs": [{"job_id": "a", "revision": 1}]},
         {"state": "rejected", "applied": False, "error": "revision changed"},
-        {"jobs": [{"job_id": "a", "revision": 2}]},
-        {"state": "accepted"},
-    ]))
-    def modification(revision):
-        return json.dumps({"tool": {"name": "jiuwen_task_modify", "arguments": {
-            "job_id": "a", "revision": revision, "instruction": "change",
-        }}})
-
-    monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[
-        modification(1), json.dumps({"tool": {"name": "jiuwen_task_query", "arguments": {}}}),
-        modification(2), '{"response":"修改已受理。"}',
-    ]))
-    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "修改任务")
+        {"jobs": [{"job_id": "a", "revision": 2}]}, {"state": "accepted"},
+    ])
     assert "error" not in result
-    assert manager.operate.await_count == 4
-    assert manager.operate.await_args_list[1].args[2].arguments["revision"] == 1
-    assert manager.operate.await_args_list[3].args[2].arguments["revision"] == 2
+    assert operate.await_count == 4
+    assert operate.await_args_list[1].args[2].arguments["revision"] == 1
+    assert operate.await_args_list[3].args[2].arguments["revision"] == 2
 
 
 @pytest.mark.asyncio
@@ -190,11 +166,8 @@ async def test_model_request_preserves_configured_network_timeout(monkeypatch):
     (json.dumps({"tool": {"name": "jiuwen_task_query", "arguments": {}}}), 6, 7, "operation limit"),
 ])
 async def test_management_budgets_are_bounded(monkeypatch, proposal, decisions, queries, error):
-    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
-    step = AsyncMock(return_value=proposal)
-    monkeypatch.setattr(queue_manager, "request_step", step)
-    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "查询队列")
+    result, operate, step = await run_queue(monkeypatch, proposal, {"jobs": []})
     assert result["state"] == "incomplete"
     assert error in result["error"]
     assert step.await_count == decisions
-    assert manager.operate.await_count == queries
+    assert operate.await_count == queries

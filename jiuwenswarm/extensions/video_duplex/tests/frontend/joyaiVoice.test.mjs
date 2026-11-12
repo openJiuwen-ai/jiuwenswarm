@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  canPlayJoyAIResponse,
-  JoyAITtsInterruptionState,
-  JoyAIVoiceSession,
-} from '../../../../channels/web/frontend/node_modules/.cache/joyai-voice/joyaiVoice.js';
-import { SpeechGate } from '../../../../channels/web/frontend/node_modules/.cache/joyai-voice/speechGate.js';
+import { loadModules, webSource } from './testSupport.mjs';
+const { canPlayJoyAIResponse, JoyAITtsInterruptionState, JoyAIVoiceSession, SpeechGate } = await loadModules([
+  "VideoLivePanel/joyaiVoice.ts",
+  webSource("utils/speechDetection/speechGate.ts"),
+]);
+
 
 class FakeAudio {
   static instances = [];

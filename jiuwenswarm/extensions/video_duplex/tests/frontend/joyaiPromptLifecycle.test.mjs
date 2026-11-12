@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  JoyAIFrameClock,
-  JoyAIPromptLifecycle,
-} from '../../../../channels/web/frontend/node_modules/.cache/joyai-prompt-lifecycle/joyaiPromptLifecycle.js';
+import { loadModules } from './testSupport.mjs';
+const { JoyAIFrameClock, JoyAIPromptLifecycle } = await loadModules([
+  "VideoLivePanel/joyaiPromptLifecycle.ts",
+]);
 
 test('the next frame consumes only the latest queued JoyAI prompt', async () => {
   const lifecycle = new JoyAIPromptLifecycle();
