@@ -22,14 +22,12 @@ class LlmUsageProjection:
         self._end_ready = False
         return pending
 
-    def end(self, payload: dict[str, Any]) -> AgentResponseChunk | None:
+    def end(self, payload: dict[str, Any]) -> None:
         refs = payload.get("payload_refs")
         self._refs = refs if isinstance(refs, dict) else None
-        pending = self.drain()
-        self._end_ready = pending is None
-        if pending is not None:
-            self._refs = None
-        return pending
+        # Retain pending usage while the adapter yields the end marker. A
+        # consumer can close at that yield before accepting the usage itself.
+        self._end_ready = True
 
     def accept(self, chunk: AgentResponseChunk) -> AgentResponseChunk | None:
         if self._end_ready:
@@ -43,7 +41,12 @@ class LlmUsageProjection:
 
     def drain(self) -> AgentResponseChunk | None:
         pending, self._pending = self._pending, None
-        return self._attach_refs(pending) if pending is not None else None
+        if pending is None:
+            return None
+        ready = self._attach_refs(pending)
+        self._refs = None
+        self._end_ready = False
+        return ready
 
     def _attach_refs(self, chunk: AgentResponseChunk) -> AgentResponseChunk:
         metadata = chunk.payload.get("metadata")

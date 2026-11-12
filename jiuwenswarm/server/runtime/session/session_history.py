@@ -1041,6 +1041,11 @@ def read_history_cursor_page(
     if read_block_bytes <= 0:
         raise InvalidHistoryCursor("history read block size must be positive")
 
+    from jiuwenswarm.server.runtime.session.history_artifacts import ARTIFACT_CURSOR_PREFIX, read_artifact_cursor
+
+    if isinstance(cursor, str) and cursor.startswith(ARTIFACT_CURSOR_PREFIX):
+        return read_artifact_cursor(normalized_session_id, cursor)
+
     stream_key = _cursor_stream_key(normalized_session_id, normalized_subagent_id)
     cursor_payload = _decode_history_cursor(cursor) if cursor is not None else None
     if cursor_payload is not None and cursor_payload.get("stream") != stream_key:
