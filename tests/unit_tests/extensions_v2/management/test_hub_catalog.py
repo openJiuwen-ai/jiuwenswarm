@@ -352,3 +352,92 @@ def test_catalog_uses_restored_manifest_instead_of_install_record(
         assert result["enabled"] is target_enabled
         assert result["active"] is runtime_active
         assert result["origin"] == origin
+
+
+@pytest.mark.parametrize("domain", ["agentserver", "gateway"])
+@pytest.mark.parametrize("runtime_active", [False, True])
+@pytest.mark.parametrize("has_origin", [False, True])
+@pytest.mark.parametrize("target_enabled", [False, True])
+def test_hub_views_follow_restored_manifest(
+    tmp_path: Path, domain: str, runtime_active: bool, has_origin: bool, target_enabled: bool,
+) -> None:
+    import json
+
+    from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+    from jiuwenswarm.gateway.extensions_v2.management import catalog as gateway_catalog
+
+    package_id = "webui.login-demo"
+    install_dir = tmp_path / "installed"
+    source = write_package(tmp_path / "source", package_id=package_id, version="1.0.0")
+    root = install_dir / package_id / "1.0.0"
+    copytree(source, root)
+    manifest = root / "manifest.json"
+    document = json.loads(manifest.read_text())
+    document["package"]["domain"] = domain
+    document["enable"] = target_enabled
+    manifest.write_text(json.dumps(document))
+    recovery = SystemPluginRecovery(install_dir, tmp_path / "recovery")
+    point = recovery.begin_session("hub-restore-test")
+    document["enable"] = not target_enabled
+    manifest.write_text(json.dumps(document))
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    if has_origin:
+        store.upsert(ExtensionInstallRecord(
+            package_id=package_id, version="1.0.0", origin="hub", asset_id="asset-1",
+            enabled=not target_enabled, active=not target_enabled,
+        ))
+    recovery.restore(point["id"])
+    active = [SimpleNamespace(package_id=package_id, version="1.0.0", root=root)] if runtime_active else []
+    state = SimpleNamespace(active=active, installed=[root])
+    item = HubAssetSummary(
+        kind="system_plugin", asset_id="asset-1", display_name="Auth", short_description="",
+        public_latest_version="1.0.0", icon_uri="", tags=(), package_name=package_id,
+    )
+    detail = _hub_detail()
+    results = [hub_card(item, build_state_index(state), store), hub_detail(detail, state, store)]
+    if domain == "gateway":
+        entry = gateway_catalog.MarketEntry(package_id, "1.0.0", root, document)
+        facts = gateway_catalog._Facts(
+            active={record.package_id: {"version": record.version, "root": root} for record in active},
+            installed={package_id: root},
+            roots={package_id: (root,)},
+        )
+        results.append(gateway_catalog._summary(entry, facts, origin="hub", origin_record=store.get(package_id)))
+    for result in results:
+        assert result["enabled"] is target_enabled
+        assert result["active"] is runtime_active
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_origin", [False, True])
+async def test_hub_list_reads_disabled_gateway_missing_from_agent_index(tmp_path, monkeypatch, has_origin):
+    import json
+
+    package_id = "webui.login-demo"
+    install_dir = tmp_path / "installed"
+    source = write_package(tmp_path / "source", package_id=package_id, version="1.0.0")
+    root = install_dir / package_id / "1.0.0"
+    copytree(source, root)
+    document = json.loads((root / "manifest.json").read_text())
+    document["package"]["domain"] = "gateway"
+    document["enable"] = False
+    (root / "manifest.json").write_text(json.dumps(document))
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    if has_origin:
+        store.upsert(ExtensionInstallRecord(
+            package_id=package_id, version="1.0.0", origin="hub", asset_id="asset-1",
+            install_path=str(root), enabled=True, active=True,
+        ))
+    item = HubAssetSummary(
+        kind="system_plugin", asset_id="asset-1", display_name="Auth", short_description="",
+        public_latest_version="1.0.0", icon_uri="", tags=(), package_name=package_id,
+    )
+    async def cached(*args, **kwargs):
+        return [item], None
+    monkeypatch.setattr("jiuwenswarm.server.runtime.marketplace.hub_catalog_cache.cached_asset_catalog", cached)
+    cards, _ = await hub_catalog.list_hub_system_plugins(SimpleNamespace(active=[], installed=[]), install_dir)
+    assert cards[0]["enabled"] is False
+
+    detail = hub_detail(_hub_detail(), SimpleNamespace(active=[], installed=[]), store, install_dir=install_dir)
+    assert detail["enabled"] is False
+    assert detail["installed"] is True

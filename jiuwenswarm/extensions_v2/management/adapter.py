@@ -170,17 +170,17 @@ async def _dispatch(manager: ExtensionManager, method: str, parsed: _Request) ->
             record = store.get(parsed.package_id) or store.by_asset(parsed.package_id)
             hub_key = record.asset_id if record is not None and record.asset_id else parsed.package_id
             detail = await get_hub_system_plugin(hub_key, parsed.version)
-            return {"package": hub_detail(detail, state, store)}
+            return {"package": hub_detail(detail, state, store, install_dir=install_dir)}
         detail = project_detail(entry, state, install_dir=install_dir)
         record = store.get(entry.package_id, detail.get("installedVersion", "")) or store.get(entry.package_id)
         if record is None or record.origin != "hub" or not record.asset_id:
             return {"package": detail}
         if parsed.version and parsed.version != detail.get("installedVersion"):
             hub = await get_hub_system_plugin(record.asset_id, parsed.version)
-            return {"package": hub_detail(hub, state, store)}
+            return {"package": hub_detail(hub, state, store, install_dir=install_dir)}
         try:
             hub = await get_hub_system_plugin(record.asset_id, "")
-            hub_projected = hub_detail(hub, state, store)
+            hub_projected = hub_detail(hub, state, store, install_dir=install_dir)
             detail["versions"] = merge_versions(
                 detail.get("versions") or [], hub_projected.get("versions") or [],
             )

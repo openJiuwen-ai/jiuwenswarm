@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | feature / F_35 |
-| 最近修订 | 2026-11-09 |
+| 最近修订 | 2026-11-12 |
 | 关联计划 | [EXTV2-35](../designs/extensions-v2-development-plan.md#extv2-35-系统插件还原) |
 | 状态 | 已实现 |
 
@@ -14,6 +14,13 @@
 当系统插件使主服务无法正常响应时，用户仍可把已安装插件还原到最近记录中的某个状态。还原保留安装目录，
 只改变受管 `manifest.json` 的 `enable` 字段；确认还原后，父启动器会自动重启 AgentServer 和 Gateway 加载新状态。重启
 AgentServer 前会回收其独立的 Runtime Worker，避免该 Worker 保留还原前已加载的 Handler 或卡死执行状态。
+
+插件广场卡片、详情页和本地列表（AgentServer / Gateway）的 `enabled` 以受管 manifest 为准，
+不以安装来源记录中的旧 `enabled` 或运行时 `active` 覆盖还原结果。`active` 独立表示运行时是否已加载。
+Hub 无可读受管 manifest 时保留安装记录或默认值的兼容回退。
+
+The marketplace cards, details and local catalogs read persisted enablement from the managed manifest.
+Runtime activation is reported separately; installation provenance does not override a restored manifest.
 
 ## 2. 记录与还原规则
 
