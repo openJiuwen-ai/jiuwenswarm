@@ -354,6 +354,12 @@ models:
         api_key: ${API_KEY}
         model_name: ${MODEL_NAME}
         client_provider: ${MODEL_PROVIDER}
+        # vendor_key：供应商方言标识，对应 .env 的 VENDOR_KEY；只有特定网关需要
+        # （例如 OpenCode Go 填 opencode-go），一般留空即"不声明"。
+        # 写在模板里而不是只写 .env.template：新装直接拷贝模板，已有配置靠
+        # migrate_config_from_template 从模板补键；而 get_default_models 只在
+        # 配置里没有 models.defaults 时才读 VENDOR_KEY 环境变量。
+        vendor_key: ${VENDOR_KEY:-}
         # endpoint_profile：仅 OpenAI 协议(client_provider=OpenAI)生效的端点方言。
         #   openai(官方/默认)、deepseek、openrouter、siliconflow、dashscope、
         #   openai_compatible(KV释放/亲和)、ollama、lmstudio、vllm、sglang。

@@ -75,6 +75,45 @@ design_note: 需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-prov
   checkout 无法收集（导入已删除的 `jiuwenswarm.common.mode_matrix`，属既有破损），
   因此无条件挂载改由新文件 `tests/unit_tests/agents/swarm/test_opencode_session_rail_mount.py` 验证。
 
+## 评审修改（PR #9875）
+
+上游 develop 合入（提交 `d12d6d66d`）后按评审意见收敛了六处实现，一份驳回：
+
+- `modelAdapters.modelDraftToEntry`：新增 `resolvePresetApiBase`。预设自带地址时
+  仍然无条件采用；预设把地址交给用户填（`opencode-go`）时照存草稿值，但丢弃
+  "原样继承自另一供应商条目"的那一个——即草稿值与 `existing.api_base` 逐字节相同
+  且 `existing.vendor_key` 不同。此前 `preset.api_base || next.api_base` 在跨供应商
+  切换时会把上一家的地址带过来。判定收窄到"未改动过的继承值"，是为了不误伤用户在
+  切换后手填的地址：FR-002 允许用户填任何可用地址，一律清空会违背该条；脏值检查
+  的前提也正是那条地址确实来自上一家，而不是用户刚输入的。Decision 8 "空地址预设
+  可手填、不被覆盖" 的语义因此保持不变。
+- `providers/member_rails._build_opencode_session_rail`：`session_id` 与成员标识
+  任一为空时返回 `None`，不挂载 rail。否则 scope 退化为 `member::`，所有会话共享
+  同一 `x-opencode-session`。
+- `config_specs`：`_REVIEWER_TEAM_RAIL_NAMES` / `_REVIEWER_CODE_RAIL_NAMES` 补入
+  `registry.OPENCODE_SESSION`。`build_reviewer_deep_agent_spec` 按白名单收窄 rails，
+  缺席即让 review 轮次的模型调用不带会话头。
+- `moa_runtime.resolve_moa_settings`：MoA 指纹改为在注入会话头之前计算
+  （`unscoped_group`），返回值中的 `core_group` 仍带 header。适配器每轮用无 scope
+  的重算结果与实例上的 `_moa_fingerprint` 比对，此前两者必然不同，导致每轮
+  `cleanup()` 并重建模型组。
+- `resources/config.yaml`：默认模型条目补 `vendor_key: ${VENDOR_KEY:-}`。新装直接
+  拷贝模板，已有配置靠 `migrate_config_from_template` 从模板补键（`_deep_merge`
+  只沿模板已有的键下探，模板没写的键无从补入）；而 `get_default_models` 只在配置
+  里没有 `models.defaults` 时才读 `VENDOR_KEY` 环境变量，本模板总是带着
+  `models.defaults`，所以只写 `.env.template` 时该变量只被记录、不生效。
+- 测试：新增/更新
+  `test_opencode_session_rail_mount.py`（reviewer 白名单、空 scope 不挂载）、
+  `test_moa_runtime.py::test_fingerprint_ignores_the_request_scope`、
+  `test_config_template_key_coverage.py::test_the_default_model_entry_names_vendor_key`、
+  `modelSettings.test.mjs` 的跨供应商地址用例；删除本仓新增 rail 测试里多余的
+  `@pytest.mark.asyncio`。
+
+**驳回**：要求给 `test_config_validate_model_mcc.py` 的 async 用例补
+`@pytest.mark.asyncio`。`pytest.ini` 已配置 `--asyncio-mode=auto`，且
+`.specify/memory/constitution.md` 原则 IV 明确"MUST NOT 额外添加
+`@pytest.mark.asyncio`"，补标记反而与仓库约束冲突。
+
 ## 验证
 
 - 后端定向：`tests/unit_tests/common/test_opencode_go.py`、`test_config_validate_model_mcc.py`、

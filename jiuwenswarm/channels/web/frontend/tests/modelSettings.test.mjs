@@ -166,6 +166,107 @@ test('empty api_base preset keeps the address editable and never overwrites a ty
   assert.match(dialog, /custom \|\| !preset\?\.api_base/);
 });
 
+test('switching to a user-addressed preset never inherits the previous vendor address', () => {
+  const catalogWithEmptyAddress = parseVendorCatalog({
+    reasoning,
+    token_plan: [preset()],
+    coding_plan: [preset({ plan: 'coding_plan', api_base: 'https://coding.example/v1' })],
+    custom_api: [preset({
+      vendor_key: 'opencode-go',
+      display_name: 'OpenCode Go',
+      plan: 'custom_api',
+      api_base: '',
+      endpoint_profile: null,
+      default_model: '',
+      model_options: [],
+      icon_key: 'opencode-go',
+      models_endpoint: null,
+      supports_anthropic: false,
+      anthropic_base: null,
+      anthropic_client_provider: null,
+    })],
+  });
+  const selection = vendorSelectionKey('custom_api', 'opencode-go');
+  const previousEntry = {
+    alias: 'prev',
+    model_name: 'prev',
+    api_base: 'https://previous.example/v1',
+    api_key: 'k',
+    model_provider: 'OpenAI',
+    vendor_key: 'alibaba',
+  };
+
+  // Editing an entry of another vendor and saving its untouched address: the
+  // old address must not follow, or the entry would keep addressing alibaba.
+  const inheritedEntry = modelDraftToEntry(
+    {
+      ...createModelDraft(previousEntry, catalogWithEmptyAddress),
+      vendor_selection: selection,
+    },
+    previousEntry,
+    catalogWithEmptyAddress,
+    false,
+  );
+  assert.equal(inheritedEntry.api_base, '');
+  assert.equal(inheritedEntry.vendor_key, 'opencode-go');
+
+  // The dialog clears the field on a vendor switch; saving that empty draft
+  // stays empty and requires the user to name an address.
+  const switchedEntry = modelDraftToEntry(
+    { ...applyVendorSelection(createModelDraft(undefined, catalogWithEmptyAddress), selection, catalogWithEmptyAddress), alias: 'x' },
+    previousEntry,
+    catalogWithEmptyAddress,
+    true,
+  );
+  assert.equal(switchedEntry.api_base, '');
+  assert.equal(switchedEntry.vendor_key, 'opencode-go');
+
+  // An address the user typed is theirs to keep, even after switching vendors:
+  // FR-002 accepts any usable OpenCode Go address, not just one the preset knows.
+  const typedEntry = modelDraftToEntry(
+    {
+      ...applyVendorSelection(createModelDraft(undefined, catalogWithEmptyAddress), selection, catalogWithEmptyAddress),
+      alias: 'x',
+      api_base: 'https://opencode.ai/zen/go/v1',
+    },
+    previousEntry,
+    catalogWithEmptyAddress,
+    true,
+  );
+  assert.equal(typedEntry.api_base, 'https://opencode.ai/zen/go/v1');
+
+  // A brand-new entry has no previous address to inherit anyway.
+  const freshEntry = modelDraftToEntry(
+    applyVendorSelection(createModelDraft(undefined, catalogWithEmptyAddress), selection, catalogWithEmptyAddress),
+    undefined,
+    catalogWithEmptyAddress,
+    true,
+  );
+  assert.equal(freshEntry.api_base, '');
+
+  // Editing an existing entry of the same vendor keeps the address it shows,
+  // which is how an already-configured OpenCode Go entry keeps working.
+  const sameVendorEntry = modelDraftToEntry(
+    {
+      ...createModelDraft(undefined, catalogWithEmptyAddress),
+      alias: 'oc',
+      vendor_selection: selection,
+      api_base: 'https://opencode.ai/zen/go/v1',
+    },
+    {
+      alias: 'oc',
+      model_name: 'oc-model',
+      api_base: 'https://opencode.ai/zen/go/v1',
+      api_key: 'k',
+      model_provider: 'OpenAI',
+      vendor_key: 'opencode-go',
+    },
+    catalogWithEmptyAddress,
+    false,
+  );
+  assert.equal(sameVendorEntry.api_base, 'https://opencode.ai/zen/go/v1');
+});
+
 test('opencode-go vendor label resolves in both locales and falls back to a custom icon', () => {
   const labels = source('src/features/settings/modules/models/modelVendorLabels.ts');
   assert.match(labels, /'opencode-go': 'opencode-go'/);

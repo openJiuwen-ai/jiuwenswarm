@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 from openjiuwen.core.foundation.llm import (
     Model,
     ModelClientConfig,
@@ -56,7 +55,6 @@ def test_rail_priority_sits_before_model_identity():
     assert OpenCodeSessionRail.priority == 4
 
 
-@pytest.mark.asyncio
 async def test_member_scope_header_is_injected_without_losing_model_config():
     source = _model()
     agent = _Agent(source)
@@ -73,7 +71,6 @@ async def test_member_scope_header_is_injected_without_losing_model_config():
     }
 
 
-@pytest.mark.asyncio
 async def test_different_members_of_one_session_differ():
     first = _Agent(_model())
     second = _Agent(_model())
@@ -90,7 +87,6 @@ async def test_different_members_of_one_session_differ():
     assert first_header != second_header
 
 
-@pytest.mark.asyncio
 async def test_non_opencode_model_is_untouched():
     source = _model(vendor_key="deepseek", headers={"X-Trace": "1"})
     agent = _Agent(source)
@@ -101,7 +97,6 @@ async def test_non_opencode_model_is_untouched():
     assert agent.llm is source
 
 
-@pytest.mark.asyncio
 async def test_repeated_calls_with_the_same_signature_do_not_reinstall():
     agent = _Agent(_model())
     rail = OpenCodeSessionRail("session-1", "card-a")
@@ -112,7 +107,6 @@ async def test_repeated_calls_with_the_same_signature_do_not_reinstall():
     assert len(agent.installed) == 1
 
 
-@pytest.mark.asyncio
 async def test_user_supplied_session_header_wins():
     source = _model(headers={"X-OpenCode-Session": "user-value", "X-Trace": "1"})
     agent = _Agent(source)

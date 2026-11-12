@@ -94,7 +94,13 @@ def _build_opencode_session_rail(params: dict[str, Any], context: SwarmBuildCont
         or getattr(context, "member_name", None)
         or ""
     )
-    return OpenCodeSessionRail(str(getattr(context, "session_id", "") or ""), identity)
+    session_id = str(getattr(context, "session_id", "") or "")
+    # Both halves of the scope must identify something. Without them the scope
+    # degenerates to "member::", so every session would share one header; the
+    # adapter's own recipe injection still covers scopes it can derive.
+    if not session_id.strip() or not identity.strip():
+        return None
+    return OpenCodeSessionRail(session_id, identity)
 
 
 @harness_element(kind=ElementKind.RAIL, name=ORGANIZATION_OWNER_INBOX,

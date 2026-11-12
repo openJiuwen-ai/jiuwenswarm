@@ -78,6 +78,14 @@ def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dic
         ModelSelection(type="model_group", id=selected.id),
         ModelExecutionContext(can_access=can_access),
     )
+    from openjiuwen.core.foundation.llm.routing.schema import ResolvedModelGroup
+
+    # Fingerprint the resolution *before* the per-request session header goes
+    # in. The header is derived from the request scope, so hashing it would
+    # make the fingerprint differ between the scoped build and the unscoped
+    # re-validation the adapter performs on every turn -- and every turn would
+    # then tear down and rebuild the group.
+    unscoped_group = ResolvedModelGroup.model_validate(resolved.model_dump())
     if scope:
         from jiuwenswarm.common.opencode_go import inject_session_into_selection
 
@@ -100,13 +108,11 @@ def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dic
         )
         if requires_api_key and not model.api_key.strip():
             raise ValueError(f"MoA member {route.route_id} has no API credential")
-    from openjiuwen.core.foundation.llm.routing.schema import ResolvedModelGroup
-
     core_group = ResolvedModelGroup.model_validate(resolved.model_dump())
     candidate["aggregator_route_id"] = core_group.routes[0].route_id
     candidate["verifier"]["route_id"] = core_group.routes[0].route_id if not settings["jev_enabled"] else ""
     fingerprint = hashlib.sha256(json.dumps(
-        {"runtime_version": 2, "settings": candidate, "group": core_group.model_dump()},
+        {"runtime_version": 2, "settings": candidate, "group": unscoped_group.model_dump()},
         sort_keys=True, default=str,
     ).encode()).hexdigest()
     return candidate, core_group, fingerprint
