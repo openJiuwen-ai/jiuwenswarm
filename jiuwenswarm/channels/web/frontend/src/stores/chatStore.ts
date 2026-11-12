@@ -36,6 +36,7 @@ import {
   shouldDropToolResult,
 } from './toolResultLifecycle';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
+import { canMessageHostFileItems } from '../features/chatFileAttachment';
 import { parseTimestampToMs } from '../utils/timestamp';
 import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
@@ -2391,13 +2392,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       const lastMessage = runtime.messages[runtime.messages.length - 1];
-      // 与历史 restore 一致：优先挂当前流；否则挂最近一条助手消息（不是下一条 final）。
+      // 与历史 restore 一致：优先挂当前流；否则只在最后一条消息能承载文件卡片时挂上去。
+      // goal 完成卡 / 主动推荐卡不渲染 fileItems，挂上去会让文件消失。
       const targetId =
         runtime.currentStreamId ??
-        (lastMessage?.role === 'assistant' ||
-        (lastMessage?.role === 'system' && lastMessage.id?.startsWith('team-leader-'))
-          ? lastMessage.id
-          : null);
+        (lastMessage && canMessageHostFileItems(lastMessage) ? lastMessage.id : null);
       const timestampIso =
         typeof options?.timestampIso === 'string' && options.timestampIso.trim()
           ? options.timestampIso.trim()
