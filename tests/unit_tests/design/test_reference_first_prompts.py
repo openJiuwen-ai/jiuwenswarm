@@ -460,6 +460,52 @@ def test_the_graph_carries_the_directors_shot_wardrobe(monkeypatch) -> None:
 
 
 
+def test_a_garment_clause_is_condensed_and_stable() -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
+        condense_garment,
+    )
+
+    zh = "\u7070\u8272\u9488\u7ec7\u5957\u5934\u886b"  # grey knit jumper
+    nested = (
+        "plain mid-grey knit crew-neck jumper (plain mid-grey knit crew-neck "
+        f"jumper ({zh}), fine wool ribbed knit, crew neckline, straight hem), "
+        "fine wool ribbed knit, crew neckline, straight hem"
+    )
+    once = condense_garment(nested)
+    assert once == f"plain mid-grey knit crew-neck jumper ({zh})"
+    # Reading the same lock again changes nothing.
+    assert condense_garment(once) == once
+    # A clean clause passes through untouched.
+    clean = "\u6885\u7d2b\u8272\u9488\u7ec7\u5f00\u886b"
+    assert condense_garment(clean) == clean
+
+
+def test_a_nameless_garment_block_belongs_to_nobody() -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+        _costume_blocks,
+        _wardrobe_for,
+    )
+
+    mother = "\u5988\u5988"
+    son = "\u5c11\u5e74\u513f\u5b50"
+    stray = "plain mid-grey knit crew-neck jumper"
+    lock = f"{mother}: top=green blouse; {stray}; {son}: top=blue hoodie"
+
+    blocks = _costume_blocks(lock)
+    assert [who for who, _ in blocks] == [mother, "", son]
+    assert "jumper" not in dict((who, text) for who, text in blocks)[mother]
+
+    cfg = {
+        "pipeline": "clip",
+        "cast_names": [mother],
+        "on_screen": ["char_3"],
+        "costume_lock": lock,
+    }
+    graph = {"metadata": {"script_analysis": {"characters": [{"id": "char_3", "name": mother}]}}}
+    assert "green blouse" in _wardrobe_for("char_3", cfg, graph)
+    assert "jumper" not in _wardrobe_for("char_3", cfg, graph)
+
+
 def test_wardrobe_phrase_drops_the_slot_label_and_never_cuts_mid_word() -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import wearable_phrase
 

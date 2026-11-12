@@ -746,11 +746,19 @@ def _costume_for_setting(token: str, name: str, cfg: dict[str, Any]) -> str:
     return str(entry.get(token) or entry.get(name) or "").strip()
 
 
+_GARMENT_SLOT_CHUNK = re.compile(
+    r"(?i)^(?:top|bottom|outfit|foot\s*wear|outer\s*wear|under\s*wear|accessor(?:y|ies))\s*="
+)
+
+
 def _costume_blocks(lock: str) -> list[tuple[str, str]]:
     """Split "Name: top=…; bottom=…; Other: …" into [(name, "top=…; bottom=…")].
 
     Garment slots are separated by the same semicolon that separates cast
-    members, so a naive split hands a character a single garment.
+    members, so a naive split hands a character a single garment. A chunk that
+    names no character is only the previous character's next garment slot when
+    it is labelled (``bottom=…``); any other stray garment belongs to nobody and
+    is kept under the empty name so it can never be read as their wardrobe.
     """
     blocks: list[tuple[str, list[str]]] = []
     for chunk in re.split(r"[;；\n]+", str(lock or "")):
@@ -760,8 +768,10 @@ def _costume_blocks(lock: str) -> list[tuple[str, str]]:
         head = re.match(r"^([^:：=]{1,40})[:：]\s*(.*)$", chunk)
         if head:
             blocks.append((head.group(1).strip(), [head.group(2).strip()]))
-        elif blocks:
+        elif blocks and _GARMENT_SLOT_CHUNK.match(chunk):
             blocks[-1][1].append(chunk)
+        elif blocks:
+            blocks.append(("", [chunk]))
         else:
             return []
     return [(name, "; ".join(part for part in parts if part)) for name, parts in blocks]
@@ -788,12 +798,16 @@ def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None,
     if not raw:
         lock = str(cfg.get("costume_lock") or "").strip()
         # "Mother: top=…; bottom=…; Young Child: pale yellow…"
-        for who, block in _costume_blocks(lock):
+        blocks = _costume_blocks(lock)
+        for who, block in blocks:
             if who.casefold() == name.casefold() or who == token:
                 raw = block
                 break
-        if not raw and lock and len(on_screen_names(cfg, graph)) <= 1:
-            raw = lock
+        if not raw and len(on_screen_names(cfg, graph)) <= 1:
+            # One face on screen: the lock can speak for them, but never through
+            # a garment chunk that lost its name.
+            named = [block for who, block in blocks if who]
+            raw = "; ".join(named) if named else ""
     if not raw:
         for char in _analysis(graph).get("characters") or []:
             if not isinstance(char, dict):

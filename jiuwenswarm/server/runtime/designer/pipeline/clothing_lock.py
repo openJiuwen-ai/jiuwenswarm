@@ -98,6 +98,32 @@ def _has_clothing_slots(text: str) -> bool:
     return any(key in text for key in _SLOT_KEYS)
 
 
+_EDGE_JUNK_RE = re.compile(r"^[\s,;\u3001\u3002\uff0c\uff1b]+|[\s,;\u3001\u3002\uff0c\uff1b]+$")
+_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff][^()]{0,40}")
+
+
+def condense_garment(text: str, *, limit: int = 160) -> str:
+    """Keep one copy of a garment clause.
+
+    A lock that has been read and re-rendered a few times can carry its own
+    text inside its own parentheses ("jumper (jumper (ZH), wool), wool").
+    Keep the head garment plus its first translation so the clause is stable
+    when it is read again.
+    """
+    value = re.sub(r"\s+", " ", str(text or ""))
+    value = _EDGE_JUNK_RE.sub("", value)
+    if not value:
+        return ""
+    head = _EDGE_JUNK_RE.sub("", re.split(r"\s*\(", value, maxsplit=1)[0])
+    repeated = bool(head) and len(head) >= 8 and value.casefold().count(head.casefold()) > 1
+    if not repeated and len(value) <= limit:
+        return value
+    zh = _CJK_RUN_RE.search(value)
+    if zh and head:
+        return f"{head} ({zh.group(0).strip()})"[:limit]
+    return (head or value)[:limit]
+
+
 def normalize_clothing_parts(raw: Any) -> dict[str, str]:
     """Garment slots authored by the LLM (any language) as a clean slot→text map."""
     if not isinstance(raw, dict):
@@ -113,7 +139,7 @@ def normalize_clothing_parts(raw: Any) -> dict[str, str]:
         # Slot values are joined with ";" / "=" in costume_lock.
         text = text.replace("=", " ").replace(";", ",").strip(" ,，;；.。")
         if text:
-            parts[slot] = text[:160]
+            parts[slot] = condense_garment(text)
     return parts
 
 
@@ -128,7 +154,7 @@ def wearable_phrase(text: str, *, name: str = "", lang: str = "en") -> str:
         raw = re.sub(rf"(?i)^{re.escape(name.strip())}\s*[:：]\s*", "", raw).strip()
     raw = _SLOT_LABEL_RE.sub("", raw)
     raw = re.sub(r"\s*[;；]\s*", clause_separator(lang), raw)
-    return raw.strip(" ,，;；.。")
+    return condense_garment(raw)
 
 
 def extract_clothing_parts(text: str) -> dict[str, str]:
@@ -236,7 +262,7 @@ def detailed_costume_lock_for_character(ch: dict[str, Any] | None) -> str:
     # A costume read straight off the identity plate keeps the exact garments;
     # the slot extractor condenses them to "deep sweater" and would lose the
     # colour and fabric the plate just declared.
-    clause = str(ch.get("costume_clause") or "").strip()
+    clause = condense_garment(str(ch.get("costume_clause") or "").strip())
     if clause:
         return f"{name}: {clause}"[:480]
     existing_parts = normalize_clothing_parts(ch.get("clothing_parts"))
