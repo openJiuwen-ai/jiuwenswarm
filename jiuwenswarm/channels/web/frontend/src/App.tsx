@@ -572,9 +572,7 @@ function AppContent({
   const [restartSeenDisconnect, setRestartSeenDisconnect] = useState(false);
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
-  const [proactiveToastVisible, setProactiveToastVisible] = useState(false);
   const [authToastVisible, setAuthToastVisible] = useState(false);
-  const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
@@ -677,7 +675,6 @@ function AppContent({
 
   const restartAutoCloseTimerRef = useRef<number | null>(null);
   const saveToastTimerRef = useRef<number | null>(null);
-  const proactiveToastTimerRef = useRef<number | null>(null);
   const authToastTimerRef = useRef<number | null>(null);
   const settingsHasChangesRef = useRef(false);
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
@@ -1285,9 +1282,6 @@ function AppContent({
   const clearTodos = useTodoStore((s) => s.clearTodos);
   const extensionReady = useHarnessStore((s) => s.runtimes[sessionId]?.extensionReady ?? null);
   const resetHarnessStore = useHarnessStore((s) => s.reset);
-  const proactiveNotificationMessage = useHarnessStore((s) => s.proactiveNotificationMessage);
-  const setProactiveNotification = useHarnessStore((s) => s.setProactiveNotification);
-
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
   const toolPanelHasContent = useMemo(() => {
     // Electron 下工具面板始终可达（内置浏览器页签等桌面能力），但新建会话首页
@@ -2311,13 +2305,6 @@ function AppContent({
     }
   }, []);
 
-  const clearProactiveToastTimer = useCallback(() => {
-    if (proactiveToastTimerRef.current != null) {
-      window.clearTimeout(proactiveToastTimerRef.current);
-      proactiveToastTimerRef.current = null;
-    }
-  }, []);
-
   const showSaveToast = useCallback(() => {
     setSaveToastVisible(true);
     clearSaveToastTimer();
@@ -2600,22 +2587,8 @@ function AppContent({
     return () => {
       clearRestartAutoCloseTimer();
       clearSaveToastTimer();
-      clearProactiveToastTimer();
     };
-  }, [clearProactiveToastTimer, clearRestartAutoCloseTimer, clearSaveToastTimer]);
-
-  useEffect(() => {
-    const message = proactiveNotificationMessage?.trim();
-    if (!message) return;
-    setProactiveToastMessage(message);
-    setProactiveToastVisible(true);
-    clearProactiveToastTimer();
-    proactiveToastTimerRef.current = window.setTimeout(() => {
-      setProactiveToastVisible(false);
-      setProactiveNotification(null);
-      proactiveToastTimerRef.current = null;
-    }, 8000);
-  }, [clearProactiveToastTimer, proactiveNotificationMessage, setProactiveNotification]);
+  }, [clearRestartAutoCloseTimer, clearSaveToastTimer]);
 
   useEffect(() => {
     if (!isConnected || initialDataLoaded) {
@@ -5332,17 +5305,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-auth-toast">
           <div className="app-session-toast animate-rise" data-testid="app-auth-toast-message">
             {t('auth.huawei.loginSuccessToast')}
-          </div>
-        </div>
-      )}
-
-      {proactiveToastVisible && proactiveToastMessage && (
-        <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-proactive-notification-toast">
-          <div
-            className="max-w-[640px] whitespace-pre-line bg-warn-subtle text-warn px-4 py-3 rounded-lg shadow-lg animate-rise text-sm leading-5"
-            data-testid="app-proactive-notification-toast-message"
-          >
-            {proactiveToastMessage}
           </div>
         </div>
       )}

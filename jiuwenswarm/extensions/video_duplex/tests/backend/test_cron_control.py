@@ -90,13 +90,14 @@ async def test_query_lists_only_owned_jobs_and_never_applies():
 
 
 @pytest.mark.asyncio
-async def test_query_by_job_id_adds_next_runs_and_marks_protected_jobs():
+async def test_query_by_job_id_adds_next_runs():
     controller = FakeCronController([job("daily"), job("system", mode="proactive.tick")])
     control = CronControl("alice", controller)
 
     receipt = await control.execute(CRON_QUERY_TOOL, {"job_id": "system"})
 
-    assert receipt["job"]["protected"] is True
+    assert receipt["job"]["id"] == "system"
+    assert receipt["job"].get("protected") is not True
     assert receipt["job"]["next_runs"] == ["2026-10-28T09:00:00+08:00"]
     assert controller.previewed == [("system", 5)]
 
@@ -199,14 +200,14 @@ async def test_update_exception_returns_unsuccessful_receipt(monkeypatch, write_
 
 
 @pytest.mark.asyncio
-async def test_update_refuses_protected_jobs():
+async def test_update_allows_former_proactive_tick_jobs():
     controller = FakeCronController([job("system", mode="proactive.tick")])
     control = CronControl("alice", controller)
 
     receipt = await control.execute(CRON_UPDATE_TOOL, {"job_id": "system", "patch": {"enabled": False}})
 
-    assert receipt["code"] == "CRON_JOB_PROTECTED"
-    assert controller.updated == []
+    assert receipt["applied"] is True
+    assert controller.updated == [("system", {"enabled": False})]
 
 
 @pytest.mark.asyncio
