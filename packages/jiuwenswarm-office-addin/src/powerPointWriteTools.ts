@@ -4,6 +4,7 @@ import { deckFingerprint, readSlides, type Batch, type PowerPointRun } from './p
 import type { PresentationToolRuntime } from './powerPointToolDispatcher';
 import { downloadAsset } from './presentationAssetClient';
 import type { PresentationHost } from './presentationContract';
+import { PackageRefused } from './presentationPackage';
 import {
   applyScenePatch, parseScenePatch, PatchRefused, type DesignSystem, type SlideJournal,
 } from './presentationScenePatch';
@@ -52,8 +53,12 @@ export function powerPointWriteRuntime({ run, host, journal, fetcher }: {
               + 'passed was read; call read_presentation_context, or use structure_fingerprint_after from the previous '
               + 'patch, and try again', 'conflict', { expected: patch.baseStructureFingerprint, actual: current });
           }
+          const write = { journal: callJournal, timings };
           const evidence = await applyScenePatch(batch, patch, { images, page: size, journal: callJournal,
-            supports: version => host.isSetSupported('PowerPointApi', version) });
+            supports: version => host.isSetSupported('PowerPointApi', version), packages: {
+              export: async id => (await exportSlides(batch, timings, [id])).exports[0],
+              replace: (id, base64) => replaceSlide(write, batch, id, base64),
+            } });
           const after = await fingerprint(batch);
           return { ok: true, result: { ...evidence, structure_fingerprint_after: after }, mutationEvidence: evidence,
             hostTimings: timings };
@@ -96,6 +101,67 @@ export async function rolledBack(
     return { ok: false, hostTimings: timings, error: { ...failure, message,
       details: { ...details, rollback_failed: messageOf(rollbackError) } } };
   }
+}
+
+/** A write's journal and host timings, which the slide round trip below reports to. */
+export interface SlideWrite {
+  journal: SlideJournal;
+  timings: HostTimings;
+}
+
+export async function deckOrder(batch: Batch): Promise<string[]> {
+  const { slides } = batch.presentation;
+  slides.load('items/id');
+  await batch.sync();
+  return slides.items.map(slide => slide.id);
+}
+
+/** A slide's 1-based position, refusing an id the deck does not have. */
+export function slidePosition(order: string[], id: string): number {
+  const at = order.indexOf(id);
+  if (at < 0) {
+    throw new PackageRefused(`Slide ${id} is not in this presentation (it has ${order.length} slides); `
+      + 'read_presentation_context lists the current slide ids');
+  }
+  return at + 1;
+}
+
+/** The deck's order and the packages of ``ids``, exported in one sync. */
+export async function exportSlides(batch: Batch, timings: HostTimings, ids: string[]) {
+  const order = await deckOrder(batch);
+  ids.forEach(id => slidePosition(order, id));
+  const started = Date.now();
+  const results = new Map([...new Set(ids)].map(id => [id, batch.presentation.slides.getItem(id).exportAsBase64()]));
+  await batch.sync();
+  timings.export_ms = (timings.export_ms ?? 0) + Date.now() - started;
+  return { order, exports: ids.map(id => results.get(id)!.value) };
+}
+
+/** Inserts a package and tells the journal of each slide it made; ``count`` is how many it should make. */
+export async function insertPackage(
+  write: SlideWrite, batch: Batch, base64: string, options: PowerPoint.InsertSlideOptions, count: number,
+): Promise<string[]> {
+  const before = await deckOrder(batch);
+  const started = Date.now();
+  batch.presentation.insertSlidesFromBase64(base64, options);
+  const made = (await deckOrder(batch)).filter(id => !before.includes(id));
+  write.timings.insert_ms = (write.timings.insert_ms ?? 0) + Date.now() - started;
+  made.forEach(id => write.journal.created(id));
+  if (made.length !== count) throw new Error(`PowerPoint inserted ${made.length} slides for ${count}`);
+  return made;
+}
+
+/**
+ * Puts the edited package of slide ``id`` in its place: the copy lands right after the slide, which then goes. The
+ * copy has a new slide id and keeps the shape ids; the journal follows it. The copy's id.
+ */
+export async function replaceSlide(write: SlideWrite, batch: Batch, id: string, base64: string): Promise<string> {
+  const options = { formatting: 'KeepSourceFormatting', targetSlideId: id } as const;
+  const [copy] = await insertPackage(write, batch, base64, options, 1);
+  batch.presentation.slides.getItem(id).delete();
+  await batch.sync();
+  write.journal.replaced(id, copy);
+  return copy;
 }
 
 /** The structure fingerprint of the deck now, as read_presentation_context reports it. */

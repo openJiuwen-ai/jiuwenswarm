@@ -76,6 +76,7 @@ function deckOptions(): FakeDeckOptions {
 function runtimeOn(deck: FakeDeck, upload: Uint8Array<ArrayBuffer>) {
   const snapshots = new SlideSnapshots(powerPointSlideDeck(deck.run), new HostWriteQueue());
   return powerPointPackageRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id),
+    sandbox: async (_code, base64) => ({ base64, dirty: false }), forgetUndo: () => snapshots.forget(),
     fetcher: async () => new Response(upload) });
 }
 
@@ -224,6 +225,9 @@ test('the slide package tools take exactly what their input_schema allows', asyn
     read_chart_style: { slide_id: chartSlide },
     create_slide_chart: { slide_id: '256#' },
     edit_built_chart: { slide_id: chartSlide },
+    edit_slide_xml: { slide_id: '256#' },
+    edit_slide_chart: { slide_id: chartSlide },
+    edit_slide_master: {},
   };
   const probes: Probe[] = [];
   for (const [name, ids] of Object.entries(known) as [PresentationToolName, S][]) {

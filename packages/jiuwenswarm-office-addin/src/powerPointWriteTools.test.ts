@@ -192,6 +192,40 @@ describe('a patch the host fails part way', () => {
   });
 });
 
+describe('a patch that draws connectors', () => {
+  const ARROW = { op: 'add_connector', end_arrow: true, start_anchor: { shape_id: '2', side: 'bottom' },
+    end_anchor: { shape_name: 'Next', side: 'top' } };
+  const NEXT = { op: 'add_shape', shape_type: 'Rectangle', name: 'Next', left: 300, top: 300, width: 100, height: 50 };
+
+  it('replaces the slide with one that has them, names its new id, and is undone as that one slide', async () => {
+    const { deck, call, fingerprint, snapshots } = pane();
+    const before = deck.content();
+    const result = await call('presentation_apply_patch', patch(await fingerprint(), [{ slide_ref: 'S1',
+      slide_id: '256#', operations: [NEXT, ARROW] }]));
+    const [copy] = deck.ids();
+    expect(result).toMatchObject({ success: true, result: { slide_id_updates: [{ old_slide_id: '256#',
+      new_slide_id: copy }], slides: [{ slide_id: copy }] },
+      mutation: { state: 'applied', replacement_slide_ids: { '256#': copy }, verification_targets: [copy] } });
+    expect(deck.slides[0].shapes.map(shape => shape.type)).toEqual(['Placeholder', 'GeometricShape', 'Line']);
+    expect((result.result as JsonObject).structure_fingerprint_after).toBe(await fingerprint());
+
+    await snapshots.closeTurn();
+    expect(snapshots.undoable(['c2'])).toEqual({ slides: 1 });
+    expect(await snapshots.undo(['c2'])).toMatchObject({ kind: 'undone', positions: [1] });
+    expect(deck.content()).toEqual(before);
+  });
+
+  it('puts the slide back as it was before the patch when PowerPoint fails to insert the copy', async () => {
+    const { deck, call, fingerprint } = pane();
+    const before = deck.content();
+    deck.insertsBeforeFailure = 0;
+    expect(await call('presentation_apply_patch', patch(await fingerprint(), [{ slide_ref: 'S1', slide_id: '256#',
+      operations: [NEXT, ARROW] }]))).toMatchObject({ success: false, code: 'HOST_WRITE_FAILED',
+      details: { outcome: 'rolled_back' } });
+    expect(deck.content()).toEqual(before);
+  });
+});
+
 describe('undoing a turn of patches', () => {
   it('takes the deck back to before the turn: three slides made and one changed', async () => {
     const { deck, call, fingerprint, snapshots } = pane();

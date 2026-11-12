@@ -4,6 +4,7 @@ import type { ClientToolResult } from './clientAttachment';
 import { FakeDeck, uploadedDeck, type FakeDeckOptions } from './fakePowerPoint';
 import type { JsonObject } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
+import { nodeSandbox } from './nodeSandbox';
 import { powerPointPackageRuntime } from './powerPointPackageTools';
 import { powerPointReadRuntime } from './powerPointReadTools';
 import { joinRuntimes, PowerPointToolDispatcher } from './powerPointToolDispatcher';
@@ -36,6 +37,8 @@ function twoSlides(): FakeDeckOptions {
   ] };
 }
 
+const sandbox = nodeSandbox();
+
 /** The pane's runtime on a fake deck, as the task pane wires it. */
 function pane(deck = new FakeDeck(twoSlides())) {
   const writes = new HostWriteQueue();
@@ -45,7 +48,8 @@ function pane(deck = new FakeDeck(twoSlides())) {
     powerPointReadRuntime({ run: deck.run, host: deck.host, documentName: async () => 'Deck.pptx',
       languages: { displayLanguage: 'zh-CN', contentLanguage: 'zh-CN' } }),
     powerPointWriteRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id) }),
-    powerPointPackageRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id), fetcher }));
+    powerPointPackageRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id), sandbox,
+      forgetUndo: () => snapshots.forget(), fetcher }));
   const dispatcher = new PowerPointToolDispatcher(runtime, writes);
   let calls = 0;
   const call = async (toolName: string, input: JsonObject = {}, downloads: Record<string, string> = {}) => {
@@ -78,9 +82,20 @@ describe('the slide package tools', () => {
     const declared = (api: string) => presentationAttachDeclaration({ documentId: 'd' as never, displayName: 'x',
       host: new FakeDeck({ api }).host, implemented: runtime.tools }).capabilities.supported_tools;
     const tools = ['read_slide_text', 'edit_slide_text', 'find_and_replace', 'duplicate_slide', 'import_slides',
-      'copy_image_between_slides', 'read_chart_style', 'create_slide_chart', 'edit_built_chart'];
+      'copy_image_between_slides', 'read_chart_style', 'create_slide_chart', 'edit_built_chart', 'edit_slide_xml',
+      'edit_slide_chart', 'edit_slide_master'];
     expect(declared('1.8')).toEqual(expect.arrayContaining(tools));
     expect(declared('1.7').filter(tool => tools.includes(tool))).toEqual([]);
+  });
+
+  it('declare the tools that run code only where the pane can start a worker', () => {
+    const { runtime } = pane();
+    const host = { ...new FakeDeck().host, worker: false };
+    const declared = presentationAttachDeclaration({ documentId: 'd' as never, displayName: 'x', host,
+      implemented: runtime.tools }).capabilities.supported_tools;
+    expect(declared).toContain('edit_slide_text');
+    expect(declared.filter(tool => ['edit_slide_xml', 'edit_slide_chart', 'edit_slide_master'].includes(tool)))
+      .toEqual([]);
   });
 
   it('refuse an input their schema does not allow, naming where, before they touch the deck', async () => {
@@ -373,6 +388,152 @@ describe('copy_image_between_slides', () => {
     expect(Object.values(target.parts!)).toEqual([expect.objectContaining({ base64: btoa('png') })]);
     await undoTurn();
     expect(deck.content()).toEqual(before);
+  });
+});
+
+describe('edit_slide_xml and edit_slide_chart', () => {
+  /** Code that changes the text ``from`` on the slide to ``to``. */
+  const retext = (from: string, to: string) => `const path = 'ppt/slides/slide1.xml';
+    const xml = await zip.file(path).async('string');
+    zip.file(path, xml.replace('${from}', escapeXml('${to}')));
+    markDirty();`;
+
+  it('run the code on the slide\'s package and put what it marked dirty in the slide\'s place', async () => {
+    const { deck, call } = pane();
+    const result = await call('edit_slide_xml', { slide_id: '256#',
+      code: `${retext('Plan', 'Plan & budget')}\nreturn 'done';`, autosize_shape_ids: ['3'] });
+    const [copy] = deck.ids();
+    expect(result).toMatchObject({ success: true, result: { slide_id: copy, script_result: 'done' },
+      mutation: { state: 'applied', replacement_slide_ids: { '256#': copy } } });
+    expect(deck.slide(copy).shapes.map(shape => [shape.id, shape.text])).toEqual([['2', 'Atlasware grew'],
+      ['3', 'Plan & budget']]);
+    expect(deck.refits).toEqual(['3']);
+    expect(await call('edit_slide_chart', { slide_id: copy, code: retext('budget', 'costs') }))
+      .toMatchObject({ success: true, mutation: { state: 'applied' } });
+    expect(deck.slides[0].shapes[1].text).toBe('Plan & costs');
+  });
+
+  it('change nothing when the code only reads, or forgets markDirty, and say which', async () => {
+    const { deck, call } = pane();
+    const before = deck.content();
+    expect(await call('edit_slide_xml', { slide_id: '256#', code: 'return Object.keys(zip.files).length > 10;' }))
+      .toMatchObject({ success: true, result: { script_result: true }, mutation: { state: 'not_applied' } });
+    expect(await call('edit_slide_xml', { slide_id: '256#', code: retext('Plan', 'Lost').replace('markDirty();', '') }))
+      .toMatchObject({ success: true, result: { warning: expect.stringMatching(/never called markDirty/) },
+        mutation: { state: 'not_applied' } });
+    expect(deck.content()).toEqual(before);
+    expect(deck.insertions).toEqual([]);
+  });
+
+  it('refuse what the code may not put in the deck, and a shape to fit that the slide lacks', async () => {
+    const { deck, call } = pane();
+    const before = deck.content();
+    const writes = {
+      macro: 'zip.file(\'ppt/vbaProject.bin\', \'x\');',
+      link: 'zip.file(\'ppt/slides/_rels/slide1.xml.rels\', (await zip.file(\'ppt/slides/_rels/slide1.xml.rels\')'
+        + '.async(\'string\')).replace(\'</Relationships>\', \'<Relationship Id="rX" Type="http://schemas.'
+        + 'openxmlformats.org/officeDocument/2006/relationships/image" Target="https://x.test/a.png" '
+        + 'TargetMode="External"/></Relationships>\'));',
+      slide: 'zip.remove(\'ppt/slides/slide1.xml\');',
+    };
+    for (const [what, code] of Object.entries(writes)) {
+      expect(await call('edit_slide_xml', { slide_id: '256#', code: `${code}\nmarkDirty();` }), what).toMatchObject({
+        success: false, code: 'INVALID_ARGUMENT', mutation: { state: 'not_applied' } });
+    }
+    expect(await call('edit_slide_xml', { slide_id: '256#', code: retext('Plan', 'Lost'),
+      autosize_shape_ids: ['3', '9'] })).toMatchObject({ code: 'INVALID_ARGUMENT',
+      error: expect.stringMatching(/names 9, which the edited slide does not/) });
+    expect(deck.content()).toEqual(before);
+    expect(deck.insertions).toEqual([]);
+  });
+
+  it('answer code that fails with what it threw, changing nothing', async () => {
+    const { deck, call } = pane();
+    const before = deck.content();
+    expect(await call('edit_slide_xml', { slide_id: '256#',
+      code: 'await zip.file(\'ppt/none.xml\').async(\'string\');' }))
+      .toMatchObject({ success: false, code: 'OOXML_SCRIPT_FAILED', error: expect.stringMatching(/^The code failed: /),
+        mutation: { state: 'not_applied', native_mutation_started: false } });
+    expect(deck.content()).toEqual(before);
+  });
+
+  it('are undone with the turn, the slide put back once', async () => {
+    const { deck, call, endTurn, undoTurn } = pane();
+    const before = deck.content();
+    await call('edit_slide_xml', { slide_id: '256#', code: retext('Plan', 'One') });
+    await call('edit_slide_xml', { slide_id: deck.ids()[0], code: retext('One', 'Two') });
+    expect(await endTurn()).toBe(1);
+    expect(await undoTurn()).toMatchObject({ kind: 'undone', positions: [1] });
+    expect(deck.content()).toEqual(before);
+  });
+});
+
+describe('edit_slide_master', () => {
+  const RECOLOUR = `const path = 'ppt/theme/theme1.xml';
+    zip.file(path, (await zip.file(path).async('string')).replace('4472C4', 'C00000'));
+    markDirty();`;
+  /** A deck of three slides on one master of three layouts. */
+  const masterDeck = (preserve = false) => new FakeDeck({
+    masters: [{ id: 'm1', name: 'Office Theme', preserve, layouts: [{ id: 'cover', name: 'Title Slide' },
+      { id: 'blank', name: 'Blank' }, { id: 'heading', name: 'Title Only' }] }],
+    slides: [{ id: '256#', layoutId: 'cover', shapes: [TEXT('2', 'Cover')] },
+      { id: '257#', layoutId: 'blank', shapes: [TEXT('2', 'Body')] },
+      { id: '258#', layoutId: 'heading', shapes: [TEXT('2', 'More')] }] });
+  const layouts = (deck: FakeDeck) => deck.slides.map(slide => [deck.template(slide).master.name,
+    deck.template(slide).layout.name]);
+
+  it('brings the edited master in with the first slide, moves the other slides to it by layout name, and drops the '
+    + 'old master', async () => {
+    const { deck, call } = pane(masterDeck());
+    const result = await call('edit_slide_master', { code: RECOLOUR });
+    const [first, ...others] = deck.ids();
+    expect(result).toMatchObject({ success: true, result: { slide_id: first,
+      master_name: expect.stringMatching(/^Office Theme \[\w+\]$/), ambiguous_layout_slide_ids: [],
+      missing_layout_slide_ids: [], old_master_retained: false },
+      mutation: { state: 'applied', replacement_slide_ids: { '256#': first },
+        affected_slide_ids: [first, ...others] } });
+    const name = (result.result as JsonObject).master_name;
+    expect(layouts(deck)).toEqual([[name, 'Title Slide'], [name, 'Blank'], [name, 'Title Only']]);
+    expect(deck.masters.map(master => master.name)).toEqual([name]);
+    expect(deck.slides.map(slide => slide.shapes.map(shape => shape.text))).toEqual([['Cover'], ['Body'], ['More']]);
+    expect(await call('read_presentation_context')).toMatchObject({ theme_palette: { accent1: 'C00000' } });
+  });
+
+  it('says which slides it could not move, and keeps the old master they still use or that is preserved',
+    async () => {
+    const { deck, call } = pane(masterDeck());
+    const renames = `for (const path of Object.keys(zip.files).filter(path => path.startsWith('ppt/slideLayouts/s'))) {
+      const xml = await zip.file(path).async('string');
+      zip.file(path, xml.replace('name="Blank"', 'name="Empty"').replace('name="Title Slide"', 'name="Title Only"'));
+    }
+    markDirty();`;
+    expect(await call('edit_slide_master', { code: renames })).toMatchObject({ success: true, result: {
+      ambiguous_layout_slide_ids: ['258#'], missing_layout_slide_ids: ['257#'], old_master_retained: true } });
+    expect(layouts(deck).slice(1)).toEqual([['Office Theme', 'Blank'], ['Office Theme', 'Title Only']]);
+
+    const preserved = pane(masterDeck(true));
+    expect(await preserved.call('edit_slide_master', { code: RECOLOUR })).toMatchObject({ success: true,
+      result: { missing_layout_slide_ids: [], old_master_retained: true } });
+    expect(preserved.deck.masters).toHaveLength(2);
+  });
+
+  it('clears the undo of this turn and the turns before it', async () => {
+    const { deck, call, endTurn } = pane(masterDeck());
+    await call('edit_slide_text', { ref: '257#:2', code: '<a:p><a:r><a:t>Edited</a:t></a:r></a:p>' });
+    expect(await endTurn()).toBe(1);
+    await call('edit_slide_master', { code: RECOLOUR });
+    await call('edit_slide_text', { ref: `${deck.ids()[1]}:2`, code: '<a:p><a:r><a:t>Again</a:t></a:r></a:p>' });
+    expect(await endTurn()).toBeUndefined();
+  });
+
+  it('changes nothing when the code only reads', async () => {
+    const { deck, call } = pane(masterDeck());
+    const before = deck.content();
+    const code = 'return Object.keys(zip.files).filter(path => path.includes(\'Layout\')).length;';
+    expect(await call('edit_slide_master', { code }))
+      .toMatchObject({ success: true, result: { script_result: 6 }, mutation: { state: 'not_applied' } });
+    expect(deck.content()).toEqual(before);
+    expect(deck.masters).toHaveLength(1);
   });
 });
 
