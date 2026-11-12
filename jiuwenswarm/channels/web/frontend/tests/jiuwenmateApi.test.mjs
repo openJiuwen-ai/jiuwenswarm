@@ -809,6 +809,21 @@ test('channel records map public messages and execution trace rows', async () =>
   ]);
 });
 
+test('an in-flight terminal schedule stays running instead of flashing paused', async () => {
+  const api = createJiuwenMateApi(async () => ({
+    plans: [{
+      plan_id: 'once-1', agent_id: 'a1', name: '提醒', prompt: '提醒我', cron_expr: '',
+      timezone: 'Asia/Shanghai', schedule_kind: 'once', interval_seconds: null,
+      run_at: '2026-10-18T01:00:00Z', starts_at: null, ends_at: null,
+      enabled: false, next_fire_at: null, conversation_id: 'schedule:once-1',
+      run_count: 1, last_status: 'running',
+    }],
+  }));
+  const [plan] = await api.listSchedules();
+  assert.equal(plan.enabled, false);
+  assert.equal(plan.lastStatus, 'running');
+});
+
 test('schedule API preserves interval, validity, completed state and real run history', async () => {
   const calls = [];
   const wire = {
