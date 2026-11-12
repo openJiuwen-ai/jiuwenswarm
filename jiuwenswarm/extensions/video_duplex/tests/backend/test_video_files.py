@@ -7,8 +7,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import agent_client
-
 
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
     empty_task_file_query,  # noqa: F401 -- pytest fixture
@@ -97,7 +95,7 @@ async def test_streamed_files_remain_in_job_status_after_missed_delivery(file_in
 
 @pytest.mark.asyncio
 async def test_nonstreaming_file_only_response_is_delivered():
-    client = agent_client({"files": [FILE]})
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True, payload={"files": [FILE]})))
     progress = AsyncMock()
     result = await video_search.execute_core_agent(
         client, question="生成文件", query="生成文件", visual_context="", search_session_id="scope", on_progress=progress,
