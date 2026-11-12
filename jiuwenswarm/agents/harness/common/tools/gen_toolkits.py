@@ -126,9 +126,9 @@ _TRANSIENT_HTTP_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.Remo
 _TRANSIENT_REQUESTS_ERRORS = (requests.ConnectionError, requests.Timeout)
 
 _MINIMAX_IMAGE_ASPECT_RATIOS = {"1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"}
-_MINIMAX_H3_MIN_PIXELS = 655_360
-_MINIMAX_H3_MAX_PIXELS = 20_000_000
-_MINIMAX_H3_AREAS = ("1K", "2K", "4K")
+_MINIMAX_H3_IMAGE_MIN_PIXELS = 655_360
+_MINIMAX_H3_IMAGE_MAX_PIXELS = 20_000_000
+_MINIMAX_H3_IMAGE_AREAS = ("1K", "2K", "4K")
 _MINIMAX_H3_IMAGE_TIMEOUT = 600
 _MINIMAX_VIDEO_RATIOS = {"16:9", "21:9", "4:3", "1:1", "3:4", "9:16"}
 _MINIMAX_MAX_POLL_SECONDS = 120
@@ -496,45 +496,37 @@ def _minimax_base_error(payload: Any) -> str | None:
     return None
 
 
-def _minimax_aspect_ratio(aspect_ratio: str) -> str:
+def _minimax_image_aspect_ratio(aspect_ratio: str) -> str:
     return aspect_ratio if aspect_ratio in _MINIMAX_IMAGE_ASPECT_RATIOS else "1:1"
 
 
-def _minimax_area_tier(size: str | None) -> str:
+def _minimax_h3_image_area_tier(size: str | None) -> str:
     token = str(size or "").strip().upper()
-    if token in _MINIMAX_H3_AREAS:
+    if token in _MINIMAX_H3_IMAGE_AREAS:
         return token
     parsed = parse_size(size)
     if parsed is None:
         return "1K"
     pixels = parsed[0] * parsed[1]
-    # Map the requested pixel area onto the closest official H3 area tier.
+    # Map the requested pixel area onto the closest official H3-Image area tier.
     targets = {"1K": 1024 * 1024, "2K": 2048 * 2048, "4K": 4096 * 4096}
     return min(targets, key=lambda tier: abs(targets[tier] - pixels))
 
 
-def _minimax_h3_size_fields(options: ImageOptions, aspect_ratio: str) -> dict[str, str]:
-    """H3 size payload: explicit ``宽x高``, or ``auto`` + aspect_ratio + area."""
-    aspect = _minimax_aspect_ratio(aspect_ratio)
+def _minimax_h3_image_size_fields(options: ImageOptions, aspect_ratio: str) -> dict[str, str]:
+    """H3-Image size payload: explicit ``宽x高``, or ``auto`` + aspect_ratio + area."""
+    aspect = _minimax_image_aspect_ratio(aspect_ratio)
     parsed = parse_size(options.size)
     if parsed:
         width, height = parsed
         pixels = width * height
         ratio = width / height
         if (
-            _MINIMAX_H3_MIN_PIXELS <= pixels <= _MINIMAX_H3_MAX_PIXELS
+            _MINIMAX_H3_IMAGE_MIN_PIXELS <= pixels <= _MINIMAX_H3_IMAGE_MAX_PIXELS
             and 1 / 3 <= ratio <= 3
         ):
             return {"size": f"{width}x{height}"}
-    return {"size": "auto", "aspect_ratio": aspect, "area": _minimax_area_tier(options.size)}
-
-
-def _minimax_unsupported_format_error(status: int, payload: Any) -> str | None:
-    """Map a 400 onto the product's 'model unsupported / unknown format' report."""
-    if status != 400:
-        return None
-    detail = _minimax_base_error(payload) or str(status)
-    return f"[ERROR]: 模型不支持、请求格式未知 ({detail})"
+    return {"size": "auto", "aspect_ratio": aspect, "area": _minimax_h3_image_area_tier(options.size)}
 
 
 def _minimax_image_url(value: str) -> str | None:
@@ -622,7 +614,7 @@ async def _minimax_generate_image(
         "n": 1,
         "response_format": "b64_json",
         "output_format": "jpeg",
-        **_minimax_h3_size_fields(options, aspect_ratio),
+        **_minimax_h3_image_size_fields(options, aspect_ratio),
     }
     references = _minimax_reference_images(options.reference_image_uris)
     path = "/v1/images/edits" if references else "/v1/images/generations"
@@ -657,9 +649,6 @@ async def _minimax_generate_image(
                 break
     except httpx.HTTPError as exc:
         return f"[ERROR]: MiniMax image generation request failed: {exc!r}"
-    format_error = _minimax_unsupported_format_error(resp.status_code, payload)
-    if format_error:
-        return format_error
     if resp.status_code != 200 or _minimax_base_error(payload):
         return f"[ERROR]: MiniMax image generation failed: {_minimax_base_error(payload) or resp.status_code}"
     return _minimax_save_image_items(payload, save_dir)

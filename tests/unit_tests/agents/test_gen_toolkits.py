@@ -171,7 +171,7 @@ async def test_minimax_region_failover_and_bad_key(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_minimax_image_400_reports_unsupported_or_unknown_format(monkeypatch, tmp_path):
+async def test_minimax_image_400_surfaces_api_error_detail(monkeypatch, tmp_path):
     payload = {
         "type": "error",
         "error": {
@@ -184,8 +184,9 @@ async def test_minimax_image_400_reports_unsupported_or_unknown_format(monkeypat
     result = await _image(
         "minimax", "k", _MM_GLOBAL, "some-brand-new-image", "p", "1:1", str(tmp_path)
     )
-    assert "模型不支持、请求格式未知" in result
+    assert result.startswith("[ERROR]: MiniMax image generation failed:")
     assert "unknown model" in result
+    assert "模型不支持、请求格式未知" not in result
 
 
 @pytest.mark.asyncio
