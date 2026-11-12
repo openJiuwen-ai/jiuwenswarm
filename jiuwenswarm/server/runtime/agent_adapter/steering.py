@@ -91,12 +91,15 @@ def _steer_request_digest(params: dict[str, Any]) -> str:
 
 
 def _live_manifest(agent: Any) -> list[dict[str, Any]]:
-    """读 agent 当前的上传清单（live 通道优先）。
+    """读 agent 当前的上传清单（request_metadata 通道优先）。
 
-    - live harness ``build_context.request_metadata``（team：成员/leader rail 每轮
-      从同一 build context 重建时读取的通道）；
-    - agent 实例镜像（deep 单代理 rail 的实时读取通道）。
-    两处按 path 去重合并；都读不到时返回空列表。
+    - team：live harness ``build_context.request_metadata`` 是**权威**通道——
+      每轮开轮覆盖写（空列表即清除上一轮残留）。返回 list（含空列表）时
+      只信它，**不再并入 agent 镜像**：镜像在 team 模式下仅 steer 写入、
+      无跨轮清除路径，并入会把上一轮 steer 的残留复活进本轮清单并随每个
+      带图 steer 单调累积（轮内多笔 steer 的累积由 metadata 自身承载）。
+    - 单代理：无 build context / metadata 未写入（返回 None）时回退 agent
+      实例镜像——deep rail 的实时读取通道，镜像随每次请求覆盖写、无残留。
     """
     from jiuwenswarm.agents.harness.common.multimodal import (
         current_multimodal_image_files_from_agent,
@@ -104,12 +107,11 @@ def _live_manifest(agent: Any) -> list[dict[str, Any]]:
         team_request_image_files,
     )
 
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    def _add(images: Any) -> None:
+    def _dedup(images: Any) -> list[dict[str, Any]]:
         if not isinstance(images, list):
-            return
+            return []
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for image in images:
             if not isinstance(image, dict):
                 continue
@@ -117,16 +119,18 @@ def _live_manifest(agent: Any) -> list[dict[str, Any]]:
             if key and key not in seen:
                 seen.add(key)
                 merged.append(image)
+        return merged
 
     try:
         harness = getattr(agent, "harness", None)
         build_context = getattr(harness, "build_context", None)
         metadata = getattr(build_context, "request_metadata", None)
-        _add(team_request_image_files(metadata))
+        metadata_list = team_request_image_files(metadata)
     except Exception:  # pragma: no cover - 防御性读取
-        pass
-    _add(current_multimodal_image_files_from_agent(agent))
-    return merged
+        metadata_list = None
+    if metadata_list is not None:
+        return _dedup(metadata_list)
+    return _dedup(current_multimodal_image_files_from_agent(agent))
 
 
 def _refresh_live_rail_bound_manifests(agent: Any, fresh: list[dict[str, Any]]) -> None:

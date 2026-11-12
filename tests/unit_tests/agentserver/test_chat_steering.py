@@ -787,6 +787,63 @@ async def test_steer_files_second_input_dedupes_in_rail_bound_manifest():
     assert [item["path"] for item in rail._resolve_request_image_files()] == ["/tmp/new.png"]
 
 
+def _team_agent_with_round_metadata(agent, bound_files):
+    """leader 形态 runtime：真实可写的 request_metadata + 绑定清单的 rail。"""
+    from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
+        MultimodalImageRail,
+    )
+
+    rail = MultimodalImageRail(image_files=bound_files)
+    metadata: dict = {}
+    agent.harness = SimpleNamespace(
+        build_context=SimpleNamespace(request_metadata=metadata),
+        find_rails=lambda rail_type: [rail] if rail_type is MultimodalImageRail else [],
+    )
+    return metadata, rail
+
+
+@pytest.mark.asyncio
+async def test_steer_files_next_round_does_not_inherit_previous_round_mirror():
+    """跨轮不复活：轮 2 steer B 只写 [B]，上一轮 steer 的 A 不经 agent 镜像回流。"""
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+        store_team_request_image_files,
+        team_request_image_files,
+    )
+
+    control, _, agent, _ = session(mode="team")
+    metadata, _rail = _team_agent_with_round_metadata(agent, [])
+    # 轮 1（无上传开轮）：steer A —— metadata 与镜像均落 [A]。
+    store_team_request_image_files(metadata, [])
+    await control.handle(
+        control_request(
+            input_id="input-1",
+            client_message_id="client-1",
+            files=[{"type": "image", "name": "a.png", "path": "/tmp/a.png"}],
+        ),
+        query=False,
+    )
+    assert [image["path"] for image in team_request_image_files(metadata)] == ["/tmp/a.png"]
+    assert [image["path"] for image in current_multimodal_image_files_from_agent(agent)] == [
+        "/tmp/a.png"
+    ]
+    # 轮 2 开新轮（覆盖写清空 metadata）；agent 镜像无人清除、仍残留 [A]。
+    store_team_request_image_files(metadata, [])
+    assert [image["path"] for image in current_multimodal_image_files_from_agent(agent)] == [
+        "/tmp/a.png"
+    ]
+    # steer B：request_metadata 通道优先，本轮清单只含 B，旧图 A 不回流。
+    await control.handle(
+        control_request(
+            input_id="input-2",
+            client_message_id="client-2",
+            files=[{"type": "image", "name": "b.png", "path": "/tmp/b.png"}],
+        ),
+        query=False,
+    )
+    assert [image["path"] for image in team_request_image_files(metadata)] == ["/tmp/b.png"]
+
+
 @pytest.mark.asyncio
 async def test_steer_files_do_not_bind_manifest_on_unbound_rail():
     """未绑定清单的 rail 不被第三通道激活：保持实时读 agent 属性的旧行为。"""
