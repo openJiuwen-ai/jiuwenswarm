@@ -67,3 +67,59 @@ def empty_task_file_query(monkeypatch):
         return await original(client, method, params, session, owner)
 
     monkeypatch.setattr(task_adapter, "task_agent_query", query)
+
+
+@pytest.fixture(name="routed_task")
+def routed_task_fixture(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+    from agent_gateway.message_handler.message_handler import MessageHandler
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
+    from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
+    store = TaskStore(tmp_path / "gateway" / "tasks.sqlite")
+    service = TaskService(store, None)
+    service.started = True
+    service.kick = Mock()
+    task = service.submit("alice", "voice", "create", "Plan a meeting")
+    task = store.update(task["id"], lambda t: t.update(status="running", checkpoint_open=True))
+    endpoint = GatewayTaskEndpoint(store)
+    request = SimpleNamespace(
+        channel_id="video_tool", session_id=task["core_session_id"],
+        request_id=task["request_id"], user_id="alice",
+        params={"managed_task_binding": endpoint.binding(task)},
+    )
+    frames, acks = [], []
+
+    async def acknowledge(env):
+        acks.append(env)
+        return await VoiceTaskServerAdapter().handle(e2a_to_agent_request(env))
+
+    handler = SimpleNamespace(
+        agent_client=SimpleNamespace(send_request=acknowledge), _stream_sessions={},
+        _handle_login_credential_refresh_push=AsyncMock(return_value=False),
+        publish_robot_messages=AsyncMock(),
+    )
+    # The production push boundary now delegates ordering to a separate method.
+
+    async def ordered(wire):
+        await MessageHandler._handle_agent_server_push_ordered(handler, wire)  # pylint: disable=protected-access
+
+    handler._handle_agent_server_push_ordered = ordered  # pylint: disable=protected-access
+
+    async def push(message):
+        frames.append(message)
+        # Exercise the installed Gateway push boundary, including its internal-frame interception.
+        await MessageHandler._handle_agent_server_push(  # pylint: disable=protected-access
+            handler, build_server_push_wire(message)
+        )
+        return True
+
+    monkeypatch.setattr(bridge, "send_runtime_push", push)
+    server_root = tmp_path / "agent-server"
+    server_root.mkdir()
+    from jiuwenswarm.common import utils
+    monkeypatch.setattr(utils, "get_agent_root_dir", lambda tenant_key=None: server_root)
+    yield SimpleNamespace(
+        store=store, task=task, endpoint=endpoint, request=request, frames=frames,
+        acks=acks, handler=handler, push=push, server_root=server_root,
+    )
+    endpoint.close()

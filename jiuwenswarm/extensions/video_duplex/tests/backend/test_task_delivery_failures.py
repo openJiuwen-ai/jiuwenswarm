@@ -10,6 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
+from functools import partial
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import until as bounded_wait
+
+until = partial(bounded_wait, timeout=5)
 from openjiuwen.core.runner.callback.errors import AbortError
 
 from jiuwenswarm.extensions.video_duplex.backend import task_adapter
@@ -17,15 +22,7 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskS
 from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution, bind_task_output
 from jiuwenswarm.server.runtime.video_task.rail import task_checkpoint
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
-from jiuwenswarm.extensions.video_duplex.tests.backend import test_task_bridge
-
-routed_task_fixture = test_task_bridge.routed_task_fixture
-
-
-async def until(predicate):
-    async with asyncio.timeout(5):
-        while not predicate():
-            await asyncio.sleep(0.005)
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import routed_task_fixture
 
 
 @pytest.mark.parametrize("failure", ["cancel", "query"])

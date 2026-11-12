@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createQwenOmniSessionUpdate, createQwenOmniToolResultEvents, parseQwenOmniFunctionCall } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/replyLanguageProtocol.mjs';
+import { loadModules } from './testSupport.mjs';
+const { createQwenOmniSessionUpdate, createQwenOmniToolResultEvents, parseQwenOmniFunctionCall } = await loadModules([
+  "VideoLivePanel/qwenOmniProtocol.ts",
+]);
 
 test('Qwen forwards the full queue management instruction to the text manager', () => {
   const call = parseQwenOmniFunctionCall({

@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  MAX_SEARCH_PROGRESS_JOBS,
-  mergeSearchProgressJob,
-  searchProgressOptionLabel,
-  selectSearchProgressJob,
-} from '../../../../channels/web/frontend/node_modules/.cache/search-presentation/searchPresentation.js';
+import { loadModules } from './testSupport.mjs';
+const { MAX_SEARCH_PROGRESS_JOBS, mergeSearchProgressJob, searchProgressOptionLabel, selectSearchProgressJob } = await loadModules([
+  "VideoLivePanel/searchPresentation.ts",
+]);
 
 function payload(id, query, status = 'running', sequence = 1) {
   return {

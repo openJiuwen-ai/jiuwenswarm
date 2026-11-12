@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  assistantSpeechText,
-  searchAwareToolStatus,
-} from '../../../../channels/web/frontend/node_modules/.cache/search-presentation/searchPresentation.js';
+import { loadModules } from './testSupport.mjs';
+const { assistantSpeechText, searchAwareToolStatus } = await loadModules([
+  "VideoLivePanel/searchPresentation.ts",
+]);
 
 test('searchAwareToolStatus keeps concurrent background searches visible', () => {
   assert.equal(

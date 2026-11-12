@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { applyDuplexSubagentEvent } from '../../../../channels/web/frontend/node_modules/.cache/duplex-subagent-panel/duplexSubagentEvents.js';
-import {
-  selectSubagentActivities,
-  selectSubagents,
-  selectSubagentTurns,
-  useSubagentStore,
-} from '../../../../channels/web/frontend/node_modules/.cache/duplex-subagent-panel/subagentStore.js';
+import { loadModules, webSource } from './testSupport.mjs';
+const { applyDuplexSubagentEvent, selectSubagentActivities, selectSubagents, selectSubagentTurns, useSubagentStore } = await loadModules([
+  "duplexSubagentEvents.ts",
+  webSource("stores/subagentStore.ts"),
+]);
+
 
 // A managed voice task runs in its own Core session; the frames still belong to the visible chat.
 const roster = {
@@ -39,7 +38,7 @@ test('malformed frames are ignored instead of creating phantom subagents', () =>
 });
 
 test('task full-duplex runtime routes subagent progress into the shared subagent panel', () => {
-  const runtime = readFileSync('../../../extensions/video_duplex/frontend/TaskFullDuplexRuntime.tsx', 'utf8');
+  const runtime = readFileSync(new URL('../../frontend/TaskFullDuplexRuntime.tsx', import.meta.url), 'utf8');
   assert.match(
     runtime,
     /entry\.stage === "subagent"[\s\S]{0,120}applyDuplexSubagentEvent\(targetSessionId, entry\.subagent_event\)/,

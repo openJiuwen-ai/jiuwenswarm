@@ -6,6 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from functools import partial
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import until as bounded_wait
+
+wait_for = partial(bounded_wait, timeout=5)
+
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.agent import create_agent_session
@@ -33,12 +38,6 @@ class CoreInputNormalizer(DeepAgent):
 
     def normalize(self, inputs):
         return self._normalize_inputs(inputs)
-
-
-async def wait_for(predicate):
-    async with asyncio.timeout(5):
-        while not predicate():
-            await asyncio.sleep(0.005)
 
 
 @pytest.mark.parametrize("scope", ["voice", "task-duplex:web-native"])
