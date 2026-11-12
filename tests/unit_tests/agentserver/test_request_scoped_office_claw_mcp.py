@@ -2160,3 +2160,179 @@ async def test_renamed_tool_is_error_keeps_remote_name_and_failure_schema() -> N
     assert result["error_code"] == "mcp_tool_error"
     assert result["error_message"] == "boom"
     assert result["result"] == "boom"
+
+
+def _corp_template_config_base() -> dict[str, object]:
+    return {
+        "mcp": {
+            "servers": [
+                {
+                    "name": "corp-docs",
+                    "transport": "streamable-http",
+                    "url": "https://corp.example.com/mcp",
+                    "enabled": True,
+                }
+            ]
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_enterprise_keeps_only_connectors_matching_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """请求级连接器必须与管理端 MCP 模板同名、同传输类型、同地址才建连。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    adapter = _bare_session_adapter()
+    adapter._startup_config_base = _corp_template_config_base()
+    discovered: list[str] = []
+
+    async def _fake_list(server_name, config):
+        discovered.append(server_name)
+        return (
+            [
+                {
+                    "name": "corp_docs_search",
+                    "description": "",
+                    "input_params": {"type": "object"},
+                }
+            ],
+            {"_mcp_client_type": "stdio", "command": "node"},
+        )
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list),
+    )
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={
+                "corp-docs": {
+                    "type": "streamableHttp",
+                    "url": " https://corp.example.com/mcp ",
+                },
+                "rogue": {"type": "sse", "url": "https://evil.example.com/sse"},
+            }
+        )
+    )
+
+    assert discovered == ["corp-docs"]
+    assert registration.tool_names == ("corp_docs_search",)
+
+
+@pytest.mark.asyncio
+async def test_enterprise_rejects_template_name_with_different_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同名但地址被替换的连接器不得建连，避免借模板名绕过。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    adapter = _bare_session_adapter()
+    adapter._startup_config_base = _corp_template_config_base()
+    discovered: list[str] = []
+
+    async def _fake_list(server_name, config):
+        discovered.append(server_name)
+        return [], {}
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list),
+    )
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={
+                "corp-docs": {
+                    "type": "streamable-http",
+                    "url": "https://evil.example.com/mcp",
+                }
+            }
+        )
+    )
+
+    assert discovered == []
+    assert registration.tool_names == ()
+
+
+@pytest.mark.asyncio
+async def test_enterprise_empty_template_rejects_all_request_connectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模板快照为空（或尚未加载）时 fail-closed：全部拒绝且不发起发现。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    adapter = _bare_session_adapter()
+    discovered: list[str] = []
+    warnings: list[str] = []
+
+    async def _fake_list(server_name, config):
+        discovered.append(server_name)
+        return [], {}
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list),
+    )
+    # 该 logger 不向 root 传播，直接截获 warning 调用以校验拒绝原因可见。
+    monkeypatch.setattr(
+        interface_deep.logger,
+        "warning",
+        lambda *args, **_kwargs: warnings.append(" ".join(str(arg) for arg in args)),
+    )
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={"rogue": {"type": "sse", "url": "https://evil.example.com/sse"}}
+        )
+    )
+
+    assert discovered == []
+    assert registration.tool_names == ()
+    assert any("rogue" in message for message in warnings)
+    assert any("不在管理端下发的 MCP 模板中" in message for message in warnings)
+
+
+@pytest.mark.asyncio
+async def test_personal_edition_does_not_apply_template_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """个人版不读取企业 MCP 模板，请求级连接器保持原有发现行为。"""
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    adapter = _bare_session_adapter()
+    adapter._startup_config_base = _corp_template_config_base()
+    discovered: list[str] = []
+
+    async def _fake_list(server_name, config):
+        discovered.append(server_name)
+        return (
+            [
+                {
+                    "name": "custom_search",
+                    "description": "",
+                    "input_params": {"type": "object"},
+                }
+            ],
+            {"_mcp_client_type": "stdio", "command": "node"},
+        )
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list),
+    )
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={"rogue": {"command": "node", "args": ["x.js"], "cwd": "."}}
+        )
+    )
+
+    assert discovered == ["rogue"]
+    assert registration.tool_names == ("custom_search",)
