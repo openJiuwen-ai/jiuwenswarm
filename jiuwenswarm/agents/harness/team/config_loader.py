@@ -303,7 +303,7 @@ def _prefer_entry_by_model_id(
         return entries
     for index, entry in enumerate(entries):
         if _entry_model_id(entry) == wanted and index:
-            return [entry, *entries[:index], *entries[index + 1 :]]
+            return [entry, *entries[:index], *entries[index + 1:]]
     return entries
 
 
