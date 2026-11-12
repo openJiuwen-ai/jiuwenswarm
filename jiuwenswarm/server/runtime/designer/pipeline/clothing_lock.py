@@ -303,6 +303,20 @@ def clothing_hold_rule() -> str:
     )
 
 
+def _clamp_clause(text: str, limit: int) -> str:
+    """Cut authored prose at a clause boundary instead of mid-word."""
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    cut = value[:limit]
+    for separator in ("\uff1b", ";", "\uff0c", ", "):
+        at = cut.rfind(separator)
+        if at >= limit // 2:
+            return cut[:at].strip(" ,\uff0c;\uff1b")
+    space = cut.rfind(" ")
+    return (cut[:space] if space >= limit // 2 else cut).strip(" ,\uff0c;\uff1b")
+
+
 def detailed_costume_lock_for_character(ch: dict[str, Any] | None) -> str:
     """Build a garment-level costume_lock string for one character."""
     if not isinstance(ch, dict):
@@ -311,9 +325,9 @@ def detailed_costume_lock_for_character(ch: dict[str, Any] | None) -> str:
     # A costume read straight off the identity plate keeps the exact garments;
     # the slot extractor condenses them to "deep sweater" and would lose the
     # colour and fabric the plate just declared.
-    clause = condense_garment(str(ch.get("costume_clause") or "").strip())
+    clause = str(ch.get("costume_clause") or "").strip()
     if clause:
-        return f"{name}: {clause}"[:480]
+        return f"{name}: {_clamp_clause(clause, 480 - len(name) - 2)}"
     existing_parts = normalize_clothing_parts(ch.get("clothing_parts"))
     blob = " ".join(
         str(ch.get(k) or "")
@@ -655,9 +669,15 @@ def sync_costume_from_specs(graph: dict[str, Any] | None) -> set[str]:
             ch = by_id.get(cid)
             if not isinstance(ch, dict):
                 continue
-            if str(ch.get("costume_lock") or "").strip() != clause:
-                ch["costume_clause"] = clause
-                ch["costume_lock"] = clause
+            ch["costume_clause"] = clause
+            # The lock keeps the cast name: a bare garment clause would be read
+            # as the previous character's next slot by whoever joins these
+            # blocks into one shared lock.
+            lock = detailed_costume_lock_for_character(ch) or (
+                f"{ch.get('name') or cid}: {_clamp_clause(clause, 400)}"
+            )
+            if str(ch.get("costume_lock") or "").strip() != lock:
+                ch["costume_lock"] = lock
                 ch["clothing_parts"] = extract_clothing_parts(clause)
                 attrs = ch.get("identity_attrs") if isinstance(ch.get("identity_attrs"), dict) else {}
                 attrs = dict(attrs)

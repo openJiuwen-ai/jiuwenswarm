@@ -543,6 +543,33 @@ def test_structured_seats_do_not_repeat_the_layout_essay() -> None:
     assert "Long table down the centre" not in prompt
 
 
+def test_a_stray_slot_in_a_shared_lock_never_reaches_another_character() -> None:
+    graph = {
+        "metadata": {
+            "script_analysis": {
+                "characters": [
+                    {"id": "char_1", "name": "Father", "clothing_parts": {"top": "grey jumper", "bottom": "navy trousers"}},
+                    {"id": "char_2", "name": "Girl", "clothing_parts": {"outfit": "yellow dress"}},
+                ]
+            }
+        }
+    }
+    cfg = {
+        "pipeline": "clip",
+        "on_screen": ["char_1", "char_2"],
+        # The girl's slots lost their name when the lock was written.
+        "costume_lock": "Father: top=grey jumper; bottom=navy trousers; outfit = yellow dress",
+        "clip_action": "They sit down.",
+    }
+
+    prompt = compose_practice_prompt(cfg=cfg, graph=graph, action="They sit down.")
+
+    sentences = [s.strip() for s in prompt.replace("\u3002", ".").split(".") if s.strip()]
+    father = next(s for s in sentences if s.startswith("Father"))
+    assert "yellow dress" not in father
+    assert "grey jumper" in father
+
+
 def test_a_shot_wardrobe_keyed_by_id_reaches_a_name_only_composer() -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
         _wardrobe_for,

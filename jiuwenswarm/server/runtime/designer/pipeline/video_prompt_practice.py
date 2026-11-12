@@ -853,6 +853,29 @@ def _id_for_name(name: str, graph: dict[str, Any] | None) -> str:
     return ""
 
 
+def _own_slots(token: str, name: str, graph: dict[str, Any] | None) -> str:
+    """This character's own garment slots as ``top=…; bottom=…`` (never another's)."""
+    from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
+        format_clothing_slots,
+        normalize_clothing_parts,
+    )
+
+    wanted_id = str(token or "").strip()
+    wanted = str(name or "").strip().casefold()
+    for char in _analysis(graph).get("characters") or []:
+        if not isinstance(char, dict):
+            continue
+        cid = str(char.get("id") or "").strip()
+        cname = str(char.get("name") or "").strip().casefold()
+        if not (cid == wanted_id or (cname and cname == wanted)):
+            continue
+        parts = normalize_clothing_parts(char.get("clothing_parts"))
+        if parts:
+            return format_clothing_slots(parts, fallback="")
+        return ""
+    return ""
+
+
 def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None, lang: str = "en") -> str:
     """Short wearable phrase for one cast member — from costume_lock / analysis."""
     name = _name_for_id(token, graph) or str(token or "").strip()
@@ -879,6 +902,11 @@ def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None,
             or by_plate.get(_id_for_name(name, graph))
             or ""
         ).strip()
+    if not raw:
+        # This character's own garment slots. Reading them keeps one cast
+        # member's clothes out of another's sentence when the shared lock is
+        # malformed or already stale.
+        raw = _own_slots(token, name, graph)
     if not raw:
         lock = str(cfg.get("costume_lock") or "").strip()
         # "Mother: top=…; bottom=…; Young Child: pale yellow…"
