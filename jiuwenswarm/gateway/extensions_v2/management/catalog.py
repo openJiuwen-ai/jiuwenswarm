@@ -236,9 +236,7 @@ def _summary(
         "origin": origin,
         "installed": installed,
         "active": record is not None,
-        "enabled": record is not None or (
-            origin_record.enabled if origin_record is not None else _enabled(entry, installed_root)
-        ),
+        "enabled": _enabled(entry, installed_root),
     }
 
 

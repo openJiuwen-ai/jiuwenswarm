@@ -10,11 +10,13 @@ from typing import Any
 
 from jiuwenswarm.extensions_v2.management.catalog import (
     StateIndex,
+    _installed_entry,
     build_state_index,
     installed_versions,
     installed_version,
     merge_versions,
 )
+from jiuwenswarm.extensions_v2.manifest_io import read_manifest_document
 from jiuwenswarm.server.runtime.extension_package_manager import preview_file_tree
 from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ExtensionInstallRecord,
@@ -44,8 +46,11 @@ def hub_card(
     item: HubAssetSummary,
     index: StateIndex,
     store: ExtensionInstallState | None = None,
+    *,
+    install_dir: Path | None = None,
 ) -> dict[str, Any]:
     package_name = item.package_name or item.asset_id
+    index = _include_managed_package(index, package_name, install_dir)
     record = _hub_record(store, item.asset_id, package_name)
     installed = bool(record) or package_name in index.installed or package_name in index.active
     active = package_name in index.active
@@ -66,7 +71,7 @@ def hub_card(
         "origin": "hub",
         "installed": installed,
         "active": active,
-        "enabled": active or (record.enabled if record else True),
+        "enabled": _persisted_enabled(index, package_name, record),
     }
 
 
@@ -88,7 +93,7 @@ async def list_hub_system_plugins(
         return [], None
     index = build_state_index(state)
     store = ExtensionInstallState.for_install_dir(install_dir) if install_dir is not None else _install_state(index)
-    return [hub_card(item, index, store) for item in items], cache
+    return [hub_card(item, index, store, install_dir=install_dir) for item in items], cache
 
 
 async def get_hub_system_plugin(asset_id: str, version: str = "") -> HubAssetDetail:
@@ -99,9 +104,12 @@ def hub_detail(
     detail: HubAssetDetail,
     state: Any,
     store: ExtensionInstallState | None = None,
+    *,
+    install_dir: Path | None = None,
 ) -> dict[str, Any]:
     index = build_state_index(state)
     package_name = detail.package_name or detail.asset_id
+    index = _include_managed_package(index, package_name, install_dir)
     record = _hub_record(store or _install_state(index), detail.asset_id, package_name)
     profile = detail.package_profile or {}
     events: list[dict[str, Any]] = []
@@ -140,12 +148,45 @@ def hub_detail(
         "origin": "hub",
         "installed": bool(record) or package_name in index.installed or package_name in index.active,
         "active": active,
-        "enabled": active or (record.enabled if record else True),
+        "enabled": _persisted_enabled(index, package_name, record),
         "details": _localized(profile.get("details")),
         "readme": _localized(detail.detail_description),
         "preview": detail.preview_url or None,
         "events": events,
     }
+
+
+def _include_managed_package(index: StateIndex, package_id: str, install_dir: Path | None) -> StateIndex:
+    """Include disabled packages owned by the other runtime in shared-store views."""
+    if install_dir is None or package_id in index.installed or package_id in index.active:
+        return index
+    from openjiuwen.core.extension.data.json_values import valid_package_id
+
+    if not valid_package_id(package_id):
+        return index
+    entry = _installed_entry(package_id, install_dir)
+    if entry is None:
+        return index
+    return StateIndex(
+        active=index.active,
+        installed={**index.installed, package_id: entry.root},
+        roots={**index.roots, package_id: (entry.root,)},
+    )
+
+
+def _persisted_enabled(
+    index: StateIndex, package_id: str, record: ExtensionInstallRecord | None,
+) -> bool:
+    """Prefer the managed manifest; install provenance may predate recovery."""
+    active = index.active.get(package_id)
+    root = getattr(active, "root", None) or index.installed.get(package_id)
+    if root is not None:
+        try:
+            value = read_manifest_document(root).get("enable")
+            return value if isinstance(value, bool) else True
+        except (OSError, UnicodeError, ValueError):
+            pass
+    return record.enabled if record is not None else True
 
 
 def _hub_record(

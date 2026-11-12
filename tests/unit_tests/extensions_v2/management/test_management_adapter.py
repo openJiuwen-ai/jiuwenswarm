@@ -811,7 +811,7 @@ async def test_show_forwards_requested_version_to_hub(
     query = AsyncMock(return_value=detail)
     monkeypatch.setattr(adapter_module, "get_hub_system_plugin", query)
     monkeypatch.setattr(
-        adapter_module, "hub_detail", lambda item, state, store=None: {"id": item.asset_id}
+        adapter_module, "hub_detail", lambda item, state, store=None, *, install_dir=None: {"id": item.asset_id}
     )
 
     response = await PackageManagementAdapter().handle(
