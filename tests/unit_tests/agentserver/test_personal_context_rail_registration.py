@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -344,6 +345,10 @@ async def test_code_modes_use_shared_personal_context_switch_and_cleanup(monkeyp
         setattr(adapter, name, None)
     for name in ("_subagent_rail", "_project_memory_rail", "_coding_memory_rail"):
         setattr(adapter, name, object())
+    monkeypatch.setattr(
+        adapter, "_active_code_config", lambda: {"modes": {"code": {"memory": {"enabled": True}}}}
+    )
+    monkeypatch.setattr(adapter, "_reconcile_coding_memory", AsyncMock())
     monkeypatch.setattr(interface_deep, "PersonalContextRail", _FakeRail)
     await adapter._update_rails_for_mode(normal)
     assert agent.register_attempts == []

@@ -271,7 +271,9 @@ async def _run_memory_extraction_with_cache_sharing(
     - Inherits parent agent's message prefix (via create_new_context_engine)
     - Runtime tool restriction via AutoMemoryToolRestrictionRail
 
-    This enables API cache hit because all cache key components match:
+    Native Coding keeps matching cache key components. When Jiuwen is selected,
+    AutoMemory excludes its tools/rail to keep legacy extraction independent;
+    this can reduce prefix cache reuse. Otherwise the inherited components are:
     - system_prompt (inherited)
     - tools (inherited, runtime restriction doesn't change tool definitions)
     - model (inherited)
@@ -321,6 +323,17 @@ async def _run_memory_extraction_with_cache_sharing(
         if hasattr(parent_instance, "ability_manager"):
             parent_tools = list(parent_instance.ability_manager.list() or [])
 
+        # AutoMemory keeps its legacy tools/storage independently of sync_turn.
+        # Inheriting Jiuwen tools/rail would let this extraction write back through
+        # the new provider and enqueue another sync_turn for the extraction itself.
+        uses_jiuwen = getattr(parent_agent, "uses_jiuwen_coding_memory", None)
+        jiuwen_memory = callable(uses_jiuwen) and uses_jiuwen()
+        if jiuwen_memory:
+            parent_tools = [
+                tool for tool in parent_tools
+                if not getattr(tool, "name", "").startswith("agent_memory_coding_memory_")
+            ]
+
         # 2.5. Get parent agent's system_prompt for cache key matching
         parent_system_prompt = None
         if hasattr(parent_instance, "deep_config") and parent_instance.deep_config is not None:
@@ -353,7 +366,7 @@ async def _run_memory_extraction_with_cache_sharing(
             parent_rails.append(_project_rail)
         # CodingMemoryRail (code mode only)
         _coding_rail = getattr(parent_agent, "_coding_memory_rail", None)
-        if _coding_rail is not None:
+        if _coding_rail is not None and not jiuwen_memory:
             parent_rails.append(_coding_rail)
 
         # 4. Create AutoMemoryToolRestrictionRail for runtime tool restriction
