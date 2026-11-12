@@ -195,22 +195,36 @@ async def test_default_loop_session_still_refuses() -> None:
 
 
 @pytest.mark.asyncio
-async def test_double_check_refuses_when_session_becomes_live(monkeypatch) -> None:
-    """TOCTOU 防护：二次判活命中（检查后、清理前被置活）必须拒绝。"""
-    loop = _LoopSession("A_B", _ask_user_state())
-    adapter = _make_adapter(loop)
-    calls = {"n": 0}
+async def test_reverse_direction_idle_clears() -> None:
+    """反向场景（loop=父 A、target=子 A_B）：空闲时同样允许清理。
 
-    def flaky_live(_sid: str) -> bool:
-        calls["n"] += 1
-        return calls["n"] >= 2  # 预检放行（False），清理前判活拦截（True）
-
-    monkeypatch.setattr(adapter, "_is_session_live", flaky_live)
+    `_is_related_session` 双向判定，锁定两个方向语义一致。
+    """
+    loop = _LoopSession("A", _ask_user_state())
+    engine = _ContextEngine(_Context([object()]))
+    adapter = _make_adapter(loop, context_engine=engine)
     cleared = await adapter._clear_pending_interaction_interrupt(
-        "A", require_pure_ask_user=False, force=True
+        "A_B", require_pure_ask_user=False, force=True
+    )
+    assert cleared is True
+    assert loop.states[INTERRUPTION_KEY] is None
+    assert loop.commits == 1
+    assert engine.saved == []
+
+
+@pytest.mark.asyncio
+async def test_reverse_direction_live_refuses() -> None:
+    """反向场景（loop=父 A、target=子 A_B）：父会话活跃（子代理在跑）时拒绝。"""
+    loop = _LoopSession("A", _ask_user_state())
+    adapter = _make_adapter(
+        loop,
+        invoke_active=True,
+        stream_task=_FakeTask(done=False),
+    )
+    cleared = await adapter._clear_pending_interaction_interrupt(
+        "A_B", require_pure_ask_user=False, force=True
     )
     assert cleared is False
-    assert calls["n"] == 2
     assert loop.updates == []
     assert loop.commits == 0
 

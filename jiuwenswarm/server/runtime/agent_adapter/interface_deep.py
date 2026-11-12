@@ -2126,7 +2126,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         修复暖池换绑/子代理父子场景下 ``loop_sid != target_sid`` 静默放弃兜底。
         防护三原则：
         - 活跃的相关会话一律拒绝（绝不误清子代理在跑的 ask_user/审批卡）；
-        - 二次判活与 ``update_state`` 之间无 await（asyncio 原子窗口防 TOCTOU）；
+        - 判活通过到 ``update_state`` 之间全程同步、无任何 await——单线程
+          事件循环下原子生效，无需二次判活；
         - mismatch 路径只清 state，不碰任何一侧 context（缩小爆炸半径）。
         非 force 调用方（cancel/supplement）行为完全不变。
         """
@@ -2134,22 +2135,30 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         loop_session = getattr(instance, "_loop_session", None)
         loop_sid = self._deep_agent_loop_session_id()
         target_sid = self._resolve_interrupt_session_id(session_id)
-        related_mismatch = (
-            force
-            and loop_session is not None
+        enabled = self._related_mismatch_enabled()
+        related_shape = (
+            loop_session is not None
             and loop_sid is not None
             and loop_sid != target_sid
-            and self._related_mismatch_enabled()
             and self._is_related_session(target_sid, loop_sid)
         )
+        related_mismatch = bool(force and related_shape and enabled)
         if loop_session is None or (loop_sid != target_sid and not related_mismatch):
             if force:
+                # 区分「开关关闭」与「真无关」：应急处置时日志必须能分辨
+                # 兜底放弃是策略使然还是拓扑无关。
+                tag = (
+                    "stale_interrupt.skipped.disabled"
+                    if related_shape and not enabled
+                    else "stale_interrupt.skipped.unrelated"
+                )
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] interrupt: cannot drop stale "
                     "interaction state, loop session mismatch loop_sid=%s "
-                    "target_sid=%s (stale_interrupt.skipped.unrelated)",
+                    "target_sid=%s (%s)",
                     loop_sid,
                     target_sid,
+                    tag,
                 )
             return False
 
@@ -2187,19 +2196,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
             cleared_related = False
             if related_mismatch:
-                # 二次判活 + update_state 之间不得有 await（原子窗口）：
-                # 新中断态的创建必然发生在其轮次 task 启动（置活）之后，
-                # 窗口内判活为 False ⇒ 清掉的只可能是陈旧残留。
-                if self._is_session_live(loop_sid):
-                    logger.warning(
-                        "[JiuWenSwarmDeepAdapter] interrupt: skip stale-interrupt "
-                        "clear, related loop session became live during "
-                        "inspection loop_sid=%s target_sid=%s "
-                        "(stale_interrupt.skipped.live)",
-                        loop_sid,
-                        target_sid,
-                    )
-                    return False
+                # 原子性说明：自上方判活通过到此处 update_state 之间全部为
+                # 同步代码、无任何 await，单线程事件循环下不可能有新轮次穿插
+                # 置活——单次判活即原子，无需二次检查。
                 loop_session.update_state({INTERRUPTION_KEY: None})
                 # mismatch 路径只清 state：不 pop 任何一侧 context、
                 # 不做跨会话 save_contexts，避免上下文混写损坏。
