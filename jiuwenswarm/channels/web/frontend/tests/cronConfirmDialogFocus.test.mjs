@@ -20,7 +20,6 @@ before(async () => {
     window: dom.window,
     document: dom.window.document,
     navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
     Node: dom.window.Node,
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
@@ -98,12 +97,14 @@ async function mountDialog(t, props = {}) {
 }
 
 function pressKey(key, init = {}) {
-  document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }));
+  const event = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
+  document.dispatchEvent(event);
+  return event;
 }
 
 test('moves focus into the dialog on mount', async (t) => {
   await mountDialog(t);
-  assert.equal(document.activeElement, byTestId('cron-confirm-close-btn'));
+  assert.equal(document.activeElement, byTestId('cron-confirm-cancel-btn'));
 });
 
 test('wraps Tab and Shift+Tab inside the dialog', async (t) => {
@@ -112,11 +113,11 @@ test('wraps Tab and Shift+Tab inside the dialog', async (t) => {
   const last = byTestId('cron-confirm-cancel-btn');
 
   last.focus();
-  pressKey('Tab');
+  assert.equal(pressKey('Tab').defaultPrevented, true);
   assert.equal(document.activeElement, first);
 
   first.focus();
-  pressKey('Tab', { shiftKey: true });
+  assert.equal(pressKey('Tab', { shiftKey: true }).defaultPrevented, true);
   assert.equal(document.activeElement, last);
 });
 
@@ -129,7 +130,7 @@ test('keeps Tab from reaching background elements', async (t) => {
   await mountDialog(t);
   const last = byTestId('cron-confirm-cancel-btn');
   last.focus();
-  pressKey('Tab');
+  assert.equal(pressKey('Tab').defaultPrevented, true);
   assert.notEqual(document.activeElement, background);
   assert.equal(document.activeElement, byTestId('cron-confirm-close-btn'));
 });
@@ -142,11 +143,11 @@ test('pulls focus back into the dialog when it has escaped', async (t) => {
   await mountDialog(t);
 
   background.focus();
-  pressKey('Tab');
+  assert.equal(pressKey('Tab').defaultPrevented, true);
   assert.equal(document.activeElement, byTestId('cron-confirm-close-btn'));
 
   background.focus();
-  pressKey('Tab', { shiftKey: true });
+  assert.equal(pressKey('Tab', { shiftKey: true }).defaultPrevented, true);
   assert.equal(document.activeElement, byTestId('cron-confirm-cancel-btn'));
 });
 
@@ -156,7 +157,7 @@ test('keeps Shift+Tab inside when the dialog container itself is focused', async
   container.focus();
   assert.equal(document.activeElement, container);
 
-  pressKey('Tab', { shiftKey: true });
+  assert.equal(pressKey('Tab', { shiftKey: true }).defaultPrevented, true);
   assert.equal(document.activeElement, byTestId('cron-confirm-cancel-btn'));
 });
 
@@ -171,16 +172,32 @@ test('closes on Escape and restores focus to the restore target', async (t) => {
     onCancel: () => { cancelCount += 1; },
   });
 
-  pressKey('Escape');
+  assert.equal(pressKey('Escape').defaultPrevented, true);
   assert.equal(cancelCount, 1);
 
   await unmount();
   assert.equal(document.activeElement, trigger);
 });
 
+test('uses the fallback when the restore target has left the document', async (t) => {
+  const trigger = document.createElement('button');
+  const fallback = document.createElement('button');
+  document.body.append(trigger, fallback);
+  t.after(() => { trigger.remove(); fallback.remove(); });
+
+  const unmount = await mountDialog(t, {
+    restoreFocusRef: { current: trigger },
+    restoreFocusFallback: () => fallback,
+  });
+  trigger.remove();
+
+  await unmount();
+  assert.equal(document.activeElement, fallback);
+});
+
 test('ignores Escape while loading', async (t) => {
   let cancelCount = 0;
   await mountDialog(t, { loading: true, onCancel: () => { cancelCount += 1; } });
-  pressKey('Escape');
+  assert.equal(pressKey('Escape').defaultPrevented, true);
   assert.equal(cancelCount, 0);
 });

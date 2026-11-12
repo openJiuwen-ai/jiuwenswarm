@@ -943,6 +943,12 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     }
   }
 
+  // 删除成功后原行已从列表移除，弹窗关闭时无法还原到原「更多」按钮，退到首行
+  const focusFallbackAfterDelete = useCallback(
+    () => tableRef.current?.querySelector<HTMLElement>('[data-testid="cron-job-more-btn"]') ?? null,
+    [],
+  );
+
   async function handleDeleteConfirm() {
     if (!confirmState || confirmBusy) return;
     setConfirmBusy(true);
@@ -1922,6 +1928,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             onCancel={() => setConfirmState(null)}
             loading={confirmBusy}
             restoreFocusRef={confirmRestoreRef}
+            restoreFocusFallback={focusFallbackAfterDelete}
           />
         )}
 
