@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 
 import {
   artifactBinaryPreviewUrl,
@@ -309,4 +310,30 @@ test('keeps spreadsheet preview messages complete in Chinese and English', async
     assert.match(locale.artifacts.spreadsheetTooLarge, /\{\{size\}\}/);
     assert.match(locale.artifacts.spreadsheetTableLabel, /\{\{sheet\}\}/);
   }
+});
+
+async function windowsPackagedWorkbook(buffer) {
+  const source = await JSZip.loadAsync(buffer);
+  const archive = new JSZip();
+  for (const entry of Object.values(source.files)) {
+    if (entry.dir) continue;
+    archive.file(entry.name.replace(/\//g, '\\'), await entry.async('uint8array'));
+  }
+  return archive.generateAsync({ type: 'arraybuffer' });
+}
+
+test('opens a workbook whose ZIP entries use the Windows path separator', async () => {
+  // Windows PowerShell 5.1's Compress-Archive stores `xl\workbook.xml`, which
+  // ExcelJS looks up by exact name.
+  const source = new ExcelJS.Workbook();
+  const sheet = source.addWorksheet('Data');
+  sheet.getCell('A1').value = 'Windows packaged';
+  sheet.getCell('B2').value = 42;
+
+  const parsed = await parseSpreadsheetWorkbook(await windowsPackagedWorkbook(await source.xlsx.writeBuffer()));
+  assert.equal(parsed.sheets.length, 1);
+  assert.equal(parsed.sheets[0].name, 'Data');
+  const cells = new Map(parsed.sheets[0].rows.flatMap(row => row.cells.map(cell => [`${cell.row}:${cell.column}`, cell])));
+  assert.equal(cells.get('1:1').text, 'Windows packaged');
+  assert.equal(cells.get('2:2').text, '42');
 });
