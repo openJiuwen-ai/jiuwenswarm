@@ -11,6 +11,10 @@
   color: var(--color-feedback-danger);
 }
 
+.degraded {
+  color: var(--color-feedback-warning);
+}
+
 .running {
   color: var(--color-action-primary);
 }
