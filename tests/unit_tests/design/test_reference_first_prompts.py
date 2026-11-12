@@ -493,7 +493,7 @@ def test_a_nameless_garment_block_belongs_to_nobody() -> None:
 
     blocks = _costume_blocks(lock)
     assert [who for who, _ in blocks] == [mother, "", son]
-    assert "jumper" not in dict((who, text) for who, text in blocks)[mother]
+    assert "jumper" not in dict(blocks)[mother]
 
     cfg = {
         "pipeline": "clip",
@@ -504,6 +504,50 @@ def test_a_nameless_garment_block_belongs_to_nobody() -> None:
     graph = {"metadata": {"script_analysis": {"characters": [{"id": "char_3", "name": mother}]}}}
     assert "green blouse" in _wardrobe_for("char_3", cfg, graph)
     assert "jumper" not in _wardrobe_for("char_3", cfg, graph)
+
+
+def test_a_shot_wardrobe_keyed_by_id_reaches_a_name_only_composer() -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+        _wardrobe_for,
+    )
+
+    anna = "\u5b89\u5a1c"
+    cfg = {
+        "pipeline": "clip",
+        "cast_names": [anna],
+        "on_screen": ["char_1"],
+        "costume_by_id": {"char_1": "night gown"},
+        "costume_lock": f"{anna}: outfit=day dress",
+    }
+    graph = {"metadata": {"script_analysis": {"characters": [{"id": "char_1", "name": anna}]}}}
+    assert "night gown" in _wardrobe_for(anna, cfg, graph)
+    assert "day dress" not in _wardrobe_for(anna, cfg, graph)
+
+
+def test_an_offscreen_character_never_wears_the_on_screen_look() -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+        _wardrobe_for,
+    )
+
+    anna = "\u5b89\u5a1c"
+    baker = "\u9762\u5305\u5e08"
+    cfg = {
+        "pipeline": "clip",
+        "cast_names": [anna],
+        "on_screen": ["char_1"],
+        "costume_lock": f"{anna}: outfit=day dress",
+    }
+    graph = {
+        "metadata": {
+            "script_analysis": {
+                "characters": [
+                    {"id": "char_1", "name": anna},
+                    {"id": "char_2", "name": baker, "costume_lock": f"{baker}: top=white apron"},
+                ]
+            }
+        }
+    }
+    assert "day dress" not in _wardrobe_for(baker, cfg, graph)
 
 
 def test_wardrobe_phrase_drops_the_slot_label_and_never_cuts_mid_word() -> None:

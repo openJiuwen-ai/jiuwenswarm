@@ -777,6 +777,20 @@ def _costume_blocks(lock: str) -> list[tuple[str, str]]:
     return [(name, "; ".join(part for part in parts if part)) for name, parts in blocks]
 
 
+def _id_for_name(name: str, graph: dict[str, Any] | None) -> str:
+    """Character id that owns a cast name (the composer may carry names only)."""
+    wanted = str(name or "").strip().casefold()
+    if not wanted:
+        return ""
+    for char in _analysis(graph).get("characters") or []:
+        if not isinstance(char, dict):
+            continue
+        cname = str(char.get("name") or "").strip().casefold()
+        if cname and cname == wanted:
+            return str(char.get("id") or "").strip()
+    return ""
+
+
 def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None, lang: str = "en") -> str:
     """Short wearable phrase for one cast member — from costume_lock / analysis."""
     name = _name_for_id(token, graph) or str(token or "").strip()
@@ -784,9 +798,11 @@ def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None,
         return ""
     raw = _costume_for_setting(token, name, cfg)
     if not raw:
-        # Per-id map if present.
+        # Per-id map if present. Tokens are usually cast names, while the map is
+        # keyed by character id, so bridge both ways before giving up on it.
         by_id = cfg.get("costume_by_id") if isinstance(cfg.get("costume_by_id"), dict) else {}
-        raw = str(by_id.get(token) or by_id.get(name) or "").strip()
+        cid = str(token or "").strip() if str(token or "").startswith("char_") else _id_for_name(name, graph)
+        raw = str(by_id.get(token) or by_id.get(name) or by_id.get(cid) or "").strip()
     if not raw:
         # The identity plate is the source of truth: a costume edited on the
         # character node outranks the lock stamped when the graph was authored.
@@ -794,7 +810,13 @@ def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None,
             spec_costume_by_character,
         )
 
-        raw = str(spec_costume_by_character(graph).get(token) or "").strip()
+        by_plate = spec_costume_by_character(graph)
+        raw = str(
+            by_plate.get(token)
+            or by_plate.get(name)
+            or by_plate.get(_id_for_name(name, graph))
+            or ""
+        ).strip()
     if not raw:
         lock = str(cfg.get("costume_lock") or "").strip()
         # "Mother: top=…; bottom=…; Young Child: pale yellow…"
@@ -803,9 +825,10 @@ def _wardrobe_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None,
             if who.casefold() == name.casefold() or who == token:
                 raw = block
                 break
-        if not raw and len(on_screen_names(cfg, graph)) <= 1:
-            # One face on screen: the lock can speak for them, but never through
-            # a garment chunk that lost its name.
+        on_screen = on_screen_names(cfg, graph)
+        if not raw and len(on_screen) == 1 and on_screen[0].casefold() == name.casefold():
+            # The lock can speak for the one face on screen — but only for that
+            # face, and never through a garment chunk that lost its name.
             named = [block for who, block in blocks if who]
             raw = "; ".join(named) if named else ""
     if not raw:

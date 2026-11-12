@@ -1891,8 +1891,9 @@ class Director:
                 "shot differs from the identity card you gave them (a change of "
                 "clothes between settings, an added coat, a removed apron). One look "
                 "per character per shot: never list two outfits or per-scene "
-                "conditions in one clause. Omit the field, or the character, when the "
-                "card already shows what this shot wears. "
+                "conditions in one clause. Repeat it on every shot in that setting "
+                "where the character still wears that other look. Omit the field, or "
+                "the character, when the card already shows what this shot wears. "
                 "Schema: "
                 '{"style_lock":{"look":"...","medium":"..."},'
                 '"characters":[{"id":"char_1","name":"...","description":"...",'
