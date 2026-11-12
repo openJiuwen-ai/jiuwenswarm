@@ -1111,7 +1111,11 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
       return toModelCatalog(await request(JIUWENMATE_METHODS.modelsList));
     },
     async loadActivity(): Promise<JiuwenMateActivity> {
-      return toActivity(record(await request(JIUWENMATE_METHODS.activityGet)).activity);
+      const viewer = {
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+        utc_offset_minutes: -new Date().getTimezoneOffset(),
+      };
+      return toActivity(record(await request(JIUWENMATE_METHODS.activityGet, viewer)).activity);
     },
     async listSchedules(agentId?: string): Promise<JiuwenMateSchedule[]> {
       const listed = record(await request(JIUWENMATE_METHODS.scheduleList, agentId ? { agent_id: agentId } : {}));
