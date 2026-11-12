@@ -6,6 +6,7 @@
 
 import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
+import { mayProcessingTrueFrameRelight } from '../features/interruptSettleGuard';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
 import { isEnterprise } from '../edition';
@@ -2278,6 +2279,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
+      // A fresh user send starts a new turn: the previous interrupt settle
+      // window no longer applies.
+      useChatStore.getState().clearInterruptSettled(sessionId);
       // 标记本地发起的发送，用于 processing_status 处理器区分"旧任务被打断"
       // 和"任务正常结束"——前者跳过自动排空
       localSendPendingRef.current.add(sessionId);
@@ -2524,6 +2528,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
+      useChatStore.getState().clearInterruptSettled(sessionId);
 
       const currentSessionState = useSessionStore.getState();
       const currentRuntime = currentSessionState.getRuntime(sessionId);
@@ -4885,9 +4890,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
 
+        // A pause/cancel ack settled this turn; a synthetic resume event from
+        // webClient (no event_type — it is not a wire frame) must not relight
+        // processing. Genuine wire frames carry event_type and clear the
+        // marker below to let a real new round start.
+        if (isProcessingNow
+          && !mayProcessingTrueFrameRelight(
+            typeof payload.event_type === 'string',
+            useChatStore.getState().getRuntime(sessionId)?.interruptSettledEpoch != null,
+          )) {
+          return;
+        }
         // 后端确认 processing=true 时清除本地发送标记——新任务已由后端接管
         if (isProcessingNow) {
           localSendPendingRef.current.delete(sessionId);
+          useChatStore.getState().clearInterruptSettled(sessionId);
         }
         // 如果 interrupt_result 指示任务已完成，忽略 processing_status=true
         const interruptResult = useChatStore.getState().getRuntime(sessionId)?.interruptResult;
@@ -5323,6 +5340,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             clearPendingContextCompressionStart(sessionId);
             useChatStore.getState().setContextCompressionStatus(sessionId, undefined);
           }
+          // The ack authoritatively settled this turn. Until a new real
+          // processing_status(true) frame or a fresh user send arrives, a
+          // lagging runtime snapshot (session.get_metadata) must not relight
+          // processing (bug1112: pause ack + stale worker snapshot kept the
+          // stop button alive forever).
+          useChatStore.getState().markInterruptSettled(sessionId);
         }
 
         if (resultPayload.intent === 'pause') {
