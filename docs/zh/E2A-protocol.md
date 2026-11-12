@@ -454,3 +454,7 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 旧历史的上下文恢复仍使用扫描预算；分批恢复之间等待模型压缩的时间不计入扫描耗时，实际磁盘读取和解析仍受时间限制。
 
 旧历史分页保留 `event_payload`、`usage` 和 `session_usage`，用于恢复工具详情与用量摘要；这些字段仍受语义字段和页面预算限制。上下文恢复继续使用独立的诊断字段过滤规则。
+
+每页使用已提交历史的字节长度边界，并发追加的记录在后续分页请求中可见；文件替换或截断返回历史变更错误。页面扫描期间允许继续写入历史，普通与流式历史查询均保持 Front 事件循环响应。
+
+每次模型调用的 `chat.usage_metadata.metadata.usage_metadata.payload_refs.prompt` 携带同次 `llm_call_end` 产生的 prompt 引用。SDK 先发 usage 时，适配器最多暂存一条用量事件，等待同次调用结束；缺少结束事件时，在下一次调用、回答或流结束时正常输出。新的 `llm_call_start` 清空上一次调用的引用。

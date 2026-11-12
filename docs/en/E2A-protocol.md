@@ -517,3 +517,7 @@ Legacy `page_idx` paging scans history in blocks and retains only the requested 
 Legacy context recovery retains its scan budget. Time spent waiting for model compression between recovery batches does not consume scanning time; actual disk reads and parsing remain time-limited.
 
 Legacy page reads preserve `event_payload`, `usage`, and `session_usage` for tool replay and usage summaries. These fields remain subject to semantic-field and page budgets; context recovery keeps its separate diagnostic projection.
+
+Each page uses a committed byte-length boundary. Concurrent appends become visible to later page requests; file replacement or truncation returns a history-change error. Page scans allow history writes to continue, and both unary and streamed history queries keep the Front event loop responsive.
+
+For each model call, `chat.usage_metadata.metadata.usage_metadata.payload_refs.prompt` carries the prompt reference emitted by that call's `llm_call_end`. When the SDK emits usage first, the adapter retains at most one usage event until call-end. Missing call-end events drain at the next call, answer, or stream completion. A new `llm_call_start` clears references from the previous call.

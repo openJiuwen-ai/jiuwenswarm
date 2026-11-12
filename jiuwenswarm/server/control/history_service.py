@@ -10,6 +10,7 @@ from typing import Any
 from agent_gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.control.responses import build_error_response
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.server.runtime.session.session_history import (
     HistorySnapshotChanged,
     InvalidHistoryCursor,
@@ -213,7 +214,6 @@ async def handle_history_request(request: AgentRequest) -> AgentResponse:
     params = request.params if isinstance(request.params, dict) else {}
     if "artifact_sha256" in params:
         from jiuwenswarm.server.runtime.session.history_artifacts import read_artifact_chunk
-        from jiuwenswarm.server.runtime.session.history_io import run_history_io
         from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
 
         session_id = params.get("session_id") or request.session_id
@@ -231,7 +231,7 @@ async def handle_history_request(request: AgentRequest) -> AgentResponse:
             ok=True, payload=data, metadata=request.metadata,
         )
     try:
-        data = load_history_query(params)
+        data = await run_history_io(load_history_query, params)
     except HistoryReplayError as exc:
         return build_error_response(request, str(exc), code=exc.code)
     except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:

@@ -375,16 +375,109 @@ async def test_artifact_get_uses_the_same_session_resolution_as_history(stored, 
 
 
 @pytest.mark.asyncio
-async def test_later_llm_call_does_not_inherit_the_previous_prompt_artifact(monkeypatch):
+@pytest.mark.parametrize("reference_phase", ["start", "end", "usage_before_end"])
+async def test_later_llm_call_does_not_inherit_the_previous_prompt_artifact(monkeypatch, reference_phase):
     from tests.unit_tests.agentserver.test_deep_adapter_stream_end_final import _adapter_ready, _run_stream, _usage_chunk
 
     refs = {"prompt": {"sha256": "a" * 64, "bytes": 12, "path": "unused"}}
-    events = await _run_stream(_adapter_ready(monkeypatch), [
-        SimpleNamespace(type="llm_call_start", payload={"prompt": "FIRST", "payload_refs": refs}),
-        _usage_chunk(),
+    start = {"prompt": "FIRST"}
+    if reference_phase == "start":
+        start["payload_refs"] = refs
+    chunks = [SimpleNamespace(type="llm_call_start", payload=start)]
+    if reference_phase == "end":
+        chunks.append(SimpleNamespace(type="llm_call_end", payload={"payload_refs": refs}))
+    chunks.append(_usage_chunk())
+    if reference_phase == "usage_before_end":
+        chunks.append(SimpleNamespace(type="llm_call_end", payload={"payload_refs": refs}))
+    chunks.extend([
         SimpleNamespace(type="llm_call_start", payload={"prompt": "SECOND"}),
         _usage_chunk(),
     ])
+    events = await _run_stream(_adapter_ready(monkeypatch), chunks)
     usage = [event["metadata"]["usage_metadata"] for event in events if event.get("event_type") == "chat.usage_metadata"]
     assert len(usage) == 2 and usage[0]["payload_refs"] == refs
     assert usage[1]["prompt"] == "SECOND" and "payload_refs" not in usage[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("usage_first", [False, True])
+async def test_usage_uses_final_end_prompt_reference_instead_of_start_preview(monkeypatch, usage_first):
+    from tests.unit_tests.agentserver.test_deep_adapter_stream_end_final import _adapter_ready, _run_stream, _usage_chunk
+
+    preview = {"prompt": {"sha256": "a" * 64, "bytes": 12, "path": "preview"}}
+    final = {"prompt": {"sha256": "b" * 64, "bytes": 24, "path": "final"}}
+    end = SimpleNamespace(type="llm_call_end", payload={"payload_refs": final})
+    ordered = [_usage_chunk(), end] if usage_first else [end, _usage_chunk()]
+    chunks = [SimpleNamespace(type="llm_call_start", payload={"prompt": "PREVIEW", "payload_refs": preview})]
+    events = await _run_stream(_adapter_ready(monkeypatch), chunks + ordered)
+    usage = next(event for event in events if event.get("event_type") == "chat.usage_metadata")
+    assert usage["metadata"]["usage_metadata"]["payload_refs"] == final
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["next_call", "answer", "stream_end"])
+async def test_usage_without_call_end_is_delivered_once_at_the_next_boundary(monkeypatch, boundary):
+    from tests.unit_tests.agentserver.test_deep_adapter_stream_end_final import _adapter_ready, _run_stream, _usage_chunk
+
+    chunks = [SimpleNamespace(type="llm_call_start", payload={"prompt": "FIRST"}), _usage_chunk()]
+    if boundary == "next_call":
+        chunks.append(SimpleNamespace(type="llm_call_start", payload={"prompt": "SECOND"}))
+    elif boundary == "answer":
+        chunks.append(SimpleNamespace(type="answer", payload={
+            "output": {"output": "ANSWER", "chunked": False}, "result_type": "answer",
+        }))
+    events = await _run_stream(_adapter_ready(monkeypatch), chunks)
+    types = [event.get("event_type") for event in events]
+    usage = [event for event in events if event.get("event_type") == "chat.usage_metadata"]
+    assert len(usage) == 1 and usage[0]["metadata"]["usage_metadata"]["total_tokens"] == 12
+    assert "payload_refs" not in usage[0]["metadata"]["usage_metadata"]
+    if boundary == "next_call":
+        assert types.index("chat.usage_metadata") < len(types) - 1 - types[::-1].index("chat.llm_call_start")
+    else:
+        assert types.index("chat.usage_metadata") < types.index("chat.final")
+
+
+@pytest.mark.parametrize("same_session", [False, True])
+def test_indexed_scan_allows_writes_after_capturing_committed_boundary(stored, monkeypatch, same_session):
+    from jiuwenswarm.server.control.history_service import load_history_page
+    from jiuwenswarm.server.runtime.session import history_paging as paging, lifecycle
+
+    monkeypatch.delenv("JIUWENSWARM_USE_LEGACY_HISTORY_JSON", raising=False)
+    stored.write([user("old", "committed input")])
+    target = stored.sid if same_session else "other-session"
+    if not same_session:
+        lifecycle.claim_runtime(target)
+    entered, release, writer_started = threading.Event(), threading.Event(), threading.Event()
+    snapshots = []
+    original = paging.read_indexed_history
+
+    def paused_scan(*args, **kwargs):
+        snapshots.append(kwargs.get("source_stat"))
+        entered.set()
+        assert release.wait(15)
+        return original(*args, **kwargs)
+
+    def write():
+        writer_started.set()
+        history.append_history_record(
+            session_id=target, request_id="during-scan", channel_id="web", role="user",
+            content="new input", timestamp=1.0,
+        )
+        history.flush_history_writes()
+
+    monkeypatch.setattr(paging, "read_indexed_history", paused_scan)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        page = pool.submit(load_history_page, stored.sid, 1)
+        try:
+            assert entered.wait(3)
+            written = pool.submit(write)
+            assert writer_started.wait(3)
+            written.result(timeout=5)
+        finally:
+            release.set()
+        result = page.result(timeout=5)
+    assert snapshots[0] is not None
+    assert [row["request_id"] for row in result["messages"]] == ["old"]
+    assert history.load_history_records(target)[-1]["request_id"] == "during-scan"
+    if same_session:
+        assert load_history_page(stored.sid, 1)["messages"][0]["request_id"] == "during-scan"
