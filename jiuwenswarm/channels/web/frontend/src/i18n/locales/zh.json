@@ -6463,8 +6463,10 @@
         "running": "运行中"
       },
       "error": {
+        "nameRequired": "请输入任务名称",
+        "promptRequired": "请输入任务描述",
         "required": "请填写任务名称和描述",
-        "executorRequired": "请选择执行者",
+        "executorRequired": "请选择执行此任务的员工",
         "intervalInvalid": "间隔必须是正整数",
         "futureRequired": "单次执行时间必须晚于当前时间",
         "rangeInvalid": "生效结束时间必须晚于开始时间"

@@ -6466,8 +6466,10 @@
         "running": "Running"
       },
       "error": {
+        "nameRequired": "Enter a task name.",
+        "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
-        "executorRequired": "Choose an executor",
+        "executorRequired": "Select an AI employee to run this task.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
