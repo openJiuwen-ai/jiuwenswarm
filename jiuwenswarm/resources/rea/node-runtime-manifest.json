@@ -1,0 +1,77 @@
+{
+  "version": "26.13.0",
+  "npm_version": "11.20.0",
+  "platforms": {
+    "windows-x64": {
+      "archive_type": "zip",
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-win-x64.zip",
+      "fallback_urls": [
+        "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v26.13.0/node-v26.13.0-win-x64.zip",
+        "https://registry.npmmirror.com/-/binary/node/v26.13.0/node-v26.13.0-win-x64.zip"
+      ],
+      "size_bytes": 41157375,
+      "sha256": "dcc60d59a0746999f99064a01c020445d54d84228c691cdbf25b49ac3b59150a",
+      "destination": "rea/cache/node-v26.13.0-win-x64.zip",
+      "extract_to": "rea/runtimes/node/26.13.0",
+      "node": "node-v26.13.0-win-x64/node.exe",
+      "npx": "node-v26.13.0-win-x64/npx.cmd",
+      "npx_cli": "node-v26.13.0-win-x64/node_modules/npm/bin/npx-cli.js"
+    },
+    "linux-x64": {
+      "archive_type": "tar.xz",
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz",
+      "fallback_urls": [
+        "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v26.13.0/node-v26.13.0-linux-x64.tar.xz"
+      ],
+      "size_bytes": 34083252,
+      "sha256": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997",
+      "destination": "rea/cache/node-v26.13.0-linux-x64.tar.xz",
+      "extract_to": "rea/runtimes/node/26.13.0",
+      "node": "node-v26.13.0-linux-x64/bin/node",
+      "npx": "node-v26.13.0-linux-x64/bin/npx",
+      "npx_cli": "node-v26.13.0-linux-x64/lib/node_modules/npm/bin/npx-cli.js"
+    },
+    "linux-arm64": {
+      "archive_type": "tar.xz",
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.xz",
+      "fallback_urls": [
+        "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v26.13.0/node-v26.13.0-linux-arm64.tar.xz"
+      ],
+      "size_bytes": 34932852,
+      "sha256": "406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92",
+      "destination": "rea/cache/node-v26.13.0-linux-arm64.tar.xz",
+      "extract_to": "rea/runtimes/node/26.13.0",
+      "node": "node-v26.13.0-linux-arm64/bin/node",
+      "npx": "node-v26.13.0-linux-arm64/bin/npx",
+      "npx_cli": "node-v26.13.0-linux-arm64/lib/node_modules/npm/bin/npx-cli.js"
+    },
+    "macos-x64": {
+      "archive_type": "tar.gz",
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz",
+      "fallback_urls": [
+        "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v26.13.0/node-v26.13.0-darwin-x64.tar.gz"
+      ],
+      "size_bytes": 53675982,
+      "sha256": "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e",
+      "destination": "rea/cache/node-v26.13.0-darwin-x64.tar.gz",
+      "extract_to": "rea/runtimes/node/26.13.0",
+      "node": "node-v26.13.0-darwin-x64/bin/node",
+      "npx": "node-v26.13.0-darwin-x64/bin/npx",
+      "npx_cli": "node-v26.13.0-darwin-x64/lib/node_modules/npm/bin/npx-cli.js"
+    },
+    "macos-arm64": {
+      "archive_type": "tar.gz",
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz",
+      "fallback_urls": [
+        "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz"
+      ],
+      "size_bytes": 58334661,
+      "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6",
+      "destination": "rea/cache/node-v26.13.0-darwin-arm64.tar.gz",
+      "extract_to": "rea/runtimes/node/26.13.0",
+      "node": "node-v26.13.0-darwin-arm64/bin/node",
+      "npx": "node-v26.13.0-darwin-arm64/bin/npx",
+      "npx_cli": "node-v26.13.0-darwin-arm64/lib/node_modules/npm/bin/npx-cli.js"
+    }
+  }
+}

@@ -131,6 +131,11 @@ import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import CommandIcon from '../../assets/chat/command.svg?react';
 import closeSvg from '../../assets/work-mode/close.svg?raw';
 import { insertPlainText } from '../../utils/textEditCommands';
+
+function skillChipDisplayLabel(skillName: string): string {
+  return skillName === 'reverse-engineer-anything' ? 'rea' : skillName;
+}
+
 // 个人上下文图标——文档/知识库隐喻，与 SessionSidebar 的 personalContextNavIcon 同源内联 SVG。
 function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -3431,7 +3436,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   /** 在光标处插入技能 chip（不可编辑原子节点） */
   const insertSkillChip = useCallback(
-    (skillName: string) => {
+    (skillName: string, placement: 'cursor' | 'start' = 'cursor') => {
       const el = inputRef.current;
       if (!el) return;
       // 输入法合成中不插入
@@ -3443,7 +3448,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
       // 恢复保存的光标，否则用当前光标
       let range: Range;
-      if (savedRangeRef.current && el.contains(savedRangeRef.current.commonAncestorContainer)) {
+      if (placement === 'start') {
+        range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else if (savedRangeRef.current && el.contains(savedRangeRef.current.commonAncestorContainer)) {
         range = savedRangeRef.current;
         sel.removeAllRanges();
         sel.addRange(range);
@@ -3462,12 +3473,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       // 创建 chip 节点
       const chip = document.createElement('span');
       chip.className = 'chat-input-chip-inline';
+      if (skillName === 'reverse-engineer-anything') {
+        chip.classList.add('chat-input-chip-inline--rea');
+      }
       chip.setAttribute('contenteditable', 'false');
       chip.setAttribute('data-skill', skillName);
-      chip.innerHTML = `
-      <span class="chat-input-chip-inline__icon" aria-hidden="true"></span>
-      <span class="chat-input-chip-inline__label">${skillName}</span>
-    `;
+      const icon = document.createElement('span');
+      icon.className = 'chat-input-chip-inline__icon';
+      icon.setAttribute('aria-hidden', 'true');
+      const label = document.createElement('span');
+      label.className = 'chat-input-chip-inline__label';
+      label.textContent = skillChipDisplayLabel(skillName);
+      chip.append(icon, label);
       // 删除按钮（覆盖在 icon 位置，悬浮时替换闪电）
       const removeBtn = document.createElement('button');
       removeBtn.type = 'button';
@@ -3614,9 +3631,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         .map((node) => node.getAttribute('data-skill'))
         .filter((name): name is string => Boolean(name)),
     );
-    selectedSkills.forEach((skill) => {
-      if (!existing.has(skill)) insertSkillChip(skill);
-    });
+    const missingSkills = selectedSkills.filter((skill) => !existing.has(skill));
+    const placement = el.textContent?.trim() ? 'start' : 'cursor';
+    const insertionOrder = placement === 'start' ? [...missingSkills].reverse() : missingSkills;
+    insertionOrder.forEach((skill) => insertSkillChip(skill, placement));
   }, [activeSessionId, insertSkillChip, selectedSkills]);
 
   // const handleVoiceStart = useCallback(() => {

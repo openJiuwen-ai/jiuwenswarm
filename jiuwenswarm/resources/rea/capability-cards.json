@@ -1,0 +1,322 @@
+{
+  "schema_version": 2,
+  "rea_inventory": {
+    "version": "6.8.0",
+    "tool_count": 229,
+    "group_count": 77,
+    "groups": [
+      {"surface": "official-proxy", "first_tool": "address_name", "count": 33},
+      {"surface": "enhanced", "first_tool": "analyze_function", "count": 11},
+      {"surface": "electron-provider", "first_tool": "analyze_javascript_application", "count": 1},
+      {"surface": "browser-provider", "first_tool": "analyze_web_bundle", "count": 1},
+      {"surface": "official-proxy", "first_tool": "annotate_native_function", "count": 1},
+      {"surface": "session", "first_tool": "binary_session", "count": 1},
+      {"surface": "session", "first_tool": "build_call_path", "count": 12},
+      {"surface": "application", "first_tool": "build_reconstruction_obligation_ledger", "count": 16},
+      {"surface": "adb-provider", "first_tool": "capture_adb_screen", "count": 4},
+      {"surface": "browser-provider", "first_tool": "capture_browser_scenario", "count": 1},
+      {"surface": "electron-provider", "first_tool": "capture_electron_scenario", "count": 1},
+      {"surface": "native-provider", "first_tool": "capture_native_ui_scenario", "count": 1},
+      {"surface": "session", "first_tool": "capture_process_scenario", "count": 1},
+      {"surface": "browser-provider", "first_tool": "capture_web_screenshot", "count": 6},
+      {"surface": "session", "first_tool": "close_binary", "count": 1},
+      {"surface": "native-provider", "first_tool": "close_frida_session", "count": 4},
+      {"surface": "native-provider", "first_tool": "close_gdb_session", "count": 2},
+      {"surface": "native-provider", "first_tool": "close_rizin_debug_session", "count": 1},
+      {"surface": "browser-provider", "first_tool": "compare_web_captures", "count": 2},
+      {"surface": "native-provider", "first_tool": "cutter_command", "count": 1},
+      {"surface": "apktool-provider", "first_tool": "decode_android_resources", "count": 1},
+      {"surface": "artifact-provider", "first_tool": "decode_interface_builder", "count": 4},
+      {"surface": "artifact-provider", "first_tool": "decode_signal_recording", "count": 2},
+      {"surface": "enhanced", "first_tool": "decompile_all", "count": 1},
+      {"surface": "jeb-provider", "first_tool": "decompile_jeb_item", "count": 3},
+      {"surface": "native-provider", "first_tool": "demangle_swift", "count": 4},
+      {"surface": "application", "first_tool": "evaluate_reconstruction_coverage", "count": 2},
+      {"surface": "native-provider", "first_tool": "execute_rizin_command", "count": 1},
+      {"surface": "application", "first_tool": "export_environment_bundle", "count": 1},
+      {"surface": "session", "first_tool": "export_evidence_bundle", "count": 1},
+      {"surface": "application", "first_tool": "export_web_scripts", "count": 1},
+      {"surface": "artifact-provider", "first_tool": "extract_artifact", "count": 1},
+      {"surface": "firmware-provider", "first_tool": "extract_firmware", "count": 1},
+      {"surface": "native-provider", "first_tool": "frida_session_status", "count": 12},
+      {"surface": "native-provider", "first_tool": "gdb_console", "count": 1},
+      {"surface": "native-provider", "first_tool": "gdb_session_status", "count": 1},
+      {"surface": "session", "first_tool": "get_evidence_bundle", "count": 3},
+      {"surface": "session", "first_tool": "get_navigation_context", "count": 1},
+      {"surface": "official-proxy", "first_tool": "goto_address", "count": 1},
+      {"surface": "flutter-provider", "first_tool": "identify_flutter_build", "count": 2},
+      {"surface": "adb-provider", "first_tool": "inspect_adb_client", "count": 1},
+      {"surface": "adb-provider", "first_tool": "inspect_adb_device", "count": 13},
+      {"surface": "android-provider", "first_tool": "inspect_android_class", "count": 5},
+      {"surface": "apktool-provider", "first_tool": "inspect_apktool_client", "count": 1},
+      {"surface": "artifact-provider", "first_tool": "inspect_artifact", "count": 1},
+      {"surface": "artifact-provider", "first_tool": "inspect_asset_catalog", "count": 1},
+      {"surface": "native-provider", "first_tool": "inspect_binary_layout", "count": 2},
+      {"surface": "artifact-provider", "first_tool": "inspect_desktop_application", "count": 9},
+      {"surface": "electron-provider", "first_tool": "inspect_electron_page", "count": 2},
+      {"surface": "artifact-provider", "first_tool": "inspect_evm_interface", "count": 1},
+      {"surface": "firmware-provider", "first_tool": "inspect_firmware_regions", "count": 1},
+      {"surface": "managed-provider", "first_tool": "inspect_managed_artifact", "count": 3},
+      {"surface": "enhanced", "first_tool": "inspect_native_api", "count": 3},
+      {"surface": "artifact-provider", "first_tool": "inspect_packet_capture", "count": 2},
+      {"surface": "pcap-provider", "first_tool": "inspect_pcap_capture", "count": 2},
+      {"surface": "native-provider", "first_tool": "inspect_signature", "count": 2},
+      {"surface": "artifact-provider", "first_tool": "inspect_sqlite_database", "count": 1},
+      {"surface": "artifact-provider", "first_tool": "inspect_wasm_artifact", "count": 1},
+      {"surface": "application", "first_tool": "inspect_web_network_capture", "count": 2},
+      {"surface": "native-provider", "first_tool": "inspect_with_objdump", "count": 1},
+      {"surface": "adb-provider", "first_tool": "install_adb_package", "count": 5},
+      {"surface": "native-provider", "first_tool": "list_cutter_sessions", "count": 1},
+      {"surface": "native-provider", "first_tool": "list_frida_devices", "count": 2},
+      {"surface": "runtime-provider", "first_tool": "list_javascript_runtime_targets", "count": 2},
+      {"surface": "native-provider", "first_tool": "observe_native_calls", "count": 1},
+      {"surface": "browser-provider", "first_tool": "observe_web_execution", "count": 1},
+      {"surface": "session", "first_tool": "open_binary", "count": 1},
+      {"surface": "jeb-provider", "first_tool": "open_jeb_project", "count": 1},
+      {"surface": "adb-provider", "first_tool": "push_adb_file", "count": 1},
+      {"surface": "electron-provider", "first_tool": "reconcile_javascript_runtime", "count": 1},
+      {"surface": "session", "first_tool": "record_unknown", "count": 2},
+      {"surface": "application", "first_tool": "recover_javascript_sources", "count": 1},
+      {"surface": "native-provider", "first_tool": "rizin_debug_command", "count": 1},
+      {"surface": "official-proxy", "first_tool": "set_address_name", "count": 6},
+      {"surface": "native-provider", "first_tool": "start_frida_session", "count": 2},
+      {"surface": "native-provider", "first_tool": "start_gdb_session", "count": 1},
+      {"surface": "application", "first_tool": "trace_web_module_imports", "count": 1}
+    ]
+  },
+  "cards": [
+    {
+      "id": "ghidra",
+      "label": "Ghidra",
+      "description": "原生反编译与函数分析",
+      "members": [
+        {"id": "java", "label": "Java 21", "kind": "component", "component_id": "java"},
+        {"id": "ghidra", "label": "Ghidra", "kind": "component", "component_id": "ghidra"}
+      ],
+      "tool_names": ["binary_overview", "decompile_all", "procedure_pseudo_code", "procedure_assembly", "analyze_function"],
+      "manual_actions": []
+    },
+    {
+      "id": "ida",
+      "label": "IDA",
+      "description": "商业反编译与交互分析",
+      "members": [
+        {"id": "ida", "label": "IDA 与上游 MCP", "kind": "component", "component_id": "ida"}
+      ],
+      "tool_names": ["list_documents", "list_procedures", "procedure_pseudo_code", "decompile_all"],
+      "manual_actions": ["安装并激活 IDA", "安装上游 IDA MCP", "在 IDA 中打开同一目标后重新检测"]
+    },
+    {
+      "id": "kuna",
+      "label": "Kuna",
+      "description": "开源二进制反编译",
+      "members": [
+        {"id": "kuna", "label": "Kuna 1.833", "kind": "component", "component_id": "kuna"}
+      ],
+      "tool_names": ["binary_overview", "procedure_pseudo_code", "analyze_function"],
+      "manual_actions": []
+    },
+    {
+      "id": "hopper",
+      "label": "Hopper",
+      "description": "macOS / Linux 原生反汇编",
+      "members": [
+        {"id": "hopper", "label": "Hopper", "kind": "component", "component_id": "hopper"}
+      ],
+      "tool_names": ["list_documents", "procedure_assembly", "procedure_pseudo_code"],
+      "manual_actions": ["首次使用时在 Hopper 中选择 Demo 或商业许可证"]
+    },
+    {
+      "id": "android",
+      "label": "Android 工具链",
+      "description": "JADX、ADB、Apktool",
+      "members": [
+        {"id": "java", "label": "Java 21", "kind": "component", "component_id": "java"},
+        {"id": "jadx", "label": "JADX", "kind": "component", "component_id": "jadx"},
+        {"id": "adb", "label": "ADB", "kind": "component", "component_id": "adb"},
+        {"id": "apktool", "label": "Apktool", "kind": "component", "component_id": "apktool"}
+      ],
+      "tool_names": [
+        "inspect_android_package",
+        "inspect_android_class",
+        "inspect_android_method",
+        "inspect_adb_client",
+        "decode_android_resources"
+      ],
+      "manual_actions": []
+    },
+    {
+      "id": "jeb",
+      "label": "JEB Android",
+      "description": "商业 Android 反编译与交互分析",
+      "members": [
+        {"id": "jeb", "label": "JEB 与外部 MCP", "kind": "component", "component_id": "jeb"}
+      ],
+      "tool_names": ["inspect_jeb_client", "list_jeb_units", "open_jeb_project", "decompile_jeb_item"],
+      "manual_actions": ["安装并激活 JEB", "启动 JEB MCP 服务"]
+    },
+    {
+      "id": "apple",
+      "label": "Apple 平台支持",
+      "description": "REA 内置 macOS native utilities",
+      "platforms": ["macos-x64", "macos-arm64"],
+      "members": [
+        {
+          "id": "apple_native",
+          "label": "macOS native utilities",
+          "kind": "tool_group",
+          "tool_names": [
+            "capture_native_ui_scenario",
+            "demangle_swift",
+            "inspect_macho",
+            "inspect_plist",
+            "list_architectures",
+            "inspect_asset_catalog",
+            "inspect_signature",
+            "observe_native_ui",
+            "observe_native_calls"
+          ]
+        }
+      ],
+      "tool_names": [],
+      "manual_actions": []
+    },
+    {
+      "id": "dynamic",
+      "label": "动态分析",
+      "description": "Frida、调试器、Cutter、浏览器与运行时观察",
+      "members": [
+        {
+          "id": "gdb",
+          "label": "GDB",
+          "kind": "component",
+          "component_id": "gdb",
+          "tool_names": ["start_gdb_session", "gdb_console", "gdb_session_status", "close_gdb_session"]
+        },
+        {
+          "id": "rizin",
+          "label": "Rizin",
+          "kind": "component",
+          "component_id": "rizin",
+          "tool_names": [
+            "start_rizin_debug_session",
+            "execute_rizin_command",
+            "rizin_debug_command",
+            "rizin_debug_session_status",
+            "close_rizin_debug_session"
+          ]
+        },
+        {
+          "id": "cutter",
+          "label": "Cutter",
+          "kind": "component",
+          "component_id": "cutter",
+          "tool_names": ["cutter_command", "list_cutter_sessions"]
+        },
+        {
+          "id": "chrome",
+          "label": "浏览器运行时",
+          "kind": "component",
+          "component_id": "chrome",
+          "tool_names": ["list_browser_targets", "capture_web_screenshot"]
+        },
+        {
+          "id": "frida",
+          "label": "Frida",
+          "kind": "tool_group",
+          "tool_names": [
+            "close_frida_session",
+            "frida_session_status",
+            "instrument_with_frida",
+            "list_frida_devices",
+            "list_frida_processes",
+            "load_frida_script",
+            "resume_frida_session",
+            "start_frida_session",
+            "unload_frida_script"
+          ]
+        },
+        {
+          "id": "browser_electron",
+          "label": "浏览器 / Electron runtime",
+          "kind": "tool_group",
+          "tool_names": [
+            "analyze_javascript_application",
+            "analyze_web_bundle",
+            "capture_browser_scenario",
+            "capture_electron_scenario",
+            "inspect_electron_page",
+            "list_browser_targets",
+            "list_electron_targets",
+            "list_javascript_runtime_targets"
+          ]
+        },
+        {
+          "id": "process_capture",
+          "label": "进程捕获",
+          "kind": "tool_group",
+          "tool_names": ["capture_process_scenario"]
+        }
+      ],
+      "tool_names": [
+        "list_frida_devices",
+        "start_frida_session",
+        "start_gdb_session",
+        "execute_rizin_command",
+        "cutter_command",
+        "list_browser_targets",
+        "list_electron_targets",
+        "capture_process_scenario"
+      ],
+      "manual_actions": ["Cutter live 命令需要用户先启动 Cutter 实例", "进程捕获需要支持的主机和目标权限"]
+    },
+    {
+      "id": "network_firmware",
+      "label": "网络与固件",
+      "description": "PCAP、代理抓包、固件与信号证据",
+      "members": [
+        {"id": "pcap", "label": "PCAP / TShark", "kind": "component", "component_id": "pcap"},
+        {"id": "mitmproxy", "label": "mitmproxy", "kind": "component", "component_id": "mitmproxy"},
+        {"id": "firmware", "label": "Binwalk / Unblob", "kind": "component", "component_id": "firmware"},
+        {"id": "sigrok", "label": "sigrok", "kind": "component", "component_id": "sigrok"}
+      ],
+      "tool_names": [
+        "inspect_pcap_capture",
+        "inspect_packet_capture",
+        "inspect_packet_fields",
+        "inspect_web_network_capture",
+        "inspect_firmware_regions",
+        "extract_firmware",
+        "decode_signal_recording",
+        "inspect_signal_decoders"
+      ],
+      "manual_actions": ["固件提取需要 Linux、prlimit 和对应格式 extractor", "信号解码需要 sigrok-cli 0.7.2"]
+    },
+    {
+      "id": "script_formats",
+      "label": "脚本与格式",
+      "description": "pwntools、WASM、JavaScript 恢复与底层格式",
+      "members": [
+        {"id": "pwntools", "label": "pwntools Python", "kind": "component", "component_id": "pwntools"},
+        {"id": "wabt", "label": "WABT", "kind": "component", "component_id": "wabt"},
+        {"id": "wakaru", "label": "Wakaru", "kind": "component", "component_id": "wakaru"},
+        {
+          "id": "objdump",
+          "label": "objdump",
+          "kind": "component",
+          "component_id": "objdump",
+          "tool_names": ["inspect_with_objdump"]
+        }
+      ],
+      "tool_names": [
+        "inspect_binary_layout",
+        "inspect_recorded_crash",
+        "inspect_wasm_artifact",
+        "compare_wasm_interfaces",
+        "recover_javascript_sources",
+        "inspect_with_objdump"
+      ],
+      "manual_actions": ["pwntools 和 Wakaru 当前仅支持 Linux x64", "objdump 属于系统依赖"]
+    }
+  ]
+}

@@ -610,6 +610,9 @@ from jiuwenswarm.common.mcp_config import (
     preflight_mcp_server_reachable,
 )
 from jiuwenswarm.server.runtime.mcp.call_timeout_patch import apply_mcp_call_timeout_patch
+from jiuwenswarm.server.runtime.mcp.schema_compat_patch import (
+    apply_openjiuwen_schema_compat_patch,
+)
 from jiuwenswarm.server.runtime.agent_adapter.task_tool_events import apply_task_tool_event_patch
 from jiuwenswarm.common.task_loop_config import (
     resolve_task_loop_completion_timeout,
@@ -1979,6 +1982,7 @@ class JiuWenSwarmDeepAdapter:
         # killed remote MCP server fails fast instead of hanging on the MCP
         # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
+        apply_openjiuwen_schema_compat_patch()
         # SDK TaskTool creates ephemeral subagents (browser_agent included)
         # without emitting roster events, and consumes the subagent stream
         # internally, so Web clients see a silent turn for the whole

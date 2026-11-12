@@ -23,8 +23,11 @@ def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
         return override
-    home = os.environ.get("JIUWENSWARM_HOME") or os.path.expanduser("~")
     name = "runtime-worker.pipe" if os.name == "nt" else "runtime-worker.sock"
+    data_dir = os.environ.get("JIUWENSWARM_DATA_DIR", "").strip()
+    if data_dir:
+        return str(Path(data_dir) / "agent" / "run" / name)
+    home = os.environ.get("JIUWENSWARM_HOME") or os.path.expanduser("~")
     return str(Path(home) / ".jiuwenswarm" / "run" / name)
 
 
