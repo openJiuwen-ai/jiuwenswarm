@@ -877,6 +877,10 @@ class XiaoyiChannel(BaseChannel):
         # 手机端版本（logical_session → systemVariables.app_ver，最后非空覆盖），
         # AskUser 结构化选项卡开关依据（>= 11.7.9.301 才开启）
         self._session_app_vers: dict[str, str] = {}
+        # 手机端模型选择（logical_session → clientVariables.modelName，最后
+        # 非空覆盖）：ask_user 发卡轮快照进 pending 待答登记，resume 请求随
+        # params 带回——续跑沿用发卡轮的模型，避免答卡后回落默认模型。
+        self._session_model_names: dict[str, str] = {}
         # AskUser 超时兜底任务：周期扫描待答表，超时未应答自动选默认选项 resume
         self._ask_user_timeout_task: asyncio.Task | None = None
         self._reload_permissions_cb: Callable[[], Any] | None = None
@@ -3608,6 +3612,9 @@ class XiaoyiChannel(BaseChannel):
         model_name = extract_model_name(parts)
         if model_name:
             params["model_name"] = model_name
+            # 会话级最新模型记录：ask_user 发卡轮据此快照进 pending（见
+            # _send_ask_user_tab_prompt/文本回退登记），答卡 resume 随请求带回。
+            self._session_model_names[logical_session] = model_name
             logger.info("[Xiaoyi] Found modelName: %s", model_name)
         # Per-request input modalities of the selected model (e.g. ["text","image"]).
         # Empty/missing = no declaration: agent falls back to its own config/probe.
@@ -4064,6 +4071,12 @@ class XiaoyiChannel(BaseChannel):
             "source": pending.get("source") or "permission_interrupt",
             "mode": "agent",
         }
+        # 续跑沿用发卡轮的模型（发卡登记时快照，见 _send_ask_user_tab_prompt/
+        # 文本回退登记）：服务端每轮按 params.model_name 覆盖出站模型，缺失不
+        # 注入——无覆盖请求回落默认模型（旧 pending 兼容）。
+        resume_model_name = str(pending.get("model_name") or "").strip()
+        if resume_model_name:
+            params["model_name"] = resume_model_name
         if responder_device_id:
             params["responder_device_id"] = responder_device_id
         metadata = {
@@ -4199,6 +4212,9 @@ class XiaoyiChannel(BaseChannel):
                 "source": source,
                 "task_id": task_id,
                 "created_at": time.time(),
+                # 快照发卡轮模型：resume/超时兜底续跑随请求带回（见
+                # _route_approval_reply），避免续跑回落默认模型。
+                "model_name": self._session_model_names.get(logical_session, ""),
             }
         else:
             logger.warning("XiaoYi: ask_user_question 缺少 request_id/会话标识，无法登记待答复审批")
@@ -4285,6 +4301,9 @@ class XiaoyiChannel(BaseChannel):
                 "source": source,
                 "task_id": task_id,
                 "created_at": time.time(),
+                # 快照发卡轮模型：resume/超时兜底续跑随请求带回（见
+                # _route_approval_reply），避免续跑回落默认模型。
+                "model_name": self._session_model_names.get(logical_session, ""),
                 # 选项卡路径标记：completed→working 降级与超时兜底仅对本形态生效
                 "ask_user_tabs": True,
                 # InvokeRsp 按 question_id 回传，此处登记 id → question 文本映射，

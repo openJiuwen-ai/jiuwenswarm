@@ -74,6 +74,7 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     # AskUser 结构化选项卡出站/应答路径开启；版本开关相关用例显式覆盖本表
     # （≤ 11.7.9 / 未上报 → 文本回退，见 test_ask_user_prompt_falls_back_*）。
     ch._session_app_vers = {"conv-1": "11.7.10.200"}
+    ch._session_model_names = {}
     ch._ws_connections = {"k": _FakeWs(sent)}
     ch._accumulated_texts = {}
     ch._send_locks = {}
@@ -791,6 +792,49 @@ async def test_ask_user_app_ver_extracted_from_system_variables(cfg_file):
 
 
 @pytest.mark.asyncio
+async def test_ask_user_resume_carries_card_round_model(cfg_file):
+    """发卡轮模型快照进 pending，答卡 resume 随请求带回（续跑沿用发卡轮模型）。
+
+    手机端模型选择随消息 clientVariables.modelName 上报：会话级记录最新值，
+    ask_user 发卡登记时快照进待答表（答卡期间切换模型不影响本轮），resume
+    请求（含超时兜底续跑）带回 model_name——服务端每轮按 params.model_name
+    覆盖出站模型，缺失才回落默认模型。
+    """
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        # 用户消息携带 clientVariables.modelName → 会话级最新模型记录
+        await ch._handle_message_stream(_build_stream_msg(
+            "用askuser询问我选择一个颜色",
+            client_vars={"workspace": None, "modelName": "LLM_GLM5.3"},
+            task="task-1",
+        ))
+        assert ch._session_model_names["conv-1"] == "LLM_GLM5.3"
+
+        ask = _make_ask_user_event("req-779")
+        await ch._send_legacy(ask)
+        # 发卡轮快照：pending 记录当轮模型
+        assert ch._pending_approvals["conv-1"]["model_name"] == "LLM_GLM5.3"
+
+        # 答卡（InvokeRsp，question_id 对齐 request_id）
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": False,
+            "answers": [{
+                "question_id": "req-779",
+                "selected_options": ["本次允许"],
+                "custom_text": None,
+            }],
+        }, task="task-9"))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-779"
+        # 续跑沿用发卡轮的模型，不回落默认模型
+        assert m.params["model_name"] == "LLM_GLM5.3"
+        assert "conv-1" not in ch._pending_approvals  # 已消费
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
 async def test_ask_user_timeout_loop_skips_text_fallback_entries(
     cfg_file, monkeypatch
 ):
@@ -1091,6 +1135,7 @@ async def test_ask_user_invoke_rsp_reply_routes_resume(cfg_file):
             "created_at": time.time(),
             "questions": ["允许执行 bash 吗？"],
             "question_ids": {"call_abc": "允许执行 bash 吗？"},
+            "model_name": "LLM_GLM5.3",
         }
         await ch._handle_message_stream(_build_invoke_rsp_msg({
             "user_cancel": False,
@@ -1110,6 +1155,8 @@ async def test_ask_user_invoke_rsp_reply_routes_resume(cfg_file):
         ]
         # responder_device_id 透传进 resume（审计/UI"由指定设备完成选择"）
         assert m.params["responder_device_id"] == "dev_abc123"
+        # 发卡轮模型快照随 resume 带回：服务端每轮按 params.model_name 覆盖
+        assert m.params["model_name"] == "LLM_GLM5.3"
         # 主投跟随应答帧带回的 task_id（task-9）：云端在 InvokeRsp 后只对
         # 应答帧链路做下发（实测挂原链手机完全收不到）；原任务链 task-2
         # 记入收口账本，resume 终态时向其补发收口终帧
