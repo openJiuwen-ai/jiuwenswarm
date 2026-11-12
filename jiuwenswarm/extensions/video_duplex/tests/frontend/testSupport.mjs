@@ -1,3 +1,5 @@
+import { readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFile } from 'node:fs/promises';
@@ -28,4 +30,15 @@ export async function loadModules(paths, { plugins = [], alias = { react: requir
     } }],
   });
   return import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+}
+
+// This module is also the suite entry point; importing it never starts another runner.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // Discover new tests automatically, independent of the shell's glob expansion.
+  const files = readdirSync(new URL('./', import.meta.url))
+    .filter(name => name.endsWith('.test.mjs')).sort()
+    .map(name => fileURLToPath(new URL(name, import.meta.url)));
+  const result = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...files], { stdio: 'inherit' });
+  if (result.error) throw result.error;
+  process.exit(result.status ?? 1);
 }

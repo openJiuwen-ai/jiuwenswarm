@@ -670,7 +670,8 @@ class VideoSearchManager:
             if payload.get("duplex_job_id") or payload.get("source") != "confirm_interrupt":
                 return
             self._chat_cards[session_id] = {
-                key: payload.get(key) for key in ("request_id", "interrupt_id", "source", "questions", "approval_schema")
+                key: payload.get(key)
+                for key in ("request_id", "interrupt_id", "source", "questions", "approval_schema")
             }
             if len(self._chat_cards) > 128:
                 expired = next(iter(self._chat_cards))

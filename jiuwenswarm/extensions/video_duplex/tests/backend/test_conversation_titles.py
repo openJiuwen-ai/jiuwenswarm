@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import RecordingChannel
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import RecordingChannel
 
 from jiuwenswarm.extensions.video_duplex.backend import video_live
 from jiuwenswarm.server.runtime.session import session_history, session_metadata

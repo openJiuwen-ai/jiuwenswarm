@@ -17,7 +17,7 @@ from jiuwenswarm.extensions.video_duplex.backend.cron_control import (
     CronControl,
     parse_cron_arguments,
 )
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import run_queue, tool_proposal
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import run_queue, tool_proposal
 
 
 def job(job_id="job-1", *, user_id="alice", mode="agent", enabled=True):

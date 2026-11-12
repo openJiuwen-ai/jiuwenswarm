@@ -27,7 +27,7 @@ from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support impor
     empty_task_file_query,  # noqa: F401 -- pytest fixture
 )
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import (
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
     RecordingChannel as FakeChannel,
     agent_client,
 )
@@ -41,6 +41,11 @@ from jiuwenswarm.extensions.video_duplex.backend import (
     video_search,
     video_voice,
 )
+
+
+from jiuwenswarm.extensions.video_duplex.backend.video_search import core_agent_progress
+
+
 
 
 @pytest.fixture(autouse=True)
@@ -3527,7 +3532,6 @@ def test_core_progress_preserves_native_skill_metadata():
     assert core_agent_progress(result)["tool_payload"] == result
 
 
-
 async def test_invalid_qwen_call_telemetry_retains_bounded_arguments(monkeypatch):
     channel = _video_channel()
     events = []
@@ -3846,3 +3850,87 @@ async def test_joyai_new_request_while_card_waits_is_a_new_task_not_an_answer(mo
     assert start.await_args.kwargs["query"] == "打开微信"
     assert not channel.dispatched, "the card was not answered"
     assert "chat" in channel.manager._chat_cards
+
+
+ROSTER = {
+    "event_type": "chat.subtask_update", "session_id": "visible", "subagent_id": "cua-1",
+    "parent_session_id": "visible", "subagent_type": "cua_agent", "display_name": "cua_agent",
+    "task_description": "Open the settings page", "status": "running", "revision": 1,
+}
+
+
+
+THINKING = {
+    "event_type": "chat.subagent_activity", "subagent_id": "cua-1", "parent_session_id": "visible",
+    "task_id": "cua-1", "seq": 1, "kind": "thinking", "summary": "Looking for the window", "at_ms": 1000,
+}
+
+
+
+TOOL_CALL = {**THINKING, "seq": 2, "kind": "tool_call", "summary": "screenshot()", "tool_name": "screenshot"}
+
+
+def test_subagent_frames_become_progress_carrying_the_original_event():
+    # The Web panel normalizes the exact typed-path frame; a reshaped copy would drift.
+    roster = video_search.core_agent_progress(ROSTER)
+    activity = video_search.core_agent_progress(THINKING)
+    assert roster["stage"] == activity["stage"] == "subagent"
+    assert roster["subagent_event"] == ROSTER
+    assert activity["subagent_event"] == THINKING
+    assert "cua_agent" in roster["title"]
+    assert activity["detail"] == "Looking for the window"
+
+
+
+@pytest.mark.asyncio
+async def test_every_subagent_frame_reaches_task_progress_in_stream_order():
+    frames = [ROSTER, THINKING, TOOL_CALL, {**ROSTER, "status": "idle", "revision": 2},
+              {"event_type": "chat.final", "content": "Done"}]
+
+    class Client:
+        async def send_request_stream(self, _env):
+            for payload in frames:
+                yield SimpleNamespace(payload=payload)
+
+    progress = []
+
+    async def record(entry):
+        progress.append(entry)
+
+    await video_search.execute_core_agent(
+        Client(), question="q", query="q", visual_context="", search_session_id="voice", on_progress=record,
+    )
+    # Repeated roster/activity frames are distinct facts; none may be deduplicated away.
+    forwarded = [entry["subagent_event"] for entry in progress if entry["stage"] == "subagent"]
+    assert forwarded == frames[:4]
+
+
+@pytest.mark.parametrize("field", ["result", "raw_output", "data"])
+def test_nested_failure_exposes_details_without_losing_receipt(field):
+    receipt = {"tool_name": "shell", "summary": "Execution failed",
+               field: {"success": False, "error": "Permission denied",
+                       "exit_code": 13, "stderr": "Cannot open target\n" + "details " * 200},
+               "payload_refs": {"result": {"id": "full-result"}}}
+    progress = core_agent_progress({"event_type": "chat.tool_result", "tool_result": receipt})
+    assert progress["tool_success"] is False
+    assert "Permission denied" in progress["detail"]
+    forwarded = progress["tool_payload"]["tool_result"]
+    assert "exit_code: 13" in forwarded["rendered_result"]
+    assert "details " * 200 in forwarded["rendered_result"]
+    assert forwarded["payload_refs"] == receipt["payload_refs"]
+    assert forwarded[field] == receipt[field]
+    assert "rendered_result" not in receipt
+
+
+def test_json_compatibility_failure_is_detected():
+    progress = core_agent_progress({"event_type": "chat.tool_result", "tool_name": "browser",
+                                   "result": '{"isError":true,"error":"Window closed"}'})
+    assert progress["status"] == "failed"
+    assert "Window closed" in progress["detail"]
+
+
+def test_pending_result_remains_pending_in_native_receipt():
+    progress = core_agent_progress({"event_type": "chat.tool_result", "status": "pending",
+                                   "error": "Awaiting approval"})
+    assert progress["tool_success"] is True
+    assert progress["tool_payload"]["status"] == "pending"

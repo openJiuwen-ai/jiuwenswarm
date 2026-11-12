@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_test_support import until
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until
 
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import LocalCheckpoint, install_bridge
 
@@ -1340,6 +1340,7 @@ async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path, m
         assert store.read(other["id"])["status"] == "running"
     finally:
         await service.close()
+
 
 async def test_scheduler_completion_waits_for_round_cleanup_before_next_task(tasks, monkeypatch):
     """A scheduler handle can finish before the round releases the shared Agent."""
