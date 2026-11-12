@@ -2,14 +2,38 @@
 
 import json
 
+from openjiuwen.agent_teams.rails.team_context import get_team_backend
 from openjiuwen.harness.rails.interrupt.interrupt_base import InterruptResult
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     convert_interactions_to_ask_user_question,
+    question_interactions,
 )
 from jiuwenswarm.server.runtime.group_execution import GroupExecutions
 from jiuwenswarm.server.runtime.group_questions import GroupQuestions, register_question_target
+
+
+async def publish_group_issue_reviews(ctx, context, group):
+    """Send an addressed issue confirmation to the public group's owner."""
+    result = getattr(getattr(ctx, "inputs", None), "result", None)
+    if not isinstance(result, dict) or result.get("result_type") != "interrupt":
+        return
+    backend = get_team_backend(context)
+    if getattr(backend, "team_name", None) != group["team_name"] or group["channel_id"] != "web":
+        return
+    for interaction in question_interactions(result.get("state")):
+        payload = convert_interactions_to_ask_user_question([interaction])
+        if not payload or payload["source"] != "confirm_interrupt" or not payload.get("interrupt_id"):
+            continue
+        if not any(question.get("issue_report") for question in payload["questions"]):
+            continue
+        target = register_question_target(
+            context.session_id, context.session_id, context.member_name, ctx.agent,
+        )
+        active = GroupExecutions(context.session_id).active(context.member_name)
+        execution_id = active["execution_id"] if active is not None else None
+        await GroupQuestions(context.session_id).ask(payload, target, context.member_name, execution_id)
 
 
 class GroupAskUserRail(StructuredAskUserRail):

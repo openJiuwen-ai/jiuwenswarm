@@ -1,4 +1,4 @@
-"""Persist group questions and resume the native ask-user interaction owner."""
+"""Persist group questions and resume the native interaction owner."""
 
 import copy
 import hashlib
@@ -9,8 +9,10 @@ from weakref import WeakValueDictionary
 
 from openjiuwen.agent_teams.context import set_session_id, reset_session_id
 from openjiuwen.agent_teams.team_workspace.frontmatter import atomic_write
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
+from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import ALLOW_ONCE, REJECT
 from jiuwenswarm.server.runtime.group_service import GroupError, group_lock, group_path, read_group
 from jiuwenswarm.server.runtime.session import lifecycle
 
@@ -69,7 +71,10 @@ class GroupQuestions:
     @staticmethod
     def public(record: dict) -> dict:
         fields = ("request_id", "questions", "source", "member_name", "execution_id", "created_at")
-        return {key: copy.deepcopy(record[key]) for key in fields}
+        payload = {key: copy.deepcopy(record[key]) for key in fields}
+        if record.get("interrupt_id"):
+            payload["interrupt_id"] = record["interrupt_id"]
+        return payload
 
     async def publish(self, payload: dict) -> None:
         from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
@@ -88,7 +93,14 @@ class GroupQuestions:
 
     async def ask(self, payload: dict, target: str, member_name: str, execution_id: str | None) -> None:
         native_id = payload["request_id"]
-        request_id = hashlib.sha256(json.dumps([self.group_id, target, execution_id, native_id]).encode()).hexdigest()
+        source = payload.get("source", "ask_user_interrupt")
+        identity = [self.group_id, target, execution_id, native_id]
+        interrupt_id = payload.get("interrupt_id") if source == "confirm_interrupt" else None
+        if source == "confirm_interrupt":
+            if not isinstance(interrupt_id, str) or not interrupt_id:
+                raise GroupError("BAD_REQUEST", "confirmation requires an interrupt ID")
+            identity.append(interrupt_id)
+        request_id = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
         async with group_lock(self.group_id):
             records = self.read()
             previous = records.get(request_id)
@@ -96,15 +108,17 @@ class GroupQuestions:
                 return
             record = {
                 "request_id": request_id, "native_request_id": native_id,
-                "questions": payload["questions"], "source": "ask_user_interrupt",
+                "questions": payload["questions"], "source": source,
                 "target": target, "member_name": member_name, "execution_id": execution_id,
                 "created_at": previous["created_at"] if previous else time.time(), "status": "pending",
             }
+            if interrupt_id:
+                record["interrupt_id"] = interrupt_id
             records[request_id] = record
             self.save(records)
         await self.publish({"event_type": "chat.ask_user_question", **self.public(record)})
 
-    async def answer(self, request_id: str, answers: list) -> dict:
+    async def answer(self, request_id: str, answers: list, *, source: str = "ask_user_interrupt") -> dict:
         if not isinstance(request_id, str) or not request_id.strip():
             raise GroupError("BAD_REQUEST", "request_id is required")
         if not isinstance(answers, list) or not answers:
@@ -122,6 +136,8 @@ class GroupQuestions:
             record = self.read().get(request_id)
             if record is None:
                 raise GroupError("NOT_FOUND", "question not found")
+            if source != record["source"]:
+                raise GroupError("BAD_REQUEST", "answer source does not match the pending question")
             if record["status"] == "answered":
                 if record["answers"] != answers:
                     raise GroupError("CONFLICT", "question already has another answer")
@@ -135,10 +151,7 @@ class GroupQuestions:
             for answer in answers:
                 if answer.get("question") not in question_texts:
                     raise GroupError("BAD_REQUEST", "answer does not match a pending question")
-            native_id = record["native_request_id"]
-            query = build_ask_user_interactive_input(native_id, answers)
-            if not query.user_inputs[native_id]["answers"]:
-                raise GroupError("BAD_REQUEST", "answer must contain nonempty text")
+            query = self._native_answer(record, answers)
             from jiuwenswarm.server.runtime.group_execution import GroupExecutions
 
             execution_id = record.get("execution_id")
@@ -155,3 +168,18 @@ class GroupQuestions:
                 self.save(records)
         await self.publish({"event_type": "chat.ask_user_answer", "request_id": request_id})
         return {"request_id": request_id, "accepted": True}
+
+    @staticmethod
+    def _native_answer(record: dict, answers: list) -> InteractiveInput:
+        if record["source"] == "confirm_interrupt":
+            options = answers[0].get("selected_options", [])
+            if len(answers) != 1 or len(options) != 1 or options[0] not in {ALLOW_ONCE, REJECT}:
+                raise GroupError("BAD_REQUEST", "select one confirmation decision")
+            query = InteractiveInput()
+            query.answer(record["interrupt_id"], {"approved": options[0] == ALLOW_ONCE, "auto_confirm": False})
+            return query
+        native_id = record["native_request_id"]
+        query = build_ask_user_interactive_input(native_id, answers)
+        if not query.user_inputs[native_id]["answers"]:
+            raise GroupError("BAD_REQUEST", "answer must contain nonempty text")
+        return query

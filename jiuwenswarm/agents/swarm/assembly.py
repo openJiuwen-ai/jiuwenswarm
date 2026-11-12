@@ -563,7 +563,7 @@ def enrich_team_spec_for_swarm(
         from jiuwenswarm.agents.swarm.group_execution import install_execution_policy
 
         install_execution_policy(teammate)
-        install_execution_policy(spec.agents["leader"], include_tools=False)
+        install_execution_policy(spec.agents["leader"], include_start_task=False)
         teammate.rails = [*(teammate.rails or []), RailSpec(type=GROUP_MEMBER_TEMPLATE,
             params={"initial_names": [member["member_name"] for member in group_members]})]
     logger.info(

@@ -209,17 +209,18 @@ async def test_group_only_chat_routes_through_web_gateway(host):
 
 
 @pytest.mark.asyncio
-async def test_group_answer_is_owned_control_input_and_does_not_start_another_task(host, monkeypatch):
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "confirm_interrupt"])
+async def test_group_answer_is_owned_control_input_and_does_not_start_another_task(host, monkeypatch, source):
     from jiuwenswarm.server.runtime.group_questions import GroupQuestions
 
     answer = AsyncMock(return_value={"request_id": "question", "accepted": True})
     monkeypatch.setattr(GroupQuestions, "answer", answer)
     ws = SimpleNamespace(send=AsyncMock())
-    req = request("chat.send", group_id="group-one", source="ask_user_interrupt", request_id="question",
+    req = request("chat.send", group_id="group-one", source=source, request_id="question",
                   answers=[{"question": "Budget?", "selected_options": ["Low"]}])
     assert await dispatch_group_request(host, ws, req, asyncio.Lock())
     host.get_group_service().owned.assert_called_once_with("group-one", "owner", "web")
-    answer.assert_awaited_once_with("question", req.params["answers"])
+    answer.assert_awaited_once_with("question", req.params["answers"], source=source)
     assert "accepted" in ws.send.await_args.args[0]
 
 

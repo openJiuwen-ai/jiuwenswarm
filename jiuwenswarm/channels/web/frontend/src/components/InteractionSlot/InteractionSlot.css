@@ -14,6 +14,144 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+.issue-review {
+  border: 1px solid var(--color-border-default);
+  border-radius: 14px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  box-shadow: var(--effect-interaction-shadow);
+  font-size: 13px;
+}
+
+.issue-review__header,
+.issue-review__details,
+.issue-review__footer {
+  padding: 12px 16px;
+}
+
+.issue-review__header h2 {
+  margin: 0;
+  color: var(--color-text-strong);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.issue-review__header p {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+}
+
+.issue-review__draft {
+  max-height: min(40vh, 420px);
+  overflow: auto;
+  border-block: 1px solid var(--color-border-default);
+}
+
+.issue-review__details {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.issue-review__details dt {
+  color: var(--color-text-secondary);
+}
+
+.issue-review__details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.issue-review__destination {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.issue-review__title {
+  color: var(--color-text-strong);
+  font-weight: 600;
+}
+
+.issue-review__labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.issue-review__body {
+  margin: 0 16px 10px;
+  padding: 14px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  color: var(--color-text-primary);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.issue-review__body > :first-child { margin-top: 0; }
+.issue-review__body > :last-child { margin-bottom: 0; }
+
+.issue-review__body :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--color-text-strong);
+  margin-block: 1em 0.35em;
+}
+
+.issue-review__body :is(h3, h4) { font-weight: 600; }
+.issue-review__body h3 { font-size: 1.05em; }
+.issue-review__body h4 { font-size: 1em; }
+.issue-review__body a { color: var(--color-text-link); }
+
+.issue-review__body .task-list-item {
+  list-style: none;
+}
+
+.issue-review__body pre,
+.issue-review__source pre {
+  overflow-x: auto;
+  background: var(--color-surface-muted);
+  color: var(--color-text-primary);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.issue-review__body pre code {
+  color: inherit;
+}
+
+.issue-review__table { overflow-x: auto; }
+.issue-review__table table { min-width: 100%; }
+
+.issue-review__source {
+  margin: 0 16px 12px;
+  color: var(--color-text-secondary);
+}
+
+.issue-review__source summary { cursor: pointer; }
+.issue-review__source pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.issue-review__footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.issue-review__footer p {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--color-feedback-danger);
+}
+
 /* 授权条：页签式吸附输入框顶部（对齐「当前无进行中的活动」的连体样式） */
 .interaction-slot--attached {
   width: calc(100% - 48px);

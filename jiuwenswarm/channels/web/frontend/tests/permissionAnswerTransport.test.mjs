@@ -43,6 +43,7 @@ after(() => dom.window.close());
 
 const { useWebSocket } = await import('../node_modules/.cache/permission-answer-transport/hooks/useWebSocket.js');
 const { AuthorizationPrompt, AuthorizationQuestionDetails } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/AuthorizationPrompt.js');
+const { InteractionSlot } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/index.js');
 const { ToolCallDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolCallDisplay.js');
 const { ToolGroupDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolGroupDisplay.js');
 const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
@@ -83,7 +84,7 @@ const question = (extra = {}) => ({
 });
 const payload = (questions = [question()]) => ({ session_id: sessionId, request_id: 'sdk-request', source: 'permission_interrupt', questions });
 
-async function mounted(run, content = null) {
+async function mounted(run, content = null, Prompt = AuthorizationPrompt) {
   useChatStore.getState().ensureRuntime(sessionId);
   useChatStore.getState().setActiveSessionId(sessionId);
   useSessionStore.getState().ensureRuntime(sessionId);
@@ -93,7 +94,7 @@ async function mounted(run, content = null) {
     observed.api = useWebSocket({ activeSessionId: sessionId, onError: (error) => observed.errors.push(error) });
     const pending = useChatStore((state) => state.runtimes[sessionId]?.pendingQuestions[0]);
     if (content) return content;
-    return pending ? createElement(AuthorizationPrompt, {
+    return pending ? createElement(Prompt, {
       pending,
       onSubmit: async (...args) => {
         const result = await observed.api.sendUserAnswer(sessionId, ...args);
@@ -348,6 +349,36 @@ test('a permission answer echoes the event interrupt_id beside the unchanged req
   await respond(socket, request);
   assert.deepEqual(observed.results, [true]);
 }));
+
+test('the issue review panel approves the exact GitCode confirmation over the WebSocket', async () => mounted(async ({ socket, observed }) => {
+  const issue_report = {
+    title: '[Bug]: Composer freezes',
+    body: '### Reproduction steps\n\n1. Select a model.\n\nToken: [redacted]',
+    labels: ['bug'],
+    tracker_url: 'https://gitcode.com/openJiuwen/jiuwenswarm/issues',
+  };
+  await deliver(socket, {
+    ...payload([question({ question: 'Review issue', issue_report })]),
+    request_id: 'report-call',
+    interrupt_id: 'report-confirmation',
+    source: 'confirm_interrupt',
+  });
+  const review = document.querySelector('[data-testid="interaction-slot-issue-review"]');
+  assert.ok(review);
+  assert.equal(prompt(), null);
+  assert.match(review.textContent, /Composer freezes/);
+  assert.match(review.querySelector('ol').textContent, /Select a model/);
+  await act(async () => review.querySelector('[data-testid="interaction-slot-issue-review-publish"]').click());
+  const request = socket.requests.at(-1);
+  assert.equal(request.method, 'chat.send');
+  assert.equal(request.params.request_id, 'report-call');
+  assert.equal(request.params.interrupt_id, 'report-confirmation');
+  assert.equal(request.params.source, 'confirm_interrupt');
+  assert.deepEqual(request.params.answers, [{ question: 'Review issue', selected_options: ['allow_once'] }]);
+  await respond(socket, request);
+  assert.deepEqual(observed.results, [true]);
+  assert.equal(document.querySelector('[data-testid="interaction-slot-issue-review"]'), null);
+}, null, InteractionSlot));
 
 for (const [label, extra] of [['no', {}], ['an empty', { interrupt_id: '' }]]) {
   test(`an event with ${label} interrupt_id answers without the key`, async () => mounted(async ({ socket }) => {

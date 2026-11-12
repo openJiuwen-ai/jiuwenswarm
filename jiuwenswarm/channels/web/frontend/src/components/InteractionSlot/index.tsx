@@ -16,7 +16,8 @@ import { A4PAuthorizationCard } from '../../features/A4PAuthorizationModal';
 import type { UserAnswer } from '../../types';
 import { AuthorizationPrompt } from './AuthorizationPrompt';
 import { InteractionPrompt } from './InteractionPrompt';
-import { classifyPrompt } from './promptRouting';
+import { IssueReviewPanel } from './IssueReviewPanel';
+import { classifyPrompt, getIssueReviewDraft } from './promptRouting';
 import './InteractionSlot.css';
 
 interface InteractionSlotProps {
@@ -60,6 +61,7 @@ export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
   // 授权条：页签式吸附输入框顶部；交互卡：独立浮卡。
   const isAuth = kind === 'authorization';
   const variant = isAuth ? 'auth' : kind;
+  const issueDraft = kind === 'issue-review' ? getIssueReviewDraft(pending) : undefined;
   return (
     <>
       <A4PAuthorizationCard />
@@ -68,7 +70,9 @@ export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
         data-testid="interaction-slot-root"
         data-variant={variant}
       >
-        {isAuth ? (
+        {issueDraft ? (
+          <IssueReviewPanel key={pending.interruptId} pending={pending} draft={issueDraft} onSubmit={onSubmit} />
+        ) : isAuth ? (
           <AuthorizationPrompt pending={pending} onSubmit={onSubmit} />
         ) : (
           <InteractionPrompt

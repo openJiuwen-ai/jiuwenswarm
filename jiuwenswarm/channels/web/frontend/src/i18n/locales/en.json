@@ -5083,6 +5083,19 @@
     "invalid": "SVG code contains errors",
     "previewTitle": "SVG image preview"
   },
+  "issueReview": {
+    "heading": "Review issue",
+    "publicNotice": "This issue will be public on GitCode.",
+    "destination": "Repository",
+    "title": "Title",
+    "labels": "Labels",
+    "noLabels": "None",
+    "draft": "Issue draft",
+    "markdownSource": "Markdown source",
+    "cancel": "Cancel",
+    "publish": "Publish to GitCode",
+    "submitFailed": "Could not send your decision. Try again."
+  },
   "authPrompt": {
     "title": "Authorization",
     "matchedRule": "Matched rule",

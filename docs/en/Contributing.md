@@ -49,6 +49,8 @@ Submit on [GitCode Issues](https://gitcode.com/openJiuwen/jiuwenswarm/issues) wi
 4. Expected behavior vs actual behavior
 5. Relevant logs (`~/.jiuwenswarm/logs/` and `~/.jiuwenswarm/agent/.logs`)
 
+In a personal Web chat, connect GitCode with a personal access token that can create issues. Ask JiuwenSwarm to report the bug and provide any missing details requested by the current Bug Report form. During a temporary GitCode lookup failure, JiuwenSwarm can read the form from the project's GitHub mirror. The **Review issue** panel shows the public GitCode repository, title, labels, and report body. Use **Markdown source** to inspect the exact body, then select **Publish to GitCode** or **Cancel**. To revise the report, cancel and ask for changes in chat. JiuwenSwarm returns the GitCode issue link. In Team Work and Team Code, the leader prepares and submits the report. In a Web group chat, you can also ask a JiuwenSwarm teammate to prepare the report and review it in that group.
+
 ### Submitting Pull Requests
 
 1. **Fork the repo**: Fork [openJiuwen/jiuwenswarm](https://gitcode.com/openJiuwen/jiuwenswarm) on GitCode

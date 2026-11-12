@@ -31,6 +31,7 @@ from openjiuwen.agent_teams.harness.manifest import (
     harness_element,
     param_field,
 )
+from openjiuwen.agent_teams.rails.team_context import get_team_backend
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 CRON_TOOLS = "swarm.cron_tools"
 SEND_FILE = "swarm.send_file"
 SESSION_MESSAGING_TOOLS = "swarm.session_messaging_tools"
+REPORT_ISSUE = "swarm.report_issue"
 ORGANIZATION_MODEL_TOOLS = "swarm.organization_model_tools"
 ORGANIZATION_OWNER_INBOX_TOOLS = "swarm.organization_owner_inbox_tools"
 
@@ -85,6 +87,28 @@ def build_session_messaging_tools(
     if str(getattr(ctx, "role", "") or "") != "leader":
         return []
     return list(SessionMessagingToolkit().get_tools())
+
+
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=REPORT_ISSUE,
+    description="JiuwenSwarm bug report template lookup and submission for team leaders and group members.",
+)
+def build_report_issue_tool(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Expose reporting in personal Web sessions with a user confirmation route."""
+    from jiuwenswarm.agents.harness.common.tools.report_issue import build_issue_report_tools
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if ctx.channel_id != "web" or is_enterprise():
+        return []
+    if not ctx.session_id or is_cron_execution_session(ctx.session_id):
+        return []
+    backend = get_team_backend(ctx)
+    group_chat = getattr(backend, "conversation_mode", None) == "group_chat"
+    role = str(ctx.role)
+    if role != "leader" and not (group_chat and role == "teammate"):
+        return []
+    return build_issue_report_tools(ctx.session_id, ctx.language, group_chat=group_chat)
 
 
 class CronToolsInput(ConstructionInput):
@@ -325,9 +349,11 @@ __all__ = [
     "CRON_TOOLS",
     "SEND_FILE",
     "SESSION_MESSAGING_TOOLS",
+    "REPORT_ISSUE",
     "ORGANIZATION_MODEL_TOOLS",
     "build_organization_model_tools",
     "build_cron_tools",
     "build_send_file_tools",
     "build_session_messaging_tools",
+    "build_report_issue_tool",
 ]

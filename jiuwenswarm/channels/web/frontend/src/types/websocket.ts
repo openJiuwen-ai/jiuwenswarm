@@ -157,7 +157,15 @@ export interface Question {
   card_id?: string;
   matched_rule?: string;
   tool_payload?: unknown;
+  issue_report?: IssueReviewDraft;
   reviewer_metadata?: AutoReviewerMetadata;
+}
+
+export interface IssueReviewDraft {
+  title: string;
+  body: string;
+  labels: string[];
+  tracker_url: string;
 }
 
 /**

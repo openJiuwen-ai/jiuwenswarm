@@ -747,6 +747,7 @@ def _build_team_capability_specs(
     if role == "leader":
         tool_specs.append(BuiltinToolSpec(type=registry.A4P_INTENT_AUTHORIZATION))
         tool_specs.append(BuiltinToolSpec(type=registry.SESSION_MESSAGING_TOOLS))
+        tool_specs.append(BuiltinToolSpec(type=registry.REPORT_ISSUE))
     return rails_specs, tool_specs
 
 
@@ -821,6 +822,7 @@ def _build_code_capability_specs(
     if role == "leader":
         tool_specs.append(BuiltinToolSpec(type=registry.A4P_INTENT_AUTHORIZATION))
         tool_specs.append(BuiltinToolSpec(type=registry.SESSION_MESSAGING_TOOLS))
+        tool_specs.append(BuiltinToolSpec(type=registry.REPORT_ISSUE))
     return rails_specs, tool_specs
 
 

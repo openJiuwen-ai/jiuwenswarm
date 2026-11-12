@@ -5080,6 +5080,19 @@
     "invalid": "SVG 代码存在异常",
     "previewTitle": "SVG 图片预览"
   },
+  "issueReview": {
+    "heading": "审阅 Issue",
+    "publicNotice": "此 Issue 将公开发布到 GitCode。",
+    "destination": "仓库",
+    "title": "标题",
+    "labels": "标签",
+    "noLabels": "无",
+    "draft": "Issue 草稿",
+    "markdownSource": "Markdown 源文本",
+    "cancel": "取消",
+    "publish": "发布到 GitCode",
+    "submitFailed": "未能发送确认结果，请重试。"
+  },
   "authPrompt": {
     "title": "操作授权",
     "matchedRule": "匹配规则",
