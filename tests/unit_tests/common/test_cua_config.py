@@ -2,6 +2,7 @@
 
 """Desktop preferences round-trip independently of backend availability."""
 
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -28,8 +29,8 @@ def panel_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
     monkeypatch.setattr(handlers, "ENV_FILE", tmp_path / ".env")
     monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: None)
-    monkeypatch.setattr(handlers, "is_cua_backend_available", lambda: False)
-    monkeypatch.setattr(config_service, "is_cua_backend_available", lambda: False)
+    monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "native_build_failed")
+    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
     monkeypatch.setattr(config_service, "get_config_file", lambda: path)
     monkeypatch.setattr(config_service, "get_env_file", lambda: tmp_path / ".env")
     original = handlers.provider
@@ -50,6 +51,7 @@ async def test_desktop_preference_round_trips_through_both_config_readers(panel_
     for payload in (channel.send_response.call_args.kwargs["payload"], config_service.get_panel()):
         assert payload["cua_agent_enabled"] == ("true" if expected else "false")
         assert payload["cua_backend_available"] == "false"
+        assert payload["cua_backend_unavailable_reason"] == "native_build_failed"
 
 
 @pytest.mark.parametrize("value", ["yes", 1, {}, []])
@@ -87,15 +89,39 @@ def test_frozen_backend_uses_external_resource_layout(tmp_path, monkeypatch, sys
     assert not cua_config.is_cua_repl_available()
 
 
-@pytest.mark.parametrize(("version", "installed", "available"), [
-    ("14.0", False, False), ("14.0", True, True), ("13.6", True, False),
+@pytest.mark.parametrize(("version", "installed", "reason", "expected"), [
+    ("14.0", False, None, "backend_missing"),
+    ("14.0", True, None, ""),
+    ("14.0", True, "native_build_failed", "native_build_failed"),
+    ("14.0", True, RuntimeError("SDK probe failed"), "backend_missing"),
+    ("13.6", True, None, "unsupported_platform"),
 ])
-def test_source_macos_reports_sdk_availability_without_building(monkeypatch, version, installed, available):
+def test_source_macos_reports_driver_availability_without_building(monkeypatch, version, installed, reason, expected):
     monkeypatch.setattr(cua_config.sys, "platform", "darwin")
     monkeypatch.setattr(cua_config.sys, "frozen", False, raising=False)
     monkeypatch.setattr(cua_config.platform, "mac_ver", lambda: (version, (), ""))
     monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object() if installed else None)
-    assert cua_config.is_cua_backend_available() is available
+
+    def check_backend():
+        if isinstance(reason, Exception):
+            raise reason
+        return reason
+
+    paths = SimpleNamespace(installed_backend_unavailable_reason=check_backend)
+    monkeypatch.setitem(sys.modules, "computer_use", SimpleNamespace(paths=paths))
+    assert cua_config.cua_repl_unavailable_reason() == expected
+    assert cua_config.is_cua_backend_available() is (not expected)
+
+
+def test_existing_backend_keeps_the_setting_available_when_the_repl_build_failed(monkeypatch):
+    monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "native_build_failed")
+    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: True)
+    assert not cua_config.is_cua_repl_available()
+    assert cua_config.is_cua_backend_available()
+    assert cua_config.cua_backend_settings() == {
+        "cua_backend_available": "true",
+        "cua_backend_unavailable_reason": "",
+    }
 
 
 def test_harmony_has_no_desktop_backend_even_with_sdk_and_legacy_dependencies(monkeypatch):
