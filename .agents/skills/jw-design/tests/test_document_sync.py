@@ -244,3 +244,20 @@ def test_unchanged_design_index_keeps_its_timestamp(sync_module: ModuleType, tmp
     sync_module.synchronize(tmp_path, identity)
 
     assert index.read_text(encoding="utf-8") == stale
+
+
+def test_generate_index_cli_keeps_author_and_check_stays_green(sync_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The standalone design-index generator follows the same author rule."""
+    import generate_index
+
+    write_doc(tmp_path, "designs/proposals/D-20261026-1200-topic/design.md", "---\nid: D-20261026-1200-topic\ntitle: Topic\nstage: proposals\nstatus: draft\nmodules: [runtime]\n---\n\n# Topic\n")
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("creator", "creator@example.invalid"))
+    index = tmp_path / "designs" / "INDEX.md"
+    before = index.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(generate_index, "git_identity", lambda path: sync_module.GitIdentity("later", "later@example.invalid"))
+    assert generate_index.main(["--root", str(tmp_path / "designs"), "--check"]) == 0
+    assert generate_index.main(["--root", str(tmp_path / "designs")]) == 0
+
+    assert index.read_text(encoding="utf-8") == before
+    assert metadata(index)["author"] == "creator"
