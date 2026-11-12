@@ -2202,7 +2202,10 @@
       "readFileFailed": "读取文件失败：{{name}}",
       "readImageFailed": "读取图片失败：{{name}}",
       "filePickerUnsupported": "当前环境无法打开本机文件选择器（请确认 jiuwenswarm 在本机运行且已重启加载最新后端）",
-      "filePickerFailed": "打开文件选择器失败"
+      "filePickerFailed": "打开文件选择器失败",
+      "preparingFiles": "正在准备文件…",
+      "preparingFilesHint": "读取完成前请稍候",
+      "cancelPreparing": "取消等待"
     },
     "uploading": "上传中...",
     "uploadFailed": "上传失败",

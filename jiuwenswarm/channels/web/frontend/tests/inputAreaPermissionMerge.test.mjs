@@ -333,6 +333,23 @@ test('web plus opens browser picker directly without a server file dialog', asyn
   });
 });
 
+test('browser picker shows a preparing card until the picker returns or is cancelled', async () => {
+  await mount({}, async () => {
+    const input = byId('chat-panel-input-file-input');
+    input.click = () => {};
+    await click(byId('chat-panel-input-attach-trigger'));
+    await click(byId('chat-panel-input-attach-menu-file'));
+
+    const preparing = byId('chat-panel-input-attachment-preparing');
+    assert.ok(preparing.textContent?.includes(i18n.t('chat.inputAttachment.preparingFiles')));
+
+    await act(async () => {
+      input.dispatchEvent(new dom.window.Event('cancel'));
+    });
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-input-attachment-preparing"]').length, 0);
+  });
+});
+
 test('desktop plus accepts a document above 100 MiB as a path without reading its content', async () => {
   const pick = { kind: 'document', path: '/fixtures/large.txt', filename: 'large.txt', size: 101 * 1024 * 1024 };
   window.pywebview = { api: { select_local_files: async () => [pick] } };
