@@ -107,6 +107,19 @@ def test_indexed_page_collapses_inline_files_and_tolerates_bad_jsonl(stored):
     assert [row["content"] for row in result["messages"]] == ["中文", "@example.txt"]
 
 
+@pytest.mark.parametrize("bad_row", [b"invalid JSON\n", b'{"role":"user","content":"\xff"}\n'])
+def test_indexed_page_skips_bad_json_and_utf8_without_losing_neighbors(stored, bad_row):
+    write_rows(stored, [{"id": "old", "role": "user", "content": "old question"}])
+    with stored.open("ab") as output:
+        output.write(bad_row)
+        output.write(b'{"id":"new","role":"user","content":"new question"}\n')
+    original = stored.read_bytes()
+    result = service.load_history_page("indexed", 1)
+    assert [row["id"] for row in result["messages"]] == ["new", "old"]
+    assert result["total_pages"] == 1
+    assert stored.read_bytes() == original
+
+
 @pytest.mark.parametrize("source_format", ["json", "jsonl"])
 def test_indexed_filter_runs_after_inline_file_normalization(stored, source_format):
     path = stored.with_suffix("." + source_format)
