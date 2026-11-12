@@ -1,6 +1,7 @@
-import { useCallback, useContext, useEffect, useId, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useId, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Select, Switch } from '../../../components/ui';
+import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import type { SettingItemDefinition } from '../registry/types';
 import { parseConfigBoolean } from '../services/settingsContract';
 import { useSettingsServices } from '../services/SettingsServicesProvider';
@@ -13,6 +14,25 @@ type EditingChange = (id: string, editing: boolean) => void;
 
 function settingFieldKey(key: string, suffix: 'title' | 'description' | 'placeholder' | 'unavailableDescription'): string {
   return `settingsPanel.fields.${key}.${suffix}`;
+}
+
+function UnavailableSwitch({ reason, children }: { reason: string; children: ReactNode }) {
+  const { tooltip, handlers } = useAdaptiveTooltip();
+  return (
+    <>
+      <span
+        className="setting-row__unavailable-switch"
+        data-testid="settings-unavailable-switch"
+        data-tooltip={reason}
+        aria-label={reason}
+        tabIndex={0}
+        {...handlers}
+      >
+        {children}
+      </span>
+      {tooltip}
+    </>
+  );
 }
 
 function InlineSettingInput({
@@ -128,9 +148,10 @@ function SimpleSettingItem({
 
   if (item.component === 'switch') {
     const Configuration = item.configure;
-    const checked = parseConfigBoolean(source.values[item.key]);
     const unavailable = item.availableWhen !== undefined && !parseConfigBoolean(source.values[item.availableWhen]);
-    const switchDescription = unavailable ? t(settingFieldKey(item.key, 'unavailableDescription')) : description;
+    const checked = parseConfigBoolean(source.values[item.key]);
+    const unavailableDescription = settingFieldKey(item.key, 'unavailableDescription');
+    const switchDescription = unavailable ? t(unavailableDescription) : description;
     const buildSwitchUpdates = (next: boolean): Record<string, boolean> => {
       const updates: Record<string, boolean> = { [item.key]: next };
       if (!next && item.subItems?.uncheckWithParent) {
@@ -145,7 +166,7 @@ function SimpleSettingItem({
         aria-label={title}
         aria-describedby={error?.id}
         checked={checked}
-        disabled={controlDisabled || configuring || editingSubItems.size > 0 || (unavailable && !checked)}
+        disabled={controlDisabled || configuring || editingSubItems.size > 0 || unavailable}
         onChange={(next) => {
           if (next && Configuration) setConfiguring(true);
           else void source.save(buildSwitchUpdates(next), item.id).catch(() => undefined);
@@ -154,8 +175,16 @@ function SimpleSettingItem({
         data-variant={item.id}
       />
     );
-    const showSubItems = item.subItems?.show === 'always' || checked;
-    const subItemsDisabled = disabled || (item.subItems?.disabled === 'when-parent-unchecked' && !checked);
+    if (unavailable) {
+      const reason = item.unavailableReasonKey ? source.values[item.unavailableReasonKey] : undefined;
+      const tooltipText = typeof reason === 'string' && reason
+        ? t(`settingsPanel.fields.${item.key}.unavailableReasons.${reason}`, { defaultValue: switchDescription })
+        : switchDescription;
+      control = <UnavailableSwitch reason={tooltipText}>{control}</UnavailableSwitch>;
+    }
+    const enabled = checked && !unavailable;
+    const showSubItems = item.subItems?.show === 'always' || enabled;
+    const subItemsDisabled = disabled || (item.subItems?.disabled === 'when-parent-unchecked' && !enabled);
     return (
       <>
         <SettingRow
