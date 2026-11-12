@@ -15,6 +15,7 @@ from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
     CONFIG_KEY_INPUTS,
+    NODE_ROLE_CHARACTER,
     PIPELINE_COMPOSE,
     PIPELINE_MUSIC,
     node_config,
@@ -66,6 +67,10 @@ _PHRASES: dict[str, dict[str, str]] = {
         "offscreen_wearing": ", wearing {wardrobe},",
         "cast_from": "{who} from {image_word}",
         "cast_wearing": "wearing {wardrobe}",
+        "turnaround_refs": (
+            "{images}: each is one person shown from the front, side, and back, with a head close-up; "
+            "draw that person once in the shot."
+        ),
         "group_variation": (
             "Within the group, each person differs in gesture, timing, and attention; "
             "no two share the same pose."
@@ -103,6 +108,7 @@ _PHRASES: dict[str, dict[str, str]] = {
         "offscreen_wearing": "（身穿{wardrobe}）",
         "cast_from": "{who}（{image_word}）",
         "cast_wearing": "身穿{wardrobe}",
+        "turnaround_refs": "{images} 各是一个人的正面、侧面、背面三视图加头部特写，镜头里每人只出现一次。",
         "group_variation": "组内每个人的手势、节奏与注意力各不相同，没有两个人是同一姿势。",
         "cast_seat": "{seat}，位于 {scene_word} 的场景中",
         "cast_in_scene": "位于 {scene_word} 的场景中（{scene}）",
@@ -926,6 +932,29 @@ def _cast_form_for(token: str, name: str, graph: dict[str, Any] | None) -> str:
     return ""
 
 
+def _turnaround_cast(graph: dict[str, Any] | None) -> set[str]:
+    """Casefolded ids and names of cast whose spec sheet is a front/side/back turnaround."""
+    from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
+        is_turnaround_sheet,
+    )
+
+    found: set[str] = set()
+    for node in (graph or {}).get("nodes") or []:
+        if not isinstance(node, dict) or node_pipeline(node) != NODE_ROLE_CHARACTER:
+            continue
+        cfg = node_config(node)
+        if not is_turnaround_sheet(cfg):
+            continue
+        tokens = [
+            cfg.get("character_id"),
+            cfg.get("character_name"),
+            *(cfg.get("character_ids") or []),
+            *(cfg.get("character_names") or []),
+        ]
+        found.update(str(t).strip().casefold() for t in tokens if str(t or "").strip())
+    return found
+
+
 def _story_cast_sentence(
     *,
     who: str,
@@ -1043,10 +1072,14 @@ def compose_practice_prompt(
         if action_sentence not in sentences:
             sentences.append(action_sentence)
 
+    turnaround = _turnaround_cast(graph)
+    turnaround_words: list[str] = []
     for index, token in enumerate(tokens, start=1):
         who = _name_for_id(token, graph) or str(token)
         if who.casefold() in gone_names:
             continue
+        if token.casefold() in turnaround or who.casefold() in turnaround:
+            turnaround_words.append(_image_word(index, family))
         sentences.append(
             _story_cast_sentence(
                 who=who,
@@ -1059,6 +1092,15 @@ def compose_practice_prompt(
                 visibility="full",
                 lang=lang,
                 group=_cast_form_for(token, who, graph) == "group",
+            )
+        )
+    if turnaround_words:
+        sentences.append(
+            phrase(
+                _PHRASES,
+                lang,
+                "turnaround_refs",
+                images=list_separator(lang).join(turnaround_words),
             )
         )
 

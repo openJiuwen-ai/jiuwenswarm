@@ -322,6 +322,13 @@ _VISUAL_STYLE_HEADING_RE = re.compile(
 )
 
 
+def authored_visual_style(text: str) -> str:
+    """The Visual Style wording the Brief wrote, verbatim; '' when it states none."""
+    body = str(text or "").strip()
+    match = _VISUAL_STYLE_HEADING_RE.search(body) or _VISUAL_STYLE_LINE_RE.search(body)
+    return match.group(1).strip().strip("*").strip()[:280] if match else ""
+
+
 def style_lock_from_brief(
     text: str,
     *,
@@ -699,7 +706,9 @@ def format_image_ref_bindings(bindings: list[dict[str, Any]] | None) -> str:
             who = name or "this cast member"
             lines.append(
                 f"Image {idx} is the sole identity/costume reference for {who} "
-                "(use face/hair/body/clothing only; ignore any backdrop in that sheet)."
+                "(use face/hair/body/clothing only; a sheet may show this one person from "
+                "front, side, and back with a head close-up — draw them once; ignore any "
+                "backdrop in that sheet)."
             )
         elif role == "environment":
             lines.append(
