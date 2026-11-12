@@ -231,6 +231,7 @@ const restoreButton = document.querySelector('#restore');
 const page = document.querySelector('main');
 const RECOVERY_HEIGHT_MESSAGE = 'jiuwenswarm.system-plugin-recovery.height';
 const RECOVERY_SELECTED_RECORD_MESSAGE = 'jiuwenswarm.system-plugin-recovery.selected-record';
+const RECOVERY_RESTART_REQUESTED_MESSAGE = 'jiuwenswarm.system-plugin-recovery.restart-requested';
 const RECOVERY_OPEN_CONFIRM_COMMAND_MESSAGE = 'jiuwenswarm.system-plugin-recovery.open-confirm';
 const RECOVERY_DIALOG_OPENED_MESSAGE = 'jiuwenswarm.system-plugin-recovery.dialog-opened';
 const RECOVERY_DIALOG_CLOSED_MESSAGE = 'jiuwenswarm.system-plugin-recovery.dialog-closed';
@@ -496,6 +497,14 @@ async function restore(id, button) {
       body: JSON.stringify({ record_id: id }),
     });
     if (!response.ok) throw new Error('restore failed');
+    const result = await response.json();
+    if (result.restart_requested === true) {
+      postToParent({
+        type: RECOVERY_RESTART_REQUESTED_MESSAGE,
+        recordId: result.record.id,
+        restoredAt: result.record.timestamp,
+      });
+    }
     await load();
   } catch {
     restoring = false;

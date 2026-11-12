@@ -43,6 +43,7 @@ from jiuwenswarm.gateway.extensions_v2.manifest import (
 )
 from jiuwenswarm.gateway.extensions_v2.management.catalog import (
     PackageNotFound,
+    catalog_facts,
     list_installed,
     list_presets,
     package_detail,
@@ -113,6 +114,7 @@ def register_extension_package_handlers(channel: Any, resolve_client: Callable[[
                 timeout_seconds=_request_timeout(),
                 drop_params=("session_id",),
                 preserve_error_payload=True,
+                transform_payload=_gateway_detail_status if method is ReqMethod.EXTENSIONS_V2_SHOW else None,
             )
 
         return handler
@@ -746,32 +748,41 @@ def _merge_packages(
 ) -> list[dict[str, Any]]:
     """Merge Gateway cards into the AgentServer catalog, Gateway first."""
 
-    installed = {
-        str(item.get("package_id"))
-        for item in (state or {}).get("installed_packages") or []
-        if isinstance(item, Mapping) and item.get("package_id")
-    }
-    active = {
-        str(item.get("package_id"))
-        for item in (state or {}).get("active") or []
-        if isinstance(item, Mapping) and item.get("package_id")
-    }
+    facts = catalog_facts(state or {})
     merged: dict[str, dict[str, Any]] = {}
-    identities: set[str] = set()
-    for item in [*local, *(entry for entry in remote if isinstance(entry, Mapping))]:
+    for item in local:
+        merged.setdefault(item["id"], item)
+    identities = {item["packageId"] for item in merged.values()}
+    for item in remote:
+        if not isinstance(item, Mapping):
+            continue
         identity = str(item.get("packageId") or item.get("packageName") or item.get("id") or "")
         if not identity or identity in identities:
             continue
         identities.add(identity)
         card = dict(item)
-        package_id = str(card.get("packageId") or "")
-        if package_id in installed:
-            card["installed"] = True
-        if package_id in active:
-            card["active"] = True
-            card["enabled"] = True
+        status = facts.status(identity)
+        if status["installed"]:
+            card.update(status)
         merged[str(card.get("id") or identity)] = card
     return list(merged.values())
+
+
+def _gateway_detail_status(payload: dict[str, Any]) -> dict[str, Any]:
+    """A Hub detail can be requested by asset ID for a locally installed Gateway package."""
+    from jiuwenswarm.gateway.extensions_v2.assembly import get_gateway_runtime
+
+    detail = payload.get("package")
+    package_id = detail.get("packageId") if isinstance(detail, dict) else None
+    if not isinstance(package_id, str) or not package_id:
+        return payload
+    runtime = get_gateway_runtime()
+    if runtime is None or not runtime.config.enabled:
+        return payload
+    status = catalog_facts(runtime.packages.query(package_id)).status(package_id)
+    if not status["installed"]:
+        return payload
+    return {**payload, "package": {**detail, **status}}
 
 
 def _install_origin(

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { CircleAlert, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useOptionalWebUIAppContext } from '../../../webui/react/WebUIProvider';
 import './SystemPluginRecoverySettings.css';
 
 const RECOVERY_ROUTE = '/system-plugin-recovery';
@@ -9,6 +10,7 @@ const MAX_ENDPOINT_ATTEMPTS = 10;
 const ENDPOINT_RETRY_DELAY_MS = 500;
 const RECOVERY_HEIGHT_MESSAGE = 'jiuwenswarm.system-plugin-recovery.height';
 const RECOVERY_SELECTED_RECORD_MESSAGE = 'jiuwenswarm.system-plugin-recovery.selected-record';
+const RECOVERY_RESTART_REQUESTED_MESSAGE = 'jiuwenswarm.system-plugin-recovery.restart-requested';
 const RECOVERY_OPEN_CONFIRM_COMMAND_MESSAGE = 'jiuwenswarm.system-plugin-recovery.open-confirm';
 const RECOVERY_DIALOG_OPENED_MESSAGE = 'jiuwenswarm.system-plugin-recovery.dialog-opened';
 const RECOVERY_DIALOG_CLOSED_MESSAGE = 'jiuwenswarm.system-plugin-recovery.dialog-closed';
@@ -20,6 +22,7 @@ type RecoveryMessage = {
   type?: unknown;
   height?: unknown;
   recordId?: unknown;
+  restoredAt?: unknown;
   restoreLabel?: unknown;
   title?: unknown;
   description?: unknown;
@@ -63,6 +66,7 @@ function recoveryFrameHeight(value: unknown): number | null {
 
 export function SystemPluginRecoverySettings() {
   const { t, i18n } = useTranslation();
+  const runtime = useOptionalWebUIAppContext()?.runtime;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [frameHeight, setFrameHeight] = useState(INITIAL_FRAME_HEIGHT);
@@ -94,6 +98,13 @@ export function SystemPluginRecoverySettings() {
         setRestoring(message.restoring === true);
         return;
       }
+      if (message?.type === RECOVERY_RESTART_REQUESTED_MESSAGE) {
+        const restoredAt = typeof message.restoredAt === 'string' ? Date.parse(message.restoredAt) : NaN;
+        if (typeof message.recordId === 'string' && message.recordId && Number.isFinite(restoredAt)) {
+          runtime?.confirmSystemPluginRestore(message.recordId, restoredAt);
+        }
+        return;
+      }
       if (message?.type === RECOVERY_DIALOG_OPENED_MESSAGE) {
         setDialogOpen(true);
         return;
@@ -104,7 +115,7 @@ export function SystemPluginRecoverySettings() {
     };
     window.addEventListener('message', receiveRecoveryMessage);
     return () => window.removeEventListener('message', receiveRecoveryMessage);
-  }, [url]);
+  }, [url, runtime]);
 
   useEffect(() => {
     navigateToRecoveryRoute();
