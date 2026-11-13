@@ -5,7 +5,6 @@
 # pylint: disable=protected-access
 
 import asyncio
-from functools import partial
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -18,12 +17,15 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskS
 from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution, bind_task_output
 from jiuwenswarm.server.runtime.video_task.rail import task_checkpoint
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import routed_task_fixture
+from jiuwenswarm.extensions.video_duplex.tests.backend import test_task_bridge
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until as bounded_wait
+routed_task_fixture = test_task_bridge.routed_task_fixture
 
 
-until = partial(bounded_wait, timeout=5)
+async def until(predicate):
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.005)
 
 
 @pytest.mark.parametrize("failure", ["cancel", "query"])

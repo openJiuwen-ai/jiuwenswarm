@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadModules, webSource } from './testSupport.mjs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
-const { describeDuplexError, duplexErrorDetail, screenCaptureFailure,
-  setTaskFullDuplexRuntimeError, setTaskFullDuplexRuntimeState, toastStore } = await loadModules([
-  'taskFullDuplexRuntimeStore.ts', 'duplexErrorMessage.ts', webSource('components/ui/Toast/toastStore.ts'),
-]);
+const require = createRequire(new URL('../../../../channels/web/frontend/package.json', import.meta.url));
+const { build } = require('esbuild');
+const runtimePath = fileURLToPath(new URL('../../frontend/taskFullDuplexRuntimeStore.ts', import.meta.url));
+const errorMessagePath = fileURLToPath(new URL('../../frontend/duplexErrorMessage.ts', import.meta.url));
+const toastPath = fileURLToPath(new URL('../../../../channels/web/frontend/src/components/ui/Toast/toastStore.ts', import.meta.url));
+const compiled = await build({
+  stdin: { contents: `export * from ${JSON.stringify(runtimePath)}; export * from ${JSON.stringify(errorMessagePath)}; export * from ${JSON.stringify(toastPath)};`,
+    resolveDir: fileURLToPath(new URL('../../../../channels/web/frontend/', import.meta.url)) },
+  bundle: true, platform: 'node', format: 'esm', write: false,
+  alias: { react: require.resolve('react') },
+});
+const { describeDuplexError, duplexErrorDetail, screenCaptureFailure, setTaskFullDuplexRuntimeError, setTaskFullDuplexRuntimeState, toastStore } =
+  await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 
 test('screen capture diagnostics preserve native errors without assuming user cancellation', () => {
   const denied = screenCaptureFailure({ name: 'NotAllowedError', message: 'Permission denied by system' });

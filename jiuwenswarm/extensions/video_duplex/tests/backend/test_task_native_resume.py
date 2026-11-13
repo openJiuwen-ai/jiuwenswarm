@@ -1,11 +1,11 @@
 """Real Core interruption and Host answer conversion; only model/transport are local."""
 
 import asyncio
-from functools import partial
 import json
 from types import SimpleNamespace
 
 import pytest
+
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.agent import create_agent_session
@@ -27,17 +27,18 @@ from jiuwenswarm.server.runtime.video_task.rail import VoiceAgentTaskRail
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import install_bridge
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until as bounded_wait
-
-
-wait_for = partial(bounded_wait, timeout=5)
-
 
 class CoreInputNormalizer(DeepAgent):
     """Expose Core's inherited normalization for this local transport test."""
 
     def normalize(self, inputs):
         return self._normalize_inputs(inputs)
+
+
+async def wait_for(predicate):
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.005)
 
 
 @pytest.mark.parametrize("scope", ["voice", "task-duplex:web-native"])

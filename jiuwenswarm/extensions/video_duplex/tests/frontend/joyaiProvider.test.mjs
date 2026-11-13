@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadModules } from './testSupport.mjs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
-const { JoyAIProvider } = await loadModules(['VideoLivePanel/joyaiProvider.ts'], {
+const require = createRequire(new URL('../../../../channels/web/frontend/package.json', import.meta.url));
+const { build } = require('esbuild');
+const compiled = await build({
+  entryPoints: [fileURLToPath(new URL('../../frontend/VideoLivePanel/joyaiProvider.ts', import.meta.url))],
+  bundle: true, platform: 'node', format: 'esm', write: false,
   plugins: [{
     name: 'offline-web-client',
     setup(builder) {
@@ -17,6 +22,7 @@ const { JoyAIProvider } = await loadModules(['VideoLivePanel/joyaiProvider.ts'],
     },
   }],
 });
+const { JoyAIProvider } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 globalThis.window = globalThis;
 
 test('voice-only turns reach JoyAI before and after screen sharing without idle empty requests', async (t) => {

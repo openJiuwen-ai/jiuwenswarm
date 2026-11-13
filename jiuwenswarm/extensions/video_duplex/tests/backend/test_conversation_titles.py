@@ -5,15 +5,23 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import RecordingChannel
-
 from jiuwenswarm.extensions.video_duplex.backend import video_live
 from jiuwenswarm.server.runtime.session import session_history, session_metadata
 
 
-class Channel(RecordingChannel):
-    async def send_response(self, ws, req_id, **response):
+class Channel:
+    def __init__(self):
+        self.handlers = {}
+        self.events = []
+
+    def register_method(self, method, handler, **_kwargs):
+        self.handlers[method] = handler
+
+    async def send_response(self, _ws, _req_id, **response):
         assert response["ok"] is True
+
+    async def send_event(self, _ws, event, payload):
+        self.events.append((event, payload))
 
 
 @pytest.fixture
@@ -29,11 +37,12 @@ def channel(tmp_path, monkeypatch):
 
 
 async def append(channel, role, content, event_id="first"):
-    await channel.request("video.conversation.append", {
+    await channel.handlers["video.conversation.append"](
+        object(), "request", {
             "session_id": "title-test", "event_id": event_id, "kind": role,
             "content": content, "timestamp": 1_800_000_000,
-        },
-        session_id="transport-session")
+        }, "transport-session",
+    )
     session_metadata._METADATA_QUEUE.join()
 
 
