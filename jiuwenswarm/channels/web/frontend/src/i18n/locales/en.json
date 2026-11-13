@@ -1163,7 +1163,12 @@
       "cua_agent_enabled": {
         "title": "Enable computer control",
         "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
-        "unavailableDescription": "Computer control is unavailable in this environment."
+        "unavailableDescription": "Computer control is unavailable in this environment.",
+        "unavailableReasons": {
+          "native_build_failed": "Computer control is unavailable because the computer-use driver failed to build during installation.",
+          "backend_missing": "No usable computer control driver was found.",
+          "unsupported_platform": "Computer control is unavailable on this operating system or version."
+        }
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
@@ -4538,18 +4543,6 @@
       }
     },
     "toolResult": {
-      "originalOpen": "View original",
-      "originalClose": "Hide original",
-      "originalSource": "Original content",
-      "originalText": "Result text",
-      "originalData": "Structured original",
-      "originalReturn": "Original tool return",
-      "originalLoading": "Loading original…",
-      "originalFailed": "Could not read the original. Please retry.",
-      "originalProgress": "Read to {{percent}}%",
-      "originalPrevious": "Previous part",
-      "originalNext": "Next part",
-      "originalRetry": "Retry",
       "answersInSummary": "See the answers in the clarification card. Sensitive input is hidden.",
       "success": "done",
       "failed": "failed",
@@ -6107,6 +6100,8 @@
         "knowledge": "Add knowledge",
         "starterPrompts": "Add quick prompt"
       },
+      "starterPromptsLimit": "Up to {{count}} prompts",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6217,6 +6212,7 @@
       "editResources": "Edit skills and connectors",
       "resourcesHint": "Choose from skills installed on this machine and connectors that are already connected. A new task uses the selection after it is saved and published.",
       "saveResources": "Save and publish",
+      "saveSuccess": "Saved",
       "savingResources": "Saving",
       "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
       "modelEmptyHint": "Add a model in Settings → Models.",
@@ -6327,10 +6323,12 @@
       "cancelAuthorizationTitle": "Revoke channel authorization",
       "cancelAuthorizationWarning": "After revoking, this colleague stops receiving and replying on this channel.",
       "cancelAuthorizationMessage": "Revoke the “{{channel}}” authorization? It can be authorized again later.",
+      "cancelAuthorizationSuccess": "Authorization revoked",
       "addConnection": "Add connection",
       "removeConnection": "Disconnect",
       "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
       "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
+      "removeConnectionSuccess": "Disconnected",
       "workLog": "Work log",
       "periods": {
         "7d": "Last 7 days",
@@ -6449,11 +6447,6 @@
       "webConnection": "Web",
       "connectionHint": "Files shared here can also be read by {{platform}} users.",
       "webResult": "New result in the Web workspace. View it",
-      "defaultPrompts": [
-        "Summarize today's hot questions",
-        "Review group reply quality",
-        "Export today's conversation summary"
-      ],
       "featuresTitle": "Features",
       "features": {
         "chat": {
@@ -6553,8 +6546,10 @@
         "running": "Running"
       },
       "error": {
+        "nameRequired": "Enter a task name.",
+        "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
-        "executorRequired": "Choose an executor",
+        "executorRequired": "Select an AI employee to run this task.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
@@ -6621,6 +6616,7 @@
       "periodStart": "Start date",
       "periodEnd": "End date",
       "periodTo": "to",
+      "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",

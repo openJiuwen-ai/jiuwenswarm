@@ -20,9 +20,9 @@ from typing import Any
 import yaml
 from dotenv import dotenv_values
 
-from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.browser_settings import project_browser_decision
-from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
+from jiuwenswarm.common.cua_config import cua_backend_settings, is_cua_agent_enabled
+from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
@@ -424,7 +424,7 @@ def get_panel() -> dict[str, Any]:
     )
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
-    payload["cua_backend_available"] = "true" if is_cua_backend_available() else "false"
+    payload.update(cua_backend_settings())
     try:
         raw = _read_raw_config()
         setup_guide_cfg = raw.get("setup_guide") or {}
@@ -441,7 +441,7 @@ def get_panel() -> dict[str, Any]:
             "true" if _affinity_enabled(raw) else "false"
         )
         perm_cfg = raw.get("permissions") or {}
-        payload["permissions_enabled"] = _bool_text(perm_cfg.get("enabled"), False)
+        payload.update(canonical_permission_facade(permission_profile(perm_cfg)))
         evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
         payload["skill_evolution"] = _bool_text(
             evolution_cfg.get("skill_evolution"), False
@@ -512,6 +512,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
+        payload.setdefault("permissions_profile", "full_access")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
         payload.setdefault("memory_forbidden_enabled", "false")

@@ -35,7 +35,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import ProviderType
 
-from jiuwenswarm.common.permission_mode import is_auto_permission_mode
+from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
@@ -107,7 +107,7 @@ from jiuwenswarm.common.config_panel.models_handlers import (
     build_models_defaults_from_frontend,
 )
 from jiuwenswarm.common.context_window import parse_positive_int
-from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
+from jiuwenswarm.common.cua_config import cua_backend_settings, is_cua_agent_enabled
 from jiuwenswarm.common.moa_config import (
     MOA_CONFIG_KEYS,
     build_moa_config_from_frontend,
@@ -483,19 +483,6 @@ DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
 EXTERNAL_CLI_PUBLISH_PATH = "/ws"
 UNSUPPORTED_WINDOWS_CLI_SUFFIXES = {".bat", ".cmd", ".ps1"}
 PERMISSIONS_PROFILES = frozenset({"default", "automatic", "full_access"})
-
-
-def permission_profile(permission_config: object) -> str:
-    if not isinstance(permission_config, dict) or permission_config.get("enabled") is not True:
-        return "full_access"
-    return "automatic" if is_auto_permission_mode(permission_config) else "default"
-
-
-def canonical_permission_facade(profile: str) -> dict[str, str]:
-    return {
-        "permissions_profile": profile,
-        "permissions_enabled": "false" if profile == "full_access" else "true",
-    }
 
 
 SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
@@ -1843,7 +1830,7 @@ async def config_get_handler(
     runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
-    payload["cua_backend_available"] = "true" if is_cua_backend_available() else "false"
+    payload.update(cua_backend_settings())
     # 合并 config.yaml 中的配置项
     try:
         raw = get_config_raw()

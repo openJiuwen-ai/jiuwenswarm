@@ -1760,7 +1760,7 @@ function AppContent({
           }
         );
       } else {
-        const n = normalizeToolResultPayload(item.payload, sid);
+        const n = normalizeToolResultPayload(item.payload);
         addToolResult(
           sid,
           {
@@ -1775,7 +1775,6 @@ function AppContent({
             ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
             ...(n.timedOut ? { timedOut: true } : {}),
             ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
-            ...(n.payloadRefs ? { payloadRefs: n.payloadRefs, artifactSessionId: n.artifactSessionId } : {}),
             reviewer: n.reviewer,
           },
           { updatedAt: item.at }
@@ -2935,7 +2934,7 @@ function AppContent({
               }
             );
           } else {
-            const n = normalizeToolResultPayload(item.payload, sessionId);
+            const n = normalizeToolResultPayload(item.payload);
             addToolResult(
               sessionId,
               {
@@ -2950,7 +2949,6 @@ function AppContent({
                 ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
                 ...(n.timedOut ? { timedOut: true } : {}),
                 ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
-                ...(n.payloadRefs ? { payloadRefs: n.payloadRefs, artifactSessionId: n.artifactSessionId } : {}),
                 reviewer: n.reviewer,
               },
               { updatedAt: item.at }

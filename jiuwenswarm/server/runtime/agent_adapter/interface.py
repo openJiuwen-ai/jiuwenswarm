@@ -2201,6 +2201,10 @@ class JiuWenSwarm:
         # Only Host-authenticated provenance may select Agent/tool input. Never
         # trust a client-supplied copy inside the SDK's extensible run context.
         run_extra = inputs["run"]["context"]["extra"]
+        # Explicit selectors belong to this turn, not history or a reused run
+        # context. Keep the prompt and routing on the same parsing rules, and
+        # clear stale nested selections even when this turn selects nothing.
+        run_extra["skills"] = turn.resolved_skills
         run_extra.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
         cross_session = metadata.get(SESSION_MESSAGE_INTERNAL_KEY)
         if isinstance(cross_session, dict):

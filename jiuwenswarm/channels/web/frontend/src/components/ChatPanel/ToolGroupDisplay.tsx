@@ -22,7 +22,6 @@ import {
 import { AutoReviewerDetails } from './AutoReviewerStatus';
 import { McpAppView } from './McpAppView';
 import { isSensitiveQuestion } from '../InteractionSlot/qaSummary';
-import { ToolResultOriginal } from './ToolResultOriginal';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
@@ -293,7 +292,6 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
               {formatToolResult(displayedResult)}
             </pre>
           )}
-          {!useAnswerSummary && <ToolResultOriginal result={result} />}
         </div>
       )}
 

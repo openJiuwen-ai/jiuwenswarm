@@ -52,6 +52,7 @@ class PackRoute:
     question: str = ""
     confirmation_call_id: str = ""
     source: str = "confirmed_query_match"
+    validation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False, compare=False)
 
     def ask_args(self) -> dict[str, Any]:
         """Build the exact existing ask_user contract for this selection."""
@@ -316,25 +317,45 @@ class SkillPackRouter:
         return True
 
     async def is_current(self, route: PackRoute) -> bool:
-        if route.blocked or route.token is None:
-            return False
-        snapshot = await self.snapshot()
-        current = self.eligible(snapshot).get(route.token.pack_id)
-        valid = (
-            snapshot.get("inventory_revision") == route.token.inventory_revision
-            and current is not None
-            and tuple(current["members"]) == route.token.allowed_member_ids
-        )
-        if not valid:
-            route.blocked = True
-            logger.warning(
-                "skillpack.route inventory_changed pack=%s revision_changed=%s eligible=%s members_changed=%s",
-                route.token.pack_id,
-                snapshot.get("inventory_revision") != route.token.inventory_revision,
-                current is not None,
-                current is not None and tuple(current["members"]) != route.token.allowed_member_ids,
-            )
-        return valid
+        # Parallel tools in one request must not spend the file-lock acquisition
+        # budget waiting on each other's full scans. Each tool still reads fresh
+        # contents after queuing; a previous successful check is not cached.
+        scan_started = False
+        try:
+            async with route.validation_lock:
+                if route.blocked or route.token is None:
+                    return False
+                try:
+                    scan_started = True
+                    snapshot = await self.snapshot()
+                except Exception:
+                    route.blocked = True
+                    raise
+                if route.blocked:
+                    return False
+                current = self.eligible(snapshot).get(route.token.pack_id)
+                valid = (
+                    snapshot.get("inventory_revision") == route.token.inventory_revision
+                    and current is not None
+                    and tuple(current["members"]) == route.token.allowed_member_ids
+                )
+                if not valid:
+                    route.blocked = True
+                    logger.warning(
+                        "skillpack.route inventory_changed pack=%s revision_changed=%s eligible=%s members_changed=%s",
+                        route.token.pack_id,
+                        snapshot.get("inventory_revision") != route.token.inventory_revision,
+                        current is not None,
+                        current is not None and tuple(current["members"]) != route.token.allowed_member_ids,
+                    )
+                return valid
+        except asyncio.CancelledError:
+            # A started to_thread scan may still own the file lock. Cancelling
+            # only a waiter (e.g. a nested tool's deadline) owns no scan and
+            # must not revoke the other live tools' authorization.
+            if scan_started:
+                route.blocked = True
+            raise
 
 
 __all__ = ["DirectRouteToken", "PackRoute", "SkillPackRouter", "direct_route_mode"]

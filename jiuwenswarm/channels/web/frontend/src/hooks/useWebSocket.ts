@@ -4554,7 +4554,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
-        const toolResult = normalizeToolResultPayload(payload, sessionId);
+        const toolResult = normalizeToolResultPayload(payload);
         const pendingSubagentQuery = toolResult.toolCallId
           ? pendingSubagentQueryRef.current.get(toolResult.toolCallId)
           : undefined;
@@ -4660,9 +4660,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ...(toolResult.mcpApp ? { mcpApp: toolResult.mcpApp } : {}),
             ...(toolResult.timedOut ? { timedOut: true } : {}),
             reviewer: toolResult.reviewer,
-            ...(toolResult.payloadRefs ? {
-              payloadRefs: toolResult.payloadRefs, artifactSessionId: toolResult.artifactSessionId,
-            } : {}),
           },
           {
             updatedAt: normalizeEventTimestampIso(payload.timestamp),

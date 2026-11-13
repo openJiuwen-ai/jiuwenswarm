@@ -998,7 +998,8 @@
 }
 
 .jiuwenmate-field input,
-.jiuwenmate-field textarea {
+.jiuwenmate-field textarea,
+.jiuwenmate-schedule-dialog__executor {
   width: 100%;
   min-height: 32px;
   padding: 6px 10px;
@@ -1012,7 +1013,8 @@
 }
 
 .jiuwenmate-field input:focus,
-.jiuwenmate-field textarea:focus {
+.jiuwenmate-field textarea:focus,
+.jiuwenmate-schedule-dialog__executor:focus {
   border-color: var(--jm-text-2);
 }
 
@@ -2220,6 +2222,9 @@
 .jiuwenmate-chat-welcome__suggestions {
   display: grid;
   width: min(552px, 100%);
+  /* Reserve three rows so the avatar and intro keep their place with fewer prompts. */
+  min-height: calc(56px * 3 + 12px * 2);
+  align-content: start;
   gap: 12px;
 }
 
@@ -2979,8 +2984,25 @@
   width: min(560px, calc(100vw - 32px));
 }
 
+.jiuwenmate-schedule-dialog__executor {
+  resize: none;
+}
+
+.jiuwenmate-schedule-dialog input[aria-invalid='true'],
+.jiuwenmate-schedule-dialog textarea[aria-invalid='true'],
+.jiuwenmate-schedule-dialog select[aria-invalid='true'] {
+  border-color: var(--color-feedback-danger, var(--jm-danger));
+}
+
+.jiuwenmate-schedule-dialog input[aria-invalid='true']:focus,
+.jiuwenmate-schedule-dialog textarea[aria-invalid='true']:focus,
+.jiuwenmate-schedule-dialog select[aria-invalid='true']:focus {
+  outline: 2px solid var(--color-feedback-danger, var(--jm-danger));
+  outline-offset: 2px;
+}
+
 .jiuwenmate-schedule-dialog [role='alert'] {
-  color: var(--color-feedback-danger);
+  color: var(--color-feedback-danger, var(--jm-danger));
   font-size: 13px;
 }
 
@@ -4180,6 +4202,11 @@
   cursor: pointer;
 }
 
+.jiuwenmate-collapsible__add-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .jiuwenmate-collapsible__add-button svg {
   width: 14px;
   height: 14px;
@@ -4212,6 +4239,12 @@
 
 .jiuwenmate-capability-chip:hover {
   background: var(--jm-muted);
+}
+
+.jiuwenmate-capability-chip[aria-pressed='true'] {
+  border-color: var(--jm-blue);
+  color: var(--jm-blue);
+  background: var(--jm-blue-soft);
 }
 
 .jiuwenmate-capability-chip > span {
@@ -4281,6 +4314,11 @@
   cursor: pointer;
 }
 
+.jiuwenmate-model-card button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .jiuwenmate-model-card button svg {
   width: 14px;
   height: 14px;
@@ -4291,10 +4329,24 @@
   gap: 8px;
 }
 
-.jiuwenmate-starter-prompts > div {
+.jiuwenmate-starter-prompts__item {
+  display: grid;
+  gap: 4px;
+}
+
+.jiuwenmate-starter-prompts__item > div {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.jiuwenmate-starter-prompts input[aria-invalid='true'] {
+  border-color: var(--jm-warning);
+}
+
+.jiuwenmate-starter-prompts small {
+  color: var(--jm-warning);
+  font-size: 12px;
 }
 
 .jiuwenmate-starter-prompts input {
@@ -4769,6 +4821,12 @@
   gap: 8px;
 }
 
+.jiuwenmate-profile__im-notice {
+  color: var(--jm-success);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .jiuwenmate-profile__im-row strong {
   font-size: 13px;
   font-weight: 600;
@@ -4886,6 +4944,24 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
+}
+
+.jiuwenmate-profile__starter-prompts {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.jiuwenmate-profile__starter-prompts > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.jiuwenmate-profile__starter-prompts h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .jiuwenmate-profile__persona-editor textarea {
@@ -5132,7 +5208,9 @@
 
 .jiuwenmate-profile__resource-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 12px;
 }
 
 .jiuwenmate-profile__resource-add {
@@ -5676,6 +5754,11 @@
   font-size: 12px;
 }
 
+.jiuwenmate-office__period-limit {
+  color: var(--jm-warning);
+  font-size: 12px;
+}
+
 .jiuwenmate-office__period input {
   height: 30px;
   padding: 0 8px;
@@ -6041,6 +6124,7 @@
   }
 
   .jiuwenmate-chat-welcome__suggestions {
+    min-height: calc(44px * 3 + 8px * 2);
     gap: 8px;
   }
 
