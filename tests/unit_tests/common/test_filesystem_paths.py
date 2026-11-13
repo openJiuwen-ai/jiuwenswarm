@@ -12,7 +12,11 @@ from jiuwenswarm.common import filesystem_paths
 @pytest.mark.parametrize(("source", "expected"), [
     (r"C:\data\team\..\member", r"\\?\C:\data\member"),
     ("C:/data/team", r"\\?\C:\data\team"),
+    ("C:\\", "\\\\?\\C:\\"),
+    (r"D:\用户目录\expert team", r"\\?\D:\用户目录\expert team"),
     (r"\\server\share\team", r"\\?\UNC\server\share\team"),
+    (r"\\server\share", r"\\?\UNC\server\share"),
+    (r"\\server\share\专家目录", r"\\?\UNC\server\share\专家目录"),
     (r"\\?\C:\data\team", r"\\?\C:\data\team"),
     (r"\\?\UNC\server\share\team", r"\\?\UNC\server\share\team"),
     (r"\\.\pipe\channel", r"\\.\pipe\channel"),

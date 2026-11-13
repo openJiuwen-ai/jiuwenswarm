@@ -895,7 +895,10 @@ def _iter_resource_package_dirs(kind: str) -> list[Path]:
         root = get_equipment_resources_plugin_packages_dir()
     else:
         return []
-    if root is None or not root.is_dir():
+    if root is None:
+        return []
+    root = Path(extended_path(root))
+    if not root.is_dir():
         return []
     try:
         entries = sorted(root.iterdir(), key=lambda p: p.name)
@@ -914,6 +917,7 @@ def _iter_resource_package_dirs(kind: str) -> list[Path]:
 
 def _iter_local_package_dirs(local_root: Path) -> list[Path]:
     """Return package dirs under the user local/ root."""
+    local_root = Path(extended_path(local_root))
     if not local_root.is_dir():
         return []
     try:
@@ -935,6 +939,7 @@ def _equipment_package_dirs(
     built_in_root: Path,
 ) -> list[tuple[Path, str]]:
     """``(package dir, source)`` from resources shelf + local/; conflicts raise."""
+    built_in_root = Path(extended_path(built_in_root))
     resource_dirs = _iter_resource_package_dirs(kind)
     resource_ids = {pkg.name for pkg in resource_dirs}
     found = [(pkg_dir, "builtin") for pkg_dir in resource_dirs]
@@ -990,10 +995,10 @@ def _resolve_show_package_dir(
         safe_name = reject_package_name(name, kind_label)
     except ValueError:
         return None
-    local_dir = local_root / safe_name
-    built_in_dir = built_in_root / safe_name
+    local_dir = Path(extended_path(local_root / safe_name))
+    built_in_dir = Path(extended_path(built_in_root / safe_name))
     resource_dir = (
-        resources_root / safe_name if resources_root is not None else None
+        Path(extended_path(resources_root / safe_name)) if resources_root is not None else None
     )
     local_exists = local_dir.is_dir()
     built_in_exists = built_in_dir.is_dir()
@@ -1261,6 +1266,7 @@ def remove_agent_group_marketplace_entry(package_id: str) -> None:
 
 
 def _package_dir_if_present(root: Path, safe_name: str) -> Path | None:
+    root = Path(extended_path(root))
     if not root.is_dir():
         return None
     root_resolved = root.resolve()
@@ -1799,7 +1805,7 @@ def _require_skill_names(params: dict) -> list[str]:
     if not isinstance(skills, list):
         raise ValueError("missing or invalid skills")
     names: list[str] = []
-    skills_root = get_agent_skills_dir()
+    skills_root = Path(extended_path(get_agent_skills_dir()))
     for item in skills:
         if not isinstance(item, str) or not item.strip():
             raise ValueError("invalid skill name: empty")
@@ -1954,12 +1960,12 @@ def _assert_package_id_available(
 ) -> None:
     """Reject create when local/built_in/resources already has the same id."""
     for root, label in ((local_root, "local"), (built_in_root, "built_in")):
-        if (root / package_id).exists():
+        if Path(extended_path(root / package_id)).exists():
             message = f"{kind} package already exists in {label}: {package_id}"
             if kind == "agent_group":
                 raise AgentGroupPackageError(message, "AGENT_GROUP_DUPLICATE")
             raise ValueError(message)
-    if resources_root is not None and (resources_root / package_id).is_dir():
+    if resources_root is not None and Path(extended_path(resources_root / package_id)).is_dir():
         message = f"{kind} package already exists in resources: {package_id}"
         if kind == "agent_group":
             raise AgentGroupPackageError(message, "AGENT_GROUP_DUPLICATE")
@@ -2108,12 +2114,13 @@ def _copy_workspace_skills(pkg_dir: Path, skill_names: list[str]) -> None:
     失败时把临时目录保留为 ``.skills.bak`` 供排查，避免包处于无 skills 目录的
     半损坏状态。
     """
+    pkg_dir = Path(extended_path(pkg_dir))
     skills_dir = pkg_dir / "skills"
     if not skill_names:
         if skills_dir.exists():
             _rmtree(skills_dir)
         return
-    skills_root = get_agent_skills_dir()
+    skills_root = Path(extended_path(get_agent_skills_dir()))
     tmp_dir = pkg_dir / ".skills.tmp"
     if tmp_dir.exists():
         _rmtree(tmp_dir)
@@ -3909,6 +3916,7 @@ def _write_agent_template_package(
     Overwrites persona + skills + manifest in place. Any failure leaves the
     caller to decide rollback; this helper does not touch the marketplace.
     """
+    pkg_dir = Path(extended_path(pkg_dir))
     persona_dir = pkg_dir / "persona"
     persona_dir.mkdir(parents=True, exist_ok=True)
     (persona_dir / f"{package_id}.md").write_text(persona, encoding="utf-8")
@@ -3958,6 +3966,7 @@ def create_agent_template(params: dict) -> None:
         resources_root=_resources_root(_AGENT_TEMPLATE_KIND),
     )
 
+    local_root = Path(extended_path(local_root))
     pkg_dir = local_root / package_id
     local_root.mkdir(parents=True, exist_ok=True)
     try:
@@ -4005,7 +4014,7 @@ def update_agent_template(params: dict) -> None:
     runtime = _require_form_runtime(params)
     tags, mcp_names = _apply_form_runtime(tags, mcp_names, runtime)
 
-    local_root = get_local_root(_AGENT_TEMPLATE_KIND)
+    local_root = Path(extended_path(get_local_root(_AGENT_TEMPLATE_KIND)))
     pkg_dir = local_root / package_id
     if not pkg_dir.is_dir():
         raise ValueError(f"agent_template not found: {package_id}")
@@ -4055,7 +4064,7 @@ def delete_agent_template(params: dict) -> None:
     clears the hub install state store).
     """
     package_id = lifecycle_package_id(params, "agent_template")
-    pkg_dir = get_local_root(_AGENT_TEMPLATE_KIND) / package_id
+    pkg_dir = Path(extended_path(get_local_root(_AGENT_TEMPLATE_KIND) / package_id))
     if not pkg_dir.is_dir():
         raise ValueError(f"agent_template not found: {package_id}")
     # 校验来源：只有 local 包可删除。hub/builtin 包走 uninstall_agent_template。
@@ -4620,12 +4629,12 @@ def _install_package(
     package_type: str,
     is_plugin: bool,
 ) -> None:
-    built_in_root = _built_in_root(kind)
-    local_root = get_local_root(kind)
+    built_in_root = Path(extended_path(_built_in_root(kind)))
+    local_root = Path(extended_path(get_local_root(kind)))
     built_in_dir = built_in_root / package_id
     local_dir = local_root / package_id
     resources_root = _resources_root(kind)
-    resource_dir = resources_root / package_id if resources_root is not None else None
+    resource_dir = Path(extended_path(resources_root / package_id)) if resources_root is not None else None
 
     if built_in_dir.is_dir() and local_dir.is_dir():
         raise ValueError(
@@ -4818,8 +4827,8 @@ def install_plugin_package(params: dict) -> None:
 def _locate_user_package_dir(
     package_id: str, *, kind: str, kind_label: str
 ) -> Path:
-    local_dir = get_local_root(kind) / package_id
-    built_in_dir = _built_in_root(kind) / package_id
+    local_dir = Path(extended_path(get_local_root(kind) / package_id))
+    built_in_dir = Path(extended_path(_built_in_root(kind) / package_id))
     local_exists = local_dir.is_dir()
     built_in_exists = built_in_dir.is_dir()
     if local_exists and built_in_exists:

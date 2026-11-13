@@ -20,5 +20,7 @@ def extended_path(path: str | Path) -> str:
         return value
     value = ntpath.abspath(value)
     if value.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + value[2:]
-    return "\\\\?\\" + value
+        return ntpath.join("\\\\?\\UNC", value[2:])
+    drive, tail = ntpath.splitdrive(value)
+    # Join from the extended drive anchor; an ordinary absolute drive drops the prefix.
+    return ntpath.join(f"\\\\?\\{drive}", tail)
