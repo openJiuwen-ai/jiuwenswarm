@@ -15,7 +15,7 @@ import WorkIcon from '../../assets/工作.svg?react';
 import SkillDesignIcon from '../../assets/agent-management/agent-skill.svg?react';
 import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
-import ReaHighFidelityIcon from '../../assets/sidebar/rea-high-fidelity.png';
+import ReaNavIcon from '../../assets/sidebar/rea.svg';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
 import type { ApplicationPluginContribution, ApplicationPluginNavKey } from '../../applicationPlugins/types';
 
@@ -88,7 +88,7 @@ const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
-  { key: 'rea', labelKey: 'nav.rea', icon: <img src={ReaHighFidelityIcon} alt="" width={16} height={16} /> },
+  { key: 'rea', labelKey: 'nav.rea', icon: <img src={ReaNavIcon} alt="" width={16} height={16} /> },
   { key: 'connectorMarket', labelKey: 'nav.connectorMarket', icon: connectorMarketNavIcon },
   { key: 'experiments', labelKey: 'nav.experiments', icon: experimentsNavIcon },
   { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },

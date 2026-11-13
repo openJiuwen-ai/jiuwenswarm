@@ -250,6 +250,7 @@ export interface ReaSetupProgressDetail {
   mirror_fallback?: boolean;
   component_progress?: number;
   mcp_tool_count?: number;
+  component_result?: ReaEnhancedInstallResult;
   error?: string;
 }
 
@@ -265,6 +266,7 @@ export interface ReaSetupJob {
   steps?: ReaSetupStep[];
   current_step_id?: string | null;
   detail?: ReaSetupProgressDetail;
+  component_results?: Record<string, ReaEnhancedInstallResult>;
   estimated_seconds_min?: number;
   estimated_seconds_max?: number;
   plan?: ReaSetupPlanItem[];

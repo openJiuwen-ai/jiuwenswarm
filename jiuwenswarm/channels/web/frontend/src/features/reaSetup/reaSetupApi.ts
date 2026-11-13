@@ -2,7 +2,8 @@ import { webRequest } from '../../services/webClient';
 import type { ReaComponentConfigureResult, ReaSetupJob, ReaSetupScan } from './types';
 
 export const reaSetupApi = {
-  status: () => webRequest<ReaSetupScan>('rea.status.get', {}, { timeoutMs: 180000 }),
+  status: (scope: 'all' | 'base' | 'enhanced' = 'all') =>
+    webRequest<ReaSetupScan>('rea.status.get', { scope }, { timeoutMs: 180000 }),
   installBase: () => webRequest<ReaSetupJob>('rea.base.install', {}, { timeoutMs: 30000 }),
   installEnhanced: (components?: string[]) =>
     webRequest<ReaSetupJob>(
