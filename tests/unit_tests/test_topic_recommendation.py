@@ -3002,6 +3002,161 @@ async def test_design_and_code_welcome_skip_packaged_presets(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_design_welcome_serves_personalized_pool(tmp_path):
+    """design/code skip packaged presets but must still serve a real personalized pool."""
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        LIST_SEARCH_VERSION,
+        PAYLOAD_VERSION,
+        POLICY_ID,
+        PROFILE_INTEREST_RECEIPT_VERSION,
+        build_serving_compatibility_key,
+    )
+
+    clock = [1_700_000_000.0]
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: clock[0],
+    )
+    try:
+        trigger = service._trigger_key(
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        batch_id = "v6-batch-design-personalized"
+        manifest_id = "v6-manifest-design-personalized"
+        revision_id = "v6-revision-design-personalized"
+        snapshot_id = "v6-input:design-personalized"
+        title = "Refine this visual system"
+        prompt = "Propose three layout refinements for the current design system"
+        card = {
+            "card_id": "candidate-design-personalized",
+            "card_revision_id": revision_id,
+            "generation_batch_id": batch_id,
+            "selector_rank": 1,
+            "category": "profile_interest_continuation",
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "work_mode": "design",
+            "interest_summary_id": "long-term-profile:1:unit-0001",
+            "source_starter_id": None,
+            "intent": title,
+            "title": title,
+            "prompt": prompt,
+            "effective_time": clock[0],
+            "expire_time": clock[0] + 7 * 24 * 60 * 60,
+            "evidence_bundle": {
+                "candidate_id": "candidate-design-personalized",
+                "fetch_status": "success",
+                "source_url": "profile://interest/unit-0001",
+                "source_kind": "authoritative",
+                "document_revision_id": "profile:unit-0001",
+                "host_receipt": {
+                    "receipt_version": PROFILE_INTEREST_RECEIPT_VERSION,
+                    "lane": "host_profile_interest_locator",
+                    "input_snapshot_id": snapshot_id,
+                    "interest_summary_id": "long-term-profile:1:unit-0001",
+                },
+            },
+            "search_provider_id": trigger["search_provider_id"],
+            "search_receipt": None,
+            "source_memory_unit_ids": ["unit-0001"],
+            "source_locators": [],
+            "project_source_locators": [],
+            "generation_input_snapshot_id": snapshot_id,
+            "profile_semantic_version": trigger["profile_semantic_version"],
+            "short_intent_version": trigger["short_intent_version"],
+            "component_receipts": {},
+            "component_invocation_receipts": [],
+            "provider_invocation_receipts": [],
+            "generation_config_version": trigger["generation_config_version"],
+            "list_search_version": LIST_SEARCH_VERSION,
+            "policy_id": POLICY_ID,
+            "payload_version": PAYLOAD_VERSION,
+        }
+        manifest = {
+            "manifest_id": manifest_id,
+            "generation_batch_id": batch_id,
+            "card_revision_ids": [revision_id],
+            "trigger_origin": "schedule_successor",
+            "local_date": trigger["local_date"],
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "work_mode": "design",
+            "generation_trigger_key": dict(trigger),
+            "generation_input_snapshot_id": snapshot_id,
+            "serving_compatibility_key": build_serving_compatibility_key(dict(trigger)),
+            "profile_semantic_version": trigger["profile_semantic_version"],
+            "short_intent_version": trigger["short_intent_version"],
+            "negative_preference_version": trigger["negative_preference_version"],
+            "component_receipts": {},
+            "generation_config_version": trigger["generation_config_version"],
+            "search_provider_id": trigger["search_provider_id"],
+            "list_search": {
+                "search_version": LIST_SEARCH_VERSION,
+                "bounded_beam_trace": {"entries": []},
+            },
+            "preference_pairs": [],
+            "policy_id": POLICY_ID,
+            "payload_version": PAYLOAD_VERSION,
+        }
+        assert store.record_events_atomic(
+            [
+                {
+                    "session_id": "v6-pool",
+                    "slate_id": manifest_id,
+                    "event_type": "starter_card",
+                    "topic_id": revision_id,
+                    "position": 1,
+                    "profile_version": card["profile_semantic_version"],
+                    "policy_id": POLICY_ID,
+                    "selection_mode": "pool_generation",
+                    "propensity_reason": "not_estimated",
+                    "payload": card,
+                    "created_at": clock[0],
+                },
+                {
+                    "session_id": "v6-pool",
+                    "slate_id": manifest_id,
+                    "event_type": "starter_slate_manifest",
+                    "topic_id": manifest_id,
+                    "profile_version": manifest["profile_semantic_version"],
+                    "policy_id": POLICY_ID,
+                    "selection_mode": "pool_generation",
+                    "propensity_reason": "not_estimated",
+                    "payload": manifest,
+                    "created_at": clock[0],
+                },
+            ]
+        )
+        design = service.serve(
+            "session-design-personalized",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        assert design["available"] is True
+        assert design["work_mode"] == "design"
+        assert len(design["topics"]) >= 1
+        assert design["topics"][0]["card_revision_id"] == revision_id
+        assert all(
+            not topic.get("cold_start") for topic in design["topics"]
+        )
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_preset_click_does_not_suppress_other_work_modes(tmp_path):
     from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
     from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
@@ -3428,6 +3583,54 @@ def test_v6_max_tokens_matches_designer_structured_budgets() -> None:
     assert _v6_max_tokens("v6_hot_news_matcher") == 16384
 
 
+def test_clamp_topic_max_tokens_respects_context_window() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        _clamp_topic_max_tokens,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _output_budget_for_stage,
+        _v6_max_tokens,
+    )
+
+    assert _clamp_topic_max_tokens(32768, context_window_tokens=8192) == 8191
+    assert _clamp_topic_max_tokens(16384, context_window_tokens=131072) == 16384
+    assert _output_budget_for_stage("rid_interest_distiller", 32768) == 32767
+    assert _output_budget_for_stage(
+        "v6_session_summarizer", 262144,
+    ) == _v6_max_tokens("v6_session_summarizer")
+
+
+def test_drop_expired_pool_cards_renumbers_live_ranks() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
+        drop_expired_pool_cards,
+    )
+
+    now = 1_700_000_000.0
+    cards = [
+        {
+            "card_revision_id": "alive",
+            "selector_rank": 1,
+            "expire_time": now + 60,
+        },
+        {
+            "card_revision_id": "dead",
+            "selector_rank": 2,
+            "expire_time": now - 1,
+        },
+        {
+            "card_revision_id": "also-alive",
+            "selector_rank": 3,
+            "expire_time": now + 120,
+        },
+    ]
+    manifest = {"card_revision_ids": ["alive", "dead", "also-alive"], "other": 1}
+    live, updated = drop_expired_pool_cards(cards, manifest, now=now)
+    assert [card["card_revision_id"] for card in live] == ["alive", "also-alive"]
+    assert [card["selector_rank"] for card in live] == [1, 2]
+    assert updated["card_revision_ids"] == ["alive", "also-alive"]
+    assert updated["other"] == 1
+
+
 def test_topic_minimal_reasoning_prefers_off(monkeypatch) -> None:
     from jiuwenswarm.agents.harness.common.recommendation import topic_model as tm
 
@@ -3482,6 +3685,53 @@ async def test_recommendation_model_path_passes_minimal_reasoning(monkeypatch) -
     assert captured["kwargs"]["max_tokens"] == 32768
     assert captured["kwargs"]["reasoning"] == {"mode": "disabled"}
     assert captured["kwargs"]["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_recommendation_model_path_drops_reasoning_on_http_400(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    calls: list[dict[str, Any]] = []
+
+    class _HttpError(Exception):
+        status_code = 400
+
+    class _Assistant:
+        content = "{}"
+        refusal = None
+        response_id = "resp-retry"
+        response_model = "glm-4-flash"
+        finish_reason = "stop"
+        usage_metadata = None
+
+    class _Model:
+        async def invoke(self, messages, **kwargs):
+            calls.append(dict(kwargs))
+            if "reasoning" in kwargs:
+                raise _HttpError("endpoint rejected reasoning")
+            return _Assistant()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.recommendation.topic_model._minimal_reasoning",
+        lambda _config: {"mode": "disabled"},
+    )
+    receipts: list[dict[str, Any]] = []
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(api_key="k", model="glm-4-flash", expected_model="glm-4-flash"),
+        model_factory=lambda _config: _Model(),
+        max_tokens_for_stage=lambda _stage: 4096,
+        require_response_metadata=False,
+        receipt_sink=receipts.append,
+    )
+    result = await invoke("v6_utility_scorer", "system", "{}")
+    assert result == {}
+    assert len(calls) == 2
+    assert "reasoning" in calls[0]
+    assert "reasoning" not in calls[1]
+    assert any(item.get("reasoning_dropped") is True for item in receipts)
 
 
 @pytest.mark.asyncio

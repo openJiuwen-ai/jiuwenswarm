@@ -264,14 +264,35 @@ def model_ids_compatible(actual: Any, expected: str) -> bool:
     )
 
 
-def _clamp_topic_max_tokens(value: int | None) -> int:
+def _clamp_topic_max_tokens(
+    value: int | None,
+    *,
+    context_window_tokens: int | None = None,
+) -> int:
+    """Bound completion size so ``prompt + max_tokens`` can still fit the window.
+
+    Stage budgets are Designer-sized (16k–65k). Without a context-window cap,
+    small models get ``max_tokens`` larger than the remaining window and many
+    OpenAI-compatible / vLLM gateways reject with HTTP 400 instead of truncating.
+    """
+
     try:
         n = int(value or 0)
     except (TypeError, ValueError):
         n = 0
     if n < 1:
         n = _TOPIC_DEFAULT_MAX_TOKENS
-    return max(256, min(_TOPIC_MAX_TOKENS_CAP, n))
+    capped = max(256, min(_TOPIC_MAX_TOKENS_CAP, n))
+    try:
+        window = int(context_window_tokens or 0)
+    except (TypeError, ValueError):
+        window = 0
+    if window <= 0:
+        return capped
+    # Leave at least one token for the prompt; never ask for more completion
+    # tokens than the configured window can hold.
+    room = max(1, window - 1)
+    return max(1, min(capped, room))
 
 
 def _minimal_reasoning(config: ArkBackgroundConfig) -> dict[str, str] | None:
@@ -464,19 +485,58 @@ async def _create_completion_prefer_thinking_disabled(
         return await create(**retry)
 
 
+def _provider_http_status(detail: BaseException) -> int | None:
+    """HTTP status on a provider error, looking through wrapped causes."""
+
+    seen: set[int] = set()
+    current: BaseException | None = detail
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for candidate in (current, getattr(current, "response", None)):
+            if candidate is None:
+                continue
+            for attr in ("status_code", "status"):
+                code = getattr(candidate, attr, None)
+                try:
+                    return int(code)
+                except (TypeError, ValueError):
+                    continue
+        current = current.__cause__ or current.__context__
+    return None
+
+
 async def _invoke_model_prefer_thinking_disabled(
     model: Any,
     messages: list[dict[str, str]],
     invoke_kwargs: Mapping[str, Any],
-) -> Any:
-    """Production Model path: reuse core's one-shot strip-and-retry for always-think models."""
+) -> tuple[Any, bool]:
+    """Production Model path: disable thinking when possible; drop ``reasoning`` on 400.
+
+    Core's ``disabled_thinking_fallback_scope`` strips thinking-disable
+    ``extra_body`` fields for always-think models. Self-hosted gateways that
+    reject the separate ``reasoning`` kwarg need the Designer-style drop-and-retry
+    (HTTP 400 → omit ``reasoning`` once).
+    """
 
     from openjiuwen.core.foundation.llm.request_context import (
         disabled_thinking_fallback_scope,
     )
 
+    kwargs = dict(invoke_kwargs)
     with disabled_thinking_fallback_scope():
-        return await model.invoke(messages, **dict(invoke_kwargs))
+        try:
+            return await model.invoke(messages, **kwargs), False
+        except Exception as exc:
+            if kwargs.get("reasoning") is None or _provider_http_status(exc) != 400:
+                raise
+            logger.warning(
+                "[Topic] endpoint rejected reasoning=%s; retrying without it. "
+                "Set endpoint_profile on self-hosted gateways. (%s)",
+                kwargs.get("reasoning"),
+                exc,
+            )
+            kwargs.pop("reasoning", None)
+            return await model.invoke(messages, **kwargs), True
 
 
 def build_ark_stage_invoker(
@@ -526,7 +586,10 @@ def build_ark_stage_invoker(
         requested = (
             max_tokens_for_stage(stage) if max_tokens_for_stage is not None else None
         )
-        max_tokens = _clamp_topic_max_tokens(requested)
+        max_tokens = _clamp_topic_max_tokens(
+            requested,
+            context_window_tokens=config.context_window_tokens,
+        )
         started_at = time.perf_counter()
         messages = [
             {"role": "system", "content": system_prompt},
@@ -616,7 +679,7 @@ def build_ark_stage_invoker(
                 }
                 if reasoning is not None:
                     invoke_kwargs["reasoning"] = dict(reasoning)
-                assistant = await _invoke_model_prefer_thinking_disabled(
+                assistant, reasoning_dropped = await _invoke_model_prefer_thinking_disabled(
                     model,
                     messages,
                     invoke_kwargs,
@@ -631,6 +694,8 @@ def build_ark_stage_invoker(
                     "finish_reason": getattr(assistant, "finish_reason", None),
                     "usage": _usage_as_dict(usage),
                 })
+                if reasoning_dropped:
+                    receipt["reasoning_dropped"] = True
                 content = getattr(assistant, "content", None)
             status = "received"
             save()
