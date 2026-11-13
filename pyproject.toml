@@ -214,6 +214,10 @@ jiuwenswarm = [
     # read at runtime
     "office/powerpoint/*",
     "office/powerpoint/**/*",
+    "office/word/*",
+    "office/word/**/*",
+    "office/excel/*",
+    "office/excel/**/*",
 ]
 jiuwenbox = [
     "configs/**/*",

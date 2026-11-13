@@ -1,0 +1,13 @@
+{
+  "package_type": "agent_template",
+  "name": "office-excel",
+  "description": "Spreadsheet analyst working in the user's open Excel workbook.",
+  "persona": {"dir": "persona"},
+  "rails": [{"file": "rails/office_tools.py", "class": "OfficeToolsRail"}],
+  "skills": [
+    "skills/financial-modeling",
+    "skills/charts",
+    "skills/data-analysis",
+    "skills/table-formatting"
+  ]
+}
