@@ -169,6 +169,7 @@ class StoreNodeSpawner:
     async def apply_story_edit(self, edit: str) -> tuple[DesignerExecutionGraph, list[str]]:
         """Revise the approved brief / cast / storyboard to follow a story-wide edit."""
         from jiuwenswarm.server.runtime.designer.model_tools import (
+            preferred_designer_model_ref,
             use_preferred_designer_model,
         )
         from jiuwenswarm.server.runtime.designer.story_edit import (
@@ -189,7 +190,7 @@ class StoreNodeSpawner:
                 "this graph has no Director-approved brief or storyboard; "
                 "edit the node prompts with designer_graph_patch instead"
             )
-        preferred_model = str((graph.get("metadata") or {}).get("model_name") or "").strip()
+        preferred_model = preferred_designer_model_ref(graph)
         with use_preferred_designer_model(preferred_model):
             changed = await apply_story_edit(graph, edit)
         return self._save_and_push(self._graph_id, graph), changed

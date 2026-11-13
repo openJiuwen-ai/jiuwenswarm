@@ -747,10 +747,12 @@ _FRESHNESS_TRIGGER_FIELDS = frozenset(
     }
 )
 
-# Model id is generation provenance only: changing it must not invalidate a
-# stored pool or force a successor. Strip it from both serving and successor
-# identity, and from keys written before this rule so old rows stay readable.
-_PROVENANCE_ONLY_TRIGGER_FIELDS = frozenset({"model"})
+# Recommendation-model connection fields are generation provenance only:
+# changing model id, endpoint, temperature, or context window must not
+# invalidate a stored pool or force a successor. Strip them from both serving
+# and successor identity, and from keys written before this rule so old rows
+# stay readable.
+_PROVENANCE_ONLY_TRIGGER_FIELDS = frozenset({"model", "generation_config_version"})
 
 _NON_SERVING_TRIGGER_FIELDS = (
     _FRESHNESS_TRIGGER_FIELDS | _PROVENANCE_ONLY_TRIGGER_FIELDS
@@ -772,12 +774,13 @@ def normalize_serving_compatibility_key(
 def build_serving_compatibility_key(
     generation_trigger_key: dict[str, Any],
 ) -> dict[str, Any]:
-    """Keep only the code and configuration identity a stored pool must share.
+    """Keep only the code identity a stored pool must share.
 
     Profile, short intent, dates, negative preferences and input revisions are
     freshness: a background successor regenerates for them while the last
     successful pool keeps serving, and read-time filtering handles the rest.
-    The recommendation model is provenance only and never blocks serving.
+    The recommendation model connection (id, base URL, decoding) is provenance
+    only and never blocks serving.
     """
 
     return normalize_serving_compatibility_key(dict(generation_trigger_key))
@@ -788,7 +791,6 @@ def serving_compatibility_keys_match(
     right: Any,
 ) -> bool:
     """Compare serving keys after dropping freshness and model provenance."""
-
     if not isinstance(left, dict) or not isinstance(right, dict):
         return False
     return normalize_serving_compatibility_key(left) == normalize_serving_compatibility_key(
@@ -2052,7 +2054,8 @@ def _compatible_pool(
     """Load the newest manifest this reader may serve, with its card revisions."""
 
     # Do not exact-match serving_compatibility_key in SQL: older rows may still
-    # embed model id, which normalize_serving_compatibility_key drops.
+    # embed model id or generation_config_version, which
+    # normalize_serving_compatibility_key drops.
     rows = store.query_events(
         event_type="starter_slate_manifest",
         policy_id=POLICY_ID,

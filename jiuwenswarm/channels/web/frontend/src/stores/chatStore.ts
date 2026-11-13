@@ -35,6 +35,7 @@ import {
   shouldDropToolResult,
 } from './toolResultLifecycle';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
+import { canMessageHostFileItems } from '../features/chatFileAttachment';
 import { parseTimestampToMs } from '../utils/timestamp';
 import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
@@ -257,6 +258,13 @@ export interface ChatRuntime {
   evolutionStatusClearTimer: ReturnType<typeof setTimeout> | null;
   /** interruptResult 自动清除定时器，按 session 隔离 */
   interruptResultClearTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Epoch of the last successful pause/cancel ack that settled this turn.
+   * While set, a lagging runtime-snapshot (session.get_metadata) or a synthetic
+   * resume processing event must not relight foreground processing; the next
+   * real processing_status(true) frame or a new user send clears it.
+   */
+  interruptSettledEpoch: number | null;
 }
 
 function createEmptyRuntime(): ChatRuntime {
@@ -275,6 +283,7 @@ function createEmptyRuntime(): ChatRuntime {
     isPaused: false,
     pausedTask: null,
     interruptResult: null,
+    interruptSettledEpoch: null,
     switchingMode: false,
     isNewSession: false,
     currentStreamContent: '',
@@ -414,6 +423,8 @@ interface ChatState {
     messages: QueuedSessionMessage[]
   ) => void;
   setInterruptResult: (sessionId: string, result: InterruptResultPayload | null) => void;
+  markInterruptSettled: (sessionId: string) => void;
+  clearInterruptSettled: (sessionId: string) => void;
   setSwitchingMode: (sessionId: string, switching: boolean) => void;
   setNewSession: (sessionId: string, isNew: boolean) => void;
   addToolCall: (
@@ -1352,6 +1363,32 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: nextRuntime,
+        },
+      };
+    });
+  },
+
+  markInterruptSettled: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, interruptSettledEpoch: Date.now() },
+        },
+      };
+    });
+  },
+
+  clearInterruptSettled: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.interruptSettledEpoch === null) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, interruptSettledEpoch: null },
         },
       };
     });
@@ -2390,13 +2427,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       const lastMessage = runtime.messages[runtime.messages.length - 1];
-      // 与历史 restore 一致：优先挂当前流；否则挂最近一条助手消息（不是下一条 final）。
+      // 与历史 restore 一致：优先挂当前流；否则只在最后一条消息能承载文件卡片时挂上去。
+      // goal 完成卡不渲染 fileItems，挂上去会让文件消失。
       const targetId =
         runtime.currentStreamId ??
-        (lastMessage?.role === 'assistant' ||
-        (lastMessage?.role === 'system' && lastMessage.id?.startsWith('team-leader-'))
-          ? lastMessage.id
-          : null);
+        (lastMessage && canMessageHostFileItems(lastMessage) ? lastMessage.id : null);
       const timestampIso =
         typeof options?.timestampIso === 'string' && options.timestampIso.trim()
           ? options.timestampIso.trim()

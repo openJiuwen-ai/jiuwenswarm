@@ -249,6 +249,27 @@ test('an unconfigured employee guides model setup, keeps the draft and cannot su
   }
 });
 
+test('the private chat welcome shows exactly the configured starter prompts and none when they were all removed', async () => {
+  const suggestions = (page) =>
+    [...page.container.querySelectorAll('.jiuwenmate-chat-welcome__suggestions button')].map((button) => button.textContent);
+  const configured = await renderWorkspace({
+    capabilities: { ...colleague.capabilities, starterPrompts: ['写周报', '写月报', '总结会议', '第四条'] },
+  });
+  try {
+    assert.deepEqual(suggestions(configured), ['写周报', '写月报', '总结会议']);
+  } finally {
+    await configured.close();
+  }
+  const empty = await renderWorkspace();
+  try {
+    assert.ok(empty.container.querySelector('[data-testid="jiuwenmate-chat-welcome"]'));
+    assert.deepEqual(suggestions(empty), []);
+    assert.ok(empty.container.querySelector('.jiuwenmate-chat-welcome__suggestions'), 'The empty slot keeps the welcome layout height');
+  } finally {
+    await empty.close();
+  }
+});
+
 test('a stale published-state response shows setup guidance instead of the internal exception', async () => {
   const page = await renderWorkspace();
   try {

@@ -881,12 +881,56 @@ def validate_verbatim_spans(
     return validated
 
 
+def _coerce_mapping_behavior_index(value: Any) -> Any:
+    if _plain_int(value):
+        return value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) and value == int(value):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return value
+
+
+def coerce_mapping_batch_payload(payload: Any) -> Any:
+    """Drop extras and loosen index/span spellings before mapping validate."""
+
+    if not isinstance(payload, dict) or "mappings" not in payload:
+        return payload
+    mappings = payload.get("mappings")
+    if not isinstance(mappings, list):
+        return {"mappings": mappings}
+    fields = (
+        "behavior_index",
+        "tag",
+        "action_type",
+        "literal_focus_span",
+    )
+    coerced: list[Any] = []
+    for raw in mappings:
+        if not isinstance(raw, dict):
+            coerced.append(raw)
+            continue
+        row = {key: raw[key] for key in fields if key in raw}
+        if "behavior_index" in row:
+            row["behavior_index"] = _coerce_mapping_behavior_index(row["behavior_index"])
+        if row.get("literal_focus_span") == "":
+            row["literal_focus_span"] = None
+        for key in fields:
+            if key not in row:
+                row[key] = None if key == "literal_focus_span" else ""
+        coerced.append(row)
+    return {"mappings": coerced}
+
+
 def validate_mapping_batch(
     payload: Any,
     batch: list[CanonicalBehavior],
 ) -> tuple[dict[int, dict[str, Any]] | None, str]:
     """Validate one batch response; returns (entries by index, failure reason)."""
 
+    payload = coerce_mapping_batch_payload(payload)
     if not isinstance(payload, dict):
         return None, "mapping_schema_invalid"
     if set(payload) != {"mappings"}:
@@ -3217,6 +3261,38 @@ class TopicHistoryEngine:
                 logger.warning("[TopicHistory] mapping invoke failed: %s", exc)
                 response = None
             entries, failure = validate_mapping_batch(response, batch)
+            if entries is None and response is not None:
+                logger.warning(
+                    "[TopicHistory] mapping validation failed (%s); repairing once",
+                    failure,
+                )
+                try:
+                    # Mapping payloads are newline-joined records, not JSON with
+                    # request_id; keep previous_output for the model only.
+                    repair_payload = json.dumps(
+                        {
+                            "validation_error": failure,
+                            "previous_output": response,
+                            "original_request": payload,
+                            "request_id": f"mapping-repair-{uuid.uuid4().hex}",
+                        },
+                        ensure_ascii=False,
+                    )
+                    response = await self.invoke_stage(
+                        "behavior_map_batch",
+                        (
+                            f"{_MAPPING_SYSTEM_PROMPT.rstrip()}\n"
+                            "Previous output failed host validation. Return one "
+                            "JSON object {\"mappings\":[...]} only, covering every "
+                            "behavior_index exactly once; no markdown fence."
+                        ),
+                        repair_payload,
+                    )
+                    entries, failure = validate_mapping_batch(response, batch)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[TopicHistory] mapping repair failed: %s", exc)
+                    response = None
+                    entries, failure = None, "mapping_schema_invalid"
             record_provider_validation(
                 self.invoke_stage, response,
                 "business_validated" if entries is not None else "business_validation_failed",

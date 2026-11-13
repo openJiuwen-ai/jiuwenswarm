@@ -5,9 +5,9 @@ import { webClient } from '../services/webClient';
 import { normalizeFinalContent } from '../utils/finalContent';
 import { describeChatError } from './free-models/chatError';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
+import { canMessageHostFileItems } from './chatFileAttachment';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { extractAutomation } from '../utils/heartbeatAutomation';
-import { proactiveAssistantMessageId } from '../utils/proactiveRecommendation';
 import {
   crossSessionAssistantMessageId,
   crossSessionUserMessageId,
@@ -1297,23 +1297,16 @@ function parseSessionHistoryTimelineEntry(
         },
       };
     }
-    // 主动推荐消息：从历史记录还原 source/proactive_type，使刷新后仍按
-    // ProactiveRecommendationCard 渲染（否则会退化为普通白色气泡）。
-    const histSource = typeof payload.source === 'string' ? payload.source : '';
-    const isProactiveRecommendation = histSource === 'proactive_recommendation';
-    const histProactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : '';
-    const agentTemplateName = isProactiveRecommendation
-      ? undefined
-      : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
-    // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
-    const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
+    // Scheduled proactive recommendation history is no longer restored into the chat UI.
+    if (isProactiveRecommendationRecord(record) || isProactiveRecommendationRecord(payload)) {
+      return null;
+    }
+    const agentTemplateName = readAgentTemplateName(payload) ?? readAgentTemplateName(record);
     const assistantCrossSession =
       extractCrossSessionMessage(payload) ?? extractCrossSessionMessage(record);
     const id = assistantCrossSession
       ? crossSessionAssistantMessageId(record.request_id, assistantCrossSession.messageId)
-      : isProactiveRecommendation && histProactiveRecId
-        ? proactiveAssistantMessageId(histProactiveRecId)
-        : restoredId;
+      : restoredId;
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const recordCompletedAtMs = parseTimestampToMs(record.completed_at);
     const completedAtMs = Number.isFinite(recordCompletedAtMs)
@@ -1339,12 +1332,7 @@ function parseSessionHistoryTimelineEntry(
           ? { keepExpanded: true }
           : {}),
         ...(completedAt ? { completedAt, outputReplayUntil: completedAtMs } : {}),
-        ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
-        ...(isProactiveRecommendation && histProactiveType
-          ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
-          : {}),
         ...(agentTemplateName ? { agentTemplateName } : {}),
-        ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
         ...(assistantCrossSession ? { crossSession: assistantCrossSession } : {}),
         // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
         // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
@@ -1578,29 +1566,23 @@ function parseSessionHistoryTimelineEntry(
   return null;
 }
 
-function isAssistantLikeHistoryMessage(message: Message): boolean {
-  return (
-    message.role === 'assistant' ||
-    (message.role === 'system' && Boolean(message.id?.startsWith('team-leader-')))
-  );
-}
-
 /**
- * 与实时 `addFileItems` 对齐：chat.file 挂到「已经出现的」最近一条助手消息。
- * 旧逻辑挂到下一条 final，会导致刷新后文件从总结上方跑到总结气泡内部下方。
+ * 与实时 `addFileItems` 对齐：chat.file 只挂到「文件到达时已经存在的最后一条消息」。
+ * 最后一条能承载文件卡片就挂上去；否则由调用方新建独立文件消息。
+ *
+ * 不能向前扫描：向前扫描会越过本轮 user 消息，把文件挂到上一轮（Issue #6159）。
+ * 也不能挂到文件之后才出现的总结消息上——它当时还不存在。
  */
-function attachFilesToPreviousAssistant(messages: Message[], files: FileDownloadItem[]): boolean {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (!isAssistantLikeHistoryMessage(messages[i])) {
-      continue;
-    }
-    messages[i] = {
-      ...messages[i],
-      fileItems: mergeFileDownloadItems(messages[i].fileItems, files),
-    };
-    return true;
+function attachFilesToLastMessage(messages: Message[], files: FileDownloadItem[]): boolean {
+  const last = messages[messages.length - 1];
+  if (!last || !canMessageHostFileItems(last)) {
+    return false;
   }
-  return false;
+  messages[messages.length - 1] = {
+    ...last,
+    fileItems: mergeFileDownloadItems(last.fileItems, files),
+  };
+  return true;
 }
 
 function createFileOnlyAssistantMessage(at: string, files: FileDownloadItem[]): Message {
@@ -1930,7 +1912,7 @@ function materializeHistoryTimeline(
       continue;
     }
     if (e.kind === 'file_items') {
-      if (!attachFilesToPreviousAssistant(messages, e.files)) {
+      if (!attachFilesToLastMessage(messages, e.files)) {
         messages.push(createFileOnlyAssistantMessage(e.at, e.files));
       }
       continue;

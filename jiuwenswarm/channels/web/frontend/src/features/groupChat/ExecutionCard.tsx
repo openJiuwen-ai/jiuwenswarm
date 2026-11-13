@@ -92,7 +92,12 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
     && ['starting', 'processing', 'executing', 'summarizing'].includes(execution.organization_stage ?? '')
     ? t(`groupChat.organizationStage.${execution.organization_stage}`) : undefined;
   const counts = taskCounts(execution.tasks ?? {});
+  // A team that has not split its work into subtasks reads like one expert at work, so it uses the
+  // single-row layout until its first subtask arrives. Organization cards keep their stage empty state.
+  const compact = singleAgent || (!counts.total && execution.execution_kind !== 'organization');
   const fullTitle = shortTaskName(execution.title || execution.task, t('groupChat.taskTitle'), Infinity);
+  // A team's task text is the proxy's delegation brief, so only its first sentence is shown on hover.
+  const summaryHover = singleAgent ? execution.title || execution.task : fullTitle;
   const owner = execution.member_name || execution.owner_member || execution.display_name;
   const ownerName = execution.display_name || execution.member_name || '';
   const progress = execution.progress && execution.progress.total > 0
@@ -112,7 +117,7 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
         className={titleOverflow ? 'is-marquee' : undefined}>
         <span ref={titleRef}>{fullTitle}</span>
       </strong>
-      {!singleAgent && <div className="group-chat-task-counts" data-testid="group-chat-task-counts">
+      {!compact && <div className="group-chat-task-counts" data-testid="group-chat-task-counts">
         {(['total', 'running', 'completed', 'stopped', 'failed'] as const).map((key) => <span key={key}
           data-testid="group-chat-task-count" data-variant={key}>
           {t(`groupChat.counts.${key}`)} <b>{counts[key]}</b>
@@ -120,7 +125,7 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
       </div>}
     </header>
     <div className={`group-chat-subtasks${execution.execution_kind === 'organization' ? ' is-organization' : ''}`} data-testid="group-chat-subtasks">
-      {!singleAgent && Object.entries(execution.tasks ?? {}).map(([id, status]) => {
+      {!compact && Object.entries(execution.tasks ?? {}).map(([id, status]) => {
         const detail = execution.task_details?.[id];
         const member = detail?.member_id || owner;
         const teammate = detail?.member_id && detail.member_id !== owner ? detail.member_id : '';
@@ -141,9 +146,9 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
           <ExpertTasks tasks={detail.expert_tasks} unavailable={detail.expert_tasks_unavailable} />
         </div>;
       })}
-      {singleAgent && <div className="group-chat-subtask" data-testid="group-chat-execution-summary">
+      {compact && <div className="group-chat-subtask" data-testid="group-chat-execution-summary">
         <div className="group-chat-subtask-info">
-          <strong data-testid="group-chat-execution-task" title={execution.title || execution.task}>
+          <strong data-testid="group-chat-execution-task" title={summaryHover}>
             {shortTaskName(execution.title || execution.task, t('groupChat.taskTitle'))}
           </strong>
           <Assignee member={owner} name={ownerName} renderAvatar={renderAvatar}
@@ -152,7 +157,7 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
         <TaskStatus status={execution.status} percent={progress} testId="group-chat-execution-status" />
       </div>}
     </div>
-    {!singleAgent && !counts.total && <div className="group-chat-no-subtasks" data-testid="group-chat-no-subtasks">
+    {!compact && !counts.total && <div className="group-chat-no-subtasks" data-testid="group-chat-no-subtasks">
       <span>{t('groupChat.noSubtasks')}</span>
       <TaskStatus status={execution.status} percent={progress} testId="group-chat-execution-status"
         labelOverride={organizationStage ?? (RUNNING.includes(execution.status) ? t('groupChat.generatingTasks') : undefined)} />

@@ -28,3 +28,25 @@ test('search and executor/status filters intersect and ignore case', () => {
   assert.deepEqual(state.filterSchedules(plans, 'SUM', 'b', 'failed').map(p => p.id), ['two']);
   assert.deepEqual(state.filterSchedules(plans, '', 'a', 'paused'), []);
 });
+
+
+test('all finished schedule plans are expired while execution outcomes stay intact', () => {
+  const base = { ...draft, agentId: 'a', lastStatus: 'completed', runCount: 1 };
+  const plans = [
+    { ...base, id: 'once-done', scheduleKind: 'once' },
+    { ...base, id: 'period-done', scheduleKind: 'cron' },
+    { ...base, id: 'interval-done', scheduleKind: 'interval' },
+    { ...base, id: 'once-pending', scheduleKind: 'once', runCount: 0 },
+    { ...base, id: 'once-running', scheduleKind: 'once', lastStatus: 'running' },
+    { ...base, id: 'once-failed', scheduleKind: 'once', lastStatus: 'failed' },
+    { ...base, id: 'period-active', scheduleKind: 'cron', lastStatus: 'running' },
+    { ...base, id: 'interval-active', scheduleKind: 'interval', lastStatus: 'running' },
+  ];
+  assert.deepEqual(state.filterSchedules(plans, '', '', 'expired').map(p => p.id), [
+    'once-done', 'period-done', 'interval-done', 'once-pending',
+  ]);
+  assert.deepEqual(state.filterSchedules(plans, '', '', 'completed'), []);
+  assert.deepEqual(state.filterSchedules(plans, '', '', 'running').map(p => p.id), ['once-running', 'period-active', 'interval-active']);
+  assert.deepEqual(state.filterSchedules(plans, '', '', 'failed').map(p => p.id), ['once-failed']);
+  assert.equal(plans[0].lastStatus, 'completed', 'Display filtering must not change the recorded execution outcome');
+});

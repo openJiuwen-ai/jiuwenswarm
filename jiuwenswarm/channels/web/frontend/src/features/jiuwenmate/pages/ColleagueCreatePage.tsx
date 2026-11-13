@@ -1,8 +1,8 @@
-import { ArrowRightLeft, Check, ChevronDown, Plus, Trash2, X } from 'lucide-react';
+import { ArrowRightLeft, Check, ChevronDown, X } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ActionMenu } from '../components/ActionMenu';
 import { CapabilitySection, CollapsibleSection, type CapabilityKind } from '../components/CapabilitySection';
+import { StarterPromptsAddButton, StarterPromptsEditor } from '../components/StarterPromptsEditor';
 import { ColleagueCard } from '../components/ColleagueCard';
 import { CustomCreateDialog } from '../components/CustomCreateDialog';
 import { JiuwenMateDialog } from '../components/JiuwenMateDialog';
@@ -429,52 +429,20 @@ function ColleagueRefineForm({
                 onChange={(items) => updateCapabilities({ [kind]: items })}
               />
             ))}
-            {source === 'template' ? (
-              <CollapsibleSection
-                title={t('jiuwenmate.create.sections.starterPrompts')}
-                action={
-                  <button
-                    type="button"
-                    className="jiuwenmate-collapsible__add-button"
-                    onClick={() => updateCapabilities({ starterPrompts: [...draft.capabilities.starterPrompts, ''] })}
-                  >
-                    <Plus aria-hidden />
-                    <span>{t('jiuwenmate.create.add.starterPrompts')}</span>
-                  </button>
-                }
-              >
-                <div className="jiuwenmate-starter-prompts">
-                  {draft.capabilities.starterPrompts.map((prompt, index) => (
-                    <div key={index}>
-                      <input
-                        value={prompt}
-                        onChange={(event) =>
-                          updateCapabilities({
-                            starterPrompts: draft.capabilities.starterPrompts.map((item, itemIndex) =>
-                              itemIndex === index ? event.target.value : item,
-                            ),
-                          })
-                        }
-                      />
-                      <ActionMenu
-                        label={t('jiuwenmate.workspace.more')}
-                        items={[
-                          {
-                            key: 'delete',
-                            label: t('jiuwenmate.office.delete'),
-                            icon: Trash2,
-                            onSelect: () =>
-                              updateCapabilities({
-                                starterPrompts: draft.capabilities.starterPrompts.filter((_, itemIndex) => itemIndex !== index),
-                              }),
-                          },
-                        ]}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </CollapsibleSection>
-            ) : null}
+            <CollapsibleSection
+              title={t('jiuwenmate.create.sections.starterPrompts')}
+              action={
+                <StarterPromptsAddButton
+                  prompts={draft.capabilities.starterPrompts}
+                  onChange={(starterPrompts) => updateCapabilities({ starterPrompts })}
+                />
+              }
+            >
+              <StarterPromptsEditor
+                prompts={draft.capabilities.starterPrompts}
+                onChange={(starterPrompts) => updateCapabilities({ starterPrompts })}
+              />
+            </CollapsibleSection>
           </div>
         </form>
       </div>

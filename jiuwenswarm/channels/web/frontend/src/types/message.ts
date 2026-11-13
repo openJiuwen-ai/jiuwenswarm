@@ -167,13 +167,8 @@ export interface Message {
   isHarnessMessage?: boolean;
   // 用户消息附带的技能列表（输入栏选中并发送）
   skills?: string[];
-  // 主动推荐消息标记
-  isProactiveRecommendation?: boolean;
-  proactiveType?: 'skill_recommend' | 'task_reminder' | 'need_exploration';
   /** Web 单 Agent 回复产生时显式选中的专家；历史恢复不能依赖当前选择状态。 */
   agentTemplateName?: string;
-  proactiveRecId?: string;  // 推荐唯一ID，用于反馈关联
-  proactiveTarget?: string;  // 推荐目标（skill名/待办/探索方向），点赞请求带回后端兜底
   /** Team-attributed history is restored into this Team's conversation runtime. */
   teamId?: string;
   /** Origin of an expert's user-directed message also displayed in the Owner chat. */

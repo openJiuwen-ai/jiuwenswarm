@@ -53,6 +53,7 @@ import { effectivePermissionProfile, permissionOptionsForMode } from '../../conf
 import clsx from 'clsx';
 import { PermissionWarningDialog } from './PermissionWarningDialog';
 import ChatModelSelector from './ChatModelSelector';
+import DesignerModelSelector from '../../features/designer/components/DesignerModelSelector';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
@@ -4102,7 +4103,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             enterprise && 'chat-input-container--enterprise',
             showWorkContextRow && 'chat-input-container--work-home',
             (isModeMenuOpen || workMenuOpen) && 'chat-input-container--menu-open',
-            composerSuggestion && !showSlashSuggestionBelow && 'chat-input-container--suggestion-open',
+            composerSuggestion && 'chat-input-container--suggestion-open',
             isListening && 'chat-input-container--recording',
             isCompactRunning && 'chat-input-container--command-pending',
           )}
@@ -5540,7 +5541,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
                 {(isAgentMode || isTeamMode) && <ContextUsageIndicator />}
 
-                {isListening ? <RecordingWaveform level={audioLevel} /> : <ChatModelSelector
+                {isListening ? <RecordingWaveform level={audioLevel} /> : workMode === 'design' ? (
+                  <DesignerModelSelector sessionId={activeSessionId ?? undefined}
+                    disabled={isProcessing || composerDisabled} readOnly={!isDesignLanding} />
+                ) : <ChatModelSelector
                   disabled={
                     isProcessing || composerDisabled || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)
                   }
