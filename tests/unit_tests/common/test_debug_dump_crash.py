@@ -18,7 +18,6 @@ def crash_env(monkeypatch, tmp_path):
     import faulthandler
 
     exits: list[int] = []
-    (tmp_path / "agent").mkdir()
     monkeypatch.setattr(debug_dump, "get_logs_dir", lambda: tmp_path)
     monkeypatch.setattr(debug_dump, "_crash_exit", exits.append)
     monkeypatch.setattr(faulthandler, "enable", lambda **_kwargs: None)
@@ -45,7 +44,7 @@ def test_crash_handler_leaves_a_faulthandler_file(crash_env) -> None:
     tmp_path, _ = crash_env
     # Native crashes (access violations) kill Python hooks entirely; the
     # faulthandler dump file is the only stack trace that survives them.
-    assert (tmp_path / "agent" / "faulthandler-agentserver.log").exists()
+    assert (tmp_path / "faulthandler-agentserver.log").exists()
 
 
 def test_faulthandler_falls_back_to_stderr(monkeypatch) -> None:

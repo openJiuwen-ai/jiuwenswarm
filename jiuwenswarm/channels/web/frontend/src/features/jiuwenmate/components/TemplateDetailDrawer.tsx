@@ -61,9 +61,23 @@ export function TemplateDetailDrawer({ template, onClose, onChoose }: TemplateDe
               </div>
             </section>
           ) : null}
-          {groups.filter((group) => group.items.length > 0).map((group) => (
-            <section key={group.key}>
+          {template.coreAbilities?.length ? (
+            <section data-testid="jiuwenmate-template-core-abilities">
+              <h3 data-testid="jiuwenmate-template-core-abilities-title">{t('jiuwenmate.create.detail.coreAbilities')}</h3>
+              <div className="jiuwenmate-capability-grid" data-testid="jiuwenmate-template-core-abilities-list">
+                {template.coreAbilities.map((item) => (
+                  <span key={item.id} className="jiuwenmate-capability-chip" title={item.description}
+                    data-testid="jiuwenmate-template-core-ability" data-variant={item.id}>
+                    <span>{item.name}</span>
+                  </span>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {groups.filter((group) => group.key === 'skills' || group.items.length > 0).map((group) => (
+            <section key={group.key} data-testid="jiuwenmate-template-resources" data-variant={group.key}>
               <h3>{group.title}</h3>
+              {group.items.length === 0 ? <p>{t('jiuwenmate.create.empty.skills')}</p> : null}
               <div className="jiuwenmate-capability-grid">
                 {group.items.map((item) => (
                   <span key={item.id} className="jiuwenmate-capability-chip" title={item.description}>

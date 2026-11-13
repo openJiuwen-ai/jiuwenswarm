@@ -32,6 +32,27 @@ CONNECTION_ROLE_HEADER = "X-Jiuwen-Connection-Role"
 CONNECTION_ROLE_RPC = "rpc"
 
 
+def unsupported_method_wire(
+    method: Any, *, request_id: Any, channel_id: Any,
+) -> dict[str, Any] | None:
+    """Return a wire error when an explicitly supplied method is unknown."""
+    if method is None:
+        return None
+    if isinstance(method, str):
+        try:
+            ReqMethod(method)
+            return None
+        except ValueError:
+            pass
+    response = AgentResponse(
+        request_id=request_id if isinstance(request_id, str) else "",
+        channel_id=channel_id if isinstance(channel_id, str) else "web",
+        ok=False,
+        payload={"error": f"unknown method: {method}", "code": "METHOD_NOT_FOUND"},
+    )
+    return encode_agent_response_for_wire(response, response_id=response.request_id)
+
+
 def payload_to_request(data: dict[str, Any]) -> AgentRequest:
     """Parse a legacy JSON payload into ``AgentRequest``."""
     req_method = data.get("req_method")
@@ -65,7 +86,7 @@ def payload_to_request(data: dict[str, Any]) -> AgentRequest:
 def parse_raw_message(raw: str | bytes) -> AgentRequest | dict[str, Any]:
     """Parse one WebSocket text frame.
 
-    Returns an ``AgentRequest`` on success, or a JSON-parse error wire dict.
+    Returns an ``AgentRequest`` on success, or an error wire dict.
     """
     try:
         data = json.loads(raw)
@@ -79,16 +100,30 @@ def parse_raw_message(raw: str | bytes) -> AgentRequest | dict[str, Any]:
         env = E2AEnvelope.from_dict(data)
     except Exception as parse_err:
         logger.warning("[Front] E2A from_dict 失败，按旧载荷解析: %s", parse_err)
-        return payload_to_request(data)
-    jw = (env.channel_context or {}).get(E2A_INTERNAL_CONTEXT_KEY)
-    if isinstance(jw, dict) and jw.get(E2A_FALLBACK_FAILED_KEY):
-        legacy = jw.get(E2A_LEGACY_AGENT_REQUEST_KEY)
-        logger.warning(
-            "[E2A][fallback] using legacy_agent_request request_id=%s",
-            env.request_id,
-        )
-        if not isinstance(legacy, dict):
-            raise ValueError("legacy_agent_request missing or not a dict")
+        legacy = data
+    else:
+        jw = (env.channel_context or {}).get(E2A_INTERNAL_CONTEXT_KEY)
+        if isinstance(jw, dict) and jw.get(E2A_FALLBACK_FAILED_KEY):
+            legacy = jw.get(E2A_LEGACY_AGENT_REQUEST_KEY)
+            logger.warning(
+                "[E2A][fallback] using legacy_agent_request request_id=%s",
+                env.request_id,
+            )
+            if not isinstance(legacy, dict):
+                raise ValueError("legacy_agent_request missing or not a dict")
+        else:
+            legacy = None
+
+    method = legacy.get("req_method") if legacy is not None else env.method
+    if legacy is None and method is None and "req_method" in data:
+        method = data["req_method"]
+    request_id = legacy.get("request_id") if legacy is not None else env.request_id
+    channel_id = legacy.get("channel_id", "web") if legacy is not None else env.channel
+    error_wire = unsupported_method_wire(method, request_id=request_id, channel_id=channel_id)
+    if error_wire is not None:
+        return error_wire
+
+    if legacy is not None:
         return payload_to_request(legacy)
     logger.info(
         "[E2A][in] request_id=%s channel=%s method=%s is_stream=%s",

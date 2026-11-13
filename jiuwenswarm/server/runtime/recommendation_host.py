@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import time
 from typing import Any, Awaitable, Callable, Iterable
 
@@ -53,9 +52,6 @@ def _build_topic_starter_services(
 ) -> tuple[Any, Any | None, Any]:
     """Always build the prepare lane; leave a misconfigured product lane disabled."""
 
-    from jiuwenswarm.agents.harness.common.recommendation.topic_collector import (
-        TopicStarterOutcomeCollector,
-    )
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
         load_recommendation_controls,
         permitted_recommendation_history,
@@ -76,16 +72,12 @@ def _build_topic_starter_services(
         TopicPreparePipeline,
         TopicPrepareService,
     )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_rid import (
-        build_ark_specific_interest_matcher,
-    )
     from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
         OpenJiuwenNativeSearchContractError,
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
         TopicService,
     )
-    from jiuwenswarm.server.runtime.session.session_history import load_history_records
 
     def permitted_records():
         # One consent read per batch rather than one per session.
@@ -126,97 +118,6 @@ def _build_topic_starter_services(
         )
         search_provider_id = UNCONFIGURED_SEARCH_PROVIDER_ID
 
-    # Bounds the cross-thread wait for one RID pair, so a stalled loop cannot wedge collection.
-    summary_pair_match_timeout_seconds = 60.0
-    outcome_collection_lock = asyncio.Lock()
-
-    async def prepare_topic_outcomes() -> str:
-        async with outcome_collection_lock:
-            # Pairs on the service's model; a switch cancels this round and the next one pairs anew.
-            ark_config = topic_service.ark_config
-            stop_collection = threading.Event()
-            matcher_tasks: set[asyncio.Task] = set()
-            matcher = None
-            if ark_config is not None:
-                try:
-                    matcher = build_ark_specific_interest_matcher(
-                        topic_starter_store,
-                        ark_config,
-                    )
-                except Exception as exc:  # noqa: BLE001 - fail-closed label exclusion
-                    logger.warning(
-                        "[Topic] RID summary-pair matcher unavailable: %s",
-                        exc,
-                    )
-            collector_kwargs: dict[str, Any] = {}
-            if matcher is not None:
-                loop = asyncio.get_running_loop()
-
-                async def match_if_running(earlier: Any, later: Any) -> bool:
-                    if stop_collection.is_set():
-                        raise asyncio.CancelledError()
-                    task = asyncio.current_task()
-                    matcher_tasks.add(task)
-                    try:
-                        return await matcher.match(earlier, later)
-                    finally:
-                        matcher_tasks.discard(task)
-
-                def match_summary_pair(earlier: Any, later: Any) -> bool:
-                    if stop_collection.is_set():
-                        raise asyncio.CancelledError()
-                    future = asyncio.run_coroutine_threadsafe(
-                        match_if_running(earlier, later),
-                        loop,
-                    )
-                    # This thread is not the loop: a loop that stops scheduling (shutdown,
-                    # saturated executor) would otherwise block it forever and keep
-                    # `asyncio.shield(worker)` from ever completing.
-                    try:
-                        result = future.result(
-                            timeout=summary_pair_match_timeout_seconds
-                        )
-                    except TimeoutError:
-                        future.cancel()
-                        raise
-                    if not isinstance(result, bool):
-                        raise ValueError("RID summary-pair matcher returned invalid output")
-                    return result
-
-                collector_kwargs = {
-                    "summary_pair_matcher": match_summary_pair,
-                    "summary_pair_matcher_id": matcher.matcher_id,
-                    "summary_pair_matcher_version": matcher.matcher_version,
-                }
-            topic_outcome_collector = TopicStarterOutcomeCollector(
-                topic_starter_store,
-                history_loader=lambda sid: permitted_recommendation_history(load_history_records(sid)),
-                cancel_event=stop_collection,
-                **collector_kwargs,
-            )
-            logger.info("[Topic] outcome collection started")
-            worker = asyncio.create_task(asyncio.to_thread(topic_outcome_collector.collect))
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                stop_collection.set()
-                tasks = list(matcher_tasks)
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await asyncio.gather(worker, return_exceptions=True)
-                logger.info("[Topic] outcome collection stopped")
-                raise
-            finally:
-                if matcher is not None:
-                    await matcher.aclose()
-            # A failed round propagates; the service logs it as failed.
-            logger.info(
-                "[Topic] outcome collection %s",
-                "stopped" if stop_collection.is_set() else "finished",
-            )
-        return ""
-
     def history_project_ids() -> list[str]:
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
@@ -245,7 +146,9 @@ def _build_topic_starter_services(
         search_provider_id=search_provider_id,
         prepare_state=topic_pipeline.refresh_state,
         prepare_short_intent=topic_pipeline.refresh_short_intent,
-        prepare_outcomes=prepare_topic_outcomes,
+        # Training / outcome labels are not required for live pools; keep them
+        # out of recommendation.db and investigate generation via process logs.
+        prepare_outcomes=None,
         input_revision_loader=topic_pipeline.scope_input_revision,
         pending_request_loader=topic_pipeline.scope_has_pending_request,
         config_loader=recommendation_model_config,

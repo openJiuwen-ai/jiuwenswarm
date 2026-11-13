@@ -98,9 +98,9 @@ def task_identity(ws, scope):
     return owner, scope
 
 
-async def task_agent_query(client, method, params, session, owner, *, metadata=None):
+async def task_agent_query(client, method, params, session, owner):
     """Read from the routed AgentServer, never from Gateway's local session tree."""
-    from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 
     client = client.get("value") if isinstance(client, dict) else client
     if client is None:
@@ -110,7 +110,6 @@ async def task_agent_query(client, method, params, session, owner, *, metadata=N
             request_id="task-query-" + str(time.time_ns()),
             req_method=method, params=params, session_id=session,
             user_id=owner or None, channel_id="video_tool", timestamp=time.time(),
-            metadata=metadata,
         ), label="voice.task", timeout_seconds=AGENT_QUERY_TIMEOUT,
     )
     payload = response.payload or {}

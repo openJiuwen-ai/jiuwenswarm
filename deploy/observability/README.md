@@ -51,8 +51,9 @@ later with `upload_traces_to_langfuse.py`.
 编辑 `~/.jiuwenswarm/config/config.yaml`:
 
 ```yaml
-team_observability:
-  enabled: true
+observability:
+  team:
+    enabled: true
   exporter: "file"
   # traces_dir 留空则默认写入 ~/.jiuwenswarm/.trace
   traces_dir: ""
@@ -144,11 +145,12 @@ docker-compose down -v
 
 ## Enable in Jiuwenswarm
 
-编辑 `~/.jiuwenswarm/config/config.yaml`，将 `team_observability.enabled` 设为 `true`，重启即可。
+编辑 `~/.jiuwenswarm/config/config.yaml`，将 `observability.team.enabled` 设为 `true`，重启即可。
 
 ```yaml
-team_observability:
-  enabled: true
+observability:
+  team:
+    enabled: true
   endpoint: http://localhost:4317
 ```
 
@@ -159,8 +161,9 @@ team_observability:
 Application sends traces to local Collector. Auth is handled by Collector.
 
 ```yaml
-team_observability:
-  enabled: true
+observability:
+  team:
+    enabled: true
   exporter: "otlp_grpc"
   endpoint: "http://localhost:4317"
   sample_rate: 1.0
@@ -171,8 +174,9 @@ team_observability:
 Application sends traces directly to Langfuse Cloud (bypasses local Collector).
 
 ```yaml
-team_observability:
-  enabled: true
+observability:
+  team:
+    enabled: true
   exporter: "otlp_http"
   endpoint: "https://cloud.langfuse.com/api/public/otel/v1/traces"
   langfuse_public_key: "pk-lf-xxx"
@@ -182,8 +186,9 @@ team_observability:
 ### Method 3: Console Output (Debug)
 
 ```yaml
-team_observability:
-  enabled: true
+observability:
+  team:
+    enabled: true
   exporter: "console"
 ```
 
@@ -191,10 +196,13 @@ Traces printed as JSON to console.
 
 ## Configuration Reference
 
+All fields live under the top-level `observability` section. The export fields are shared by Team and single-agent tracing (one OTel provider per process); only the two `enabled` switches are per runtime. Legacy `team_observability` / `agent_observability` sections are migrated into `observability` automatically on upgrade.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | True | Enable/disable observability |
-| `service_name` | str | "openjiuwen-agent-teams" | OTel resource service name |
+| `team.enabled` | bool | true | Enable Team (TeamAgent) tracing |
+| `agent.enabled` | bool | false | Enable single-agent / coding-agent tracing |
+| `service_name` | str | "jiuwenswarm" | OTel resource service name |
 | `exporter` | str | "otlp_grpc" | Exporter type: `otlp_grpc`, `otlp_http`, `console`, `file` |
 | `endpoint` | str | "http://localhost:4317" | OTLP endpoint URL |
 | `traces_dir` | str | "~/.jiuwenswarm/.trace" | Output dir for the `file` exporter (empty → default) |

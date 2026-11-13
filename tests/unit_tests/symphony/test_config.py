@@ -3,6 +3,23 @@ import pytest
 from jiuwenswarm.common import symphony_config
 
 
+@pytest.mark.parametrize("symphony_enabled", [None, False, True])
+def test_discovery_enables_required_infrastructure(symphony_enabled):
+    cfg = symphony_config.symphony_config_from_dict({
+        "enabled": symphony_enabled, "evolution": {"flow": {"enabled": True}},
+    })
+    assert cfg.enabled is True
+    assert cfg.evolution.flow.enabled is True
+
+
+def test_disabled_discovery_preserves_independent_symphony():
+    cfg = symphony_config.symphony_config_from_dict({
+        "enabled": True, "evolution": {"enabled": True, "flow": {"enabled": False}},
+    })
+    assert cfg.enabled is True
+    assert cfg.evolution.flow.enabled is False
+
+
 def test_symphony_config_defaults_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(
         symphony_config,

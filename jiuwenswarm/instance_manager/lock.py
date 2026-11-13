@@ -316,6 +316,16 @@ def is_process_alive(pid: int) -> bool:
                 ],
                 capture_output=True,
                 text=True,
+                # Pin the codec. With ``text=True`` alone the child's output is
+                # decoded with ``io.text_encoding(None)``: the locale codec until
+                # Python runs in UTF-8 mode, ``utf-8`` after. ``uv run`` sets
+                # PYTHONUTF8=1, while ``tasklist`` still emits ANSI/OEM bytes, so
+                # the decode raised UnicodeDecodeError inside subprocess' reader
+                # thread -- the exception never reached this caller, stdout came
+                # back empty, and a live process was reported as dead. Only ASCII
+                # tokens are parsed below, so a tolerant handler is safe.
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             # tasklist returns "INFO: No tasks are running..." if not found

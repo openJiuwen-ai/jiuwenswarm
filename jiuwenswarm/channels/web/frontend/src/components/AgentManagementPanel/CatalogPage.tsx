@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isEnterprise } from '../../edition';
 import { LoaderCircle } from 'lucide-react';
 
 import { useTranslation } from 'react-i18next';
@@ -175,7 +176,7 @@ export function CatalogPage({
                 : t(isMine ? 'agentManagement.states.mineEmpty' : 'agentManagement.states.catalogEmpty')
             }
           >
-            {isMine && !hasQuery ? (
+            {isMine && !hasQuery && !isEnterprise() ? (
               <button
                 type="button"
                 className="h-[28px] w-[96px] rounded-full border border-[var(--color-button-border)] bg-card text-[12px] text-text"

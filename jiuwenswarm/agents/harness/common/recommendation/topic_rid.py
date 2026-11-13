@@ -16,6 +16,7 @@ from typing import Any
 from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
     ArkBackgroundConfig,
     build_ark_stage_invoker,
+    model_ids_compatible,
     persist_provider_invocation,
     provider_validation,
 )
@@ -268,9 +269,13 @@ class ArkSpecificInterestMatcher:
             isinstance(receipt, dict)
             and receipt.get("stage") == RID_SUMMARY_PAIR_MATCH_STAGE
             and receipt.get("response_object") == "chat.completion"
-            and receipt.get("actual_model") == expected_model
-            and receipt.get("finish_reason") == "stop"
-            and receipt.get("structured_output_mode") == "json_schema_strict"
+            and model_ids_compatible(receipt.get("actual_model"), expected_model)
+            and receipt.get("finish_reason") in {"stop", "length"}
+            and receipt.get("structured_output_mode") in {
+                "prompt_json",
+                "json_object",
+                "json_schema_strict",
+            }
             and isinstance(receipt.get("provider_response_id"), str)
             and receipt["provider_response_id"]
             and isinstance(lineage, dict)
@@ -388,9 +393,21 @@ class ArkSpecificInterestMatcher:
             ),
         )
         with provider_validation(self._invoke_stage, result):
+            if isinstance(result, dict) and "label" in result:
+                result = {"label": result.get("label")}
             if not isinstance(result, dict) or set(result) != {"label"}:
                 raise ValueError("summary pair matcher output contract failed")
             label = result.get("label")
+            if isinstance(label, str):
+                label = label.strip().upper().replace("-", "_")
+                if label in {"MATCH", "TRUE", "YES", "1"}:
+                    label = "MATCH"
+                elif label in {"NO_MATCH", "NOMATCH", "FALSE", "NO", "0"}:
+                    label = "NO_MATCH"
+            elif label is True:
+                label = "MATCH"
+            elif label is False:
+                label = "NO_MATCH"
             if label not in {"MATCH", "NO_MATCH"}:
                 raise ValueError("summary pair matcher output contract failed")
             provider_receipt = self._provider_receipt(

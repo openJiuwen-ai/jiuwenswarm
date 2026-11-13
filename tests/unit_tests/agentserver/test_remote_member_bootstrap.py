@@ -868,6 +868,152 @@ async def test_bootstrap_control_plane_forwards_cron_marker(monkeypatch) -> None
     kickoff_kwargs = kickoff.await_args.kwargs
     assert kickoff_kwargs["assembly_cron_meta"] == cron_meta
     assert kickoff_kwargs["assembly_mode"] == "team"
+    assert kickoff_kwargs.get("assembly_cron_session") is None
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_control_plane_forwards_cron_session(monkeypatch) -> None:
+    """Session-level cron ownership reaches the kickoff loop separately (issue #6188).
+
+    ``cron`` stays reserved for scheduler-triggered rounds; a Web cron session's
+    later turn forwards ``cron_session`` so tool gating holds without telling
+    consumers (approvals, A4P scope) that this round is unattended.
+    """
+    status = AsyncMock(return_value=None)
+    replace = AsyncMock(return_value=True)
+    kickoff = AsyncMock(return_value=(True, True))
+    monkeypatch.setattr(_mod, "_member_status_for_session", status)
+    monkeypatch.setattr(
+        _mod,
+        "_replace_teammate_card_after_direct_bootstrap",
+        replace,
+    )
+    monkeypatch.setattr(
+        _mod,
+        "_ensure_dynamic_member_execution_loop",
+        kickoff,
+    )
+    kickoff_tasks: set[asyncio.Task[Any]] = set()
+    cron_session = {"job_id": "job-42", "source": "session_metadata"}
+
+    await apply_bootstrap_envelope_from_control_plane(
+        processed_ids=set(),
+        loop_kicked_members=set(),
+        kickoff_tasks=kickoff_tasks,
+        adopted_member="blank",
+        envelope={
+            "bootstrap_id": "bootstrap-cron-session",
+            "team_name": "team-1",
+            "session_id": "web_19abc_abcdef123456",
+            "member_name": "calculator",
+            "mode": "team",
+            "cron_session": cron_session,
+        },
+        source_id="source-1",
+    )
+    await asyncio.gather(*kickoff_tasks)
+
+    kickoff_kwargs = kickoff.await_args.kwargs
+    assert kickoff_kwargs["assembly_cron_session"] == cron_session
+    assert kickoff_kwargs.get("assembly_cron_meta") is None
+
+
+def test_kickoff_request_metadata_keeps_cron_session_separate() -> None:
+    """Rebuild metadata never turns session ownership into a scheduler marker."""
+    cron_session = {"job_id": "job-42", "source": "session_metadata"}
+    metadata = _mod._kickoff_request_metadata(
+        assembly_mode="team",
+        assembly_project_dir="",
+        assembly_cron_meta=None,
+        assembly_cron_session=cron_session,
+    )
+    assert metadata["cron_session"] == cron_session
+    assert "cron" not in metadata
+
+    cron_meta = {"job_id": "job-1", "run_id": "job-1:1900"}
+    metadata = _mod._kickoff_request_metadata(
+        assembly_mode="team",
+        assembly_project_dir="",
+        assembly_cron_meta=cron_meta,
+        assembly_cron_session=None,
+    )
+    assert metadata["cron"] == cron_meta
+    assert "cron_session" not in metadata
+
+
+def _leader_for_hint(*, request_metadata: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(
+        spec=SimpleNamespace(
+            build_context_seed={"mode": "team", "request_metadata": request_metadata},
+            team_name="team-1",
+            leader=SimpleNamespace(member_name="leader"),
+        ),
+        runtime_context=SimpleNamespace(team_spec=None, messager_config=None),
+    )
+
+
+def test_bootstrap_envelope_forwards_persisted_cron_session(monkeypatch) -> None:
+    """A rebuilt Web cron session forwards its persisted cron_id to members.
+
+    Web cron execution sessions are ordinary ``web_*`` ids and later turns carry
+    no scheduler marker. The leader resolves the persisted ``cron_id`` and sends
+    it as the separate ``cron_session`` hint: remote members, which may not see
+    this session's metadata, stay cron-gated, while ``cron`` keeps its
+    "this round was scheduler-triggered" meaning (issue #6188).
+    """
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *_args, **_kwargs: {"cron_id": "job-42"},
+    )
+
+    envelope = _mod.build_bootstrap_envelope(
+        _leader_for_hint(request_metadata={"mode": "team"}),
+        session_id="web_19abc_abcdef123456",
+        member_name="calculator",
+        prompt="",
+    )
+
+    assert envelope["cron_session"] == {"job_id": "job-42", "source": "session_metadata"}
+    assert "cron" not in envelope
+    assert envelope["mode"] == "team"
+
+
+def test_bootstrap_envelope_keeps_scheduler_cron_marker(monkeypatch) -> None:
+    """The request's own marker wins and no metadata read is needed."""
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    def _unexpected(*_args, **_kwargs):
+        raise AssertionError("session metadata must not be read for a cron run")
+
+    monkeypatch.setattr(session_metadata, "get_session_metadata", _unexpected)
+    cron_meta = {"job_id": "job-1", "run_id": "job-1:1900"}
+
+    envelope = _mod.build_bootstrap_envelope(
+        _leader_for_hint(request_metadata={"mode": "team", "cron": cron_meta}),
+        session_id="web_19abc_abcdef123456",
+        member_name="calculator",
+        prompt="",
+    )
+
+    assert envelope["cron"] == cron_meta
+    assert "cron_session" not in envelope
+
+
+def test_bootstrap_envelope_omits_cron_for_normal_session(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *_args, **_kwargs: {"cron_id": ""},
+    )
+
+    envelope = _mod.build_bootstrap_envelope(
+        _leader_for_hint(request_metadata={"mode": "team"}),
+        session_id="web_19abc_abcdef123456",
+        member_name="calculator",
+        prompt="",
+    )
+
+    assert "cron" not in envelope
+    assert "cron_session" not in envelope
 
 
 @pytest.mark.asyncio

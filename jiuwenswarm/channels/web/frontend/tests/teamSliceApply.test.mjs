@@ -5,7 +5,6 @@ import {
   useSessionStore,
   useTeamSelectorStore,
   applyTeamSnapshotToSession,
-  mergeEnterpriseTeamTasks,
 } from '../node_modules/.cache/team-slice-apply/teamSliceApply.mjs';
 
 const SESSION_ID = 'a10-owner-session';
@@ -256,18 +255,4 @@ test('applying an expert-team snapshot leaves the owner projection untouched', (
   const expertMembers = useSessionStore
     .getState().runtimes[`${SESSION_ID}::expert-team`].teamMembers;
   assert.deepEqual(expertMembers.map((m) => m.member_id), ['expert-lead']);
-});
-
-
-test('enterprise partial snapshots preserve live task fields and add missed tasks', () => {
-  const current = [{ task_id: 'live', title: 'Keep this title', assignee: 'worker', status: 'in_progress' }];
-  const merged = mergeEnterpriseTeamTasks(current, [
-    { task_id: 'live', title: '', assignee: undefined, status: 'completed' },
-    { task_id: 'missed', title: 'Recovered task', status: 'pending' },
-  ]);
-  assert.deepEqual(merged, [
-    { task_id: 'live', title: 'Keep this title', assignee: 'worker', status: 'completed' },
-    { task_id: 'missed', title: 'Recovered task', status: 'pending' },
-  ]);
-  assert.equal(current[0].status, 'in_progress');
 });

@@ -675,7 +675,7 @@ def test_enabled_cua_is_skipped_when_the_host_has_no_backend(monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize("legacy_available", [False, True])
-@pytest.mark.parametrize(("language", "guidance"), [("cn", "cua_repl 支持"), ("en", "cua_repl executes")])
+@pytest.mark.parametrize(("language", "guidance"), [("cn", "直接调用同步 SDK 方法"), ("en", "Call SDK methods synchronously")])
 def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, tmp_path, legacy_available, language, guidance):
     from openjiuwen.harness.tools.cua.rails import CuaProgressRail
     from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
@@ -767,6 +767,7 @@ def test_wheel_driver_retries_incomplete_native_build(monkeypatch, tmp_path):
     from jiuwenswarm.agents.harness.common.tools import cua_runtime
 
     _prepare_native_driver = cua_runtime._prepare_native_driver
+    monkeypatch.setattr(cua_runtime, "cua_repl_unavailable_reason", lambda: "")
 
     driver = tmp_path / "driver"
     monkeypatch.setattr(paths, "repository_root", lambda: tmp_path)
@@ -786,6 +787,17 @@ def test_wheel_driver_retries_incomplete_native_build(monkeypatch, tmp_path):
     monkeypatch.setattr(cua_runtime, "FileLock", MagicMock(side_effect=PermissionError("read-only driver cache")))
     _prepare_native_driver()
     assert build.call_count == 2
+
+
+def test_wheel_driver_skips_preparation_after_install_build_failure(monkeypatch):
+    from jiuwenswarm.agents.harness.common.tools import cua_runtime
+
+    monkeypatch.setattr(cua_runtime, "cua_repl_unavailable_reason", lambda: "native_build_failed")
+    lock = MagicMock()
+    monkeypatch.setattr(cua_runtime, "FileLock", lock)
+    with pytest.raises(RuntimeError, match="native_build_failed"):
+        cua_runtime._prepare_native_driver()
+    lock.assert_not_called()
 
 
 def test_panel_rail_is_added_to_the_cua_default_rails_not_replacing_them(monkeypatch, tmp_path):

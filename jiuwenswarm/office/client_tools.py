@@ -69,7 +69,9 @@ class TaskPaneTool(ClientTool):
         if capabilities is None:
             raise ClientToolUnavailable("no document is attached to this conversation")
         if self.card.name not in (capabilities.get("supported_tools") or ()):
-            raise ClientToolUnavailable(f"the task pane of this conversation's document cannot run {self.card.name}")
+            raise ClientToolUnavailable(
+                f"this add-in does not offer {self.card.name} yet, in any PowerPoint version; do the work with the "
+                "tools you have, or tell the user this add-in cannot do it yet")
         if get_attachment_directory().connection_for_session(session_id) is None:
             raise ClientToolUnavailable(
                 "this conversation's document is not open right now; ask the user to open it and continue in "

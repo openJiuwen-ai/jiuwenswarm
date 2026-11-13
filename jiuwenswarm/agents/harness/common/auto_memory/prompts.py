@@ -162,7 +162,7 @@ There are {new_messages_count} new messages in this conversation. Analyze them a
 
 1. If you find new memorable information:
    - Use coding_memory_write tool to create memory file
-   - File path: {semantic-name}.md (e.g., user_role.md)
+   - File path: {{semantic-name}}.md (e.g., user_role.md)
    - Format: YAML frontmatter + Markdown content
    - Then use coding_memory_edit tool to update MEMORY.md index
 

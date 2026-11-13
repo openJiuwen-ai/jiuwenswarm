@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
 import os
 import selectors
 import subprocess
 import sys
+from pathlib import Path
 
 from jiuwenbox.models.policy import SecurityPolicy
+from jiuwenbox.server.runtime.process import ProcessRuntime
 from jiuwenbox.server.runtime.warm_pool import (
     WarmPool,
+    boot_policy,
     warm_pool_compatible,
+    warm_pool_mismatches,
     warm_pool_size,
 )
 from jiuwenbox.supervisor.bwrap import BwrapConfig
@@ -34,6 +40,27 @@ def test_bwrap_uses_numeric_run_as():
     assert config.gid == 1000
 
 
+def test_boot_policy_keeps_the_loaded_filesystem_and_stays_root():
+    template = SecurityPolicy.model_validate({
+        "filesystem_policy": {
+            "bind_mounts": [
+                {"host_path": "/opt", "sandbox_path": "/opt", "mode": "ro"},
+            ],
+        },
+        "process": {"run_as_user": "sandbox", "run_as_group": "sandbox"},
+    })
+
+    booted = boot_policy(template)
+
+    assert [
+        (mount.host_path, mount.sandbox_path, mount.mode)
+        for mount in booted.filesystem_policy.bind_mounts
+    ] == [("/opt", "/opt", "ro")]
+    assert booted.process.run_as_user == "0"
+    assert booted.process.run_as_group == "0"
+    assert template.process.run_as_user == "sandbox"
+
+
 def test_warm_pool_allows_filesystem_and_run_as_to_differ():
     template = SecurityPolicy()
     request = template.model_copy(deep=True)
@@ -41,6 +68,40 @@ def test_warm_pool_allows_filesystem_and_run_as_to_differ():
     request.process.run_as_group = "app"
     request.filesystem_policy.read_write.append("/app/build")
     assert warm_pool_compatible(template, request)
+
+
+def test_warm_pool_mismatches_name_each_incompatible_field():
+    template = SecurityPolicy()
+    request = template.model_copy(deep=True)
+    request.network.mode = "host"
+    request.network.egress.allowed_domains = ["example.com"]
+    request.cgroup.memory_max = 1024
+    request.namespace.pid = False
+    request.syscall.x86_64.blocked = ["clone"]
+    request.landlock.compatibility = "disabled"
+
+    reasons = warm_pool_mismatches(template, request)
+
+    assert reasons == [
+        "landlock.compatibility request='disabled' template='best_effort' "
+        "(warm pool cannot serve a sandbox with Landlock disabled)",
+        "network.mode request='host' template='isolated'",
+        "network.egress.allowed_domains request=['example.com'] template=[]",
+        "cgroup.memory_max request=1024 template=None",
+        "namespace.pid request=False template=True",
+        "syscall.x86_64.blocked request=['clone'] template=[]",
+    ]
+    assert not warm_pool_compatible(template, request)
+
+
+def test_warm_pool_mismatches_landlock_mode_without_disabling_it():
+    template = SecurityPolicy()
+    request = template.model_copy(deep=True)
+    request.landlock.compatibility = "hard_requirement"
+
+    assert warm_pool_mismatches(template, request) == [
+        "landlock.compatibility request='hard_requirement' template='best_effort'",
+    ]
 
 
 def test_warm_pool_rejects_network_or_disabled_landlock():
@@ -93,9 +154,70 @@ def test_replace_template_discards_slots_that_cannot_serve_the_new_policy():
     assert pool.acquire(updated) == (True, None)
 
 
-def test_warm_pool_size_defaults_to_four(monkeypatch):
+def test_create_logs_why_the_warm_pool_was_not_used(caplog, monkeypatch):
+    runtime = ProcessRuntime()
+    policy = SecurityPolicy()
+    with caplog.at_level(logging.INFO):
+        adopted = asyncio.run(runtime.claim_warm_sandbox("sb-off", policy, Path("policy.yaml"), None))
+    assert adopted is None
+    assert "Warm pool not used for sb-off: pool was not started" in caplog.text
+
+    caplog.clear()
+    monkeypatch.setenv("JIUWENBOX_WARM_POOL", "0")
+    with caplog.at_level(logging.INFO):
+        runtime.start_warm_pool(policy)
+        adopted = asyncio.run(
+            runtime.claim_warm_sandbox("sb-disabled", policy, Path("policy.yaml"), None),
+        )
+    assert adopted is None
+    assert "Warm pool disabled (JIUWENBOX_WARM_POOL='0')" in caplog.text
+    assert "Warm pool not used for sb-disabled: disabled (JIUWENBOX_WARM_POOL='0')" in caplog.text
+
+    class _Pool:
+        depth = 4
+
+        @staticmethod
+        def acquire(request):
+            del request
+            return False, None
+
+        @staticmethod
+        def mismatch_reasons(request):
+            return warm_pool_mismatches(policy, request)
+
+    request = policy.model_copy(deep=True)
+    request.network.mode = "host"
+    runtime.attach_warm_pool(_Pool())
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        adopted = asyncio.run(
+            runtime.claim_warm_sandbox("sb-policy", request, Path("policy.yaml"), None),
+        )
+    assert adopted is None
+    assert (
+        "Warm pool not used for sb-policy: policy incompatible: "
+        "network.mode request='host' template='isolated'"
+    ) in caplog.text
+
+    class _EmptyPool(_Pool):
+        @staticmethod
+        def acquire(request):
+            del request
+            return True, None
+
+    runtime.attach_warm_pool(_EmptyPool())
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        adopted = asyncio.run(
+            runtime.claim_warm_sandbox("sb-empty", policy, Path("policy.yaml"), None),
+        )
+    assert adopted is None
+    assert "Warm pool not used for sb-empty: no parked sandbox available (depth=4)" in caplog.text
+
+
+def test_warm_pool_size_defaults_to_eight(monkeypatch):
     monkeypatch.delenv("JIUWENBOX_WARM_POOL", raising=False)
-    assert warm_pool_size() == 4
+    assert warm_pool_size() == 8
     monkeypatch.setenv("JIUWENBOX_WARM_POOL", "0")
     assert warm_pool_size() == 0
 

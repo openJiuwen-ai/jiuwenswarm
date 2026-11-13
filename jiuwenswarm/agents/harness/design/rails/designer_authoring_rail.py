@@ -170,6 +170,7 @@ class DesignerAuthoringRail(DeepAgentRail):
             )
             from jiuwenswarm.server.runtime.designer.model_tools import (
                 DesignerLlmError,
+                preferred_designer_model_ref,
                 require_llm,
                 use_preferred_designer_model,
             )
@@ -181,9 +182,7 @@ class DesignerAuthoringRail(DeepAgentRail):
                 require_llm()
             except DesignerLlmError as exc:
                 return f"error: {exc.user_message}\n{AUTORUN_FAILURE_HINT}"
-            preferred_model = str(
-                (graph.get("metadata") or {}).get("model_name") or ""
-            ).strip()
+            preferred_model = preferred_designer_model_ref(graph)
             try:
                 with use_preferred_designer_model(preferred_model):
                     composed = await run_director_chain(

@@ -427,12 +427,10 @@ def enforce_setting_transitions(analysis: dict[str, Any]) -> list[str]:
                 )
             shot["clip_strategy"] = "compose_from_character_specs"
             shot["same_setting_prior_edit"] = False
-            shot["compose_setting_master"] = True
             shot["ensemble_master"] = False
         else:
             shot["clip_strategy"] = "edit_prior_image"
             shot["same_setting_prior_edit"] = True
-            shot["compose_setting_master"] = False
         prev_set = sid
     analysis["clips"] = shots
     return notes

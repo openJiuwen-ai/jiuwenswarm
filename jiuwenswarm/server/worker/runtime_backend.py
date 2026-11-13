@@ -24,25 +24,55 @@ def _log_preparation_stage(stage: str, began: float) -> None:
 
 def _configure_openjiuwen_logging() -> None:
     """Install OpenJiuwen logging after the Worker IPC socket is listening."""
+    from openjiuwen.core.common.logging import LogManager
+
     from jiuwenswarm.common.media_capability_config import (
         migrate_media_capability_switches,
     )
     from jiuwenswarm.common.utils import (
         apply_free_search_runtime_defaults,
-        configure_openjiuwen_core_logging,
         get_env_file,
+        get_root_dir,
     )
 
     migrate_media_capability_switches(get_env_file())
     apply_free_search_runtime_defaults()
 
-    if configure_openjiuwen_core_logging(suppress_level=logging.CRITICAL):
-        # 用户自管日志：下方权限审计处理器不再挂载。
+    _logging_yaml = get_root_dir() / "config" / "logging.yaml"
+    if _logging_yaml.exists():
+        from openjiuwen.core.common.logging.log_config import configure_log
+
+        configure_log(str(_logging_yaml))
         return
+
+    try:
+        from openjiuwen.core.common.logging.log_config import configure_log_config
+
+        _oj_home = os.environ.get("JIUWENSWARM_HOME") or os.environ.get("HOME") or os.path.expanduser("~")
+        _oj_log_dir = f"{_oj_home}/.jiuwenswarm/logs/"
+        configure_log_config({
+            "backend": "default",
+            "level": "INFO",
+            "log_path": _oj_log_dir,
+            "log_file": "run/jiuwen.log",
+            "output": ["console", "file"],
+            "structured_output_format": "json",
+            "interface_log_file": "interface/jiuwen_interface.log",
+            "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
+            "performance_log_file": "performance/jiuwen_performance.log",
+        })
+    except Exception as _log_cfg_exc:  # noqa: BLE001
+        logger.warning(
+            "openjiuwen log config failed; using degraded logging: %s",
+            _log_cfg_exc,
+        )
+
+    for _lg in LogManager.get_all_loggers().values():
+        _lg.set_level(logging.CRITICAL)
 
     from jiuwenswarm.common.utils import get_logs_dir
 
-    _logs_root = get_logs_dir() / "agent"
+    _logs_root = get_logs_dir()
     _logs_root.mkdir(parents=True, exist_ok=True)
     _perm_fmt = logging.Formatter(
         "%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",

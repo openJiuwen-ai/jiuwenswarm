@@ -37,6 +37,7 @@ export const JIUWENMATE_METHODS = {
   modelsList: 'jiuwenmate.models.list',
   chatSend: 'jiuwenmate.chat.send',
   chatHistory: 'jiuwenmate.chat.history',
+  artifactList: 'jiuwenmate.artifact.list',
   requestGet: 'jiuwenmate.request.get',
   requestAbort: 'jiuwenmate.request.abort',
   permissionDecide: 'jiuwenmate.permission.decide',
@@ -79,6 +80,10 @@ export interface JiuwenMateDingTalkAuthStatus {
   user_code?: string;
   account?: string;
   organization?: string;
+  group_monitor?: {
+    status: 'discovering' | 'listening' | 'no_groups' | 'error' | 'disabled' | 'mentions_only' | 'unavailable';
+    group_count: number;
+  };
 }
 
 export interface JiuwenMateWelinkOfficeStatus {
@@ -433,9 +438,10 @@ export function withColleagueEdit(
     connectors?: readonly string[];
     plugins?: readonly string[];
     knowledge?: readonly string[];
+    starterPrompts?: readonly string[];
   },
 ): JiuwenMateWireSettings {
-  return toWireSettings(
+  const settings = toWireSettings(
     {
       ...colleague,
       name: edit.name ?? colleague.name,
@@ -451,11 +457,17 @@ export function withColleagueEdit(
         connectors: [...(edit.connectors ?? colleague.capabilities.connectors)],
         plugins: [...(edit.plugins ?? colleague.capabilities.plugins)],
         knowledge: [...(edit.knowledge ?? colleague.capabilities.knowledge)],
+        starterPrompts: [...(edit.starterPrompts ?? colleague.capabilities.starterPrompts)],
       },
     },
     models,
   );
+  // An editing client's catalog may be stale; the server validates the stored selection.
+  settings.capabilities.model = (edit.model ?? colleague.capabilities.model).trim() || null;
+  return settings;
 }
+
+export type JiuwenMateSettingsEdit = Parameters<typeof withColleagueEdit>[2];
 
 function toConnections(value: unknown, agentId: string, workspaceDir: string | null): JiuwenMateConnection[] {
   const connections = rows(value).flatMap((item): JiuwenMateConnection[] => {
@@ -513,6 +525,7 @@ export function toColleague(value: unknown): JiuwenMateColleague {
     isDefault: wire.is_default === true,
     currentVersion: typeof wire.current_version === 'string' ? wire.current_version : null,
     hasUnpublishedChanges: wire.has_unpublished_changes === true,
+    hasUnpublishedModelChanges: wire.has_unpublished_model_changes === true,
     workspaceDir,
   };
 }
@@ -552,7 +565,12 @@ export function toModelCatalog(value: unknown): JiuwenMateModelCatalog {
     const model = record(item);
     const id = text(model.selection_key);
     if (!id) return [];
-    return [{ id, label: text(model.display_name) || text(model.model_name) || id, provider: text(model.provider) }];
+    return [{
+      id,
+      label: text(model.display_name) || text(model.model_name) || id,
+      provider: text(model.provider),
+      ...(text(model.vendor_key) ? { vendorKey: text(model.vendor_key) } : {}),
+    }];
   });
   return {
     models,
@@ -924,8 +942,15 @@ export function toSchedule(value: unknown): JiuwenMateSchedule {
     endsAt: text(plan.ends_at) || null,
     conversationId: text(plan.conversation_id) || `schedule:${text(plan.plan_id)}`,
     runCount: typeof plan.run_count === 'number' ? plan.run_count : 0,
-    lastStatus: plan.last_status === 'failed' || plan.last_status === 'completed' || plan.last_status === 'paused'
-      ? plan.last_status : plan.enabled === true ? 'running' : 'paused',
+    // Trust server last_status including running: a finished once/ends_at plan can be
+    // enabled=false while its latest fire is still in flight; remapping that to paused
+    // flashes "已暂停" before "已完成" on the next refresh.
+    lastStatus: plan.last_status === 'failed'
+      || plan.last_status === 'completed'
+      || plan.last_status === 'paused'
+      || plan.last_status === 'running'
+      ? plan.last_status
+      : plan.enabled === true ? 'running' : 'paused',
   };
 }
 
@@ -1032,6 +1057,19 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     async readSettings(agentId: string): Promise<JiuwenMateWireSettings> {
       return record(await request(JIUWENMATE_METHODS.settingsGet, { agent_id: agentId })).settings as JiuwenMateWireSettings;
     },
+    async saveSettings(
+      agentId: string, models: readonly JiuwenMateModelOption[], edit: JiuwenMateSettingsEdit,
+    ): Promise<JiuwenMateColleague> {
+      const current = record(await request(JIUWENMATE_METHODS.settingsGet, { agent_id: agentId }));
+      const source = toColleague({ ...record(current.settings), agent_id: agentId });
+      const settings = withColleagueEdit(source, models, edit);
+      await request(JIUWENMATE_METHODS.settingsUpdate, {
+        agent_id: agentId, settings,
+      });
+      const replyModeOnly = edit.groupReplyMode !== undefined && Object.keys(edit).every((key) => key === 'groupReplyMode');
+      if (settings.capabilities.model && !replyModeOnly) await request(JIUWENMATE_METHODS.publish, { agent_id: agentId });
+      return colleague(JIUWENMATE_METHODS.get, { agent_id: agentId });
+    },
     updateSettings: (agentId: string, settings: JiuwenMateWireSettings) =>
       colleague(JIUWENMATE_METHODS.settingsUpdate, { agent_id: agentId, settings }),
     async publish(agentId: string): Promise<JiuwenMatePublishedVersion> {
@@ -1075,7 +1113,11 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
       return toModelCatalog(await request(JIUWENMATE_METHODS.modelsList));
     },
     async loadActivity(): Promise<JiuwenMateActivity> {
-      return toActivity(record(await request(JIUWENMATE_METHODS.activityGet)).activity);
+      const viewer = {
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+        utc_offset_minutes: -new Date().getTimezoneOffset(),
+      };
+      return toActivity(record(await request(JIUWENMATE_METHODS.activityGet, viewer)).activity);
     },
     async listSchedules(agentId?: string): Promise<JiuwenMateSchedule[]> {
       const listed = record(await request(JIUWENMATE_METHODS.scheduleList, agentId ? { agent_id: agentId } : {}));
@@ -1202,6 +1244,10 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
         await request(JIUWENMATE_METHODS.chatHistory, { agent_id: agentId, conversation_id: conversationId }),
       );
       return (Array.isArray(listed.requests) ? listed.requests : []).map(toChatRequest);
+    },
+    async listArtifacts(agentId: string): Promise<JiuwenMateSharedFile[]> {
+      const listed = record(await request(JIUWENMATE_METHODS.artifactList, { agent_id: agentId }));
+      return toSharedFiles(listed.files);
     },
     /** The colleague's conversations, latest message first. */
     async listConversations(agentId: string): Promise<JiuwenMateConversation[]> {

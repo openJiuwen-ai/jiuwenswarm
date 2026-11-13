@@ -24,7 +24,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { FINISHED_EXECUTIONS, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, renameAttachment, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { FINISHED_EXECUTIONS, filterGroupMembers, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, matchesMemberQuery, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, renameAttachment, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -476,9 +476,8 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   }
   const timeline = groupTimeline(messages, executions);
 
-  const visibleMembers = group?.members.filter((member) => (member.display_name ?? '')
-    .toLocaleLowerCase().includes(memberQuery.trim().toLocaleLowerCase())) ?? [];
-  const showSelf = !memberQuery.trim() || t('groupChat.you').includes(memberQuery.trim());
+  const visibleMembers = filterGroupMembers(group?.members ?? [], memberQuery);
+  const showSelf = matchesMemberQuery(t('groupChat.you'), memberQuery);
   const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
   const agentCount = group?.members.length ?? 0;
 

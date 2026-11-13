@@ -151,24 +151,35 @@ class SkillPackService:
         return impacts
 
 
-def read_skill_kind(skill_dir: Path | None) -> str:
-    """Read a root ``kind`` without accepting non-root Markdown fallbacks."""
+def read_skill_kind(skill_dir: Path | None, *, strict: bool = False) -> str:
+    """Read the root kind; strict reads distinguish invalid metadata from ordinary Skills."""
 
-    if skill_dir is None or not skill_dir.is_dir():
+    if strict:
+        if skill_dir is None:
+            raise SkillPackValidationError("缺少根 SKILL.md")
+    elif skill_dir is None or not skill_dir.is_dir():
         return ""
     try:
         text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError) as exc:
+        if strict:
+            raise SkillPackValidationError("无法读取 SKILL.md") from exc
         return ""
     match = _FRONTMATTER_RE.match(text)
     if match is None:
+        if strict and re.match(r"^(?:\s*\n)*---\s*\n", text):
+            raise SkillPackValidationError("SKILL.md 缺少合法 YAML frontmatter")
         return ""
     try:
         frontmatter = yaml.safe_load(match.group(1))
-    except (yaml.YAMLError, RecursionError):
+    except (yaml.YAMLError, RecursionError) as exc:
+        if strict:
+            raise SkillPackValidationError("SKILL.md frontmatter YAML 无效") from exc
         frontmatter = None
     if isinstance(frontmatter, dict):
         return str(frontmatter.get("kind") or "").strip().casefold()
+    if strict:
+        raise SkillPackValidationError("SKILL.md frontmatter 必须是 YAML 对象")
     for line in match.group(1).splitlines():
         key, separator, value = line.partition(":")
         if separator and key.strip() == "kind":

@@ -107,8 +107,26 @@ class SkillPackPublishService:
 
     @staticmethod
     def _validate_profile(data: dict) -> None:
-        if skillpack_publish_profile() != data["transport_profile"]:
-            raise PublishValidationError("SKILLPACK_TRANSPORT_CHANGED")
+        # Confirmed publications retain the protocol authorized in their stored
+        # snapshot, independently of settings for newly started publications.
+        if data.get("transport_profile") not in ("legacy_skill_v1", "native_skillpack_v1"):
+            raise PublishValidationError("INVALID_SKILLPACK_HUB_PROFILE")
+
+    @staticmethod
+    def _was_disabled(data: dict) -> bool:
+        return (
+            data["confirmed"] and data["stage"] == "blocked"
+            and (data.get("error") or {}).get("code") == "SKILLPACK_DISABLED"
+        )
+
+    def _restore_disabled_publication(self, data: dict) -> None:
+        # Older clients could block an already-confirmed operation when the
+        # setting changed. Recover only its unchanged, server-owned snapshot.
+        if self._was_disabled(data):
+            self._check_sources(data)
+            data["stage"] = "publishing_pack" if data["pack"].get("operation_id") else "publishing_members"
+            data["error"] = None
+            self._save(data)
 
     def _check_sources(self, data: dict) -> None:
         for item in [data["pack"], *data["members"]]:
@@ -166,6 +184,8 @@ class SkillPackPublishService:
         if existing:
             data = json.loads(existing["payload"])
             self._validate_profile(data)
+            if data["transport_profile"] != profile:
+                raise PublishValidationError("SKILLPACK_TRANSPORT_CHANGED")
             replace_changed_plan = (
                 data["confirmed"] and data["stage"] == "blocked"
                 and (data.get("error") or {}).get("code") == "SKILLPACK_CONTENT_CHANGED"
@@ -392,6 +412,9 @@ class SkillPackPublishService:
         async with self._lock:
             data = self._load(scope, draft_id)
             self._validate_profile(data)
+            if not data["confirmed"] and skillpack_publish_profile() != data["transport_profile"]:
+                raise PublishValidationError("SKILLPACK_TRANSPORT_CHANGED")
+            self._restore_disabled_publication(data)
             if data["stage"] == "blocked" and (data.get("error") or {}).get("code") == "SKILLPACK_HUB_CHECK_FAILED":
                 self._check_sources(data)
                 data["stage"] = data.pop("retry_stage")
@@ -415,7 +438,9 @@ class SkillPackPublishService:
 
     def resume(self, scope: str, operation_id: str, auth: PublishAuth) -> None:
         data = self._load(scope, operation_id)
-        if not data["confirmed"] or data["stage"] in {"completed", "blocked", "reconcile_upload", "reauth_required"}:
+        if not data["confirmed"] or data["stage"] in {"completed", "reconcile_upload", "reauth_required"}:
+            return
+        if data["stage"] == "blocked" and not self._was_disabled(data):
             return
         if operation_id not in self._tasks:
             task = asyncio.create_task(self._run(scope, operation_id, auth))
@@ -455,10 +480,13 @@ class SkillPackPublishService:
         """Advance only confirmed, unchanged snapshots; persist before each transition."""
         async with self._lock:
             data = self._load(scope, operation_id)
-            if not data["confirmed"] or data["stage"] in {"completed", "blocked"}:
+            if not data["confirmed"] or data["stage"] == "completed":
+                return
+            if data["stage"] == "blocked" and not self._was_disabled(data):
                 return
             try:
                 self._validate_profile(data)
+                self._restore_disabled_publication(data)
                 # Submitted ZIPs are immutable snapshots. While waiting for
                 # moderation, poll only unfinished uploads; fully revalidate
                 # sources before creating or submitting another artifact.

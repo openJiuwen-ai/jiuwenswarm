@@ -158,6 +158,11 @@ class UserTurn:
         """Return a copy carrying rewritten user text, keeping all context."""
         return replace(self, text=text)
 
+    @property
+    def resolved_skills(self) -> list[str]:
+        """Return this turn's explicit selectors using the prompt's rules."""
+        return self._resolve_skills(self.text)
+
     def render(self) -> Any:
         """Render this turn into the prompt an agent receives.
 

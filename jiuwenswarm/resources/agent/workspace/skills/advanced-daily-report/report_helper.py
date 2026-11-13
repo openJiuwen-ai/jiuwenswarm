@@ -58,7 +58,7 @@ def get_workspace_dir() -> Path:
         return Path(os.environ["JIUWENSWARM_AGENT_ROOT"])
 
     # 默认路径
-    home_agent = Path.home() / ".jiuwenswarm" / "domain" / "agent"
+    home_agent = Path.home() / ".jiuwenswarm" / "agent"
     if home_agent.is_dir():
         return home_agent
 

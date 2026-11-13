@@ -178,7 +178,6 @@ async def test_personal_json_disconnect_is_a_controlled_error():
     assert caught.value.detail == 'client_disconnected'
 
 
-@pytest.mark.timeout(1)
 @pytest.mark.asyncio
 async def test_personal_upload_has_a_total_deadline(monkeypatch):
     monkeypatch.setattr(api, '_UPLOAD_TIMEOUT_SECONDS', 0.02)

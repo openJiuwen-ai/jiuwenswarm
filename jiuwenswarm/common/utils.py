@@ -2,76 +2,29 @@
 
 """Path management for JiuWenSwarm.
 
-数据根 ``JIUWENSWARM_DATA_DIR``（默认 ``~/.jiuwenswarm``）按数据所有权拆为
-domain/（业务）与 infrastructure/（系统）两个分区目录，根自身仅作命名空间：
-不挂载、不留散落条目。
+根目录见 ``JIUWENSWARM_DATA_DIR``（默认 ``~/.jiuwenswarm``；可由环境变量 ``JIUWENSWARM_DATA_DIR`` 指定绝对路径）。
 
-背景：数据根原先整卷挂载，业务数据与程序运行时数据混居一处。企业版多 Pod 共享
-同一卷时，IPC socket 与文件锁跨 Pod 互踩、运行日志交错写、缓存并发下载；每新增
-一类数据都要重新评估该不该共享、挂载要不要调整（run/ 的 subPathExpr 遮蔽挂载即
-为此打的补丁），config/ 内部"业务配置不该共享、会话运行态必须共享"的冲突亦无解。
+Runtime layout:
+- <root>/config/config.yaml
+- <root>/config/.env
+- <root>/agent/home
+- <root>/agent/workspace（DeepAgent 标准工作空间）
+  - memory/
+  - skills/
+  - todo/
+  - messages/
+  - agents/
+  - AGENT.md
+  - IDENTITY.md
+  - SOUL.md
+  - USER.md
+- <root>/agent/sessions
+- <root>/agent/workspace/agent-data.json
+- <root>/agent/.checkpoint
+- <root>/agent/.logs（channel.log / agent_server.log / full.log；gateway.log 默认同目录，
+  可通过环境变量 AGENTOS_GATEWAY_LOG_DIR 指定独立目录，如 Linux 部署的 /var/log/agentos）
 
-划分依据是数据所有权，与部署形态无关：业务数据跟着用户与会话走，系统数据
-跟着程序与机器走。由此挂载语义唯一推导——业务挂共享卷、系统挂私有卷；个人版
-两区均为普通子目录，代码路径一致、无开关。
-
-    ├── domain/                          业务区：用户直接产生、需要留存
-    │                                    （企业版挂共享卷 PVC/NFS，跨 Pod 存活）
-    │   ├── agent/                       agent 根：会话、检查点、任务、团队库
-    │   │   ├── sessions/                会话轨迹（含 sessions_archived/ 归档）
-    │   │   ├── home/                    定时与心跳任务（懒创建）
-    │   │   ├── teams/                   团队控制库
-    │   │   ├── .checkpoint/             会话映射检查点
-    │   │   └── workspace/               DeepAgent 工作空间（企业版名 jiuwenclaw_workspace）
-    │   │       ├── AGENT.md             人设
-    │   │       ├── SOUL.md              灵魂
-    │   │       ├── IDENTITY.md          身份
-    │   │       ├── USER.md              用户
-    │   │       ├── skills/              技能库（skills_state.json）
-    │   │       ├── memory/              长期记忆
-    │   │       ├── projects/            项目工作区
-    │   │       ├── todo/                待办
-    │   │       ├── messages/            消息
-    │   │       ├── agents/              子代理
-    │   │       ├── interactions/        待交互上下文
-    │   │       ├── mcp/                 MCP：credentials/ + mcp_builtins/
-    │   │       └── plugins/             agent_templates/ 与 plugin_packages/
-    │   │           └── {built_in,local}/   内置/本地两个来源桶
-    │   ├── workspace_{tk}/              企业版租户根（内含各自的 agent/）
-    │   ├── runtime_state/               每会话运行态快照
-    │   ├── application_plugins/         运维部署的插件
-    │   ├── .agent_teams/                团队名册/任务/工作区
-    │   ├── .trace/                      观测轨迹库（每会话 SQLite）
-    │   └── .agent_history/              agent-core 工具历史
-    └── infra/                           系统区：程序自身维护、可重建或机器域
-                                         （企业版挂私有卷 emptyDir，随 Pod 生命周期）
-        ├── run/                         supervisor IPC socket 与锁
-        ├── config/                      服务配置（update_conf 生成）+ 业务配置副本
-        ├── logs/                        系统日志区（企业版经 stdout 采集留存）
-        │   ├── agent/                   业务日志：channel / agent_server / full / permissions /
-        │   │                            gateway / service_exits / context_usage / runtime_diagnostics
-        │   ├── core/                    openjiuwen 全家族：jiuwen / llm / server / session /
-        │   │                            runner / memory / context_engine / sys_operation +
-        │   │                            interface/ + performance/
-        │   ├── process_cli/             CLI 按次诊断转储
-        │   └── video/                   视频扩展事件流 jsonl
-        ├── runtime/                     本机安装的运行时资产（含安装锁）
-        │   ├── custom-agents/           自定义 agent runtime（wheel + site-packages/）
-        │   ├── npm/                     npm CLI（preserved/、installed/）
-        │   ├── external-cli/            外部 CLI 依赖（<cli>/site-packages/）
-        │   └── upgrade-config/          升级待办
-        ├── tokenizers/                  tokenizer 下载缓存
-        ├── auth/                        登录态凭据副本
-        ├── permission_audit/            自动权限审批审计流水
-        ├── instances.yaml               多实例注册表（实例名 → workspace + 端口组）
-        │                                仅本机启动流程消费，不可共享
-        └── *.lock/*.txt 等              散落系统态文件：.gateway.lock、last_file_picker_dir.txt
-
-归类规则（按数据所有权，版别无关）：
-   - 业务 = 用户直接产生、需要留存 → domain；
-   - 系统 = 程序自身维护的数据（含业务配置的程序副本与运行时产物）→ infrastructure；
-
-新增路径一律经``get_domain_data_dir()`` / ``get_infra_data_dir()`` 派生，挂载拓扑不随新增数据调整。
+内置模板位于包内 ``jiuwenswarm/resources/``（含 ``agent/`` 下各技能模板以及 ``skills_state.json``）。
 """
 
 import ctypes
@@ -509,26 +462,6 @@ def get_user_workspace_dir() -> Path:
 
     _workspace_base_dir = get_user_home() / ".jiuwenswarm"
     return _workspace_base_dir
-
-
-# 分区目录名常量（布局与归类规则见模块 docstring）
-_DOMAIN_DIR_NAME = "domain"
-_INFRA_DIR_NAME = "infra"
-
-
-def get_domain_data_dir() -> Path:
-    """获取业务区根：会话/工作区/租户/运行态快照等用户产生、需留存的数据
-    一律经此派生；企业版挂共享卷（跨 Pod 存活），个人版为普通子目录。
-    """
-    return get_user_workspace_dir() / _DOMAIN_DIR_NAME
-
-
-def get_infra_data_dir() -> Path:
-    """获取系统区根：IPC socket/锁、业务 config 的程序副本、本机安装物、
-    缓存、日志等程序自维护数据一律经此派生；企业版挂私有卷（随 Pod 生命
-    周期），个人版为普通子目录。
-    """
-    return get_user_workspace_dir() / _INFRA_DIR_NAME
 
 
 
@@ -1002,7 +935,7 @@ def ensure_config_migrated_from_template(
     from jiuwenswarm.common.version import get_runtime_version_label
 
     root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
-    config_path = root / "infra" / "config" / "config.yaml"
+    config_path = root / "config" / "config.yaml"
 
     try:
         template_path = _find_config_template_path()
@@ -1039,18 +972,10 @@ def cleanup_team_files(workspace_dir: Path) -> None:
     Args:
         workspace_dir: JiuWenSwarm 用户工作空间根目录 (~/.jiuwenswarm)
     """
-    # agent 子树随分区改造落在 domain 区；数据根旧布局遗留（迁移后残留在
-    # 数据根的 workspace//team.db*）与 domain/ 内的旧版本产物一并清理。
-    agent_dir = get_domain_data_dir() / "agent"
+    agent_dir = workspace_dir / "agent"
 
-    for base in (workspace_dir, get_domain_data_dir()):
-        _cleanup_team_files_under(base, agent_dir)
-
-
-def _cleanup_team_files_under(base: Path, agent_dir: Path) -> None:
-    """清理 base（数据根或 domain/）下旧版本 team 遗留文件。"""
-    # 清理 {base}/workspace/ (旧版本 team workspace)
-    legacy_workspace = base / "workspace"
+    # 清理 {workspace_dir}/workspace/ (旧版本 team workspace)
+    legacy_workspace = workspace_dir / "workspace"
     if legacy_workspace.exists():
         try:
             shutil.rmtree(legacy_workspace)
@@ -1067,8 +992,8 @@ def _cleanup_team_files_under(base: Path, agent_dir: Path) -> None:
         except OSError as e:
             logger.warning(f"[Cleanup] Failed to remove legacy team_data directory: {e}")
 
-    # 清理 {base}/team.db* (旧版本 team 数据库文件)
-    legacy_team_db_root = base / "team.db"
+    # 清理 {workspace_dir}/team.db* (旧版本 team 数据库文件)
+    legacy_team_db_root = workspace_dir / "team.db"
     for suffix in ["", "-wal", "-shm"]:
         db_file = legacy_team_db_root.with_suffix(".db" + suffix)
         if db_file.exists():
@@ -1185,18 +1110,15 @@ def prepare_workspace(
     cumulative_diff = CopyDiffResult([], [], [])
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create logs directory in the infra zone (<root>/infra/logs)
-    (workspace_dir / "infra" / "logs").mkdir(parents=True, exist_ok=True)
+    # Create logs directory at workspace root (~/.jiuwenswarm/logs)
+    (workspace_dir / "logs").mkdir(parents=True, exist_ok=True)
 
     # ----- config: copy config.yaml -----
     resources_dir = package_root / "resources"
     config_yaml_src = _find_config_template_path()
 
-    config_dest_dir = workspace_dir / "infra" / "config"
+    config_dest_dir = workspace_dir / "config"
     config_dest_dir.mkdir(parents=True, exist_ok=True)
-    # Fresh initialization never saw the legacy layout, so the import-time
-    # partition migration was a no-op; ensure the compat link here as well.
-    _ensure_config_compat_symlink(workspace_dir)
     config_yaml_dest = config_dest_dir / "config.yaml"
 
     config_initialized = overwrite or not config_yaml_dest.exists()
@@ -1228,7 +1150,7 @@ def prepare_workspace(
             "env template source not found; tried: "
             + ", ".join(str(p) for p in env_template_src_candidates)
         )
-    env_dest = workspace_dir / "infra" / "config" / ".env"
+    env_dest = workspace_dir / "config" / ".env"
     if overwrite or not env_dest.exists():
         with TrackCopyDiff(
             dest=env_dest,
@@ -1238,10 +1160,11 @@ def prepare_workspace(
         ):
             shutil.copy2(env_template_src, env_dest)
 
-    # ----- copy runtime dirs (new layout; agent 子树落 domain 区) -----
-    agent_root = workspace_dir / "domain" / "agent"
+    # ----- copy runtime dirs (new layout) -----
+    agent_root = workspace_dir / "agent"
     agent_sessions = agent_root / "sessions"
     (agent_root / ".checkpoint").mkdir(parents=True, exist_ok=True)
+    (agent_root / ".logs").mkdir(parents=True, exist_ok=True)
 
     # ----- DeepAgent workspace (standard DeepAgents schema) -----
     deepagent_workspace = agent_root / "workspace"
@@ -1359,7 +1282,7 @@ def prepare_workspace(
         kind_root = deepagent_workspace / "plugins" / kind
         (kind_root / "built_in").mkdir(parents=True, exist_ok=True)
         (kind_root / "local").mkdir(parents=True, exist_ok=True)
-    agent_group_root = workspace_dir / "domain" / ".agent_teams" / "agent_groups"
+    agent_group_root = workspace_dir / ".agent_teams" / "agent_groups"
     (agent_group_root / "built_in").mkdir(parents=True, exist_ok=True)
     (agent_group_root / "local").mkdir(parents=True, exist_ok=True)
 
@@ -1631,12 +1554,9 @@ def prepare_runtime_workspace(
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
 
-    # 分区布局迁移先于任何路径读取（幂等）
-    migrate_partitioned_data_root_layout()
-
     workspace_dir = get_user_workspace_dir()
-    config_file = get_infra_data_dir() / "config" / "config.yaml"
-    new_workspace = get_domain_data_dir() / "agent" / "workspace"
+    config_file = workspace_dir / "config" / "config.yaml"
+    new_workspace = workspace_dir / "agent" / "workspace"
     mcp_builtins_dir = new_workspace / "mcp" / "mcp_builtins"
 
     cleanup_team_files(workspace_dir)
@@ -1717,10 +1637,9 @@ def init_user_workspace(
     - 数据模板:   <package_root>/resources/agent（含各技能模板）、skills_state.json
 
     上述内容会被复制到:
-    - ~/.jiuwenswarm/infra/config/config.yaml（含 preferred_language）
-    - ~/.jiuwenswarm/infra/config/.env
-    - ~/.jiuwenswarm/domain/agent/...
-    （分区前旧路径 <root>/config 由兼容 symlink 指向 infra/config）
+    - ~/.jiuwenswarm/config/config.yaml（含 preferred_language）
+    - ~/.jiuwenswarm/config/.env
+    - ~/.jiuwenswarm/agent/...
 
     注意：PRINCIPLE.md、TONE.md、HEARTBEAT.md 已被 SOUL.md 和新的心跳机制替代，
     不再由 JiuwenSwarm 复制到用户工作区。
@@ -1803,10 +1722,8 @@ def _resolve_paths() -> None:
 
     # 优先使用已初始化的用户工作区 (~/.jiuwenswarm)，
     # 保证源码运行与安装包运行后的读写路径完全一致。
-    # 业务 config 属系统区（infra/），DeepAgent workspace 属跨 Pod
-    # 业务态（domain/agent/workspace），分区见 get_infra_data_dir/get_domain_data_dir。
-    user_config_dir = get_infra_data_dir() / "config"
-    user_workspace_dir = get_domain_data_dir() / "agent" / "workspace"
+    user_config_dir = workspace_dir / "config"
+    user_workspace_dir = workspace_dir / "agent" / "workspace"
     if user_config_dir.exists():
         _root_dir = workspace_dir
         _config_dir = user_config_dir
@@ -1839,14 +1756,13 @@ def get_config_dir() -> Path:
 
 
 def get_runtime_state_path(session_id: str | None = None) -> Path:
-    """Per-session runtime_state.yaml path under the domain zone.
+    """Per-session runtime_state.yaml path under config dir.
 
     每个 session 独占一份文件，避免心跳/定时/并发 session 共用单文件互相覆盖
     channel/mode/model/git 等字段。session_id 为空时回退到 ``default``。
-    会话态跟会话走（Pod 重建/重路由后可恢复），故落 domain 区 domain/runtime_state。
     """
     sid = re.sub(r"[^A-Za-z0-9_.-]", "_", (session_id or "").strip())[:128] or "default"
-    return get_domain_data_dir() / "runtime_state" / f"{sid}.yaml"
+    return get_config_dir() / "runtime_state" / f"{sid}.yaml"
 
 
 def get_workspace_dir() -> Path:
@@ -1919,6 +1835,17 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     workspace = base / safe_session
     workspace.mkdir(parents=True, exist_ok=True)
     return workspace
+
+
+def get_domain_data_dir() -> Path:
+    """Get the root directory that hosts user-owned business data.
+
+    Sessions, agent workspaces, tenant data and runtime-state snapshots are
+    derived from this root, so it is the parent of :func:`get_agent_root_dir`.
+    Personal edition resolves to the user workspace, enterprise edition to the
+    tenant workspace currently bound in ``TenantContext``.
+    """
+    return get_agent_root_dir().parent
 
 
 def get_agent_root_dir(tenant_key: str | None = None) -> Path:
@@ -2529,371 +2456,39 @@ def resolve_git_branch(project_dir: str | None) -> str:
 _legacy_migration_done: bool = False
 
 
-def _move_if_absent(old: Path, new: Path) -> None:
-    """源路径存在且目标位置不存在时，将其移动到目标位置（幂等）。
-
-    并发进程可能已抢先搬迁同一源：源消失视为对方获胜，静默跳过。"""
-    if not old.exists() or new.exists():
-        return
-    new.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        shutil.move(str(old), str(new))
-    except FileNotFoundError:
-        pass
-
-
 def _migrate_legacy_checkpoint_and_logs() -> None:
-    """数据根旧平铺路径一次性搬迁。
-
-    - ``.checkpoint``（业务态）→ ``domain/agent/``
-    - ``.logs``（系统日志）→ ``infra/logs/agent/``
-    """
+    """One-time migration: move ~/.jiuwenswarm/.checkpoint and .logs to ~/.jiuwenswarm/agent/."""
     global _legacy_migration_done
     if _legacy_migration_done:
         return
     _legacy_migration_done = True
 
     workspace = get_user_workspace_dir()
-    _move_if_absent(workspace / ".checkpoint", get_agent_root_dir() / ".checkpoint")
-    _move_if_absent(workspace / ".logs", get_logs_dir() / "agent")
+    agent_root = workspace / "agent"
 
-
-_partition_migration_done: bool = False
-
-
-def migrate_partitioned_data_root_layout() -> None:
-    """One-time migration into the domain/infra partition layout.
-
-    旧布局（数据根平铺）→ 新布局（domain/ + infra/ 两分区），幂等：
-    仅当旧路径存在且新路径不存在时搬迁，可安全重复调用。覆盖两类起点：
-    - 个人版旧数据根（config/run/agent/... 平铺在数据根）
-    - 企业版：共享卷改挂后旧数据根内容位于 domain/，仅归位 runtime_state；
-      domain/ 下残留的系统数据由部署侧清理
-
-    失败仅降级告警，不抛出：迁移幂等，下次启动自动重试。
-    """
-    global _partition_migration_done
-    if _partition_migration_done:
-        return
-    _partition_migration_done = True
-    try:
-        _do_migrate_partitioned_data_root_layout()
-    except Exception:  # noqa: BLE001
-        logger.error(
-            "workspace partition migration failed; continuing with degraded layout"
-            " (retried on next start)",
-            exc_info=True,
-        )
-
-
-def _do_migrate_partitioned_data_root_layout() -> None:
-    # 旧平铺 .checkpoint/.logs 搬运（幂等）先于分区搬迁执行
-    _migrate_legacy_checkpoint_and_logs()
-
-    root = get_user_workspace_dir()
-    shared = get_domain_data_dir()
-    infra = get_infra_data_dir()
-    if not root.exists():
-        return
-
-    def _move(old: Path, new: Path) -> None:
-        _move_if_absent(old, new)
-
-    # 0) electron 侧车发现态（瞬态）：仅在无会话态竞争时并入 domain/runtime_state
-    session_state_exists = (
-        (shared / "runtime_state").exists()
-        or (root / "config" / "runtime_state").exists()
-        or (shared / "config" / "runtime_state").exists()
-    )
-    if (root / "runtime_state").exists() and not session_state_exists:
-        _move(root / "runtime_state", shared / "runtime_state")
-
-    # 1) 会话运行态：两个历史位置 → domain/runtime_state（优先保会话态）
-    _move(root / "config" / "runtime_state", shared / "runtime_state")
-    _move(shared / "config" / "runtime_state", shared / "runtime_state")
-
-    # 2) 业务态：agent/、application_plugins/、团队库、观测轨迹、工具历史 → domain/
-    _move(root / "agent", shared / "agent")
-    _move(root / "application_plugins", shared / "application_plugins")
-    _move(root / ".agent_teams", shared / ".agent_teams")
-    _move(root / ".organizations", shared / ".organizations")
-    _move(root / "jiuwenmate", shared / "jiuwenmate")
-    _move(root / ".trace", shared / ".trace")
-    _move(root / ".agent_history", shared / ".agent_history")
-    _move(root / "agents", shared / "agents")
-    _move(root / ".personal_context", shared / ".personal_context")
-    _move(root / "gateway", shared / "gateway")
-
-    # 3) 系统态：config/run/logs/runtime/tokenizers/auth/rsi/auto-harness → infra/
-    for name in (
-        "config",
-        "run",
-        "logs",
-        "runtime",
-        "tokenizers",
-        "auth",
-        "rsi",
-        "auto-harness",
-    ):
-        _move(root / name, infra / name)
-
-    # 4) 根上散落的机器态 → infra/（.gateway.lock 为按数据根的私有单例锁）
-    _move(root / ".gateway.lock", infra / ".gateway.lock")
-
-    # 4.1) 多实例注册表是机器级 HOME 语义：读取侧（instance_manager/dotenv_early）
-    # 均按 HOME/.jiuwenswarm 定位、不随 JIUWENSWARM_DATA_DIR 漂移，搬迁必须同语义，
-    # 否则 DATA_DIR 重定向部署下搬不到真身。
-    home_root = get_user_home() / ".jiuwenswarm"
-    _move(home_root / "instances.yaml", home_root / "infra" / "instances.yaml")
-
-    # 5) 根上历史散落目录归位分区：
-    #    - logs/ → infra/logs/（logs/logs/ 为 openjiwen core 家族，归 core/）
-    #    - agent/ → domain/agent/（其 .logs 子树归 infra/logs/agent/）
-    #    - .agent_teams/ → domain/.agent_teams/
-    #    - auth/、runtime/、config/ → infra/（步骤 3 整体搬迁因目标已存在被跳过的残留）
-    #    目标缺失照搬；文件冲突时分区正本不动，残留副本内容一致视为重复
-    #    丢弃、不一致改名（.migrated 序号）保留，因此根上目录必然清空。
-    #    symlink 一律跳过（兼容链接不是残留，沿链吸收会自清正本）。
-    def _absorb_file(old: Path, new: Path) -> None:
-        if not new.exists():
-            new.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.move(str(old), str(new))
-            except FileNotFoundError:
-                pass
-            return
-        try:
-            is_duplicate = (
-                old.stat().st_size == new.stat().st_size
-                and old.stat().st_size <= 32 * 1024 * 1024
-                and old.read_bytes() == new.read_bytes()
-            )
-        except OSError:
-            is_duplicate = False
-        if is_duplicate:
-            old.unlink()
-            return
-        migrated = new.with_name(f"{new.name}.migrated")
-        index = 1
-        while migrated.exists():
-            index += 1
-            migrated = new.with_name(f"{new.name}.migrated.{index}")
-        new.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old), str(migrated))
-
-    def _prune_empty_tree(top: Path) -> None:
-        if not top.is_dir():
-            return
-        # 尽力而为：任一目录剪除失败（如并发写入）即放弃本轮，
-        # 迁移幂等，下次启动重试
-        try:
-            for child in sorted(top.rglob("*"), reverse=True):
-                if child.is_dir() and not child.is_symlink() and not any(child.iterdir()):
-                    child.rmdir()
-            if not any(top.iterdir()):
-                top.rmdir()
-        except OSError:
-            pass
-
-    def _absorb_tree(old: Path, new: Path) -> None:
-        if not old.is_dir():
-            return
-        for entry in sorted(old.iterdir()):
-            target = new / entry.name
-            if entry.is_dir() and not entry.is_symlink():
-                if not target.exists():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.move(str(entry), str(target))
-                    except FileNotFoundError:
-                        pass
-                else:
-                    _absorb_tree(entry, target)
-            else:
-                _absorb_file(entry, target)
-        _prune_empty_tree(old)
-
-    stray_logs = root / "logs"
-    if stray_logs.is_dir() and not stray_logs.is_symlink():
-        for entry in sorted(stray_logs.iterdir()):
-            if entry.name == "logs":
-                # openjiwen core 家族日志（run/、interface/、performance/）
-                _absorb_tree(entry, get_logs_dir() / "core")
-            elif entry.is_dir():
-                _absorb_tree(entry, get_logs_dir() / entry.name)
-            else:
-                _absorb_file(entry, get_logs_dir() / entry.name)
-        _prune_empty_tree(stray_logs)
-
-    stray_agent = root / "agent"
-    if stray_agent.is_dir() and not stray_agent.is_symlink():
-        for entry in sorted(stray_agent.iterdir()):
-            if entry.name == ".logs":
-                # gateway 旧日志目录
-                _absorb_tree(entry, get_logs_dir() / "agent")
-            elif entry.is_dir():
-                _absorb_tree(entry, shared / "agent" / entry.name)
-            else:
-                _absorb_file(entry, shared / "agent" / entry.name)
-        _prune_empty_tree(stray_agent)
-
-    stray_teams = root / ".agent_teams"
-    if stray_teams.is_dir() and not stray_teams.is_symlink():
-        _absorb_tree(stray_teams, shared / ".agent_teams")
-
-    # config 的兼容 symlink（<root>/config → infra/config）不是残留：
-    # 沿 symlink 吸收会以 infra/config 自身为"冲突副本"把正本清空
-    for stray_name in ("auth", "runtime", "config", "auto-harness"):
-        stray = root / stray_name
-        if stray.is_dir() and not stray.is_symlink():
-            _absorb_tree(stray, infra / stray_name)
-
-    # 旧路径写兼容：外部脚本/文档仍按 <root>/config 定位 .env
-    _ensure_config_compat_symlink(root)
-
-
-def _ensure_config_compat_symlink(workspace_dir: Path) -> None:
-    """Keep the pre-partition ``<root>/config`` path working after migration.
-
-    The domain/infra partition moved the config family to ``infra/config``;
-    external tooling and user scripts written against the historical
-    ``<root>/config/.env`` location (and documentation published before the
-    partition) still write and read that path. A relative symlink lets both
-    paths address the same files while the old location is phased out.
-
-    Best effort and idempotent: never touches a real legacy directory (the
-    migration owns moving it), replaces only a stale/wrong symlink, and
-    silently skips on platforms that forbid symlink creation (e.g. Windows
-    without developer mode).
-    """
-    infra_config = workspace_dir / _INFRA_DIR_NAME / "config"
-    if not infra_config.is_dir():
-        return
-    legacy = workspace_dir / "config"
-    if legacy.is_symlink():
-        try:
-            if legacy.resolve() == infra_config.resolve():
-                return
-        except OSError:
-            pass
-        try:
-            legacy.unlink()
-        except OSError:
-            logger.debug(
-                "[Compat] failed to replace stale config symlink: %s", legacy
-            )
-            return
-    elif legacy.exists():
-        # A real legacy directory is still in place; the partition migration
-        # owns moving it. Creating a symlink here would shadow user data.
-        return
-    try:
-        legacy.symlink_to(
-            Path(_INFRA_DIR_NAME) / "config", target_is_directory=True
-        )
-        logger.info(
-            "[Compat] linked legacy config path: %s -> %s",
-            legacy,
-            f"{_INFRA_DIR_NAME}/config",
-        )
-    except (OSError, NotImplementedError):
-        logger.debug(
-            "[Compat] config compat symlink not created at %s", legacy
-        )
+    for name in (".checkpoint", ".logs"):
+        legacy = workspace / name
+        new_path = agent_root / name
+        if legacy.exists() and not new_path.exists():
+            agent_root.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(legacy), str(new_path))
 
 
 def get_checkpoint_dir() -> Path:
+    _migrate_legacy_checkpoint_and_logs()
     return get_agent_root_dir() / ".checkpoint"
 
 
 def get_logs_dir() -> Path:
-    """日志根目录（系统区 infra/logs/），各组件桶经此派生。
-
-    组件桶：agent/（应用运行日志）、core/（openjiwen 家族）、
-    runtime/（openjiuwen_runtime foundation）、video/、process_cli/。
-    运行日志为程序自维护数据：企业版容器内直接打印 stdout 由客户采集，
-    文件副本随 infra 卷按 Pod 生命周期留存；个人版本机持久。
-    """
-    return get_infra_data_dir() / "logs"
-
-
-def configure_openjiuwen_runtime_logging() -> None:
-    """把 openjiuwen_runtime foundation 文件日志钉到 infra/logs/runtime。
-
-    SDK 自带 logging.yaml 的 file handler filename 相对进程 cwd 解析，须在
-    首次 ``get_logger()`` 之前调用；入口进程应在模块顶部调用。
-    失败仅告警，不抛出。
-    """
-    try:
-        from openjiuwen_runtime.foundation.log import setup_logging
-
-        setup_logging(
-            log_file=str(get_logs_dir() / "runtime" / "openjiuwen_runtime.log")
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("openjiuwen runtime logging bootstrap failed: %s", exc)
-
-
-def configure_openjiuwen_core_logging(*, suppress_level: int | None = None) -> bool:
-    """把 openjiwen core LogManager 日志钉到 infra/logs/core。
-
-    默认 ``log_path`` 相对进程 cwd 解析，须在任何 ``LogManager.get_logger()``
-    之前调用：``infra/config/logging.yaml`` 存在则整份加载，否则按备用 dict
-    配置（jiuwen.log 与 interface/、performance/ 子目录均相对 log_path 落盘）。
-    失败仅告警，不抛出。
-
-    Args:
-        suppress_level: 用户未自管 ``logging.yaml`` 时，将全部 openjiwen core
-            logger 级别压至该值；``None`` 表示不压制。
-
-    Returns:
-        True 表示已应用用户自管的 ``logging.yaml``；yaml 缺失、加载失败
-        回退内置配置或整体失败时为 False。
-    """
-    user_managed = False
-    _logging_yaml = get_config_dir() / "logging.yaml"
-    if _logging_yaml.exists():
-        try:
-            from openjiuwen.core.common.logging.log_config import configure_log
-
-            configure_log(str(_logging_yaml))
-            user_managed = True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "openjiwen core logging: failed to load %s; using built-in config: %s",
-                _logging_yaml,
-                exc,
-            )
-    if not user_managed:
-        try:
-            from openjiuwen.core.common.logging.log_config import configure_log_config
-
-            configure_log_config({
-                "backend": "default",
-                "level": "INFO",
-                "log_path": f"{get_logs_dir() / 'core'}/",
-                "log_file": "jiuwen.log",
-                "output": ["console", "file"],
-                "structured_output_format": "json",
-                "interface_log_file": "interface/jiuwen_interface.log",
-                "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
-                "performance_log_file": "performance/jiuwen_performance.log",
-            })
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("openjiwen core logging bootstrap failed: %s", exc)
-        if suppress_level is not None:
-            from openjiuwen.core.common.logging import LogManager
-
-            for core_logger in LogManager.get_all_loggers().values():
-                core_logger.set_level(suppress_level)
-    return user_managed
+    _migrate_legacy_checkpoint_and_logs()
+    return get_agent_root_dir() / ".logs"
 
 
 def get_gateway_log_dir() -> Optional[Path]:
     """获取 gateway 独立日志目录；未配置时返回 ``None``（与其它日志同目录）。
 
     gateway.log 及其轮转归档文件可独立存放于该目录，与其它组件日志
-    （channel.log / agent_server.log / full.log 位于 infra/logs/agent/）分离。
+    （channel.log / agent_server.log / full.log 位于 ``agent/.logs``）分离。
     通过环境变量 ``AGENTOS_GATEWAY_LOG_DIR`` 指定（如 Linux 部署的
     ``/var/log/agentos``）；服务可能运行于 Windows 等系统，代码中不设默认值。
     """
@@ -2904,7 +2499,8 @@ def get_gateway_log_dir() -> Optional[Path]:
 
 
 def get_xy_tmp_dir() -> Path:
-    xy_tmp_dir = get_infra_data_dir() / "tmp" / "xiaoyi"
+    workspace_dir = get_user_workspace_dir()
+    xy_tmp_dir = workspace_dir / "tmp" / "xiaoyi"
     xy_tmp_dir.mkdir(parents=True, exist_ok=True)
     return xy_tmp_dir
 
@@ -3475,9 +3071,9 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
 
     channel / agent_server（含 permissions）日志同时汇总写入 ``full.log``；
     gateway 日志**不写入** full.log（无论 gateway.log 是否独立目录）。输出目录：
-    ``<数据根>/infra/logs/agent/``；gateway.log 默认同目录，可通过环境变量
+    ``~/.jiuwenswarm/agent/.logs/``；gateway.log 默认同目录，可通过环境变量
     ``AGENTOS_GATEWAY_LOG_DIR`` 指定独立目录（如 Linux 部署的 ``/var/log/agentos``；
-    目录不可写时降级回默认日志目录）。
+    目录不可写时降级回 ``agent/.logs``）。
 
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
     （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
@@ -3485,7 +3081,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     install_runtime_log_filter()
     # 必须在创建 StreamHandler 之前完成：cp1252 → UTF-8，否则中文日志会触发 UnicodeEncodeError。
     _reconfigure_stdio_utf8()
-    logs_root = get_logs_dir() / "agent"
+    logs_root = get_logs_dir()
     logs_root.mkdir(parents=True, exist_ok=True)
 
     levels = _resolve_logging_levels(log_level)
@@ -3765,7 +3361,4 @@ from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
 )
 
 logger = logging.getLogger(__name__)
-# 分区迁移先于 setup_logger 等目录创建行为执行：
-# 旧平铺数据优先整体搬迁，而非退化为逐文件吸收
-migrate_partitioned_data_root_layout()
 setup_logger()

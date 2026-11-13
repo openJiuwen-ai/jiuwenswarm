@@ -39,8 +39,8 @@ def workspace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     from jiuwenswarm.common import external_cli_catalog
 
     home = tmp_path / "home"
-    monkeypatch.setattr(runtime, "get_infra_data_dir", lambda: home)
-    monkeypatch.setattr(external_cli_catalog, "get_infra_data_dir", lambda: home)
+    monkeypatch.setattr(runtime, "get_user_workspace_dir", lambda: home)
+    monkeypatch.setattr(external_cli_catalog, "get_user_workspace_dir", lambda: home)
     return home
 
 

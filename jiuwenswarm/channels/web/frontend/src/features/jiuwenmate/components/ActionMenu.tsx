@@ -1,5 +1,5 @@
 import { Ellipsis, type LucideIcon } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
 export interface JiuwenMateMenuItem {
   key: string;
@@ -19,27 +19,70 @@ interface ActionMenuProps {
   className?: string;
   align?: 'start' | 'end';
   testId?: string;
+  /** Anchor the list to the viewport so a scrolling container cannot clip it. */
+  floating?: boolean;
 }
 
-export function ActionMenu({ label, items, emptyLabel, trigger, className, align = 'end', testId }: ActionMenuProps) {
+export function ActionMenu({
+  label,
+  items,
+  emptyLabel,
+  trigger,
+  className,
+  align = 'end',
+  testId,
+  floating = false,
+}: ActionMenuProps) {
   const [open, setOpen] = useState(false);
+  const [listStyle, setListStyle] = useState<CSSProperties>();
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return undefined;
-    const close = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    // resize targets Window (no nodeType); close unless the event is from inside the menu.
+    const close = (event: Event) => {
+      const target = event.target;
+      if (
+        target != null
+        && typeof (target as Node).nodeType === 'number'
+        && rootRef.current?.contains(target as Node)
+      ) {
+        return;
+      }
+      setOpen(false);
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
     };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', escape);
+    // A viewport-anchored list would drift away from its trigger once anything scrolls or resizes.
+    if (floating) {
+      window.addEventListener('scroll', close, true);
+      window.addEventListener('resize', close);
+    }
     return () => {
       document.removeEventListener('mousedown', close);
       document.removeEventListener('keydown', escape);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
     };
-  }, [open]);
+  }, [open, floating]);
+
+  const toggle = () => {
+    if (!open && floating && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setListStyle({
+        position: 'fixed',
+        top: rect.bottom + 4,
+        ...(align === 'start'
+          ? { left: rect.left, right: 'auto' }
+          : { left: 'auto', right: window.innerWidth - rect.right }),
+      });
+    }
+    setOpen((current) => !current);
+  };
 
   return (
     <div
@@ -48,6 +91,7 @@ export function ActionMenu({ label, items, emptyLabel, trigger, className, align
       data-align={align}
     >
       <button
+        ref={triggerRef}
         type="button"
         className="jiuwenmate-menu__trigger"
         aria-label={label}
@@ -55,14 +99,14 @@ export function ActionMenu({ label, items, emptyLabel, trigger, className, align
         aria-expanded={open}
         onClick={(event) => {
           event.stopPropagation();
-          setOpen((current) => !current);
+          toggle();
         }}
         data-testid={testId}
       >
         {trigger ?? <Ellipsis aria-hidden />}
       </button>
       {open ? (
-        <div className="jiuwenmate-menu__list" role="menu">
+        <div className="jiuwenmate-menu__list" role="menu" style={floating ? listStyle : undefined}>
           {items.length === 0 ? <p className="jiuwenmate-menu__empty">{emptyLabel}</p> : null}
           {items.map((item) => {
             const Icon = item.icon;

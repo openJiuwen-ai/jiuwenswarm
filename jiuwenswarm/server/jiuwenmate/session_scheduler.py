@@ -202,7 +202,12 @@ class SessionScheduler:
         """Wait until nothing is running, including Requests dispatched meanwhile."""
         while self._running:
             tasks = [run.task for run in self._running.values() if run.task is not None]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                # Dispatch owns this lock until its task is registered or its failure is cleaned up.
+                async with self._lock:
+                    pass
 
     async def aclose(self) -> None:
         """Stop accepting, stop every running Execution and wait until each stream has ended."""
@@ -248,11 +253,15 @@ class SessionScheduler:
                     continue
                 if self._agent_running(key[0], agent_id) >= self._limits.max_running_per_agent:
                     continue
-                execution = await asyncio.to_thread(
-                    self._sessions.start_execution, key[0], head.record.request_id, now=self._clock()
-                )
                 run = _Running(head, self._driver.new_handle())
                 self._running[key] = run
+                try:
+                    execution = await asyncio.to_thread(
+                        self._sessions.start_execution, key[0], head.record.request_id, now=self._clock()
+                    )
+                except BaseException:
+                    self._running.pop(key, None)
+                    raise
                 run.task = asyncio.create_task(self._execute(key, run, execution), name="jiuwenmate-execution")
 
     async def _execute(self, key: SessionKey, run: _Running, execution) -> None:

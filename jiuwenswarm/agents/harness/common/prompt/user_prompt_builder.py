@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import logging
 import mimetypes
 from contextvars import ContextVar
 from pathlib import Path
@@ -30,6 +31,7 @@ _CURRENT_MULTIMODAL_IMAGE_FILES: ContextVar[tuple[dict[str, Any], ...]] = Contex
     "jiuwenswarm_current_multimodal_image_files",
     default=(),
 )
+logger = logging.getLogger(__name__)
 
 
 def is_image_content_block(part: Any) -> bool:
@@ -119,18 +121,38 @@ def prepare_image_tool_inputs(
     image_input_status: str = "unknown",
     steer_image_tool: str | None = None,
 ) -> dict[str, Any]:
-    """Serialize image-tool context for both ordinary chat and text-only steer."""
+    """Serialize image-tool context for both ordinary chat and text-only steer.
+
+    Every caller reaches this point with the routing decision made, so the log
+    line naming the route taken is emitted here, not during extraction.
+    """
     if enable_read_image_multimodal and steer_image_tool is None:
-        return inputs
-    query = inputs.get("query")
-    if not isinstance(query, str) or (
-        steer_image_tool is None and "jiuwenswarm_image_tool_context" in query
-    ):
+        pending = inputs.get("_multimodal_image_files")
+        if isinstance(pending, list) and pending:
+            logger.info(
+                "Native image input enabled: %d image attachment(s) routed to the "
+                "model context window",
+                len(pending),
+            )
         return inputs
     image_files = inputs.get("_multimodal_image_files")
     if not isinstance(image_files, list) or not image_files:
         image_files = extract_multimodal_image_files(params)
     if not image_files:
+        return inputs
+    query = inputs.get("query")
+    if isinstance(query, str) and steer_image_tool is None and "jiuwenswarm_image_tool_context" in query:
+        # A second pass over a query that already carries the tool context.
+        return inputs
+    if not isinstance(query, str):
+        # Reachable: resume turns carry an InteractiveInput, not a string.
+        logger.warning(
+            "Native image input not in use (image_input_status=%s) and the "
+            "image-understanding tool prompt could not be built (no text query): "
+            "%d image attachment(s) not routed to the model",
+            image_input_status,
+            len(image_files),
+        )
         return inputs
 
     params = params if isinstance(params, dict) else {}
@@ -142,6 +164,14 @@ def prepare_image_tool_inputs(
         question = "Read the attached images and use them to continue the current task."
     first_path = str(image_files[0].get("path") or "").strip()
     if not first_path:
+        # Defensive: _normalize_image_file drops records with no path.
+        logger.warning(
+            "Native image input not in use (image_input_status=%s) and the "
+            "image-understanding tool prompt could not be built (no file path): "
+            "%d image attachment(s) not routed to the model",
+            image_input_status,
+            len(image_files),
+        )
         return inputs
     media_items = []
     for image_file in image_files:
@@ -155,6 +185,14 @@ def prepare_image_tool_inputs(
             "mimeType": image_file.get("mime_type") or image_file.get("mimeType"),
         })
     if not media_items:
+        # Defensive: the first_path guard above guarantees one item.
+        logger.warning(
+            "Native image input not in use (image_input_status=%s) and the "
+            "image-understanding tool prompt could not be built (no usable file "
+            "path): %d image attachment(s) not routed to the model",
+            image_input_status,
+            len(image_files),
+        )
         return inputs
     tool_context = {
         "marker": "jiuwenswarm_image_tool_context",
@@ -171,6 +209,32 @@ def prepare_image_tool_inputs(
         + "\n\n图片附件上下文（供 ReAct 选择图片理解工具使用）：\n"
         + json.dumps(tool_context, ensure_ascii=False)
     )
+    # Without a vision tool the same block tells the model to say it cannot
+    # read the image, so that case must not be logged as routed to a tool.
+    if steer_image_tool:
+        logger.info(
+            "Steering input: %d image attachment(s) routed to the %s tool prompt; "
+            "the steering queue carries text only",
+            len(media_items),
+            steer_image_tool,
+        )
+    elif vision_tool_available:
+        logger.info(
+            "Native image input not in use (image_input_status=%s): %d image "
+            "attachment(s) routed to the image-understanding tool prompt, not to "
+            "the model context window",
+            image_input_status,
+            len(media_items),
+        )
+    else:
+        logger.warning(
+            "Native image input not in use (image_input_status=%s) and no "
+            "image-understanding tool is configured: %d image attachment(s) reach "
+            "the model as paths only, and the prompt instructs it to state that "
+            "it cannot read them",
+            image_input_status,
+            len(media_items),
+        )
     return updated
 
 

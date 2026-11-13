@@ -84,7 +84,7 @@ def _data_dir() -> Path:
 
 def default_doctor_output_path() -> Path:
     """Return the persistent diagnostic path used outside installer overrides."""
-    return _data_dir() / "infra" / "logs" / "agent" / "startup-doctor.json"
+    return _data_dir() / "agent" / ".logs" / "startup-doctor.json"
 
 
 def _check_result(

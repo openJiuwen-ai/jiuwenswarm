@@ -3,7 +3,7 @@ const path = require('path');
 
 const scriptDir = __dirname;
 const envRoot = process.env.JIUWENSWARM_ROOT ? path.resolve(process.env.JIUWENSWARM_ROOT) : '';
-const agentFromEnv = envRoot ? path.join(envRoot, 'domain', 'agent') : '';
+const agentFromEnv = envRoot ? path.join(envRoot, 'agent') : '';
 const packageAgentFromResources = path.join(scriptDir, '../resources/agent');
 
 const agentRoot = [agentFromEnv, packageAgentFromResources]

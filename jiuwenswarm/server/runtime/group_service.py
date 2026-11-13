@@ -62,13 +62,18 @@ async def group_lock(group_id: str):
         try:
             await asyncio.shield(acquisition)
         except asyncio.CancelledError:
-            await acquisition
-            await asyncio.to_thread(guard.__exit__, None, None, None)
+            # The worker can still acquire the lock after its caller is cancelled.
+            def release_abandoned(task: asyncio.Task[Path]) -> None:
+                if not task.cancelled() and task.exception() is None:
+                    guard.__exit__(None, None, None)
+
+            acquisition.add_done_callback(release_abandoned)
             raise
         try:
             yield
         finally:
-            await asyncio.to_thread(guard.__exit__, None, None, None)
+            # Unlock and close without a suspension point that cancellation can interrupt.
+            guard.__exit__(None, None, None)
 
 
 class GroupError(ValueError):

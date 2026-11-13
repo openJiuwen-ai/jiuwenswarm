@@ -39,7 +39,7 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
 )
 from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-from jiuwenswarm.common.cron_session import is_cron_execution_session
+from jiuwenswarm.common.cron_session import is_cron_execution_context
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +140,7 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
     # use the caller's project (especially code-mode projects), rather than
     # silently falling back to the work default project.
     metadata = dict(inp.request_metadata or {})
+    session_metadata: dict[str, Any] | None = None
     if isinstance(inp.session_id, str) and inp.session_id.strip():
         try:
             from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -160,8 +161,13 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
                     if isinstance(model, str) and model.strip():
                         metadata["model_name"] = model.strip()
         except Exception as exc:  # noqa: BLE001 - cron retains legacy fallback
-            logger.debug(
-                "[swarm.cron_tools] failed to load session project binding: %s", exc
+            # The same read feeds the cron gate; on failure the gate falls back
+            # to request signals and may re-expose cron tools, so log it.
+            logger.warning(
+                "[swarm.cron_tools] session metadata lookup failed; cron gate "
+                "falls back to request signals session_id=%s: %s",
+                inp.session_id,
+                exc,
             )
     cron_context = SimpleNamespace(
         tool_scope=f"team_member_{agent_id or 'unknown'}",
@@ -176,15 +182,25 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
     # cron 执行会话全面禁止操作 cron：成员工具集整体不下发（连 list/get
     # 等只读管理也不暴露，与单 Agent 链路 _ensure_cron_tools_registered 的
     # 全面下架对齐），心跳工具同样不挂（见 member_rails 的 swarm.heartbeat）。
-    # 判定信号与 code_rails 的 permission rail 对齐：调度器给每个 cron 请求
-    # 打 request_metadata["cron"]（见 CronScheduler._run_team_stream_job），
-    # channel_id == "__cron__" 兜底覆盖 SDK 未透传 metadata 的场景，会话 ID
-    # 前缀（cron_*）覆盖 team 流式执行会话（_resolve_cron_execution_context）。
-    # 普通会话三个信号都不命中，cron 工具集保持完整。
-    cron_execution_session = bool(
-        (inp.request_metadata or {}).get("cron")
-        or str(inp.channel_id or "").strip() == "__cron__"
-        or is_cron_execution_session(inp.session_id)
+    #
+    # 判定必须包含会话里持久化的 ``cron_id``：Web 定时任务的执行会话由
+    # ``_allocate_execution_session`` 以 web 渠道创建，会话 ID 是普通的
+    # ``web_<ts>_<rand>``，既没有 ``cron_`` 前缀也不是 ``__cron__`` 渠道；
+    # 调度器的 ``request_metadata["cron"]`` 只存在于触发那一轮请求上。用户
+    # 进入该执行会话继续对话、会话运行时被回收后重建时，请求上没有任何
+    # cron 标记，若再只看请求信号，成员会重新拿到完整的 cron 工具集，
+    # ``cron_create_job`` 就能在定时任务会话里再建任务（issue #6188）。
+    # 单 Agent 链路一直通过 ``_is_cron_execution_session`` 读这份元数据，
+    # team 链路这里必须对齐，见 ``common/cron_session.py``。
+    #
+    # 远端成员可能读不到该会话的元数据，leader 会在 bootstrap 时把归属作为
+    # ``cron_session`` 转发过来；它与 ``cron`` 分开，避免把"本轮由调度器
+    # 触发"的语义带给审批/A4P 等消费者，见 remote_member_bootstrap。
+    cron_execution_session = is_cron_execution_context(
+        inp.session_id,
+        channel_id=inp.channel_id,
+        request_metadata=inp.request_metadata,
+        session_metadata=session_metadata,
     )
     if cron_execution_session:
         logger.info(

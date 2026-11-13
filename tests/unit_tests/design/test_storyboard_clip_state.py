@@ -98,7 +98,9 @@ def test_story_curve_keeps_one_climax_and_carries_the_end() -> None:
     assert "lands beneath" not in str(shots[1]["start_state"].get("pose"))
     assert any("red coat" in change for change in shots[1]["wardrobe_changes"])
     lines = start_end_story_lines(stamp_shot_states_on_clip_cfg({}, shot=shots[1]))
-    assert any("single climax" in line for line in lines)
+    # The climax stays a story-curve label only; it is never declared to the
+    # video model ("This shot is the film's single climax." leaked into prompts).
+    assert not any("single climax" in line for line in lines)
     assert any("red coat" in line for line in lines)
     assert "lands beneath" not in " ".join(lines)
     assert not any("already finished" in line for line in lines)

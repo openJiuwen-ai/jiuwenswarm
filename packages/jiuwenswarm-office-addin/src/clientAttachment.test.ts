@@ -364,7 +364,7 @@ describe('ClientAttachment', () => {
       client_tool: { downloads: { oa_1: '/file-api/download?token=t' } },
     }));
     await settle();
-    expect(runtime.execute).toHaveBeenCalledWith({
+    expect(runtime.execute).toHaveBeenCalledWith({ callId: 'call_7:target',
       toolName: 'read_presentation_context', input: {}, downloads: { oa_1: '/file-api/download?token=t' },
     });
     expect(gateway.sent('chat.send')).toEqual([]);

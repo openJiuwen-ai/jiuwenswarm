@@ -35,6 +35,40 @@ def _valid_bot_code(code: Any) -> bool:
     return not any(char.isspace() or ord(char) < 32 for char in code)
 
 
+def valid_group_conversation_id(group: Any, field: str) -> bool:
+    """Check the conversation ID field in a group discovery record."""
+    if not isinstance(group, dict) or not isinstance(group.get(field), str):
+        return False
+    conversation_id = group[field]
+    if not conversation_id or len(conversation_id) > 512:
+        return False
+    return not any(char.isspace() or ord(char) < 32 for char in conversation_id)
+
+
+def _valid_group_discovery_response(result: Any, cursor: int | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if not isinstance(result.get('readerKey'), str) or not _GROUP_HISTORY_READER.fullmatch(result['readerKey']):
+        return False
+    if not isinstance(result.get('groups'), list) or len(result['groups']) > 5:
+        return False
+    if not isinstance(result.get('hasMore'), bool) or not isinstance(result.get('failed'), bool):
+        return False
+    if result['hasMore']:
+        if (
+            isinstance(result.get('nextCursor'), bool)
+            or not isinstance(result.get('nextCursor'), int)
+            or result['nextCursor'] <= (cursor or 0)
+        ):
+            return False
+    for group in result['groups']:
+        if not valid_group_conversation_id(group, 'conversation_id'):
+            return False
+        if not isinstance(group.get('name'), str) or len(group['name']) > 512:
+            return False
+    return True
+
+
 def valid_document_search(query: str, cursor: str | None, limit: int) -> bool:
     if not isinstance(query, str) or len(query) > 512:
         return False
@@ -86,6 +120,9 @@ class DingTalkCliRuntimePort(Protocol):
         ...
 
     async def inspect_group_membership(self, scope: DingTalkCliScope, *, conversation_id: str) -> dict[str, str]:
+        ...
+
+    async def discover_groups(self, scope: DingTalkCliScope, *, cursor: int | None = None) -> dict[str, Any]:
         ...
 
     async def read_group_history(
@@ -243,6 +280,30 @@ class DingTalkCliRuntimeService:
             return {"status": "unknown"}
         return {"status": result["status"]}
 
+    async def discover_groups(self, scope: DingTalkCliScope, *, cursor: int | None = None) -> dict[str, Any]:
+        """Expose only bot-verified group metadata to the host, never a model tool."""
+        discover = getattr(self._runtime, 'discover_groups', None)
+        if not callable(discover) or not self.is_available(scope):
+            raise PersistentAgentError(
+                "DingTalk group discovery is unavailable", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE",
+            )
+        try:
+            result = await discover(scope, cursor=cursor)
+        except PersistentAgentError:
+            raise
+        except Exception as exc:
+            raise PersistentAgentError(
+                "DingTalk group discovery failed", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE",
+            ) from exc
+        if not _valid_group_discovery_response(result, cursor):
+            raise PersistentAgentError(
+                "Invalid DingTalk group discovery response", code="DINGTALK_CLI_GROUP_HISTORY_INVALID",
+            )
+        return {'readerKey': result['readerKey'], 'hasMore': result['hasMore'],
+                'nextCursor': result.get('nextCursor') if result['hasMore'] else None, 'failed': result['failed'],
+                'groups': [{'conversation_id': group['conversation_id'], 'name': group['name']}
+                           for group in result['groups']]}
+
     async def read_group_history(
         self, scope: DingTalkCliScope, *, conversation_id: str, since: str,
     ) -> dict[str, Any]:
@@ -297,9 +358,9 @@ class DingTalkCliRuntimeService:
         return await self._auth_call(scope, "dingtalk_auth_disconnect")
 
     async def _auth_call(self, scope: DingTalkCliScope, method: str, *args: Any) -> dict[str, Any]:
-        if self._runtime is None or not self.is_available(scope):
+        if self._runtime is None or (method != "dingtalk_auth_disconnect" and not self.is_available(scope)):
             raise PersistentAgentError(
-                "DingTalk app is unavailable for this employee", code="DINGTALK_CLI_APP_NOT_CONFIGURED"
+                "DingTalk app is unavailable for this employee", code="DINGTALK_CLI_APP_NOT_CONFIGURED",
             )
         call = getattr(self._runtime, method, None)
         if not callable(call):

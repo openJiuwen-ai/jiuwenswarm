@@ -32,7 +32,6 @@ def _app_services_from(source: Any) -> tuple[AppServices, Any]:
         "_agent_manager": "agent_manager",
         "_runtime": "runtime",
         "_session_message_service": "session_message_service",
-        "_proactive_engine": "proactive_engine",
         "_scheduler_service": "scheduler_service",
         "_scheduler_agent": "scheduler_agent",
         "_jiuwenbox_runner": "jiuwenbox_runner",
@@ -129,11 +128,6 @@ class AgentServerServices:
     def session_message_service(self) -> Any:
         """跨会话排队消息。没装好时是空的。"""
         return self._app.session_message_service
-
-    @property
-    def proactive_engine(self) -> Any:
-        """主动推荐引擎。没装好时是空的。"""
-        return self._app.proactive_engine
 
     def resolve_model(self, model_name: Optional[str] = None) -> Optional[Any]:
         override = self._overridden("_resolve_model", "resolve_model")

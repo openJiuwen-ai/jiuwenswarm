@@ -33,9 +33,9 @@ _PHRASES: dict[str, dict[str, str]] = {
         "one_clear_image": "One clear image.",
         "one_person": "One person only: {name}, full or three-quarter body on a plain empty studio backdrop.",
         "one_group": (
-            "One group only: {name}, {count} people sharing one look — same wardrobe, "
-            "same styling and same age range across everyone, full bodies, on a plain "
-            "empty studio backdrop."
+            "One group only: {name}, {count} distinct people — varied faces, ages, and "
+            "postures within one shared wardrobe family, full bodies, on a plain empty "
+            "studio backdrop. No two share the same face."
         ),
         "neutral_backdrop": "Solid neutral background, identity and costume only.",
         "wearing": "Wearing {costume}.",
@@ -52,8 +52,8 @@ _PHRASES: dict[str, dict[str, str]] = {
         "one_clear_image": "画面清晰，单张图像。",
         "one_person": "画面中仅一人：{name}，全身或七分身，站在纯净空白的影棚背景前。",
         "one_group": (
-            "画面中只有一群人：{name}，共{count}人，统一着装风格与造型，年龄段一致，"
-            "全员全身，站在纯净空白的影棚背景前。"
+            "画面中只有一群人：{name}，共{count}人，面孔、年龄与姿态各不相同，但属于"
+            "统一的着装体系；全员全身，站在纯净空白的影棚背景前。没有两个人共用同一张脸。"
         ),
         "neutral_backdrop": "纯色中性背景，只呈现人物身份与服装。",
         "wearing": "身穿{costume}。",

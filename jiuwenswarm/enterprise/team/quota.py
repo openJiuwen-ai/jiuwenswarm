@@ -32,7 +32,7 @@ from agent_gateway.enterprise.team.quota_policy import (
     _now,
     leader_spawn_names,
 )
-from jiuwenswarm.common.utils import get_infra_data_dir, get_user_workspace_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.enterprise.team.control_store import TEAM_ACTIVE_STATUSES, OwnerIdentity
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,10 @@ KIND_REQUESTED_TEAM_SIZE = "requested_team_size"
 STATUS_RELEASED = "released"
 
 LEASE_TTL_SEC = 60.0
+# A held reservation has no expiry. Gateway and AgentServer both release it
+# when it is still reserved this long after the last hold stamp.
+RESERVED_HOLD_MAX_SEC = 30 * 60
+HOLD_REFRESH_INTERVAL_SEC = 5 * 60
 FEATURE_ENABLED_ENV = "TEAM_QUOTA_ENABLED"
 
 QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
@@ -345,9 +349,37 @@ _OCCUPY_SQL = (
     "(status = :committed OR (status = :reserved AND (expires_at IS NULL OR expires_at > :now)))"
 )
 
+_ABANDONED_HOLD_SQL = (
+    "UPDATE team_quota_lease SET status=:rel, updated_at=:now "
+    "WHERE kind=:kind AND status=:res AND expires_at IS NULL "
+    "AND updated_at<=:cutoff"
+)
+
+
+def _abandoned_hold_params(now: float) -> dict[str, Any]:
+    return {
+        "rel": STATUS_RELEASED,
+        "now": now,
+        "kind": KIND_TEAM_CREATE,
+        "res": STATUS_RESERVED,
+        "cutoff": now - RESERVED_HOLD_MAX_SEC,
+    }
+
 _SQLITE_OCCUPY = (
     "(status=? OR (status=? AND (expires_at IS NULL OR expires_at>?)))"
 )
+
+
+def _postgres_team_store() -> bool:
+    from jiuwenswarm.infrastructure.db.team_store_actor import team_store_db_type
+
+    return team_store_db_type() == "postgres"
+
+
+def _insert_ignore_sql(mysql_sql: str, postgres_sql: str) -> str:
+    if _postgres_team_store():
+        return postgres_sql
+    return mysql_sql
 
 
 class TeamQuotaService(TeamQuotaPolicyStore):
@@ -355,7 +387,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
 
     @staticmethod
     def _default_sqlite_path() -> Path:
-        return get_infra_data_dir() / "agent" / "teams" / "team_control.db"
+        return get_user_workspace_dir() / "agent" / "teams" / "team_control.db"
 
     @staticmethod
     def _quota_config() -> dict[str, Any]:
@@ -491,7 +523,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
         if self._use_mysql():
             from sqlalchemy import text
 
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_tx
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_tx
 
             actor = self._mysql()
 
@@ -535,6 +567,43 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                 ),
             )
 
+    def hold_reserved_create(self, session_id: str) -> None:
+        """Keep a chat reservation occupying until the resident stream ends.
+
+        Only a still-reserved team_create row is touched. Clearing ``expires_at``
+        stops the 60s TTL from dropping it before ``team.runtime_ready``.
+        A committed lease is left alone, and no team entity is inserted.
+        """
+        sid = _clean(session_id)
+        if not sid or not self._use_mysql():
+            return
+        from sqlalchemy import text
+
+        from jiuwenswarm.infrastructure.db.team_store_actor import run_tx
+
+        key = team_create_key(sid)
+        now = _now()
+        actor = self._mysql()
+
+        async def _op() -> None:
+            async def _tx(conn: Any) -> None:
+                await conn.execute(
+                    text(
+                        "UPDATE team_quota_lease SET expires_at=NULL, updated_at=:now "
+                        "WHERE kind=:kind AND idempotency_key=:key AND status=:res"
+                    ),
+                    {
+                        "now": now,
+                        "kind": KIND_TEAM_CREATE,
+                        "key": key,
+                        "res": STATUS_RESERVED,
+                    },
+                )
+
+            await run_tx(actor.handler, _tx)
+
+        actor.call(_op)
+
     def release_reserved_create(self, session_id: str) -> None:
         """Release a chat reservation only while it is still reserved. One MySQL call."""
         sid = _clean(session_id)
@@ -542,7 +611,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
             return
         from sqlalchemy import text
 
-        from jiuwenswarm.infrastructure.db.team_mysql_actor import run_tx
+        from jiuwenswarm.infrastructure.db.team_store_actor import run_tx
 
         key = team_create_key(sid)
         now = _now()
@@ -589,7 +658,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
         if self._use_mysql():
             from sqlalchemy import text
 
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_tx
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_tx
 
             actor = self._mysql()
 
@@ -621,7 +690,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
         if self._use_mysql():
             from sqlalchemy import text
 
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_tx
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_tx
 
             actor = self._mysql()
 
@@ -660,7 +729,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
             return None
         key = team_create_key(sid)
         if self._use_mysql():
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import record_to_dict
+            from jiuwenswarm.infrastructure.db.team_store_actor import record_to_dict
 
             actor = self._mysql()
 
@@ -721,7 +790,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
         if self._use_mysql():
             from sqlalchemy import text
 
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_tx
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_tx
 
             actor = self._mysql()
 
@@ -761,7 +830,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
         if self._use_mysql():
             from sqlalchemy import text
 
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_tx
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_tx
 
             actor = self._mysql()
 
@@ -827,7 +896,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
         if self._use_mysql():
             from sqlalchemy import text
 
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_tx
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_tx
 
             actor = self._mysql()
 
@@ -840,6 +909,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                         ),
                         {"rel": STATUS_RELEASED, "now": now, "res": STATUS_RESERVED},
                     )
+                    await conn.execute(text(_ABANDONED_HOLD_SQL), _abandoned_hold_params(now))
                     active = ",".join(f"'{s}'" for s in sorted(TEAM_ACTIVE_STATUSES))
                     result = await conn.execute(
                         text(
@@ -868,11 +938,19 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                         key = team_create_key(sid or tid)
                         await conn.execute(
                             text(
-                                "INSERT IGNORE INTO team_quota_lease ("
-                                "lease_id, kind, idempotency_key, user_id, group_id, bot_id, "
-                                "team_id, member_name, status, expires_at, created_at, updated_at"
-                                ") VALUES ("
-                                ":lid, :kind, :key, :uid, :gid, :bid, :tid, '', :st, NULL, :now, :now)"
+                                _insert_ignore_sql(
+                                    "INSERT IGNORE INTO team_quota_lease ("
+                                    "lease_id, kind, idempotency_key, user_id, group_id, bot_id, "
+                                    "team_id, member_name, status, expires_at, created_at, updated_at"
+                                    ") VALUES ("
+                                    ":lid, :kind, :key, :uid, :gid, :bid, :tid, '', :st, NULL, :now, :now)",
+                                    "INSERT INTO team_quota_lease ("
+                                    "lease_id, kind, idempotency_key, user_id, group_id, bot_id, "
+                                    "team_id, member_name, status, expires_at, created_at, updated_at"
+                                    ") VALUES ("
+                                    ":lid, :kind, :key, :uid, :gid, :bid, :tid, '', :st, NULL, :now, :now) "
+                                    "ON CONFLICT (kind, idempotency_key) DO NOTHING",
+                                )
                             ),
                             {
                                 "lid": uuid.uuid4().hex,
@@ -1171,7 +1249,11 @@ class TeamQuotaService(TeamQuotaPolicyStore):
     ) -> QuotaLease | None:
         from sqlalchemy import text
 
-        from jiuwenswarm.infrastructure.db.team_mysql_actor import is_unique_violation, run_tx
+        from jiuwenswarm.infrastructure.db.team_store_actor import (
+            is_unique_violation,
+            json_value_expr,
+            run_tx,
+        )
         from jiuwenswarm.enterprise.team.control_store import TEAM_STATUS_DELETED
 
         actor = self._mysql()
@@ -1198,8 +1280,9 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                             ") VALUES ("
                             ":team_id, :team_name, :owner_user_id, :owner_group_id, :owner_bot_id, "
                             ":status, :runtime_mode, :template_id, :team_session_id, :runtime_team_name, "
-                            ":agent_service_id, :gateway_id, :created_at, :updated_at, CAST(:extra AS json)"
-                            ")"
+                            ":agent_service_id, :gateway_id, :created_at, :updated_at, "
+                            + json_value_expr("extra")
+                            + ")"
                         ),
                         record_entity,
                     )
@@ -1226,6 +1309,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                     ),
                     {"rel": STATUS_RELEASED, "now": now, "res": STATUS_RESERVED},
                 )
+                await conn.execute(text(_ABANDONED_HOLD_SQL), _abandoned_hold_params(now))
                 if on_existing != "ignore" and session_id:
                     entity_row = (
                         await conn.execute(
@@ -1295,9 +1379,15 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                     if gid and int(org_limit) > 0:
                         await conn.execute(
                             text(
-                                "INSERT IGNORE INTO team_quota_org_account "
-                                "(group_id, created_at, updated_at) "
-                                "VALUES (:gid, :now, :now)"
+                                _insert_ignore_sql(
+                                    "INSERT IGNORE INTO team_quota_org_account "
+                                    "(group_id, created_at, updated_at) "
+                                    "VALUES (:gid, :now, :now)",
+                                    "INSERT INTO team_quota_org_account "
+                                    "(group_id, created_at, updated_at) "
+                                    "VALUES (:gid, :now, :now) "
+                                    "ON CONFLICT (group_id) DO NOTHING",
+                                )
                             ),
                             {"gid": gid, "now": now},
                         )
@@ -1335,9 +1425,15 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                             )
                     await conn.execute(
                         text(
-                            "INSERT IGNORE INTO team_quota_account "
-                            "(user_id, group_id, bot_id, created_at, updated_at) "
-                            "VALUES (:uid, :gid, :bid, :now, :now)"
+                            _insert_ignore_sql(
+                                "INSERT IGNORE INTO team_quota_account "
+                                "(user_id, group_id, bot_id, created_at, updated_at) "
+                                "VALUES (:uid, :gid, :bid, :now, :now)",
+                                "INSERT INTO team_quota_account "
+                                "(user_id, group_id, bot_id, created_at, updated_at) "
+                                "VALUES (:uid, :gid, :bid, :now, :now) "
+                                "ON CONFLICT (user_id, group_id, bot_id) DO NOTHING",
+                            )
                         ),
                         {
                             "uid": identity.user_id,
@@ -1687,7 +1783,7 @@ class TeamQuotaService(TeamQuotaPolicyStore):
         """One actor call: policies, leases, and live entities on the same connection."""
         from sqlalchemy import text
 
-        from jiuwenswarm.infrastructure.db.team_mysql_actor import run_tx
+        from jiuwenswarm.infrastructure.db.team_store_actor import run_tx
 
         user_sessions, org_sessions = self._local_session_pairs(identity, "")
         actor = self._mysql()

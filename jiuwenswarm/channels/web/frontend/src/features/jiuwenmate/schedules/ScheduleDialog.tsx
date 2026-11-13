@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { buildCron, fromZonedInput, parseCron, toZonedInput, validateDraft, weekdayName } from './state';
@@ -119,31 +119,48 @@ export function ScheduleDialog({
   const { t } = useTranslation();
   const [form, setForm] = useState<FormState>(() => (plan ? formFromPlan(plan) : blankForm()));
   const executorRef = useRef<HTMLSelectElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const endsOnRef = useRef<HTMLInputElement>(null);
   const [chosenExecutor, setChosenExecutor] = useState(executorId);
-  const [error, setError] = useState('');
+  const [submitError, setSubmitError] = useState('');
+  const [validationAttempted, setValidationAttempted] = useState(false);
+  const errorId = useId();
+  const executorErrorId = `${errorId}-executor`;
+  const nameErrorId = `${errorId}-name`;
+  const promptErrorId = `${errorId}-prompt`;
+  const rangeErrorId = `${errorId}-range`;
   if (!open) return null;
   const draft = toDraft(form, timezone);
+  const validationReason = validationAttempted ? validateDraft(draft, chosenExecutor) : null;
+  const executorInvalid = validationReason === 'executorRequired';
+  const nameInvalid = validationReason === 'required' && !draft.name;
+  const promptInvalid = validationReason === 'required' && !draft.prompt;
+  const rangeInvalid = validationReason === 'rangeInvalid';
+  const hasFieldError = (executorInvalid && executors !== undefined) || nameInvalid || promptInvalid || rangeInvalid;
+  const validationMessage = validationReason && !hasFieldError ? t(`jiuwenmate.schedule.error.${validationReason}`) : '';
   const save = () => {
     const reason = validateDraft(draft, chosenExecutor);
-    if (reason === 'executorRequired' && executorRef.current) {
-      setError('');
-      executorRef.current.focus();
-      executorRef.current.reportValidity();
-      return;
-    }
+    setValidationAttempted(true);
+    setSubmitError('');
     if (reason) {
-      setError(t(`jiuwenmate.schedule.error.${reason}`));
+      if (reason === 'executorRequired') executorRef.current?.focus();
+      else if (reason === 'required' && !draft.name) nameRef.current?.focus();
+      else if (reason === 'required' && !draft.prompt) promptRef.current?.focus();
+      else if (reason === 'rangeInvalid') endsOnRef.current?.focus();
       return;
     }
-    setError('');
     void Promise.resolve(onSubmit(chosenExecutor, draft))
       .then(() => onClose())
       .catch((failure: unknown) => {
         const message = failure instanceof Error ? failure.message : '';
-        setError(message || t('jiuwenmate.schedule.error.required'));
+        setSubmitError(message || t('jiuwenmate.schedule.error.required'));
       });
   };
-  const patch = (next: Partial<FormState>) => setForm((current) => ({ ...current, ...next }));
+  const patch = (next: Partial<FormState>) => {
+    setForm((current) => ({ ...current, ...next }));
+    setSubmitError('');
+  };
   return (
     <div className="jiuwenmate-dialog-backdrop" data-testid="jiuwenmate-schedule-dialog">
       <div className="jiuwenmate-dialog jiuwenmate-schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="jiuwenmate-schedule-dialog-title">
@@ -157,21 +174,67 @@ export function ScheduleDialog({
           {executors ? (
             <label className="jiuwenmate-field">
               <span>{t('jiuwenmate.schedule.executor')}</span>
-              <select ref={executorRef} required value={chosenExecutor} onChange={(event) => setChosenExecutor(event.target.value)} data-testid="jiuwenmate-schedule-executor">
+              <select
+                ref={executorRef}
+                className="jiuwenmate-schedule-dialog__executor"
+                required
+                value={chosenExecutor}
+                aria-label={t('jiuwenmate.schedule.executor')}
+                aria-invalid={executorInvalid || undefined}
+                aria-describedby={executorInvalid ? executorErrorId : undefined}
+                onChange={(event) => {
+                  setChosenExecutor(event.target.value);
+                  setSubmitError('');
+                }}
+                data-testid="jiuwenmate-schedule-executor"
+              >
                 <option value="">{t('jiuwenmate.schedule.chooseExecutor')}</option>
                 {executors.map((item) => (
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
               </select>
+              {executorInvalid ? (
+                <span id={executorErrorId} role="alert" data-testid="jiuwenmate-schedule-executor-error">
+                  {t('jiuwenmate.schedule.error.executorRequired')}
+                </span>
+              ) : null}
             </label>
           ) : null}
           <label className="jiuwenmate-field">
             <span>{t('jiuwenmate.schedule.name')}</span>
-            <input value={form.name} placeholder={t('jiuwenmate.schedule.placeholder')} onChange={(event) => patch({ name: event.target.value })} data-testid="jiuwenmate-schedule-name" />
+            <input
+              ref={nameRef}
+              value={form.name}
+              placeholder={t('jiuwenmate.schedule.placeholder')}
+              aria-label={t('jiuwenmate.schedule.name')}
+              aria-invalid={nameInvalid || undefined}
+              aria-describedby={nameInvalid ? nameErrorId : undefined}
+              onChange={(event) => patch({ name: event.target.value })}
+              data-testid="jiuwenmate-schedule-name"
+            />
+            {nameInvalid ? (
+              <span id={nameErrorId} role="alert" data-testid="jiuwenmate-schedule-name-error">
+                {t('jiuwenmate.schedule.error.nameRequired')}
+              </span>
+            ) : null}
           </label>
           <label className="jiuwenmate-field">
             <span>{t('jiuwenmate.schedule.prompt')}</span>
-            <textarea value={form.prompt} placeholder={t('jiuwenmate.schedule.placeholder')} onChange={(event) => patch({ prompt: event.target.value })} data-testid="jiuwenmate-schedule-prompt" />
+            <textarea
+              ref={promptRef}
+              value={form.prompt}
+              placeholder={t('jiuwenmate.schedule.placeholder')}
+              aria-label={t('jiuwenmate.schedule.prompt')}
+              aria-invalid={promptInvalid || undefined}
+              aria-describedby={promptInvalid ? promptErrorId : undefined}
+              onChange={(event) => patch({ prompt: event.target.value })}
+              data-testid="jiuwenmate-schedule-prompt"
+            />
+            {promptInvalid ? (
+              <span id={promptErrorId} role="alert" data-testid="jiuwenmate-schedule-prompt-error">
+                {t('jiuwenmate.schedule.error.promptRequired')}
+              </span>
+            ) : null}
           </label>
           <div className="jiuwenmate-field">
             <span>{t('jiuwenmate.schedule.plan')}</span>
@@ -221,11 +284,33 @@ export function ScheduleDialog({
           <div className="jiuwenmate-field">
             <span>{t('jiuwenmate.schedule.effective')}</span>
             <div className="jiuwenmate-schedule-plan">
-              <input type="date" value={form.startsOn} aria-label={t('jiuwenmate.schedule.startsOn')} onChange={(event) => patch({ startsOn: event.target.value })} />
-              <input type="date" value={form.endsOn} aria-label={t('jiuwenmate.schedule.endsOn')} onChange={(event) => patch({ endsOn: event.target.value })} />
+              <input
+                type="date"
+                value={form.startsOn}
+                aria-label={t('jiuwenmate.schedule.startsOn')}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? rangeErrorId : undefined}
+                onChange={(event) => patch({ startsOn: event.target.value })}
+                data-testid="jiuwenmate-schedule-starts-on"
+              />
+              <input
+                ref={endsOnRef}
+                type="date"
+                value={form.endsOn}
+                aria-label={t('jiuwenmate.schedule.endsOn')}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? rangeErrorId : undefined}
+                onChange={(event) => patch({ endsOn: event.target.value })}
+                data-testid="jiuwenmate-schedule-ends-on"
+              />
             </div>
+            {rangeInvalid ? (
+              <span id={rangeErrorId} role="alert" data-testid="jiuwenmate-schedule-range-error">
+                {t('jiuwenmate.schedule.error.rangeInvalid')}
+              </span>
+            ) : null}
           </div>
-          {error ? <p role="alert">{error}</p> : null}
+          {submitError || validationMessage ? <p role="alert">{submitError || validationMessage}</p> : null}
         </div>
         <div className="jiuwenmate-dialog__footer">
           <button type="button" className="jiuwenmate-outline-button" onClick={onClose}>{t('jiuwenmate.schedule.cancel')}</button>

@@ -51,7 +51,7 @@ async function render(backend, run, enterprise = true, simulate = false) {
     return React.createElement(
       'div',
       { 'data-testid': 'probe' },
-      JSON.stringify(value && { user: value.user, selected: value.selected, managerAccess: value.managerAccess }),
+      JSON.stringify(value && { user: value.user, selected: value.selected }),
     );
   }
   const root = createRoot(document.getElementById('root'));
@@ -68,7 +68,6 @@ async function render(backend, run, enterprise = true, simulate = false) {
 
 function success(url) {
   if (url.endsWith('/auth/me')) return [200, { user_id: 'u', display_name: 'User U' }];
-  if (url.endsWith('/authz/me')) return [200, { code: 200, data: { manager_access: false } }];
   if (url.endsWith('/agent-contexts')) return [200, { code: 200, data: { contexts: [context] } }];
   return [200, { code: 200 }];
 }
@@ -78,7 +77,6 @@ test('raw Identity user and Manager context win over query; initial active clust
     const value = JSON.parse(document.querySelector('[data-testid="probe"]').textContent);
     assert.equal(value.user.user_id, 'u');
     assert.equal(value.selected.user_id, 'u');
-    assert.equal(value.managerAccess, false);
     const active = calls.find(([url]) => url.endsWith('/active-cluster'));
     assert.equal(active[1].method, 'POST');
     assert.deepEqual(JSON.parse(active[1].body), { jiuwenclaw_id: 'cluster' });

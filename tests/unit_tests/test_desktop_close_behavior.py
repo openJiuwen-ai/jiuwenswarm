@@ -86,7 +86,7 @@ def test_pre_service_shutdown_failure_cannot_complete_update(desktop_app, tmp_pa
 def test_close_action_preference_round_trip(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(desktop_app, "get_config_dir", lambda: tmp_path / "config")
+    monkeypatch.setattr(desktop_app, "get_user_workspace_dir", lambda: tmp_path)
 
     assert desktop_app._load_close_action() is None
     assert desktop_app._save_close_action(desktop_app.CLOSE_ACTION_HIDE) is True
@@ -103,7 +103,7 @@ def test_window_api_reads_and_updates_close_action(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(desktop_app, "_is_windows_desktop", lambda: True)
-    monkeypatch.setattr(desktop_app, "get_config_dir", lambda: tmp_path / "config")
+    monkeypatch.setattr(desktop_app, "get_user_workspace_dir", lambda: tmp_path)
     runtime = _runtime(desktop_app, tmp_path, monkeypatch)
     api = desktop_app._WindowApi(runtime)
 

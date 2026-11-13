@@ -96,8 +96,8 @@ async def test_preset_plugin_private_copy_loads_real_resources(tmp_path, name):
 
 @pytest.mark.asyncio
 async def test_optimized_plugin_can_be_installed_and_restored_in_fresh_agent(tmp_path, monkeypatch):
-    tasks_root = tmp_path / "infra" / "rsi" / "tasks"
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_infra_data_dir", lambda: tmp_path / "infra")
+    tasks_root = tmp_path / "rsi" / "tasks"
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
     source = _make_plugin_package(tmp_path / "presets", "coding-guard")
     material = RsiTaskMaterializer(tasks_root).materialize_harness_refs("probe", source)
     run = tasks_root / "probe" / "run"

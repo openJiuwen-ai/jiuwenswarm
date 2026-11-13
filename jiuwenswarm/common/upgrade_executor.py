@@ -14,14 +14,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from jiuwenswarm.common.version import __version__
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 
 DOWNLOAD_CHUNK_SIZE = 1024 * 512
 
 
 def _updates_dir() -> Path:
-    path = get_infra_data_dir() / ".updates"
+    path = get_user_workspace_dir() / ".updates"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

@@ -37,7 +37,7 @@ try:
         if env_workspace:
             _cfg_env = Path(env_workspace) / "config" / ".env"
         else:
-            _cfg_env = Path.home() / ".jiuwenswarm" / "infra" / "config" / ".env"
+            _cfg_env = Path.home() / ".jiuwenswarm" / "config" / ".env"
     if _cfg_env.exists():
         load_dotenv(_cfg_env)
 except ImportError:
@@ -76,10 +76,7 @@ else:
     if env_workspace:
         AGENT_ROOT = Path(env_workspace) / "agent"
     else:
-        AGENT_ROOT = Path(os.environ.get(
-            "JIUWENSWARM_AGENT_ROOT",
-            str(Path.home() / ".jiuwenswarm" / "domain" / "agent"),
-        ))
+        AGENT_ROOT = Path(os.environ.get("JIUWENSWARM_AGENT_ROOT", str(Path.home() / ".jiuwenswarm" / "agent")))
 
 # 配置环境文件路径
 if _has_jiuwenswarm:

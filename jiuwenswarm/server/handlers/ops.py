@@ -55,87 +55,26 @@ async def _reset_requested_browser_runtime_if_available(
 
 
 async def handle_proactive_tick(ctx: RequestContext) -> None:
-    """定时器触发一次主动推荐。会遵守冷却时间和每天次数上限。"""
+    """Soft no-op: proactive recommendation engine removed; keep cron sync happy."""
     request = ctx.request
-    engine = ctx.services.proactive_engine
-    if engine is None:
-        resp = AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=False,
-            payload={"error": "ProactiveEngine not initialized"},
-        )
-    else:
-        try:
-            params = request.params or {}
-            target_channel = params.get("target_channel")
-            success = await engine.tick_now(target_channel=target_channel)
-            status = "tick_executed" if success else "no_recommendation"
-            last_tick = engine.last_tick_at
-            if last_tick > 0:
-                status = f"{status} (last_tick_at={last_tick:.0f})"
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={"status": status, "success": success},
-            )
-        except Exception as e:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
+    resp = AgentResponse(
+        request_id=request.request_id,
+        channel_id=request.channel_id,
+        ok=True,
+        payload={"status": "skipped", "success": False, "reason": "proactive_removed"},
+    )
     await ctx.sink.send_response(resp)
 
 
 async def handle_proactive_feedback(ctx: RequestContext) -> None:
-    """记下用户对一条主动推荐的喜欢或不喜欢。"""
+    """Soft no-op: proactive recommendation feedback path removed."""
     request = ctx.request
-    try:
-        params = request.params or {}
-        rec_id = params.get("rec_id")
-        feedback_type = params.get("feedback_type")
-        rec_type = str(params.get("rec_type") or params.get("proactive_type") or "")
-        rec_target = str(params.get("rec_target") or params.get("proactive_target") or "")
-
-        if not rec_id or feedback_type not in ("explicit_like", "explicit_dislike"):
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={
-                    "error": (
-                        "Invalid params: rec_id and feedback_type "
-                        "(explicit_like|explicit_dislike) required"
-                    ),
-                },
-            )
-        else:
-            from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-                RecMeta,
-                record_explicit_feedback,
-            )
-
-            record_explicit_feedback(
-                rec_id,
-                feedback_type,
-                meta=RecMeta(rec_type=rec_type, rec_target=rec_target),
-            )
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={"status": "feedback_recorded", "rec_id": rec_id},
-            )
-    except Exception as e:
-        resp = AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=False,
-            payload={"error": str(e)},
-        )
+    resp = AgentResponse(
+        request_id=request.request_id,
+        channel_id=request.channel_id,
+        ok=True,
+        payload={"status": "skipped", "reason": "proactive_removed"},
+    )
     await ctx.sink.send_response(resp)
 
 
@@ -317,21 +256,6 @@ async def handle_agent_reload_config(ctx: RequestContext) -> None:
                     "[AgentWebSocketServer] failed to stop paused team runtimes after agent.reload_config: %s",
                     exc,
                 )
-
-        should_reload_proactive = not reload_scopes or bool(
-            reload_scopes & {"model", "proactive", "agent_runtime"}
-        )
-        engine = ctx.services.proactive_engine
-        if engine is not None and should_reload_proactive:
-            cfg = get_config()
-            proactive_cfg = cfg.get("proactive_recommendation", {})
-            engine.reload_config(proactive_cfg)
-            try:
-                from jiuwenswarm.server.runtime.proactive_adapter import build_proactive_agent
-
-                engine.rebuild_proactive_agent(build_proactive_agent)
-            except Exception as exc:
-                logger.warning("[AgentWebSocketServer] proactive agent rebuild failed: %s", exc)
 
         resp = AgentResponse(
             request_id=request.request_id,

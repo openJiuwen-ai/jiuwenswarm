@@ -58,7 +58,7 @@ from openjiuwen.core.session.stream.base import OutputSchema
 
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 from .capabilities import AutoHarnessCapabilityRegistry, create_default_capability_registry
 from .scheduler import Scheduler
@@ -69,7 +69,7 @@ from .repo_auth import configure_gitcode_auth
 logger = logging.getLogger(__name__)
 
 # Data directory for auto-harness runs (per §5.6.1)
-_AUTO_HARNESS_DATA_DIR = get_infra_data_dir() / "auto-harness"
+_AUTO_HARNESS_DATA_DIR = get_user_workspace_dir() / "auto-harness"
 # Packages metadata file for version management
 _HARNESS_PACKAGES_FILE = _AUTO_HARNESS_DATA_DIR / "harness-packages.json"
 # Default repo URL if not specified in request (per §5.5)

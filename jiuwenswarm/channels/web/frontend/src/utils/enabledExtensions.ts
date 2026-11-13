@@ -1,6 +1,8 @@
 import { useSessionStore } from '../stores/sessionStore';
 import { usePluginPackageStore } from '../stores/pluginPackageStore';
 import { useConnectorStore } from '../stores/connectorStore';
+import { useWorkspaceStore } from '../stores/workspaceStore';
+import { isPluginBlockedInWorkMode } from '../features/equipmentMarketplace';
 
 /**
  * 会话内"扩展"面板（ChatPanel/ExtensionPickerPanel.tsx）的启用开关只在用户点击那一刻校验过
@@ -14,6 +16,9 @@ import { useConnectorStore } from '../stores/connectorStore';
  * 校验依据跟 ExtensionPickerPanel.tsx 面板本身"何时把开关渲染成可点"的判断完全一致：插件要
  * installed && connectionState==='connected'；MCP 要能在 connectorStore.connectors（builtin+
  * local 合并视图，见该 store 头注释）里查到且 connectionState==='connected'。
+ *
+ * Work mode uses built-in TTSE; the code plugin is pruned even before catalog metadata arrives.
+ * Equipment restoration also uses this gate so stale server selections cannot re-enable TTSE.
  *
  * 过滤掉的失效项会同步调用 removeEnabledPlugin/removeEnabledMcp 从这个会话的开关状态里摘除
  * （用户明确要求：让面板开关同步变回关闭，不要"发了但开关看着还是开着"的认知不一致）。
@@ -30,6 +35,10 @@ export function pruneEnabledExtensions(sessionId: string): { plugins: string[]; 
 
   const plugins: string[] = [];
   for (const id of runtime.enabledPlugins) {
+    if (isPluginBlockedInWorkMode(id, useWorkspaceStore.getState().workMode)) {
+      sessionStore.removeEnabledPlugin(sessionId, id);
+      continue;
+    }
     const installedState = installed[id];
     const connectionState = pluginConnectionStateMap[id];
     // Metadata can arrive before the marketplace list after a page refresh.
@@ -72,6 +81,7 @@ export function restoreSessionEquipment(
 ): void {
   const sessionStore = useSessionStore.getState();
   sessionStore.restoreSessionEquipment(sessionId, equipment);
+  pruneEnabledExtensions(sessionId);
   const agentName = equipment.agent_template_name?.trim();
   if (agentName && sessionStore.getRuntime(sessionId)?.agentSelectionIntent.kind === 'keep') {
     sessionStore.setAgentSelectionIntent(sessionId, { kind: 'select', id: agentName });

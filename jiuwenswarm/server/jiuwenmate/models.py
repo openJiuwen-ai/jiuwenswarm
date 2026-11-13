@@ -243,6 +243,7 @@ class ColleagueView:
     group_reply_mode: str = "adaptive"
     permission_profile: str = "default"
     config_id: str = ""
+    has_unpublished_model_changes: bool = False
 
     @classmethod
     def from_definition(cls, definition: ColleagueDefinition) -> ColleagueView:
@@ -263,6 +264,12 @@ class ColleagueView:
             enabled=definition.enabled,
             current_version=definition.current_version,
             has_unpublished_changes=definition.has_unpublished_changes,
+            has_unpublished_model_changes=bool(settings.capabilities.model) and (
+                definition.current_version is None or (
+                    definition.published_settings is not None
+                    and settings.capabilities.model != definition.published_settings.capabilities.model
+                )
+            ),
             created_at=definition.created_at,
             updated_at=definition.updated_at,
         )
@@ -282,6 +289,7 @@ class ColleagueView:
             "enabled": self.enabled,
             "current_version": self.current_version,
             "has_unpublished_changes": self.has_unpublished_changes,
+            "has_unpublished_model_changes": self.has_unpublished_model_changes,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "workspace_dir": self.workspace_dir,

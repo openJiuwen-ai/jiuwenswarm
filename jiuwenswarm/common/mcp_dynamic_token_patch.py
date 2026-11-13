@@ -166,6 +166,19 @@ USER_TOKEN_EXT_KEY = "X-User-Token"
 _MAX_USER_TOKEN_LEN = 4096
 
 # ---------------------------------------------------------------------------
+# 条目级 ssl_verify：与 ``dynamic_token_url`` 同处下发（``mcp_entry`` 透传键，
+# 随企业合并整份出现在 ``mcp.servers[]`` 条目上，零解析）、**绑定生效**——
+# 仅动态 token 网关（条目携带 ``dynamic_token_url``）显式配置
+# ``"ssl_verify": False`` 时，**取动态 token的 HTTP 请求**跳过证书校验
+# （自签名 Keycloak 等）；其余一律默认校验。绑定在唯一落点收敛：
+# ``build_mcp_server_config`` 只在两者同时存在时把 ``ssl_verify: False`` 放进
+# ``McpServerConfig.params``，注册时随 ``mark_dynamic_token_server`` 登记到
+# server_id 注册表，取 token 的客户端按 server_id 现读。
+# ---------------------------------------------------------------------------
+#: 条目里 ssl_verify 的键名（``mcp_entry`` 透传键）。
+SSL_VERIFY_ENTRY_KEY = "ssl_verify"
+
+# ---------------------------------------------------------------------------
 # SDK / 会话私有槽位与幂等标记名（G.CLS.11：类外不得以 ``obj._xxx`` 字面量
 # 访问受保护成员——monkeypatch 接缝一律经常量 + setattr/getattr 访问）。
 # ---------------------------------------------------------------------------
@@ -284,21 +297,27 @@ def read_instance_credentials() -> InstanceCredentials | None:
 # ---------------------------------------------------------------------------
 
 
-def mark_dynamic_token_server(server_id: str, token_url: str) -> bool:
-    """把进程级注册的网关标记为动态 token 作用域，并登记其 token 端点。
+def mark_dynamic_token_server(
+    server_id: str, token_url: str, *, ssl_verify: bool = True
+) -> bool:
+    """把进程级注册的网关标记为动态 token 作用域，并登记 token 端点与 ssl_verify。
 
     ``token_url`` 为空（条目未携带 dynamic_token_url）时是 no-op（返回 False，
-    该网关保持静态行为）。注册成功路径上 mark 必须与 unregister 路径上 unmark
-    配对，见 ``interface_deep._register_mcp_server``。
+    该网关保持静态行为）。``ssl_verify=False`` 表示取该网关动态 token 时跳过
+    证书校验（条目级配置，见 ``SSL_VERIFY_ENTRY_KEY``）。注册成功路径上 mark
+    必须与 unregister 路径上 unmark 配对，见 ``interface_deep._register_mcp_server``。
     """
     token_url = str(token_url or "").strip()
     sid = str(server_id or "").strip()
     if not token_url or not sid:
         return False
     with _REGISTRY_LOCK:
-        entry = _DYNAMIC_SERVERS.setdefault(sid, {"refcount": 0, "token_url": token_url})
+        entry = _DYNAMIC_SERVERS.setdefault(
+            sid, {"refcount": 0, "token_url": token_url}
+        )
         entry["refcount"] += 1
         entry["token_url"] = token_url
+        entry[SSL_VERIFY_ENTRY_KEY] = bool(ssl_verify)
     return True
 
 
@@ -335,6 +354,18 @@ def _registry_token_url(server_id: str) -> str | None:
     with _REGISTRY_LOCK:
         entry = _DYNAMIC_SERVERS.get(sid)
     return str(entry["token_url"]) if entry else None
+
+
+def _registry_ssl_verify(server_id: str) -> bool:
+    """查某网关登记的 ssl_verify（未标记 / 未配置 → True）。"""
+    sid = str(server_id or "").strip()
+    if not sid:
+        return True
+    with _REGISTRY_LOCK:
+        entry = _DYNAMIC_SERVERS.get(sid)
+    if not entry:
+        return True
+    return entry.get(SSL_VERIFY_ENTRY_KEY) is not False
 
 
 # ---------------------------------------------------------------------------
@@ -818,16 +849,19 @@ async def fetch_dynamic_token(
     *,
     client: Any | None = None,
     timeout_s: float | None = None,
+    ssl_verify: bool = True,
 ) -> str:
     """取一次 token。供 preflight 一次性使用；不传 client 则临时建（async with）。
 
     ``timeout_s`` 覆盖 ``TOKEN_TIMEOUT_S``（preflight 取 min(token 超时, 探活
-    read_timeout)，避免 token 服务慢拖垮整个探活周期）。
+    read_timeout)，避免 token 服务慢拖垮整个探活周期）。``ssl_verify=False``
+    时临时客户端跳过证书校验（条目级 ssl_verify 配置）；传入 ``client`` 时
+    由调用方自行控制。
     """
     effective_timeout = TOKEN_TIMEOUT_S if timeout_s is None else timeout_s
     if client is not None:
         return await _request_token(client, token_url, creds)
-    async with httpx.AsyncClient(timeout=effective_timeout) as probe:
+    async with httpx.AsyncClient(timeout=effective_timeout, verify=ssl_verify) as probe:
         return await _request_token(probe, token_url, creds)
 
 
@@ -935,12 +969,17 @@ class DynamicTokenProvider(httpx.Auth):
         auth_query_params: dict[str, str] | None,
         token_url: str,
         server_id: str,
+        *,
+        ssl_verify: bool = True,
     ) -> None:
         self.headers = dict(auth_headers or {})
         self.query_params = dict(auth_query_params or {})
-        # 网关级 token 端点（注册表按 server_id 持有，fetch 时现查——热更命中）。
+        # 网关级 token 端点（注册表按 server_id 持有，fetch 时现读——热更命中）。
         self._token_url = str(token_url or "")
         self._server_id = str(server_id or "")
+        # 条目级 ssl_verify（strategy 按 server_id 从注册表现读后传入）：
+        # false 时取 token 的 httpx 客户端跳过证书校验（自签名网关）。
+        self._ssl_verify = bool(ssl_verify)
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._inflight: asyncio.Task | None = None
@@ -1133,8 +1172,13 @@ class DynamicTokenProvider(httpx.Auth):
                     "token client: server_id=%s",
                     self._server_id,
                 )
-            self._client = httpx.AsyncClient(timeout=TOKEN_TIMEOUT_S)
+            self._client = httpx.AsyncClient(timeout=TOKEN_TIMEOUT_S, verify=self._ssl_verify)
             self._loop = loop
+            logger.debug(
+                "[mcp-dynamic-token] token client created: server_id=%s verify=%s",
+                self._server_id,
+                self._ssl_verify,
+            )
         return await _request_token(self._client, self._token_url, creds)
 
     async def aclose(self) -> None:
@@ -1191,11 +1235,20 @@ class DynamicTokenAuthStrategy:
         # 被多个会话各自建连时，各连接的请求 id 空间 / 通知 FIFO / last-known
         # 互不可见（并发 session 交替不串身份）。旧 provider 随其连接消亡，
         # unmark 时统一逐出关闭。
+        # 条目级 ssl_verify：注册时随 mark 登记在 server_id 注册表，这里按
+        # tool_id 现读，取 token 的客户端据此决定是否跳过证书校验。
+        ssl_verify = _registry_ssl_verify(tool_id)
+        logger.debug(
+            "[mcp-dynamic-token] provider created: server_id=%s ssl_verify=%s",
+            tool_id,
+            ssl_verify,
+        )
         provider = DynamicTokenProvider(
             auth_config.config.get("auth_headers"),
             auth_config.config.get("auth_query_params"),
             token_url,
             tool_id,
+            ssl_verify=ssl_verify,
         )
         with _REGISTRY_LOCK:
             _ACTIVE_PROVIDERS.add(provider)

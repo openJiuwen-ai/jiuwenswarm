@@ -108,7 +108,7 @@ async def test_agentserver_constructs_one_host_at_deployment_data_home(
     server = _server(monkeypatch)
 
     assert len(_FakePersonalContextHost.instances) == 1
-    assert _FakePersonalContextHost.instances[0].home == data_home / "domain" / ".personal_context"
+    assert _FakePersonalContextHost.instances[0].home == data_home / ".personal_context"
     assert server._personal_context_host is _FakePersonalContextHost.instances[0]  # pylint: disable=protected-access
 
 

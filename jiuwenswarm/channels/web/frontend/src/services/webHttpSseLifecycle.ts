@@ -40,13 +40,9 @@ export function isChatSseTerminal(event: WsEvent): boolean {
   if (!isEnterprise()) {
     return event.event === 'chat.final' || event.event === 'chat.error';
   }
-  if (
-    event.event !== 'chat.processing_status' ||
-    !isRecord(event.payload) ||
-    event.payload.is_processing !== false
-  ) {
-    return false;
-  }
-  // idle 只关灯。回复连接留到没有 idle 的结束帧，或流本身结束。
-  return event.payload.idle !== true;
+  return (
+    event.event === 'chat.processing_status' &&
+    isRecord(event.payload) &&
+    event.payload.is_processing === false
+  );
 }

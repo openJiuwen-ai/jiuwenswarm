@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import urlsplit
 
 from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
@@ -153,10 +153,14 @@ _VERBATIM_SPAN_SYSTEM_PROMPT = (
 
 _MEMORY_INIT_SYSTEM_PROMPT = (
     "对全部用户行为执行一次 RecGPT-V3 式结构化行为压缩，输出 JSON"
-    " {\"units\": [...]}。每个 unit 包含 behavior_pattern（taxonomy 或"
-    " provisional tag）、preference_summary、representative_behavior_indices、"
-    "preferred_entities、temporal_activity。只压缩用户自有行为证据；每个"
-    " behavior_index 至多归入一个 unit；不要发明输入之外的 index。"
+    " {\"units\": [...]}。每个 unit 包含 behavior_pattern、preference_summary、"
+    "representative_behavior_indices、preferred_entities、temporal_activity。"
+    "behavior_pattern 必须逐字等于该 unit 所引用行为的同一个输入 tag"
+    "（taxonomy id 或 provisional:<slug>），禁止中文名、复合标签或自造标签。"
+    "同一 unit 只能引用 tag 相同的行为；每个 behavior_index 至多归入一个 unit；"
+    "不要发明输入之外的 index。"
+    "对照（非本轮事实）：行为 tag=tech-ai-ml → behavior_pattern 必须是"
+    " \"tech-ai-ml\"，不能写「人工智能」。"
 )
 
 _PLANNER_SYSTEM_PROMPT = (
@@ -188,11 +192,15 @@ _MEMORY_INCREMENTAL_SYSTEM_PROMPT = (
     "按 RecGPT-V3 Evolving Memory Curation 一次输出 Update/Retain/New。"
     "快速决定，只返回 JSON。每个旧 unit 恰好一个操作：有相关新行为时"
     " {unit_id, operation: \"update\", core: {...}}，core 综合旧单元与相关"
-    " delta（不含 timestamp）；无关时 {unit_id, operation: \"retain\"}，"
-    "不要附带 core。未匹配但形成一致新模式的 delta 写入 new_units"
-    "（结构同 update.core）；零散行为进 unmatched_behavior_indices。"
-    "无 Delete/衰减/置信度/合并。输出 {\"updated_units\": [...],"
-    " \"new_units\": [...], \"unmatched_behavior_indices\": [...]}。"
+    " delta（不含 timestamp），且 core.representative_behavior_indices 必须包含"
+    "至少一条本轮 delta index；无关时 {unit_id, operation: \"retain\"}，"
+    "不要附带 core。new_units 仅用于同 tag 的新兴趣：behavior_pattern 必须"
+    "逐字等于所引用行为的同一个输入 tag，禁止中文名/复合标签；其他零散行为"
+    "进 unmatched_behavior_indices。无 Delete/衰减/置信度/合并。"
+    "输出 {\"updated_units\": [...], \"new_units\": [...],"
+    " \"unmatched_behavior_indices\": [...]}。"
+    "对照（非本轮事实）：旧 unit pattern=tech-ai-ml；相关 delta 更新时 pattern"
+    "仍写 \"tech-ai-ml\"，不能改成「人工智能」；无关 unit 只 retain。"
 )
 
 
@@ -873,12 +881,56 @@ def validate_verbatim_spans(
     return validated
 
 
+def _coerce_mapping_behavior_index(value: Any) -> Any:
+    if _plain_int(value):
+        return value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) and value == int(value):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return value
+
+
+def coerce_mapping_batch_payload(payload: Any) -> Any:
+    """Drop extras and loosen index/span spellings before mapping validate."""
+
+    if not isinstance(payload, dict) or "mappings" not in payload:
+        return payload
+    mappings = payload.get("mappings")
+    if not isinstance(mappings, list):
+        return {"mappings": mappings}
+    fields = (
+        "behavior_index",
+        "tag",
+        "action_type",
+        "literal_focus_span",
+    )
+    coerced: list[Any] = []
+    for raw in mappings:
+        if not isinstance(raw, dict):
+            coerced.append(raw)
+            continue
+        row = {key: raw[key] for key in fields if key in raw}
+        if "behavior_index" in row:
+            row["behavior_index"] = _coerce_mapping_behavior_index(row["behavior_index"])
+        if row.get("literal_focus_span") == "":
+            row["literal_focus_span"] = None
+        for key in fields:
+            if key not in row:
+                row[key] = None if key == "literal_focus_span" else ""
+        coerced.append(row)
+    return {"mappings": coerced}
+
+
 def validate_mapping_batch(
     payload: Any,
     batch: list[CanonicalBehavior],
 ) -> tuple[dict[int, dict[str, Any]] | None, str]:
     """Validate one batch response; returns (entries by index, failure reason)."""
 
+    payload = coerce_mapping_batch_payload(payload)
     if not isinstance(payload, dict):
         return None, "mapping_schema_invalid"
     if set(payload) != {"mappings"}:
@@ -2141,7 +2193,9 @@ def _validate_semantic_core(core: Any, active_indices: set[int]) -> str:
 def validate_memory_init(
     payload: Any,
     active_indices: set[int],
+    mapping_by_index: dict[int, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, str]:
+    payload = _coerce_memory_init_payload(payload, mapping_by_index)
     if not isinstance(payload, dict):
         return None, "memory_schema_invalid"
     if set(payload) != {"units"}:
@@ -2174,6 +2228,183 @@ def validate_memory_init(
 _SHAREABLE_ACTION_TYPES = frozenset({"explicit_goal_preference_task", "correction"})
 
 
+def _tags_for_indices(
+    indices: Iterable[Any],
+    mapping_by_index: dict[int, dict[str, Any]],
+) -> set[str]:
+    tags: set[str] = set()
+    for item in indices:
+        if not _plain_int(item):
+            continue
+        tag = str((mapping_by_index.get(item) or {}).get("tag") or "")
+        if tag:
+            tags.add(tag)
+    return tags
+
+
+def _coerce_behavior_index(value: Any) -> int | None:
+    if _plain_int(value) and value >= 1:
+        return value
+    if isinstance(value, float) and value.is_integer() and value >= 1:
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        number = int(value.strip())
+        if number >= 1:
+            return number
+    return None
+
+
+def _coerce_memory_core_fields(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    core = {
+        key: raw[key]
+        for key in _MEMORY_CORE_FIELDS
+        if key in raw and key != "timestamp"
+    }
+    indices = core.get("representative_behavior_indices")
+    if isinstance(indices, list):
+        # Drop only unparsable entries. An empty list stays empty so the strict
+        # validator fail-closes instead of deleting the whole unit here.
+        coerced_indices: list[int] = []
+        for item in indices:
+            number = _coerce_behavior_index(item)
+            if number is not None:
+                coerced_indices.append(number)
+        core["representative_behavior_indices"] = coerced_indices
+    entities = core.get("preferred_entities")
+    if isinstance(entities, list):
+        core["preferred_entities"] = [
+            item for item in entities if isinstance(item, str)
+        ]
+    if core.get("temporal_activity") is None:
+        core["temporal_activity"] = ""
+    return core
+
+
+def _coerce_memory_init_payload(
+    payload: Any,
+    mapping_by_index: dict[int, dict[str, Any]] | None = None,
+) -> Any:
+    """Repair Flash-typical memory_init slips before the strict validator.
+
+    When every referenced behavior shares one mapping tag, rewrite
+    ``behavior_pattern`` to that tag so a Chinese label or wrong taxonomy id
+    does not void the whole init. Units that are not objects are kept so the
+    strict validator can fail closed instead of silently shrinking the set.
+    """
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("units"), list):
+        return payload
+    mapping = mapping_by_index or {}
+    units: list[Any] = []
+    for raw in payload["units"]:
+        core = _coerce_memory_core_fields(raw)
+        if core is None:
+            units.append(raw)
+            continue
+        indices = core.get("representative_behavior_indices")
+        if isinstance(indices, list):
+            tags = _tags_for_indices(indices, mapping)
+            if len(tags) == 1:
+                core["behavior_pattern"] = next(iter(tags))
+        units.append(core)
+    return {"units": units}
+
+
+def _coerce_memory_incremental_payload(
+    payload: Any,
+    previous_units: list[dict[str, Any]],
+    delta_indices: set[int],
+    mapping_by_index: dict[int, dict[str, Any]],
+) -> Any:
+    """Repair Flash-typical incremental slips before the strict validator.
+
+    - Keep only the three required top-level keys (drop commentary fields).
+    - Empty updates that cite no delta become retain.
+    - ``new_units`` that share one supporting tag get ``behavior_pattern``
+      rewritten to that tag; multi-tag new units are dropped (indices stay
+      unmatched via the validator's consumed/unmatched accounting).
+    - Missing old units are filled as retain so coverage stays complete.
+    """
+
+    if not isinstance(payload, dict):
+        return payload
+    updated_raw = payload.get("updated_units")
+    new_raw = payload.get("new_units")
+    unmatched_raw = payload.get("unmatched_behavior_indices")
+    if not isinstance(updated_raw, list) or not isinstance(new_raw, list):
+        return payload
+    unmatched = unmatched_raw if isinstance(unmatched_raw, list) else []
+
+    previous_by_id = {
+        str((unit.get("companion") or {}).get("unit_id") or ""): unit
+        for unit in previous_units
+    }
+    coerced_updated: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw in updated_raw:
+        if not isinstance(raw, dict):
+            continue
+        unit_id = str(raw.get("unit_id") or "")
+        if not unit_id or unit_id not in previous_by_id or unit_id in seen_ids:
+            continue
+        operation = str(raw.get("operation") or "")
+        if operation != "update":
+            coerced_updated.append({"unit_id": unit_id, "operation": "retain"})
+            seen_ids.add(unit_id)
+            continue
+        core = _coerce_memory_core_fields(raw.get("core"))
+        if core is None:
+            coerced_updated.append({"unit_id": unit_id, "operation": "retain"})
+            seen_ids.add(unit_id)
+            continue
+        indices = core.get("representative_behavior_indices")
+        if not isinstance(indices, list) or not all(_plain_int(item) for item in indices):
+            coerced_updated.append({"unit_id": unit_id, "operation": "retain"})
+            seen_ids.add(unit_id)
+            continue
+        previous_core = previous_by_id[unit_id].get("core") or {}
+        previous_pattern = previous_core.get("behavior_pattern")
+        if _valid_tag(previous_pattern):
+            core["behavior_pattern"] = previous_pattern
+        elif len(_tags_for_indices(indices, mapping_by_index)) == 1:
+            core["behavior_pattern"] = next(
+                iter(_tags_for_indices(indices, mapping_by_index))
+            )
+        if not (set(indices) & delta_indices):
+            coerced_updated.append({"unit_id": unit_id, "operation": "retain"})
+            seen_ids.add(unit_id)
+            continue
+        coerced_updated.append(
+            {"unit_id": unit_id, "operation": "update", "core": core}
+        )
+        seen_ids.add(unit_id)
+    for unit_id in previous_by_id:
+        if unit_id and unit_id not in seen_ids:
+            coerced_updated.append({"unit_id": unit_id, "operation": "retain"})
+
+    coerced_new: list[dict[str, Any]] = []
+    for raw in new_raw:
+        core = _coerce_memory_core_fields(raw)
+        if core is None:
+            continue
+        indices = core.get("representative_behavior_indices")
+        if not isinstance(indices, list) or not indices:
+            continue
+        tags = _tags_for_indices(indices, mapping_by_index)
+        if len(tags) != 1:
+            continue
+        core["behavior_pattern"] = next(iter(tags))
+        coerced_new.append(core)
+
+    return {
+        "updated_units": coerced_updated,
+        "new_units": coerced_new,
+        "unmatched_behavior_indices": unmatched,
+    }
+
+
 def validate_memory_incremental(
     payload: Any,
     previous_units: list[dict[str, Any]],
@@ -2181,6 +2412,12 @@ def validate_memory_incremental(
     active_indices: set[int],
     mapping_by_index: dict[int, dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str]:
+    payload = _coerce_memory_incremental_payload(
+        payload,
+        previous_units,
+        delta_indices,
+        mapping_by_index,
+    )
     if not isinstance(payload, dict) or set(payload) != {
         "updated_units",
         "new_units",
@@ -3024,6 +3261,38 @@ class TopicHistoryEngine:
                 logger.warning("[TopicHistory] mapping invoke failed: %s", exc)
                 response = None
             entries, failure = validate_mapping_batch(response, batch)
+            if entries is None and response is not None:
+                logger.warning(
+                    "[TopicHistory] mapping validation failed (%s); repairing once",
+                    failure,
+                )
+                try:
+                    # Mapping payloads are newline-joined records, not JSON with
+                    # request_id; keep previous_output for the model only.
+                    repair_payload = json.dumps(
+                        {
+                            "validation_error": failure,
+                            "previous_output": response,
+                            "original_request": payload,
+                            "request_id": f"mapping-repair-{uuid.uuid4().hex}",
+                        },
+                        ensure_ascii=False,
+                    )
+                    response = await self.invoke_stage(
+                        "behavior_map_batch",
+                        (
+                            f"{_MAPPING_SYSTEM_PROMPT.rstrip()}\n"
+                            "Previous output failed host validation. Return one "
+                            "JSON object {\"mappings\":[...]} only, covering every "
+                            "behavior_index exactly once; no markdown fence."
+                        ),
+                        repair_payload,
+                    )
+                    entries, failure = validate_mapping_batch(response, batch)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[TopicHistory] mapping repair failed: %s", exc)
+                    response = None
+                    entries, failure = None, "mapping_schema_invalid"
             record_provider_validation(
                 self.invoke_stage, response,
                 "business_validated" if entries is not None else "business_validation_failed",
@@ -3184,12 +3453,18 @@ class TopicHistoryEngine:
         prev_semantic = int(state["memory"].get("semantic_version") or 0)
 
         if gate.mode == "memory_init":
-            cores, reason = validate_memory_init(response, active_indices)
+            cores, reason = validate_memory_init(
+                response, active_indices, mapping_by_index=mapping,
+            )
             record_provider_validation(
                 self.invoke_stage, response,
                 "business_validated" if cores is not None else "business_validation_failed",
             )
             if cores is None:
+                logger.warning(
+                    "[TopicHistory] memory_init contract failed: %s",
+                    reason,
+                )
                 return "contract_failed", reason
             state["memory"]["units"] = self._wrap_units(
                 state,
@@ -3207,8 +3482,25 @@ class TopicHistoryEngine:
                 }
                 for unit in state["memory"]["units"]
             ]
-            consumed = sorted(active_indices)
-            unmatched: list[int] = []
+            # Only indices actually carried by units are consumed. Uncovered
+            # active behaviors stay pending so a coerced/partial init cannot
+            # claim them as compressed and hide them from later curation.
+            covered: set[int] = set()
+            for unit in state["memory"]["units"]:
+                raw_indices = (unit.get("core") or {}).get(
+                    "representative_behavior_indices"
+                ) or []
+                for item in raw_indices:
+                    if _plain_int(item):
+                        covered.add(int(item))
+            consumed = sorted(covered & active_indices)
+            unmatched = sorted(active_indices - covered)
+            if unmatched:
+                logger.warning(
+                    "[TopicHistory] memory_init left %d behaviors unmatched: %s",
+                    len(unmatched),
+                    unmatched[:20],
+                )
         else:
             result, reason = validate_memory_incremental(
                 response,
@@ -3222,6 +3514,10 @@ class TopicHistoryEngine:
                 "business_validated" if result is not None else "business_validation_failed",
             )
             if result is None:
+                logger.warning(
+                    "[TopicHistory] memory_incremental contract failed: %s",
+                    reason,
+                )
                 return "contract_failed", reason
             changed = False
             next_units: list[dict[str, Any]] = []

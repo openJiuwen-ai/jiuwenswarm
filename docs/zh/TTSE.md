@@ -4,7 +4,7 @@ TTSE（Two-Track Self-Evolution）从对话轨迹归纳环境事实（FACT）与
 
 内置 TTSE 由 `react.ttse.enabled` 控制，仅在 agent/work 模式生效。随包模板 **默认关闭**：设 `enabled: true` 后挂载 `TTSERail`（依赖 agent-core 提供该 rail；缺失时 Host 侧降级跳过）。主 code 模式只通过会话中选择 TTSE 插件启用，不再由旧开关注入内置 Rail。
 
-轨迹归纳依赖 LLM/工具 span：开启 TTSE 时 Host 会像 Skill/Symphony 演进一样自动拉起 `agent_observability`（即使其 `enabled: false`），否则 `run_evolution` 因无轨迹而静默跳过。
+轨迹归纳依赖 LLM/工具 span：开启 TTSE 时 Host 会像 Skill/Symphony 演进一样自动拉起 `observability.agent`（即使其 `enabled: false`），否则 `run_evolution` 因无轨迹而静默跳过。
 
 ```yaml
 react:

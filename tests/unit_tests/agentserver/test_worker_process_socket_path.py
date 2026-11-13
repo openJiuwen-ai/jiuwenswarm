@@ -41,8 +41,8 @@ def _tmp_dir(prefix: str) -> Path:
     return directory
 
 
-def test_short_workspace_keeps_infra_socket_path(monkeypatch, _cleanup_dirs) -> None:
-    """infra socket 路径在长度预算内时，不触发兜底。"""
+def test_short_workspace_keeps_workspace_path(monkeypatch, _cleanup_dirs) -> None:
+    """workspace 路径 <100 字节时直接使用 workspace 路径，不触发兜底。"""
     short_root = _tmp_dir("jw-ws-")
     _cleanup_dirs.append(short_root)
     monkeypatch.setattr(
@@ -51,7 +51,7 @@ def test_short_workspace_keeps_infra_socket_path(monkeypatch, _cleanup_dirs) -> 
 
     result = default_socket_path()
 
-    assert Path(result).parent == short_root / "infra" / "run"
+    assert Path(result).parent == short_root / "run"
     assert Path(result).name.startswith("runtime-")
     assert len(os.fsencode(result)) < 100
 

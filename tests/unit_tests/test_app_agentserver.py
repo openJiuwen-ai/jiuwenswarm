@@ -111,15 +111,14 @@ async def test_supervisor_attaches_before_waiting_for_worker_ipc(monkeypatch):
 def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default log path must resolve under the workspace infra/logs/core directory."""
+    """Default log path must resolve under $JIUWENSWARM_HOME/.jiuwenswarm/logs/."""
     captured: dict[str, Any] = {}
 
     def _fake_configure_log_config(config: dict[str, Any]) -> None:
         captured.update(config)
 
     home = tmp_path / "home"
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "infra" / "config")
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_logs_dir", lambda: tmp_path / "infra" / "logs")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_root_dir", lambda: tmp_path)
     monkeypatch.setenv("JIUWENSWARM_HOME", str(home))
     monkeypatch.setattr(
         "openjiuwen.core.common.logging.log_config.configure_log_config",
@@ -128,7 +127,7 @@ def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
 
     app_agentserver._configure_openjiuwen_logging()
 
-    assert captured["log_path"] == f"{tmp_path}/infra/logs/core/"
+    assert captured["log_path"] == f"{home}/.jiuwenswarm/logs/"
     assert captured["log_file"] == "run/jiuwen.log"
     # Control-plane errors must stay visible: the fallback must not silence
     # OpenJiuwen loggers after configuring them.
@@ -138,8 +137,8 @@ def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
 def test_configure_openjiuwen_logging_prefers_workspace_yaml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config_dir = tmp_path / "infra" / "config"
-    config_dir.mkdir(parents=True)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
     logging_yaml = config_dir / "logging.yaml"
     logging_yaml.write_text("logging: {}\n", encoding="utf-8")
     called: dict[str, str] = {}
@@ -147,8 +146,7 @@ def test_configure_openjiuwen_logging_prefers_workspace_yaml(
     def _fake_configure_log(path: str) -> None:
         called["path"] = path
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "infra" / "config")
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_logs_dir", lambda: tmp_path / "infra" / "logs")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_root_dir", lambda: tmp_path)
     monkeypatch.setattr(
         "openjiuwen.core.common.logging.log_config.configure_log",
         _fake_configure_log,
@@ -168,8 +166,7 @@ def test_configure_openjiuwen_logging_failure_is_non_fatal(
         _ = config
         raise RuntimeError("Read-only file system: '/logs'")
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "infra" / "config")
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_logs_dir", lambda: tmp_path / "infra" / "logs")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_root_dir", lambda: tmp_path)
     monkeypatch.setattr(
         "openjiuwen.core.common.logging.log_config.configure_log_config",
         _boom,
@@ -182,8 +179,8 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When logging.yaml exists but configure_log raises, fall back to the workspace config."""
-    config_dir = tmp_path / "infra" / "config"
-    config_dir.mkdir(parents=True)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
     (config_dir / "logging.yaml").write_text("logging: {}\n", encoding="utf-8")
 
     captured: dict[str, Any] = {}
@@ -195,8 +192,7 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
     def _capture_configure_log_config(config: dict[str, Any]) -> None:
         captured.update(config)
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "infra" / "config")
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_logs_dir", lambda: tmp_path / "infra" / "logs")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_root_dir", lambda: tmp_path)
     monkeypatch.setattr(
         "openjiuwen.core.common.logging.log_config.configure_log",
         _broken_configure_log,
@@ -209,4 +205,4 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
     app_agentserver._configure_openjiuwen_logging()
 
     assert captured.get("log_file") == "run/jiuwen.log"
-    assert captured.get("log_path", "") == f"{tmp_path}/infra/logs/core/"
+    assert captured.get("log_path", "").endswith("/.jiuwenswarm/logs/")

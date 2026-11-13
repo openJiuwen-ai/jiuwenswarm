@@ -22,7 +22,6 @@ export type EnterpriseContextSnapshot = {
 
 export type EnterpriseContextValue = EnterpriseContextSnapshot & {
   /** 有管理面资格时展示「进入管理面」；普通用户为 false。 */
-  managerAccess: boolean;
   contextError: string;
   contextSwitching: boolean;
   onContextChange: (key: string) => void;
@@ -32,7 +31,6 @@ export type EnterpriseContextValue = EnterpriseContextSnapshot & {
     userId: string;
     jiuwenclawId: string;
   }) => void;
-  onSwitchToManager: () => void;
   onLogout: () => void;
 };
 

@@ -24,7 +24,7 @@ from jiuwenswarm.common.external_cli_catalog import (
 def report_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Keep the stored model reports out of the developer's workspace."""
     home = tmp_path / "workspace"
-    monkeypatch.setattr(catalog_module, "get_infra_data_dir", lambda: home)
+    monkeypatch.setattr(catalog_module, "get_user_workspace_dir", lambda: home)
     return home
 
 

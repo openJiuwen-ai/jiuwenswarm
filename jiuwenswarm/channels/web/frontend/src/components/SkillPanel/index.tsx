@@ -1241,23 +1241,21 @@ export function SkillPanel({
               </button>
               <div className="hidden group-hover:block">
                 <div className="dropdown-menu">
-                  {!isPackage ? (
-                    <button
-                      onClick={
-                        isDisabled
-                          ? undefined
-                          : (e: React.MouseEvent) => {
-                              e.stopPropagation();
-                              handleEditSkill(skill.name, skill.skill_type);
-                            }
-                      }
-                      disabled={isDisabled}
-                      className="flex items-center w-full px-3 py-2 text-xs text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                      data-testid="skill-panel-my-skill-card-menu-edit"
-                    >
-                      {t('skills.actions.edit')}
-                    </button>
-                  ) : null}
+                  <button
+                    onClick={
+                      isDisabled
+                        ? undefined
+                        : (e: React.MouseEvent) => {
+                            e.stopPropagation();
+                            handleEditSkill(skill.name, skill.skill_type);
+                          }
+                    }
+                    disabled={isDisabled}
+                    className="flex items-center w-full px-3 py-2 text-xs text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                    data-testid="skill-panel-my-skill-card-menu-edit"
+                  >
+                    {t('skills.actions.edit')}
+                  </button>
                   <button
                     onClick={
                       isUninstalling

@@ -103,6 +103,8 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 | `session_update_kind` | For ACP `session/update` bridge; values match `constants.ACP_SESSION_UPDATE_KINDS` |
 | `expected_output_modes` | A2A `acceptedOutputModes` |
 
+At the Gateway-facing WebSocket ingress, AgentServer converts an explicitly supplied method to its own `ReqMethod`. Unknown or non-string methods receive a final error response with `payload.code` set to `METHOD_NOT_FOUND`. Internal requests without a method retain their existing path.
+
 **Common `params` keys** (extend as needed; names below cooperate with ACP bridging):
 
 | Key | Purpose |

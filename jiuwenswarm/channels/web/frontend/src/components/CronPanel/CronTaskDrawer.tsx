@@ -124,10 +124,6 @@ interface CronTaskDrawerProps {
   initial?: CronTaskFormValue;
   projects: ProjectInfo[];
   targetOptions: { value: string; label: string; disabled?: boolean }[];
-  // 主动推荐自动维护的 job（proactive-tick-auto）编辑时锁定：只能改执行计划(cron表达式)和时区，
-  // 其余字段（名称/模型/描述/推送频道/启用）由 Settings/cron_sync 管理，只读展示
-  // （沿用 upstream 提交 59cf6de7 的约束，见 index.tsx handleEditSubmit）
-  proactiveLocked?: boolean;
   onClose: () => void;
   onSubmit: (value: CronTaskFormValue) => void;
   onSwitchToManual?: () => void;
@@ -192,7 +188,6 @@ export default function CronTaskDrawer({
   initial,
   projects,
   targetOptions,
-  proactiveLocked = false,
   onClose,
   onSubmit,
   onSwitchToManual,
@@ -266,8 +261,6 @@ export default function CronTaskDrawer({
       : scheduleAlreadyExpired
         ? t('cron.drawer.scheduleAlreadyExpiredHint')
         : undefined;
-  const lockedTitle = proactiveLocked ? (t('cron.autoManagedToggleDisabled') ?? undefined) : undefined;
-
   interface SelectFieldConfig {
     testId: string;
     label: string;
@@ -307,7 +300,6 @@ export default function CronTaskDrawer({
       labelTestId: 'cron-drawer-channel-label',
       value: form.targets,
       options: targetOptions,
-      disabled: proactiveLocked,
       onChange: (v) => setForm({ ...form, targets: v }),
     },
     {
@@ -376,15 +368,6 @@ export default function CronTaskDrawer({
         <div className="flex-1 overflow-y-auto">
           {/* ── Form body ───────────────────────────────────────── */}
           <div className="flex flex-col gap-5">
-            {proactiveLocked && (
-              <p
-                className="rounded-md bg-bg-muted px-3 py-2 text-xs text-text-muted"
-                data-testid="cron-drawer-locked-hint"
-              >
-                {t('cron.autoManagedHint')}
-              </p>
-            )}
-
             {/* Name */}
             <FormTextField
               label={t('cron.drawer.fieldName')}
@@ -407,8 +390,6 @@ export default function CronTaskDrawer({
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder={t('cron.drawer.placeholderInput') ?? undefined}
                   maxLength={CRON_NAME_MAX_LENGTH}
-                  disabled={proactiveLocked}
-                  title={lockedTitle}
                   data-testid="cron-drawer-name-input"
                   className={fieldClass}
                 />
@@ -456,8 +437,6 @@ export default function CronTaskDrawer({
                     placeholder={t('cron.drawer.placeholderInput') ?? undefined}
                     rows={4}
                     maxLength={CRON_DESCRIPTION_MAX_LENGTH}
-                    disabled={proactiveLocked}
-                    title={lockedTitle}
                     data-testid="cron-drawer-description-input"
                     className="w-full resize-none border-0 bg-transparent py-1.5 text-sm text-text outline-none placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
                   />
@@ -465,7 +444,7 @@ export default function CronTaskDrawer({
                     className="cron-drawer-mode-model-row flex items-center gap-4 border-border/60"
                     data-testid="cron-drawer-mode-model-row"
                   >
-                    <ModeSelector value={form.mode} onChange={handleModeChange} disabled={proactiveLocked} />
+                    <ModeSelector value={form.mode} onChange={handleModeChange} />
                     <ModelPicker
                       testIdPrefix="cron-model-picker"
                       value={form.modelName}
@@ -479,7 +458,6 @@ export default function CronTaskDrawer({
                         setForm({ ...form, modelSelection, modelName: matchedName });
                       }}
                       includeModelGroups={false}
-                      disabled={proactiveLocked}
                     />
                   </div>
                   {defaultModelHint && (
@@ -516,7 +494,6 @@ export default function CronTaskDrawer({
               timezone={form.timezone}
               wakeOffsetSeconds={form.wakeOffsetSeconds}
               onWakeOffsetSecondsChange={(wakeOffsetSeconds) => setForm({ ...form, wakeOffsetSeconds })}
-              wakeOffsetDisabled={proactiveLocked}
             />
 
             {/* Effective date (currently hidden, see CRON_EFFECTIVE_DATE_UI_ENABLED) */}
@@ -536,8 +513,6 @@ export default function CronTaskDrawer({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                disabled={proactiveLocked}
-                title={lockedTitle}
                 onClick={() => setForm({ ...form, enabled: !form.enabled })}
                 data-testid="cron-drawer-enabled-toggle"
                 data-variant={form.enabled ? 'enabled' : 'disabled'}

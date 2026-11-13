@@ -24,7 +24,6 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_clip_index,
     video_concat_source_ids,
 )
-from jiuwenswarm.server.runtime.designer.ffmpeg_runner import run_off_loop
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     canvas_output_dir,
     node_output_image_paths,
@@ -685,11 +684,8 @@ class ClipNodeHandler:
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
         cfg = dict(cfg)
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
-            extract_last_frame,
-            resolve_gated_last_frame_chain_off_loop,
             scrub_restated_speech,
-            stamp_last_frame_onto_next_clips,
-            stamp_scene_last_frame_chain,
+            stamp_speech_onto_next_clips,
         )
 
         cfg = scrub_restated_speech(cfg)
@@ -700,10 +696,6 @@ class ClipNodeHandler:
         )
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_files = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        scene_chain = await resolve_gated_last_frame_chain_off_loop(cfg, ctx)
-        if scene_chain:
-            cfg = stamp_scene_last_frame_chain(cfg, scene_chain)
-            node["config"] = cfg
         duration = video_duration_seconds(ctx, node)
         note_video_duration(ctx, node, duration)
         prompt = build_clip_prompt(ctx.graph, node, ctx)
@@ -837,24 +829,17 @@ class ClipNodeHandler:
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("post-clip wan-prompt stamp failed", exc_info=True)
-            # Keep last-frame files for debug; do not attach them as next-clip refs.
             try:
-                frame_out = path.with_name(f"{path.stem}_lastframe.jpg")
-                extracted = await run_off_loop(extract_last_frame, path, frame_out)
-                if extracted is not None:
-                    stamp_last_frame_onto_next_clips(
-                        graph,
-                        completed_clip_id=str(node.get("id") or ""),
-                        last_frame_path=str(extracted),
-                        clip_index=clip_index,
-                        speech_line=str(
-                            cfg.get("speech_line") or cfg.get("previous_clip_speech") or ""
-                        ),
-                    )
-                    cfg["last_frame_path"] = str(extracted)
-                    node["config"] = cfg
+                stamp_speech_onto_next_clips(
+                    graph,
+                    completed_clip_id=str(node.get("id") or ""),
+                    clip_index=clip_index,
+                    speech_line=str(
+                        cfg.get("speech_line") or cfg.get("previous_clip_speech") or ""
+                    ),
+                )
             except Exception:  # noqa: BLE001
-                logger.debug("post-clip last-frame stamp failed", exc_info=True)
+                logger.debug("post-clip speech handoff stamp failed", exc_info=True)
         except Exception as exc:
             raise RuntimeError(
                 f"Video gen failed for shot {clip_index}; image→mp4 fallback is disabled: {exc}"

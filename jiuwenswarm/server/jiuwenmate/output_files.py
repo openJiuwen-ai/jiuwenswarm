@@ -137,6 +137,44 @@ class WorkspaceOutputFiles:
         except (OSError, ValueError, PersistentAgentError):
             return None
 
+    def list_artifacts(self, namespace_id: str, agent_id: str) -> list[dict[str, object]]:
+        """List this employee's completed output directories for the local Web owner."""
+        from jiuwenswarm.common.file_download_token import build_file_download_info
+
+        root = self._workspaces.path(namespace_id, agent_id)
+        self._workspaces.shared_asset_roots(namespace_id, agent_id)
+        sessions = root / "sessions"
+        if not sessions.is_dir():
+            return []
+        found: list[tuple[int, dict[str, object]]] = []
+        for session in sessions.iterdir():
+            if not _IDENTIFIER.fullmatch(session.name):
+                continue
+            try:
+                self._workspaces.validate_session_paths(namespace_id, agent_id, session.name)
+                output = session / "output"
+                if output.is_symlink() or not output.is_dir():
+                    continue
+                for entry in output.iterdir():
+                    logical = f"sessions/{session.name}/output/{entry.name}"
+                    path = self._workspaces.resolve_shared_output(namespace_id, agent_id, logical)
+                    if path is None:
+                        continue
+                    metadata = path.stat()
+                    download = build_file_download_info(str(path), path.name, session.name)
+                    found.append((metadata.st_mtime_ns, {
+                        "output_id": "workspace_" + hashlib.sha256(logical.encode("utf-8")).hexdigest()[:32],
+                        "name": path.name,
+                        "path": logical,
+                        "size": metadata.st_size,
+                        "caption": None,
+                        "share_mode": "attachment",
+                        "download_url": download["download_url"],
+                    }))
+            except (OSError, PersistentAgentError):
+                continue
+        return [item for _, item in sorted(found, key=lambda row: row[0], reverse=True)]
+
     def verify(self, execution: ExecutionContext, output: OutputPayload) -> None:
         """Verify the request-authorized shared output without creating a retained copy."""
         if output.share_mode not in FILE_SHARE_MODES:

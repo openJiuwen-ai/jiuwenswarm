@@ -485,7 +485,7 @@ export function EnterpriseSkillSourcePanel({
           className={`${btnClass} text-text border-text hover:bg-secondary/50`}
           data-testid="skill-panel-enterprise-update-btn"
         >
-          {isInstalling ? t('common.loading') : t('common.update')}
+          {isInstalling ? t('common.loading') : t('skills.actions.update')}
         </button>
       );
     }

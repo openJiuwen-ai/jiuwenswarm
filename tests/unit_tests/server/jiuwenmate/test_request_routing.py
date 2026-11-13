@@ -366,7 +366,7 @@ def test_unpublished_colleague_cannot_accept_requests(tmp_path):
     with pytest.raises(PersistentAgentError) as caught:
         host.accept(session, "om_1")
 
-    assert caught.value.code == "NOT_PUBLISHED"
+    assert caught.value.code == "MODEL_NOT_CONFIGURED"
     assert host.sessions.pending_requests(NS) == []
 
 

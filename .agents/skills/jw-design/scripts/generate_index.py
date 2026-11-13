@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 import lib_frontmatter as lib
-from document_identity import git_identity
+from document_identity import GitIdentity, git_identity
 import yaml
 
 _GENERATED_AT_RE = re.compile(r"^<!-- generated-at:.*-->\s*$", re.MULTILINE)
@@ -145,8 +145,26 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def _normalize(text: str) -> str:
-    """剔除易变的 generated-at 行，用于 --check 比对。"""
+def index_metadata(path: Path, title: str, identity: GitIdentity) -> dict:
+    """Build a generated index header that keeps the index's original author.
+
+    An index is attributed once, to whoever first generated it. Regenerating
+    it later is a mechanical refresh, not authorship, so the existing
+    ``author`` / ``author_email`` survive and the current Git identity is used
+    only when the index is new or has no readable author yet.
+    """
+    author: object = identity.name
+    author_email: object = identity.email
+    if path.is_file():
+        existing, _, error = lib.parse_frontmatter(path.read_text(encoding="utf-8"))
+        if error is None and existing.get("author"):
+            author = existing["author"]
+            author_email = existing.get("author_email")
+    return {"title": title, "author": author, "author_email": author_email, "generated": True}
+
+
+def normalize(text: str) -> str:
+    """剔除易变的 generated-at 行，用于 --check 和重新生成时比对内容是否变化。"""
     return _GENERATED_AT_RE.sub("", text)
 
 
@@ -162,22 +180,25 @@ def main(argv: list[str] | None = None) -> int:
         timestamp = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).isoformat(timespec="minutes")
         content = build_index(records, timestamp)
         identity = git_identity(root.resolve())
-        metadata = {"title": "设计文档索引", "author": identity.name, "author_email": identity.email, "generated": True}
+        index_path = root / lib.INDEX_FILE
+        metadata = index_metadata(index_path, "设计文档索引", identity)
         header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
         content = f"---\n{header}\n---\n\n{content}"
-        index_path = root / lib.INDEX_FILE
 
         if args.check:
             if not index_path.is_file():
                 print("INDEX.md 不存在，需要生成。", file=sys.stderr)
                 return 1
             current = index_path.read_text(encoding="utf-8")
-            if _normalize(current) == _normalize(content):
+            if normalize(current) == normalize(content):
                 print("✓ INDEX.md 已是最新。")
                 return 0
             print("✗ INDEX.md 已过期，请运行：python .agents/skills/jw-design/scripts/generate_index.py", file=sys.stderr)
             return 1
 
+        if index_path.is_file() and normalize(index_path.read_text(encoding="utf-8")) == normalize(content):
+            print("✓ INDEX.md 已是最新，未改写。")
+            return 0
         index_path.write_text(content, encoding="utf-8")
         print(f"✓ 已生成 {lib.INDEX_FILE}（{len([r for r in records if not r.parse_error])} 篇文档）。")
         return 0

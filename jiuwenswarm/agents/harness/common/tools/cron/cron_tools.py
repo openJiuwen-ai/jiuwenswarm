@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 from jiuwenswarm.runtime.cron.cron_expr import normalize_cron_expr
-from jiuwenswarm.runtime.cron.store import CronJobStore, _PROACTIVE_TICK_MODE
+from jiuwenswarm.runtime.cron.store import CronJobStore
 from jiuwenswarm.runtime.cron.models import (
     CronJob,
     CronTargetChannel,
@@ -541,18 +541,7 @@ class CronTools:
             result = await self._send("list", {})
             return list(result.get("data") or [])
         jobs = await self._view_jobs()
-        # 给受保护的 proactive.tick job 标记 protected，让 LLM 在批量操作时
-        # （如"删除所有定时任务"）能识别并优雅跳过，而不是删到一半才遇错。
-        out = []
-        for j in jobs:
-            d = j.to_dict()
-            if str(d.get("mode") or "").strip().lower() == _PROACTIVE_TICK_MODE:
-                d["protected"] = True
-                d["protected_reason"] = (
-                    "由主动推荐开关自动维护，不可删除/启停；如需关闭请到设置→主动推荐关闭开关。"
-                )
-            out.append(d)
-        return out
+        return [j.to_dict() for j in jobs]
 
     async def get_authoritative_job(self, job_id: str) -> Any:
         """Read the owner-scoped host store, never a snapshot or local projection."""
@@ -760,14 +749,8 @@ class CronTools:
         return result
 
     async def delete_job(self, job_id: str) -> Any:
-        # proactive.tick 保护：读只读视图拦截（与 toggle_job 一致），
-        # 避免把受保护的定时任务删除请求转发给 Gateway 后再报错。
         existing = await self._view_job(job_id)
         remote_gateway = self._uses_gateway_command_ack()
-        if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
-            raise RuntimeError(
-                "主动推荐定时任务由设置→主动推荐开关控制，不能删除；请到设置关闭开关。"
-            )
         if existing is None:
             if remote_gateway:
                 result = await self._send("delete", {"job_id": job_id})
@@ -792,14 +775,8 @@ class CronTools:
         return True
 
     async def toggle_job(self, job_id: str, enabled: bool) -> Any:
-        # proactive.tick job 的开关由 config 的 proactive_recommendation.enabled 驱动，
-        # 禁止手动 toggle——否则会与 config 开关不一致。引导用户去设置关开关。
         existing = await self._view_job(job_id)
         remote_gateway = self._uses_gateway_command_ack()
-        if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
-            raise RuntimeError(
-                "主动推荐定时任务由设置→主动推荐开关控制，不能手动启停；请到设置→主动推荐操作。"
-            )
         if existing is None:
             if remote_gateway:
                 return (await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})).get("data")

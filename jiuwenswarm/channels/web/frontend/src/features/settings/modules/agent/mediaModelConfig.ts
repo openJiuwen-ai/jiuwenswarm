@@ -111,3 +111,26 @@ export function buildMediaModelValidationPayload(
   if (vendorKey) payload.vendor_key = vendorKey;
   return payload;
 }
+
+/** Card-level probe for a saved topic connection (key already loaded). */
+export function buildSavedTopicModelValidationPayload(
+  config: Readonly<Record<string, unknown>>,
+): ModelValidationPayload | null {
+  const apiBase = String(config.api_base ?? '').trim();
+  const apiKey = String(config.api_key ?? '').trim();
+  const model = String(config.model ?? '').trim();
+  const modelProvider = (String(config.provider ?? '').trim() || 'OpenAI');
+  if (!apiBase || !apiKey || !model) return null;
+  const payload: ModelValidationPayload = {
+    api_base: apiBase,
+    api_key: apiKey,
+    model,
+    model_provider: modelProvider,
+    reasoning_level: '',
+  };
+  const endpointProfile = String(config.endpoint_profile ?? '').trim();
+  const vendorKey = String(config.vendor_key ?? '').trim();
+  if (endpointProfile) payload.endpoint_profile = endpointProfile;
+  if (vendorKey) payload.vendor_key = vendorKey;
+  return payload;
+}

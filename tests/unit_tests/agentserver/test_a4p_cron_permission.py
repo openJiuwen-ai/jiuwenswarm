@@ -40,13 +40,13 @@ def _web_authorizer_route() -> AuthorizerRoute:
     )
 
 
-@pytest.fixture(autouse=True)
-def _cron_execution_context():
+@pytest.fixture(autouse=True, params=["__cron__", "web"])
+def _cron_execution_context(request):
     AUTHORIZATION_EXECUTION_CONTEXTS.activate(
         AuthorizationExecutionContext(
             request_id="cron-request",
             session_id="cron-session",
-            channel_id="__cron__",
+            channel_id=request.param,
             agent_id="agent-1",
             metadata={"cron": {"job_id": "job-1"}},
         )

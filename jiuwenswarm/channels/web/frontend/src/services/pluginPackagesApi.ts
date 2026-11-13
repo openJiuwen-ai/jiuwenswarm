@@ -53,6 +53,26 @@ export class PluginInstallPendingError extends Error {
   }
 }
 
+export interface PluginReplacementConflict {
+  package_id: string;
+  local_version: string;
+  hub_version: string;
+  local_fingerprint: string;
+}
+
+export interface PluginInstallOptions {
+  from_hub?: boolean;
+  replace_local?: boolean;
+  local_fingerprint?: string;
+}
+
+export class PluginReplacementError extends Error {
+  constructor(public code: string, public conflict?: PluginReplacementConflict) {
+    super(code);
+    this.name = 'PluginReplacementError';
+  }
+}
+
 interface RawPluginPackageSummary {
   id: string;
   packageName?: string;
@@ -156,10 +176,15 @@ export const pluginPackagesApi = {
     webRequest<{ id: string }>('plugin_packages.import_local', params),
   // v2 §1.6.3：失败且带 pending_connectors → 包成 PluginInstallPendingError，让调用方走连接
   // 续跑；不带 pending_connectors 的纯硬失败原样上抛。
-  install: async (id: string): Promise<void> => {
+  install: async (id: string, options: PluginInstallOptions = {}): Promise<void> => {
     try {
-      await webRequest<void>('plugin_packages.install', { id }, { timeoutMs: 180000 });
+      await webRequest<void>('plugin_packages.install', { id, ...options }, { timeoutMs: 180000 });
     } catch (error) {
+      const payload = (error as WebError | undefined)?.payload as
+        { error_code?: string; conflict?: PluginReplacementConflict } | undefined;
+      if (payload?.error_code?.startsWith('PLUGIN_')) {
+        throw new PluginReplacementError(payload.error_code, payload.conflict);
+      }
       const pendingConnectors = extractPendingConnectors(error);
       if (pendingConnectors) {
         throw new PluginInstallPendingError(error instanceof Error ? error.message : String(error), pendingConnectors);

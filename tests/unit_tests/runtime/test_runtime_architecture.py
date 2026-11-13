@@ -72,7 +72,6 @@ def _runtime_dependency_sources() -> list[Path]:
             / "multi_session_toolkits.py",
             package / "server" / "runtime" / "agent_adapter" / "team_helpers.py",
             package / "agents" / "harness" / "team" / "remote_member_bootstrap.py",
-            package / "server" / "runtime" / "proactive_adapter.py",
         ]
     )
     return sorted(set(sources))

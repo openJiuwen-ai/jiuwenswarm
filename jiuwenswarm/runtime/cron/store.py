@@ -13,10 +13,8 @@ from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.common.utils import get_cron_jobs_path
 from jiuwenswarm.runtime.cron.cron_job_mutations import (
     _PROACTIVE_TICK_MODE,
-    _ProactiveJobProtected,
     apply_cron_job_patch,
     build_new_cron_job,
-    ensure_proactive_deletable,
     migrate_work_mode_on_items,
     parse_cron_jobs,
 )
@@ -271,8 +269,6 @@ class FileCronJobStore:
         job_id = str(job_id or "").strip()
         if not job_id:
             return False
-        if not force:
-            ensure_proactive_deletable(await self.get_job(job_id), force=False)
 
         def _body() -> bool:
             data = self._read_json_unlocked()
@@ -393,5 +389,4 @@ __all__ = [
     "CronJobStore",
     "CronJob",
     "_PROACTIVE_TICK_MODE",
-    "_ProactiveJobProtected",
 ]

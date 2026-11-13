@@ -61,11 +61,6 @@ def _install_stop_handlers(loop: asyncio.AbstractEventLoop, task: asyncio.Task) 
 async def _wait_for_worker(task: asyncio.Task) -> None:
     await task
 
-from jiuwenswarm.common.utils import (
-    configure_openjiuwen_core_logging,
-    configure_openjiuwen_runtime_logging,
-)
-
 
 def _activate_managed_external_cli_paths() -> None:
     """Expose managed external CLI SDK paths before runtime modules load.
@@ -90,11 +85,6 @@ def _activate_managed_external_cli_paths() -> None:
 
 
 def main() -> None:
-    # 日志引导：须先于任何可能创建 openjiwen logger 的导入执行。
-    # 置于 main() 而非模块级：front/supervisor 进程也会 import 本模块，
-    # 模块级调用会在导入期加载 openjiuwen，破坏 front 侧导入隔离契约。
-    configure_openjiuwen_runtime_logging()
-    configure_openjiuwen_core_logging()
     logging.basicConfig(level=logging.INFO)
     from jiuwenswarm.common.background_logging import (
         enable_background_logging,
@@ -183,15 +173,6 @@ def main() -> None:
         exit_code = 0
     except WorkerForceExit as exc:
         logging.getLogger(__name__).exception("[Worker] fatal exit with unfinished shutdown steps: %s", exc)
-        # The parent owns stderr; file-only logging must not hide fatal diagnostics.
-        if sys.stderr is not None:
-            stderr_handler = logging.StreamHandler(sys.stderr)
-            fatal_record = logging.LogRecord(
-                __name__, logging.CRITICAL, __file__, 0,
-                "[Worker] fatal exit with unfinished shutdown steps: %s", (exc,),
-                sys.exc_info(),
-            )
-            stderr_handler.handle(fatal_record)
         if stop_background_logging():
             logging.shutdown()
         # A cancelled to_thread load may still own non-daemon executor threads.

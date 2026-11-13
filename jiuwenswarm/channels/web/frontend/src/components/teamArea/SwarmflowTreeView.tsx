@@ -74,6 +74,7 @@ import {
 } from './AgentDetailModal';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { Toast } from '../ConnectorMarket/Toast';
+import './SwarmflowTreeView.css';
 
 // ── 状态图标映射 ──────────────────────────────────────────
 
@@ -133,7 +134,7 @@ function ProgressBar({ completed, total }: { completed: number; total: number })
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
   return (
     <div className="flex items-center gap-2 shrink-0">
-      <div className="w-16 h-1.5 rounded-full bg-secondary overflow-hidden">
+      <div className="swarmflow-run-progress-track w-16 h-1.5 rounded-full bg-secondary overflow-hidden">
         <div
           className="h-full rounded-full bg-blue-500 transition-all"
           style={{ width: `${pct}%` }}
@@ -1552,25 +1553,27 @@ function RunNode({
     }`;
 
   return (
-    <div className="border border-border rounded-lg overflow-hidden bg-card/50" data-testid="team-area-swarmflow-run" data-variant={run.id}>
+    <div className="team-area-swarmflow-run border border-border rounded-lg overflow-hidden bg-card/50" data-testid="team-area-swarmflow-run" data-variant={run.id}>
       <div
-        className={`flex items-center gap-2 px-3 ${compressed ? 'py-1' : 'py-2.5'} bg-secondary/30 cursor-pointer hover:bg-secondary/50 transition-colors`}
+        className={`team-area-swarmflow-run-header px-3 ${compressed ? 'py-1' : 'py-2.5'} bg-secondary/30 cursor-pointer hover:bg-secondary/50 transition-colors`}
         onClick={() => setExpanded((v) => !v)}
         data-testid="team-area-swarmflow-run-header"
         data-variant={run.id}
       >
         {expanded ? (
-          <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
+          <ChevronDown className="swarmflow-run-header__chev w-4 h-4 text-text-muted shrink-0" />
         ) : (
-          <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
+          <ChevronRight className="swarmflow-run-header__chev w-4 h-4 text-text-muted shrink-0" />
         )}
-        <StatusIcon status={run.status} className="w-4 h-4 shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-text-strong truncate" title={run.name} data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
+        <StatusIcon status={run.status} className="swarmflow-run-header__status w-4 h-4 shrink-0" />
+        {/* 名称轨：换行由 SwarmflowTreeView.css 的 grid 模板决定；overflow 裁切是
+            止血——让 shrink-0 的状态文案与执行者徽章无法向右溢出绘制到指标簇之上。 */}
+        <div className="swarmflow-run-nametrack">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="min-w-[5rem] flex-1 truncate text-sm font-semibold text-text-strong" title={run.name} data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
               {run.name}
             </span>
-            <span className="text-xs text-text-muted shrink-0" data-testid="team-area-swarmflow-run-status" data-variant={run.id}>
+            <span className="team-area-swarmflow-run-status-text text-xs text-text-muted shrink-0" data-testid="team-area-swarmflow-run-status" data-variant={run.id}>
               {statusText(run.status, t)}
             </span>
             {run.executor && (
@@ -1586,7 +1589,7 @@ function RunNode({
                   imageClassName="rounded-full"
                   alt={run.executor}
                 />
-                <span className="max-w-24 truncate">{run.executor}</span>
+                <span className="swarmflow-run-executor-name max-w-24 truncate">{run.executor}</span>
               </span>
             )}
           </div>
@@ -1594,65 +1597,86 @@ function RunNode({
             <p className="text-xs text-text-muted truncate mt-0.5" data-testid="team-area-swarmflow-run-summary" data-variant={run.id}>{run.summary}</p>
           )}
         </div>
-        {waitingCount > 0 && (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 shrink-0 animate-pulse" data-testid="team-area-swarmflow-run-waiting-badge" data-variant={run.id}>
-            {t('swarmflow.waitingForHuman', { count: waitingCount })}
-          </span>
-        )}
-        <ProgressBar completed={completedCount} total={totalCount} />
-        {run.budget && (
-          <span
-            className={`text-xs shrink-0 tabular-nums px-1.5 py-0.5 rounded-full ${
-              run.budget.exhausted
-                ? 'bg-red-500/10 text-red-500'
-                : 'bg-blue-500/10 text-blue-500'
-            }`}
-            title={t('swarmflow.sessionBudget')}
-            data-testid="team-area-swarmflow-run-budget"
-            data-variant="session"
-          >
-            {t('swarmflow.sessionBudgetShort')} {formatBudgetK(run.budget)}
-            {run.budget.total == null && ` · ${t('swarmflow.budgetUnlimited')}`}
-          </span>
-        )}
-        {run.workflow_budget && (
-          <span
-            className={`text-xs shrink-0 tabular-nums px-1.5 py-0.5 rounded-full ${
-              run.workflow_budget.exhausted
-                ? 'bg-red-500/10 text-red-500'
-                : 'bg-green-500/10 text-green-500'
-            }`}
-            title={t('swarmflow.runBudget')}
-          >
-            {t('swarmflow.runBudgetShort')} {formatBudgetK(run.workflow_budget)}
-            {run.workflow_budget.total == null && ` · ${t('swarmflow.budgetUnlimited')}`}
-          </span>
-        )}
-        {budgetExhaustedScope && (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/10 text-red-500 shrink-0">
-            {t(
-              budgetExhaustedScope === 'session'
-                ? 'swarmflow.budgetExhaustedSession'
-                : 'swarmflow.budgetExhaustedWorkflow',
+        {/* 指标簇 + 控制按钮。整簇作为一个 grid item：宽档与名称同排贴右，窄档由
+            grid 模板换到第二行、左沿对齐名称轨。 */}
+        <div className="swarmflow-run-metrics flex min-w-0 items-center gap-x-2 gap-y-1">
+          {waitingCount > 0 && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 shrink-0 animate-pulse" data-testid="team-area-swarmflow-run-waiting-badge" data-variant={run.id}>
+              {t('swarmflow.waitingForHuman', { count: waitingCount })}
+            </span>
+          )}
+          <ProgressBar completed={completedCount} total={totalCount} />
+          {/* 两个预算徽章成组，避免被拆到两行 */}
+          <div className="swarmflow-run-budgets">
+            {run.budget && (
+              <span
+                className={`text-xs shrink-0 tabular-nums px-1.5 py-0.5 rounded-full ${
+                  run.budget.exhausted
+                    ? 'bg-red-500/10 text-red-500'
+                    : 'bg-blue-500/10 text-blue-500'
+                }`}
+                title={t('swarmflow.sessionBudget')}
+                data-testid="team-area-swarmflow-run-budget"
+                data-variant="session"
+              >
+                {t('swarmflow.sessionBudgetShort')} {formatBudgetK(run.budget)}
+                {run.budget.total == null && (
+                  <span className="swarmflow-run-unbounded"> · {t('swarmflow.budgetUnlimited')}</span>
+                )}
+              </span>
             )}
-          </span>
-        )}
-        {(run.status === 'running' || run.status === 'paused') && (
-          <div
-            className="flex items-center gap-1 shrink-0"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.pauseResumeHint')}
-              className={`${controlBtnClass} hover:text-amber-500`}
-              disabled={controlsDisabled || pendingControl !== null}
-              data-testid="team-area-swarmflow-run-pause-btn"
-              data-variant={run.status === 'running' ? 'pause' : 'resume'}
-              onClick={() => {
-                if (run.status !== 'running') {
-                  setPendingControl('resume');
-                  void webRequest('swarmflow.resume', {
+            {run.workflow_budget && (
+              <span
+                className={`text-xs shrink-0 tabular-nums px-1.5 py-0.5 rounded-full ${
+                  run.workflow_budget.exhausted
+                    ? 'bg-red-500/10 text-red-500'
+                    : 'bg-green-500/10 text-green-500'
+                }`}
+                title={t('swarmflow.runBudget')}
+              >
+                {t('swarmflow.runBudgetShort')} {formatBudgetK(run.workflow_budget)}
+                {run.workflow_budget.total == null && (
+                  <span className="swarmflow-run-unbounded"> · {t('swarmflow.budgetUnlimited')}</span>
+                )}
+              </span>
+            )}
+          </div>
+          {budgetExhaustedScope && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/10 text-red-500 shrink-0">
+              {t(
+                budgetExhaustedScope === 'session'
+                  ? 'swarmflow.budgetExhaustedSession'
+                  : 'swarmflow.budgetExhaustedWorkflow',
+              )}
+            </span>
+          )}
+          {(run.status === 'running' || run.status === 'paused') && (
+            <div
+              className="flex items-center gap-1 shrink-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.pauseResumeHint')}
+                className={`${controlBtnClass} hover:text-amber-500`}
+                disabled={controlsDisabled || pendingControl !== null}
+                data-testid="team-area-swarmflow-run-pause-btn"
+                data-variant={run.status === 'running' ? 'pause' : 'resume'}
+                onClick={() => {
+                  if (run.status !== 'running') {
+                    setPendingControl('resume');
+                    void webRequest('swarmflow.resume', {
+                      session_id: sessionId,
+                      run_id: run.id,
+                    }).catch((err) => {
+                      if (applyControlFailure(err)) {
+                        setPendingControl(null);
+                      }
+                    });
+                    return;
+                  }
+                  setPendingControl('pause');
+                  void webRequest('swarmflow.pause', {
                     session_id: sessionId,
                     run_id: run.id,
                   }).catch((err) => {
@@ -1660,52 +1684,42 @@ function RunNode({
                       setPendingControl(null);
                     }
                   });
-                  return;
-                }
-                setPendingControl('pause');
-                void webRequest('swarmflow.pause', {
-                  session_id: sessionId,
-                  run_id: run.id,
-                }).catch((err) => {
-                  if (applyControlFailure(err)) {
-                    setPendingControl(null);
-                  }
-                });
-              }}
-            >
-              {pendingControl === 'pause' || pendingControl === 'resume' ? (
-                <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
-              ) : run.status === 'running' ? (
-                <Pause className="w-4 h-4" />
-              ) : (
-                <Play className="w-4 h-4" />
-              )}
-            </button>
-            <button
-              type="button"
-              title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.stopHint')}
-              className={`${controlBtnClass} hover:text-red-500`}
-              disabled={controlsDisabled || pendingControl !== null}
-              data-testid="team-area-swarmflow-run-stop-btn"
-              onClick={() => {
-                setPendingControl('stop');
-                void webRequest('swarmflow.stop', { session_id: sessionId, run_id: run.id }).catch(
-                  (err) => {
-                    if (applyControlFailure(err)) {
-                      setPendingControl(null);
-                    }
-                  },
-                );
-              }}
-            >
-              {pendingControl === 'stop' ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
-              ) : (
-                <Square className="w-3.5 h-3.5" />
-              )}
-            </button>
-          </div>
-        )}
+                }}
+              >
+                {pendingControl === 'pause' || pendingControl === 'resume' ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+                ) : run.status === 'running' ? (
+                  <Pause className="w-4 h-4" />
+                ) : (
+                  <Play className="w-4 h-4" />
+                )}
+              </button>
+              <button
+                type="button"
+                title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.stopHint')}
+                className={`${controlBtnClass} hover:text-red-500`}
+                disabled={controlsDisabled || pendingControl !== null}
+                data-testid="team-area-swarmflow-run-stop-btn"
+                onClick={() => {
+                  setPendingControl('stop');
+                  void webRequest('swarmflow.stop', { session_id: sessionId, run_id: run.id }).catch(
+                    (err) => {
+                      if (applyControlFailure(err)) {
+                        setPendingControl(null);
+                      }
+                    },
+                  );
+                }}
+              >
+                {pendingControl === 'stop' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
+                ) : (
+                  <Square className="w-3.5 h-3.5" />
+                )}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {controlError && (

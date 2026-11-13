@@ -306,7 +306,7 @@ def _infer_style_lock(prompt: str, scene_desc: str) -> dict[str, str]:
     elif any(k in blob for k in _PHOTOREAL_STYLE_WORDS):
         lock["look"] = "photoreal cinematic — continuous color grade; never cartoon restyle"
         lock["lens"] = "35mm cinematic, soft background when close; no comic/grid UI"
-        lock["palette"] = "match scene color temperature and wardrobe dyes across shots"
+        lock["palette"] = "match scene color temperature and clothing dyes across shots"
         lock["medium"] = "photoreal_cinematic"
     return {k: str(v)[:280] for k, v in lock.items()}
 
@@ -598,12 +598,12 @@ def wan3_clip_prompt_prefix(
     return (
         f"{layer}"
         f"[Composition]: {camera or 'cinematic shot'}; move={move}. "
-        "If the camera moves, keep landmark L/R anchors stable every beat.\n"
+        "If the camera moves, keep landmark L/R anchors stable in every shot.\n"
         f"{ref_line}\n"
         f"[Positioning]: {positions}. Objects: {objects}. 180-degree rule; Fixed L/R anchors.\n"
         f"[Motion]: {motion}\n"
         f"[Speech/Audio]: {speech}\n"
-        f"[Action beat]: {action}\n"
+        f"[Action]: {action}\n"
         + (f"[Locks]: {locks_line}\n" if locks_line else "")
         + f"[Style]: {style_line}."
     )
@@ -688,7 +688,7 @@ def format_image_ref_bindings(bindings: list[dict[str, Any]] | None) -> str:
         if role == "first_frame":
             lines.append(
                 f"Image {idx} is the FIRST-FRAME reference — animate THIS exact image; "
-                "preserve its art style, faces, wardrobe, architecture, and lighting."
+                "preserve its art style, faces, clothing, architecture, and lighting."
             )
         elif role == "prior_clip":
             lines.append(
@@ -699,7 +699,7 @@ def format_image_ref_bindings(bindings: list[dict[str, Any]] | None) -> str:
             who = name or "this cast member"
             lines.append(
                 f"Image {idx} is the sole identity/costume reference for {who} "
-                "(use face/hair/body/wardrobe only; ignore any backdrop in that sheet)."
+                "(use face/hair/body/clothing only; ignore any backdrop in that sheet)."
             )
         elif role == "environment":
             lines.append(

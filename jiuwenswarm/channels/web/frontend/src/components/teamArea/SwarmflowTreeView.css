@@ -1,0 +1,129 @@
+/* SwarmFlow 树视图：run 卡头部在不同卡片宽度下的布局。
+ *
+ * 用 CSS Grid 而不是 flex-wrap 分行。原因：flex 的分行依据每个 item 的
+ * hypothetical main size，名称轨带 min-width 时该值随内容与可用空间来回变化，
+ * 实测在 740↔760px 之间出现「一行 ↔ 两行」反复跳变（高度 48↔73 闪烁）。
+ * Grid 的模板是声明式的：断点唯一，拖动面板时高度单调变化，不抖动。
+ *
+ * 两档布局：
+ *   宽  ≥ 52rem  一行：chev | stat | name | metrics     指标簇贴右、不折行
+ *   窄  < 52rem  两行：chev stat name                   名称独占整行
+ *                      .    .    metrics               指标簇左沿对齐名称轨
+ *   52rem 由 Chrome 实测反推：指标簇 max-content 占 483px（进度条+两个徽章+控制
+ *   按钮），两个图标 + 三个列距 + 左右 padding 约 130px，即单行至少需要 613px；
+ *   名称还要留出可读宽度，故取 52rem(832px) 作为两行起点。
+ *
+ * 窄档内部逐级删减（按信息价值从低到高）：
+ *   无限额后缀 → 执行者名字 → 进度条轨道（百分比数字保留）→ 状态文案（图标仍在）
+ *   进度条轨道删减后 "3/3 (100%)" 仍在，信息不丢。
+ *
+ * 两个关键实现约束（都实测踩过）：
+ *   1. container-type 必须挂在卡片根 `.team-area-swarmflow-run`，不能挂 header：
+ *      容器查询只作用于容器的后代，元素不能查询自身；挂 header 上所有规则静默失效。
+ *   2. 宽档的指标列必须是 max-content 而不是 auto：auto 列在空间不足时会被压窄，
+ *      指标簇于是在单元格内部折行，产生比"换行到第二行"更难看的中断行。
+ *
+ * 用容器查询而不是 @media：任务面板宽度可独立拖拽，视口宽时面板可能很窄。
+ * 本仓 tailwind 3.4.19 未装 container-queries 插件，所以不用 `@[..]:` 变体。
+ * 阈值由真实渲染实测校准，回归脚本 scripts/test-swarmflow-run-header-layout.mjs
+ * 覆盖 3 种组合 × 32 个宽度（200–1600px），断言无重叠、无越界。
+ */
+
+.team-area-swarmflow-run {
+  container-type: inline-size;
+}
+
+.team-area-swarmflow-run-header {
+  display: grid;
+  grid-template-columns: auto auto minmax(11rem, 1fr) max-content;
+  grid-template-areas: 'chev stat name metrics';
+  align-items: center;
+  column-gap: 0.5rem;
+  row-gap: 0.375rem;
+}
+
+.swarmflow-run-header__chev {
+  grid-area: chev;
+}
+
+.swarmflow-run-header__status {
+  grid-area: stat;
+}
+
+/* 必须裁切：名称轨内的状态文案与执行者徽章都是 shrink-0，不裁切会向右溢出
+ * 并绘制在指标簇之上——用户看到的就是"文字压在一起"。 */
+.swarmflow-run-nametrack {
+  grid-area: name;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 两个预算徽章成组：内部间距固定、默认不互相折行，整组作为一个 flex item 参与
+ * 外层指标的排布。这里刻意不给 flex:none——极窄档需要这一组先被压缩，才能触发
+ * 它内部的 flex-wrap 纵向堆叠（写死 flex:none 会让它顶出卡片右缘）。 */
+.swarmflow-run-budgets {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.swarmflow-run-metrics {
+  grid-area: metrics;
+  justify-self: end;
+  /* 宽档不折行：宽度由 max-content 列保证，一旦折行说明断点该提前 */
+  flex-wrap: nowrap;
+}
+
+@container (max-width: 52rem) {
+  .team-area-swarmflow-run-header {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      'chev stat name'
+      '. . metrics';
+  }
+
+  /* 换行后左沿落在名称列，视觉上仍属于同一个名称块 */
+  .swarmflow-run-metrics {
+    justify-self: start;
+    flex-wrap: wrap;
+  }
+
+  /* "· 无限制" 只是补充说明（title 里完整写着），两个徽章各带一次共占约 90px。
+   * 单行档仍保留它，只在进入两行档、宽度真正紧张时才舍掉，把宽度还给 run 名称。 */
+  .swarmflow-run-unbounded {
+    display: none;
+  }
+}
+
+@container (max-width: 34rem) {
+  /* 执行者只留头像（title 仍可悬浮看全名），省下 6-8ch */
+  .swarmflow-run-executor-name {
+    display: none;
+  }
+}
+
+@container (max-width: 26rem) {
+  /* 进度条轨道让位，保留 "3/3 (100%)" 数字——百分比比色条更有信息量 */
+  .swarmflow-run-progress-track {
+    display: none;
+  }
+}
+
+@container (max-width: 19rem) {
+  /* 最窄：连状态文案也收起，run 状态由左侧 StatusIcon 承担 */
+  .team-area-swarmflow-run-status-text {
+    display: none;
+  }
+}
+
+@container (max-width: 17rem) {
+  /* 极窄（面板被拖到约 272px 以下）：预算组改为纵向堆叠，否则两个徽章横向
+   * 排不下，最后一个会溢出卡片右缘。实测 250px 时溢出 11px、220px 时 41px，
+   * 260px 处也差 1.3px，故阈值取 17rem 覆盖到 272px。 */
+  .swarmflow-run-budgets {
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+  }
+}

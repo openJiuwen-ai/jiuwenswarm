@@ -10,7 +10,6 @@ from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall, ToolMessa
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ModelCallInputs
 from openjiuwen.harness.prompts import PromptAttachmentManager
 from openjiuwen.harness.rails.personal_context import PersonalContextRail
-from jiuwenswarm.common import utils
 from jiuwenswarm.agents.swarm import register_swarm_providers
 from jiuwenswarm.agents.swarm.config_specs import build_member_capability_specs
 
@@ -37,16 +36,14 @@ def test_team_personal_context_spec_survives_member_serialization(
     selected = [spec for spec in specs if spec.type == "swarm.personal_context"]
     assert len(selected) == 1
     assert selected[0].params == {}
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / ".jiuwenswarm")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     restored = RailSpec.model_validate(selected[0].model_dump())
     first = restored.build(language="cn", context=SimpleNamespace())
     second = restored.build(language="cn", context=SimpleNamespace())
     assert isinstance(first, PersonalContextRail)
     assert isinstance(second, PersonalContextRail)
     assert first is not second
-    assert first._home == (
-        tmp_path / ".jiuwenswarm" / "domain" / ".personal_context"
-    )
+    assert first._home == tmp_path / ".jiuwenswarm" / ".personal_context"
     assert second._home == first._home
 
 
@@ -57,8 +54,8 @@ async def test_team_existing_and_new_members_follow_shared_switch(
     import openjiuwen.harness.rails.personal_context as rail_module
 
     register_swarm_providers()
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / ".jiuwenswarm")
-    home = tmp_path / ".jiuwenswarm" / "domain" / ".personal_context"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    home = tmp_path / ".jiuwenswarm" / ".personal_context"
     root = home / "workspace" / "context"
     root.mkdir(parents=True)
     (root / "description.md").write_text("# shared personal context", encoding="utf-8")
@@ -109,8 +106,8 @@ async def test_team_personal_context_keeps_tool_call_result_adjacency(
     tmp_path, monkeypatch
 ):
     register_swarm_providers()
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / ".jiuwenswarm")
-    home = tmp_path / ".jiuwenswarm" / "domain" / ".personal_context"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    home = tmp_path / ".jiuwenswarm" / ".personal_context"
     root = home / "workspace" / "context"
     root.mkdir(parents=True)
     (home / "personal_context.yaml").write_text("agent_use_enabled: true\n")

@@ -284,61 +284,27 @@ def _pick_exiting(
     return leavers
 
 
-def _blocking_for_shot(
-    shot: dict[str, Any],
-    characters: list[dict[str, Any]],
-    on_screen: list[str],
-) -> dict[str, Any]:
-    action = str(shot.get("action") or shot.get("clip_prompt") or "")
-    camera = str(shot.get("camera") or "").lower()
-    by_id = {str(c.get("id")): c for c in characters if c.get("id")}
-    positions: list[dict[str, str]] = []
-    zones = ("center", "left", "right", "foreground", "background")
-    for i, cid in enumerate(on_screen):
-        ch = by_id.get(cid) or {}
-        name = str(ch.get("name") or cid)
-        zone = zones[min(i, len(zones) - 1)]
-        if "close" in camera and i == 0:
-            zone = "center"
-        if _action_has_exit(action) and cid in (shot.get("exiting_character_ids") or []):
-            zone = "right" if "left" in action.lower() else "left"
-            pose = "standing_and_exiting_frame"
-            facing = "away_from_primary_speaker_or_camera_subject"
-        else:
-            pose = "engaged_in_beat"
-            facing = "toward_camera_or_scene_focus"
-            try:
-                from jiuwenswarm.server.runtime.designer.pipeline.wan_r2v_best_practices import (
-                    infer_pose_from_action,
-                )
+def _prune_blocking_to_on_screen(shot: dict[str, Any], on_screen: list[str]) -> None:
+    """Keep the director's declared blocking for this shot's visible cast.
 
-                pose = infer_pose_from_action(action, fallback=pose)
-            except Exception:  # noqa: BLE001
-                pass
-        positions.append(
-            {
-                "character_id": cid,
-                "name": name,
-                "zone": zone,
-                "pose": pose,
-                "facing": facing,
-            }
-        )
-    landmark = ""
-    for key in ("table", "pulpit", "desk", "window", "aisle", "pew", "door", "counter", "phone"):
-        if key in action.lower() or key in str(shot.get("clip_prompt") or "").lower():
-            landmark = key
-            break
-    return {
-        "landmark": landmark or "primary_set_landmark",
-        "positions": positions,
-        "rule": (
-            "Place each listed character in their zone relative to the landmark. "
-            "Honor pose contact with supports (seat/floor/edge) — never merge bodies "
-            "into solid furniture or props. "
-            "Do not invent extra named leads. Do not clone one face onto two bodies."
-        ),
-    }
+    Blocking is authored geometry: when the shot declares none, the key is
+    dropped rather than filled with invented zones/facings, and declared
+    positions for cast no longer on screen are pruned.
+    """
+    blocking = shot.get("blocking")
+    if not isinstance(blocking, dict):
+        shot.pop("blocking", None)
+        return
+    visible = {str(x) for x in on_screen if str(x)}
+    positions = [
+        p
+        for p in (blocking.get("positions") or [])
+        if isinstance(p, dict) and str(p.get("character_id") or "") in visible
+    ]
+    if not positions:
+        shot.pop("blocking", None)
+        return
+    shot["blocking"] = {**blocking, "positions": positions}
 
 
 def _spatial_lock_from_prompt(prompt: str, scenes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -697,50 +663,15 @@ def enrich_analysis_heuristically(prompt: str, analysis: dict[str, Any]) -> dict
         else:
             relation = "hard_cut"
         shot["shot_relation"] = relation
-        shot["blocking"] = (
-            shot.get("blocking")
-            if isinstance(shot.get("blocking"), dict)
-            else _blocking_for_shot(shot, characters, on_screen)
-        )
-        # Fold blocking into action so leaf prompts see it even without schema awareness
-        blk = shot["blocking"]
-        pos_bits = []
-        for p in blk.get("positions") or []:
-            if not isinstance(p, dict):
-                continue
-            pos_bits.append(
-                f"{p.get('name') or p.get('character_id')}@{p.get('zone')} "
-                f"({p.get('pose')}, {p.get('facing')})"
-            )
-        if pos_bits:
-            extra = (
-                f" BLOCKING: landmark={blk.get('landmark')}; "
-                + "; ".join(pos_bits)
-                + f". {blk.get('rule')}"
-            )
-            base_action = str(shot.get("action") or "")
-            if "BLOCKING:" not in base_action:
-                shot["action"] = (base_action + extra)[:500]
-                kp = str(shot.get("clip_prompt") or base_action)
-                if "BLOCKING:" not in kp:
-                    shot["clip_prompt"] = (kp + extra)[:500]
+        # Declared blocking only: kept for the visible cast, never invented,
+        # and never serialized into the action prose (structured locks stay
+        # in config for the prompt composer to render).
+        _prune_blocking_to_on_screen(shot, on_screen)
     _ensure_stay_on_leave_beats(prompt, characters, shots)
     # Refresh blocking after stay/leave fix
     for shot in shots:
         on_screen = [str(x) for x in (shot.get("character_ids") or []) if str(x)]
-        shot["blocking"] = _blocking_for_shot(shot, characters, on_screen)
-        blk = shot["blocking"]
-        pos_bits = [
-            f"{p.get('name') or p.get('character_id')}@{p.get('zone')}"
-            for p in (blk.get("positions") or [])
-            if isinstance(p, dict)
-        ]
-        if pos_bits:
-            extra = f" BLOCKING: landmark={blk.get('landmark')}; " + "; ".join(pos_bits)
-            base_action = str(shot.get("action") or "")
-            # Replace prior BLOCKING suffix if present
-            base_action = re.split(r"\sBLOCKING:", base_action, maxsplit=1)[0]
-            shot["action"] = (base_action + extra)[:500]
+        _prune_blocking_to_on_screen(shot, on_screen)
     _apply_exit_propagation(shots)
     out["clips"] = shots
     out["target_clip_count"] = len(shots)
@@ -801,21 +732,21 @@ async def enrich_analysis_with_llm(
             "shot_relation (hard_cut|continuation; angle_variant only if the user asked "
             "for same-moment multi-cam coverage), "
             "blocking={landmark, positions:[{character_id, zone, pose, facing}]}, "
-            "motion_detail (second-by-second acting beats for THIS timeline window only — "
+            "motion_detail (second-by-second acting for THIS timeline window only — "
             "pose, gaze, hands, weight shifts like a movie shot sheet), "
             "speech_line (exact dialogue spoken in this shot, or empty string if silent — "
-            "never invent lines for mute beats), "
+            "never invent lines for shots without speech), "
             "wardrobe_lock (dress/outfit color, hair, facial features for EACH on_screen id), "
             "camera_framing_rule (how to frame so off_camera people are not visible). "
             "Rules: (1) shot count matches brief budget; shots are consecutive TIME "
             "windows that concatenate to the film — do not restage the full user prompt "
             "in every shot and do not paste the entire user_prompt into every action; "
-            "each action is that window's full blocking/speech/wardrobe; "
+            "each action is that window's full blocking/speech/clothing; "
             "(2) after exit, id not in later on_screen; "
             "(3) leave vs stay are DIFFERENT ids; "
             "(4) blocking zones concrete; "
             "(5) spatial_lock={setting, architecture, landmarks, static_rule, light}; "
-            "(6) location changes reflected per beat; "
+            "(6) location changes reflected per shot; "
             "(7) off_camera people are NOT deleted — camera simply excludes them. "
             "Schema: "
             '{"clips":[...],"spatial_lock":{...},"target_clip_count":N,"notes":"..."}'
@@ -911,12 +842,14 @@ async def enrich_analysis_with_llm(
             if rel not in {"hard_cut", "angle_variant", "continuation"}:
                 rel = "hard_cut" if i == 1 else str(draft.get("shot_relation") or "hard_cut")
             merged["shot_relation"] = rel
+            # Blocking is authored per shot: honor this shot's declaration,
+            # never invent it, and never carry the previous shot's staging
+            # over a shot that declared none.
             if isinstance(sh.get("blocking"), dict):
                 merged["blocking"] = sh["blocking"]
-            elif not isinstance(merged.get("blocking"), dict):
-                merged["blocking"] = _blocking_for_shot(
-                    merged, characters, merged["character_ids"]
-                )
+            else:
+                merged.pop("blocking", None)
+            _prune_blocking_to_on_screen(merged, list(merged["character_ids"]))
             for craft_key in (
                 "motion_detail",
                 "speech_line",
@@ -930,27 +863,6 @@ async def enrich_analysis_with_llm(
             )
             if off_cam:
                 merged["off_camera_cast_ids"] = off_cam
-            blk = merged.get("blocking") if isinstance(merged.get("blocking"), dict) else {}
-            pos_bits = []
-            for p in blk.get("positions") or []:
-                if not isinstance(p, dict):
-                    continue
-                pos_bits.append(
-                    f"{p.get('name') or p.get('character_id')}@{p.get('zone')} "
-                    f"({p.get('pose')}, {p.get('facing')})"
-                )
-            if pos_bits:
-                extra = (
-                    f" BLOCKING: landmark={blk.get('landmark')}; "
-                    + "; ".join(pos_bits)
-                    + f". {blk.get('rule')}"
-                )
-                base_action = str(merged.get("action") or "")
-                if "BLOCKING:" not in base_action:
-                    merged["action"] = (base_action + extra)[:500]
-                kp = str(merged.get("clip_prompt") or base_action)
-                if "BLOCKING:" not in kp:
-                    merged["clip_prompt"] = (kp + extra)[:500]
             norm.append(merged)
         if not norm:
             raise DesignerLlmError(

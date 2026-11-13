@@ -170,15 +170,15 @@ def verify_workspace_structure():
     def _verify(workspace_dir: Path, language: str = "zh") -> None:
         """Verify the workspace has the expected structure."""
         expected_dirs = [
-            workspace_dir / "infra" / "config",
-            workspace_dir / "domain" / "agent" / "home",
-            workspace_dir / "domain" / "agent" / "skills",
-            workspace_dir / "domain" / "agent" / "memory",
-            workspace_dir / "domain" / "agent" / "sessions",
-            workspace_dir / "domain" / "agent" / "workspace",
-            workspace_dir / "domain" / "agent" / "workspace" / "projects",
-            workspace_dir / "domain" / "agent" / ".checkpoint",
-            workspace_dir / "infra" / "logs",
+            workspace_dir / "config",
+            workspace_dir / "agent" / "home",
+            workspace_dir / "agent" / "skills",
+            workspace_dir / "agent" / "memory",
+            workspace_dir / "agent" / "sessions",
+            workspace_dir / "agent" / "workspace",
+            workspace_dir / "agent" / "workspace" / "projects",
+            workspace_dir / "agent" / ".checkpoint",
+            workspace_dir / "agent" / ".logs",
         ]
 
         for dir_path in expected_dirs:
@@ -188,16 +188,16 @@ def verify_workspace_structure():
                 raise NotADirectoryError(f"{dir_path} is not a directory")
 
         # Check config files
-        config_file = workspace_dir / "infra" / "config" / "config.yaml"
+        config_file = workspace_dir / "config" / "config.yaml"
         if not config_file.exists():
             raise FileNotFoundError("config.yaml does not exist")
 
-        env_file = workspace_dir / "infra" / "config" / ".env"
+        env_file = workspace_dir / "config" / ".env"
         if not env_file.exists():
             raise FileNotFoundError(".env does not exist")
 
         # Check agent templates
-        agent_home = workspace_dir / "domain" / "agent" / "home"
+        agent_home = workspace_dir / "agent" / "home"
         expected_templates = ["PRINCIPLE.md", "TONE.md"]
         for template in expected_templates:
             template_path = agent_home / template

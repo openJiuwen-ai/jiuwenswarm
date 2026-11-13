@@ -20,7 +20,7 @@ from typing import Callable, Mapping, MutableMapping, Sequence
 
 import portalocker
 
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 
 logger = logging.getLogger(__name__)
@@ -191,7 +191,7 @@ def _remove_invalid_cache_target(target: Path, version_root: Path) -> None:
 def materialize_bundled_runtime(
     *,
     resource_dir: Path | None = None,
-    install_root: Path | None = None,
+    user_workspace_dir: Path | None = None,
 ) -> tuple[Path, dict[str, object]]:
     """Verify and atomically extract the bundled runtime, returning its CLI."""
     resources = (resource_dir or _resource_dir()).resolve()
@@ -207,10 +207,10 @@ def materialize_bundled_runtime(
             f"runtime archive hash mismatch: expected {expected_hash}, found {actual_hash}"
         )
 
-    install_base = (install_root or get_infra_data_dir()).expanduser()
+    workspace = (user_workspace_dir or get_user_workspace_dir()).expanduser()
     version = str(manifest["version"])
     hash_prefix = expected_hash[:12]
-    version_root = install_base / "runtime" / "playwright-mcp" / version
+    version_root = workspace / "runtime" / "playwright-mcp" / version
     target = version_root / hash_prefix
     version_root.mkdir(parents=True, exist_ok=True)
     lock_path = version_root / ".extract.lock"
@@ -326,7 +326,7 @@ def resolve_playwright_mcp_launch(
     *,
     environ: Mapping[str, str] | None = None,
     resource_dir: Path | None = None,
-    install_root: Path | None = None,
+    user_workspace_dir: Path | None = None,
     which: Callable[[str], str | None] = shutil.which,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> PlaywrightMcpLaunch:
@@ -355,7 +355,7 @@ def resolve_playwright_mcp_launch(
     try:
         cli, manifest = materialize_bundled_runtime(
             resource_dir=resource_dir,
-            install_root=install_root,
+            user_workspace_dir=user_workspace_dir,
         )
         node = resolve_node_executable(which=which, run=run)
         archive_hash = str(manifest["archive_sha256"])

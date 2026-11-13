@@ -2,6 +2,7 @@
 """Exercise document authorship, relationships and generated navigation."""
 
 import importlib
+import re
 from pathlib import Path
 from types import ModuleType
 
@@ -202,3 +203,61 @@ def test_grouping_keeps_author_and_design_links(sync_module: ModuleType, tmp_pat
     assert "设计数" not in design_index
     assert "| [runtime](#module-1) |" in design_index
     assert "[D-20261026-1200-topic]" in design_index
+
+
+def test_regenerating_indexes_keeps_their_original_author(sync_module: ModuleType, tmp_path: Path) -> None:
+    """A later sync refreshes index content without re-attributing the index."""
+    write_doc(tmp_path, "designs/proposals/D-20261026-1200-topic/design.md", "---\nid: D-20261026-1200-topic\ntitle: Topic\nstage: proposals\nstatus: draft\nmodules: [runtime]\n---\n\n# Topic\n")
+    write_doc(tmp_path, "features/F_20261026_1200_first.md", "---\nmodules: [runtime]\ndesigns: []\ndesign_note: none\n---\n\n# First\n")
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("creator", "creator@example.invalid"))
+    indexes = [tmp_path / "INDEX.md", *(tmp_path / section / "INDEX.md" for section in ("designs", "features", "bugfix", "specs"))]
+    for index in indexes:
+        assert metadata(index)["author"] == "creator"
+
+    added = write_doc(tmp_path, "features/F_20261027_1200_second.md", "---\nauthor: null\nmodules: [other]\ndesigns: []\ndesign_note: none\n---\n\n# Second\n")
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("later", "later@example.invalid"), added)
+
+    assert metadata(added)["author"] == "later"
+    assert "F_20261027_1200_second" in (tmp_path / "features" / "INDEX.md").read_text(encoding="utf-8")
+    for index in indexes:
+        data = metadata(index)
+        assert data["author"] == "creator"
+        assert data["author_email"] == "creator@example.invalid"
+
+
+def test_index_without_author_is_attributed_to_current_identity(sync_module: ModuleType, tmp_path: Path) -> None:
+    """An index whose header has no author yet takes the current Git identity."""
+    write_doc(tmp_path, "features/INDEX.md", "---\ntitle: stale\ngenerated: true\n---\n\n# stale\n")
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("writer", "writer@example.invalid"))
+    assert metadata(tmp_path / "features" / "INDEX.md")["author"] == "writer"
+
+
+def test_unchanged_design_index_keeps_its_timestamp(sync_module: ModuleType, tmp_path: Path) -> None:
+    """A sync that changes nothing in the design index leaves the file untouched."""
+    write_doc(tmp_path, "designs/proposals/D-20261026-1200-topic/design.md", "---\nid: D-20261026-1200-topic\ntitle: Topic\nstage: proposals\nstatus: draft\nmodules: [runtime]\n---\n\n# Topic\n")
+    identity = sync_module.GitIdentity("writer", "writer@example.invalid")
+    sync_module.synchronize(tmp_path, identity)
+    index = tmp_path / "designs" / "INDEX.md"
+    stale = re.sub(r"generated-at: .*? -->", "generated-at: 2000-01-01T00:00+08:00 -->", index.read_text(encoding="utf-8"), count=1)
+    index.write_text(stale, encoding="utf-8")
+
+    sync_module.synchronize(tmp_path, identity)
+
+    assert index.read_text(encoding="utf-8") == stale
+
+
+def test_generate_index_cli_keeps_author_and_check_stays_green(sync_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The standalone design-index generator follows the same author rule."""
+    import generate_index
+
+    write_doc(tmp_path, "designs/proposals/D-20261026-1200-topic/design.md", "---\nid: D-20261026-1200-topic\ntitle: Topic\nstage: proposals\nstatus: draft\nmodules: [runtime]\n---\n\n# Topic\n")
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("creator", "creator@example.invalid"))
+    index = tmp_path / "designs" / "INDEX.md"
+    before = index.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(generate_index, "git_identity", lambda path: sync_module.GitIdentity("later", "later@example.invalid"))
+    assert generate_index.main(["--root", str(tmp_path / "designs"), "--check"]) == 0
+    assert generate_index.main(["--root", str(tmp_path / "designs")]) == 0
+
+    assert index.read_text(encoding="utf-8") == before
+    assert metadata(index)["author"] == "creator"

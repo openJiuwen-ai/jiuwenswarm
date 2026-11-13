@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 
+import yaml
+
 import agent_gateway.dotenv_early as dotenv_early
 from agent_gateway.dotenv_early import (
     CLI_PORTS_ENV_FLAG,
@@ -72,9 +74,10 @@ def test_name_loads_workspace_line(tmp_path: Path, monkeypatch) -> None:
     yaml_dir = home / ".jiuwenswarm"
     yaml_dir.mkdir(parents=True)
     (yaml_dir / "instances.yaml").write_text(
-        "instances:\n"
-        "  demo:\n"
-        f'    workspace: "{workspace}"\n',
+        yaml.safe_dump(
+            {"instances": {"demo": {"workspace": str(workspace)}}},
+            allow_unicode=True,
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv("JIUWENSWARM_HOME", str(home))
@@ -120,9 +123,10 @@ def test_name_missing_env_does_not_create_file(tmp_path: Path, monkeypatch) -> N
     yaml_dir = home / ".jiuwenswarm"
     yaml_dir.mkdir(parents=True)
     (yaml_dir / "instances.yaml").write_text(
-        "instances:\n"
-        "  demo:\n"
-        f'    workspace: "{workspace}"\n',
+        yaml.safe_dump(
+            {"instances": {"demo": {"workspace": str(workspace)}}},
+            allow_unicode=True,
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv("JIUWENSWARM_HOME", str(home))

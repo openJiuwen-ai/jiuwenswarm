@@ -63,7 +63,8 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
       'grammar correction',
       'language learning',
     ],
-    skills: [
+    skills: [],
+    coreAbilities: [
       bound('english-coach-locate', '问题定位', '从写作或口语样本中找出影响表达效果的关键问题。'),
       bound('english-coach-rewrite', '自然改写', '给出符合语境的改写，并说明改写理由。'),
       bound('english-coach-practice', '针对练习', '生成可复测的练习，跟踪薄弱点的改善情况。'),
@@ -93,7 +94,8 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
       'software design',
       'code review',
     ],
-    skills: [
+    skills: [],
+    coreAbilities: [
       bound('system-architect-dependencies', '依赖梳理', '梳理模块之间的调用与数据依赖，识别耦合点。'),
       bound('system-architect-review', '方案评审', '对技术方案进行评审，指出风险与替代方案。'),
       bound('system-architect-roadmap', '演进规划', '输出分阶段、可落地的架构改造路线。'),
@@ -123,7 +125,8 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
       'equity research',
       'financial analysis',
     ],
-    skills: [
+    skills: [],
+    coreAbilities: [
       bound('fundamental-researcher-facts', '事实分层', '区分已知事实、分析假设与待核验数据。'),
       bound('fundamental-researcher-scenarios', '情景分析', '构建多情景假设，评估关键变量的影响。'),
       bound('fundamental-researcher-framework', '研究框架', '围绕业务质量、风险与催化因素形成结论。'),
@@ -153,7 +156,8 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
       'story planning',
       'character development',
     ],
-    skills: [
+    skills: [],
+    coreAbilities: [
       bound('serial-story-bible', '故事圣经', '沉淀世界观、人物设定与关键事件。'),
       bound('serial-story-beats', '章节节拍', '规划每章的冲突、转折与情绪节奏。'),
       bound('serial-story-continuity', '连续性检查', '检查人物与情节前后是否一致。'),
@@ -183,7 +187,8 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
       'budgeting',
       'investment planning',
     ],
-    skills: [
+    skills: [],
+    coreAbilities: [
       bound('personal-finance-spending', '支出分析', '按类别整理收支结构，标出可以调整的部分。'),
       bound('personal-finance-compare', '方案比较', '在相同假设下比较储蓄或定投方案。'),
       bound('personal-finance-risk', '风险说明', '写明方案依赖的假设，以及不成立时的影响。'),
@@ -213,7 +218,8 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
       'legal document',
       'evidence organization',
     ],
-    skills: [
+    skills: [],
+    coreAbilities: [
       bound('case-organizer-archive', '材料归档', '按时间线与争议焦点整理案件材料。'),
       bound('case-organizer-points', '要点提炼', '提炼事实、证据与法律关系。'),
       bound('case-organizer-draft', '文书初稿', '生成结构清晰的案件摘要初稿。'),
@@ -243,7 +249,8 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
       'script breakdown',
       'visual storytelling',
     ],
-    skills: [
+    skills: [],
+    coreAbilities: [
       bound('video-storyboard-shots', '分镜拆解', '把沟通目标拆成镜头、时长与画面描述。'),
       bound('video-storyboard-constraints', '制作约束', '标注声音、场景与制作资源要求。'),
       bound('video-storyboard-rights', '权利检查', '检查素材使用是否存在权利风险。'),
@@ -273,7 +280,8 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
       'research methodology',
       'literature review',
     ],
-    skills: [
+    skills: [],
+    coreAbilities: [
       bound('research-writing-question', '问题聚焦', '帮助明确研究问题与边界。'),
       bound('research-writing-method', '方法匹配', '为研究问题选择合适的方法。'),
       bound('research-writing-evidence', '证据链检查', '检查论证是否有充分的证据支撑。'),

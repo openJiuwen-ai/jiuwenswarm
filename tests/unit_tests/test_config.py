@@ -200,14 +200,14 @@ def test_extension_migration_preserves_null_when_dotenv_changes_in_child(tmp_pat
 
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("evolution_enabled", [False, True])
-def test_symphony_evolution_requires_both_switches(
+def test_discovery_switch_does_not_require_hidden_symphony_switch(
     enabled: bool,
     evolution_enabled: bool,
 ) -> None:
     config = {
         "symphony": {"enabled": enabled, "evolution": {"enabled": evolution_enabled}}
     }
-    assert get_symphony_evolution_enabled(config) is (enabled and evolution_enabled)
+    assert get_symphony_evolution_enabled(config) is evolution_enabled
 
 
 @pytest.mark.parametrize("switch", ["symphony", "evolution"])
@@ -241,6 +241,7 @@ def test_symphony_evolution_switch_matches_full_parser(
     raw: dict[str, Any] = {"enabled": True, "evolution": {"enabled": True}}
     target = raw if switch == "symphony" else raw["evolution"]
     target["enabled"] = value
+    expected = True if switch == "symphony" else expected
     parsed = symphony_config_module.symphony_config_from_dict(raw)
     assert get_symphony_evolution_enabled({"symphony": raw}) is expected
     # enabled 已移到 evolution.flow 下；evolution 层的旧位置靠回退兼容
@@ -278,7 +279,7 @@ def test_symphony_evolution_getter_reads_only_passed_switches(
     assert get_symphony_evolution_enabled(None) is False
     assert get_symphony_evolution_enabled({}) is False
     evolution_only = {"symphony": {"evolution": {"enabled": True}}}
-    assert get_symphony_evolution_enabled(evolution_only) is False
+    assert get_symphony_evolution_enabled(evolution_only) is True
     assert get_symphony_evolution_enabled({"symphony": {"enabled": True}}) is False
     enabled_config = {
         "symphony": {
@@ -289,6 +290,32 @@ def test_symphony_evolution_getter_reads_only_passed_switches(
         },
     }
     assert get_symphony_evolution_enabled(enabled_config) is True
+
+
+def test_saved_discovery_setting_controls_all_product_gates(temp_config_file, monkeypatch):
+    from jiuwenswarm.agents.harness.common.rails.symphony.skillpack_route import direct_route_mode
+    from jiuwenswarm.server.runtime.marketplace.skillpack_publish_config import skillpack_publish_profile
+    from jiuwenswarm.server.runtime.skill.skillpack_config import skillpack_productization_enabled
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
+    monkeypatch.setattr(config_module, "get_config_file", lambda: temp_config_file)
+    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "false")
+    monkeypatch.setenv("SKILLPACK_DIRECT_ROUTE_MODE", "off")
+    monkeypatch.setenv("SKILLPACK_HUB_TRANSPORT_PROFILE", "native_skillpack_v1")
+    monkeypatch.delenv("SKILLPACK_HUB_DEPLOYMENT_SCOPE", raising=False)
+
+    for enabled in [True, False, True]:
+        config_module.update_symphony_in_config({"evolution": {"flow": {"enabled": enabled}}})
+        saved = config_module.get_config()
+        assert get_symphony_evolution_enabled(saved) is enabled
+        assert skillpack_productization_enabled() is enabled
+        assert direct_route_mode(saved) == ("confirm" if enabled else "off")
+        if enabled:
+            assert skillpack_publish_profile() == "legacy_skill_v1"
+        else:
+            with pytest.raises(ValueError):
+                skillpack_publish_profile()
+        assert symphony_config_module.load_symphony_config(saved).enabled is enabled
 
 
 def test_configured_read_image_multimodal_preserves_explicit_value() -> None:
@@ -1409,7 +1436,7 @@ permissions:
 
         template_path = tmp_path / "template.yaml"
         workspace_dir = tmp_path / "workspace"
-        config_dir = workspace_dir / "infra" / "config"
+        config_dir = workspace_dir / "config"
         config_dir.mkdir(parents=True)
         user_config_path = config_dir / "config.yaml"
 
@@ -1458,7 +1485,7 @@ react:
         template_path = tmp_path / "template.yaml"
         template_path.write_text("new_option: true\n", encoding="utf-8")
         workspace_dir = tmp_path / "workspace"
-        config_path = workspace_dir / "infra" / "config" / "config.yaml"
+        config_path = workspace_dir / "config" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         original_config = "user_value: keep\n"
         config_path.write_text(original_config, encoding="utf-8")
@@ -1502,7 +1529,7 @@ react:
             encoding="utf-8",
         )
         workspace_dir = tmp_path / "workspace"
-        config_path = workspace_dir / "infra" / "config" / "config.yaml"
+        config_path = workspace_dir / "config" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
             'config_version: "0.2.8b1 · 2026-10-26"\nreact:\n  answer_chunk_size: 300\n',

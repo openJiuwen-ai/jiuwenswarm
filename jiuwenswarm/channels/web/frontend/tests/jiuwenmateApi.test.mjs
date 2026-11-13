@@ -26,6 +26,19 @@ import {
   withResourceSelection,
 } from '../node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js';
 
+test('employee artifacts load independently of chat history and retain signed download links', async () => {
+  const calls = [];
+  const api = createJiuwenMateApi(async (method, params) => {
+    calls.push({ method, params });
+    return { files: [{ output_id: 'workspace-report', name: 'report.md', path: 'sessions/old/output/report.md',
+      size: 20, download_url: '/file-api/download?token=signed' }] };
+  });
+  const files = await api.listArtifacts('employee-1');
+  assert.deepEqual(calls, [{ method: 'jiuwenmate.artifact.list', params: { agent_id: 'employee-1' } }]);
+  assert.equal(files[0].name, 'report.md');
+  assert.equal(files[0].downloadUrl, '/file-api/download?token=signed');
+});
+
 test('DingTalk authorization methods keep their RPC names, scope and response envelopes', async () => {
   const calls = [];
   const status = { status: 'connected', cli_version: '1.0.65', account: 'tester' };
@@ -79,6 +92,126 @@ const wireCatalog = {
   current_selection: 'deepseek#0',
   current_display_name: 'DeepSeek',
 };
+
+test('employee views preserve the model-specific publication status without inferring it from other drafts', () => {
+  assert.equal(toColleague({ ...wireColleague, has_unpublished_changes: true,
+    has_unpublished_model_changes: false }).hasUnpublishedModelChanges, false);
+  assert.equal(toColleague({ ...wireColleague, has_unpublished_changes: true,
+    has_unpublished_model_changes: true }).hasUnpublishedModelChanges, true);
+  assert.equal(toColleague(wireColleague).hasUnpublishedModelChanges, false);
+});
+
+test('the team model catalog retains explicit vendor identity independently of the protocol', () => {
+  const catalog = toModelCatalog({ models: [
+    { selection_key: 'deepseek-flash#0', model_name: 'deepseek-flash', provider: 'OpenAI', vendor_key: 'deepseek' },
+    { selection_key: 'kimi#1', model_name: 'kimi', provider: 'OpenAI', vendor_key: 'kimi' },
+    { selection_key: 'custom#2', model_name: 'custom', provider: 'OpenAI' },
+  ] });
+  assert.equal(catalog.models[0].vendorKey, 'deepseek');
+  assert.equal(catalog.models[1].vendorKey, 'kimi');
+  assert.equal(catalog.models[2].vendorKey, undefined);
+  assert.equal(catalog.models[0].provider, 'OpenAI');
+});
+
+test('saving an employee model reads current settings, publishes and returns the shared employee', async () => {
+  const calls = [];
+  const stored = { ...wireColleague, persona: '保留最新人设', permission_profile: 'full_access',
+    capabilities: { ...wireColleague.capabilities, skills: ['latest-skill'], model: 'deepseek#0' } };
+  const api = createJiuwenMateApi(async (method, params) => {
+    calls.push({ method, params });
+    if (method === JIUWENMATE_METHODS.settingsGet) return { settings: stored };
+    if (method === JIUWENMATE_METHODS.get) return { colleague: {
+      ...stored, capabilities: { ...stored.capabilities, model: 'kimi#1' }, current_version: 'v2',
+    } };
+    return {};
+  });
+
+  const saved = await api.saveSettings('agent-1', toModelCatalog(wireCatalog).models, { model: 'kimi#1' });
+
+  assert.deepEqual(calls.map(({ method }) => method), [JIUWENMATE_METHODS.settingsGet,
+    JIUWENMATE_METHODS.settingsUpdate, JIUWENMATE_METHODS.publish, JIUWENMATE_METHODS.get]);
+  const written = calls[1].params.settings;
+  assert.equal(written.capabilities.model, 'kimi#1');
+  assert.deepEqual(written.capabilities.skills, ['latest-skill']);
+  assert.equal(written.persona, '保留最新人设');
+  assert.equal(written.permission_profile, 'full_access');
+  assert.equal(saved.capabilities.model, 'kimi#1');
+  assert.equal(saved.currentVersion, 'v2');
+});
+
+test('an employee without a model can save its persona as an unpublished draft', async () => {
+  const calls = [];
+  let stored = { ...wireColleague, current_version: null };
+  const api = createJiuwenMateApi(async (method, params) => {
+    calls.push(method);
+    if (method === JIUWENMATE_METHODS.settingsGet) return { settings: stored };
+    if (method === JIUWENMATE_METHODS.settingsUpdate) {
+      stored = { ...stored, ...params.settings, has_unpublished_changes: true };
+      return { colleague: stored };
+    }
+    if (method === JIUWENMATE_METHODS.publish) throw new Error('choose a model before publishing');
+    if (method === JIUWENMATE_METHODS.get) return { colleague: stored };
+  });
+  const saved = await api.saveSettings('agent-1', [], { persona: '更新后的人设' });
+  assert.equal(stored.persona, '更新后的人设');
+  assert.equal(stored.capabilities.model, null);
+  assert.equal(saved.currentVersion, null);
+  assert.equal(saved.hasUnpublishedChanges, true);
+  assert.deepEqual(calls, [JIUWENMATE_METHODS.settingsGet, JIUWENMATE_METHODS.settingsUpdate, JIUWENMATE_METHODS.get]);
+});
+
+test('a persona edit preserves the stored model when the frontend model catalog is unavailable', async () => {
+  let written;
+  const stored = { ...wireColleague, capabilities: { ...wireColleague.capabilities, model: 'deepseek#0' } };
+  const api = createJiuwenMateApi(async (method, params) => {
+    if (method === JIUWENMATE_METHODS.settingsGet) return { settings: stored };
+    if (method === JIUWENMATE_METHODS.settingsUpdate) written = params.settings;
+    if (method === JIUWENMATE_METHODS.publish) {
+      assert.equal(written.capabilities.model, 'deepseek#0');
+      return {};
+    }
+    if (method === JIUWENMATE_METHODS.get) return { colleague: { ...stored, ...written } };
+    return {};
+  });
+  const saved = await api.saveSettings('agent-1', [], { persona: '仅修改人设' });
+  assert.equal(written.capabilities.model, 'deepseek#0');
+  assert.equal(saved.capabilities.model, 'deepseek#0');
+});
+
+test('a failed employee model save does not publish or report success', async () => {
+  const calls = [];
+  const api = createJiuwenMateApi(async (method) => {
+    calls.push(method);
+    if (method === JIUWENMATE_METHODS.settingsGet) return { settings: wireColleague };
+    throw new Error('save refused');
+  });
+  await assert.rejects(api.saveSettings('agent-1', toModelCatalog(wireCatalog).models, { model: 'kimi#1' }), /save refused/);
+  assert.deepEqual(calls, [JIUWENMATE_METHODS.settingsGet, JIUWENMATE_METHODS.settingsUpdate]);
+});
+
+test('a model publication failure is propagated and its saved draft can be published on retry', async () => {
+  let stored = { ...wireColleague };
+  let failPublication = true;
+  let reads = 0;
+  const api = createJiuwenMateApi(async (method, params) => {
+    if (method === JIUWENMATE_METHODS.settingsGet) return { settings: stored };
+    if (method === JIUWENMATE_METHODS.settingsUpdate) stored = { ...stored, ...params.settings };
+    if (method === JIUWENMATE_METHODS.publish && failPublication) throw new Error('publish refused');
+    if (method === JIUWENMATE_METHODS.get) {
+      reads += 1;
+      return { colleague: { ...stored, current_version: 'v2', has_unpublished_changes: false } };
+    }
+    return {};
+  });
+  const models = toModelCatalog(wireCatalog).models;
+  await assert.rejects(api.saveSettings('agent-1', models, { model: 'kimi#1' }), /publish refused/);
+  assert.equal(reads, 0);
+  assert.equal(stored.capabilities.model, 'kimi#1');
+  failPublication = false;
+  const fresh = await api.saveSettings('agent-1', models, { model: 'kimi#1' });
+  assert.equal(fresh.capabilities.model, 'kimi#1');
+  assert.equal(fresh.hasUnpublishedChanges, false);
+});
 
 const draft = {
   name: '  品牌顾问 ',
@@ -169,6 +302,14 @@ test('draft settings trim blanks, drop uploaded images and keep only listed mode
   assert.deepEqual(settings.capabilities.starter_prompts, ['写一份周报']);
   assert.equal('persona' in settings, false);
   assert.equal(withColleagueEdit(toColleague(wireColleague), models, { persona: '新的人设' }).persona, '新的人设');
+  assert.deepEqual(
+    withColleagueEdit(toColleague(wireColleague), models, { persona: '新的人设' }).capabilities.starter_prompts,
+    ['帮我整理本周工作进展。'],
+  );
+  assert.deepEqual(
+    withColleagueEdit(toColleague(wireColleague), models, { starterPrompts: [] }).capabilities.starter_prompts,
+    [],
+  );
 
   const unlisted = toWireSettings({ ...draft, capabilities: { ...draft.capabilities, model: 'deepseek-v3.2' } }, models);
   assert.equal(unlisted.capabilities.model, null);
@@ -676,6 +817,21 @@ test('channel records map public messages and execution trace rows', async () =>
   ]);
 });
 
+test('an in-flight terminal schedule stays running instead of flashing paused', async () => {
+  const api = createJiuwenMateApi(async () => ({
+    plans: [{
+      plan_id: 'once-1', agent_id: 'a1', name: '提醒', prompt: '提醒我', cron_expr: '',
+      timezone: 'Asia/Shanghai', schedule_kind: 'once', interval_seconds: null,
+      run_at: '2026-10-18T01:00:00Z', starts_at: null, ends_at: null,
+      enabled: false, next_fire_at: null, conversation_id: 'schedule:once-1',
+      run_count: 1, last_status: 'running',
+    }],
+  }));
+  const [plan] = await api.listSchedules();
+  assert.equal(plan.enabled, false);
+  assert.equal(plan.lastStatus, 'running');
+});
+
 test('schedule API preserves interval, validity, completed state and real run history', async () => {
   const calls = [];
   const wire = {
@@ -810,4 +966,21 @@ test('WeLink office setup uses colleague-scoped status, connect and disconnect R
     ['jiuwenmate.welink_office.connect', { agent_id: 'agent-1', email: 'employee@example.com' }],
     ['jiuwenmate.welink_office.disconnect', { agent_id: 'agent-1' }],
   ]);
+});
+
+
+test('reply mode saves independently of a deleted model and never publishes pending settings', async () => {
+  let stored = { ...wireColleague, capabilities: { ...wireColleague.capabilities, model: 'removed#9' } };
+  const api = createJiuwenMateApi(async (method, params) => {
+    if (method === JIUWENMATE_METHODS.settingsGet) return { settings: stored };
+    if (method === JIUWENMATE_METHODS.settingsUpdate) stored = { ...stored, ...params.settings };
+    if (method === JIUWENMATE_METHODS.publish) throw new Error('model is not available: model not found');
+    if (method === JIUWENMATE_METHODS.get) return { colleague: stored };
+    return {};
+  });
+  for (const mode of ['passive', 'adaptive']) {
+    const saved = await api.saveSettings('agent-1', [], { groupReplyMode: mode });
+    assert.equal(saved.groupReplyMode, mode);
+    assert.equal(saved.capabilities.model, 'removed#9');
+  }
 });

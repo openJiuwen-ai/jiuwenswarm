@@ -30,6 +30,9 @@ _SKILL_DIR = "skills"
 _CONNECTOR_SKILL_DIR = "connector-skills"
 _KNOWLEDGE_DIR = "knowledge"
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+# Matches the skill checksum exclusions: ``.archive`` holds every past version and
+# its nesting can push employee copies past the Windows MAX_PATH limit.
+_SKILL_COPY_EXCLUDED_DIRS = frozenset({".archive", "__pycache__"})
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -458,7 +461,7 @@ def _copy_skill(source: Path, destination: Path) -> None:
         relative = current.relative_to(source)
         kept = []
         for name in dirnames:
-            if (current / name).is_symlink():
+            if name in _SKILL_COPY_EXCLUDED_DIRS or (current / name).is_symlink():
                 continue
             kept.append(name)
         dirnames[:] = kept

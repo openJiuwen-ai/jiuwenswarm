@@ -7,8 +7,8 @@
 | 类型 | feature |
 | 编号 / slug | F_27 / employee-dingtalk-cli |
 | 关联计划 | [JM-27](../designs/jiuwenmate-development-plan.md#jm-27-员工钉钉-dws-cli-接入扩展) |
-| 方案状态 | 默认 App Token 工具、群文件操作和当前群共享日程已实现；群成员读取使用 App Token，真实钉钉联调仍待验收 |
-| 最近修订日期 | 2026-10-29 |
+| 方案状态 | 当前契约见 S_06；本文保留早期方案及后续演进，用户授权与群文档等能力的验证边界见各修订节；最新解绑授权清理见第 38 节 |
+| 最近修订日期 | 2026-11-05 |
 | 契约 | [S_06 钉钉 DWS CLI 应用身份规约](../specs/S_06_employee-dingtalk-cli.md) |
 
 ## 1. 背景、目标与范围
@@ -362,3 +362,159 @@ DingTalkCliScope 新增可选 app_id，由宿主从已核验钉钉请求的 rout
 没有钉钉路由时，保留既有团队模式的默认应用／唯一应用／员工绑定选择顺序。Web 或飞书请求不会被伪造钉钉群和发送者身份，依赖当前群／发送者的组合操作仍受原限制。飞书 CLI 资料与 DWS App Token 分开管理，跨渠道归档搜索不依赖 CLI 互用。
 
 新增回归：`test_dingtalk_cli_app_scope.py`；`test_dingtalk_cli_tool.py` 验证实际传入的应用 Scope。本轮没有启动登录、授权或真实平台写入。
+
+## 34. Canonical 员工绑定的授权状态检查（2026-11-04，已实现并验证）
+
+根因：三渠道共用 canonical Agent 后，新式钉钉绑定只登记在持久渠道配置中，不新增历史连接行；授权 RPC 仍强制要求历史 `connections` 记录，导致机器人已绑定但未授权用户账号时误报 `NOT_FOUND`。页面将请求失败只写入错误文案，未收到状态时仍显示 loading。
+
+最小修复：仅调整团队版 `web_adapter.py` 的钉钉授权校验，先匹配当前员工 canonical ID 与有效应用绑定，再兼容同一员工的历史连接 ID；所有授权操作均以核验后的 Agent ID 和应用 ID 构造 Scope，不回落到其他默认应用。未登录返回真实 `not_connected`，机器人绑定不代表用户已授权。`ColleagueProfilePage.tsx` 在初始查询失败且没有有效状态时显示已有 error 状态，并保留重试授权操作；不改 OAuth 令牌、存储、个人版或其他渠道。验证覆盖五种授权操作的两类身份、缺失／错误归属、错误应用、页面失败退出 loading 及成功恢复；使用临时存储和替代 CLI 边界，不启动真人授权或发送平台消息。
+
+English: Validate DingTalk authorization RPCs against the current canonical employee binding, retaining legacy connection compatibility. Pass the verified employee and app into the CLI scope. An unconnected user remains unconnected; a failed initial status request must leave the loading state. This correction does not alter credentials or other channels.
+
+实测补充：全新员工的私有 OAuth 目录没有任何文件，且本地没有固定版本 CLI 缓存；状态查询仍运行 npx 安装并因 npm 缓存错误重试，超过网页等待时间。provider 仅在“没有显式／缓存 CLI，且私有 OAuth 目录没有任何持久文件”时直接返回 `not_connected`，不触发安装；存在任何私有状态或已安装 CLI 时仍核验真实登录态。授权发起继续走既有 CLI 流程，不复制或清除凭据。新增冷启动与已有资料不被误判两项回归，修改前 1 项失败、1 项通过。
+
+验证：13 项授权 RPC 用例通过；新增页面失败／恢复用例先失败后通过，页面回归共 61 项通过。加入冷启动回归后的后端四文件共 232 项通过，2 项已核对的既有失败为 RPC 清单与 WeLink 邮箱绑定；未扩大修改。`npm run build` 通过，独立复核未发现阻塞问题。当前小九的真实配置在 provider 直接查询中 7ms 返回 `not_connected`；重启源码服务后，通过真实 WebSocket 再次核对同一员工也返回 `not_connected`，HTTP 5173 返回最新构建，AgentServer 就绪。未发起真人授权或平台写入，未改现有凭据。
+
+Validation: 13 authorization RPC cases, 61 frontend cases and 232 broader backend cases passed; the two previously verified RPC-list and WeLink failures remain. The production build passed. After the source restart, the actual WebSocket returned `not_connected` for Xiaojiu's robot-only binding and the frontend served the latest build. No live authorization or platform write was initiated.
+
+## 35. 首次发起授权的 CLI 准备（2026-11-04，已实现，授权发起实测通过）
+
+状态查询恢复后，用户实际发起授权仍被冷启动 CLI 阻塞。原因：设备登录直接使用 npx，安装与获取设备码共用 15 秒等待；之前还会先以普通 30 秒 CLI 调用检查登录状态。CLI 未安装或 npx 缓存残留 ENOTEMPTY 时，设备进程尚未就绪便超时，前端在 130 秒 RPC 等待期间一直显示“正在发起授权”。此前状态查询验证不代表授权发起链路已通过。
+
+最小修复：仅在发起授权时，先复用 `_run_cli` 的缓存锁和 ENOTEMPTY 修复，用固定版本 `--version` 准备 CLI，再检查登录态并启动设备码进程。安装准备总预算 75 秒，缓存修复重试共享同一预算；保留普通 CLI 调用原有 30 秒策略。准备失败返回稳定错误，不启动登录进程，不暴露 CLI 输出和凭据。涉及 provider、原回归测试及本规约；不修改账号绑定、令牌、个人版或其他渠道。验证先复现“未准备就登录”和“准备失败仍登录”的用例，再检查实际固定版本 CLI 和授权链接返回。
+
+验证：两个新增用例先均失败，修复后 provider 与应用 Scope 回归共 148 项通过。现场 npm 下载约 129MB 包体的速度不足以在原等待时间内完成，因此仅从本机备份恢复已核对版本为 1.0.65 的 CLI 程序与包元数据到当前管理缓存；未恢复任何 OAuth 或员工数据。源码服务重启后，小九真实 `dingtalk_auth.begin` 在 7860ms 返回 `authorizing`、授权 URL 和设备码；授权页面禁止电脑自动化访问，后续真人登录未代办。本次未实测全新联网下载安装完成，准备失败的有界返回由回归覆盖。管理页中英文说明补充明确“通过钉钉 CLI 授权”。
+
+Validation: Both new preparation cases failed before the fix; all 148 provider and app-scope checks now pass. Restore only the existing, version-checked 1.0.65 program and package metadata from a local backup, without OAuth or employee data. After the source restart, the actual begin RPC returned a device URL and code in 7.86 seconds. Browser authorization is restricted from computer automation and user consent was not completed by the agent. A fresh network installation was not verified; bounded preparation failure is covered by tests. The bilingual page description explicitly names the DingTalk CLI.
+
+## 36. 初始化后首次绑定与前端授权窗口（2026-11-04，已实现并验证）
+
+再次复现发现第 35 节的运行时恢复没有覆盖用户重新初始化：`init_user_workspace(overwrite=True)` 会删除整个工作区，原 CLI 和 npm 缓存也随 `jiuwenmate` 数据一起消失。新绑定又触发约 129MB 包下载。另一个遗漏是弹窗完全依赖后端 CLI 打开浏览器，前端实际没有在点击事件中创建窗口。
+
+修复范围：provider 将纯程序缓存独立到操作系统用户缓存目录，OAuth、应用 profile 和员工数据继续保存在原路径；构造参数允许独立 cache_root，旧程序缓存兼容读取。前端在用户点击时同步创建等待窗口，授权 RPC 返回后跳转到受信任的授权链接；失败关闭等待窗口并释放按钮，浏览器拦截时提示允许弹窗且不启动登录。设备登录增加官方 `--no-browser`，避免前后端重复打开同一设备码。只改钉钉 provider、团队版员工页、中英文资源与相关测试，不改变个人版或其他渠道。
+
+验证计划：真实初始化清理边界、跨平台缓存路径、项目数据删除后程序仍可用且旧 OAuth 不恢复、首次绑定后点击立即打开窗口、RPC 失败和弹窗拦截。授权网页受电脑自动化访问限制，使用真实授权 RPC 与本地页面组件验证，不代办账号确认。
+
+验证结果：三项窗口回归先失败后通过，页面测试共 64 项通过，中英文资源测试 6 项通过，`npm run build` 通过。跨平台缓存和临时项目重置回归均通过；后端四文件 238 项通过，保留第 34 节已确认的 RPC 清单和 WeLink 两项既有失败。源码服务重启后 `agent_ready=true`，5173 返回最新 dist；真实员工授权状态 RPC 正常返回 `not_connected`。使用同一应用配置、独立临时 OAuth 目录及持久程序缓存，原生 CLI 在 5.09 秒返回授权链接与设备码；随后仅取消这笔隔离测试操作，没有修改真实员工授权，也没有恢复历史账号数据。首次绑定后的同步开窗和自动跳转由真实页面组件测试验证，未自动操作授权网页。
+
+Validation: All 64 frontend and six locale checks passed, including three window regressions that failed before the fix. The production build passed. All cache-reset and platform-path cases passed; the broader backend run passed 238 cases with the two previously confirmed unrelated failures. After restart, the source service was ready and served the latest build; the actual status RPC returned `not_connected`. With the current app configuration, a separate temporary OAuth directory and the persistent program cache, the native CLI returned a device URL and code in 5.09 seconds. Only that isolated test operation was cancelled. Existing employee authorization and account data were not changed. Component tests verify synchronous window creation and redirection after first binding; the authorization website was not automated.
+
+## 37. 授权交互收尾与有界资料查询（2026-11-04，已实现并验证）
+
+问题与最小方案：第 36 节仍在弹窗返回 null 时终止授权，原生浏览器桥接和弹窗拦截均会使用户无法继续；等待窗口没有纳入连接移除、页面卸载、取消和终态的清理，迟到的 begin 仍会跳转旧窗口。保留现有设备 OAuth、应用身份与 generation 校验，统一管理本页创建的钉钉窗口；开窗失败继续获取链接，并展开已有恢复入口；窗口手动关闭后也可恢复。有效结果才允许跳转，取消、失败、成功、连接移除和卸载均收尾。开始阶段用明确状态提示，等待窗口采用主题色与简洁进度说明。
+
+资料查询中 `contact +me --timeout 5` 仍使用 30 秒子进程预算，授权已完成时可因展示资料阻塞；将授权状态、profile 与本人资料读取分别限制到 5、5、4 秒，本人资料网络预算为 3 秒，资料失败不撤销已核实登录。账号或组织缺失时，回到页面可再次只读补齐，不重复启动授权。仅调整团队版员工页、其样式和中英文文案、钉钉 provider、对应测试及此 feature/spec；不改变个人版、其他渠道或钉钉授予权限。
+
+验证计划：先补弹窗拦截／异常、取消与成功／失败关窗、移除与卸载后迟到响应、重复点击、资料查询超时与回到页面补齐的回归并观察失败；执行 profile/API/i18n 测试、provider/Scope/adapter 回归、前端 build，重启后验证真实 RPC 与本地页面。真实账号确认仍由用户完成；本机授权网页的电脑自动化限制不变。
+
+补充复核：旧项目中的程序必须实际迁移，不能只兼容旧路径，否则下一次初始化仍会丢失。固定版本程序通过唯一临时文件和原子替换写入独立缓存，只生成 name/version 元数据，拒绝向缓存根之外写入；迁移失败时保留旧程序可用性，不复制 OAuth。资料缺姓名时不以 userId 填充展示字段，以便回到页面仍能补齐。
+
+验证结果：前端页面 74 项、API 40 项、中英文资源 6 项通过，`npm run build` 通过。新增窗口／资料查询回归均先复现失败，迁移和 userId 降级两项也先失败后通过。provider 与应用 Scope 共 155 项通过；扩大到工具、群读取、生产接入和 adapter 共 429 项通过，4 项已有失败如下：
+
+- `test_deleting_a_colleague_removes_its_apps_before_agent_server_removes_it[unbind]`
+- `test_deleting_a_colleague_removes_its_apps_before_agent_server_removes_it[purge]`
+- `test_web_gateway_does_not_forward_internal_jiuwenmate_methods`
+- `test_welink_mail_settings_follow_colleague_connection_and_are_live`
+
+前两项在未修改的 HEAD 临时 worktree 同样失败，路径是原有飞书配置归一化；后两项沿用第 34 节已确认基线。未将这些无关问题纳入授权修改。独立复核未发现其他确定阻塞。
+
+服务已重启，真实 health RPC 为 `AGENT_READY`，5173 返回最新 dist。真实员工遗留设备流已过期，RPC 与实际页面均明确返回／展示 `authorization_expired`，授权按钮可用且不持续 loading。使用当前应用配置、临时私有 OAuth 目录与持久程序缓存，原生 CLI 在 6.16 秒返回链接和设备码；再次 begin 复用同一 operation，取消后为 `not_connected`，没有修改真实员工的账号数据。
+
+另用实际 `ColleagueProfilePage` 建立仅本机的临时交互测试页，替换的只有授权 RPC；浏览器中已完成同步开窗、自动跳转到本地模拟确认页、模拟确认后自动展示两行账号/组织并关闭窗口、弹窗拦截时展开恢复链接、取消后恢复未绑定。测试页不连接钉钉；真实钉钉账号确认未自动完成，不能以此测试代替真人授权验收。临时页面、服务和基线 worktree 验证后清理。
+
+English: All 74 frontend, 40 API and six locale checks passed, as did the production build. The provider/app-scope run passed 155 cases. Broader DingTalk coverage passed 429 cases with four verified pre-existing failures listed above. The source service was restarted and served the latest build. An isolated native CLI authorization returned a device URL/code in 6.16 seconds, reused the same operation on repeat begin and returned to `not_connected` after cancellation. Actual browser interactions with the production profile component and local simulated RPCs verified popup creation, redirection, completion display, cleanup and blocked-popup recovery. The real DingTalk consent page was not automated, so final live user consent remains outside this verification. No employee credentials were restored or changed.
+
+## 38. 解除钉钉连接时清理用户授权（2026-11-05，已实现并验证）
+
+根因：Gateway 的 `channel.dingtalk.unbind_agent` 只删除应用配置；用户 OAuth 位于员工和应用凭据对应的私有目录，没有调用断开接口。相同员工、clientId 与 secret 重绑后仍读取旧登录态。用户已确认解除连接时一并清理授权，保留员工和聊天数据。
+
+最小方案与文件：`gateway/channel_manager/web/app_web_handlers.py` 在现有应用锁内核对当前持久绑定，先调用现有 `jiuwenmate.dingtalk_auth.disconnect`，仅在确认 `not_connected` 后移除配置，清理失败保留绑定；释放应用锁后再重载 Stream，避免回调停机互锁。`server/jiuwenmate/web_adapter.py` 为断开操作兼容通过可信历史连接解析配置员工，仍校验可见员工及当前精确 app/Agent 绑定；发起授权持有同一应用锁并在获得锁后复核绑定，避免解绑途中重建登录。`dingtalk_cli_runtime.py` 允许已核验绑定的本地授权清理不依赖 CLI 程序是否可执行；`dingtalk_cli_local_provider.py` 等待本页设备进程结束后删除私有 OAuth，删除失败明确报错，不再忽略。复用原 RPC、Scope 与锁，不新增接口或生命周期表，不清理其他员工、个人版、历史消息或程序缓存。
+
+拒绝仅从前端先后发两个请求：直接调用解绑 API 会漏清理，且并发授权可插入。也不在 Gateway 新建独立 provider 删除凭据：它无法与 AgentServer 中正在发起的设备进程协调。
+
+补充边界：一个员工每个平台最多一个当前应用，因此断开清理该员工 `user-oauth` 下全部历史凭据版本，防止旧 secret 恢复后复活登录；其他员工和程序缓存不动。停用机器人也允许按持久绑定校验并清理。凭据已可读但设备进程尚活跃时保留 PID，失败后重试须先停止旧流再移除跟踪，避免形成无法清理的孤立进程。目录删除遇到子项消失或未完整删除时，必须复核授权根目录已不存在，不能将局部 `FileNotFoundError` 当作全部清理成功。
+
+执行中命令也可在返回结果时刷新凭据：`_execute_oauth_command` 与 `_execute_online_document` 连同环境准备纳入同一 OAuth 临界区。Web/IM 可创建不同 provider 实例，所以在员工私有根目录（位于待删除的 `user-oauth` 之外）复用 FileLock 作跨实例、跨进程互斥，保留原实例 RLock；两次锁等待共享 15 秒预算，忙碌时明确失败。Gateway 清理 RPC 最多等待 30 秒，不因命令仍在运行而提前删除凭据。没有终止用户正在执行的文档或日历写操作，也不推断写操作可回滚。
+
+验证命令：`.venv/bin/python -m pytest -o addopts= --asyncio-mode=auto -q tests/unit_tests/server/jiuwenmate/test_dingtalk_production_wiring.py tests/unit_tests/server/jiuwenmate/test_web_adapter.py tests/unit_tests/server/jiuwenmate/test_dingtalk_cli_local_provider.py tests/unit_tests/server/jiuwenmate/test_dingtalk_cli_tool.py`；覆盖真实临时凭据解绑后重绑、普通应用和其他员工不受影响、重复解绑、清理失败保留配置、历史连接归属、发起授权与解绑竞争、CLI 缺失、进程退出与目录删除失败。测试先复现失败，再实现；重启源码服务并核对就绪，不操作真实用户凭据。本轮不修改前端，不重复构建未变化的前端。
+
+验证结果：初始定向用例 9 项失败、1 项通过，额外真实 POSIX 进程回归分别复现等待退出、connected 提前丢 PID 和 retry 丢 PID；部分删除 2 项、命令与清理并发 4 项也先复现失败。最终将 provider、Scope、CLI 工具、群读取、生产接入与 Web adapter 七文件合跑，449 项通过；第 37 节已确认的四项既有失败不变。独立复核的定向验证 15 项通过，三条已确认漏清理路径均已修复，未发现新增锁序死锁或跨员工误删。
+
+源码服务已重启，health 为 `AGENT_READY`，HTTP 5173 返回原有最新 dist。通过真实 Gateway 19000 `/ws` 验证不存在应用的重复解绑为成功，配置文件哈希未变；当前员工用户授权状态只读核验为 `connected`，本轮未解除实际绑定或清除真实账号。实际解绑后重绑与凭据删除使用临时配置、真实私有文件和生产 Gateway/provider 代码验证，未发起钉钉登录、消息或文档写入。
+
+English: Unbinding a team DingTalk connection now clears the employee's private user OAuth state before removing the app. Live device flows and in-flight user CLI calls are coordinated; successful login and retry retain or stop the old process before dropping tracking. Credential revisions are removed only for that employee, deletion is verified and cleanup failure retains the binding. The broader seven-file run passed 449 cases with the four previously verified failures unchanged. Independent targeted review passed 15 cases. The source service was restarted and reported ready; a real Gateway absent-app request was idempotent without modifying configuration. Existing real authorization was checked read-only, while unlink/rebind and late-write scenarios used isolated files and controlled process/CLI boundaries. No real user authorization was revoked during verification.
+
+## 39. 新绑定员工的普通群消息监听（2026-11-05，已实现并验证）
+
+现场证据：小九当前为 canonical 员工 ID，用户授权 `connected`、回复模式 `adaptive`，测试群1存在当前 app 的 `active` 群访问记录，但 `colleague_connections` 没有历史独立运行记录。监听没有产生 observation-start 日志。`DingTalkGroupPoller._eligible_accesses` 对 `connection_of=None` 直接排除；@ 回调的 `DingTalkInboundHandler` 已支持通过 `get_config` 核验 canonical 员工，因此 @ 正常、普通消息不读取。回归点是 `43ba56fcb` 改为共用 canonical ID 后，poller 仍保留旧连接假设，非本次用户授权被清理。
+
+最小修改仅 `dingtalk_group_polling.py`：与回调保持一致，缺少历史连接时核验可见配置员工，有历史连接时仍精确匹配平台与 app；机器人缺席标记复用相同校验。发现、读前复核和读取均从当前绑定注入 `DingTalkCliScope.app_id`，避免多员工应用时落入默认应用的另一授权目录。不改变保守 @ 过滤、群访问校验、去重、游标、停机历史不自动执行策略、个人版或 Agent Core。
+
+验证计划：`test_dingtalk_group_polling.py` 补 canonical 普通消息、隐藏／不存在配置拒绝、错连接拒绝、canonical 机器人退群及精确 app Scope；`test_dingtalk_production_wiring.py` 在双员工无历史连接情况下核对普通消息进入实际请求及独立回复。先观察失败，再实现；跑监听／生产接入／provider／adapter 相关回归，重启后通过真实监听日志及只读群读取核对，不发送群测试消息、不自动补发停机前任务。本轮无前端修改。
+
+验证结果：四项新增／扩展回归先失败，五项拒绝路径与旧连接用例通过。修复后上述七文件共 457 项通过，前述四项既有失败不变；双 canonical 员工从普通文字到实际请求、独立回复及重复读取去重均通过。独立只读复核未发现权限放宽、错用应用、去重或游标边界变更。使用小九当前应用与用户授权做真实只读读取，返回 27 条消息，其中 3 条普通人类文字不含 @；`complete=true`、`hasMore=false` 且机器人列表校验通过。只读验证本身未发送消息、创建任务或改写真实账号授权。
+
+源码服务 10:17 重启并就绪，worker stderr 于 10:17:19 记录小九开始监听测试群1；该日志不在 launcher 汇总文件中。启动后有两次 `PersistentAgentError` 读取失败，既有日志未记录错误码，不能据此判断上游原因；随后重试成功。通过与生产相同的 RuntimeService 封装只读核对，近一分钟返回完整空批次，近二十分钟返回完整 20 条；后台 checkpoint 独立从 `02:20:20.441309+00:00` 推进到 `02:20:33.247790+00:00`，证明监听连续完成读取，HTTP 5173 正常。未重置授权或游标，不回放修复前漏收任务；实时新消息的回复由用户发消息验证。
+
+English: Canonical employee bindings no longer require a legacy connection row for ordinary DingTalk message polling. Visible configuration and exact legacy/app/group checks remain, and all OAuth scopes use the current binding's app ID. Four regressions failed before the fix; 457 broader checks passed with the four verified baseline failures unchanged. Live read-only queries confirmed ordinary messages and bot membership. After restart, worker logs confirmed observation of the actual group and successive background checkpoints advanced. Two initial reads failed without a recorded upstream code, then retries recovered. No authorization or cursor was reset and no test message was sent; prior missed tasks were not replayed.
+
+## 40. Markdown 发送回执与纯文本回读重复（2026-11-05，已实现，数据已修复）
+
+现场证据：10:26:28 的小九回复保存为 `delivery:` 行，正文含 `**西湖**`、Markdown 无序列表；同一秒的 `dingtalk:message:` 行来自当前已绑定机器人，正文是平台展示文本，粗体变成文本节点间空格，列表变成 `•`。现有归并按正文逐字相等索引，因此同一平台发言显示为小九和机器人昵称两条。两条人类提问来自不同真实消息 ID，须保留。
+
+最小方案：仅调整 `conversation_archive.py` 的钉钉回执／回读候选文字投影，兼容已核实的加粗、标题、无序列表和布局空白差异；保留原文精确匹配，不做模糊相似度、数字或标点删除。复杂代码、转义、链接、HTML 不作展示投影，避免折叠不同目标或字面内容。候选按真实消息 ID 去重，继续沿用同群、已验证机器人身份、10 秒时间差、无附件、双方候选唯一及完整时间窗要求；不合并用户输入，不改平台发送和 Agent 执行。新增用例在 `test_group_chat_port.py`，测试格式化正例、不同内容及歧义拒绝、重入后不复活旧回执，再跑归档／监听／投递相关回归。
+
+已有重复修复：先通过当前员工独立授权对覆盖该发言前后各十秒的窗口做完整只读回读并核实机器人映射；备份该群本地归档后，仅调用同一生产归并函数清理已确认回显。不直接按昵称／近似文本删除记录，不重发群消息、不重复执行用户任务。重启源码服务后核对管理页 RPC 与原消息 ID。
+
+验证：格式化正文与歧义共 5 项先失败、6 项拒绝用例通过；补充四空格、空格加 Tab 缩进代码及 tilde 围栏保护，相关负例分别先失败后通过。最终钉钉归并专项 29 项通过，归档／频道记录／监听／生产接入合跑 172 项通过，4 项已有失败为 `test_a_group_discards_messages_older_than_the_latest_hundred`、`test_the_same_display_name_is_listed_once_per_platform` 和前述两项员工删除用例；前两项替换成 HEAD 原归档类仍复现，后两项已在第 37 节核验。扩大到投递脱敏文件另见 38 项失败、10 项通过；替换 HEAD 原归档类后失败集合完全相同，未扩到修改无关的共享／撤权逻辑。此处不能宣称整体测试全绿。独立复核发现的缩进代码投影问题已按负例收紧。
+
+真实修复：平台投递记录为 delivered、attempt_count=1。当前授权完整回读覆盖目标前后时间窗并核对真实 bot sender、目标 messageId 与正文一致。先备份并在副本试归并，确认只合并一对且所有人类行不变，再对真实归档调用生产函数。结果合并 1 对，保留平台 messageId、员工身份、reply_to 和展示正文；12 条人类消息逐行保持不变，再执行返回 0。备份位于 `~/.jiuwenswarm-backups/dingtalk-echo-20261105-104413/`，目录 0700、归档 0600。本轮没有重发消息、重跑 Agent 或修改真实账号授权。
+
+## 41. 首次授权自动发现员工所在群（2026-11-05，已实现并验证）
+
+背景：重新初始化后 11:30 的普通消息没有进入处理，11:37 首次 @ 才创建群访问记录。监听器原先只遍历已有 active access，导致账号已授权仍无法首次接入群。当前用户已要求修复自动发现及页面状态。真实只读核验：CLI 1.0.65 的 `chat group list-all` 返回 `result.groups/hasMore/nextCursor`，`chat group bots` 可以核验该员工绑定的 robotCode。
+
+方案与边界：复用现有 poller，每次按员工独立 OAuth 读取最多五个候选群并检查机器人；只有账号可见且当前机器人确实在内的群才登记 active access。分页继续扫描，完整一轮后间隔一分钟重扫，以覆盖后续新入群；某群校验失败保留其他成功结果，下一轮重试，不据不完整列表退群。登记前重新核对应用绑定、员工启用／自适应模式与授权身份，避免解绑并发时落地旧授权。只从本轮确认接入时刻开始处理新任务，不补执行授权前历史。沿用现有机器人存在性复核、消息去重和保守 @ 过滤；不改个人版、飞书、Agent Core 或消息发送能力。
+
+备选：仅提示“先 @ 一次”不能完成自动接入；直接接入账号的全部群会把机器人不在的群错误交给员工，均不采用。渠道页通过原有授权状态接口附带独立群监听状态，显示发现中、已监听群数、无匹配群、读取异常或仅 @ 回复，不将账号授权成功等同于读取成功。
+
+实施步骤（使用 writing-plans / executing-plans 流程，沿用本 feature 维护计划）：
+
+- [x] 在 provider、RuntimeService、poller 及生产接入测试中先复现无群记录的首次发现、精确 app 隔离、分页、无授权、机器人不在群和解绑竞争；执行定向 pytest，确认预期失败。
+- [x] 修改 `dingtalk_cli_local_provider.py`、`dingtalk_cli_runtime.py`、`dingtalk_group_polling.py`，补只读发现与现有仓库登记，不增加表或独立调度服务；执行上述测试。
+- [x] 修改 `web_adapter.py`、`agent_ws_server.py` 的钉钉状态装配，以及前端 `jiuwenmateApi.ts`、`ColleagueProfilePage.tsx` 和中英文语言资源；补 adapter／界面回归，核实状态变化可见。
+- [x] 运行钉钉相关 pytest、前端 profile/API 测试及 `npm run build`；重启源码服务，使用空临时群目录和真实 CLI 做只读发现验证，再核对真实后台状态。不发送测试群消息、不重复执行旧任务。同步 S_06 契约和实际验证结果。
+
+English: The approved fix discovers employee groups after OAuth instead of requiring a first mention. Discovery is paged and bounded, verifies the exact employee bot, rechecks the current binding and reader before registration, and reuses the existing polling and deduplication path. Only messages after confirmed access may trigger new work. The authorization view separately reports discovery and group-read state. Validation is recorded below.
+
+验证结果：首次发现及 provider 用例先有 8 项预期失败；状态显示、active access 版本稳定性先有 2 项失败，前端 1 项失败；复核补充的慢发现时间边界、换账号旧错误和跨群错误清除均先失败后通过。首次授权启动 IM runtime 的行为在修正测试准备后复现未启动，再修复通过。最终 provider／群读取／poller／生产接入／Web adapter 五文件合跑 391 项通过，4 项已核验的既有失败不变：`test_deleting_a_colleague_removes_its_apps_before_agent_server_removes_it[unbind/purge]`、`test_web_gateway_does_not_forward_internal_jiuwenmate_methods`、`test_welink_mail_settings_follow_colleague_connection_and_are_live`。前端 profile/workspace 75 项、API 40 项、语言资源 6 项通过，`npm run build` 通过（保留既有大 chunk 提示）。未运行格式化或静态检查。
+
+真实只读验证：CLI 首次分页返回时间戳游标，单次读取出现过可重试失败；后续正常返回已验证的测试群1。使用当前员工真实独立 OAuth、全新的临时群 SQLite 和生产 poller，初始 active access 为 0，自动分页后变为 1 且 status=listening；没有机器人回调或手工群登记，没有发送钉钉测试消息。临时验证入站使用只归档的替身，不执行用户历史任务；真实账号授权和生产群目录保持原有数据。
+
+源码服务于 12:09 重启，12:10 worker 记录开始监听小九的测试群1。health 返回 AGENT_READY、agent_ready=true，HTTP 5173 与最新 dist 的 index 哈希一致。启动后一次群读取失败，自动重试后 checkpoint 推进；真实 Gateway RPC 最终返回 connected、group_monitor.status=listening、group_count=1。首次授权后启动共享 runtime 的新分支通过生产 dispatch 的定向回归；未为真实账号重复登录或重置群目录。
+
+English validation: The new discovery, monitoring and race regressions were observed failing before their fixes. The five-file backend run passed 391 cases with the four previously verified failures unchanged. Frontend profile/workspace, API and locale checks passed 75/40/6; the production build passed. Real employee OAuth discovered the bot's group from an empty temporary directory without a callback or manual registration. No actual DingTalk test message was sent and no historical task was replayed. The restarted source service reported ready, served the latest dist, and its real authorization RPC reported one actively observed group after a transient read recovered.
+
+## 42. 首次发现期间普通消息衔接（2026-11-05，已实现并验证）
+
+现场：测试群2的人类消息于 14:14:00 发送，14:15:27 才确认接入；第 41 节采用确认时刻作为 visibility/floor，并从最近三十秒起读，导致首次自动发现期间的第一条普通消息永久漏收。当前机器人名单同时证明，平台将 14:13:50 的机器人入群发言标为 sendType=user，补读时必须按已验证 bot sender 纠正身份，避免当作人类任务。
+
+本轮修复首次接入衔接，替代第 41 节“确认前一律不执行”的过严策略：以本进程首次确认当前员工、应用、OAuth reader 有效为授权观察起点；首次发现群后，仅补读该起点之后且最多最近五分钟的文字。登记前仍验证当前机器人确在群内，verified_at 使用实际确认时间，首次可见及派发窗口不得早于授权观察起点，确认退群后重新入群仍沿用新确认时间。新员工接收边界独立于共享检查点，避免共享进度已推进时漏掉首次窗口。未授权、停用／被动、换账号、解绑后清除该观察起点；临时故障保留原起点。服务重启产生新观察起点，不补执行重启前任务。仅根据当前已核实机器人 sender ID 纠正 sendType，不依赖昵称或欢迎语内容。
+
+最小修改：`dingtalk_group_polling.py` 增加员工授权观察起点和新群有界读取边界，复用 `observe_access(visible_from=...)`；`dingtalk_cli_local_provider.py` 在已核实机器人映射下纠正发送者类型。测试覆盖慢发现、分页／后续新群、五分钟上限、失去授权后的新窗口、机器人被标为 user，以及生产入站到任务与去重。先复现失败再修复，定向 pytest 后重启服务；不改前端、个人版、模型、发送能力或真实账号，不自动重跑已漏收的旧任务。
+
+English: The first-discovery policy is amended to bridge messages sent during discovery. A newly discovered bot-verified group may catch up at most five minutes, never earlier than this process's confirmed employee OAuth observation. Existing revocation, restart and message-ID deduplication boundaries remain. Verified bot senders must remain bot messages even when the platform labels them as users. Validation is recorded below.
+
+验证：慢发现、后续新群五分钟窗口、错误用户类型四项先失败；补充首次身份确认延迟与登记前失去授权两项均先失败后通过。四文件最终合跑 352 项通过，仅保留已核验的两项员工删除既有失败 `[unbind/purge]`。生产入站／SQLite／scheduler／模拟投递验证了 0 秒和 120 秒发现延迟下的首条用户消息可执行、授权前消息不执行、重复读取不重复执行。当前机器人的真实入群发言被平台标为 user 的现象已只读确认，精确 bot sender 归类回归通过。复核指出的授权确认时刻与登记前撤权问题已修复；读前确认换账号／失效亦清除当前员工观察边界，临时故障保留原边界。
+
+源码服务于 14:35 重启，health=AGENT_READY、agent_ready=true，HTTP 5173 正常；真实渠道列表包含测试群1、测试群2，后台两群 checkpoint 持续推进。真实 CLI 对测试群2最近一分钟只读返回 complete=true/hasMore=false 的空批次。14:14 的原消息已超过本轮补读窗口，没有手工重跑或补发；需要用新消息验证当前真实响应。本轮只改后端与相关测试／契约，前端沿用上轮已验证构建。
+
+English validation: Four initial catch-up/classification regressions and two authorization-boundary regressions failed before their fixes. The final four-file run passed 352 cases with the two previously verified employee-removal failures unchanged. Production ingress/scheduler tests covered first-message delivery with a two-minute discovery delay and deduplication. The source service restarted at 14:35, reported ready and listed both actual groups; checkpoints advanced and a real read-only recent query succeeded. The original 14:14 message was not manually replayed. No frontend code changed in this follow-up.
+
+## 43. 拆仓迁移（2026-11-09）
+
+独立仓 `agent-gateway` 的 `agent_gateway/channel_manager/web/persistent_bindings.py` 持有应用锁时请求 AgentServer 清理该员工的用户授权，确认成功后删除配置。持久写入使用既有配置事务，释放应用锁后再应用最新配置，允许不同应用并行等待 AgentServer。Swarm 保留 CLI 清理和群发现，轮询复用现有的入站校验并接纳无历史连接记录的 canonical 绑定。
+
+拆仓验证通过 Gateway 267 项，Swarm 后端主回归 531 项、补充回归 169 项（含重跑连接用例），前端 API 和页面 122 项及前端构建。全量语言资源用例的重复键检查失败，与迁移前的中英文重复键清单一致，新增钉钉文案已核对。真实钉钉账号授权、群消息和当前服务重启尚未执行。
+
+English: The standalone Gateway clears employee OAuth through AgentServer before deleting a DingTalk binding. It reloads the latest saved configuration after releasing the application lock. Swarm retains OAuth cleanup and group discovery, and its polling checks accept canonical bindings without a legacy connection row. The focused backend and frontend suites and the frontend build passed. The locale duplicate-key failure matches the pre-port baseline. Live DingTalk authorization and group messaging remain to be verified.

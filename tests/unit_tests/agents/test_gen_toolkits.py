@@ -180,16 +180,28 @@ def _mm_video_handler(statuses: list[str], *, error: Any = None) -> Handler:
 
 
 @pytest.mark.asyncio
-async def test_minimax_video_submit_poll_download(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("model", "requested", "expected"),
+    [
+        ("MiniMax-H3", "1080p", "2K"),
+        ("MiniMax-H3-Highspeed", "1080p", "768P"),
+        ("MiniMax-H3-Lite", "480p", "480P"),
+        ("MiniMax-H3-Max", "2K", "768P"),
+        ("minimax/MiniMax-H3-Highspeed-01", "2K", "768P"),
+        ("MiniMax H3 Lite", "1080p", "768P"),
+    ],
+)
+async def test_minimax_video_submit_poll_download(monkeypatch, tmp_path, model, requested, expected):
     seen = _patch_client(monkeypatch, _mm_video_handler(["queued", "running", "succeeded"]))
     result = await _submit(
-        "minimax", "k", _MM_GLOBAL, "MiniMax-H3", "fox", "9:16", "1080p", 15, True,
+        "minimax", "k", _MM_GLOBAL, model, "fox", "9:16", requested, 15, True,
         "data:image/png;base64,AAA", str(tmp_path),
     )
     assert result.startswith("Video generated successfully!")
     assert (tmp_path / "video_T1.mp4").read_bytes() == _MP4
     body = _body(seen[0])
-    assert body["resolution"] == "2K" and body["duration"] == 15 and body["ratio"] == "9:16"
+    assert body["model"] == model
+    assert body["resolution"] == expected and body["duration"] == 15 and body["ratio"] == "9:16"
     assert body["content"][1]["role"] == "first_frame"
     assert "authorization" not in seen[-1].headers  # the pre-signed download must not carry the key
 
@@ -670,3 +682,240 @@ async def test_vllm_omni_check_video_keeps_job_pending_when_server_unreachable(m
 def test_vllm_omni_size_covers_every_tier_and_ratio(aspect_ratio, resolution, expected):
     assert gt._vllm_omni_size(None, aspect_ratio, resolution) == expected
     assert gt._vllm_omni_size("640*480", aspect_ratio, resolution) == "640*480"
+
+
+# --------------------------------------------------------------------------- #
+# OpenRouter
+# --------------------------------------------------------------------------- #
+
+_OR = "https://openrouter.ai/api/v1"
+_OR_TARGET = gt.GenerationTarget("openrouter", "sk-or", _OR, "google/gemini-3.1-flash-image")
+_OR_VIDEO_TARGET = gt.GenerationTarget("openrouter", "sk-or", _OR, "bytedance/seedance-2.0-fast")
+
+
+def _or_image_response(*urls: str) -> httpx.Response:
+    images = [{"type": "image_url", "image_url": {"url": url}} for url in urls]
+    return httpx.Response(200, json={"choices": [{"message": {"content": None, "images": images}}]})
+
+
+def test_openrouter_is_not_auto_detected():
+    """The chat tools keep their own OpenRouter path; only Design opts into the backend."""
+    assert gt.detect_backend("TEST_GEN_PROTOCOL", _OR) is None
+    assert gt.OPENROUTER not in gt.NATIVE_BACKENDS
+
+
+@pytest.mark.asyncio
+async def test_openrouter_image_sends_references_and_ratio(monkeypatch, tmp_path):
+    data_uri = "data:image/png;base64," + base64.b64encode(_PNG).decode()
+    seen = _patch_client(monkeypatch, lambda r: _or_image_response(data_uri))
+    options = gt.ImageOptions(size="1424x800", reference_image_uris=("data:image/png;base64,AAA", "https://x/ref.png"))
+    result = await gt.generate_image(_OR_TARGET, "the fox under a tree", "1:1", str(tmp_path), options)
+    saved = _saved_path(result)
+    assert saved.parent == tmp_path and saved.read_bytes() == _PNG and saved.suffix == ".png"
+    assert str(seen[0].url) == f"{_OR}/chat/completions"
+    assert seen[0].headers["authorization"] == "Bearer sk-or"
+    body = _body(seen[0])
+    assert body["model"] == "google/gemini-3.1-flash-image"
+    assert body["modalities"] == ["image", "text"]
+    assert body["image_config"] == {"aspect_ratio": "16:9"}  # the explicit size wins over the 1:1 hint
+    content = body["messages"][0]["content"]
+    assert [part["type"] for part in content] == ["image_url", "image_url", "text"]
+    assert content[1]["image_url"]["url"] == "https://x/ref.png"
+    assert content[2]["text"].startswith("the fox under a tree")
+
+
+@pytest.mark.asyncio
+async def test_openrouter_image_downloads_remote_url(monkeypatch, tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            return _or_image_response("https://cdn.example/out.png")
+        return httpx.Response(200, content=_PNG)
+
+    seen = _patch_client(monkeypatch, handler)
+    result = await gt.generate_image(_OR_TARGET, "a fox", "9:16", str(tmp_path))
+    assert _saved_path(result).read_bytes() == _PNG
+    assert str(seen[1].url) == "https://cdn.example/out.png"
+    assert _body(seen[0])["image_config"] == {"aspect_ratio": "9:16"}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_image_errors(monkeypatch, tmp_path):
+    _patch_client(monkeypatch, lambda r: httpx.Response(402, json={"error": {"message": "Insufficient credits"}}))
+    assert await gt.generate_image(_OR_TARGET, "a fox", "1:1", str(tmp_path)) == (
+        "[ERROR]: OpenRouter image generation failed: 402 Insufficient credits"
+    )
+    _patch_client(monkeypatch, lambda r: httpx.Response(
+        200, json={"choices": [{"message": {"content": "I cannot draw that", "images": []}}]}
+    ))
+    result = await gt.generate_image(_OR_TARGET, "a fox", "1:1", str(tmp_path))
+    assert "no images" in result and "I cannot draw that" in result
+
+
+def _or_video_handler(statuses: list[str], *, error: str = "") -> Handler:
+    polls = iter(statuses)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/videos"):
+            return httpx.Response(202, json={"id": "gen-vid-1", "status": "pending"})
+        if path.endswith("/content"):
+            assert request.headers["authorization"] == "Bearer sk-or"
+            return httpx.Response(200, content=_MP4)
+        status = next(polls)
+        return httpx.Response(200, json={"id": "gen-vid-1", "status": status, "error": error or None})
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_openrouter_video_references_poll_download(monkeypatch, tmp_path):
+    seen = _patch_client(monkeypatch, _or_video_handler(["in_progress", "completed"]))
+    request = gt.VideoRequest(
+        "the fox runs", "16:9", "480P", 5, False, "data:image/png;base64,FRAME",
+        reference_image_uris=("data:image/png;base64,FOX", "https://x/tree.png"),
+    )
+    result = await gt.submit_video(_OR_VIDEO_TARGET, request, str(tmp_path))
+    assert _saved_path(result).read_bytes() == _MP4
+    body = _body(seen[0])
+    assert str(seen[0].url) == f"{_OR}/videos"
+    assert body["resolution"] == "480p" and body["duration"] == 5 and body["aspect_ratio"] == "16:9"
+    assert body["frame_images"] == [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,FRAME"}, "frame_type": "first_frame"}
+    ]
+    assert [ref["image_url"]["url"] for ref in body["input_references"]] == [
+        "data:image/png;base64,FOX", "https://x/tree.png",
+    ]
+    assert str(seen[-1].url) == f"{_OR}/videos/gen-vid-1/content?index=0"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_video_reference_mode_folds_frame_into_references(monkeypatch, tmp_path):
+    seen = _patch_client(monkeypatch, _or_video_handler(["completed"]))
+    request = gt.VideoRequest(
+        "p", "16:9", "720p", 5, False, "data:image/png;base64,FRAME",
+        reference_image_uris=("data:image/png;base64,FOX",), reference_mode=True,
+    )
+    await gt.submit_video(_OR_VIDEO_TARGET, request, str(tmp_path))
+    body = _body(seen[0])
+    assert "frame_images" not in body
+    assert len(body["input_references"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_openrouter_video_submit_retries_tls_send_errors(monkeypatch, tmp_path):
+    """A TLS record error while sending (anyio raises a bare ssl.SSLError) means no job was created."""
+    import ssl
+
+    inner = _or_video_handler(["completed"])
+    failures = iter([ssl.SSLError(1, "[SSL: SSLV3_ALERT_BAD_RECORD_MAC] ssl/tls alert bad record mac")])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            failure = next(failures, None)
+            if failure is not None:
+                raise failure
+        return inner(request)
+
+    seen = _patch_client(monkeypatch, handler)
+    result = await gt.submit_video(_OR_VIDEO_TARGET, gt.VideoRequest("p", "16:9", "720p", 5), str(tmp_path))
+    assert _saved_path(result).read_bytes() == _MP4
+    assert [r.method for r in seen].count("POST") == 2
+
+
+@pytest.mark.asyncio
+async def test_openrouter_persistent_tls_error_is_reported_not_raised(monkeypatch, tmp_path):
+    import ssl
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise ssl.SSLError(1, "[SSL: SSLV3_ALERT_BAD_RECORD_MAC] ssl/tls alert bad record mac")
+
+    seen = _patch_client(monkeypatch, handler)
+    result = await gt.submit_video(_OR_VIDEO_TARGET, gt.VideoRequest("p", "16:9", "720p", 5), str(tmp_path))
+    assert result.startswith("[ERROR]: OpenRouter video generation request failed: SSLError")
+    assert len(seen) == gt._OPENROUTER_POST_ATTEMPTS
+    image = await gt.generate_image(_OR_TARGET, "a fox", "1:1", str(tmp_path))
+    assert image.startswith("[ERROR]: OpenRouter image generation request failed: SSLError")
+
+
+@pytest.mark.asyncio
+async def test_openrouter_read_timeout_is_not_resubmitted(monkeypatch, tmp_path):
+    """After the body was sent the job may exist; resending could start (and bill) a second clip."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    seen = _patch_client(monkeypatch, handler)
+    result = await gt.submit_video(_OR_VIDEO_TARGET, gt.VideoRequest("p", "16:9", "720p", 5), str(tmp_path))
+    assert result.startswith("[ERROR]: OpenRouter video generation request failed: ReadTimeout")
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_openrouter_video_pending_failed_and_check(monkeypatch, tmp_path):
+    _patch_client(monkeypatch, _or_video_handler(["in_progress"] * 100))
+    request = gt.VideoRequest("p", "16:9", "480p", 5)
+    pending = await gt.submit_video(_OR_VIDEO_TARGET, request, str(tmp_path))
+    assert pending.startswith("Video job gen-vid-1 submitted and still in_progress after 300s")
+
+    _patch_client(monkeypatch, _or_video_handler(["failed"], error="content moderated"))
+    failed = await gt.submit_video(_OR_VIDEO_TARGET, request, str(tmp_path))
+    assert failed == "[ERROR]: video job gen-vid-1 ended with status failed: content moderated"
+
+    _patch_client(monkeypatch, _or_video_handler(["pending", "completed"]))
+    assert (await gt.check_video(_OR_VIDEO_TARGET, "gen-vid-1", str(tmp_path))).startswith(
+        "Video job gen-vid-1 is still pending."
+    )
+    assert _saved_path(await gt.check_video(_OR_VIDEO_TARGET, "gen-vid-1", str(tmp_path))).read_bytes() == _MP4
+
+
+_AUDIO_REJECTED = (
+    "The request failed because the output audio may be related to copyright restrictions. Request id: 0217"
+)
+
+
+def _or_audio_handler(first_error: str) -> tuple[Handler, list[dict[str, Any]]]:
+    """First job fails with ``first_error``; any later job completes."""
+    submitted: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/videos"):
+            submitted.append(json.loads(request.content))
+            return httpx.Response(202, json={"id": f"job-{len(submitted)}", "status": "pending"})
+        if path.endswith("/content"):
+            return httpx.Response(200, content=_MP4)
+        job_id = path.rsplit("/", 1)[-1]
+        if job_id == "job-1":
+            return httpx.Response(200, json={"id": job_id, "status": "failed", "error": first_error})
+        return httpx.Response(200, json={"id": job_id, "status": "completed"})
+
+    return handler, submitted
+
+
+@pytest.mark.asyncio
+async def test_openrouter_audio_rejection_retries_without_audio(monkeypatch, tmp_path):
+    handler, submitted = _or_audio_handler(_AUDIO_REJECTED)
+    _patch_client(monkeypatch, handler)
+    request = gt.VideoRequest("p", "16:9", "720p", 5, generate_audio=True)
+    result = await gt.submit_video(_OR_VIDEO_TARGET, request, str(tmp_path))
+    assert _saved_path(result).read_bytes() == _MP4
+    assert [body["generate_audio"] for body in submitted] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_other_failures_are_not_retried(monkeypatch, tmp_path):
+    handler, submitted = _or_audio_handler("content moderated")
+    _patch_client(monkeypatch, handler)
+    request = gt.VideoRequest("p", "16:9", "720p", 5, generate_audio=True)
+    result = await gt.submit_video(_OR_VIDEO_TARGET, request, str(tmp_path))
+    assert result == "[ERROR]: video job job-1 ended with status failed: content moderated"
+    assert len(submitted) == 1
+
+
+@pytest.mark.asyncio
+async def test_openrouter_silent_clip_audio_rejection_is_not_retried(monkeypatch, tmp_path):
+    handler, submitted = _or_audio_handler(_AUDIO_REJECTED)
+    _patch_client(monkeypatch, handler)
+    result = await gt.submit_video(_OR_VIDEO_TARGET, gt.VideoRequest("p", "16:9", "720p", 5), str(tmp_path))
+    assert result.startswith("[ERROR]: video job job-1 ended with status failed")
+    assert len(submitted) == 1

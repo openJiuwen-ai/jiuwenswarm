@@ -13,6 +13,7 @@ import {
   selectOfficeMember,
   selectOfficeTab,
   setActivityPeriod,
+  exceedsActivityPeriod,
   setActivityRange,
   setActivityScope,
   taskColumns,
@@ -66,7 +67,7 @@ test('half-year heatmap covers the selected half only', () => {
   assert.ok(second.every((cell) => cell.level === 0));
 });
 
-test('period heatmap lists recent days with relative labels and is capped at 31 days', () => {
+test('period heatmap lists recent days with relative labels and is capped at 30 days', () => {
   const hourly = [Array(24).fill(0).map((_, hour) => (hour === 0 ? 60 : 0)), Array(24).fill(0)];
   const rows = periodHeatmap('2026-10-10', '2026-10-12', today, hourly);
   assert.deepEqual(rows.map((row) => row.relative), ['today', 'yesterday', null]);
@@ -75,7 +76,12 @@ test('period heatmap lists recent days with relative labels and is capped at 31 
   assert.equal(rows[0].cells[0].level, 4);
 
   const clamped = setActivityPeriod(createOfficeState(null, today), '2026-01-01', '2026-10-12');
-  assert.equal(clamped.periodStart, '2026-09-12');
+  assert.equal(clamped.periodStart, '2026-09-13');
+  assert.equal(exceedsActivityPeriod('2026-01-01', '2026-10-12'), true);
+  assert.equal(exceedsActivityPeriod('2026-09-13', '2026-10-12'), false);
+
+  const reversed = setActivityPeriod(createOfficeState(null, today), '2026-10-12', '2026-01-01');
+  assert.deepEqual([reversed.periodStart, reversed.periodEnd], ['2026-09-13', '2026-10-12']);
 });
 
 test('period heatmap keeps subminute work visible by using hourly task counts', () => {

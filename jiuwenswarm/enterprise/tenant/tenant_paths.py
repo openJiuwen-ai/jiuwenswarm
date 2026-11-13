@@ -72,20 +72,17 @@ def _effective_tenant_key(tenant_key: str | None = None) -> str:
 
 
 def get_multi_tenant_user_workspace_dir(tenant_key: str | None = None) -> Path:
-    """Tenant workspace root (under the domain zone).
+    """Tenant workspace root.
 
-    - Enterprise: ``domain/workspace_{tenant_key}/``（租户隔离根，内含各自的 agent/）
-    - Personal: ``domain/``
-
-    agent/ 子树（sessions/workspace/skills/teams...）整体落在业务区——
-    会话与工作区是跨 Pod 业务态，随共享卷持久化。
+    - Enterprise: ``~/.jiuwenswarm/workspace_{tenant_key}``
+    - Personal: develop layout unchanged (``~/.jiuwenswarm``)
     """
-    from jiuwenswarm.common.utils import get_domain_data_dir
+    from jiuwenswarm.common.utils import get_user_workspace_dir
 
     if is_enterprise():
         tk = _effective_tenant_key(tenant_key)
-        return get_domain_data_dir() / f"workspace_{tk}"
-    return get_domain_data_dir()
+        return get_user_workspace_dir() / f"workspace_{tk}"
+    return get_user_workspace_dir()
 
 
 def seed_tenant_agent_workspace(tenant_root: Path) -> None:

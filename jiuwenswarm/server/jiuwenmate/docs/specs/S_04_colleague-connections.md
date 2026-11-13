@@ -6,8 +6,8 @@
 | --- | --- |
 | 类型 | spec |
 | 编号 / slug | S_04 / colleague-connections |
-| 关联模块 | `repository.py`、`service.py`、`web_adapter.py`、`agent_manager.py`、`feishu_group_fanout.py`、`dingtalk_inbound.py`；Gateway `app_web_handlers.py` 的飞书、钉钉绑定与同事删除 |
-| 最近一次修订日期 | 2026-10-30 |
+| 关联模块 | `repository.py`、`service.py`、`web_adapter.py`、`agent_manager.py`、`feishu_group_fanout.py`、`dingtalk_inbound.py`；独立仓 `agent-gateway` 中 `agent_gateway/channel_manager/web/persistent_bindings.py` 的飞书、钉钉绑定与同事删除 |
+| 最近一次修订日期 | 2026-11-09 |
 | 关联 feature | [F_02_02 同事配置与连接聚合](../features/F_02_02_colleague-connections.md)、[F_02](../features/F_02_colleague-management.md)、[F_21_02](../features/F_21_02_dingtalk-direct-message.md) |
 | 设计依据 | [架构](../designs/jiuwenmate-architecture.md)第 2.1、4.1、9.2 节 |
 
@@ -47,6 +47,7 @@
 8. **无孤立连接：** 添加连接的事务核对同事存在、不是 IM Agent、未隐藏，否则 `NOT_FOUND` 且不写入任何记录；同事行在仍有连接时不能删除（`CONFLICT`）。添加连接在准备版本后发现自己的 Agent 已被删除时，移除其重新建立的办公目录并返回 `NOT_FOUND`。
 9. **删除可重试且不误报：** 每个运行 Agent 的清理全部完成、并核对模板与办公目录已不存在后，才删除它的登记与同事表行；任何一步失败都返回错误，未删完的 Agent 仍能被查询到。已完成的 `unbind` / `purge` 被原样重试时返回成功；从未存在的 ID 返回 `NOT_FOUND`。
 10. **绑定与删除串行：** 在同一个 Gateway 进程中，同一同事的 `channel.feishu.bind_agent`、`channel.dingtalk.bind_agent` 与 `jiuwenmate.colleague.delete` 逐个执行，每个操作覆盖询问 AgentServer、写 YAML 与重启渠道的整段，失败、超时或取消时释放。因此绑定成功时其应用指向仍存在的连接 Agent，删除成功时 YAML 中没有指向该同事任一 Agent 的应用；删除之后到达的绑定得到 `NOT_FOUND`，不写 YAML。不同同事不共用编排锁；渠道自身的重启协调不变。
+11. **应用唯一占用：** 团队版现有飞书 `channels.feishu.apps` 与钉钉绑定流程中，同一平台的同一应用 ID 只能绑定一个配置员工。提交值和持久配置均以环境变量解析后的有效 ID 校验；提交值解析为空时返回 `BAD_REQUEST`，不改配置，钉钉应用锁也使用有效 ID。同一员工重复保存或其历史运行 Agent 迁移到 canonical ID 允许；其他员工绑定时返回 `CHANNEL_ALREADY_BOUND`，不改动原配置与凭据。停用或撤销授权不释放占用，解除连接后才能换绑。校验与写入在配置写锁内原子完成；不同平台的相同文本 ID 互不冲突。团队版解绑与删除员工也在配置事务中核对并清理持久绑定，不因运行时加载失败回退内存而漏删；文件已清理但内存仍有旧绑定时重新应用文件配置。WeLink 沿用助手凭证唯一性，共享读取账号不作为机器人渠道 ID。`feishu_enterprise` 与个人版设置保存行为不在本轮修复范围。
 
 ## 4. 接口契约
 
@@ -66,7 +67,8 @@ Gateway 渠道方法：
 | --- | --- |
 | `channel.feishu.bind_agent {config_id, app_id, app_secret}` | 校验配置后将同一 `config_id` 写入 Feishu 应用项的 `persistent_agent_id`，重启飞书渠道；不新建 Agent 或连接登记 |
 | `channel.dingtalk.bind_agent {config_id, client_id, client_secret, robot_code?}` | 校验配置后返回同一 `config_id`，再保存钉钉绑定；不创建 Agent、版本或 workspace；旧连接未完成请求阻止切换 |
-| `channel.feishu.unbind_agent {app_id}` / `channel.dingtalk.unbind_agent {client_id}` | 删除该应用条目，仅当它绑定了 Agent；登记与数据保留；条目不存在时成功 |
+| `channel.feishu.unbind_agent {app_id}` | 删除该应用条目，仅当它绑定了 Agent；登记与数据保留；条目不存在时成功 |
+| `channel.dingtalk.unbind_agent {client_id}` | 在应用锁内先清理当前绑定员工的用户 CLI 授权，确认成功再删除应用条目；清理失败保留绑定。员工、登记与聊天数据保留；条目不存在时成功。Stream 重载前释放应用锁 |
 
 AgentServer 拒绝时，Gateway 原样返回其错误码；无法回答时返回 `SERVICE_UNAVAILABLE`，不写 YAML。
 
@@ -85,7 +87,7 @@ AgentServer 拒绝时，Gateway 原样返回其错误码；无法回答时返回
 - **添加飞书：** 校验可见配置后返回 `config_id`，Gateway 将其写为 `persistent_agent_id`；不新增 Agent 行、连接登记、版本或 workspace。
 - **添加钉钉：** 校验后返回 canonical `config_id`，Gateway 将其写入钉钉应用；不新增独立运行身份。
 - **改绑到另一同事：** 应用改指另一同事现有的 canonical Agent；原 Agent 的历史数据保留。旧连接未完成工作须先完成或结束，不自动迁移。
-- **解除连接：** 只删除 YAML 应用条目。同一同事再次绑定同一应用时沿用原 Agent。
+- **解除连接：** 删除 YAML 应用条目，同一同事再次绑定同一应用时沿用原 Agent；钉钉在删除配置前须先成功清理该员工用户 CLI 授权，重绑后重新确认用户账号，详见 [CLI 授权规约](S_06_employee-dingtalk-cli.md)。
 - **`unbind`：** 同事设为隐藏并停用；全部 Agent、版本、办公目录与会话保留，页面不提供恢复。
 - **`purge`：** 逐个清理历史独立 IM Agent，最后清理三渠道共用的 canonical Agent。每个 Agent：先结束其排队与执行中的请求，再清理会话列表、定时任务、CLI 资料、邮件授权、模板、办公目录与窗口，核对目录已不存在，最后在一个事务中删除版本、登记、群访问与同事表行。处理独立连接期间重新读取连接列表，最多三轮，仍有新增时返回 `CONFLICT`。配置行与删除记录一起写入。执行记录（Session、Request、执行事件与投递）、权限审批与群检索游标沿用现有删除规则，不清理。
 - **重试：** Gateway 删除的每一步都可重复：已删除的应用条目不会再被找到；AgentServer 一侧按不变量 9 识别已完成的删除。
@@ -94,7 +96,7 @@ AgentServer 拒绝时，Gateway 原样返回其错误码；无法回答时返回
 
 - 旧飞书、钉钉绑定在重新绑定前仍可使用原登记 Agent；重新绑定后改为 canonical `config_id`，旧数据和长期授权不自动迁移或删除。
 - 新式 Feishu 绑定使用配置 Agent；`channels.feishu_enterprise` 的历史手工绑定继续按其 Agent 身份解析，并须通过可见配置校验。
-- Gateway 与 AgentServer 各自按同事 ID 串行绑定和删除，服务端删除未完成时 attach 等待；Gateway 超时不会结束服务端的串行保护。钉钉重绑另有跨进程应用锁，与接收回调的校验／持久入队互斥；停止／重载 Stream 前释放应用锁。多个 Gateway 进程同时写同一份渠道配置仍不在支持范围内；按应用解除（`unbind_agent`）不参与按同事的串行。
+- Gateway 与 AgentServer 各自按同事 ID 串行绑定和删除，服务端删除未完成时 attach 等待；Gateway 超时不会结束服务端的串行保护。钉钉绑定、解除连接和用户授权发起共用跨进程应用锁，与接收回调的校验／持久入队互斥；停止／重载 Stream 前释放应用锁。多个 Gateway 进程同时写同一份渠道配置仍不在支持范围内；按应用解除（`unbind_agent`）不参与按同事的串行。
 - 一个同事每个平台最多一个当前应用；Web、飞书和钉钉共用 Agent 工作空间，会话仍按平台及会话身份隔离。
 - 已解除连接、已隐藏同事的数据没有查看入口。
 - 旧版本代码会把 IM Agent 行当作普通同事列出，且不认识新列和新表，不能直接回滚。

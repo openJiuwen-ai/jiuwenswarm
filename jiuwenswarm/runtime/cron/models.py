@@ -91,8 +91,7 @@ CRON_JOB_MODES: frozenset[str] = frozenset(
         "code.normal",
         "code.plan",
         "team.code",
-        # 不走 chat.send，scheduler 消费时直接发 PROACTIVE_TICK WS 请求
-        # 触发 AgentServer ProactiveEngine.tick_now()。由 proactive_cron_sync 自动注册。
+        # Kept for gateway packages; AgentServer proactive.tick is a soft no-op.
         "proactive.tick",
         # 新三段命名 canonical（与 message_handler /mode 同源）。
         "agent.work.normal",

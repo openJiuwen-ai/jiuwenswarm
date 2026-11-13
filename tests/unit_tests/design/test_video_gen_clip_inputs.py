@@ -134,7 +134,16 @@ def test_generation_problem_explains_each_gap(monkeypatch: pytest.MonkeyPatch, d
     assert mg.generation_problem("video") is None
     monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "bytedance")
     monkeypatch.setenv("VIDEO_GEN_API_BASE", "https://openrouter.ai/api/v1")
-    assert "not one of them" in (mg.generation_problem("video") or "")
+    assert mg.generation_problem("video") is None
+    assert mg.slot_settings("video").backend == gt.OPENROUTER
+    # Any other OpenAI-compatible gateway is rejected before generation, not at the first call.
+    monkeypatch.setenv("VIDEO_GEN_API_BASE", "https://gateway.example.com/v1")
+    assert mg.slot_settings("video").backend is None
+    assert "is not one of them" in (mg.generation_problem("video") or "")
+    monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "openrouter")
+    assert mg.generation_problem("video") is None
+    monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "bytedance")
+    monkeypatch.setenv("VIDEO_GEN_API_BASE", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("VIDEO_GEN_API_KEY", "")
     assert "not configured" in (mg.generation_problem("video") or "")
     monkeypatch.setenv("VIDEO_GEN_ENABLED", "false")

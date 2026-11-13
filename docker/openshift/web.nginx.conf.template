@@ -20,23 +20,28 @@
 #      proxy_pass 域名);部署工具先建 Service 后起 pod,天然满足
 # =====================================================================
 
-# UBI 镜像 worker 以 nginx(uid 998) 运行,而 /var/lib/nginx/tmp 父目录属主为
-# default(uid 1001) 且 2770,worker 无法穿越,缓冲区落盘即 Permission denied
-# 并中途掐断响应(浏览器表现为 ERR_INCOMPLETE_CHUNKED_ENCODING)。统一指向 /tmp。
-proxy_temp_path /tmp/proxy_temp;
-client_body_temp_path /tmp/client_body_temp;
-fastcgi_temp_path /tmp/fastcgi_temp;
-uwsgi_temp_path /tmp/uwsgi_temp;
-scgi_temp_path /tmp/scgi_temp;
-
 map $http_upgrade $connection_upgrade {
     default upgrade;
     ""      "";
 }
 
+map $http_authorization $user_authz {
+    default $http_authorization;
+    ""      "Bearer $cookie_openjiuwen_user_access_token";
+}
+
 server {
     listen ${WEB_HTTP_PORT};
     server_name _;
+    # Preserve the public scheme and port when the OpenShift router terminates TLS.
+    absolute_redirect off;
+
+    # Scope the UBI temp paths here so images with http-level paths can also mount this template.
+    proxy_temp_path /tmp/proxy_temp;
+    client_body_temp_path /tmp/client_body_temp;
+    fastcgi_temp_path /tmp/fastcgi_temp;
+    uwsgi_temp_path /tmp/uwsgi_temp;
+    scgi_temp_path /tmp/scgi_temp;
 
     include /etc/nginx/mime.types;
     types { application/javascript mjs; }
@@ -72,35 +77,35 @@ server {
     # ---------- Gateway Web HTTP 组(gateway-api/file-api/share-api/sessions/v1) ----------
     location = /gateway-api { return 307 /gateway-api/; }
     location ^~ /gateway-api/ {
+        include /etc/nginx/optional-upstreams/user-http.inc;
         rewrite ^/gateway-api/(.*)$ /api/$1 break;
-        proxy_pass ${GATEWAY_WEB_HTTP_URL};
         proxy_buffering off;
         proxy_cache off;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
     location ^~ /file-api/ {
-        proxy_pass ${GATEWAY_WEB_HTTP_URL};
+        include /etc/nginx/optional-upstreams/user-http.inc;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
     location ^~ /share-api/ {
-        proxy_pass ${GATEWAY_WEB_HTTP_URL};
+        include /etc/nginx/optional-upstreams/user-http.inc;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
     location ^~ /api/sessions {
-        proxy_pass ${GATEWAY_WEB_HTTP_URL};
+        include /etc/nginx/optional-upstreams/user-http.inc;
     }
-    location = /api/v1  { proxy_pass ${GATEWAY_WEB_HTTP_URL}; }
+    location = /api/v1 { include /etc/nginx/optional-upstreams/user-http.inc; }
     location ^~ /api/v1/ {
-        proxy_pass ${GATEWAY_WEB_HTTP_URL};
+        include /etc/nginx/optional-upstreams/user-http.inc;
     }
 
     # ---------- 其余 /api → Gateway WebChannel ----------
-    location = /api { proxy_pass ${GATEWAY_URL}; }
+    location = /api { include /etc/nginx/optional-upstreams/user-webchannel-http.inc; }
     location ^~ /api/ {
-        proxy_pass ${GATEWAY_URL};
+        include /etc/nginx/optional-upstreams/user-webchannel-http.inc;
         proxy_buffering off;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
@@ -108,7 +113,7 @@ server {
 
     # ---------- /ws → Gateway WebChannel WebSocket(upgrade 隧道) ----------
     location = /ws {
-        proxy_pass ${GATEWAY_URL};
+        include /etc/nginx/optional-upstreams/user-ws.inc;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
         proxy_set_header Accept-Encoding "";
@@ -116,7 +121,7 @@ server {
         proxy_send_timeout 3600s;
     }
     location ^~ /ws/ {
-        proxy_pass ${GATEWAY_URL};
+        include /etc/nginx/optional-upstreams/user-ws.inc;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
         proxy_set_header Accept-Encoding "";

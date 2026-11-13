@@ -442,6 +442,33 @@ function scopeParams(request) {
   return scope;
 }
 
+test('enterprise skips topic UI, reads, subscriptions and foreground checks', async () => {
+  const previousEdition = window.__JIUWENSWARM_EDITION__;
+  const originalOn = webClient.on;
+  const subscriptions = [];
+  window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  webClient.on = function (event, handler) {
+    subscriptions.push(event);
+    return originalOn.call(this, event, handler);
+  };
+  let panel;
+  try {
+    panel = await mountWelcome('enterprise-topic-disabled', { holdResponses: true });
+    await panel.rerender({ isConnected: false });
+    await panel.rerender({ isConnected: true });
+    await setPageVisibility('hidden');
+    await setPageVisibility('visible');
+    assert.equal(document.querySelector('[data-testid="chat-panel-welcome-suggestions"]'), null);
+    assert.deepEqual(subscriptions.filter((event) => event.startsWith('topic_starters.')), []);
+    assert.deepEqual(sent.filter((frame) => frame.method.startsWith('topic_starters.')), []);
+  } finally {
+    if (panel) await panel.unmount();
+    webClient.on = originalOn;
+    if (previousEdition === undefined) delete window.__JIUWENSWARM_EDITION__;
+    else window.__JIUWENSWARM_EDITION__ = previousEdition;
+  }
+});
+
 test('a pool that answers at once is shown without a static entrance first', async () => {
   const panel = await mountWelcome('sess-no-flash', { holdResponses: true });
   try {
@@ -542,6 +569,19 @@ test('General renders and persists the topic switch through config while keeping
     await react.act(settle);
     assert.equal(storedValue, 'true', 'reenabling a saved model must save the switch directly');
     assert.equal(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'), null);
+    const testBtn = document.querySelector('[data-testid="settings-topic-model-test-btn"]');
+    assert.ok(testBtn, 'saved topic model card must expose a test-connection button like chat models');
+    const validateBeforeCardTest = requests.filter(request => request.method === 'config.validate_model').length;
+    await react.act(async () => testBtn.click());
+    await react.act(settle);
+    const cardProbe = requests.findLast(request => request.method === 'config.validate_model');
+    assert.ok(cardProbe, 'card test must call config.validate_model');
+    assert.ok(requests.filter(request => request.method === 'config.validate_model').length > validateBeforeCardTest);
+    assert.equal(cardProbe.params.model, 'topic-chat');
+    assert.equal(cardProbe.params.api_key, 'saved-topic-key');
+    assert.equal(cardProbe.params.api_base, 'https://example.test/v1');
+    assert.ok(requests.some(request => request.method === 'topic_starters.status' && request.params?.include_api_key === true));
+    assert.ok(document.querySelector('[data-testid="settings-topic-model-toast"][data-variant="success"]'));
     await react.act(async () => document.querySelector('[data-testid="settings-topic-model-edit"]').click());
     await react.act(settle);
     assert.ok(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'));

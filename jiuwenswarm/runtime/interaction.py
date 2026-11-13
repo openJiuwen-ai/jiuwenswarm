@@ -13,6 +13,7 @@ from agent_gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.runtime.evolution import (
+    SKILL_EVOLUTION_APPROVAL_SOURCE,
     is_interrupt_evolution_approval_answer_payload,
 )
 
@@ -78,6 +79,39 @@ def validate_answer_items(value: object) -> tuple[Mapping[str, Any], ...]:
     if not result:
         raise InteractionAnswerError("answers must not be empty")
     return tuple(result)
+
+
+#: Sources that may legally carry interrupt answers on a ``chat.send``.
+ANSWER_SOURCE_WHITELIST = frozenset(INTERRUPT_RESUME_SOURCES) | frozenset(
+    {SKILL_EVOLUTION_APPROVAL_SOURCE}
+)
+
+
+def validate_answer_source(params: object) -> None:
+    """Reject answers carried under a source no transport defines (#6285).
+
+    A ``chat.send`` with ``request_id`` + ``answers`` but a typo'd/unknown
+    ``source`` is not an interrupt resume: it is classified as a plain turn
+    and queues behind the interaction still waiting for that answer,
+    deadlocking the session without a terminal frame. Rejecting here —
+    before lane admission — guarantees the client an error response.
+    """
+    if not isinstance(params, Mapping):
+        return
+    if not str(params.get("request_id") or "").strip():
+        return
+    answers = params.get("answers")
+    if isinstance(answers, (str, bytes)) or not isinstance(answers, Sequence) or not answers:
+        return
+    source = str(params.get("source") or "").strip()
+    if not source:
+        return
+    if source not in ANSWER_SOURCE_WHITELIST:
+        raise InteractionAnswerError(
+            "params.source must be one of "
+            f"{sorted(ANSWER_SOURCE_WHITELIST)} when answers are present, "
+            f"got {source!r}"
+        )
 
 
 def _trusted_dirs(value: object) -> tuple[str, ...]:

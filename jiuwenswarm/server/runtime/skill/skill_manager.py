@@ -4359,7 +4359,19 @@ class SkillManager:
         requested_display_name = str(params.get("display_name") or "").strip()
 
         existing = self._find_skill_dir_by_installed_asset_id(asset_id)
-        if existing is not None and not is_skillpack(existing) and not skillpack_productization_enabled():
+        installed_local = (
+            existing is not None
+            and not is_skillpack(existing)
+            and not skillpack_productization_enabled()
+        )
+        installed_version = ""
+        if installed_local:
+            try:
+                installed_version = get_current_version(existing) or ""
+            except SkillArchiveError:
+                installed_version = ""
+        if installed_local and version_str and installed_version == version_str:
+            # 显式指定版本且与已装一致：零网络幂等短路。
             return {
                 "success": True,
                 "skill": {
@@ -4385,6 +4397,33 @@ class SkillManager:
                 raise SkillRpcError(
                     ERROR_SKILLHUB_INSTALL_FAILED,
                     "marketplace 返回数据格式错误",
+                )
+
+            if installed_local:
+                # 同一资产的重装/升级以 existing 为锚点，仅凭远端元数据
+                # 版本就地决策：不下载制品，也不按包内 name 生成第二个
+                # 安装目标（改名重发同 asset_id 时不落重复目录/记录）。
+                remote_version = str(artifact_data.get("version") or "").strip()
+                if remote_version and installed_version == remote_version:
+                    return {
+                        "success": True,
+                        "skill": {
+                            "name": existing.name,
+                            "source": "teamskillshub",
+                            "asset_id": asset_id,
+                            "path": str(existing),
+                        },
+                    }
+                version_note = (
+                    f"本地版本 v{installed_version}" if installed_version else "本地版本未知"
+                )
+                market_note = (
+                    f"市场版本 v{remote_version}" if remote_version else "市场版本未知"
+                )
+                raise SkillRpcError(
+                    ERROR_SKILL_NAME_CONFLICT,
+                    f"本地已安装 Skill: {existing.name}（{version_note}，{market_note}），"
+                    "请先卸载后重新安装以升级",
                 )
 
             download_url = str(artifact_data.get("download_url", "")).strip()
@@ -4468,15 +4507,32 @@ class SkillManager:
                         # 即使 force=true 也不得覆盖同名本地 Skill
                         installed_same = get_installed_asset_id(dest) == asset_id
                         if installed_same:
-                            return {
-                                "success": True,
-                                "skill": {
-                                    "name": skill_name,
-                                    "source": "teamskillshub",
-                                    "asset_id": asset_id,
-                                    "path": str(dest),
-                                },
-                            }
+                            try:
+                                installed_version = get_current_version(dest) or ""
+                            except SkillArchiveError:
+                                installed_version = ""
+                            if installed_version == product_version:
+                                return {
+                                    "success": True,
+                                    "skill": {
+                                        "name": skill_name,
+                                        "source": "teamskillshub",
+                                        "asset_id": asset_id,
+                                        "path": str(dest),
+                                    },
+                                }
+                            # 同一资产的新版本：不覆盖落盘，明确告知版本差
+                            # 并引导先卸载，替代原先"下载完也不装还报成功"。
+                            version_note = (
+                                f"本地版本 v{installed_version}"
+                                if installed_version
+                                else "本地版本未知"
+                            )
+                            raise SkillRpcError(
+                                ERROR_SKILL_NAME_CONFLICT,
+                                f"本地已安装同名 Skill: {skill_name}（{version_note}，"
+                                f"市场版本 v{product_version}），请先卸载后重新安装以升级",
+                            )
                         raise SkillRpcError(
                             ERROR_SKILL_NAME_CONFLICT,
                             f"本地已存在同名 Skill: {skill_name}",

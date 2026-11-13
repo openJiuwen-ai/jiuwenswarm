@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { settingsActionIcons } from '../../../../assets/settings';
 import { Button, Switch } from '../../../../components/ui';
-import { Form, FormDialog, useForm } from '../../../../components/form';
+import { FormDialog } from '../../../../components/form';
 import { setA2UIFeatureEnabled } from '../../../../features/a2ui/featureConfig';
 import { normalizeRSIEnabled, setRSIFeatureEnabled } from '../../../../features/rsi/featureConfig';
 import { setTrajectoryDiagnosisEnabled } from '../../../../features/trajectory/diagnosis/diagnosisFeatureConfig';
@@ -22,7 +22,6 @@ import {
 import { SettingRow, SettingsConfirmDialog } from '../../components';
 import type { SettingsCustomItemProps } from '../../registry/types';
 import { parseConfigBoolean } from '../../services/settingsContract';
-import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useSettingsSource } from '../../services/SettingsSourceProvider';
 
@@ -37,103 +36,6 @@ async function uploadCustomAgent(wheel: File, cli: File | null): Promise<Externa
   const payload = (await response.json().catch(() => ({}))) as { agent?: ExternalCliCustomAgent; error?: string };
   if (!response.ok || !payload.agent) throw new Error(payload.error || `HTTP ${response.status}`);
   return payload.agent;
-}
-
-function ProactiveLimitsDialog({
-  values,
-  onClose,
-  onSave,
-}: {
-  values: { daily: string; rounds: string };
-  onClose: () => void;
-  onSave: (values: { daily: string; rounds: string }) => Promise<void>;
-}) {
-  const { t } = useTranslation();
-  const form = useForm({ initialValues: values });
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
-  const closeBlocked = saving;
-  const { discardConfirmationOpen, requestClose, cancelDiscard, confirmDiscard } = useSettingsFormDialogClose({
-    id: 'proactive-limits-dialog',
-    form,
-    closeBlocked,
-    onClose,
-  });
-  const validator = (value: unknown) =>
-    /^\d+$/.test(String(value)) && Number(value) >= 1 && Number(value) <= 50
-      ? undefined
-      : t('settingsPanel.validation.integerRange', { min: 1, max: 50 });
-  const submit = async () => {
-    const result = form.validate();
-    if (!result.valid) return;
-    setSaving(true);
-    setSaveError('');
-    try {
-      await onSave(result.values);
-      onClose();
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <>
-      <FormDialog
-        open
-        title={t('settingsPanel.experimental.proactiveLimits')}
-        submitting={closeBlocked}
-        confirmLabel={t('common.confirm')}
-        cancelLabel={t('common.cancel')}
-        testIdPrefix="settings-proactive-limits-dialog"
-        onConfirm={() => void submit()}
-        onCancel={requestClose}
-      >
-        <Form
-          form={form}
-          optionalText={t('common.optional')}
-          testIdPrefix="settings-proactive-limits-dialog"
-          rules={{ daily: [{ validator }], rounds: [{ validator }] }}
-          items={[
-            {
-              name: 'daily',
-              label: t('settingsPanel.fields.proactive_recommendation_max_recommend_per_day.title'),
-              component: 'input',
-              type: 'number',
-              min: 1,
-              max: 50,
-              step: 1,
-              changeOnBlur: true,
-              required: true,
-            },
-            {
-              name: 'rounds',
-              label: t('settingsPanel.fields.proactive_recommendation_max_rounds_per_tick.title'),
-              component: 'input',
-              type: 'number',
-              min: 1,
-              max: 50,
-              step: 1,
-              changeOnBlur: true,
-              required: true,
-            },
-          ]}
-        />
-        {saveError ? (
-          <div className="settings-page__error" role="alert" data-testid="settings-proactive-limits-dialog-error">
-            {saveError}
-          </div>
-        ) : null}
-      </FormDialog>
-      <SettingsConfirmDialog
-        open={discardConfirmationOpen}
-        title={t('settingsPanel.dialog.discardTitle')}
-        message={t('settingsPanel.dialog.discardConfirm')}
-        onConfirm={confirmDiscard}
-        onCancel={cancelDiscard}
-      />
-    </>
-  );
 }
 
 export function RSISetting({ disabled }: SettingsCustomItemProps) {
@@ -437,52 +339,6 @@ export function TaskAsrSetting({ disabled }: SettingsCustomItemProps) {
           if (!deleting) setDeleteOpen(false);
         }}
       />
-    </>
-  );
-}
-
-export function ProactiveLimitsSetting({ disabled }: SettingsCustomItemProps) {
-  const { t } = useTranslation();
-  const { isConnected } = useSettingsServices();
-  const source = useSettingsSource();
-  const [limitsOpen, setLimitsOpen] = useState(false);
-  const proactive = parseConfigBoolean(source.values.proactive_recommendation_enabled);
-  return (
-    <>
-      <SettingRow
-        title={t('settingsPanel.experimental.proactiveLimits')}
-        description={t(
-          proactive
-            ? 'settingsPanel.experimental.proactiveLimitsDescription'
-            : 'settingsPanel.experimental.proactiveLimitsDisabledDescription',
-          {
-            daily: String(source.values.proactive_recommendation_max_recommend_per_day ?? 10),
-            rounds: String(source.values.proactive_recommendation_max_rounds_per_tick ?? 20),
-          },
-        )}
-      >
-        <Button disabled={disabled || !isConnected} onClick={() => setLimitsOpen(true)} data-testid="settings-proactive-limits-modify-btn">
-          {t('common.modify')}
-        </Button>
-      </SettingRow>
-      {limitsOpen ? (
-        <ProactiveLimitsDialog
-          values={{
-            daily: String(source.values.proactive_recommendation_max_recommend_per_day ?? 10),
-            rounds: String(source.values.proactive_recommendation_max_rounds_per_tick ?? 20),
-          }}
-          onClose={() => setLimitsOpen(false)}
-          onSave={async (values) => {
-            await source.save(
-              {
-                proactive_recommendation_max_recommend_per_day: values.daily,
-                proactive_recommendation_max_rounds_per_tick: values.rounds,
-              },
-              'proactive-limits',
-            );
-          }}
-        />
-      ) : null}
     </>
   );
 }

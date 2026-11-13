@@ -1,3 +1,4 @@
+import { isEnterprise } from '../../edition';
 import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 import { catalogAwaitingItems, scheduleCatalogRefresh, catalogScope, withCatalogCache, catalogCacheOf } from '../../features/catalogCache';
@@ -1451,7 +1452,7 @@ export function AgentManagementPanel({
                 }}
                 placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView || isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
               />
-              {isMine ? (
+              {isMine && !isEnterprise() ? (
                 <div className="agent-management-create-menu" data-testid="agent-management-create-menu">
                   <button
                     type="button"

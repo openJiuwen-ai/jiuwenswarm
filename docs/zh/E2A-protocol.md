@@ -101,6 +101,8 @@
 | `session_update_kind` | 桥接 ACP `session/update` 时，与 `constants.ACP_SESSION_UPDATE_KINDS` 一致 |
 | `expected_output_modes` | A2A `acceptedOutputModes` |
 
+AgentServer 的 Gateway WebSocket 入口将显式传入的方法名转换为本服务的 `ReqMethod`；未知或非字符串方法返回终态错误响应，`payload.code` 为 `METHOD_NOT_FOUND`。未传方法的内部请求保持原有处理路径。
+
 **`params` 常用键约定**（可按业务扩展，以下为与 ACP 桥接协作的推荐名）：
 
 | 键 | 用途 |

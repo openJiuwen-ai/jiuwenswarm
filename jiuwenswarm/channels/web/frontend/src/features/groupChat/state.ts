@@ -73,6 +73,21 @@ export function newMember(kind: GroupMember['kind'], id: string, displayName: st
   return { kind, id, display_name: displayName, member_name: `member-${crypto.randomUUID()}`, ...(description ? { description } : {}) };
 }
 
+/** Case-insensitive, trimmed match for one displayed member label; an empty query matches everything. */
+export function matchesMemberQuery(label: string, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  return !needle || label.toLocaleLowerCase().includes(needle);
+}
+
+/**
+ * Group member search only matches the display name shown to the user.
+ * member_name is an internal id (e.g. member-<uuid>) and must never produce a hit.
+ */
+export function filterGroupMembers(members: GroupMember[], query: string): GroupMember[] {
+  if (!query.trim()) return members;
+  return members.filter((member) => matchesMemberQuery(member.display_name ?? '', query));
+}
+
 export function selectedMentions(content: string, selected: string[], members: GroupMember[]): string[] {
   const mentions: string[] = [];
   for (const member of members) {
