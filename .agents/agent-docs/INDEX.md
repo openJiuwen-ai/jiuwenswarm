@@ -209,6 +209,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261112_1405_stop-btn-stuck-after-skip](bugfix/jiuwenswarm/B_20261112_1405_stop-btn-stuck-after-skip.md) | B | 集群模式跳过后停止按钮永久卡死：interrupt 收尾窗口护栏 | xiajing | 无独立 D：依据现场日志与轨迹定位，无独立设计文档；修复范围限定前端状态机护栏，并补后端判据不变量测试。 |
+| [B_20261112_1814_pool-free-member-models](bugfix/jiuwenswarm/agents/harness/team/B_20261112_1814_pool-free-member-models.md) | B | 空共享模型池保留成员独立模型 | LaiYongqiang | 无独立 D：Issue 6496 与 MR 10012 的回归修复，依据既有成员模型回退契约，无独立设计。 |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 
@@ -313,6 +314,7 @@ generated: true
 | [F_20261111_1528_unified-observability-config](features/F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 | [B_20261112_1716_affinity-status-read](bugfix/jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [B_20261112_2025_permission-profile-refresh](bugfix/jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
+| [B_20261112_2110_explicit-default-flag-leak](bugfix/jiuwenswarm/common/B_20261112_2110_explicit-default-flag-leak.md) | B | 显式默认标记泄漏到模型详情与配置写入 | LaiYongQiang | 无独立 D：MR !10012 的补充修复，依据既有 models.get / models.upsert 契约，无独立设计。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
