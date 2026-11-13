@@ -10,11 +10,14 @@
  * - text on a shape goes into the shape's own frame, so a badge is centred by construction;
  * - the result names every slide and shape it made, so the next patch needs no re-read.
  *
- * Connectors need DrawingML that PowerPoint's API does not offer (no arrowheads,
- * no glue), which the slide XML tools bring; until then ``add_connector`` is refused.
+ * Connectors need DrawingML that PowerPoint's API does not offer (arrowheads, a
+ * fixed direction): once the native objects are drawn, a slide with connectors is
+ * exported, the connectors are written into its package, and the package replaces
+ * the slide under a new id.
  */
 import type { JsonObject } from './gatewayClient';
 import type { Batch } from './powerPointReadTools';
+import { renderConnectors, type ConnectorShape } from './presentationPackage';
 
 export interface DesignSystem {
   colors: Record<string, string>;
@@ -96,6 +99,22 @@ interface UpdateTable {
   rowRules?: { color: string; weight: number };
 }
 
+interface Point { x: number; y: number }
+type Side = 'left' | 'right' | 'top' | 'bottom';
+
+/** A point on the edge of a shape: one this slide patch adds (by name) or one the slide has (by id). */
+interface Anchor { shape: { name: string } | { id: string }; side: Side; offset: number }
+
+interface AddConnector {
+  op: 'add_connector';
+  name?: string;
+  connectorType: ConnectorShape['connectorType'];
+  line?: LineStyle;
+  endArrow: boolean;
+  /** From one shape's edge to another's through ``waypoints``; or a free line, whose width and height may be below 0. */
+  route: { start: Anchor; end: Anchor; waypoints?: Point[] } | { line: Geometry };
+}
+
 type Operation =
   | { op: 'delete_shape'; shapeId: string }
   | ({ op: 'add_text'; text: string; name?: string; textStyle: TextStyle; fill?: FillStyle; line?: LineStyle;
@@ -105,6 +124,7 @@ type Operation =
   | ({ op: 'add_image'; assetKey: string; name?: string; altText?: string; rotation?: number } & Geometry)
   | AddTable
   | UpdateTable
+  | AddConnector
   | { op: 'update_shape'; shapeId: string; name?: string; text?: string; textStyle?: Partial<TextStyle>;
     fill?: FillStyle; line?: LineStyle; geometry?: Partial<Geometry>; rotation?: number; zOrder?: ZOrder };
 
@@ -161,10 +181,21 @@ export interface SlideJournal {
   /** A slide the patch made. */
   created(id: string): void;
   /**
+   * The write deleted slide ``oldId`` after it made ``newId`` (``created``), an edited copy of it: from here on
+   * ``newId`` stands wherever ``oldId`` stood, so an undo puts the slide back once and deletes the copy.
+   */
+  replaced(oldId: string, newId: string): void;
+  /**
    * Put the slides the patch changed back as they were before it, after the host failed part way; the new id of
    * each slide put back.
    */
   rollback(): Promise<Map<string, string>>;
+}
+
+/** A slide as a package: its export, and an edited package put in its place, which gives the copy's id. */
+export interface SlidePackages {
+  export(slideId: string): Promise<string>;
+  replace(slideId: string, base64: string): Promise<string>;
 }
 
 const SHAPE_TYPES = new Set([
@@ -340,6 +371,7 @@ export async function applyScenePatch(batch: Batch, patch: ScenePatch, options: 
   page: { width: number; height: number };
   supports: (version: string) => boolean;
   journal: SlideJournal;
+  packages: SlidePackages;
 }): Promise<JsonObject> {
   const { presentation, sync } = batch;
   const { page, images, journal } = options;
@@ -364,7 +396,7 @@ export async function applyScenePatch(batch: Batch, patch: ScenePatch, options: 
         throw new PatchRefused(`${spec.slideRef}: slide_id is not current: ${spec.slideId}`);
       }
     }
-    await checkShapes(batch, patch, page);
+    const routes = connectorRoutes(patch, await checkShapes(batch, patch, page), page);
     const tables = await checkTables(batch, patch);
     const layouts = await findLayouts(batch, patch);
 
@@ -436,6 +468,33 @@ export async function applyScenePatch(batch: Batch, patch: ScenePatch, options: 
       completedSlides += 1;
     }
 
+    const connectors: { slideRef: string; operationIndex: number; id: string; name: string }[] = [];
+    const slideIdUpdates: { old_slide_id: string; new_slide_id: string }[] = [];
+    for (const target of targets) {
+      const { spec } = target;
+      const drawn = spec.operations.flatMap((operation, index) => {
+        if (operation.op !== 'add_connector') return [];
+        const segments = routes.get(operation)!;
+        // Behind the next shape the patch adds, as the order of the operations says.
+        const before = made.find(item => item.slideRef === spec.slideRef && item.operationIndex > index
+          && item.kind.startsWith('add_'))?.shape.id;
+        return segments.map((segment, at) => ({ operationIndex: index, shape: { ...segment, before,
+          name: operation.name && segments.length > 1 ? `${operation.name}::segment-${at + 1}` : operation.name,
+          connectorType: segments.length > 1 ? 'Straight' as const : operation.connectorType, line: operation.line,
+          endArrow: operation.endArrow && at === segments.length - 1 } }));
+      });
+      if (!drawn.length) continue;
+      const slideId = spec.slideId ?? target.slide.id;
+      const rendered = renderConnectors(await options.packages.export(slideId), drawn.map(item => item.shape));
+      const copy = await options.packages.replace(slideId, rendered.base64);
+      if (spec.slideId) slideIdUpdates.push({ old_slide_id: spec.slideId, new_slide_id: copy });
+      resolved.find(slide => slide.slide_ref === spec.slideRef)!.slide_id = copy;
+      target.slide = slides.getItem(copy);
+      target.slide.load('id');
+      rendered.shapes.forEach((shape, at) => connectors.push({ slideRef: spec.slideRef,
+        operationIndex: drawn[at].operationIndex, ...shape }));
+    }
+
     // Slide-level changes run after the content edits so the ids above stay valid; moves before
     // deletions, so a move_to position counts the slides the caller could see.
     for (const { spec, slide } of targets) {
@@ -482,11 +541,14 @@ export async function applyScenePatch(batch: Batch, patch: ScenePatch, options: 
       operation_count: operationCount,
       design_system_source: patch.designSystemSource,
       design_system_tokens: patch.designSystem ? Object.keys(patch.designSystem.colors) : [],
+      ...(slideIdUpdates.length ? { slide_id_updates: slideIdUpdates } : {}),
       slides: slideResults,
-      shapes: made.map(({ shape, slideRef, operationIndex, kind }) => ({
+      shapes: [...made.map(({ shape, slideRef, operationIndex, kind }) => ({
         slide_ref: slideRef, operation_index: operationIndex, kind, shape_id: shape.id,
         ref: `${idOf.get(slideRef)}:${shape.id}`, shape_name: shape.name,
-      })),
+      })), ...connectors.map(({ slideRef, operationIndex, id, name }) => ({ slide_ref: slideRef,
+        operation_index: operationIndex, kind: 'add_connector', shape_id: id, ref: `${idOf.get(slideRef)}:${id}`,
+        shape_name: name }))],
     };
   } catch (error) {
     if (error instanceof PatchRefused && !started) throw error;
@@ -526,11 +588,17 @@ function checkCapabilities(patch: ScenePatch, supports: (version: string) => boo
   }
 }
 
-/** Every shape an update or a delete names is on its slide, and every moved shape stays on the page. */
-async function checkShapes(batch: Batch, patch: ScenePatch, page: { width: number; height: number }): Promise<void> {
-  const loads = patch.slides.flatMap(spec => (spec.slideId && spec.operations.some(operation => 'shapeId' in operation)
+/**
+ * Every shape an update or a delete names is on its slide, and every moved shape stays on the page. The geometry,
+ * once the patch's updates and deletes are done, of the shapes of each existing slide whose shapes the patch names.
+ */
+async function checkShapes(batch: Batch, patch: ScenePatch, page: { width: number; height: number }):
+  Promise<Map<SlidePatch, Map<string, Geometry>>> {
+  const live = new Map<SlidePatch, Map<string, Geometry>>();
+  const loads = patch.slides.flatMap(spec => (spec.slideId && spec.operations.some(operation => 'shapeId' in operation
+    || (operation.op === 'add_connector' && 'start' in operation.route))
     ? [{ spec, shapes: batch.presentation.slides.getItem(spec.slideId).shapes }] : []));
-  if (!loads.length) return;
+  if (!loads.length) return live;
   loads.forEach(({ shapes }) => shapes.load('items/id,items/left,items/top,items/width,items/height'));
   await batch.sync();
   for (const { spec, shapes } of loads) {
@@ -551,7 +619,97 @@ async function checkShapes(batch: Batch, patch: ScenePatch, page: { width: numbe
         geometry.set(shapeId, after);
       }
     });
+    live.set(spec, geometry);
   }
+  return live;
+}
+
+/**
+ * The segments of each connector, in points, from its anchors (on the shapes as the patch leaves them) or its own
+ * box; refused when an anchor names no shape of its slide, or a point leaves the page.
+ */
+function connectorRoutes(patch: ScenePatch, live: Map<SlidePatch, Map<string, Geometry>>,
+  page: { width: number; height: number }): Map<AddConnector, Geometry[]> {
+  const routes = new Map<AddConnector, Geometry[]>();
+  for (const spec of patch.slides) {
+    spec.operations.forEach((operation, index) => {
+      if (operation.op !== 'add_connector') return;
+      const where = `${spec.slideRef} operation ${index}`;
+      const { route } = operation;
+      let points: Point[];
+      if ('line' in route) {
+        const { left, top, width, height } = route.line;
+        points = [{ x: left, y: top }, { x: left + width, y: top + height }];
+      } else {
+        const at = (anchor: Anchor, name: string) => anchorPoint(anchor, spec, live.get(spec), `${where}.${name}`);
+        const [start, end] = [at(route.start, 'start_anchor'), at(route.end, 'end_anchor')];
+        const bends = route.waypoints ?? (operation.connectorType === 'Elbow'
+          ? elbow(start, end, route.start.side, route.end.side) : []);
+        points = [start, ...bends, end].filter((point, at, all) => !at || route.waypoints
+          || point.x !== all[at - 1].x || point.y !== all[at - 1].y);
+      }
+      for (const point of points) {
+        if (point.x < -0.01 || point.y < -0.01 || point.x > page.width + 0.01 || point.y > page.height + 0.01) {
+          throw new PatchRefused(`${where} runs to (${point.x}, ${point.y}), off the ${page.width}x${page.height} `
+            + 'point canvas');
+        }
+      }
+      routes.set(operation, points.slice(1).map((point, at) => {
+        const from = points[at];
+        if (point.x === from.x && point.y === from.y) {
+          throw new PatchRefused(`${where} has a segment of zero length at (${point.x}, ${point.y})`);
+        }
+        return { left: from.x, top: from.y, width: point.x - from.x, height: point.y - from.y };
+      }));
+    });
+  }
+  return routes;
+}
+
+/** Where an anchor is: on a shape this slide patch adds, or on one of the slide's own as the patch leaves it. */
+function anchorPoint(anchor: Anchor, spec: SlidePatch, live: Map<string, Geometry> | undefined, path: string): Point {
+  let box: Geometry | undefined;
+  if ('id' in anchor.shape) {
+    box = live?.get(anchor.shape.id);
+    if (!box) {
+      throw new PatchRefused(`${path}.shape_id ${anchor.shape.id} is not a shape on this slide after the patch`);
+    }
+  } else {
+    const { name } = anchor.shape;
+    const added = spec.operations.flatMap(operation => ((operation.op === 'add_text' || operation.op === 'add_shape'
+      || operation.op === 'add_image' || operation.op === 'add_table') && operation.name === name ? [operation] : []));
+    if (added.length !== 1) {
+      throw new PatchRefused(`${path}.shape_name ${name} ${added.length ? 'names more than one shape'
+        : 'names no shape this slide patch adds'}`);
+    }
+    const [shape] = added;
+    if (shape.op === 'add_shape' && !['Rectangle', 'RoundRectangle'].includes(shape.shapeType)
+      && anchor.offset !== 0.5) {
+      throw new PatchRefused(`${path}.offset must be 0.5 on ${shape.shapeType} ${name}, whose edge is not straight`);
+    }
+    box = shape;
+  }
+  const { left, top, width, height } = box;
+  switch (anchor.side) {
+    case 'left': return { x: left, y: top + height * anchor.offset };
+    case 'right': return { x: left + width, y: top + height * anchor.offset };
+    case 'top': return { x: left + width * anchor.offset, y: top };
+    case 'bottom': return { x: left + width * anchor.offset, y: top + height };
+  }
+}
+
+/** The bends of an orthogonal route between two anchors: one when the sides cross, two (halfway) when they face. */
+function elbow(start: Point, end: Point, from: Side, to: Side): Point[] {
+  const across = (side: Side) => side === 'left' || side === 'right';
+  if (across(from) && across(to)) {
+    const x = (start.x + end.x) / 2;
+    return [{ x, y: start.y }, { x, y: end.y }];
+  }
+  if (!across(from) && !across(to)) {
+    const y = (start.y + end.y) / 2;
+    return [{ x: start.x, y }, { x: end.x, y }];
+  }
+  return across(from) ? [{ x: end.x, y: start.y }] : [{ x: start.x, y: end.y }];
 }
 
 /** Each restyled table's size, once every target is a table and every range fits it. */
@@ -615,6 +773,9 @@ function draw(
   switch (operation.op) {
     case 'delete_shape':
       shapes.getItem(operation.shapeId).delete();
+      return undefined;
+    case 'add_connector':
+      // Written into the slide's package once the native objects are drawn.
       return undefined;
     case 'update_table': {
       const shape = shapes.getItem(operation.shapeId);
@@ -902,8 +1063,7 @@ function parseOperation(value: unknown, path: string, tokens: TokenResolver): Op
     case 'update_table':
       return parseUpdateTable(source, path, tokens);
     case 'add_connector':
-      throw new PatchRefused(`${path}: add_connector is not available in this version of the task pane; `
-        + 'draw the nodes and labels in this patch and leave the connectors out', 'CAPABILITY_UNAVAILABLE');
+      return parseConnector(source, path, tokens);
     case 'add_text':
       exactKeys(source, ['op', 'name', 'text', 'role', 'left', 'top', 'width', 'height', 'text_style', 'fill', 'line',
         'rotation'], path);
@@ -932,6 +1092,70 @@ function parseOperation(value: unknown, path: string, tokens: TokenResolver): Op
     default:
       throw new PatchRefused(`${path}.op is unsupported`);
   }
+}
+
+function parseConnector(source: JsonObject, path: string, tokens: TokenResolver): AddConnector {
+  exactKeys(source, ['op', 'name', 'connector_type', 'left', 'top', 'width', 'height', 'start_anchor', 'end_anchor',
+    'waypoints', 'line', 'end_arrow'], path);
+  const connectorType = (source.connector_type ?? 'Straight') as AddConnector['connectorType'];
+  if (!['Straight', 'Elbow', 'Curve'].includes(connectorType)) {
+    throw new PatchRefused(`${path}.connector_type must be Straight, Elbow or Curve`);
+  }
+  const common = { op: 'add_connector' as const, name: optionalString(source.name, `${path}.name`), connectorType,
+    line: lineOf(source.line, path, tokens),
+    endArrow: optionalBoolean(source.end_arrow, `${path}.end_arrow`) ?? false };
+  const anchored = source.start_anchor !== undefined || source.end_anchor !== undefined;
+  const boxed = ['left', 'top', 'width', 'height'].some(key => source[key] !== undefined);
+  if (anchored) {
+    if (source.start_anchor === undefined || source.end_anchor === undefined) {
+      throw new PatchRefused(`${path} sets start_anchor and end_anchor together`);
+    }
+    if (boxed) throw new PatchRefused(`${path} takes anchors or left/top/width/height, not both`);
+    const waypoints = source.waypoints === undefined ? undefined : pointList(source.waypoints, `${path}.waypoints`);
+    if (waypoints && connectorType !== 'Straight') {
+      throw new PatchRefused(`${path}.waypoints need connector_type Straight: each leg of the route is straight`);
+    }
+    return { ...common, route: { start: anchorOf(source.start_anchor, `${path}.start_anchor`),
+      end: anchorOf(source.end_anchor, `${path}.end_anchor`), waypoints } };
+  }
+  if (source.waypoints !== undefined) throw new PatchRefused(`${path}.waypoints need start_anchor and end_anchor`);
+  const line = {
+    left: finite(source.left, `${path}.left`, 0, 100_000),
+    top: finite(source.top, `${path}.top`, 0, 100_000),
+    width: finite(source.width, `${path}.width`, -100_000, 100_000),
+    height: finite(source.height, `${path}.height`, -100_000, 100_000),
+  };
+  if (!line.width && !line.height) throw new PatchRefused(`${path} has zero length`);
+  return { ...common, route: { line } };
+}
+
+function anchorOf(value: unknown, path: string): Anchor {
+  const source = record(value, path);
+  exactKeys(source, ['shape_name', 'shape_id', 'side', 'offset'], path);
+  const name = optionalString(source.shape_name, `${path}.shape_name`);
+  const id = optionalString(source.shape_id, `${path}.shape_id`);
+  if ((name === undefined) === (id === undefined)) {
+    throw new PatchRefused(`${path} names its shape by shape_name or shape_id`);
+  }
+  const side = source.side;
+  if (side !== 'left' && side !== 'right' && side !== 'top' && side !== 'bottom') {
+    throw new PatchRefused(`${path}.side must be left, right, top or bottom`);
+  }
+  // Away from the corners, which a rounded rectangle leaves empty.
+  const offset = source.offset === undefined ? 0.5 : finite(source.offset, `${path}.offset`, 0.15, 0.85);
+  return { shape: name === undefined ? { id: id! } : { name }, side, offset };
+}
+
+function pointList(value: unknown, path: string): Point[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8) {
+    throw new PatchRefused(`${path} must list 1 to 8 points`);
+  }
+  return value.map((item, index) => {
+    const point = record(item, `${path}[${index}]`);
+    exactKeys(point, ['x', 'y'], `${path}[${index}]`);
+    return { x: finite(point.x, `${path}[${index}].x`, 0, 100_000),
+      y: finite(point.y, `${path}[${index}].y`, 0, 100_000) };
+  });
 }
 
 function parseAddTable(source: JsonObject, path: string, tokens: TokenResolver): AddTable {

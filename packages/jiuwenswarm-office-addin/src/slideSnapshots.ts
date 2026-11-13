@@ -21,18 +21,6 @@ import type { HostWriteQueue } from './hostWriteQueue';
 import { sha256Hex } from './presentationAssetClient';
 import type { SlideJournal } from './presentationScenePatch';
 
-/**
- * A call's journal, which also follows a slide the call replaced by an edited copy of it. Its ``rollback`` names
- * each slide put back by the id the call was given, not by a copy's.
- */
-export interface CallJournal extends SlideJournal {
-  /**
-   * The call deleted slide ``oldId`` after it made ``newId`` (``created``), an edited copy of it: from here on
-   * ``newId`` stands wherever ``oldId`` stood, so an undo puts the slide back once and deletes the copy.
-   */
-  replaced(oldId: string, newId: string): void;
-}
-
 /** The deck as an undo works it, one host round trip per call. */
 export interface SlideDeck {
   ids(): Promise<string[]>;
@@ -81,6 +69,8 @@ const DEFAULT_LIMITS: SnapshotLimits = { turns: 10, bytes: 64 * 1024 * 1024 };
 export class SlideSnapshots {
   /** Oldest first; only the last can be open (no ``after``). */
   private turns: Turn[] = [];
+  /** Set by ``forget`` until the turn under way ends, whose later writes are not recorded either. */
+  private forgotten = false;
 
   constructor(
     private readonly deck: SlideDeck,
@@ -88,8 +78,11 @@ export class SlideSnapshots {
     private readonly limits: SnapshotLimits = DEFAULT_LIMITS,
   ) {}
 
-  /** What the call ``callId`` tells the open turn about the slides it changes; used inside its write. */
-  journal(callId: string): CallJournal {
+  /**
+   * What the call ``callId`` tells the open turn about the slides it changes; used inside its write. Its
+   * ``rollback`` names each slide put back by the id the call was given, not by a copy's.
+   */
+  journal(callId: string): SlideJournal {
     const call: Restorable = { order: [], exports: new Map(), created: new Set() };
     /** What the call added to its turn's record, taken out again when the call is rolled back. */
     const added = { exports: new Set<string>(), moved: new Set<string>() };
@@ -143,8 +136,19 @@ export class SlideSnapshots {
     };
   }
 
+  /**
+   * Nothing up to the end of the turn under way can be undone: a write changed slides no turn recorded (an edit of
+   * the slide master moves every slide of that master to the new one), so putting back older exports would mix the
+   * two masters.
+   */
+  forget(): void {
+    this.turns = [];
+    this.forgotten = true;
+  }
+
   /** The turn is over: hash what it left. Queued behind its writes. */
   closeTurn(): Promise<void> {
+    this.forgotten = false;
     const turn = this.turns.at(-1);
     if (!turn || turn.after) return Promise.resolve();
     return this.writes.exclusive(async () => {
@@ -185,9 +189,9 @@ export class SlideSnapshots {
 
   private openTurn(callId: string, order: readonly string[]): Turn {
     let turn = this.turns.at(-1);
-    if (!turn || turn.after) {
+    if (!turn || turn.after || this.forgotten) {
       turn = { callIds: new Set(), order: [...order], exports: new Map(), moved: new Set(), created: new Set() };
-      this.turns.push(turn);
+      if (!this.forgotten) this.turns.push(turn);
     }
     turn.callIds.add(callId);
     return turn;

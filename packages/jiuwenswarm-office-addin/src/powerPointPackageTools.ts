@@ -2,31 +2,83 @@
  * The tools that work on a slide's XML: they export the slide as a package (``exportAsBase64``), read or edit it,
  * and put an edited copy in the slide's place (``insertSlidesFromBase64`` after it, then delete it). The copy has a
  * new slide id and keeps the shape ids. The export taken before a write is the turn's undo snapshot, and a write the
- * host fails part way is rolled back.
+ * host fails part way is rolled back. The code of edit_slide_xml, edit_slide_chart and edit_slide_master runs in
+ * the sandbox worker (``ooxmlSandbox.worker``).
  */
 import type { JsonObject } from './gatewayClient';
+import type { SandboxReply, SandboxRequest } from './ooxmlSandbox.worker';
 import type { Batch, PowerPointRun } from './powerPointReadTools';
 import type { PresentationToolRuntime } from './powerPointToolDispatcher';
-import { fingerprint, rolledBack } from './powerPointWriteTools';
+import {
+  deckOrder, exportSlides, fingerprint, insertPackage, replaceSlide, rolledBack, slidePosition, type SlideWrite,
+} from './powerPointWriteTools';
 import { downloadAsset, type AssetDescriptor } from './presentationAssetClient';
 import { ChartSpecError } from './presentationChart';
 import { checkInput, isMutatingTool, type PresentationHost } from './presentationContract';
 import {
-  copyImage, createChart, editBuiltChart, editSlideText, findAndReplace, importedSlides, PackageRefused,
-  readChartStyle, readSlideText, type FindOptions, type ImageGeometry, type ReplacementPair, type SkippedMatch,
+  checkEdit, copyImage, createChart, editBuiltChart, editSlideText, findAndReplace, importedSlides,
+  normalizeMasterEdit, PackageRefused, readChartStyle, readSlideText, slideShapeIds, type FindOptions,
+  type ImageGeometry, type ReplacementPair, type SkippedMatch,
 } from './presentationPackage';
+import type { SlideJournal } from './presentationScenePatch';
 import type { ClientToolError, ClientToolResponse, HostTimings } from './presentationToolTypes';
-import type { CallJournal } from './slideSnapshots';
 
 type PackageTool = 'read_slide_text' | 'edit_slide_text' | 'find_and_replace' | 'duplicate_slide' | 'import_slides'
-  | 'copy_image_between_slides' | 'read_chart_style' | 'create_slide_chart' | 'edit_built_chart';
+  | 'copy_image_between_slides' | 'read_chart_style' | 'create_slide_chart' | 'edit_built_chart' | 'edit_slide_xml'
+  | 'edit_slide_chart' | 'edit_slide_master';
+
+/** Runs the model's code on a slide package away from the pane: what it left of the package and what it returned. */
+export type Sandbox = (code: string, base64: string) => Promise<Exclude<SandboxReply, { error: string }>>;
+
+/** The part of a ``Worker`` the sandbox uses. */
+export interface SandboxWorker {
+  postMessage(request: SandboxRequest): void;
+  terminate(): void;
+  onmessage: ((event: MessageEvent<SandboxReply>) => void) | null;
+  onerror: ((event: ErrorEvent) => void) | null;
+}
+
+/** How the sandbox failed: the code threw, ran past its time, or the worker itself failed (it did not load). */
+type SandboxFailure = 'threw' | 'timed_out' | 'worker';
+
+/** The code failed in the sandbox; the deck is as it was. */
+export class SandboxFailed extends Error {
+  constructor(message: string, readonly failure: SandboxFailure) {
+    super(message);
+  }
+}
+
+const SANDBOX_ERRORS: Record<SandboxFailure, [string, ClientToolError['category']]> = {
+  threw: ['OOXML_SCRIPT_FAILED', 'validation'],
+  timed_out: ['OOXML_SCRIPT_TIMEOUT', 'timeout'],
+  worker: ['OOXML_WORKER_FAILED', 'host'],
+};
+
+const NO_CHANGES = 'Nothing was written: the code never called markDirty() and returned nothing. Call markDirty() '
+  + 'after writing parts with zip.file(path, xml), or return what you read.';
+
+/** A ``Sandbox`` that runs each code in a new worker, stopped once it answers or after ``timeoutMs``. */
+export function workerSandbox(createWorker: () => SandboxWorker, timeoutMs = 90_000): Sandbox {
+  return (code, base64) => new Promise((resolve, reject) => {
+    const worker = createWorker();
+    const finish = (settle: () => void) => {
+      clearTimeout(timer);
+      worker.terminate();
+      settle();
+    };
+    const timer = setTimeout(() => finish(() => reject(new SandboxFailed(
+      `The code ran past ${timeoutMs / 1000} s and was stopped`, 'timed_out'))), timeoutMs);
+    worker.onmessage = ({ data }) => finish(() => ('error' in data
+      ? reject(new SandboxFailed(`The code failed: ${data.error}`, 'threw')) : resolve(data)));
+    worker.onerror = event => finish(() => reject(new SandboxFailed(`The sandbox failed: ${event.message}`, 'worker')));
+    worker.postMessage({ code, base64 });
+  });
+}
 
 /** One call, its input checked against the tool's ``input_schema``. */
-interface Call {
+interface Call extends SlideWrite {
   input: JsonObject;
   downloads: Readonly<Record<string, string>>;
-  timings: HostTimings;
-  journal: CallJournal;
   /** Set once the call changed the deck: a failure after that rolls the call back. */
   started: boolean;
   batch<T>(work: (batch: Batch) => Promise<T>): Promise<T>;
@@ -35,10 +87,13 @@ interface Call {
 /** A slide and the edited package that replaces it; ``refit`` are the shapes whose frames fit their text again. */
 interface Replacement { id: string; before: string; after: string; refit: string[] }
 
-export function powerPointPackageRuntime({ run, host, journal, fetcher }: {
+export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUndo, fetcher }: {
   run: PowerPointRun;
   host: PresentationHost;
-  journal: (callId: string) => CallJournal;
+  journal: (callId: string) => SlideJournal;
+  sandbox: Sandbox;
+  /** Clears the pane's undo, after an edit of the slide master that no turn can put back. */
+  forgetUndo: () => void;
   fetcher?: (url: string, init: RequestInit) => Promise<Response>;
 }): PresentationToolRuntime {
   /** Puts each edited copy in place of its slide, as one write of the turn; the copies' ids by the slides'. */
@@ -51,10 +106,7 @@ export function powerPointPackageRuntime({ run, host, journal, fetcher }: {
     call.started = true;
     const copies = new Map<string, string>();
     for (const { id, after, refit } of edits) {
-      const [copy] = await insertPackage(call, batch, after, { formatting: 'KeepSourceFormatting', targetSlideId: id }, 1);
-      batch.presentation.slides.getItem(id).delete();
-      await batch.sync();
-      call.journal.replaced(id, copy);
+      const copy = await replaceSlide(call, batch, id, after);
       await refitText(batch, copy, refit);
       copies.set(id, copy);
     }
@@ -81,6 +133,100 @@ export function powerPointPackageRuntime({ run, host, journal, fetcher }: {
     fitting.forEach(frame => { frame.autoSizeSetting = 'AutoSizeShapeToFitText'; });
     tables.forEach(rows => rows.items.forEach(row => { row.height = row.height; }));
     if (fitting.length || tables.length) await batch.sync();
+  }
+
+  /** edit_slide_xml and edit_slide_chart: the code runs on the slide's package, and what it marked dirty goes in. */
+  async function editSlideXml(call: Call): Promise<ClientToolResponse> {
+    const id = call.input.slide_id as string;
+    const [before] = (await call.batch(b => exportSlides(b, call.timings, [id]))).exports;
+    const ran = await sandbox(call.input.code as string, before);
+    if (!ran.dirty) return unchanged(ran);
+    checkEdit(before, ran.base64);
+    const refit = (call.input.autosize_shape_ids as string[] | undefined) ?? [];
+    const shapes = slideShapeIds(ran.base64);
+    const unknown = refit.filter(shape => !shapes.includes(shape));
+    if (unknown.length) {
+      throw new PackageRefused(`autosize_shape_ids names ${unknown.join(', ')}, which the edited slide does not have `
+        + `as shapes of its own (it has ${shapes.join(', ') || 'none'})`);
+    }
+    return call.batch(async b => {
+      // The code ran outside this batch: the slide may have gone meanwhile.
+      const order = await deckOrder(b);
+      slidePosition(order, id);
+      const copies = await replaceSlides(call, b, order, [{ id, before, after: ran.base64, refit }]);
+      return applied(b, { slide_id: copies.get(id), ...returned(ran) }, copies);
+    });
+  }
+
+  /**
+   * edit_slide_master: the code runs on the first slide's package, whose master, layouts and theme come in as a new
+   * master with that slide. The other slides of the old master take the new master's layout of the same name, and
+   * the old master goes when no slide uses it. The pane's undo is cleared: putting back older exports would bring
+   * the old master back beside the new one.
+   */
+  async function editSlideMaster(call: Call): Promise<ClientToolResponse> {
+    const [id, before] = await call.batch(async b => {
+      const [first] = await deckOrder(b);
+      if (!first) throw new PackageRefused('The deck has no slide, whose package carries the master; add one first');
+      return [first, (await exportSlides(b, call.timings, [first])).exports[0]];
+    });
+    const ran = await sandbox(call.input.code as string, before);
+    if (!ran.dirty) return unchanged(ran);
+    checkEdit(before, ran.base64);
+    const edited = normalizeMasterEdit(ran.base64, Date.now().toString(36));
+    return call.batch(async b => {
+      const { presentation } = b;
+      const slides = presentation.slides;
+      const now = await deckOrder(b);
+      slidePosition(now, id);
+      slides.items.forEach(slide => {
+        slide.slideMaster.load('id');
+        slide.layout.load('name');
+        slide.shapes.load('items/id');
+      });
+      await b.sync();
+      const old = slides.items.find(slide => slide.id === id)!.slideMaster.id;
+      const others = slides.items.filter(slide => slide.id !== id && slide.slideMaster.id === old)
+        .map(slide => ({ id: slide.id, layout: slide.layout.name, shapes: slide.shapes.items.map(shape => shape.id) }));
+      const copies = await replaceSlides(call, b, now, [{ id, before, after: edited, refit: [] }]);
+      const master = slides.getItem(copies.get(id)!).slideMaster;
+      master.load('name');
+      master.layouts.load('items/name');
+      await b.sync();
+      const relaid: string[] = [];
+      const ambiguous: string[] = [];
+      const missing: string[] = [];
+      for (const slide of others) {
+        const layouts = master.layouts.items.filter(layout => layout.name === slide.layout);
+        if (layouts.length === 1) slides.getItem(slide.id).applyLayout(layouts[0]);
+        (layouts.length === 1 ? relaid : layouts.length ? ambiguous : missing).push(slide.id);
+      }
+      const relaidShapes = relaid.map(slideId => slides.getItem(slideId).shapes);
+      relaidShapes.forEach(shapes => shapes.load('items/id'));
+      await b.sync();
+      // Reapplying a layout gives a slide back the placeholders it had deleted; changing the theme does not.
+      relaid.forEach((slideId, at) => {
+        const kept = others.find(slide => slide.id === slideId)!.shapes;
+        relaidShapes[at].items.filter(shape => !kept.includes(shape.id)).forEach(shape => shape.delete());
+      });
+      await b.sync();
+      let retained = await hasMaster(b, old);
+      if (retained && relaid.length === others.length) {
+        // PowerPoint drops a master that is not preserved when the last slide of it is deleted; a master that
+        // applyLayout left without slides goes when a slide of it is added and deleted.
+        const layouts = presentation.slideMasters.getItem(old).layouts;
+        layouts.load('items/id');
+        const present = await deckOrder(b);
+        slides.add({ slideMasterId: old, layoutId: layouts.items[0].id });
+        const [added] = (await deckOrder(b)).filter(slide => !present.includes(slide));
+        slides.getItem(added).delete();
+        await b.sync();
+        retained = await hasMaster(b, old);
+      }
+      forgetUndo();
+      return applied(b, { slide_id: copies.get(id), master_name: master.name, ambiguous_layout_slide_ids: ambiguous,
+        missing_layout_slide_ids: missing, old_master_retained: retained, ...returned(ran) }, copies, [], relaid);
+    });
   }
 
   const handlers: Record<PackageTool, (call: Call) => Promise<ClientToolResponse>> = {
@@ -215,6 +361,10 @@ export function powerPointPackageRuntime({ run, host, journal, fetcher }: {
       const copies = await replaceSlides(call, b, order, [{ id, before, after: edit.base64, refit: [] }]);
       return applied(b, edit.result, copies);
     }),
+
+    edit_slide_xml: editSlideXml,
+    edit_slide_chart: editSlideXml,
+    edit_slide_master: editSlideMaster,
   };
 
   return {
@@ -236,6 +386,10 @@ export function powerPointPackageRuntime({ run, host, journal, fetcher }: {
         if (call.started) {
           return rolledBack(call.journal, messageOf(error), { outcome: 'unknown', native_mutation_started: true }, timings);
         }
+        if (error instanceof SandboxFailed) {
+          const [code, category] = SANDBOX_ERRORS[error.failure];
+          return { ...notApplied(code, error.message, category), hostTimings: timings };
+        }
         if (error instanceof PackageRefused || error instanceof ChartSpecError) {
           return { ...notApplied('INVALID_ARGUMENT', error.message), hostTimings: timings };
         }
@@ -246,57 +400,36 @@ export function powerPointPackageRuntime({ run, host, journal, fetcher }: {
   };
 }
 
-async function deckOrder(batch: Batch): Promise<string[]> {
-  const { slides } = batch.presentation;
-  slides.load('items/id');
-  await batch.sync();
-  return slides.items.map(slide => slide.id);
-}
-
-/** A slide's 1-based position, refusing an id the deck does not have. */
-function slidePosition(order: string[], id: string): number {
-  const at = order.indexOf(id);
-  if (at < 0) {
-    throw new PackageRefused(`Slide ${id} is not in this presentation (it has ${order.length} slides); `
-      + 'read_presentation_context lists the current slide ids');
-  }
-  return at + 1;
-}
-
-/** The deck's order and the packages of ``ids``, exported in one sync. */
-async function exportSlides(batch: Batch, timings: HostTimings, ids: string[]) {
-  const order = await deckOrder(batch);
-  ids.forEach(id => slidePosition(order, id));
-  const started = Date.now();
-  const results = new Map([...new Set(ids)].map(id => [id, batch.presentation.slides.getItem(id).exportAsBase64()]));
-  await batch.sync();
-  timings.export_ms = (timings.export_ms ?? 0) + Date.now() - started;
-  return { order, exports: ids.map(id => results.get(id)!.value) };
-}
-
-/** Inserts a package and tells the journal of each slide it made; ``count`` is how many it should make. */
-async function insertPackage(
-  call: Call, batch: Batch, base64: string, options: PowerPoint.InsertSlideOptions, count: number,
-): Promise<string[]> {
-  const before = await deckOrder(batch);
-  const started = Date.now();
-  batch.presentation.insertSlidesFromBase64(base64, options);
-  const made = (await deckOrder(batch)).filter(id => !before.includes(id));
-  call.timings.insert_ms = (call.timings.insert_ms ?? 0) + Date.now() - started;
-  made.forEach(id => call.journal.created(id));
-  if (made.length !== count) throw new Error(`PowerPoint inserted ${made.length} slides for ${count}`);
-  return made;
-}
-
-/** A write that landed, with the fingerprint the deck has now; ``copies`` maps each replaced slide to its copy. */
+/**
+ * A write that landed, with the fingerprint the deck has now; ``copies`` maps each replaced slide to its copy, and
+ * ``changed`` are the other slides whose look it changed.
+ */
 async function applied(
-  batch: Batch, result: unknown, copies: Map<string, string>, created: string[] = [],
+  batch: Batch, result: unknown, copies: Map<string, string>, created: string[] = [], changed: string[] = [],
 ): Promise<ClientToolResponse> {
   return { ok: true, result, successFields: { structure_fingerprint_after: await fingerprint(batch) },
     mutationEvidence: { outcome: 'applied', native_mutation_started: true,
-      ...(copies.size ? { affected_slide_ids: [...copies.values()], slide_id_updates: [...copies]
+      ...(copies.size ? { affected_slide_ids: [...copies.values(), ...changed], slide_id_updates: [...copies]
         .map(([before, after]) => ({ old_slide_id: before, new_slide_id: after })) } : {}),
       ...(created.length ? { created_slide_ids: created } : {}) } };
+}
+
+/** What the code returned, for the answer. */
+function returned(ran: { result?: unknown }): JsonObject {
+  return ran.result === undefined ? {} : { script_result: ran.result };
+}
+
+/** What code answers that wrote nothing: what it returned, or that it forgot ``markDirty``. */
+function unchanged(ran: { result?: unknown }): ClientToolResponse {
+  return { ok: true, result: ran.result === undefined ? { warning: NO_CHANGES } : returned(ran),
+    mutationEvidence: { outcome: 'not_applied', native_mutation_started: false } };
+}
+
+async function hasMaster(batch: Batch, id: string): Promise<boolean> {
+  const masters = batch.presentation.slideMasters;
+  masters.load('items/id');
+  await batch.sync();
+  return masters.items.some(master => master.id === id);
 }
 
 /** ``ref`` as list_slide_shapes gives it: the slide id, a colon, the shape id. */
