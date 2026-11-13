@@ -16,7 +16,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front import router

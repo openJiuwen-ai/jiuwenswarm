@@ -341,7 +341,7 @@ async def test_attached_service_drains_dispatch_before_runtime_shutdown(monkeypa
             events.append("dispatch")
             await ws.send(json.dumps({"request_id": request.request_id, "is_stream": True,
                                       "body": {"event_type": "chat.delta", "content": "first"}}))
-            from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+            from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
             await ws.send(json.dumps({"request_id": request.request_id, "is_stream": True,
                                       "metadata": {E2A_WIRE_SERVER_PUSH_KEY: True},

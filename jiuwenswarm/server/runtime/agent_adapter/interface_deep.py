@@ -9297,7 +9297,7 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _login_required_message(request: AgentRequest) -> str:
-        from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
+        from e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
 
         params = request.params if isinstance(request.params, dict) else {}
         hint = params.get(E2A_LOGIN_REQUIRED_HINT_PARAM_KEY)

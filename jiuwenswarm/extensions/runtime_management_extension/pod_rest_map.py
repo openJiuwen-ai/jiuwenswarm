@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import quote, urljoin
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 
 API_PREFIX = "/api/v1"
 DEFAULT_HTTP_PORT = 8766
