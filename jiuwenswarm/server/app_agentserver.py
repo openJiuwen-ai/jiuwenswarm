@@ -77,14 +77,28 @@ def _log_import_elapsed(label: str, t0: float) -> None:
     )
 
 
+def _log_step_elapsed(label: str, t0: float) -> None:
+    """[startup] 分段日志：静默窗口内一个非导入步骤的耗时（毫秒，单调钟）。"""
+    logger.info(
+        "[startup] step %s elapsed_ms=%.0f",
+        label,
+        (time.perf_counter() - t0) * 1000.0,
+    )
+
+
 def _startup_total_ms() -> float:
     """自 _STARTUP_T0 锚点以来的进程启动总耗时（毫秒，单调钟）。"""
     return (time.perf_counter() - _STARTUP_T0) * 1000.0
 
 
+# 首条日志与首个 import 分段之间仍有一段无输出的初始化步骤（配置迁移、工作区
+# 守卫、日志装配等），逐步计时补齐，使分段加总与窗口墙钟对得上。
+_t_step = time.perf_counter()
 migrate_legacy_user_config_if_needed()
+_log_step_elapsed("migrate_legacy_user_config", _t_step)
 
 # Ensure workspace initialized
+_t_step = time.perf_counter()
 _workspace_dir = get_user_workspace_dir()
 _config_file = _workspace_dir / "config" / "config.yaml"
 _new_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
@@ -96,16 +110,27 @@ else:
     # 配置由部署侧/init 写入 PVC，运行时经 Gateway reload_config 热更新，不在此 merge。
     if not is_enterprise():
         update_config()
+_log_step_elapsed("workspace_guard", _t_step)
 
 # Pin openjiuwen log dir before any openjiuwen-heavy imports
+_t_import = time.perf_counter()
 from jiuwenswarm.common.openjiuwen_logging import bootstrap_openjiuwen_logging
+_log_import_elapsed("common.openjiuwen_logging", _t_import)
 
+_t_step = time.perf_counter()
 _loaded_logging_yaml = bootstrap_openjiuwen_logging()
+_log_step_elapsed("bootstrap_openjiuwen_logging", _t_step)
 
 # --- Now safe to import remaining jiuwenswarm modules ---
+_t_import = time.perf_counter()
 from jiuwenswarm.common.debug_dump import install_async_dump_handler, install_fault_log
-from jiuwenswarm.infrastructure.config import Settings
+_log_import_elapsed("common.debug_dump", _t_import)
 
+_t_import = time.perf_counter()
+from jiuwenswarm.infrastructure.config import Settings
+_log_import_elapsed("infrastructure.config", _t_import)
+
+_t_step = time.perf_counter()
 if not _loaded_logging_yaml:
     _logs_root = get_logs_dir()
     _file_logging_enabled = Settings().log_to_file_enabled
@@ -188,13 +213,24 @@ if not _loaded_logging_yaml:
             _shield_logger.addHandler(_perm_fh)
         _shield_logger.addHandler(_perm_sh)
     _shield_logger.propagate = False
+_log_step_elapsed("permissions_log_handlers", _t_step)
 
 # Load env from user workspace config/.env
+_t_step = time.perf_counter()
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
-from jiuwenswarm.common.local_env_config import ingest_bare_business_into_tip
+_log_step_elapsed("load_dotenv_runtime", _t_step)
 
+_t_import = time.perf_counter()
+from jiuwenswarm.common.local_env_config import ingest_bare_business_into_tip
+_log_import_elapsed("common.local_env_config", _t_import)
+
+_t_step = time.perf_counter()
 ingest_bare_business_into_tip()
+_log_step_elapsed("ingest_bare_business_into_tip", _t_step)
+
+_t_step = time.perf_counter()
 reset_free_search_runtime_flags()
+_log_step_elapsed("reset_free_search_runtime_flags", _t_step)
 
 _t_import = time.perf_counter()
 from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
