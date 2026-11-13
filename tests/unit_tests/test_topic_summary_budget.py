@@ -33,6 +33,23 @@ class _CharCounter:
         return len(user_payload) + int(reserved_output)
 
 
+def _stage_fit_window(stage: str) -> int:
+    """Context window large enough that ``_output_budget_for_stage`` keeps the stage max.
+
+    Production fits reserve the same completion budget the invoker will send. Tests
+    that still used the old 512/256/2048 reserved constants understated the limit and
+    made every fit fail closed.
+    """
+
+    return pipeline._v6_max_tokens(stage) + 1
+
+
+def _stage_reserved(stage: str, *, window: int | None = None) -> int:
+    return pipeline._output_budget_for_stage(
+        stage, window if window is not None else _stage_fit_window(stage),
+    )
+
+
 def _message(
     session_id: str,
     ordinal: int,
@@ -134,23 +151,18 @@ def test_fit_summary_session_drops_the_oldest_turns_to_meet_the_limit() -> None:
         [_message("s", ordinal, "用" * 400) for ordinal in range(4)],
     )
     snapshot = _snapshot(tuple())
+    reserved = _stage_reserved("v6_session_summarizer")
     full_limit = pipeline._summary_batch_estimate(
         _CharCounter(),
         snapshot,
         [payload],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS
-        ),
+        reserved_output=reserved,
     )
     single_limit = pipeline._summary_batch_estimate(
         _CharCounter(),
         snapshot,
         [{**payload, "messages": payload["messages"][-1:]}],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS
-        ),
+        reserved_output=reserved,
     )
 
     fitted = pipeline._fit_summary_session(
@@ -179,14 +191,12 @@ def test_plan_summary_batches_covers_every_session_once() -> None:
         )
         for index in range(5)
     ]
+    reserved = _stage_reserved("v6_session_summarizer")
     two = pipeline._summary_batch_estimate(
         _CharCounter(),
         snapshot,
         payloads[:2],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS * 2
-        ),
+        reserved_output=reserved,
     )
 
     batches = pipeline._plan_summary_batches(
@@ -347,23 +357,18 @@ async def test_summarize_sessions_splits_a_long_first_preparation() -> None:
         )
         for index in range(4)
     ]
+    reserved = _stage_reserved("v6_session_summarizer")
     one = pipeline._summary_batch_estimate(
         counter,
         snapshot,
         payloads[:1],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS
-        ),
+        reserved_output=reserved,
     )
     two = pipeline._summary_batch_estimate(
         counter,
         snapshot,
         payloads[:2],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS * 2
-        ),
+        reserved_output=reserved,
     )
     assert two > one
 
@@ -458,10 +463,11 @@ def test_fit_rid_inputs_drops_oldest_optional_summaries_first() -> None:
         "decision_context": {},
     }
     counter = _CharCounter()
+    reserved = _stage_reserved("rid_interest_distiller")
     full_tokens = counter.estimate_stage_tokens(
         pipeline._RID_API_SYSTEM_PROMPT,
         pipeline._rid_request_estimate_payload(rid_inputs),
-        pipeline._RID_RESERVED_OUTPUT_TOKENS,
+        reserved,
     )
     # Force at least one optional summary drop while keeping the required one.
     ok = pipeline._fit_rid_inputs_to_budget(
