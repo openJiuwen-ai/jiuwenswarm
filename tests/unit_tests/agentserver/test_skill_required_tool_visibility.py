@@ -38,6 +38,14 @@ from jiuwenswarm.agents.harness.common.tools.tools_search_tool import (
 _MISSING = object()
 
 
+def _assert_tool_not_available_result(result: object) -> None:
+    """skip 拒绝结果已统一为 schema dict：display 保留原文本前缀。"""
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error_code"] == "tool_not_available"
+    assert result["display"].startswith("[TOOL_NOT_AVAILABLE]")
+
+
 def _card(name: str, required_skill: object = _MISSING) -> ToolCard:
     properties = {}
     if required_skill is not _MISSING:
@@ -533,7 +541,7 @@ async def test_replayed_direct_call_is_skipped_before_tool_implementation(
     )[0]
 
     native_execute.assert_not_awaited()
-    assert str(result).startswith("[TOOL_NOT_AVAILABLE]")
+    _assert_tool_not_available_result(result)
     assert tool_message.content.startswith("[TOOL_NOT_AVAILABLE]")
 
 
@@ -553,7 +561,7 @@ async def test_registered_card_list_failure_does_not_bypass_direct_gate() -> Non
     await rail.before_tool_call(ctx)
 
     assert ctx.extra["_skip_tool"] is True
-    assert str(ctx.inputs.tool_result).startswith("[TOOL_NOT_AVAILABLE]")
+    _assert_tool_not_available_result(ctx.inputs.tool_result)
 
 
 @pytest.mark.asyncio
@@ -572,7 +580,7 @@ async def test_registered_card_lookup_failure_fails_closed() -> None:
     await rail.before_tool_call(ctx)
 
     assert ctx.extra["_skip_tool"] is True
-    assert str(ctx.inputs.tool_result).startswith("[TOOL_NOT_AVAILABLE]")
+    _assert_tool_not_available_result(ctx.inputs.tool_result)
 
 
 @pytest.mark.asyncio
@@ -592,7 +600,7 @@ async def test_removed_registered_gated_tool_is_rejected_on_replay() -> None:
     await rail.before_tool_call(ctx)
 
     assert ctx.extra["_skip_tool"] is True
-    assert str(ctx.inputs.tool_result).startswith("[TOOL_NOT_AVAILABLE]")
+    _assert_tool_not_available_result(ctx.inputs.tool_result)
 
 
 @pytest.mark.asyncio

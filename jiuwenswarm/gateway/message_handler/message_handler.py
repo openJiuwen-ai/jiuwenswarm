@@ -5733,6 +5733,9 @@ class MessageHandler(FileTransferMixin, ABC):
     ) -> "Message":
         """Build tool_result message for cancelled tool execution."""
         from jiuwenswarm.common.schema.message import Message, EventType
+        from jiuwenswarm.server.utils.stream_utils import (
+            build_cancelled_tool_result_payload,
+        )
 
         return Message(
             id=f"tool_result_{int(time.time() * 1000):x}_{secrets.token_hex(3)}",
@@ -5743,12 +5746,9 @@ class MessageHandler(FileTransferMixin, ABC):
             timestamp=time.time(),
             ok=True,
             payload={
-                "tool_result": {
-                    "tool_name": tool_info.get("tool_name", ""),
-                    "tool_call_id": tool_info.get("tool_call_id", ""),
-                    "result": tool_info.get("result", ""),
-                    "status": tool_info.get("status", "error"),
-                },
+                # P0 协议兼容：wire status 保持 error，用 cancelled/cancel_reason
+                # 让新消费者区分取消；旧消费者只读 status 的行为不变。
+                "tool_result": build_cancelled_tool_result_payload(tool_info),
             },
             event_type=EventType.CHAT_TOOL_RESULT,
             metadata=metadata,

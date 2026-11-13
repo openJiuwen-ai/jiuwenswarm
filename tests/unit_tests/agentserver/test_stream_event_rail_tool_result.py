@@ -5,6 +5,7 @@
 # pylint: disable=protected-access
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -176,12 +177,14 @@ def test_format_tool_result_for_stream_deepresearch_completed_returns_content() 
     assert _format_tool_result_for_stream(envelope) == content
 
 
-def test_format_tool_result_for_stream_non_envelope_dict_keeps_str_form() -> None:
+def test_format_tool_result_for_stream_non_envelope_dict_uses_json() -> None:
     """非 deepresearch completed 信封的 dict 仍走 str(result)，保持既有口径（回归防护）。"""
+    # CR-6：非 deepresearch 完成态的 dict 输出 JSON（不再是 str(dict) repr），
+    # 前端直接把 result 作为工具卡片 detail。
     other = {"schema_version": "other.v1", "kind": "completed", "content": "x"}
-    assert _format_tool_result_for_stream(other) == str(other)
+    assert _format_tool_result_for_stream(other) == json.dumps(other, ensure_ascii=False)
     interaction = {"schema_version": EXECUTION_SCHEMA, "kind": "interaction", "content": "x"}
-    assert _format_tool_result_for_stream(interaction) == str(interaction)
+    assert _format_tool_result_for_stream(interaction) == json.dumps(interaction, ensure_ascii=False)
     assert _structured_tool_result_payload(other) == other
 
 

@@ -1508,8 +1508,17 @@ async def test_fire_and_forget_cancel_forwards_cancelled_tools() -> None:
         interrupt_out = await handler.consume_robot_messages(timeout=0)
         assert tool_out is not None
         assert tool_out.event_type.value == "chat.tool_result"
-        assert tool_out.payload["tool_result"]["tool_call_id"] == "call_spin"
-        assert "[Interrupted]" in tool_out.payload["tool_result"]["result"]
+        cancelled_result = tool_out.payload["tool_result"]
+        assert cancelled_result["tool_call_id"] == "call_spin"
+        assert "[Interrupted]" in cancelled_result["result"]
+        # P0 协议兼容：wire status 仍是 error，新字段表达取消语义
+        assert cancelled_result["status"] == "error"
+        assert cancelled_result["success"] is False
+        assert cancelled_result["error_code"] == "tool_cancelled"
+        assert cancelled_result["error_message"] == cancelled_result["result"]
+        assert cancelled_result["display"] == cancelled_result["result"]
+        assert cancelled_result["cancelled"] is True
+        assert cancelled_result["cancel_reason"] == "user_cancelled"
         assert interrupt_out is not None
         assert interrupt_out.payload["event_type"] == "chat.interrupt_result"
         assert interrupt_out.payload["success"] is True
