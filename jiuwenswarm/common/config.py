@@ -339,10 +339,9 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 
 
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
-    """Return whether both Symphony and its evolution switch are enabled."""
+    """Read the persisted Discover SkillPack setting without deployment overrides."""
 
     from jiuwenswarm.common.symphony_config import (
-        resolve_symphony_enabled,
         resolve_symphony_evolution_enabled,
     )
 
@@ -359,10 +358,7 @@ def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
     if flow_enabled is None:
         flow_enabled = evolution.get("enabled")
-    return (
-        resolve_symphony_enabled(symphony.get("enabled"))
-        and resolve_symphony_evolution_enabled(flow_enabled)
-    )
+    return resolve_symphony_evolution_enabled(flow_enabled)
 
 
 def coerce_config_bool(value: Any, default: bool) -> bool:
@@ -1095,13 +1091,8 @@ def update_enable_free_models_in_config(value: bool) -> None:
 
 
 def update_proactive_recommendation_in_config(updates: dict[str, Any]) -> None:
-    """更新 proactive_recommendation 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "proactive_recommendation" not in data or data["proactive_recommendation"] is None:
-        data["proactive_recommendation"] = {}
-    section = data["proactive_recommendation"]
-    _merge_config_dict(section, updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """No-op: proactive recommendation settings removed."""
+    _ = updates
 
 
 def update_trajectory_ui_in_config(enabled: bool) -> None:
@@ -1951,6 +1942,60 @@ def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict
     return merged
 
 
+def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, Any]) -> None:
+    """Remove the shipped example when a real model is added."""
+    from jiuwenswarm.common.model_config_validation import (
+        PLACEHOLDER_API_BASES,
+        PLACEHOLDER_API_KEYS,
+        PLACEHOLDER_MODEL_NAMES,
+        is_placeholder_model_entry,
+    )
+
+    client = resolve_env_vars(saved.get("model_client_config") or {})
+    if not str(client.get("model_name") or "").strip() or is_placeholder_model_entry(client):
+        return
+
+    referenced_ids = set()
+    for group in models.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        for route in group.get("routes") or []:
+            if isinstance(route, dict):
+                referenced_ids.add(str(route.get("model_id") or "").strip())
+
+    remaining = []
+    removed_default = False
+    # Unset template variables resolve to empty strings.
+    placeholder_api_bases = PLACEHOLDER_API_BASES | {""}
+    placeholder_api_keys = PLACEHOLDER_API_KEYS | {""}
+    for current in models["defaults"]:
+        # Preserve existing model group routes, even if they point at the example.
+        if current is saved or current.get("model_id") in referenced_ids:
+            remaining.append(current)
+            continue
+        raw_client = current.get("model_client_config")
+        if not isinstance(raw_client, dict):
+            remaining.append(current)
+            continue
+        config = resolve_env_vars(raw_client)
+        model_name = str(config.get("model_name") or "").strip()
+        api_base = str(config.get("api_base") or "").strip()
+        api_key = str(config.get("api_key") or "").strip()
+        if (
+            model_name in PLACEHOLDER_MODEL_NAMES
+            and api_base in placeholder_api_bases
+            and api_key in placeholder_api_keys
+        ):
+            removed_default = removed_default or current.get("is_default") is True
+        else:
+            remaining.append(current)
+
+    if len(remaining) != len(models["defaults"]):
+        models["defaults"] = remaining
+        if removed_default and not any(current.get("is_default") is True for current in remaining):
+            saved["is_default"] = True
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
     model_config = saved.get("model_config_obj")
@@ -1977,10 +2022,11 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
                 defaults[index] = saved
                 break
         else:
-            _protect_model_key(saved, {})
             defaults.append(saved)
+            _remove_initial_model_placeholder(candidate, saved)
+            _protect_model_key(saved, {})
         if entry.get("is_default") is True:
-            for current in defaults:
+            for current in candidate["defaults"]:
                 current["is_default"] = current["model_id"] == saved["model_id"]
         _validate_model_candidate(candidate)
         return data
@@ -3934,6 +3980,37 @@ def get_sandbox_runtime() -> dict[str, Any]:
     if "enabled" not in raw:
         raw["enabled"] = resolve_sandbox_enabled(sandbox)
     return _ensure_sandbox_runtime_shape(raw)
+
+
+def get_sandbox_team_fail_closed() -> bool:
+    """Read ``sandbox.team_fail_closed`` (default False).
+
+    When True, a distributed teammate whose local sandbox is unavailable is
+    rejected at bootstrap instead of degrading to LOCAL execution (design
+    D-20261105-1041 KD7): security-sensitive deployments refuse unsandboxed
+    remote members rather than warning.
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return False
+    return coerce_config_bool(sandbox.get("team_fail_closed"), False)
+
+
+def get_sandbox_network_mode() -> str:
+    """Read ``sandbox.network_mode`` (default empty = do not forward).
+
+    When set (e.g. ``host``), the sandbox card's client policy fragment
+    carries ``network.mode`` explicitly: jiuwenbox's append-merge only keeps
+    fields present in the fragment, so a root-policy-only network mode is
+    lost after merge and creation falls back to isolated networking — which
+    needs ``ip netns`` privileges the host may not have.
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return ""
+    return str(sandbox.get("network_mode") or "").strip().lower()
 
 
 # ``preserve_file_sharing_mode`` 当前合法取值集合 = ``{"mount"}``; 空值表示

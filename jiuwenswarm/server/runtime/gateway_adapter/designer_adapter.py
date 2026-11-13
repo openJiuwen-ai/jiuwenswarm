@@ -713,6 +713,54 @@ def _attach_design_references(
     return attach_user_references_to_graph(graph, user_refs)
 
 
+def _design_chat_model_selection(params: dict[str, Any]):
+    """Return a single-model selection when the client sent a stable id.
+
+    Design does not use model groups. A missing or group selection stays unset
+    so the legacy name path is unchanged.
+    """
+    raw = params.get("model_selection")
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("type") != "model":
+        return None
+    from agent_gateway.common.model_selection import ModelSelection
+    from pydantic import ValidationError
+
+    try:
+        selection = ModelSelection.model_validate(raw)
+    except (ValidationError, ValueError):
+        return None
+    if selection.type != "model":
+        return None
+    selected_id = str(selection.id or "").strip()
+    if not selected_id:
+        return None
+    return selection
+
+
+def _persist_design_chat_model(session_id: str, params: dict[str, Any]) -> None:
+    """Store the stable id on the session so team rounds do not guess by name."""
+    selection = _design_chat_model_selection(params)
+    if selection is None:
+        return
+    from jiuwenswarm.common.model_selection_store import set_session_model_selection
+
+    set_session_model_selection(session_id, selection)
+
+
+def _design_graph_model_metadata(params: dict[str, Any]) -> dict[str, str]:
+    """Graph fields the director chain reads. ``model_id`` wins over a shared name."""
+    model_name = str(params.get("model_name") or "").strip()
+    selection = _design_chat_model_selection(params)
+    fields: dict[str, str] = {}
+    if model_name:
+        fields["model_name"] = model_name
+    if selection is not None:
+        fields["model_id"] = str(selection.id).strip()
+    return fields
+
+
 async def _create_design_workspace_once(
     request: AgentRequest,
     params: dict[str, Any],
@@ -751,6 +799,7 @@ async def _create_design_workspace_once(
             work_mode=DESIGN_WORK_MODE,
             agent_group_name=DESIGNER_AGENT_GROUP,
         )
+        _persist_design_chat_model(session_id, params)
         graph = normalize_execution_graph(
             {
                 "schema_version": SCHEMA_VERSION,
@@ -764,7 +813,7 @@ async def _create_design_workspace_once(
                 "metadata": {
                     "session_id": session_id,
                     "work_mode": DESIGN_WORK_MODE,
-                    **({"model_name": model_name} if model_name else {}),
+                    **_design_graph_model_metadata(params),
                 },
             }
         )
@@ -819,6 +868,7 @@ async def _create_design_workspace(
                 "prompt": prompt,
                 "references": params.get("references") or [],
                 "model_name": str(params.get("model_name") or "").strip(),
+                "model_id": _design_graph_model_metadata(params).get("model_id", ""),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -967,20 +1017,25 @@ def _compose_design_session(
         return None, "design session already has a canvas", "CONFLICT"
     graph = dict(graph)
     metadata = dict(graph.get("metadata") or {})
-    model_name = str(params.get("model_name") or "").strip()
+    model_fields = _design_graph_model_metadata(params)
+    model_name = model_fields.get("model_name", "")
     if model_name:
         metadata["model_name"] = model_name
         # Team rounds resolve their chat model from the session, not the graph.
         # Persist the canvas's chosen model here as well, otherwise the leader
-        # turn (``chat.send(mode='team.design')`` carries no model_name) falls
-        # back to the configured default even though the canvas was created
-        # with another model selected.
+        # turn falls back to the configured default even though the canvas was
+        # created with another model selected.
         update_session_metadata(
             session_id=session_id,
             model=model_name,
             touch_last_message_at=False,
             sync_write=True,
         )
+    if model_fields.get("model_id"):
+        metadata["model_id"] = model_fields["model_id"]
+    # A shared model_name matches every custom row with that API id. The stable
+    # selection lets the team round pick the row the landing page selected.
+    _persist_design_chat_model(session_id, params)
     graph["metadata"] = metadata
     if prompt:
         graph["description"] = prompt

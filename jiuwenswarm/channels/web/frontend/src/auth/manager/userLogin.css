@@ -1,0 +1,59 @@
+.user-login {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 32px;
+  color: var(--color-text-primary);
+  background: var(--color-surface-page);
+}
+.user-login-card {
+  width: min(360px, 100%);
+  padding: 18px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-sm);
+}
+.user-login-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.user-login-language {
+  display: flex;
+  width: max-content;
+  gap: 4px;
+  margin: 0 0 8px auto;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--color-surface-page);
+}
+.user-login-language .ui-button {
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.user-login-language .ui-button[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--color-action-primary);
+  color: var(--color-text-inverse);
+}
+.user-login-title img { height: 28px; }
+.user-login-title h1 { font-size: 14px; font-weight: 600; }
+.user-login-card label { display: block; font-size: 12px; margin-bottom: 6px; color: var(--color-text-secondary); }
+.user-login-card input, .user-login-primary, .user-login-federation button {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 14px;
+}
+.user-login-card input { margin-bottom: 12px; background: var(--color-surface-card); }
+.user-login-primary, .user-login-federation button { margin-top: 8px; }
+.user-login-card input:focus { outline: none; box-shadow: var(--effect-focus-ring); }
+.user-login-primary { background: var(--color-action-primary); color: var(--color-text-inverse); }
+.user-login-card button:disabled { opacity: .5; }
+.user-login-card [role='alert'] { color: var(--color-text-danger, var(--color-text-primary)); font-size: 13px; }
+.user-login-federation { margin-top: 16px; text-align: center; font-size: 12px; color: var(--color-text-secondary); }

@@ -1276,7 +1276,6 @@ class AgentWebSocketServer:
     _runtime = _AppField("runtime")
     _agent_manager = _AppField("agent_manager")
     _session_message_service = _AppField("session_message_service")
-    _proactive_engine = _AppField("proactive_engine")
     _scheduler_service = _AppField("scheduler_service")
     _scheduler_agent = _AppField("scheduler_agent")
     _jiuwenbox_runner = _AppField("jiuwenbox_runner")
@@ -1427,8 +1426,6 @@ class AgentWebSocketServer:
         # Archive service for session/project lifecycle management
         self._archive_service = None
         self._login_credential_refresh_task: Optional[asyncio.Task] = None
-        # Proactive recommendation engine (set by app_agentserver for debug trigger)
-        self._proactive_engine: Any = None
         self._on_runtime_ready: Any = None
         self._on_runtime_warmup_retry: Any = None
         self._on_runtime_failed: Any = None
@@ -1437,7 +1434,6 @@ class AgentWebSocketServer:
         self._execution_minimum_observed = False
         self._preparation_registry: Any = None
         self._startup_preparation_tokens: set = set()
-        self.proactive_preparation_task: asyncio.Task | None = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -1474,10 +1470,6 @@ class AgentWebSocketServer:
             record.target_session_id,
             request_id=record.execution_request_id,
         )
-
-    def set_proactive_engine(self, engine: Any) -> None:
-        """Store the proactive engine instance for debug trigger interface."""
-        self._proactive_engine = engine
 
     def set_runtime_lifecycle_hooks(
         self,
@@ -2272,12 +2264,6 @@ class AgentWebSocketServer:
         if preparation is not None:
             await preparation.close()
             self._preparation_registry = None
-        proactive = getattr(self, "_proactive_engine", None)
-        if proactive is not None:
-            close = getattr(proactive, "close", None)
-            if callable(close):
-                await close()
-            self._proactive_engine = None
         sandbox_start = getattr(self, "_sandbox_start_task", None)
         self._sandbox_start_task = None
         if sandbox_start is not None:
@@ -3434,13 +3420,6 @@ class AgentWebSocketServer:
                         # /sandbox enable retry and the existing backend/error
                         # resolution available after a failed warm pass.
                         logger.warning("[AgentServer] Sandbox bootstrap unavailable")
-            if request.req_method is not None and request.req_method.value.startswith("proactive."):
-                preparation = getattr(self, "proactive_preparation_task", None)
-                if preparation is not None:
-                    if registry is not None:
-                        await registry.ensure("proactive")
-                    else:
-                        await asyncio.shield(preparation)
             from jiuwenswarm.server.runtime.group_requests import dispatch_group_request
 
             if await dispatch_group_request(self, ws, request, send_lock):
@@ -3981,10 +3960,6 @@ class AgentWebSocketServer:
                                 await send_wire_payload(ws, wire)
                 return
             await self._ensure_auto_team_binding_for_chat(request)
-            # chat.send 入口采集隐式反馈：用户在推荐后的文本回复关联到最近推荐。
-            # best-effort，失败绝不影响主 chat 流（见方法实现）。
-            if request.req_method == ReqMethod.CHAT_SEND:
-                await self._try_record_implicit_feedback(request)
             if request.is_stream:
                 await self._handle_stream(ws, request, send_lock)
             else:
@@ -4084,58 +4059,6 @@ class AgentWebSocketServer:
                 runtime, session_id, request_id = pending_chat_request
                 runtime.end_chat_request(session_id, request_id)
             _tenant_cm.__exit__(None, None, None)
-
-    async def _try_record_implicit_feedback(self, request: AgentRequest) -> None:
-        """Best-effort 采集隐式反馈：用户在收到推荐后的文本回复。
-
-        主动推荐送达后，用户若直接用文本回复（"简洁点""不需要"…）而不是点卡片
-        上的赞/踩按钮，这条回复就是隐式反馈。把它关联到该会话最近一条推荐，
-        交由 ``record_implicit_feedback`` 做情感分类后入 buffer，供下次 tick 梯度更新。
-
-        与 Runtime activity participant 同款 best-effort：任何异常只 log debug，
-        绝不阻断主 chat 流。只在 ``chat.send`` 且来源不是 proactive 自己触发的
-        推荐指令时才介入（``source=proactive_recommendation`` 是系统主动塞给主
-        agent 的指令，不是用户说的话，见 proactive_adapter 触发处）。
-        """
-        try:
-            params = request.params if isinstance(request.params, dict) else {}
-            # proactive 自己触发主 agent 的指令带 source=proactive_recommendation，
-            # 那不是用户输入，跳过
-            if str(params.get("source") or "").strip() == "proactive_recommendation":
-                return
-            session_id = str(request.session_id or params.get("session_id") or "").strip()
-            if not session_id:
-                return
-            query = _request_query_text(request)
-            if not query:
-                return
-
-            from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-                find_latest_recommendation,
-                record_implicit_feedback,
-            )
-
-            # max_age_seconds=0 砍掉时间窗：不靠时间硬挡"无关反馈"——是否相关、是否
-            # 产生梯度交给梯度更新器的模型判断（看 rec_content + user_reply 语义）。
-            # 配合 record_feedback 的"同 rec_id 只采紧跟第一条、后续不覆盖"逻辑，
-            # 每条推荐只关联它之后紧跟的第一条用户回复。
-            latest = find_latest_recommendation(session_id, max_age_seconds=0)
-            if latest is None:
-                return
-            rec_id = latest.get("id")
-            if not rec_id:
-                return
-
-            # 已对该 rec_id 给过显式反馈（赞/踩）的话，record_feedback 的去重逻辑
-            # 会自动丢弃隐式补充——无需在此预判。
-            record_implicit_feedback(rec_id, query)
-        except Exception as exc:
-            logger.debug(
-                "[AgentWebSocketServer] implicit feedback hook failed; preserving chat: "
-                "session_id=%s error=%s",
-                request.session_id,
-                exc,
-            )
 
     @staticmethod
     def _is_client_disconnect_cancel_request(request: AgentRequest) -> bool:
@@ -7435,100 +7358,25 @@ class AgentWebSocketServer:
 
 
     async def _handle_proactive_tick(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Handle proactive.tick request from CronScheduler.
-
-        This is called by Gateway's CronScheduler to trigger a recommendation tick.
-        Respects cooldown and daily limits.
-        """
-        if self._proactive_engine is None:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": "ProactiveEngine not initialized"},
-            )
-        else:
-            try:
-                # Extract target_channel from params
-                params = request.params or {}
-                target_channel = params.get("target_channel")
-
-                # Run the tick (respects cooldown and daily limits)
-                success = await self._proactive_engine.tick_now(target_channel=target_channel)
-
-                status = "tick_executed" if success else "no_recommendation"
-                last_tick = self._proactive_engine.last_tick_at
-                if last_tick > 0:
-                    status = f"{status} (last_tick_at={last_tick:.0f})"
-
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={"status": status, "success": success},
-                )
-            except Exception as e:
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={"error": str(e)},
-                )
-
+        """Soft no-op: proactive recommendation removed; keep gateway cron sync happy."""
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"status": "skipped", "success": False, "reason": "proactive_removed"},
+        )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
 
     async def _handle_proactive_feedback(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Handle proactive.feedback request from frontend.
-
-        Receives user feedback (like/dislike) on proactive recommendations.
-        Stores feedback in buffer for next tick to update strategy gradients.
-        """
-        try:
-            params = request.params or {}
-            rec_id = params.get("rec_id")
-            feedback_type = params.get("feedback_type")
-            # 前端从 message 上带的推荐元数据，history 尚未写入时兜底填充反馈记录。
-            rec_type = str(params.get("rec_type") or params.get("proactive_type") or "")
-            rec_target = str(params.get("rec_target") or params.get("proactive_target") or "")
-
-            if not rec_id or feedback_type not in ("explicit_like", "explicit_dislike"):
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={
-                        "error": (
-                            "Invalid params: rec_id and feedback_type "
-                            "(explicit_like|explicit_dislike) required"
-                        ),
-                    },
-                )
-            else:
-                from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-                    RecMeta,
-                    record_explicit_feedback,
-                )
-                record_explicit_feedback(
-                    rec_id, feedback_type,
-                    meta=RecMeta(rec_type=rec_type, rec_target=rec_target),
-                )
-
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={"status": "feedback_recorded", "rec_id": rec_id},
-                )
-        except Exception as e:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
-
+        """Soft no-op: proactive recommendation feedback path removed."""
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"status": "skipped", "reason": "proactive_removed"},
+        )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
@@ -13486,13 +13334,6 @@ class AgentWebSocketServer:
         from jiuwenswarm.common.auth.login_credentials import apply_credential_update
 
         applied = apply_credential_update(request.params)
-        proactive = getattr(self, "_proactive_engine", None)
-        if applied and proactive is not None:
-            from jiuwenswarm.server.runtime.proactive_adapter import (
-                build_proactive_agent,
-            )
-
-            proactive.rebuild_proactive_agent(build_proactive_agent)
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -13631,23 +13472,6 @@ class AgentWebSocketServer:
                         "[AgentWebSocketServer] failed to stop paused team runtimes after agent.reload_config: %s",
                         exc,
                     )
-
-            # Hot-reload ProactiveEngine config if available
-            should_reload_proactive = not reload_scopes or bool(reload_scopes & {"model", "proactive", "agent_runtime"})
-            if self._proactive_engine is not None and should_reload_proactive:
-                cfg = get_config()
-                proactive_cfg = cfg.get("proactive_recommendation", {})
-                self._proactive_engine.reload_config(proactive_cfg)
-                # 重建 proactive agent——它启动时建一次，模型配置固化在实例里。
-                # 用户改模型后主 agent 会热更新，但 proactive agent 不在主 agent
-                # 链路里，不重建会继续用旧模型（可能已失效/欠费）。
-                try:
-                    from jiuwenswarm.server.runtime.proactive_adapter import (
-                        build_proactive_agent,
-                    )
-                    self._proactive_engine.rebuild_proactive_agent(build_proactive_agent)
-                except Exception as exc:
-                    logger.warning("[AgentWebSocketServer] proactive agent rebuild failed: %s", exc)
 
             payload = {"reloaded": True}
             if should_warm_tokenizers:

@@ -697,6 +697,7 @@ from jiuwenswarm.common.config import (
     get_evolution_auto_save_enabled,
     get_progressive_tool_enabled,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
     get_sandbox_endpoint,
     get_sandbox_runtime,
     get_sandbox_startup_mode,
@@ -8262,22 +8263,58 @@ class JiuWenSwarmDeepAdapter:
             self._prioritize_paid_search_tool_card()
 
     def _sync_symphony_tools_for_runtime(self, config_base: dict[str, Any]) -> None:
-        """Sync Symphony tool registration after config reload."""
+        """Reconcile discovery tools without replacing unchanged Symphony tools."""
         try:
             enabled = bool(load_symphony_config(config_base).enabled)
+            desired = mark_stateless(SymphonyToolkit().get_tools(config_base)) if enabled else []
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] symphony config reload failed: %s",
                 exc,
             )
-            enabled = False
-        self._symphony_tools, self._symphony_tools_registered = self._sync_tool_group(
-            current_tools=self._symphony_tools,
-            registered=self._symphony_tools_registered,
-            enabled=enabled,
-            create_fn=lambda: mark_stateless(SymphonyToolkit().get_tools(config_base)),
+            desired = []
+        desired_names = {tool.card.name for tool in desired}
+        removed = [tool for tool in self._symphony_tools if tool.card.name not in desired_names]
+        self._remove_registered_tools(removed)
+        self._prune_tool_cards({tool.card.name for tool in removed})
+        retained = [tool for tool in self._symphony_tools if tool.card.name in desired_names]
+        retained_names = {tool.card.name for tool in retained}
+        missing = [tool for tool in desired if tool.card.name not in retained_names]
+        added, _ = self._sync_tool_group(
+            current_tools=[],
+            registered=False,
+            enabled=bool(missing),
+            create_fn=lambda: missing,
             warn_label="symphony tools",
         )
+        self._symphony_tools = retained + added
+        self._symphony_tools_registered = bool(self._symphony_tools)
+
+    async def _sync_symphony_graph_evolution_rail_for_runtime(self) -> None:
+        """Hot-toggle evidence collection without resetting direct-route authority."""
+        if self._instance is None:
+            return
+        try:
+            config = load_symphony_config(self._config_base_cache)
+            enabled = config.enabled and config.evolution.flow.enabled
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SymphonyGraphEvolutionRail config reload failed: %s",
+                exc,
+            )
+            enabled = False
+        rail = self._symphony_graph_evolution_rail
+        if not enabled:
+            if rail is not None:
+                await self._instance.unregister_rail(rail)
+                self._symphony_graph_evolution_rail = None
+            return
+        if rail is not None:
+            return
+        rail = self._build_symphony_graph_evolution_rail()
+        if rail is not None:
+            await self._instance.register_rail(rail)
+            self._symphony_graph_evolution_rail = rail
 
     def _sync_a4p_tools_for_runtime(
         self,
@@ -9390,8 +9427,8 @@ class JiuWenSwarmDeepAdapter:
         updated = dict(inputs)
         updated["_multimodal_image_files"] = image_files
         logger.info(
-            "[JiuWenSwarmDeepAdapter] Prepared %d image attachment(s) "
-            "for Core multimodal context-window injection",
+            "[JiuWenSwarmDeepAdapter] Extracted %d image attachment(s) from the "
+            "request; routing is decided further down",
             len(image_files),
         )
         return updated
@@ -11656,10 +11693,12 @@ class JiuWenSwarmDeepAdapter:
 
             return SymphonyOrchestrationRail(
                 config_base=lambda: self._config_base_cache,
+                automatic_skillpack_enabled=lambda: get_symphony_evolution_enabled(get_config()),
                 skillpack_router=SkillPackRouter(
                     manager=lambda: self._skill_manager,
                     toolkit=lambda: self._get_or_create_skill_retrieval_toolkit(),
                     model=lambda: self._model,
+                    skills_for_session=lambda session: self._skill_rail.get_skills_for_session(session),
                 ),
             )
         except Exception as exc:
@@ -14122,6 +14161,10 @@ class JiuWenSwarmDeepAdapter:
         # ensure_initialized(), so we live-register it here — same pattern
         # memory / task_planning / ask_user / context_* / skill_evolution use.
         await self._ensure_permission_rail_live_registered()
+        # This rail is absent on a discovery-disabled cold start. Mount it
+        # live after configure; never rebuild the orchestration rail, whose
+        # state owns already-confirmed direct routes and pending questions.
+        await self._sync_symphony_graph_evolution_rail_for_runtime()
         await self.install_session_input_guard(reload=True)
         if getattr(self, "_voice_agent_task_rail", None) is not None:
             await self.install_voice_task_rail(reload=True)
@@ -20059,6 +20102,10 @@ class JiuWenSwarmDeepAdapter:
                     payload["steering_generation_start"] = True
             if event_type in ("chat.tool_call", "chat.tool_update", "chat.tool_result"):
                 had_tool_output = True
+            if event_type == "chat.tool_call" or event_type in USER_INTERACTION_EVENTS:
+                # The history writer closes the text segment here; the stream-end
+                # final patches the open segment only.
+                visible_answer_deltas.clear()
             if event_type == "chat.delta":
                 # Single choke point for forwarded text: memo it so a demoted
                 # goal attempt final can skip text the bubble already shows.

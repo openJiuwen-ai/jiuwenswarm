@@ -271,7 +271,8 @@ async def test_worker_crash_fails_inflight_request() -> None:
         max_restarts=0,
     )
     try:
-        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 5)
+        # Allow cold interpreter/import startup on loaded CI runners; crash handling stays bounded below.
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 30)
         await asyncio.wait_for(readiness.wait_agent_ready(2), 3)
         request = _request(ReqMethod.CHAT_RESUME)
         await asyncio.wait_for(

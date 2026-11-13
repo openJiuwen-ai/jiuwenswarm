@@ -1840,6 +1840,17 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     return workspace
 
 
+def get_domain_data_dir() -> Path:
+    """Get the root directory that hosts user-owned business data.
+
+    Sessions, agent workspaces, tenant data and runtime-state snapshots are
+    derived from this root, so it is the parent of :func:`get_agent_root_dir`.
+    Personal edition resolves to the user workspace, enterprise edition to the
+    tenant workspace currently bound in ``TenantContext``.
+    """
+    return get_agent_root_dir().parent
+
+
 def get_agent_root_dir(tenant_key: str | None = None) -> Path:
     """Get the agent root directory path.
 

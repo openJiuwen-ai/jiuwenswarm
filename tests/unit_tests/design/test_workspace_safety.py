@@ -577,6 +577,63 @@ async def test_selected_model_context_reaches_designer_model_calls(monkeypatch):
     assert result["model_name"] == "selected-model"
 
 
+def test_compose_persists_the_stable_model_selection(monkeypatch):
+    saved: dict = {}
+    graph = {
+        "graph_id": "g1",
+        "project_id": "proj_design",
+        "nodes": [],
+        "metadata": {"session_id": "design_session"},
+    }
+    workspace = {
+        "project": {"project_id": "proj_design"},
+        "session": {"session_id": "design_session"},
+        "graph": graph,
+        "messages": [],
+    }
+
+    monkeypatch.setattr(
+        designer_adapter,
+        "_get_design_workspace",
+        lambda params: (workspace, None, None),
+    )
+    monkeypatch.setattr(designer_adapter._store, "save_graph", lambda item: saved.setdefault("graph", item))
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.update_session_metadata",
+        lambda **kwargs: saved.setdefault("updates", []).append(kwargs),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda session_id: {"agent_group_name": "designer"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.model_selection_store.set_session_model_selection",
+        lambda session_id, selection: saved.setdefault("selection", (session_id, selection.model_dump())),
+    )
+
+    payload, error, code = designer_adapter._compose_design_session(
+        AgentRequest(request_id="request", channel_id="web"),
+        {
+            "project_id": "proj_design",
+            "session_id": "design_session",
+            "prompt": "make a film",
+            "model_name": "shared",
+            "model_selection": {"type": "model", "id": "mdl-picked"},
+        },
+    )
+
+    assert error is None
+    assert code is None
+    assert payload is workspace
+    session_id, selection = saved["selection"]
+    assert session_id == "design_session"
+    assert selection["type"] == "model"
+    assert selection["id"] == "mdl-picked"
+    assert saved["graph"]["metadata"]["model_name"] == "shared"
+    assert saved["graph"]["metadata"]["model_id"] == "mdl-picked"
+    assert saved["updates"][0]["model"] == "shared"
+
+
 def test_canvas_title_uses_model_phrase_not_the_prompt():
     from jiuwenswarm.common.schema.designer_node_labels import usable_story_title
 

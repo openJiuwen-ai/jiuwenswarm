@@ -308,3 +308,39 @@ async def test_background_subagent_status_includes_latest_session_usage(monkeypa
     assert initial["session_usage"]["revision"] == 1
     assert final["session_usage"]["revision"] == 2
     assert final["session_usage"]["others"]["input_tokens"] == 70
+
+
+async def test_pause_on_tool_call_records_one_final_per_text_segment(monkeypatch):
+    """先说一句再调客户端工具、本轮在中断处结束：历史里这段文字只落一条 final。
+
+    历史层在 chat.tool_call 处把攒下的正文写成 final；合成 final 只补当前分段，
+    不能再把工具前那段带出来，否则历史出现两条相同的 final。
+    """
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+    from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+
+    adapter = _adapter_ready(monkeypatch)
+    _install_stream(adapter, [
+        SimpleNamespace(type="llm_output", payload={"content": "我先读取。"}),
+        _usage_chunk(),
+        SimpleNamespace(type="tool_call", payload={"tool_call": {
+            "name": "read_presentation_context", "arguments": "{}", "tool_call_id": "c1",
+        }}),
+    ])
+    facade = JiuWenSwarm()
+    recorded = []
+    monkeypatch.setattr(facade, "_adapter", adapter)
+    monkeypatch.setattr(facade, "_sdk_name", "harness")
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **kwargs: recorded.append(kwargs))
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _cfg: "off")
+    monkeypatch.setattr(interface_module, "build_user_prompt", lambda q, **_kwargs: q)
+
+    async for _chunk in facade.process_message_stream(_chat_request()):
+        pass
+
+    finals = [
+        r["content"] for r in recorded
+        if r.get("event_type") == "chat.final" and str(r.get("content") or "").strip()
+    ]
+    assert finals == ["我先读取。"]

@@ -1850,10 +1850,16 @@ class TeamManager:
                     if key in raw_selection
                 }
             )
+        selected_model_id = (
+            str(selection.id).strip()
+            if selection is not None and selection.type == "model"
+            else ""
+        )
         if selection is not None and selection.type == "model":
             # A single-model selection only names the page-selected model; the
             # pool keeps every configured model below so members can still be
             # assigned any of them. Resolving it also rejects a stale selection.
+            # ``model_id`` keeps a shared model_name on the chosen endpoint.
             requested_model_name = TeamManager._selected_model_name(
                 selection,
                 TeamManager._resolve_and_compile_team_selection(selection),
@@ -1863,6 +1869,7 @@ class TeamManager:
             config_base=config_base,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
+            model_id=selected_model_id or None,
             template_id=template_id,
             template_snapshot=template_snapshot,
             strict_template=strict_template,
@@ -1887,6 +1894,7 @@ class TeamManager:
             config_base,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
+            model_id=selected_model_id or None,
         )
         if effective_models:
             from openjiuwen.agent_teams.schema.team import ModelPoolEntry
@@ -2486,9 +2494,6 @@ class TeamManager:
             ).strip()
             or None,
         )
-        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
-
-        assign_shared_sandbox_sys_operation(spec, deep_agent)
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 

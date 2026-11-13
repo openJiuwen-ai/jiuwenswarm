@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  designerChatStopControl,
+  isDesignerChatStoppable,
   isDesignerGraphEditingLocked,
   isDesignerLeaderBusy,
 } from '../node_modules/.cache/designer-graph-lock/designerGraphLock.js';
@@ -94,6 +96,31 @@ test('the leader stays busy while it waits for an answer or is paused', () => {
   assert.equal(isDesignerLeaderBusy({ ...idle, isProcessing: true }), true);
   assert.equal(isDesignerLeaderBusy({ ...idle, pendingQuestions: [{ request_id: 'q1' }] }), true);
   assert.equal(isDesignerLeaderBusy({ ...idle, isPaused: true }), true);
+});
+
+test('a stop click stays disabled until the run actually ends', () => {
+  assert.equal(designerChatStopControl({ canStop: true, stopPending: false }), 'stop');
+  assert.equal(designerChatStopControl({ canStop: true, stopPending: true }), 'stopping');
+  assert.equal(designerChatStopControl({ canStop: false, stopPending: false }), 'send');
+});
+
+test('chat stop stays available while a leader-triggered canvas run continues after chat.final', () => {
+  assert.equal(
+    isDesignerChatStoppable({ isProcessing: true, isRunning: false, triggerSource: null }),
+    true,
+  );
+  assert.equal(
+    isDesignerChatStoppable({ isProcessing: false, isRunning: true, triggerSource: 'leader' }),
+    true,
+  );
+  assert.equal(
+    isDesignerChatStoppable({ isProcessing: false, isRunning: true, triggerSource: 'canvas' }),
+    false,
+  );
+  assert.equal(
+    isDesignerChatStoppable({ isProcessing: false, isRunning: false, triggerSource: 'leader' }),
+    false,
+  );
 });
 
 test('a failed built graph unlocks so it can be edited', () => {
