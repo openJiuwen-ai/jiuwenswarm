@@ -11,6 +11,8 @@ JIUWENBOX_DIR="$(realpath "$PROJECT_DIR/src")"
 # 默认 test 目标 & 类别; 各子命令可以覆盖。
 TEST_TARGETS=("tests/integration/")
 TEST_KIND="integration"
+# 仅 default 目标填充；按 node id 前缀从收集结果里剔除。
+DESELECT_ARGS=()
 PERF_SANDBOX_COUNT="${JIUWENBOX_PERF_SANDBOX_COUNT:-1}"
 PERF_CONCURRENCY="${JIUWENBOX_PERF_CONCURRENCY:-4}"
 PERF_LOOP="${JIUWENBOX_PERF_LOOP:-8}"
@@ -72,6 +74,10 @@ if [[ $# -gt 0 ]]; then
                 "tests/unit/test_etcd_sync_client.py"
                 "tests/unit/test_etcd_sync_service.py"
                 "tests/unit/test_bwrap_to_args.py"
+            )
+            # CLI Basic auth 用例依赖独立上游，default 套件不跑。
+            DESELECT_ARGS=(
+                "--deselect=tests/integration/test_cli_default.py::TestCliProxyBasicAuth"
             )
             TEST_KIND="integration"
             shift
@@ -183,8 +189,8 @@ if [[ "$TEST_KIND" == "performance" ]]; then
         JIUWENBOX_PERF_LOOP=${PERF_LOOP} \
         JIUWENBOX_PERF_EXEC_TIMEOUT_SECONDS=${PERF_EXEC_TIMEOUT_SECONDS} \
         PYTHONPATH=${JIUWENBOX_DIR} \
-        python3 -m pytest "${TEST_TARGETS[@]}" -v --tb=short "${PYTEST_ARGS[@]}"
+        python3 -m pytest "${TEST_TARGETS[@]}" "${DESELECT_ARGS[@]}" -v --tb=short "${PYTEST_ARGS[@]}"
 else
     PYTHONPATH=${JIUWENBOX_DIR} \
-        python3 -m pytest "${TEST_TARGETS[@]}" -v --tb=short "${PYTEST_ARGS[@]}"
+        python3 -m pytest "${TEST_TARGETS[@]}" "${DESELECT_ARGS[@]}" -v --tb=short "${PYTEST_ARGS[@]}"
 fi
