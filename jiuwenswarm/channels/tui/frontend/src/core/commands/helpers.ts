@@ -1,4 +1,5 @@
 import type { HistoryItem, DiffMeta } from "../types.js";
+import type { CommandContext } from "./types.js";
 
 function now(): string {
   return new Date().toISOString();
@@ -29,6 +30,20 @@ export function addInfo(
 
 export function addError(sessionId: string, content: string): HistoryItem {
   return makeItem(sessionId, "error", content);
+}
+
+/** Pin the Session a command acts on: boot may replace the placeholder ID. Null once the user has left it. */
+export async function resolveCommandSession(ctx: CommandContext, failure: string): Promise<string | null> {
+  const currentId = (): string => ctx.getCurrentSessionId?.() ?? ctx.sessionId;
+  try {
+    const sessionId = ctx.resolveModeSessionId ? await ctx.resolveModeSessionId() : ctx.sessionId;
+    return currentId() === sessionId ? sessionId : null;
+  } catch (error) {
+    if (currentId() !== ctx.sessionId) return null;
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.addItem(addError(ctx.sessionId, `${failure}: ${message}`));
+    return null;
+  }
 }
 
 export function addCommandEcho(sessionId: string, content: string): HistoryItem {

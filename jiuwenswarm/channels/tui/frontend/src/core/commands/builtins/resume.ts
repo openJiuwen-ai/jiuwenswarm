@@ -82,6 +82,9 @@ async function doResume(
   // sessionId 已切换、entries 已清空，需在 catch 中回滚，避免停留在一个未成功恢复但
   // sessionId 已切过去的半成品状态（后续消息会继续命中占用冲突）。
   const previousSessionId = ctx.sessionId;
+  const previousMode = ctx.mode;
+  const previousPersistedId = ctx.previousSessionId ?? previousSessionId;
+  const wasDraftSession = ctx.isDraftSession === true;
   const previousAccent = ctx.accentColor;
   const previousTitle = ctx.sessionTitle;
   // 历史 session 可能存旧 canonical 串，走 normalizeToClientMode 归一到新串；
@@ -90,7 +93,7 @@ async function doResume(
   try {
     await ctx.request("session.switch", {
       session_id: session.session_id,
-      previous_session_id: previousSessionId,
+      previous_session_id: previousPersistedId,
       previous_mode: ctx.mode,
       mode: targetMode,
     });
@@ -123,11 +126,16 @@ async function doResume(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // 回滚到恢复前的会话状态：sessionId/accentColor/sessionTitle
-      ctx.updateSession(previousSessionId);
+      if (wasDraftSession && ctx.restoreDraftSession) {
+        ctx.restoreDraftSession(previousSessionId, previousPersistedId, previousMode);
+      } else {
+        ctx.updateSession(previousSessionId);
+        ctx.setMode(previousMode);
+      }
       ctx.setAccentColor(previousAccent);
       ctx.setSessionTitle(previousTitle);
       // 重新拉取旧会话历史以还原 entries（best-effort，失败则保留空 transcript + 错误条）
-      void (async () => {
+      if (!wasDraftSession) void (async () => {
         try {
           await ctx.restoreHistory(previousSessionId);
         } catch {
