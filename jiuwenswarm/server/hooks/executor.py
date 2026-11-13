@@ -5,20 +5,42 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
+import signal
 from dataclasses import dataclass
+from typing import Any
 
 from openjiuwen.harness_providers.jsonsafe import to_json_safe
 
 logger = logging.getLogger(__name__)
 
+# 超时清理自身的等待上限：进程组清理未命中时，回收等待不能反过来挂死调用方
+_CLEANUP_WAIT_TIMEOUT = 5.0
+
 
 def _hook_input_json(hook_input: dict) -> str:
     """Serialize hook input; tool results are models (e.g. ``ToolOutput``), not plain JSON."""
     return json.dumps(to_json_safe(hook_input), ensure_ascii=False)
+
+
+def _kill_hook_process_group(proc: asyncio.subprocess.Process, pgid: int | None) -> None:
+    """超时清理：杀掉 hook 子进程及同进程组的后台孙进程.
+
+    ``start_new_session`` 让 hook 子进程成为进程组长，``killpg`` 因此能一并
+    清理它在后台拉起的孙进程；只 ``proc.kill()`` 会把这些孙进程留成孤儿，
+    继续占用 hook 的管道句柄。
+    """
+    if pgid is not None:
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGKILL)
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
 
 
 class HookOutcome:
@@ -80,6 +102,10 @@ class HookExecutor:
         env["TOOL_NAME"] = tool_name
 
         proc = None
+        pgid: int | None = None
+        popen_kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
         try:
             proc = await asyncio.create_subprocess_exec(
                 shell, "-c", command,
@@ -87,7 +113,11 @@ class HookExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                **popen_kwargs,
             )
+            # POSIX: start_new_session makes the child a process-group leader,
+            # so its pid is also the pgid shared by everything it spawns.
+            pgid = proc.pid if popen_kwargs.get("start_new_session") else None
 
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(input=hook_input_json.encode()),
@@ -98,8 +128,8 @@ class HookExecutor:
         except asyncio.TimeoutError:
             try:
                 if proc is not None:
-                    proc.kill()
-                    await proc.wait()
+                    _kill_hook_process_group(proc, pgid)
+                    await asyncio.wait_for(proc.wait(), timeout=_CLEANUP_WAIT_TIMEOUT)
             except Exception:
                 logger.debug("Failed to kill hook process after timeout", exc_info=True)
             return HookResult(

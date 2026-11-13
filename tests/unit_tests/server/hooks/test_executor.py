@@ -4,11 +4,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import signal
+import time
 
+import psutil
 import pytest
 
-from jiuwenswarm.server.hooks.executor import HookExecutor, HookResult, HookOutcome
+from jiuwenswarm.server.hooks.executor import (
+    HookExecutor,
+    HookOutcome,
+    HookResult,
+    _kill_hook_process_group,
+)
 
 
 # ============================================================
@@ -215,6 +225,96 @@ class TestCommandHookTimeout:
         )
         assert results[0].outcome == HookOutcome.NON_BLOCKING_ERROR
         assert results[1].outcome == HookOutcome.SUCCESS
+
+
+# ============================================================
+# Command Hook: timeout process-group cleanup
+# ============================================================
+
+async def _pid_dead(pid: int, timeout_seconds: float = 5.0) -> bool:
+    """轮询等待 pid 消失；未回收的僵尸进程同样视为已清理."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            proc = psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            return True
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return True
+        await asyncio.sleep(0.1)
+    return False
+
+
+class TestCommandHookTimeoutProcessGroup:
+    @staticmethod
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name != "posix", reason="process-group kill only applies on POSIX")
+    async def test_timeout_kills_background_grandchild(tmp_path):
+        """超时清理应连同后台孙进程一起杀掉进程组，不留下孤儿."""
+        pid_file = tmp_path / "grandchild.pid"
+        command = f"sleep 60 & echo $! > '{pid_file}'; sleep 60"
+        hook_timeout = 1
+        e = HookExecutor()
+        # 外层兜底：清理路径挂死时用例判失败，而不是无限阻塞
+        start = time.monotonic()
+        results = await asyncio.wait_for(
+            e.run_all([{"command": command, "timeout": hook_timeout}], {"event": "Test"}),
+            timeout=hook_timeout + 20,
+        )
+        elapsed = time.monotonic() - start
+        r = results[0]
+        assert r.outcome == HookOutcome.NON_BLOCKING_ERROR
+        assert "timeout" in r.error.lower()
+        # 超时加有界清理应在时限内返回，清理挂死在此暴露
+        assert elapsed < hook_timeout + 10, (
+            f"timeout cleanup took {elapsed:.1f}s; unbounded cleanup wait?"
+        )
+
+        grandchild_pid = int(pid_file.read_text().strip())
+        assert await _pid_dead(grandchild_pid), (
+            f"grandchild pid {grandchild_pid} survived the hook process-group kill"
+        )
+
+    @staticmethod
+    def test_kill_hook_process_group_uses_killpg(monkeypatch):
+        """有 pgid 时对整个进程组发 SIGKILL，覆盖后台孙进程."""
+        killpg_calls: list = []
+        monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+        monkeypatch.setattr(
+            os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)), raising=False,
+        )
+
+        class _FakeProc:
+            pid = 4242
+            killed = False
+
+            def kill(self):
+                self.killed = True
+
+        proc = _FakeProc()
+        _kill_hook_process_group(proc, 4242)
+        assert killpg_calls == [(4242, 9)]
+        assert proc.killed is True
+
+    @staticmethod
+    def test_kill_hook_process_group_without_pgid_kills_child_only(monkeypatch):
+        """无 pgid（Windows 或未开新会话）时退回只杀直接子进程."""
+        killpg_calls: list = []
+        monkeypatch.setattr(
+            os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)), raising=False,
+        )
+
+        class _FakeProc:
+            pid = 4242
+            killed = False
+
+            def kill(self):
+                self.killed = True
+
+        proc = _FakeProc()
+        _kill_hook_process_group(proc, None)
+        assert killpg_calls == []
+        assert proc.killed is True
 
 
 # ============================================================
