@@ -59,16 +59,11 @@ def test_a_family_dinner_keeps_every_seat() -> None:
 
     lock = build_lock(cfg=cfg, names=NAMES, lang="en")
 
-    assert (
-        "Grandmother on the left of frame, near the dining table, facing the kitchen door"
-        in lock
-    )
-    assert (
-        "Father on the right of frame, near the dining table, facing the window" in lock
-    )
-    assert (
-        "Maya at frame centre, near the dining table, facing the birthday cake" in lock
-    )
+    assert "Grandmother near the dining table, facing the kitchen door" in lock
+    assert "Father near the dining table, facing the window" in lock
+    assert "Maya near the dining table, facing the birthday cake" in lock
+    # A frame side belongs to one camera, so the cross-shot sentence never states one.
+    assert "left of frame" not in lock and "right of frame" not in lock
 
 
 def test_a_roadside_diner_splits_counter_and_booth() -> None:
@@ -93,8 +88,8 @@ def test_a_roadside_diner_splits_counter_and_booth() -> None:
 
     lock = build_lock(cfg=cfg, names=NAMES, lang="en")
 
-    assert "Maya in the foreground, near the counter stool" in lock
-    assert "Theo in the background, near the window booth" in lock
+    assert "Maya near the counter stool" in lock
+    assert "Theo near the window booth" in lock
 
 
 def test_a_road_trip_car_keeps_driver_passenger_and_back_seat() -> None:
@@ -116,12 +111,9 @@ def test_a_road_trip_car_keeps_driver_passenger_and_back_seat() -> None:
 
     lock = build_lock(cfg=cfg, names=NAMES, lang="en")
 
-    assert (
-        "Driver on the left of frame, near the windscreen, facing the road ahead"
-        in lock
-    )
-    assert "Father on the right of frame" in lock
-    assert "Theo in the background" in lock
+    assert "Driver near the windscreen, facing the road ahead" in lock
+    assert "Father near the windscreen, facing the driver" in lock
+    assert "Theo near the windscreen, facing the side window" in lock
 
 
 def test_a_cartoon_living_room_holds_the_same_geometry() -> None:
@@ -144,8 +136,8 @@ def test_a_cartoon_living_room_holds_the_same_geometry() -> None:
 
     lock = build_lock(cfg=cfg, names=NAMES, lang="en")
 
-    assert "Maya at frame centre, near the sofa, facing the television" in lock
-    assert "Dog in the foreground, near the rug" in lock
+    assert "Maya near the sofa, facing the television" in lock
+    assert "Dog near the rug" in lock
 
 
 def test_an_authored_layout_carries_a_setting_without_blocking() -> None:
@@ -182,7 +174,7 @@ def test_a_close_up_still_states_who_stays_in_the_room() -> None:
 
     lock = build_lock(cfg=cfg, names=NAMES, lang="en", visible=["char_6"])
 
-    assert "Dog in the foreground, near the rug" in lock
+    assert "Dog near the rug" in lock
     assert "Still in this room and keeping their places: Grandmother, Maya." in lock
     assert "Anchors of this room: television on the left wall" in lock
     assert "Frame sides follow the camera" in lock
@@ -265,9 +257,63 @@ def test_the_lock_reads_the_same_in_every_shot_and_leaks_no_negatives() -> None:
     actions = ("They walk in.", "She pours the tea.", "He laughs.")
     prompts = [compose_practice_prompt(cfg=cfg, graph=None, action=a) for a in actions]
     for prompt in prompts:
-        assert "Grandmother on the left of frame" in prompt
-        assert "Father on the right of frame" in prompt
+        assert "Grandmother near the kitchen island" in prompt
+        assert "Father near the kitchen island" in prompt
         # Sound keeps its negatives on purpose; the staging text never carries one.
         visual = prompt.split("Sound:")[0].split("声音：")[0].lower()
         for banned in (" no ", "not ", "never ", "without ", "do not"):
             assert banned not in visual
+
+
+def test_a_layout_written_for_one_camera_loses_its_frame_sides() -> None:
+    # The storyboard writes the room from the doorway camera. Repeating that sentence in
+    # a shot from the window side is what kept the reverse angle facing the same way.
+    layout = (
+        "镜1从门口向屋内看：左墙灶台在画面左、"
+        "右墙窗户在画面右；"
+        "四人座位全片不变：祖母桌左侧面朝灶台、"
+        "父亲桌右侧面朝窗户"
+    )
+    cfg = _cfg(blocking=None, spatial_lock={"layout": layout})
+
+    lock = build_lock(cfg=cfg, names=NAMES, lang="zh")
+
+    # The seat map survives; the frame-side claims do not. (The closing geometry clause
+    # says frame sides follow the camera, so only the arrangement line is checked.)
+    arrangement = lock.split("\n")[0]
+    assert "祖母桌左侧面朝灶台" in arrangement
+    assert "画面左" not in arrangement
+    assert "画面右" not in arrangement
+
+
+def test_a_row_stated_as_a_screen_order_becomes_an_invariant_order() -> None:
+    layout = (
+        "观众排从左到右固定为阿玛拉（左端）"
+        "—通德（中左）—丹尼尔（中右）"
+        "—恩戈齐妈妈（右端）；"
+        "教师始终在前方中央桌旁"
+    )
+    cfg = _cfg(blocking=None, spatial_lock={"layout": layout})
+
+    lock = build_lock(cfg=cfg, names=NAMES, lang="zh")
+
+    assert "座次顺序固定为" in lock
+    assert "阿玛拉 → 通德 → 丹尼尔 → 恩戈齐妈妈" in lock
+    assert "镜像" in lock
+    assert "从左到右" not in lock
+    assert "教师始终在前方中央桌旁" in lock
+
+
+def test_the_english_row_order_reads_the_same_way() -> None:
+    cfg = _cfg(
+        blocking=None,
+        spatial_lock={
+            "layout": "Seats left to right: Amara, Tunde, Daniel, Mama Ngozi; the teacher stays at the front table"
+        },
+    )
+
+    lock = build_lock(cfg=cfg, names=NAMES, lang="en")
+
+    assert "seating order fixed as Amara" in lock
+    assert "reads mirrored from the other side of the room" in lock
+    assert "left to right" not in lock

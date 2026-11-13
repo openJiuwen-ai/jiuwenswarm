@@ -29,14 +29,150 @@ _ZONE_WORDS = {
     },
 }
 
+# Screen sides belong to one camera, not to the room. A layout sentence copied into a
+# shot that looks from the other side reads as "the stove is on the left", and the
+# model then keeps the framing instead of moving the camera (or mirrors the people to
+# satisfy it). Only room-relative words survive into the per-setting lock.
+_SCREEN_SIDE = (
+    "\u753b\u9762\u5de6",
+    "\u753b\u9762\u53f3",
+    "\u753b\u9762\u4e2d",
+    "\u753b\u9762\u4e0a\u65b9",
+    "\u753b\u9762\u4e0b\u65b9",
+    "\u753b\u9762\u8fd1\u5904",
+    "\u753b\u9762\u6df1\u5904",
+    "\u753b\u9762\u5185",
+    "left of frame",
+    "right of frame",
+    "left side of the frame",
+    "right side of the frame",
+    "screen left",
+    "screen right",
+    "upper frame",
+    "lower frame",
+    "frame left",
+    "frame right",
+)
+_ORDER_SIDE = (
+    "\u4ece\u5de6\u5230\u53f3",
+    "\u81ea\u5de6\u81f3\u53f3",
+    "\u4ece\u5de6\u81f3\u53f3",
+    "\u4ece\u53f3\u5230\u5de6",
+    "\u81ea\u53f3\u81f3\u5de6",
+    "left to right",
+    "right to left",
+    "from left",
+    "from right",
+)
+_CLAUSE_SPLIT = ("\uff1b", ";", "\u3002", "\uff0c", ",")
+_ORDER_JOINERS = ("\u2014", "\u2013", "-", "\u2192", "\uff0c", ",", "\u3001")
+
+
+def _sentences(text: str) -> list[str]:
+    parts = [text]
+    for sep in ("\uff1b", ";", "\u3002", "\n"):
+        expanded: list[str] = []
+        for part in parts:
+            expanded.extend(part.split(sep))
+        parts = expanded
+    return [p.strip(" \t") for p in parts if p.strip(" \t")]
+
+
+def _phrases(sentence: str) -> list[str]:
+    parts = [sentence]
+    for sep in ("\uff0c", ","):
+        expanded: list[str] = []
+        for part in parts:
+            expanded.extend(part.split(sep))
+        parts = expanded
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _is_screen_side(clause: str) -> bool:
+    low = clause.lower()
+    return any(word in low for word in _SCREEN_SIDE)
+
+
+def _drop_brackets(text: str) -> str:
+    """Remove bracketed hints ? a row's "left end / middle" notes only fit one camera."""
+    out: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch in "(\uff08[\u3010":
+            depth += 1
+            continue
+        if ch in ")\uff09]\u3011":
+            depth = max(0, depth - 1)
+            continue
+        if depth == 0:
+            out.append(ch)
+    return "".join(out).strip()
+
+
+def _ordered_sequence(sentence: str) -> list[str]:
+    """The seat names of a "left to right A, B, C" phrase, or []."""
+    low = sentence.lower()
+    if not any(word in low for word in _ORDER_SIDE):
+        return []
+    tail = sentence
+    for sep in ("\uff1a", ":", "\u4e3a", "="):
+        if sep in tail:
+            tail = tail.split(sep, 1)[1]
+            break
+    names = [tail]
+    for joiner in _ORDER_JOINERS:
+        expanded: list[str] = []
+        for part in names:
+            expanded.extend(part.split(joiner))
+        names = expanded
+    cleaned: list[str] = []
+    for raw in names:
+        name = _drop_brackets(raw.strip())
+        name = name.strip("()\uff08\uff09[]\u3010\u3011, \t")
+        if name and len(name) <= 24:
+            cleaned.append(name)
+    return cleaned if len(cleaned) >= 2 else []
+
+
+def room_relative(text: str, lang: str = "en") -> str:
+    """Drop the camera-dependent parts of a layout sentence, keep the room's own terms.
+
+    A seat map written as a screen order becomes an invariant order instead: the row
+    keeps its sequence in the room, and a shot from the other side sees that same row
+    mirrored. Everything that names a screen side is dropped, because it is only true
+    for the one camera it was written for.
+    """
+    kept: list[str] = []
+    for sentence in _sentences(str(text or "")):
+        sequence = _ordered_sequence(sentence)
+        if sequence:
+            joined = " \u2192 ".join(sequence)
+            kept.append(
+                f"seating order fixed as {joined}; the same order reads mirrored from the "
+                "other side of the room, and nobody changes seat"
+                if lang == "en"
+                else f"\u5ea7\u6b21\u987a\u5e8f\u56fa\u5b9a\u4e3a{joined}\uff0c"
+                f"\u4ece\u53e6\u4e00\u4fa7\u62cd\u6444\u65f6\u540c\u4e00\u987a\u5e8f\u5728\u753b\u9762\u4e2d\u955c\u50cf\uff0c"
+                f"\u4eba\u7269\u4e0d\u6362\u5ea7"
+            )
+            continue
+        for phrase in _phrases(sentence):
+            if _is_screen_side(phrase):
+                continue
+            kept.append(phrase)
+    return _JOINER[lang].join(kept)
+
+
 _SEPARATOR = {"en": ", ", "zh": "\uff0c"}
 _JOINER = {"en": "; ", "zh": "\uff1b"}
 
 
-def _seat_parts(anchor: dict[str, Any], geo: str, lang: str) -> list[str]:
+def _seat_parts(
+    anchor: dict[str, Any], geo: str, lang: str, *, include_zone: bool = True
+) -> list[str]:
     bits: list[str] = []
     zone = str(anchor.get("zone") or "").strip().lower()
-    if zone in _ZONE_WORDS[lang]:
+    if include_zone and zone in _ZONE_WORDS[lang]:
         bits.append(_ZONE_WORDS[lang][zone])
     elif str(anchor.get("seat") or "").strip():
         bits.append(str(anchor["seat"]).strip())
@@ -129,7 +265,8 @@ def build_lock(
         name = names.get(token) or str(pos.get("name") or "").strip()
         if not name:
             continue
-        bits = _seat_parts(pos, geo, lang)
+        # No frame zone here: this sentence travels to every camera in the setting.
+        bits = _seat_parts(pos, geo, lang, include_zone=False)
         if not bits:
             continue
         joined = _SEPARATOR[lang].join(bits)
@@ -137,8 +274,8 @@ def build_lock(
     layout = str(spatial.get("layout") or "").strip()
     while layout and layout[-1] in ".;\u3002\uff1b":
         layout = layout[:-1].rstrip()
-    arrangement = _JOINER[lang].join(phrases) or layout
-    landmarks = str(spatial.get("landmarks") or "").strip()
+    arrangement = _JOINER[lang].join(phrases) or room_relative(layout, lang)
+    landmarks = room_relative(str(spatial.get("landmarks") or "").strip(), lang)
     while landmarks and landmarks[-1] in ".;\u3002\uff1b":
         landmarks = landmarks[:-1].rstrip()
 
