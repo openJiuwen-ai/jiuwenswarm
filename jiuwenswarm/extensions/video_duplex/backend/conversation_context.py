@@ -1,6 +1,7 @@
 """Import persisted realtime speech into the shared chat Agent before dispatch."""
 
 import asyncio
+import logging
 
 from openjiuwen.core.foundation.llm import AssistantMessage, UserMessage
 from openjiuwen.core.foundation.llm.schema.message import (
@@ -14,6 +15,8 @@ from jiuwenswarm.server.runtime.session.history_replay import (
     HistoryReplayError,
     read_history_replay,
 )
+
+logger = logging.getLogger(__name__)
 
 HISTORY_ID = "duplex_history_id"
 
@@ -64,7 +67,15 @@ async def sync_conversation_context(agent, session_id):
 
 async def _sync_conversation_context(agent, session_id, context, react):
     cursor = getattr(context, "duplex_history_cursor", None)
-    batch = await _load_voice_batch(session_id, cursor)
+    try:
+        batch = await _load_voice_batch(session_id, cursor)
+    except RuntimeError as exc:
+        # Ordinary chat dispatch calls this sync for every message; voice import
+        # only enriches the context. A busy history writer (flush timeout) must
+        # not fail the whole chat request (#6608). Skip this round's import —
+        # the cursor stays put, so a later sync picks the records up.
+        logger.warning("Skipping voice history import for %s: %s", session_id, exc)
+        return
     records = batch.records
     # Retain consumed IDs even if Core compacts its message window.
     seen = getattr(context, "duplex_history_ids", None)

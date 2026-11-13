@@ -45,6 +45,22 @@ async def test_voice_history_never_reads_unflushed_records(monkeypatch):
     read.assert_not_called()
 
 
+async def test_chat_dispatch_sync_survives_busy_history_writer(monkeypatch):
+    """Regression for #6608: ordinary chat dispatch runs this sync for every
+    message; a flush timeout must not fail the whole chat request."""
+    messages = [UserMessage(content="old text")]
+    context = SimpleNamespace(get_messages=lambda: messages, add_messages=AsyncMock())
+    agent = SimpleNamespace(react_agent=SimpleNamespace(
+        context_engine=SimpleNamespace(get_context=lambda **_: context, save_contexts=AsyncMock())))
+    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: False)
+    read = AsyncMock()
+    monkeypatch.setattr(sync.session_history, "load_history_records", read)
+    # Before the fix this raised RuntimeError("Voice history is still saving").
+    await sync.sync_conversation_context(agent, "web-chat")
+    context.add_messages.assert_not_called()
+    read.assert_not_called()
+
+
 def test_saved_chat_tasks_share_session_but_have_distinct_execution_ids():
     # Verify the internal scheduler predicates without starting its worker loop.
     # pylint: disable=protected-access
