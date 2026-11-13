@@ -1371,6 +1371,11 @@ def encrypt_config_params(params: dict[str, Any]) -> dict[str, Any]:
         if key.endswith("_context_window_tokens"):
             continue
         if "api_key" in key.lower() or "token" in key.lower():
+            # An empty value means "clear the stored credential" (e.g. the Jev
+            # delete flow). Encrypting it would persist a non-empty ciphertext,
+            # so the credential would keep looking configured and never clear.
+            if val is None or str(val).strip() == "":
+                continue
             encrypted[key] = crypto.encrypt(val)
     return encrypted
 
