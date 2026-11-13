@@ -3779,10 +3779,36 @@ def add_or_update_model_in_config(name: str, model_config: dict[str, Any]) -> No
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def _get_agentos_model(models: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """在 models.agentos 备份模型中按 model_name/alias 查找。
+
+    仅 AgentOS 运行时生效：那类部署会把可用模型放在 models.agentos；
+    其他部署里该段只是只读备份，不参与按名校验。
+    """
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+
+    if not is_agentos_runtime():
+        return None
+    agentos = models.get("agentos")
+    if not isinstance(agentos, list) or not name:
+        return None
+    for entry in agentos:
+        if not isinstance(entry, dict):
+            continue
+        mcc = entry.get("model_client_config") or {}
+        entry_name = str(resolve_env_vars(mcc.get("model_name")) or "").strip()
+        alias = str(resolve_env_vars(entry.get("alias")) or "").strip()
+        if name in (entry_name, alias):
+            return entry
+    return None
+
+
 def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | None:
     """获取指定模型的原始配置（不解析环境变量）。
 
-    优先从 models.defaults 列表中按 model_name 查找。
+    优先从 models.defaults 列表中按 model_name 查找；AgentOS 运行时未命中时
+    回退到 models.agentos（该部署把可用模型放在这里，仅扫 defaults 会让 cron
+    等按名校验的调用方误报 Unknown model）。
     当存在同名模型时，可通过 index 参数指定第几个匹配项（0-based）。
     若 index 为 None，返回 is_default=True 的条目；若无则返回第一个匹配。
     """
@@ -3805,6 +3831,9 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
                 alias = entry.get("alias", "")
                 if alias and resolve_env_vars(str(alias)) == name:
                     return entry
+            agentos_entry = _get_agentos_model(models, name)
+            if agentos_entry is not None:
+                return agentos_entry
             return models.get(name) if name in models else None
         if index is not None:
             for pos, entry in matches:
@@ -3815,6 +3844,9 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
             if entry.get("is_default") is True:
                 return entry
         return matches[0][1]
+    agentos_entry = _get_agentos_model(models, name)
+    if agentos_entry is not None:
+        return agentos_entry
     return models.get(name) if name in models else None
 
 
