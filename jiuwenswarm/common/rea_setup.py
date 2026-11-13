@@ -304,6 +304,7 @@ def _run(
     *,
     env: dict[str, str] | None = None,
     timeout: float = 30.0,
+    cwd: str | Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     kwargs: dict[str, Any] = {
         "capture_output": True,
@@ -313,6 +314,8 @@ def _run(
         "timeout": timeout,
         "env": env,
     }
+    if cwd is not None:
+        kwargs["cwd"] = cwd
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.run(argv, check=False, **kwargs)  # noqa: S603
