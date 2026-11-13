@@ -28,6 +28,7 @@ generated: true
 | [jiuwenswarm/resources/plugins/ttse](#module-11) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-12) |
 | [scripts](#module-13) |
+| [tests](#module-14) |
 
 <a id="module-1"></a>
 
@@ -135,3 +136,11 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+
+<a id="module-14"></a>
+
+## tests
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261113_1040_del-ut-slim](F_20261113_1040_del-ut-slim.md) | F | develop 测试库瘦身第一批：删除 agent-gateway 镜像测试层与死代码副本 | kdgmpw | tests | TESTING.md, tests/unit_tests/channels/cli/test_chat.py, tests/unit_tests/test_config.py, tests/unit_tests/runtime/test_runtime_service.py, tests/unit_tests/common/test_mcp_dynamic_token_patch.py, tests/unit_tests/gateway/test_cli_channel_handlers.py, tests/unit_tests/server/test_session_metadata.py, tests/unit_tests/agentserver/test_team_model_selection.py, tests/unit_tests/agentserver/test_skill_sync.py, tests/unit_tests/agentserver/test_runtime_worker_phase2.py, tests/unit_tests/agentserver/test_team_helpers.py, tests/system_tests/test_project_memory.py, tests/auth/（整目录删除，4 个上游镜像测试）, tests/unit_tests/agentserver/memory/（删除 4 个镜像/占位测试）, tests/unit_tests/agentserver/test_skill_manager_rebuild_followup.py（删除）, tests/unit_tests/agentserver/test_envelope_placeholder.py（删除）, tests/integration/test_acp_cli_stdio_integration.py（删除）, tests/unit_tests/gateway/ 与 tests/unit_tests/channel/ 等（删除 65 个上游逐字节镜像测试，完整清单见本特性提交 diff） | 无独立 D：基于会话内对 develop 测试库的两轮静态扫描（10 个分组深扫 + 17,316 个用例级 AST 指纹比对）与上游 agent-gateway 仓的逐字节校验，用户在会话中直接确认执行，无独立设计编号。 |

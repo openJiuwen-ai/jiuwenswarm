@@ -9517,23 +9517,3 @@ def test_group_input_restores_persisted_type_without_per_message_type(monkeypatc
     request.params["type"] = "chat"
     with pytest.raises(ValueError, match="requires group_chat"):
         team_helpers._group_chat_input(request, "Hello")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("event", [
-    "designer.graph.updated", "designer.run.updated", "designer.node.updated", "designer.leader.activity",
-])
-@pytest.mark.parametrize("channel", ["video_tool", "web"])
-async def test_voice_design_canvas_events_reach_web_session(monkeypatch, event, channel):
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.server.runtime.design.team_bridge import _push_team_event
-
-    host = SimpleNamespace(send_push=AsyncMock())
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", lambda: host)
-    payload = {"event_type": event, "session_id": "design-chat", "graph": {"graph_id": "g"}}
-    await _push_team_event(channel, "design-chat", payload, "original-turn")
-    frame = host.send_push.call_args.args[0]
-    assert frame["channel_id"] == "web"
-    assert frame["session_id"] == "design-chat"
-    assert frame["request_id"] == "original-turn"
-    assert frame["payload"] is payload
