@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { attachDeclaration } from './appContract';
 import type { ClientToolResult } from './clientAttachment';
 import { FakeDeck } from './fakePowerPoint';
 import type { JsonObject } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
+import { POWERPOINT } from './powerPointApp';
 import { powerPointReadRuntime } from './powerPointReadTools';
-import { joinRuntimes, PowerPointToolDispatcher } from './powerPointToolDispatcher';
+import { joinRuntimes, ClientToolDispatcher } from './clientToolDispatcher';
 import { powerPointWriteRuntime } from './powerPointWriteTools';
-import { presentationAttachDeclaration } from './presentationContract';
 import { SlideSnapshots } from './slideSnapshots';
 import { powerPointSlideDeck } from './powerPointWriteTools';
 
@@ -24,7 +25,7 @@ function pane(deck = new FakeDeck({ slides: [{ id: '256#', shapes: [{ id: '2', t
     powerPointReadRuntime({ run: deck.run, host: deck.host, documentName: async () => 'Deck.pptx',
       languages: { displayLanguage: 'zh-CN', contentLanguage: 'zh-CN' } }),
     powerPointWriteRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id), fetcher }));
-  const dispatcher = new PowerPointToolDispatcher(runtime, writes);
+  const dispatcher = new ClientToolDispatcher(POWERPOINT, runtime, writes);
   let calls = 0;
   const call = async (toolName: string, input: JsonObject = {}, downloads: Record<string, string> = {}) => {
     calls += 1;
@@ -47,7 +48,7 @@ function patch(base: string, slides: JsonObject[], extra: JsonObject = {}): Json
 describe('presentation_apply_patch', () => {
   it('is declared on a host with PowerPointApi 1.8, and not below', () => {
     const { runtime } = pane();
-    const declared = (api: string) => presentationAttachDeclaration({ documentId: 'd' as never, displayName: 'x',
+    const declared = (api: string) => attachDeclaration(POWERPOINT, { documentId: 'd' as never, displayName: 'x',
       host: new FakeDeck({ api }).host, implemented: runtime.tools }).capabilities.supported_tools;
     expect(declared('1.8')).toContain('presentation_apply_patch');
     expect(declared('1.7')).not.toContain('presentation_apply_patch');

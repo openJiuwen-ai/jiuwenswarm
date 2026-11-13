@@ -1,11 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientToolRequest, ClientToolResult } from './clientAttachment';
+import { CALL_DEADLINE_MS, ClientToolDispatcher, type ClientToolResponse, type ClientToolRuntime, type ToolTelemetry } from './clientToolDispatcher';
 import { HostWriteQueue } from './hostWriteQueue';
-import {
-  CALL_DEADLINE_MS, PowerPointToolDispatcher, type PresentationToolRuntime, type ToolTelemetry,
-} from './powerPointToolDispatcher';
-import { PRESENTATION_TOOL_NAMES, type ClientToolResponse } from './presentationToolTypes';
+import { POWERPOINT, PRESENTATION_TOOL_NAMES } from './powerPointApp';
 
 function request(toolName: string, overrides: Partial<ClientToolRequest> = {}): ClientToolRequest {
   return { requestId: 'call_1', interruptId: 'int_1', toolName, input: {}, downloads: {}, ...overrides };
@@ -21,14 +19,14 @@ function after(ms: number, response: ClientToolResponse): Promise<ClientToolResp
   return new Promise(resolve => setTimeout(() => resolve(response), ms));
 }
 
-describe('PowerPointToolDispatcher', () => {
-  let execute: ReturnType<typeof vi.fn<PresentationToolRuntime['execute']>>;
-  let dispatcher: PowerPointToolDispatcher;
+describe('ClientToolDispatcher', () => {
+  let execute: ReturnType<typeof vi.fn<ClientToolRuntime['execute']>>;
+  let dispatcher: ClientToolDispatcher;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    execute = vi.fn<PresentationToolRuntime['execute']>(async () => ({ ok: true, result: { slide_count: 3 } }));
-    dispatcher = new PowerPointToolDispatcher(
+    execute = vi.fn<ClientToolRuntime['execute']>(async () => ({ ok: true, result: { slide_count: 3 } }));
+    dispatcher = new ClientToolDispatcher(POWERPOINT,
       { tools: new Set(PRESENTATION_TOOL_NAMES), execute }, new HostWriteQueue());
   });
 

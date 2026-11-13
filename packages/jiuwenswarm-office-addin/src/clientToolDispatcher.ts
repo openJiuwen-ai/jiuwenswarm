@@ -1,11 +1,8 @@
+import type { OfficeApp, Surface } from './appContract';
 import type { ClientToolExecutor, ClientToolRequest, ClientToolResult, ContentBlock } from './clientAttachment';
 import { withMutationRecord } from './clientToolOutcome';
 import { isRecord, type JsonObject } from './gatewayClient';
 import type { HostWriteQueue } from './hostWriteQueue';
-import { isContractTool, isMutatingTool } from './presentationContract';
-import type {
-  ClientToolError, ClientToolResponse, HostTimings, PresentationToolName,
-} from './presentationToolTypes';
 import { fitToolResultJson } from './toolResultBudget';
 
 const MAX_TOOL_RESULT_CHARS = 9500;
@@ -15,27 +12,26 @@ const MAX_TOOL_RESULT_CHARS = 9500;
  * host settles it, so answering a merely slow call early gains nothing.
  */
 export const CALL_DEADLINE_MS = 280_000;
-/** Answers with their fields at the top level: the deck inventory, and the slide capture the backend's review reads. */
-const FLAT_RESULT_TOOLS: ReadonlySet<string> = new Set<PresentationToolName>(
-  ['read_presentation_context', 'verify_slide_visual']);
+/** What a write changes, as a timed-out write tells the model to look at first. */
+const PARTS: Record<Surface, string> = { presentation: 'slides', document: 'paragraphs', workbook: 'ranges' };
 const FAILURE_STATUS = new Map<string, ClientToolResult['status']>(
   [['CLIENT_TOOL_CANCELLED', 'cancelled'], ['CLIENT_TOOL_TIMEOUT', 'timeout']]);
 
 /** Executes one contract tool in the host document. */
-export interface PresentationToolRuntime {
+export interface ClientToolRuntime<Name extends string = string> {
   /** The tools it implements; the pane declares no other. */
-  readonly tools: ReadonlySet<PresentationToolName>;
+  readonly tools: ReadonlySet<Name>;
   execute(call: {
     /** The call's request id, which names the call to the turn's undo. */
     callId: string;
-    toolName: PresentationToolName;
+    toolName: Name;
     input: JsonObject;
     downloads: Readonly<Record<string, string>>;
   }): Promise<ClientToolResponse>;
 }
 
 /** One runtime of several, each running the tools it declares. */
-export function joinRuntimes(...runtimes: PresentationToolRuntime[]): PresentationToolRuntime {
+export function joinRuntimes(...runtimes: ClientToolRuntime[]): ClientToolRuntime {
   const owners = new Map(runtimes.flatMap(runtime => [...runtime.tools].map(tool => [tool, runtime] as const)));
   return {
     tools: new Set(owners.keys()),
@@ -55,14 +51,17 @@ export interface ToolTelemetry {
 }
 
 /**
- * Runs the PowerPoint calls of the attached conversation: reads at once and
+ * Runs the host calls of the attached conversation: reads at once and
  * concurrently, writes one at a time in the host write queue.
  */
-export class PowerPointToolDispatcher implements ClientToolExecutor {
+export class ClientToolDispatcher implements ClientToolExecutor {
   /** Advanced by ``cancelAll``; a write still queued from before does not run. */
   private generation = 0;
 
-  constructor(private readonly runtime: PresentationToolRuntime, private readonly writes: HostWriteQueue) {}
+  constructor(
+    private readonly app: OfficeApp, private readonly runtime: ClientToolRuntime,
+    private readonly writes: HostWriteQueue,
+  ) {}
 
   cancelAll(): void {
     this.generation += 1;
@@ -70,13 +69,14 @@ export class PowerPointToolDispatcher implements ClientToolExecutor {
 
   async execute(request: ClientToolRequest): Promise<ClientToolResult> {
     const { toolName } = request;
-    if (!isContractTool(toolName)) {
-      return toolResult(toolName, notApplied('UNSUPPORTED_CLIENT_TOOL', `${toolName} is not a PowerPoint tool`),
+    const { contract, host, surface } = this.app;
+    if (!contract.has(toolName)) {
+      return this.answer(toolName, notApplied('UNSUPPORTED_CLIENT_TOOL', `${toolName} is not a ${host} tool`),
         { elapsed_ms: 0, queue_wait_ms: 0, host: {} });
     }
     const started = Date.now();
     const generation = this.generation;
-    const mutating = isMutatingTool(toolName);
+    const mutating = contract.isMutating(toolName);
     let hostStarted = false;
     let answered = false;
     const run = async (): Promise<ClientToolResponse> => {
@@ -102,7 +102,7 @@ export class PowerPointToolDispatcher implements ClientToolExecutor {
       : run();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const response = await Promise.race([settled, new Promise<ClientToolResponse>(resolve => {
-      deadline = setTimeout(() => resolve(timedOut(mutating, hostStarted)), CALL_DEADLINE_MS);
+      deadline = setTimeout(() => resolve(timedOut(host, PARTS[surface], mutating, hostStarted)), CALL_DEADLINE_MS);
     })]);
     clearTimeout(deadline);
     answered = true;
@@ -111,24 +111,28 @@ export class PowerPointToolDispatcher implements ClientToolExecutor {
       elapsed_ms: elapsed, queue_wait_ms: hostStarted ? queueWait : elapsed, host: response.hostTimings ?? {},
     };
     try {
-      return toolResult(toolName, response, telemetry);
+      return this.answer(toolName, response, telemetry);
     } catch (error) {
       // The host's result does not serialize (a BigInt, a cycle); the call is answered all the same.
-      return toolResult(toolName, unreadable(mutating, error), telemetry);
+      return this.answer(toolName, unreadable(host, mutating, error), telemetry);
     }
   }
 
   declineHeldElsewhere(request: ClientToolRequest): ClientToolResult {
-    return toolResult(request.toolName, notApplied(
+    return this.answer(request.toolName, notApplied(
       'CLIENT_TOOL_DISPLACED',
-      'This presentation is open in another window, which now runs its PowerPoint tools; nothing was changed. '
-        + 'Tell the user to continue in that window.',
+      `This ${this.app.surface} is open in another window, which now runs its ${this.app.host} tools; `
+        + 'nothing was changed. Tell the user to continue in that window.',
       'conflict',
     ), { elapsed_ms: 0, queue_wait_ms: 0, host: {} });
   }
+
+  private answer(toolName: string, response: ClientToolResponse, telemetry: ToolTelemetry): ClientToolResult {
+    return toolResult(response, telemetry, this.app.flatResults?.has(toolName) ?? false);
+  }
 }
 
-function toolResult(toolName: string, response: ClientToolResponse, telemetry: ToolTelemetry): ClientToolResult {
+function toolResult(response: ClientToolResponse, telemetry: ToolTelemetry, flat: boolean): ClientToolResult {
   const mutation = response.mutation ? { mutation: response.mutation } : {};
   let value: JsonObject;
   if (!response.ok) {
@@ -137,7 +141,7 @@ function toolResult(toolName: string, response: ClientToolResponse, telemetry: T
       success: false, error: error.message, code: error.code, retryable: error.retryable, category: error.category,
       ...(error.details ? { details: error.details } : {}), ...mutation,
     };
-  } else if (FLAT_RESULT_TOOLS.has(toolName)) {
+  } else if (flat) {
     value = { ...(isRecord(response.result) ? response.result : { result: response.result }),
       ...response.successFields, ...mutation };
   } else {
@@ -164,10 +168,10 @@ function notApplied(
 }
 
 /** The answer when the host's result cannot be read. A write the host ran may have landed. */
-function unreadable(mutating: boolean, error: unknown): ClientToolResponse {
+function unreadable(host: string, mutating: boolean, error: unknown): ClientToolResponse {
   const response: ClientToolResponse = { ok: false, error: {
     code: 'CLIENT_TOOL_RESULT_UNREADABLE',
-    message: `PowerPoint's result could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    message: `${host}'s result could not be read: ${error instanceof Error ? error.message : String(error)}`,
     retryable: false, category: 'host',
     details: mutating ? { outcome: 'unknown', native_mutation_started: true } : { outcome: 'not_applied' },
   } };
@@ -175,15 +179,72 @@ function unreadable(mutating: boolean, error: unknown): ClientToolResponse {
 }
 
 /** The answer at the deadline. A write the host is still running may yet land. */
-function timedOut(mutating: boolean, hostStarted: boolean): ClientToolResponse {
+function timedOut(host: string, parts: string, mutating: boolean, hostStarted: boolean): ClientToolResponse {
   const writing = mutating && hostStarted;
   const response: ClientToolResponse = { ok: false, error: {
     code: 'CLIENT_TOOL_TIMEOUT',
     message: writing
-      ? 'PowerPoint did not finish this change in time; it may still complete. Inspect the affected slides first.'
-      : 'PowerPoint did not finish this call in time',
+      ? `${host} did not finish this change in time; it may still complete. Inspect the affected ${parts} first.`
+      : `${host} did not finish this call in time`,
     retryable: false, category: 'timeout',
     details: { outcome: writing ? 'unknown' : 'not_applied', native_mutation_started: writing },
   } };
   return mutating ? withMutationRecord(response) : response;
 }
+
+export interface ClientToolError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  category: 'capability' | 'validation' | 'conflict' | 'transport' | 'timeout' | 'host';
+  details?: Record<string, unknown>;
+}
+
+/** What a write did to the document, as the agent reads it; the slide fields are PowerPoint's. */
+export interface MutationRecord {
+  state: 'not_applied' | 'applied' | 'partial' | 'uncertain';
+  native_mutation_started: boolean;
+  last_completed_stage?: string;
+  created_slide_ids?: string[];
+  deleted_slide_ids?: string[];
+  affected_slide_ids?: string[];
+  replacement_slide_ids?: Record<string, string>;
+  verification_targets?: string[];
+  /**
+   * Which slide_ref each already resolved to on the live document, in the
+   * order they resolved. Present on a partial/uncertain outcome so the
+   * caller's next patch can reuse the real slide_id for a slide_ref instead
+   * of re-deriving position/role bookkeeping from a stale assumption after
+   * a mid-batch failure (2026-09-19 live finding: an unreported orphaned
+   * slide desynced the caller's slide_ref → slide_id map from the document).
+   */
+  resolved_slides?: { slide_ref: string; slide_id: string; created: boolean }[];
+  safe_to_retry: boolean;
+}
+
+/** Time a tool spent in the host, as the runtime measured it; goes to the answer's ``data``, not to the model. */
+export interface HostTimings {
+  export_ms?: number;
+  insert_ms?: number;
+  render_ms?: number;
+  sync_count?: number;
+}
+
+interface ResponseRecords {
+  /** What a write did to the deck, as the runtime saw it; ``withMutationRecord`` turns it into ``mutation``. */
+  mutationEvidence?: Record<string, unknown>;
+  mutation?: MutationRecord;
+  hostTimings?: HostTimings;
+}
+
+/** What a tool runtime returns for one call. */
+export type ClientToolResponse = ResponseRecords & (
+  | {
+    ok: true;
+    result?: unknown;
+    successFields?: Record<string, unknown>;
+    /** A PNG the tool produced (a slide render), returned as an image block. */
+    imageBase64?: string;
+  }
+  | { ok: false; error: ClientToolError }
+);

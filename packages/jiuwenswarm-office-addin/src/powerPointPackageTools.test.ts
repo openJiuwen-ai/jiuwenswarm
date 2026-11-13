@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { attachDeclaration } from './appContract';
 import type { ClientToolResult } from './clientAttachment';
 import { FakeDeck, uploadedDeck, type FakeDeckOptions } from './fakePowerPoint';
 import type { JsonObject } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
 import { nodeSandbox } from './nodeSandbox';
+import { POWERPOINT, PRESENTATION_TOOL_NAMES } from './powerPointApp';
 import { powerPointPackageRuntime } from './powerPointPackageTools';
 import { powerPointReadRuntime } from './powerPointReadTools';
-import { joinRuntimes, PowerPointToolDispatcher } from './powerPointToolDispatcher';
+import { joinRuntimes, ClientToolDispatcher } from './clientToolDispatcher';
 import { powerPointSlideDeck, powerPointWriteRuntime } from './powerPointWriteTools';
 import { sha256Hex } from './presentationAssetClient';
-import { presentationAttachDeclaration } from './presentationContract';
-import { PRESENTATION_TOOL_NAMES } from './presentationToolTypes';
 import { SlideSnapshots } from './slideSnapshots';
 
 const NS = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
@@ -50,7 +50,7 @@ function pane(deck = new FakeDeck(twoSlides())) {
     powerPointWriteRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id) }),
     powerPointPackageRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id), sandbox,
       forgetUndo: () => snapshots.forget(), fetcher }));
-  const dispatcher = new PowerPointToolDispatcher(runtime, writes);
+  const dispatcher = new ClientToolDispatcher(POWERPOINT, runtime, writes);
   let calls = 0;
   const call = async (toolName: string, input: JsonObject = {}, downloads: Record<string, string> = {}) => {
     calls += 1;
@@ -79,7 +79,7 @@ function answer(result: ClientToolResult): JsonObject {
 describe('the slide package tools', () => {
   it('are declared on a host with PowerPointApi 1.8, and not below', () => {
     const { runtime } = pane();
-    const declared = (api: string) => presentationAttachDeclaration({ documentId: 'd' as never, displayName: 'x',
+    const declared = (api: string) => attachDeclaration(POWERPOINT, { documentId: 'd' as never, displayName: 'x',
       host: new FakeDeck({ api }).host, implemented: runtime.tools }).capabilities.supported_tools;
     const tools = ['read_slide_text', 'edit_slide_text', 'find_and_replace', 'duplicate_slide', 'import_slides',
       'copy_image_between_slides', 'read_chart_style', 'create_slide_chart', 'edit_built_chart', 'edit_slide_xml',
@@ -91,7 +91,7 @@ describe('the slide package tools', () => {
   it('declare the tools that run code only where the pane can start a worker', () => {
     const { runtime } = pane();
     const host = { ...new FakeDeck().host, worker: false };
-    const declared = presentationAttachDeclaration({ documentId: 'd' as never, displayName: 'x', host,
+    const declared = attachDeclaration(POWERPOINT, { documentId: 'd' as never, displayName: 'x', host,
       implemented: runtime.tools }).capabilities.supported_tools;
     expect(declared).toContain('edit_slide_text');
     expect(declared.filter(tool => ['edit_slide_xml', 'edit_slide_chart', 'edit_slide_master'].includes(tool)))
