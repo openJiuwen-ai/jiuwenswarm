@@ -204,6 +204,27 @@ _ROUND_TERMINAL_CHUNK_TYPES = frozenset(
     }
 )
 
+# Every SDK chunk type :meth:`JiuWenSwarmDeepAdapter._parse_stream_chunk` renders
+# as text the answering model wrote itself: ``chat.delta`` for ``llm_output`` and
+# ``content_chunk``, ``chat.reasoning`` for ``llm_reasoning``, ``chat.final`` for
+# ``answer``. Nothing else belongs here. Tool, subagent and ask-user events keep
+# the child visible, and an error stays an error: an ``answer`` whose
+# ``result_type`` is ``"error"`` is already recorded by :meth:`_run_failure`
+# before this guard runs, so the turn still reports it.
+_MODEL_TEXT_CHUNK_TYPES = frozenset(
+    {"answer", "content_chunk", "llm_output", "llm_reasoning"}
+)
+
+
+def _chunk_type_name(chunk: Any) -> str:
+    """The SDK type of *chunk*, for both object and mapping chunk shapes."""
+    chunk_type = getattr(chunk, "type", None)
+    if chunk_type is None and isinstance(chunk, dict):
+        chunk_type = chunk.get("type")
+    if chunk_type is None:
+        return ""
+    return str(getattr(chunk_type, "value", chunk_type))
+
 # Upper bound for the per-round streamed-text memo used to de-duplicate a
 # demoted goal attempt final. Long enough for a full answer, bounded so a
 # many-step round cannot grow it without limit.
@@ -747,6 +768,13 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
 from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import (
     BrowserRuntimeSecurityProfile,
     apply_browser_runtime_security_profile,
+)
+from jiuwenswarm.server.runtime.agent_adapter.required_subagent import (
+    RequiredSubagentRail,
+    required_subagent_from_params,
+    required_subagent_state,
+    validate_required_subagent,
+    with_required_subagent_run_context,
 )
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
@@ -16037,12 +16065,7 @@ class JiuWenSwarmDeepAdapter:
         ``answer`` is written once per round (including empty answers and goal
         attempt boundaries); HITL interrupt frames end a round without one.
         """
-        chunk_type = getattr(chunk, "type", None)
-        if chunk_type is None and isinstance(chunk, dict):
-            chunk_type = chunk.get("type")
-        if chunk_type is None:
-            return False
-        return str(getattr(chunk_type, "value", chunk_type)) in _ROUND_TERMINAL_CHUNK_TYPES
+        return _chunk_type_name(chunk) in _ROUND_TERMINAL_CHUNK_TYPES
 
     async def _begin_visible_chat_content(
         self,
@@ -16384,6 +16407,20 @@ class JiuWenSwarmDeepAdapter:
         request: AgentRequest,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
+        params = request.params if isinstance(request.params, dict) else {}
+        required = required_subagent_from_params(params)
+        if required is not None:
+            if getattr(self._instance, "active_round", None) is not None:
+                raise ValueError("Required subagent command needs a new turn")
+            validate_required_subagent(self._instance, required)
+            required_rail = getattr(self, "_required_subagent_rail", None)
+            if required_rail is None or required_rail not in getattr(
+                self._instance, "_registered_rails", ()
+            ):
+                required_rail = RequiredSubagentRail()
+                await self._instance.register_rail(required_rail)
+                self._required_subagent_rail = required_rail
+            inputs = with_required_subagent_run_context(inputs, required)
         from jiuwenswarm.extensions.video_duplex.backend.conversation_context import sync_conversation_context
 
         rail = getattr(self, "_voice_agent_task_rail", None)
@@ -19011,6 +19048,7 @@ class JiuWenSwarmDeepAdapter:
             if self._kv_cache_affinity_enabled:
                 inputs["_turn_number"] = _turn.turn_number
             inputs = await self._prepare_root_input_dispatch(request, inputs)
+            required_subagent = required_subagent_state(inputs)
             attach_goal = self._wants_attach_goal(request.params)
             if attach_goal:
                 gm = self._get_goal_manager()
@@ -19177,6 +19215,19 @@ class JiuWenSwarmDeepAdapter:
                 self._unmark_session_active(session_id)
 
         content = "".join(collected_content) if collected_content else ""
+        if required_subagent is not None:
+            # Only the child answers a required delegation. Parent text that
+            # reached ``collected_content`` before the rail took over the tool
+            # choice is dropped here.
+            if required_subagent.completed and not error_text:
+                content = required_subagent.result
+            else:
+                content = ""
+                error_text = (
+                    required_subagent.error
+                    or error_text
+                    or "Required subagent delegation did not complete."
+                )
 
         if error_text:
             # 模型/round 级错误：即使已流出部分内容，也按失败返回并透传错误消息，
@@ -20423,6 +20474,7 @@ class JiuWenSwarmDeepAdapter:
                     and str(request.params.get("source") or "").strip() == "permission_interrupt"
                 )
                 raise
+            required_subagent = required_subagent_state(inputs)
             moa_progress = getattr(self._moa_runtime, "progress", None)
             if moa_progress is not None:
                 moa_mailbox = moa_progress.ensure_mailbox()
@@ -20733,6 +20785,16 @@ class JiuWenSwarmDeepAdapter:
                         question = parse_common_stream_chunk(chunk)
                         if isinstance(question, dict) and question.get("event_type") == "chat.ask_user_question":
                             continue
+                if (
+                    required_subagent is not None
+                    and _chunk_type_name(chunk) in _MODEL_TEXT_CHUNK_TYPES
+                ):
+                    # The SDK writes model text to the session while the call is
+                    # still running and fires AFTER_MODEL_CALL only once it has
+                    # returned, so a rail cannot unsend the text whose tool
+                    # choice it replaces. Drop it: a required delegation is
+                    # answered by the child below, from verified state.
+                    continue
                 if not (hasattr(chunk, "type") and hasattr(chunk, "payload")):
                     parsed = await run_stream_parser(
                         self._parse_stream_chunk,
@@ -21047,6 +21109,27 @@ class JiuWenSwarmDeepAdapter:
                         is_complete=False,
                     )
 
+            if required_subagent is not None:
+                if required_subagent.completed and run_failure is None:
+                    payload = {
+                        "event_type": "chat.final",
+                        "content": required_subagent.result,
+                    }
+                else:
+                    payload = {
+                        "event_type": "chat.error",
+                        "error": required_subagent.error
+                        or (run_failure[1] if run_failure is not None else "")
+                        or "Required subagent delegation did not complete.",
+                    }
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=cid,
+                    payload=await note_chat_payload(payload),
+                    is_complete=False,
+                )
+                had_tool_output = True
+
             if accumulated_text:
                 # Same rule as _adapt_goal_intermediate_final: demote host
                 # flush only when the flushed text belonged to a goal round.
@@ -21120,7 +21203,7 @@ class JiuWenSwarmDeepAdapter:
             # a model chat.final. Synthesize a real final so the frontend can
             # stopStreaming; do not demote or suppress this stream-end control
             # when accepted steering remains unconsumed.
-            if run_failure is None and self._should_emit_stream_end_chat_final(
+            if required_subagent is None and run_failure is None and self._should_emit_stream_end_chat_final(
                 had_assistant_output=had_assistant_output,
                 emitted_terminal_chat_final=emitted_terminal_chat_final,
             ):
