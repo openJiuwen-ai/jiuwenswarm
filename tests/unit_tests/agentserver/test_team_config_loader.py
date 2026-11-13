@@ -199,6 +199,73 @@ def test_effective_team_models_select_from_normalized_entries(monkeypatch):
     assert entries[0]["model_client_config"]["custom_headers"] == {"X-Trace-Id": "trace-one"}
 
 
+def test_team_manager_uses_resolved_config_provider_when_yaml_provider_is_blank(monkeypatch):
+    """Cluster assembly must use the same resolved model snapshot as single-agent chat.
+
+    AgentServer config.yaml often still contains an unresolved ``${MODEL_PROVIDER}``.
+    Single-agent chat overlays the enterprise template first; team spec loading has
+    to accept that overlay instead of validating the blank placeholder.
+    """
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    yaml_config = {
+        "models": {
+            "defaults": [
+                {
+                    "model_client_config": {
+                        "api_base": "",
+                        "api_key": "",
+                        "model_name": "",
+                        "client_provider": "",
+                    },
+                    "model_config_obj": {},
+                }
+            ]
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}, "teammate": {}},
+                }
+            }
+        ),
+    }
+    resolved_config = {
+        "models": {
+            "defaults": [
+                {
+                    "model_id": "default-model",
+                    "model_client_config": {
+                        "api_base": "http://113.46.219.251:8080/v1",
+                        "api_key": "sk-test",
+                        "model_name": "GLM-5.2",
+                        "client_provider": "OpenAI",
+                    },
+                    "model_config_obj": {},
+                    "is_default": True,
+                }
+            ]
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}, "teammate": {}},
+                }
+            }
+        ),
+    }
+    monkeypatch.setattr(team_manager_module, "get_config", lambda: yaml_config)
+
+    spec = TeamManager._load_team_spec("session-one", config_base=resolved_config)
+
+    assert spec.model_pool[0].api_provider == "OpenAI"
+    assert spec.model_pool[0].model_name == "GLM-5.2"
+    assert spec.agents["leader"].model.model_client_config.client_provider == "OpenAI"
+
+
 def test_team_manager_builds_pool_for_single_configured_model(monkeypatch):
     """A single configured model remains available to external fallback."""
     from jiuwenswarm.agents.harness.team import team_manager as team_manager_module

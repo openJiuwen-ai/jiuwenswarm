@@ -22,8 +22,8 @@ def _prepare_broken_home(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_SKIP_DOTENV", "1")
     monkeypatch.setattr(common_utils, "_user_home", None, raising=False)
     monkeypatch.setattr(common_utils, "_workspace_base_dir", None, raising=False)
-    config_dir = tmp_path / ".jiuwenswarm"
-    config_dir.mkdir()
+    config_dir = tmp_path / ".jiuwenswarm" / "infra"
+    config_dir.mkdir(parents=True)
     (config_dir / "instances.yaml").write_text(
         "instances:\n  alice: [unclosed\n", encoding="utf-8",
     )

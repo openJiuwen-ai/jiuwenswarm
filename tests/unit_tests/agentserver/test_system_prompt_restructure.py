@@ -1625,7 +1625,7 @@ async def test_runtime_attachment_tracks_live_code_agent_mode(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_runtime_git_status_is_stable_system_context_for_one_invoke(tmp_path, monkeypatch):
-    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(_utils_mod, "get_domain_data_dir", lambda: tmp_path)
     runtime_state = tmp_path / "runtime_state" / "default.yaml"
     runtime_state.parent.mkdir(parents=True, exist_ok=True)
     runtime_state.write_text(
@@ -1690,7 +1690,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1748,7 +1748,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1808,7 +1808,7 @@ async def test_runtime_prompt_lists_installed_extensions_from_global_workspace(
         lambda: installed_workspace,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1872,7 +1872,7 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1909,7 +1909,7 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1944,7 +1944,7 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1983,7 +1983,7 @@ async def test_process_cli_directory_prompt_refreshes_across_requests(
     for directory in (internal, first, second, current):
         directory.mkdir()
     monkeypatch.setattr(runtime_module, "get_agent_workspace_dir", lambda: internal)
-    monkeypatch.setattr(runtime_module, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime_module, "get_domain_data_dir", lambda: tmp_path)
     monkeypatch.setattr(runtime_module, "get_runtime_state_path", lambda _: tmp_path / "absent.yaml")
     monkeypatch.setattr(RuntimePromptRail, "_configured_model_names", staticmethod(lambda: []))
     rail = RuntimePromptRail(language=language, channel="process_cli")
