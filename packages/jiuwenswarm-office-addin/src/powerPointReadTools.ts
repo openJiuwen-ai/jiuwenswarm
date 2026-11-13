@@ -1,6 +1,7 @@
 import type { JsonObject } from './gatewayClient';
 import type { PresentationToolRuntime } from './powerPointToolDispatcher';
 import type { PresentationHost } from './presentationContract';
+import { themeOf } from './presentationPackage';
 import type { ClientToolResponse, HostTimings } from './presentationToolTypes';
 
 /** ``PowerPoint.run``, injected so tests can drive a fake deck. */
@@ -59,6 +60,7 @@ interface Call {
 
 export const DEFAULT_RENDER_WIDTH = 960;
 const ASSUMED_SIZE: SlideSize = { width: 960, height: 540, assumed: true };
+const NO_THEME: ReturnType<typeof themeOf> = { theme_palette: null, theme_fonts: null, template_body_font_pt: null };
 const DIMENSIONS_ASSUMED_WARNING = 'PowerPoint did not report the slide size, so 960 x 540 pt (16:9) is assumed; '
   + 'on a 4:3 or custom-sized deck the out-of-bounds checks can be off.';
 /** Slides verify_slides measures when to_slide is not given, so one answer stays readable. */
@@ -87,8 +89,8 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
     return read().catch(() => fallback);
   }
 
-  async function readContext({ batch }: Call): Promise<ClientToolResponse> {
-    const [title, { deck, hasContent }, masters, selectedSlideIds, selectedShapeIds] = await Promise.all([
+  async function readContext({ batch, timings }: Call): Promise<ClientToolResponse> {
+    const [title, { deck, hasContent }, masters, selectedSlideIds, selectedShapeIds, theme] = await Promise.all([
       documentName(),
       batch(async b => {
         const deck = await readDeck(b);
@@ -103,6 +105,7 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
       optional([], () => batch(readMasters)),
       optional([], () => batch(b => selectedIds(b, b.presentation.getSelectedSlides()))),
       optional([], () => batch(b => selectedIds(b, b.presentation.getSelectedShapes()))),
+      optional(NO_THEME, () => batch(b => readTheme(b, host, timings))),
     ]);
     const slideIds = deck.slides.map(slide => slide.id);
     return { ok: true, result: {
@@ -113,10 +116,7 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
       ...(deck.size.assumed ? { dimensions_assumed_warning: DIMENSIONS_ASSUMED_WARNING } : {}),
       is_default_theme: masters[0]?.name === 'Office Theme',
       has_content: hasContent,
-      // These come from the theme and master parts of the OOXML package, which this runtime does not read yet.
-      theme_palette: null,
-      theme_fonts: null,
-      template_body_font_pt: null,
+      ...theme,
       content_language: languages.contentLanguage || null,
       display_language: languages.displayLanguage || null,
       masters,
@@ -250,6 +250,21 @@ async function readMasters({ presentation, sync }: Batch) {
   await sync();
   return masters.items.map(master => ({ id: master.id, name: master.name,
     layouts: master.layouts.items.map(layout => ({ id: layout.id, name: layout.name })) }));
+}
+
+/** The theme facts of a deck on a template, from the package of its first slide; none on the default theme. */
+async function readTheme({ presentation, sync }: Batch, host: PresentationHost, timings: HostTimings) {
+  if (!host.isSetSupported('PowerPointApi', '1.8')) return NO_THEME;
+  presentation.slideMasters.load('items/name');
+  presentation.slides.load('items/id');
+  await sync();
+  const [first] = presentation.slides.items;
+  if (!first || presentation.slideMasters.items[0]?.name === 'Office Theme') return NO_THEME;
+  const started = Date.now();
+  const exported = first.exportAsBase64();
+  await sync();
+  timings.export_ms = Date.now() - started;
+  return themeOf(exported.value);
 }
 
 async function selectedIds(

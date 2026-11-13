@@ -314,6 +314,16 @@ class JiuwenExpertTeamLauncher:
         if team_package_availability(team_id, group_name).get("available") is False:
             logger.warning("[ExpertTeamLauncher] package unavailable team=%s group=%s", team_id, group_name)
             return False
+        if group_name:
+            from jiuwenswarm.enterprise.capabilities.experts.request_packages import allows
+
+            if not allows("agent_group", group_name):
+                logger.warning(
+                    "[ExpertTeamLauncher] package not in current expansion team=%s group=%s",
+                    team_id,
+                    group_name,
+                )
+                return False
         is_relayed_team = isinstance(spec_metadata, dict) and (
             spec_metadata.get("expert_team") is True
             or (source == "org_summary_background" and spec_metadata.get("summary_team") is True)

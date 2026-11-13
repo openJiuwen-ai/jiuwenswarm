@@ -85,6 +85,7 @@ import {
   enqueuePendingInstall,
 } from '../node_modules/.cache/agent-management/pendingInstallQueue.js';
 import { isUncertainInstallError } from '../node_modules/.cache/agent-management/installOutcome.js';
+import { agentAccessDeniedCopyKey } from '../node_modules/.cache/agent-management/accessDenied.js';
 
 test('pending Expert installs keep target identity while connector flows run serially', () => {
   const first = {
@@ -831,4 +832,11 @@ test('backend verdicts without a code stay definite so the upload rollback fires
   assert.equal(isUncertainInstallError({ code: '' }), false);
   assert.equal(isUncertainInstallError(null), false);
   assert.equal(isUncertainInstallError('backend exploded'), false);
+});
+
+test('Agent admission denial maps to the plaza copy key', () => {
+  assert.equal(agentAccessDeniedCopyKey('Agent access denied'), 'agentManagement.states.agentAccessDenied');
+  assert.equal(agentAccessDeniedCopyKey('  Agent access denied  '), 'agentManagement.states.agentAccessDenied');
+  assert.equal(agentAccessDeniedCopyKey('Agent routing identity is required'), null);
+  assert.equal(agentAccessDeniedCopyKey('agent_template package not found: demo'), null);
 });
