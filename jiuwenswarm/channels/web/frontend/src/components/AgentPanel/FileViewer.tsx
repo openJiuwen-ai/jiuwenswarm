@@ -284,7 +284,12 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
       }
       setSaveError(message);
     } finally {
-      setSaving(false);
+      // A stale response's finally must not reset the saving flag of a newer
+      // in-flight save: with saving wrongly cleared, the editor re-enables and
+      // the newer save's success callback then discards what the user typed
+      // meanwhile. loadFile already resets saving on a file switch, so skipping
+      // the reset for a stale response is side-effect-free.
+      if (filePathRef.current === savedPath) setSaving(false);
     }
   };
 
