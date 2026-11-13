@@ -14,13 +14,10 @@ from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     "method", ["describe", "prepare", "commit", "status", "records"]
 )
 async def test_publish_wire_forwards_user_context_without_echoing_auth(method):
-    from agent_gateway.channel_manager.web.app_web_handlers import (
-        _FORWARD_REQ_METHODS,
-        _FORWARD_NO_LOCAL_HANDLER_METHODS,
-    )
+    from tests.unit_tests.gateway.method_passthrough_harness import assert_web_method_forwarded
 
     value = "assets.publish." + method
-    assert value in _FORWARD_REQ_METHODS and value in _FORWARD_NO_LOCAL_HANDLER_METHODS
+    await assert_web_method_forwarded(value)
     server = object.__new__(AgentWebSocketServer)
     api = SimpleNamespace(
         call=AsyncMock(

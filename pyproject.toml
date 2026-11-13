@@ -26,9 +26,9 @@ dependencies = [
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
-    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@06a75d66eb011762077e8924d0d1e41791a93034#subdirectory=e2a",
+    "e2a @ git+https://gitcode.com/mingo007/agent-protocol.git@c499c69f29828984d9c25ac9c74fdde625deeb4f#subdirectory=e2a",
     # Gateway 传输层已拆分为独立仓 agent-gateway
-    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@2c40ac150276477a8079ef7937674b600b6a1420",
+    "agent-gateway @ git+https://gitcode.com/mingo007/agent-gateway.git@8b8a150c22f1bce5084cca7e68c385417f4d7904",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -243,14 +243,14 @@ override-dependencies = [
     "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'claude'",
     "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'codex'",
     "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'distribute'",
-    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@06a75d66eb011762077e8924d0d1e41791a93034#subdirectory=e2a",
+    "e2a @ git+https://gitcode.com/mingo007/agent-protocol.git@c499c69f29828984d9c25ac9c74fdde625deeb4f#subdirectory=e2a",
 ]
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "2c40ac150276477a8079ef7937674b600b6a1420" }
+agent-gateway = { git = "https://gitcode.com/mingo007/agent-gateway.git", rev = "8b8a150c22f1bce5084cca7e68c385417f4d7904" }
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "f3f8f576164cc405c046e43079c8ad00ee17f0c4" }
-e2a = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "06a75d66eb011762077e8924d0d1e41791a93034", subdirectory = "e2a" }
+e2a = { git = "https://gitcode.com/mingo007/agent-protocol.git", rev = "c499c69f29828984d9c25ac9c74fdde625deeb4f", subdirectory = "e2a" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
 
 [dependency-groups]

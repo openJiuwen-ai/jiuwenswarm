@@ -307,7 +307,7 @@ def test_internal_completion_never_enters_wire(monkeypatch, fallback):
     # 实现已迁 e2a.wire_codec（common/e2a 为转发别名），
     # monkeypatch 需指向真实实现模块才能生效。
     from e2a import wire_codec as protocol_wire_codec
-    from e2a import wire_codec
+    from jiuwenswarm.common.e2a import wire_codec
 
     if fallback:
         monkeypatch.setattr(

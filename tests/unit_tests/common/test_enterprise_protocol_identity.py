@@ -1,19 +1,20 @@
 """Exercise mixed Gateway / AgentServer protocol consumers after integration."""
 
 import pytest
-
-from e2a.message import ReqMethod as ProtocolReqMethod
+import e2a.message as protocol_message
+from e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
-
 
 @pytest.mark.parametrize("name", [
     "CHAT_SEND", "A4P_CONFIG_GET", "A4P_CONFIG_UPDATE", "WORKSPACE_TREE",
     "FILE_READ_UPLOAD_CHUNK", "SKILLS_ENTERPRISE_INSTALL",
 ])
-def test_rpc_members_share_identity_across_protocol_consumers(name):
+def test_swarm_rpc_members_cross_protocol_as_strings(name):
     local = getattr(ReqMethod, name)
-    assert ReqMethod is ProtocolReqMethod
-    assert ProtocolReqMethod(local.value) is local
+    assert not hasattr(protocol_message, "ReqMethod")
+    envelope = e2a_from_agent_fields(request_id="identity", req_method=local)
+    assert envelope.method == local.value
+    assert ReqMethod(envelope.method) is local
 
 
 @pytest.mark.asyncio

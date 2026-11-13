@@ -16,6 +16,7 @@ from jiuwenswarm.common.request_ext import reset_ext, set_current
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext, bind_request_tenant
+from jiuwenswarm.server.request_policy import request_policy_error
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,10 @@ def _error_response(ctx: RequestContext, exc: BaseException) -> AgentResponse:
 async def invoke_unary(ctx: RequestContext, handler: Handler) -> None:
     """调用一次性回包。异常变成一条失败 JSON，取消仍向外抛。"""
     try:
+        error = request_policy_error(ctx.request, web_http=True)
+        if error is not None:
+            await ctx.sink.send_response(error)
+            return
         async with _request_scope(ctx):
             await handler(ctx)
     except Exception as exc:
@@ -89,6 +94,10 @@ async def invoke_unary(ctx: RequestContext, handler: Handler) -> None:
 async def invoke_stream(ctx: RequestContext, handler: Handler) -> None:
     """调用流式回包。取消必须继续向外抛，不能吞掉。"""
     try:
+        error = request_policy_error(ctx.request, web_http=True)
+        if error is not None:
+            await ctx.sink.send_response(error)
+            return
         async with _request_scope(ctx):
             await handler(ctx)
     except asyncio.CancelledError:

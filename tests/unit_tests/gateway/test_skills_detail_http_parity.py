@@ -9,7 +9,6 @@ METHOD_NOT_FOUND 或 Gateway FORBIDDEN，且日志里看不到南向请求。
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import re
 import sys
@@ -18,7 +17,9 @@ from pathlib import Path
 import pytest
 import agent_gateway
 
-from e2a.models import E2AEnvelope
+from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.server.request_policy import request_policy_error
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     REST_ROUTES,
     assemble_rest_request,
@@ -26,7 +27,6 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
 
 _ROOT = Path(__file__).resolve().parents[3]
 _GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
-_INVOKE = _GATEWAY_ROOT / "channel_manager" / "web" / "invoke.py"
 _MAPPED = _GATEWAY_ROOT / "channel_manager" / "web" / "http_routes" / "mapped.py"
 _DISPATCH = _ROOT / "jiuwenswarm" / "server" / "dispatch.py"
 _WEB_HTTP = (
@@ -61,23 +61,6 @@ def _load_mapped():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
-def _enterprise_skill_allowed() -> set[str]:
-    tree = ast.parse(_INVOKE.read_text(encoding="utf-8"))
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "_ENTERPRISE_SKILL_ALLOWED" for t in node.targets):
-            continue
-        assert isinstance(node.value, ast.Call)
-        assert node.value.args and isinstance(node.value.args[0], (ast.Set, ast.Tuple, ast.List))
-        out: set[str] = set()
-        for elt in node.value.args[0].elts:
-            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                out.add(elt.value)
-        return out
-    raise AssertionError("_ENTERPRISE_SKILL_ALLOWED not found in invoke.py")
 
 
 def _frontend_route_paths() -> dict[str, str]:
@@ -129,8 +112,10 @@ def test_skill_detail_read_methods_registered_in_dispatch(method: str) -> None:
 
 
 @pytest.mark.parametrize("method", sorted(_SKILL_DETAIL_READ_METHODS))
-def test_skill_detail_read_methods_allowed_in_enterprise(method: str) -> None:
-    assert method in _enterprise_skill_allowed()
+def test_skill_detail_read_methods_allowed_in_enterprise(method, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    request = AgentRequest(request_id="read", channel_id="web", req_method=method, params={})
+    assert request_policy_error(request, web_http=True) is None
 
 
 def test_skills_files_and_versions_assemble_dedicated_urls() -> None:

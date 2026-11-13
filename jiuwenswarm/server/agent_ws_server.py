@@ -3329,6 +3329,13 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        from jiuwenswarm.server.request_policy import request_policy_error
+
+        error = request_policy_error(request)
+        if error is not None:
+            async with send_lock:
+                await send_wire_payload(ws, encode_agent_response_for_wire(error, response_id=request.request_id))
+            return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_PREPARE:
             params = request.params if isinstance(request.params, dict) else {}
             agent_id = params.get("agent_id")

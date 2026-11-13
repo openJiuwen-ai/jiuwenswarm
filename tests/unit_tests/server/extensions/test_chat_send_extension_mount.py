@@ -8,11 +8,7 @@ from typing import get_type_hints
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from agent_gateway.channel_manager.tui.tui_connect import (
-    CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
-    CLI_FORWARD_REQ_METHODS,
-)
-from agent_gateway.channel_manager.web import app_web_handlers
+from tests.unit_tests.gateway.method_passthrough_harness import assert_web_method_forwarded
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.chat_send import ChatSendParams
@@ -494,7 +490,7 @@ class TestChatSendMountAndGates:
 class TestPackageCatalogReqMethodRouting:
     """Catalog RPCs are stateless; install pending payload; uninstall unloads first."""
 
-    def test_catalog_methods_are_stateless_and_forwarded(self) -> None:
+    async def test_catalog_methods_are_stateless_and_forwarded(self) -> None:
         assert not hasattr(ReqMethod, "PLUGIN_PACKAGES_TOGGLE")
         for method in _CATALOG_METHODS:
             req = AgentRequest(request_id="r", channel_id="c", req_method=method)
@@ -508,20 +504,14 @@ class TestPackageCatalogReqMethodRouting:
         assert AgentWebSocketServer._is_stateless_method_request(chat_request) is False
         assert AgentRuntime._is_stateless_method_request(chat_request) is False
         for _, value in _LIFECYCLE_METHODS:
-            assert value in app_web_handlers._FORWARD_REQ_METHODS
-            assert value in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
-            assert value in CLI_FORWARD_REQ_METHODS
-            assert value in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
+            await assert_web_method_forwarded(value)
         for forwarded in (
             "agent_groups.list",
             "agent_groups.show",
             "agent_groups.file.list",
             "agent_groups.file.read",
         ):
-            assert forwarded in app_web_handlers._FORWARD_REQ_METHODS
-            assert forwarded in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
-            assert forwarded in CLI_FORWARD_REQ_METHODS
-            assert forwarded in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
+            await assert_web_method_forwarded(forwarded)
 
     async def test_agent_group_list_payload(self, monkeypatch) -> None:
         iface = _iface()

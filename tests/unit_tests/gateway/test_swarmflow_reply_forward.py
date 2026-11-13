@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 from e2a.gateway_normalize import e2a_from_agent_fields
-from e2a.message import ReqMethod
+
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.schema import Message
@@ -72,7 +72,7 @@ def _swarmflow_reply_message(*, session_id: str = "sess-1") -> Message:
         },
         timestamp=0.0,
         ok=True,
-        req_method=ReqMethod.CHAT_SWARMFLOW_REPLY,
+        req_method='chat.swarmflow_reply',
         is_stream=False,
     )
 
@@ -93,7 +93,7 @@ async def test_swarmflow_reply_does_not_cancel_existing_stream() -> None:
     chat_send = Message(
         id="r-cs", type="req", channel_id="tui", session_id="sess-1",
         params={"mode": "agent.plan", "query": "hi"}, timestamp=0.0, ok=True,
-        req_method=ReqMethod.CHAT_SEND, is_stream=True,
+        req_method='chat.send', is_stream=True,
     )
     assert MessageHandler._should_cancel_existing_stream_before_chat_send(chat_send) is True
 
@@ -107,7 +107,7 @@ async def test_swarmflow_reply_forwarded_to_agent_server_non_stream() -> None:
         request_id=msg.id,
         channel_id=msg.channel_id,
         session_id=msg.session_id,
-        req_method=ReqMethod.CHAT_SWARMFLOW_REPLY,
+        req_method='chat.swarmflow_reply',
         params=msg.params,
         is_stream=False,
         timestamp=0.0,
@@ -118,6 +118,6 @@ async def test_swarmflow_reply_forwarded_to_agent_server_non_stream() -> None:
     assert len(client.sent) == 1
     forwarded = client.sent[0]
     # The forwarded envelope preserves the swarmflow reply method + params.
-    assert forwarded.method == ReqMethod.CHAT_SWARMFLOW_REPLY.value
+    assert forwarded.method == 'chat.swarmflow_reply'
     assert forwarded.params["correlation_id"] == "review:host:0"
     assert forwarded.params["answer"] == "ok"

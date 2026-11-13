@@ -26,9 +26,10 @@ generated: true
 | [jiuwenswarm/extensions/sdk](#module-9) |
 | [jiuwenswarm/resources](#module-10) |
 | [jiuwenswarm/resources/plugins/ttse](#module-11) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-12) |
-| [scripts](#module-13) |
-| [tests](#module-14) |
+| [jiuwenswarm/server](#module-12) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-13) |
+| [scripts](#module-14) |
+| [tests](#module-15) |
 
 <a id="module-1"></a>
 
@@ -86,6 +87,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
+| [F_20261113_1113_method-decoupling](F_20261113_1113_method-decoupling.md) | F | E2A method 字符串化并回归 Swarm 解析 | mingo007 | jiuwenswarm/common, jiuwenswarm/server, jiuwenswarm/channels/web/frontend | jiuwenswarm/common/schema/message.py, jiuwenswarm/common/schema/agent.py, jiuwenswarm/server/request_policy.py, jiuwenswarm/server/front/router.py, jiuwenswarm/server/agent_ws_server.py, jiuwenswarm/server/http_invoke.py, jiuwenswarm/channels/web/frontend/src/services/webHttpClient.ts, tests/unit_tests/common/test_request_method_policy.py, tests/unit_tests/common/test_req_method_contract.py, tests/unit_tests/gateway/method_passthrough_harness.py, docs/zh/E2A-protocol.md, docs/en/E2A-protocol.md | 无独立 D：用户确认的 method 解耦任务，无独立 D 设计编号。 |
 
 <a id="module-8"></a>
 
@@ -94,6 +96,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| [F_20261113_1113_method-decoupling](F_20261113_1113_method-decoupling.md) | F | E2A method 字符串化并回归 Swarm 解析 | mingo007 | jiuwenswarm/common, jiuwenswarm/server, jiuwenswarm/channels/web/frontend | jiuwenswarm/common/schema/message.py, jiuwenswarm/common/schema/agent.py, jiuwenswarm/server/request_policy.py, jiuwenswarm/server/front/router.py, jiuwenswarm/server/agent_ws_server.py, jiuwenswarm/server/http_invoke.py, jiuwenswarm/channels/web/frontend/src/services/webHttpClient.ts, tests/unit_tests/common/test_request_method_policy.py, tests/unit_tests/common/test_req_method_contract.py, tests/unit_tests/gateway/method_passthrough_harness.py, docs/zh/E2A-protocol.md, docs/en/E2A-protocol.md | 无独立 D：用户确认的 method 解耦任务，无独立 D 设计编号。 |
 
 <a id="module-9"></a>
 
@@ -121,6 +124,14 @@ generated: true
 
 <a id="module-12"></a>
 
+## jiuwenswarm/server
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261113_1113_method-decoupling](F_20261113_1113_method-decoupling.md) | F | E2A method 字符串化并回归 Swarm 解析 | mingo007 | jiuwenswarm/common, jiuwenswarm/server, jiuwenswarm/channels/web/frontend | jiuwenswarm/common/schema/message.py, jiuwenswarm/common/schema/agent.py, jiuwenswarm/server/request_policy.py, jiuwenswarm/server/front/router.py, jiuwenswarm/server/agent_ws_server.py, jiuwenswarm/server/http_invoke.py, jiuwenswarm/channels/web/frontend/src/services/webHttpClient.ts, tests/unit_tests/common/test_request_method_policy.py, tests/unit_tests/common/test_req_method_contract.py, tests/unit_tests/gateway/method_passthrough_harness.py, docs/zh/E2A-protocol.md, docs/en/E2A-protocol.md | 无独立 D：用户确认的 method 解耦任务，无独立 D 设计编号。 |
+
+<a id="module-13"></a>
+
 ## jiuwenswarm/server/runtime/agent_adapter
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
@@ -129,7 +140,7 @@ generated: true
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 
-<a id="module-13"></a>
+<a id="module-14"></a>
 
 ## scripts
 
@@ -137,7 +148,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 
-<a id="module-14"></a>
+<a id="module-15"></a>
 
 ## tests
 

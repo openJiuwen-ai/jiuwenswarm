@@ -58,7 +58,7 @@ function pickHeaderString(value: unknown): string | undefined {
 }
 
 type HttpVerb = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-type RestKind = 'unary' | 'sse' | 'history-stream';
+type RestKind = 'unary' | 'sse' | 'history-stream' | 'rpc-stream';
 
 export class RestAssemblyError extends Error {
   readonly missing: string[];
@@ -285,15 +285,23 @@ function applyMethodBody(
 export function assembleWebRest(
   method: string,
   params: Record<string, unknown> | undefined,
-  baseUrl: string
-): AssembledWebRest | null {
+  baseUrl: string,
+  isStream = false
+): AssembledWebRest {
   const name = method.trim();
   if (!name) {
     throw new RestAssemblyError('method 为空，无法组装 REST');
   }
   const row = lookupWebRestRoute(name);
   if (!row) {
-    return null;
+    return {
+      method: name,
+      verb: 'POST',
+      url: joinGatewayUrl(baseUrl, '/rpc'),
+      query: null,
+      jsonBody: { method: name, params: { ...(params ?? {}) }, is_stream: isStream },
+      kind: isStream ? 'rpc-stream' : 'unary',
+    };
   }
   const values = { ...(params ?? {}) };
   const { path, used } = fillPath(row.path, values);
@@ -693,24 +701,18 @@ export class WebHttpClient {
     const requestParams = withExpertUiLanguage(method, params);
     let assembled;
     try {
-      assembled = assembleWebRest(method, requestParams, getGatewayHttpBase());
+      assembled = assembleWebRest(method, requestParams, getGatewayHttpBase(), options.isStream);
     } catch (error) {
       if (error instanceof RestAssemblyError) {
         throw this.createWebError(error.message, 'BAD_REQUEST', requestId, false);
       }
       throw error;
     }
-    if (!assembled) {
-      const error = this.createWebError(i18n.t('network.requestFailed'), 'METHOD_NOT_FOUND', requestId);
-      error.httpRouteMissing = true;
-      throw error;
-    }
-
     const controller = new AbortController();
     this.inflight.set(requestId, controller);
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const awaitRuntimeAccepted =
-      options.awaitRuntimeAccepted === true && assembled.kind === 'sse';
+      options.awaitRuntimeAccepted === true && (assembled.kind === 'sse' || assembled.kind === 'rpc-stream');
     const timeoutId = window.setTimeout(() => {
       if (awaitRuntimeAccepted) {
         this.rejectRuntimeAckPending(
@@ -772,7 +774,7 @@ export class WebHttpClient {
         signal: controller.signal,
       });
 
-      if (assembled.kind === 'sse' || assembled.kind === 'history-stream') {
+      if (assembled.kind !== 'unary') {
         if (isSseContentType(response.headers.get('content-type'))) {
           if (!response.ok) {
             window.clearTimeout(timeoutId);
@@ -947,7 +949,7 @@ export class WebHttpClient {
   private async pumpSse(
     response: Response,
     requestId: string,
-    kind: 'sse' | 'history-stream',
+    kind: 'sse' | 'history-stream' | 'rpc-stream',
     controller: AbortController,
     sessionId?: string
   ): Promise<void> {
@@ -976,6 +978,8 @@ export class WebHttpClient {
       // synchronously ahead of the request() microtask (avoids delivery-less bubbles).
       this.dispatchEvent(event);
       this.resolveRuntimeAckPending(event, requestId);
+      // Generic streams use the upstream EOF, not chat/history lifecycle rules.
+      if (kind === 'rpc-stream') return false;
       // processing_status(false) 或 STEER 短回执终态都算「正常结束」：
       // 后者必须抬 sawTaskEnd，否则 finally 会误判异常 EOF 并 interrupt(cancel) 父任务。
       sawTaskEnd ||=
@@ -1072,9 +1076,6 @@ export class WebHttpClient {
         { session_id: sessionId, intent: 'cancel' },
         getGatewayHttpBase()
       );
-      if (!assembled) {
-        return;
-      }
       await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
         method: assembled.verb,
         headers: {

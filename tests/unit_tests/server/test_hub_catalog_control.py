@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from e2a.models import E2AEnvelope
-from e2a.wire_codec import parse_agent_server_wire_unary
-from e2a.message import ReqMethod
+from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+
 from jiuwenswarm.server.front.protocol import parse_raw_message
 from jiuwenswarm.server.front.router import MethodRouter, is_control_method
 from jiuwenswarm.server.http_invoke import _request_tenant_scope
@@ -22,7 +22,7 @@ from jiuwenswarm.server.lifecycle import Readiness
 @pytest.mark.parametrize("outcome", ["success", "hub-error", "unexpected-error"])
 async def test_ws_hub_catalog_reaches_query_without_admission_or_tenant(monkeypatch, outcome):
     envelope = E2AEnvelope(
-        request_id="catalog-ws", channel="gateway", method=ReqMethod.HUB_EXPERT_PACKAGES_CATALOG.value, params={},
+        request_id="catalog-ws", channel="gateway", method='hub.expert_packages.catalog', params={},
     )
     request = parse_raw_message(json.dumps(envelope.to_dict()))
     assert is_control_method(request)

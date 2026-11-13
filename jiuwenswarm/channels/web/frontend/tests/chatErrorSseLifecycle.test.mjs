@@ -256,6 +256,85 @@ function installHttpWindow() {
   };
 }
 
+test('unmapped HTTP methods reach RPC and propagate upstream errors', async () => {
+  installHttpWindow();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/connection/status')) {
+      return Response.json({ ok: true, data: {} });
+    }
+    calls.push({ url, init });
+    const body = JSON.parse(init.body);
+    return body.method === 'future.reject'
+      ? Response.json({ ok: false, error: { code: 'METHOD_NOT_FOUND', message: 'unknown upstream method' } }, { status: 404 })
+      : Response.json({ ok: true, data: { result: body.params } });
+  };
+  const client = new WebHttpClient();
+  try {
+    const params = { opaque: [false, null, { value: 42 }] };
+    assert.deepEqual(await client.request('future.execute', params), { result: params });
+    assert.equal(calls[0].url, '/api/v1/rpc');
+    assert.equal(calls[0].init.method, 'POST');
+    assert.deepEqual(JSON.parse(calls[0].init.body), { method: 'future.execute', params, is_stream: false });
+    await assert.rejects(client.request('future.reject', {}), error => {
+      assert.equal(error.code, 'METHOD_NOT_FOUND');
+      assert.equal(error.message, 'unknown upstream method');
+      assert.notEqual(error.httpRouteMissing, true);
+      return true;
+    });
+    assert.equal(client.getInflightCount(), 0);
+  } finally {
+    await client.disconnect();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generic RPC streams do not abort an existing chat or interrupt it on EOF', async () => {
+  installHttpWindow();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let finish;
+  const streamDone = new Promise(resolve => { finish = resolve; });
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/connection/status')) {
+      return Response.json({ ok: true, data: {} });
+    }
+    calls.push({ url, init });
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(frame('future.progress', { value: 42 })));
+        controller.close();
+      },
+    }), { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const client = new WebHttpClient();
+  const chatController = new AbortController();
+  const events = [];
+  client.on('future.progress', event => { events.push(event); finish(); });
+  client.on('chat.processing_status', event => events.push(event));
+  client.sseInflight.set('existing-chat', { controller: chatController, sessionId: 's1' });
+  try {
+    const result = await client.request('future.stream', { session_id: 's1' }, { isStream: true });
+    assert.equal(result.accepted, true);
+    await streamDone;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(chatController.signal.aborted, false);
+    assert.equal(client.sseInflight.has('existing-chat'), true);
+    assert.equal(client.getInflightCount(), 0);
+    assert.deepEqual(events.map(event => event.event), ['future.progress']);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, '/api/v1/rpc');
+    assert.equal(calls[0].init.headers.Accept, 'text/event-stream');
+    assert.deepEqual(JSON.parse(calls[0].init.body), {
+      method: 'future.stream', params: { session_id: 's1' }, is_stream: true,
+    });
+  } finally {
+    await client.disconnect();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 async function withMockedChatSse(buildStream, run) {
   installHttpWindow();
   const originalFetch = globalThis.fetch;
