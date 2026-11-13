@@ -164,9 +164,13 @@ def build_lock(
         )
     if clauses:
         clauses.append(
-            "Frame sides follow the camera; walls and furniture stay where they are."
+            "Frame sides follow the camera; walls, furniture and people stay where they "
+            "are. When the camera looks the other way the same chairs appear on the other "
+            "side of frame, and nobody swaps places to fit the frame."
             if lang == "en"
-            else "\u753b\u9762\u5de6\u53f3\u968f\u955c\u5934\u6539\u53d8\uff0c\u5899\u9762\u4e0e\u9648\u8bbe\u4f4d\u7f6e\u4e0d\u53d8\u3002"
+            else "\u753b\u9762\u5de6\u53f3\u968f\u955c\u5934\u6539\u53d8\uff0c\u5899\u9762\u3001\u9648\u8bbe\u4e0e\u4eba\u7269\u4f4d\u7f6e\u4e0d\u53d8\u3002"
+            "\u955c\u5934\u53cd\u6253\u65f6\uff0c\u540c\u4e00\u6279\u6905\u5b50\u51fa\u73b0\u5728\u753b\u9762\u53e6\u4e00\u4fa7\uff0c"
+            "\u4eba\u7269\u4e0d\u4f1a\u4e3a\u4e86\u6784\u56fe\u4e92\u6362\u5ea7\u4f4d\u3002"
         )
     return "\n".join(clauses)
 
