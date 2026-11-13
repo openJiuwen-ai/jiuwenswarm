@@ -841,7 +841,8 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
             "enabled": True,
         }
 
-        for key in ("url", "headers", "command", "args", "env", "timeout_s", "server_id_scope"):
+        for key in ("url", "headers", "command", "args", "env", "timeout_s",
+                    "server_id_scope", "dynamic_token_url"):
             if key in rec:
                 mcp_entry[key] = rec[key]
 

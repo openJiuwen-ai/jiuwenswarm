@@ -310,6 +310,32 @@ def test_connect_custom_mcp_writes_connecting_until_handler_promotes(tmp_path: P
     assert rec["state"] == "connecting"
 
 
+def test_connect_custom_mcp_keeps_dynamic_token_url(tmp_path: Path, monkeypatch) -> None:
+    """The connect response entry must carry the entry-level dynamic_token_url.
+
+    It is documented to mirror build_config_entry's shape, and the field's
+    presence is what marks the gateway as needing a per-request dynamic token;
+    dropping it here leaves that gateway on static headers.
+    """
+    from jiuwenswarm.server.runtime.mcp import state_store
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(state_store, "get_workspace_dir", lambda: tmp_path)
+    state_store.upsert_mcp_record(
+        "ent-gw", {
+            "name": "ent-gw", "transport": "streamable-http",
+            "url": "https://gw.invalid/mcp",
+            "dynamic_token_url": "https://kc.invalid/token",
+            "server_id_scope": "mcp:ent-gw",
+        },
+        state="registered",
+        integration_type="remote-mcp",
+    )
+    result = registry.connect_mcp("ent-gw")
+    assert result["transport"] == "streamable-http"
+    assert result["dynamic_token_url"] == "https://kc.invalid/token"
+    assert state_store.get_mcp_record("ent-gw")["state"] == "connecting"
+
+
 def test_connect_custom_mcp_not_in_state_raises_keyerror(tmp_path: Path, monkeypatch) -> None:
     """connect on a name that is neither a marketplace package nor in state.json
     raises KeyError (genuine not found)."""

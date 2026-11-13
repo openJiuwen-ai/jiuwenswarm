@@ -223,6 +223,53 @@ def test_upsert_preserves_enabled_when_not_passed(tmp_path: Path) -> None:
         assert rec["enabled"] is True
 
 
+def test_record_to_mcp_entry_keeps_dynamic_token_url() -> None:
+    """The entry-level dynamic_token_url must survive state.json -> entry.
+
+    Its presence marks a gateway that needs a per-request dynamic token;
+    dropping it silently degrades that gateway to its static template headers
+    at registration time. A legacy record (no key, or None) must not surface an
+    empty key — downstream tests presence with ``entry.get(...)``.
+    """
+    record = {
+        "transport": "streamable-http", "url": "https://gw.invalid/mcp",
+        "headers": {"Authorization": "Bearer ${T}"},
+        "dynamic_token_url": "https://kc.invalid/token",
+        "server_id_scope": "mcp:ent-gw",
+    }
+    entry = ss.record_to_mcp_entry("ent-gw", record)
+    assert entry["dynamic_token_url"] == "https://kc.invalid/token"
+
+    for legacy in (
+        {"transport": "streamable-http", "url": "https://gw.invalid/mcp"},
+        {"transport": "streamable-http", "url": "https://gw.invalid/mcp",
+         "dynamic_token_url": None},
+    ):
+        legacy_entry = ss.record_to_mcp_entry("ent-gw", legacy)
+        assert "dynamic_token_url" not in legacy_entry
+
+
+def test_upsert_keeps_dynamic_token_url(tmp_path: Path) -> None:
+    """The write path must store the field too.
+
+    The gateway-only ``state_upsert`` action hands upsert_mcp_record the
+    dispatched entry as-is, so a read-side-only fix would still lose the field
+    the moment the record is created or updated.
+    """
+    with patch("jiuwenswarm.server.runtime.mcp.state_store.get_workspace_dir", return_value=tmp_path):
+        entry = _mk_entry("ent-gw", transport="streamable-http",
+                          url="https://gw.invalid/mcp")
+        entry["dynamic_token_url"] = "https://kc.invalid/token"
+        ss.upsert_mcp_record("ent-gw", entry, state="connected",
+                             integration_type="remote-mcp")
+        rec = ss.get_mcp_record("ent-gw")
+        assert rec["dynamic_token_url"] == "https://kc.invalid/token"
+        # And it survives the record -> entry conversion.
+        assert ss.record_to_mcp_entry("ent-gw", rec)["dynamic_token_url"] == (
+            "https://kc.invalid/token"
+        )
+
+
 def test_set_mcp_enabled_flips_without_touching_state(tmp_path: Path) -> None:
     """TUI enable/disable flips only enabled; connection state stays. Off keeps
     the connection alive — it just hides the MCP from the TUI default set."""
