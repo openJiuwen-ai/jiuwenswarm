@@ -503,7 +503,9 @@ async def _traffic(supervisor, gateway, client, frames):
 
 @pytest.mark.asyncio
 @pytest.mark.slow
-@pytest.mark.parametrize("method", ["project.list", "project.get_cron_sessions", "session.list"])
+@pytest.mark.parametrize("method", [
+    "project.list", "project.get_cron_sessions", "session.list", "session.get_metadata",
+])
 async def test_slow_front_query_keeps_real_worker_stream_consuming(tmp_path, monkeypatch, method):
     import psutil
     from websockets.asyncio.client import connect
@@ -525,9 +527,15 @@ async def test_slow_front_query_keeps_real_worker_stream_consuming(tmp_path, mon
         release.wait(20)
         return [], 0
 
+    def slow_metadata(*_args, **_kwargs):
+        started.set()
+        release.wait(20)
+        return {"session_id": "ipc-pressure"}
+
     monkeypatch.setattr(project_repository, "load_project_list", slow_project)
     monkeypatch.setattr(project_repository, "load_project_cron_sessions", slow_project)
     monkeypatch.setattr(session_repository, "get_all_sessions_metadata", slow_sessions)
+    monkeypatch.setattr(session_repository, "get_session_metadata", slow_metadata)
     async with _worker("normal", tmp_path, monkeypatch) as (supervisor, process):
         pid = supervisor.worker_pid
         created = psutil.Process(pid).create_time()
@@ -538,7 +546,8 @@ async def test_slow_front_query_keeps_real_worker_stream_consuming(tmp_path, mon
                 pass
 
         request = AgentRequest(request_id="slow-list", channel_id="web",
-            req_method=ReqMethod(method), params={"project_id": "default"})
+            req_method=ReqMethod(method), session_id="ipc-pressure",
+            params={"project_id": "default", "session_id": "ipc-pressure"})
         query = None
         async with _gateway(supervisor) as (url, gateway, attached):
             async with connect(url, max_size=None) as client:
