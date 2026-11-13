@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / progressive-disclosure-models |
 | 关联模块 | jiuwenswarm progressive_tool_rail + agent-core progressive_tool_rail |
-| 最近一次修订日期 | 2026-11-09 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-11-13 |
+| 关联 feature | [[F_01]] |
 
 ## 范围 / 边界
 
@@ -56,6 +56,14 @@
 interface_deep / build_progressive_tool_rail_from_config（agent_adapter/deep/progressive_tools.py）
   → ProgressiveToolRail(eager_tools, disabled_tools, ...)
   → init: 注册 ToolsSearchTool + InvokeToolTool + 绑定 _search_tools / _invoke_target_tool
+```
+
+### P1b：Team 成员（预制专家团）
+
+```
+config_specs → swarm.team_progressive_tool（providers/team_progressive.py）
+  → ProgressiveToolRail(角色常量 eager，不读 yaml eager_tools)
+  → agent_card_id = {member_card}_s_{session}
 ```
 
 ### P2：Core DeepAgent（协作）

@@ -15,6 +15,7 @@ from jiuwenswarm.common.mcp_config import (
     bind_active_office_claw_mcp_tools,
     clear_agent_office_claw_tool_ids,
     get_request_scoped_mcp_registration,
+    office_claw_thread_id_from_tools,
     set_agent_office_claw_tool_ids,
 )
 
@@ -106,6 +107,18 @@ class RequestScopedMcpToolsRail(DeepAgentRail):
             set_agent_office_claw_tool_ids(agent, mounted_ids)
         else:
             clear_agent_office_claw_tool_ids(agent)
+        # Pin to this member's ProgressiveToolRail only — host adapter sync
+        # writes self._progressive_tool_rail and never reaches member rails.
+        # Do not invalidate_deferred_tool_cache here: id-only MCP rebinds must
+        # keep TOOL_NAVIGATION frozen; before_model_call's stale check refreshes
+        # instance caches when ids change.
+        thread_id = office_claw_thread_id_from_tools(registration.tool_instances)
+        self._sync_progressive_office_claw_pin(
+            agent,
+            mounted_ids if mounted_ids else None,
+            delivery_thread_id=thread_id or None,
+            invocation_id=str(registration.invocation_id or "").strip() or None,
+        )
         original_execute = getattr(ability_manager, "execute", None)
         bound_execute = None
         if original_execute is not None:
@@ -163,6 +176,49 @@ class RequestScopedMcpToolsRail(DeepAgentRail):
             _active_office_claw_tool_ids.reset(token)
 
     @staticmethod
+    def _sync_progressive_office_claw_pin(
+        agent,
+        tool_ids: frozenset[str] | None,
+        *,
+        delivery_thread_id: str | None = None,
+        invocation_id: str | None = None,
+    ) -> None:
+        """Publish or clear this member's ProgressiveToolRail OfficeClaw pin."""
+        find = getattr(agent, "find_rails_by_type", None)
+        if not callable(find):
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
+                ProgressiveToolRail,
+            )
+
+            rails = find((ProgressiveToolRail,)) or []
+        except Exception as exc:  # noqa: BLE001 - optional progressive mount
+            logger.debug(
+                "[RequestScopedMcpToolsRail] progressive rail lookup failed: %s",
+                exc,
+            )
+            return
+        for rail in rails:
+            setter = getattr(rail, "set_office_claw_active_tool_ids", None)
+            if not callable(setter):
+                continue
+            try:
+                setter(
+                    tool_ids,
+                    delivery_thread_id=delivery_thread_id,
+                    invocation_id=invocation_id,
+                )
+            except TypeError:
+                setter(tool_ids)
+            except Exception as exc:  # noqa: BLE001 - pin must not abort invoke
+                logger.warning(
+                    "[RequestScopedMcpToolsRail] failed to sync OfficeClaw "
+                    "allowlist to ProgressiveToolRail: %s",
+                    exc,
+                )
+
+    @staticmethod
     def _unmount(agent, ability_manager, state) -> None:
         mounted, mounted_ids, original_execute, bound_execute = state
         for name, tool_id in mounted:
@@ -170,6 +226,7 @@ class RequestScopedMcpToolsRail(DeepAgentRail):
             if str(getattr(existing, "id", "") or "") == tool_id:
                 ability_manager.remove(name)
         clear_agent_office_claw_tool_ids(agent, expected_tool_ids=mounted_ids)
+        RequestScopedMcpToolsRail._sync_progressive_office_claw_pin(agent, None)
         if bound_execute is not None and getattr(ability_manager, "execute", None) is bound_execute:
             ability_manager.execute = original_execute
         delattr(ability_manager, _MOUNT_STATE_ATTR)
