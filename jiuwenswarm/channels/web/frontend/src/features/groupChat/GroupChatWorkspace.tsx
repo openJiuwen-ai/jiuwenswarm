@@ -24,7 +24,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { FINISHED_EXECUTIONS, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, renameAttachment, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { FINISHED_EXECUTIONS, filterGroupMembers, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, matchesMemberQuery, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, renameAttachment, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -476,12 +476,8 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   }
   const timeline = groupTimeline(messages, executions);
 
-  const memberSearchTerm = memberQuery.trim().toLocaleLowerCase();
-  const selfLabel = t('groupChat.you');
-  const visibleMembers = (group?.members ?? [])
-    .map((member) => ({ member, label: member.display_name || member.member_name }))
-    .filter(({ label }) => label.toLocaleLowerCase().includes(memberSearchTerm));
-  const showSelf = selfLabel.toLocaleLowerCase().includes(memberSearchTerm);
+  const visibleMembers = filterGroupMembers(group?.members ?? [], memberQuery);
+  const showSelf = matchesMemberQuery(t('groupChat.you'), memberQuery);
   const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
   const agentCount = group?.members.length ?? 0;
 
@@ -709,9 +705,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
         <div className="group-chat-member-list" data-testid="group-chat-member-list">
           {showSelf && <div className="group-chat-member-row" data-testid="group-chat-self">
             <TeamMemberAvatar member="user" className="group-chat-member-avatar" alt="" />
-            <span>{selfLabel}</span>
+            <span>{t('groupChat.you')}</span>
           </div>}
-          {visibleMembers.map(({ member, label }) => {
+          {visibleMembers.map((member) => {
             const team = member.kind === 'agent_group' ? expertTeams.find((item) =>
               item.id === member.id || item.name === member.id) : undefined;
             const expertNames = team?.members.map((expert) => expert.displayName.trim()
@@ -725,7 +721,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
             disabled={sending} onClick={() => mention(member.member_name)} title={tooltip}
             data-testid="group-chat-member" data-variant={member.member_name}>
             <TeamMemberAvatar member={member.member_name} className="group-chat-member-avatar" alt="" />
-            <span>{label}</span>
+            <span>{member.display_name || member.member_name}</span>
             {member.cli_agent && <small className="group-chat-provider" data-testid="group-chat-member-provider">
               {member.cli_agent === 'claude' ? 'Claude Code' : 'Codex'}
             </small>}

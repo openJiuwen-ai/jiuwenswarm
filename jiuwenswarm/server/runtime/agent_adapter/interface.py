@@ -623,6 +623,30 @@ def _resolve_final_record_timestamp(
     return segment_started_at
 
 
+async def persist_cancelled_llm_usage(
+    chunk: AgentResponseChunk, *, request: AgentRequest, session_id: str,
+) -> None:
+    """Preserve an accepted usage event when its output consumer has closed."""
+    payload = chunk.payload
+    extra = {key: value for key, value in payload.items() if key not in ("event_type", "content")}
+    params = request.params if isinstance(request.params, dict) else {}
+    extra = with_cross_session_history_metadata(
+        _with_heartbeat_history_metadata(
+            _with_web_agent_template_metadata(
+                extra, params, request.channel_id, event_type="chat.usage_metadata", payload=payload,
+            ), params,
+        ), _cross_session_marker_from_params(params),
+    ) or {}
+    timestamp = resolve_final_record_timestamp(
+        event_type="chat.usage_metadata", segment_started_at=None, extra_fields=extra,
+    )
+    await _run_history_io(
+        append_history_record, session_id=session_id, request_id=request.request_id,
+        channel_id=request.channel_id, role="assistant", event_type="chat.usage_metadata",
+        content="", timestamp=timestamp, extra=extra, mode=params.get("mode", "unknown"),
+    )
+
+
 def _history_media_string(item: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = item.get(key)
@@ -2177,6 +2201,10 @@ class JiuWenSwarm:
         # Only Host-authenticated provenance may select Agent/tool input. Never
         # trust a client-supplied copy inside the SDK's extensible run context.
         run_extra = inputs["run"]["context"]["extra"]
+        # Explicit selectors belong to this turn, not history or a reused run
+        # context. Keep the prompt and routing on the same parsing rules, and
+        # clear stale nested selections even when this turn selects nothing.
+        run_extra["skills"] = turn.resolved_skills
         run_extra.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
         cross_session = metadata.get(SESSION_MESSAGE_INTERNAL_KEY)
         if isinstance(cross_session, dict):
@@ -3116,7 +3144,10 @@ class JiuWenSwarm:
                     )
             elif method == ReqMethod.PLUGIN_PACKAGES_INSTALL:
                 ok, payload = await asyncio.wait_for(
-                    package_manager.install_equipment_from_hub_gated("plugin_packages", params),
+                    package_manager.install_equipment_from_hub_gated(
+                        "plugin_packages", params,
+                        before_replace=self._prepare_live_plugin_replacement,
+                    ),
                     timeout=120,
                 )
                 if not ok:
@@ -3359,12 +3390,6 @@ class JiuWenSwarm:
                 cancelled = await team_manager.cancel_session_runtime(
                     session_id, reason=reason, workflow_disposition=workflow_disposition
                 )
-                if workflow_disposition == "stop":
-                    from jiuwenswarm.enterprise.team.session_live import (
-                        stop_team_session_live,
-                    )
-
-                    await stop_team_session_live(session_id, drop_queued=True)
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,
@@ -3427,14 +3452,14 @@ class JiuWenSwarm:
 
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 
         with bind_request_subject(request.metadata):
             return await self._process_message(request, schedule_session=True)
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 
         with bind_request_subject(request.metadata):
             return await self._process_message(request, schedule_session=False)
@@ -3905,7 +3930,7 @@ class JiuWenSwarm:
         """Inject an interaction answer into this Session's active execution."""
         if not is_interrupt_resume_payload(request.params):
             raise ValueError("control input must answer an active interaction")
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 
         # 续聊不经过 process_message。这里绑定当次请求的名单，深研适配器里的 allows 才能放行已授权专家。
         # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
@@ -4216,7 +4241,7 @@ class JiuWenSwarm:
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求，并带上本次请求的用户身份。"""
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 
         # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
         stream = self._process_message_stream(request)
@@ -4851,9 +4876,8 @@ class JiuWenSwarm:
         # 只有最后一个非工具轮非空 final（=推荐话术）落盘带 source/rec_id——否则刷新
         # 后 history 里每一条 chat.final 都带 rec_id，被渲染成多张推荐卡片（bug）。
         # "最后一个"要等流结束才能确定，故缓存话术轮候选、流末补落。
-        is_proactive_request = bool(
-            request.params.get("source") == "proactive_recommendation"
-        )
+        # Proactive recommendation engine removed; never inject recommendation cards.
+        is_proactive_request = False
         proactive_pending_final: dict[str, Any] | None = None
         # 自上一个 chat.final 以来是否出现过 chat.tool_call（用于识别工具轮总结 final）。
         saw_proactive_tool_call_since_final = False
@@ -6099,6 +6123,14 @@ class JiuWenSwarm:
         if unload is None:
             return
         await unload(kind, package_id)
+
+    async def _prepare_live_plugin_replacement(self, package_id: str) -> Any:
+        """Detach idle plugins and retain a rollback for all live selections."""
+        adapter = getattr(self, "_adapter", None)
+        prepare = getattr(adapter, "prepare_plugin_replacement", None)
+        if prepare is not None:
+            return await prepare(package_id)
+        return None
 
     async def compress_context(
             self,

@@ -27,6 +27,12 @@ export type JiuwenMateChatApi = Pick<
 /** Messages run on the server; pushed fragments show progress, and asking again covers missed pushes. */
 const POLL_INTERVAL_MS = 1500;
 
+function chatError(reason: unknown): { message: string; code: string | null } {
+  const code = reason && typeof reason === 'object' && 'code' in reason && typeof reason.code === 'string'
+    ? reason.code : null;
+  return { message: errorMessage(reason), code };
+}
+
 export function newId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -41,7 +47,7 @@ export function newId(): string {
 export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversationId: string, connectionEpoch: number) {
   const scope = `${agentId} ${conversationId}`;
   const [requests, setRequests] = useState<JiuwenMateChatRequest[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ReturnType<typeof chatError> | null>(null);
   const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [pollRound, setPollRound] = useState(0);
@@ -89,7 +95,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
         setError(null);
       } catch (reason) {
         if (historyRead.current === read && scopeRef.current === scope) {
-          setError(errorMessage(reason));
+          setError(chatError(reason));
           setLoadedScope(scope);
         }
       } finally {
@@ -207,7 +213,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
         }
         return sent.conversation;
       } catch (reason) {
-        if (scopeRef.current === scope) setError(errorMessage(reason));
+        if (scopeRef.current === scope) setError(chatError(reason));
         return null;
       } finally {
         setSending(false);
@@ -226,7 +232,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
           setRequests((current) => mergeChatRequest(current, controlled));
         }
       } catch (reason) {
-        if (scopeRef.current === scope) setError(errorMessage(reason));
+        if (scopeRef.current === scope) setError(chatError(reason));
       }
     },
     [api, scope],
@@ -242,11 +248,12 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
           setRequests((current) => mergeChatRequest(current, updated));
         }
       } catch (reason) {
-        if (scopeRef.current === scope) setError(errorMessage(reason));
+        if (scopeRef.current === scope) setError(chatError(reason));
       }
     },
     [api, conversationId, scope],
   );
 
-  return { liveRequestIds: liveRequestIds.current, requests: visibleRequests, error: visibleError, loading, sending, send, abort, decidePermission, reload };
+  return { liveRequestIds: liveRequestIds.current, requests: visibleRequests, error: visibleError?.message ?? null,
+    errorCode: visibleError?.code ?? null, loading, sending, send, abort, decidePermission, reload };
 }

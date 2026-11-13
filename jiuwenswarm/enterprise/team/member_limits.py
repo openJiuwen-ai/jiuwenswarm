@@ -13,11 +13,10 @@ import re
 import types
 from typing import Any
 
-from agent_gateway.enterprise.team.quota_policy import DEFAULT_MAX_TEAMMATES, resolve_max_teammates
-
 logger = logging.getLogger(__name__)
 
 TEAM_MEMBER_QUOTA_EXCEEDED = "TEAM_MEMBER_QUOTA_EXCEEDED"
+DEFAULT_MAX_TEAMMATES = 5
 
 
 def teammate_quota_user_message(limit: int) -> str:
@@ -205,6 +204,31 @@ _SHUTDOWN_GUARD_ATTR = "_jiuwen_teammate_quota_shutdown_attached"
 _ORIGINAL_SHUTDOWN_ATTR = "_jiuwen_original_shutdown_member"
 
 
+def resolve_max_teammates(config_base: dict[str, Any] | None, template_id: str | None = None) -> int:
+    """Read ``modes.team.<template>.max_teammates`` (fallback: any team / default)."""
+    cfg = config_base if isinstance(config_base, dict) else {}
+    modes = cfg.get("modes") if isinstance(cfg.get("modes"), dict) else {}
+    teams = modes.get("team") if isinstance(modes.get("team"), dict) else {}
+    candidates: list[dict[str, Any]] = []
+    if template_id and isinstance(teams.get(template_id), dict):
+        candidates.append(teams[template_id])
+    candidates.extend(v for v in teams.values() if isinstance(v, dict))
+    legacy = cfg.get("team")
+    if isinstance(legacy, dict):
+        candidates.append(legacy)
+    for item in candidates:
+        raw = item.get("max_teammates")
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return DEFAULT_MAX_TEAMMATES
+
+
 async def count_non_leader_members(backend: Any) -> int:
     """Count members on the roster excluding the leader row."""
     leader_name = str(getattr(backend, "leader_member_name", "") or "")
@@ -267,7 +291,7 @@ def attach_teammate_limit_guard(
                 get_team_quota_service,
             )
 
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
             svc = get_team_quota_service()
             try:
@@ -316,7 +340,7 @@ def attach_teammate_limit_guard(
                 from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
                 if owner is not None:
-                    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                     limits = await run_team_store(get_team_quota_service().resolve_limits, owner)
                     limit = limits.max_teammates_per_team
@@ -356,7 +380,7 @@ def attach_teammate_limit_guard(
                 try:
                     from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
-                    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                     await run_team_store(
                         get_team_quota_service().release_teammate,

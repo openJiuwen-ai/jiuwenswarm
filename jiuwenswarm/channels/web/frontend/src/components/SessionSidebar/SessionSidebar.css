@@ -201,7 +201,6 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-action-primary) 16%, transparent);
 }
 .enterprise-context-popover__apply,
-.enterprise-context-popover__switch,
 .enterprise-context-popover__logout {
   width: 100%;
   margin-top: 10px;
@@ -214,9 +213,7 @@
   text-align: center;
 }
 .enterprise-context-popover__apply { background: var(--color-surface-card); color: var(--color-text-primary); }
-.enterprise-context-popover__apply:hover:not(:disabled),
-.enterprise-context-popover__switch:hover { border-color: var(--color-action-primary); color: var(--color-action-primary); }
-.enterprise-context-popover__switch { margin-top: 12px; color: var(--color-text-primary); }
+.enterprise-context-popover__apply:hover:not(:disabled) { border-color: var(--color-action-primary); color: var(--color-action-primary); }
 .enterprise-context-popover__logout { margin-top: 8px; color: var(--color-feedback-danger); }
 .enterprise-context-popover__logout:hover { background: color-mix(in srgb, var(--color-feedback-danger) 8%, transparent); border-color: var(--color-feedback-danger); }
 .enterprise-context-popover__status { margin-top: 10px; color: var(--color-text-secondary); font-size: 11px; }
@@ -280,17 +277,23 @@
 }
 .editable-combobox__list {
   position: absolute;
+  box-sizing: border-box;
   z-index: 1;
   top: calc(100% + 4px);
   right: 0;
   left: 0;
-  max-height: 168px;
+  max-height: 178px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 4px;
   border: 1px solid var(--color-border-default);
   border-radius: 7px;
   background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
+}
+.editable-combobox__list[data-side='top'] {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 .editable-combobox__option {
   display: block;

@@ -896,13 +896,14 @@ async def test_missing_hub_expert_invalidates_catalog_and_returns_code(monkeypat
 @pytest.mark.parametrize("method", [ReqMethod.PLUGIN_PACKAGES_INSTALL, ReqMethod.AGENT_TEMPLATES_INSTALL])
 async def test_equipment_install_has_total_timeout(monkeypatch, method):
     iface = _iface()
+    owner = iface.JiuWenSwarm.__new__(iface.JiuWenSwarm)
     async def expired(operation, *, timeout):
         assert timeout == 120
         operation.close()
         raise TimeoutError()
     monkeypatch.setattr(iface.asyncio, "wait_for", expired)
     response = await iface.JiuWenSwarm._handle_package_catalog_request(
-        None, _req({"id": "slow-hub-asset"}, method=method)
+        owner, _req({"id": "slow-hub-asset"}, method=method)
     )
     assert response.ok is False
     assert response.payload["error"] == "安装超时，请稍后重试"

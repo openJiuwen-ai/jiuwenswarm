@@ -11,7 +11,7 @@ contract.py            读包目录的 tools.json，校验 annotations，生成 
 client_tools.py        TaskPaneTool(ClientTool)：build_request 判断能否执行并给出下载链接，complete 处理截图；
                        VerifySlideVisualTool：verify_slide_visual
 review.py              视觉复核：选审稿模型、审稿调用（60s）、判定、几何摘要、返回给作者的结果
-rails.py               OfficeToolsRail：注册所在包的工具、按 supported_tools 过滤每次模型调用
+rails.py               OfficeToolsRail：注册所在包的工具，第一次模型调用时按 supported_tools 去掉窗格跑不了的
 assets.py              publish_office_asset 与会话资产（office_assets/，经 /file-api/download 下发）
 documents.py           list_open_documents：同一用户其他已连接的文档及其对话
 runtime.py             会话目录、资产允许目录、把图片存进会话 uploads
@@ -49,8 +49,9 @@ powerpoint/            合同 tools.json、profile.json（任务窗格构建时�
   `arguments` 是本次调用的参数，`client_tool.downloads` 是参数里各资产 handle 的下载链接。
   任务窗格执行后用 `chat.send`（`source: "client_tool_interrupt"`）续跑。
 - 审批只在后端：工具和其他工具一样走 permissions 规则，任务窗格不再自己询问。
-- 本文档的宿主跑不了的工具不出现在模型的工具列表里；`tool_search` 仍可能找到
-  deferred 工具，调用时直接报错说明原因。文档当前没打开时调用立即失败（可重试），
+- 窗格连上后的第一次模型调用，rail 把窗格跑不了的工具从 agent 上去掉：模型的工具列表、
+  `tool_search` 和 deferred 工具目录都没有它们。之后不再变：一个对话在一个宿主里用。
+  调用途中窗格失去支持时，调用直接报错说明是插件还没有这个工具。文档当前没打开时调用立即失败（可重试），
   不会占住这一轮；已发出的调用若窗格消失，由 attach 的 sweep 答成 `client_gone`。
 - 截图：当前模型能看图时，图片只送进下一次模型调用（`keep_in_context: False`）；
   不能看图时存进本对话 uploads，结果里给出 `visual_attachment.path`。

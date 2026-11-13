@@ -576,6 +576,7 @@ class TestRewindSessionContextInjectsSummaries:
         mock_session.pre_run = AsyncMock()
 
         mock_deep_agent = MagicMock()
+        mock_deep_agent.ensure_initialized = AsyncMock()
         mock_deep_agent.react_agent = mock_react_agent
         mock_deep_agent.card = MagicMock()
 
@@ -593,6 +594,7 @@ class TestRewindSessionContextInjectsSummaries:
             )
 
         assert result is True
+        mock_deep_agent.ensure_initialized.assert_awaited_once()
         kwargs = mock_context_engine.create_context.call_args.kwargs
         assert kwargs["processors"] == processors
 

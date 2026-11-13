@@ -860,7 +860,7 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     class FakeSymphonyToolkit:
         def get_tools(self, config_base=None):
             seen_configs.append(config_base)
-            return tools
+            return [SimpleNamespace(card=SimpleNamespace(id=tool.card.id, name=tool.card.name)) for tool in tools]
 
     monkeypatch.setattr(interface_module.Runner, "resource_mgr", fake_resource)
     monkeypatch.setattr(interface_module, "SymphonyToolkit", FakeSymphonyToolkit)
@@ -880,12 +880,14 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
         "symphony_compose_graph",
     ]
     assert fake_instance.ability_manager.added == fake_resource.added
+    registered_tools = list(adapter._symphony_tools)
 
-    # Re-applying the same enabled snapshot is idempotent. Code cold start and
-    # reload both use this path, so neither cards nor registrations may grow.
+    # Reload re-evaluates the desired group because discovery can change while
+    # Symphony stays enabled. Existing objects and registrations remain stable.
     adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": True}})
 
-    assert len(seen_configs) == 1
+    assert seen_configs == [{"symphony": {"enabled": True}}, {"symphony": {"enabled": True}}]
+    assert all(current is previous for current, previous in zip(adapter._symphony_tools, registered_tools))
     assert len(adapter._tool_cards) == 3
     assert fake_resource.added == [
         "symphony_read_graph",
@@ -1240,6 +1242,7 @@ async def test_a4p_guidance_is_a_runtime_attachment_not_cached_system_prompt(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("permissions", [
     None,
+    "cron",
     {"enabled": True, "mode": "auto"},
     {"enabled": False, "mode": "manual"},
 ])
@@ -1256,7 +1259,9 @@ async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatc
     ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
     await rail._sync_a4p_intent_authorization_attachment(ctx)
 
-    if permissions is None:
+    if permissions == "cron":
+        rail.set_request_metadata({"cron": {"job_id": "job-1"}})
+    elif permissions is None:
         rail.set_a4p_authorizer_available(False)
     else:
         monkeypatch.setattr(
@@ -1269,17 +1274,29 @@ async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatc
         await agent.prompt_attachment_manager.collect_for_session("sess1")
     )
     assert "A4P Intent Authorization" not in rendered
+    if permissions == "cron":
+        rail.set_request_metadata({})
+        await rail._sync_a4p_intent_authorization_attachment(ctx)
+        restored = agent.prompt_attachment_manager.render(
+            await agent.prompt_attachment_manager.collect_for_session("sess1")
+        )
+        assert "A4P Intent Authorization" in restored
 
 
 @pytest.mark.parametrize("channel,permissions", [
     ("tui", {}),
+    ("web", "cron"),
     ("web", {"enabled": True, "mode": "auto"}),
     ("web", {"enabled": False, "mode": "manual"}),
 ])
-def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, channel, permissions):
+@pytest.mark.parametrize("adapter_kind", ["deep", "code"])
+def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, channel, permissions, adapter_kind):
     fake_resource = _FakeResourceManager()
     fake_instance = _FakeRuntimeInstance()
-    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+
+    adapter_type = JiuwenSwarmCodeAdapter if adapter_kind == "code" else JiuWenSwarmDeepAdapter
+    adapter = object.__new__(adapter_type)
     adapter._instance = fake_instance
     adapter._tool_cards = []
     adapter._a4p_tools = []
@@ -1314,6 +1331,9 @@ def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, cha
             "request_a4p_intent_authorization"
         ]
 
+        if permissions == "cron":
+            AUTHORIZATION_EXECUTION_CONTEXTS.get("session-1").metadata["cron"] = {"job_id": "job-1"}
+            permissions = {}
         adapter._sync_a4p_tools_for_runtime(
             {"a4p": {"enabled": True}, "permissions": permissions},
             channel,
@@ -1322,6 +1342,14 @@ def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, cha
         assert adapter._a4p_tools == []
         assert adapter._a4p_tools_registered is False
         assert adapter._tool_cards == []
+        context = AUTHORIZATION_EXECUTION_CONTEXTS.get("session-1")
+        if context.metadata.get("cron"):
+            context.metadata.clear()
+            adapter._sync_a4p_tools_for_runtime(
+                {"a4p": {"enabled": True}}, "web", "session-1",
+            )
+            assert adapter._a4p_tools_registered
+            assert [card.name for card in adapter._tool_cards] == ["request_a4p_intent_authorization"]
     finally:
         AUTHORIZATION_EXECUTION_CONTEXTS.clear()
 
@@ -1597,7 +1625,7 @@ async def test_runtime_attachment_tracks_live_code_agent_mode(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_runtime_git_status_is_stable_system_context_for_one_invoke(tmp_path, monkeypatch):
-    monkeypatch.setattr(_utils_mod, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
     runtime_state = tmp_path / "runtime_state" / "default.yaml"
     runtime_state.parent.mkdir(parents=True, exist_ok=True)
     runtime_state.write_text(
@@ -1662,7 +1690,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1720,7 +1748,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1780,7 +1808,7 @@ async def test_runtime_prompt_lists_installed_extensions_from_global_workspace(
         lambda: installed_workspace,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1844,7 +1872,7 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1881,7 +1909,7 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1916,7 +1944,7 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
@@ -1955,7 +1983,7 @@ async def test_process_cli_directory_prompt_refreshes_across_requests(
     for directory in (internal, first, second, current):
         directory.mkdir()
     monkeypatch.setattr(runtime_module, "get_agent_workspace_dir", lambda: internal)
-    monkeypatch.setattr(runtime_module, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime_module, "get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(runtime_module, "get_runtime_state_path", lambda _: tmp_path / "absent.yaml")
     monkeypatch.setattr(RuntimePromptRail, "_configured_model_names", staticmethod(lambda: []))
     rail = RuntimePromptRail(language=language, channel="process_cli")

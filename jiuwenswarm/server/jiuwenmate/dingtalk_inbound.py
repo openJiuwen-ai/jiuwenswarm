@@ -210,7 +210,10 @@ class DingTalkInboundHandler:
 
     def matches_connection(self, binding: DingTalkBinding) -> bool:
         connection = self._service.connection_of(binding.namespace_id, binding.agent_id)
-        return connection is not None and (connection.channel, connection.connection_key) == (
+        if connection is None:
+            self._service.get_config(binding.namespace_id, binding.agent_id)
+            return True
+        return (connection.channel, connection.connection_key) == (
             "dingtalk",
             binding.app_id,
         )

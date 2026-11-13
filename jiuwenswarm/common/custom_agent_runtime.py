@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.external_cli_runtime import _safe_extract_wheel
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class CustomAgent:
 
 def custom_agents_root() -> Path:
     """Return the directory holding every custom agent and the registry."""
-    return get_infra_data_dir() / "runtime" / "custom-agents"
+    return get_user_workspace_dir() / "runtime" / "custom-agents"
 
 
 def custom_agent_site_packages(name: str) -> Path:

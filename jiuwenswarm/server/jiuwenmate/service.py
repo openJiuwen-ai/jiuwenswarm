@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
 
@@ -45,6 +46,11 @@ from jiuwenswarm.server.jiuwenmate.resource_assembly import (
     assemble_resources,
 )
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
+from jiuwenswarm.common.model_config_validation import (
+    PLACEHOLDER_MODEL_NAMES,
+    is_placeholder_model_entry,
+    model_client_config_view,
+)
 from jiuwenswarm.server.jiuwenmate.spec_provider import (
     ConfigSnapshot,
     model_identity,
@@ -133,7 +139,30 @@ class ConfiguredModelProvider:
         from jiuwenswarm.runtime.model_catalog import build_model_catalog
 
         entries = list(self._entries())
-        return entries, build_model_catalog(entries)
+        # Keep holes so existing name#index selections still address the same entry.
+        available = [
+            entry if isinstance(entry, dict) and self._configured_client(entry.get("model_client_config")) else None
+            for entry in entries
+        ]
+        return entries, build_model_catalog(available)
+
+    @staticmethod
+    def _configured_client(client: Any) -> bool:
+        if not isinstance(client, dict) or is_placeholder_model_entry(client):
+            return False
+        if not all(isinstance(client.get(key), str) and client[key].strip()
+                   for key in ("model_name", "api_base", "client_provider")):
+            return False
+        try:
+            # Reuse core's provider/authentication validation without making a model call.
+            ModelClientConfig(**client)
+        except (BaseError, ValueError, TypeError):
+            return False
+        return True
+
+    def catalog(self):
+        """Return the same credential-free choices used by model resolution."""
+        return self._catalog()[1]
 
     def default_selection(self) -> str | None:
         _, catalog = self._catalog()
@@ -225,9 +254,9 @@ def show_agent_template(template_id: str) -> Mapping[str, Any] | None:
 
 
 def default_data_dir() -> Path:
-    from jiuwenswarm.common.utils import get_domain_data_dir
+    from jiuwenswarm.common.utils import get_user_workspace_dir
 
-    return get_domain_data_dir() / "jiuwenmate"
+    return get_user_workspace_dir() / "jiuwenmate"
 
 
 def _utcnow() -> datetime:
@@ -292,6 +321,11 @@ class PersistentAgentService:
             windows=WindowBackendStore(root / "agents.sqlite3"),
             workspaces=WorkspaceStore(root / "workspaces"),
         )
+
+    @property
+    def db_path(self) -> Path:
+        """The SQLite file shared by colleague and Web conversation storage."""
+        return self._repository.db_path
 
     @property
     def workspaces(self) -> WorkspaceStore:
@@ -413,7 +447,27 @@ class PersistentAgentService:
             else:
                 claimed = self._repository.default_agent_id(namespace_id)
         definition = self._repository.get(namespace_id, claimed) if claimed else None
+        if definition is not None and not definition.hidden and self._needs_model_initialization(definition):
+            try:
+                self.publish(namespace_id, definition.agent_id, expected_revision=definition.revision)
+            except PersistentAgentError as exc:
+                logger.warning("[JiuwenMate] default colleague awaiting model: code=%s", exc.code)
+            definition = self._repository.get(namespace_id, claimed)
         return None if definition is None or definition.hidden else self._view(definition)
+
+    def _needs_model_initialization(self, definition: ColleagueDefinition) -> bool:
+        """Recognize only an untouched default left without a usable initial model."""
+        if not definition.is_default or definition.revision != 1:
+            return False
+        selection = definition.settings.capabilities.model
+        if selection is None:
+            return definition.current_version is None
+        if selection.rpartition("#")[0] in PLACEHOLDER_MODEL_NAMES or selection in PLACEHOLDER_MODEL_NAMES:
+            return True
+        if definition.current_version is None:
+            return False
+        snapshot = self.snapshot(definition.namespace_id, definition.agent_id, definition.current_version)
+        return is_placeholder_model_entry(model_client_config_view(snapshot.load_spec().model.model_client_config))
 
     def create_colleague(
         self,
@@ -481,12 +535,13 @@ class PersistentAgentService:
         connected = {item.agent_id for item in self._repository.connections(namespace_id)}
         for definition in self._repository.list(namespace_id):
             # An IM agent is republished with its configuration.
-            if definition.agent_id in connected or definition.hidden or definition.current_version is None:
-                continue
-            if definition.has_unpublished_changes:
-                applied = False
+            if definition.agent_id in connected or definition.hidden:
                 continue
             try:
+                initializing = self._needs_model_initialization(definition)
+                if definition.has_unpublished_changes and not initializing:
+                    applied = False
+                    continue
                 self.publish(namespace_id, definition.agent_id, expected_revision=definition.revision, models=models)
             except Exception as exc:
                 applied = False
@@ -593,11 +648,17 @@ class PersistentAgentService:
         return None
 
     def update_settings(self, namespace_id: str, agent_id: str, settings: ColleagueSettings) -> ColleagueView:
-        """Save settings and the Template; nothing changes for Requests until ``publish``."""
+        """Save settings and the Template; reply mode is live, other edits require ``publish``."""
         definition = self._require_config(namespace_id, agent_id)
+        current_persona = self._templates.read_persona(agent_id)
         if not settings.persona:
-            settings = settings.with_persona(self._templates.read_persona(agent_id))
-        self._check_model(settings, agent_id)
+            settings = settings.with_persona(current_persona)
+        reply_mode_only = replace(settings, group_reply_mode=definition.settings.group_reply_mode) == (
+            definition.settings.with_persona(current_persona)
+        )
+        # Reply mode is read live by IM ingress; it does not rebuild the model Spec.
+        if not reply_mode_only:
+            self._check_model(settings, agent_id)
         with self._templates.replace(agent_id, settings, definition.source_template_id):
             updated = self._repository.update_settings(
                 namespace_id,
@@ -605,6 +666,7 @@ class PersistentAgentService:
                 settings.with_persona(""),
                 expected_revision=definition.revision,
                 updated_at=self._clock(),
+                publish_reply_mode=reply_mode_only,
             )
         return self._view(updated)
 
@@ -627,6 +689,15 @@ class PersistentAgentService:
         if expected_revision is not None and definition.revision != expected_revision:
             raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
         settings = definition.settings
+        initializing = self._needs_model_initialization(definition)
+        if initializing:
+            selection = (models or self._models).default_selection()
+            if selection is None:
+                raise PersistentAgentError(
+                    "configure a model before initializing this employee", code="MODEL_NOT_CONFIGURED",
+                )
+            settings = replace(settings, capabilities=replace(settings.capabilities, model=selection))
+        initialize_model = initializing and settings.capabilities.model != definition.settings.capabilities.model
         if settings.capabilities.model is None:
             raise PersistentAgentError("choose a model before publishing", code="MODEL_NOT_CONFIGURED")
         settings = settings.with_persona(self._templates.read_persona(agent_id))
@@ -640,6 +711,7 @@ class PersistentAgentService:
         self._repository.publish_configuration(
             namespace_id, agent_id, revision=definition.revision, published_settings=settings, changes=changes,
             published_at=self._clock(),
+            initialize_model=initialize_model,
         )
         web = changes[0][2]
         version = definition.current_version if web is None else web.config_version
@@ -741,10 +813,25 @@ class PersistentAgentService:
             published_at=published_at,
         )
 
+    def validate_request_model(self, namespace_id: str, agent_id: str) -> None:
+        """Require a live model for new input without invalidating accepted Requests' snapshots."""
+        definition = self._require(namespace_id, agent_id)
+        snapshot = self.current_snapshot(namespace_id, agent_id)
+        if definition.published_settings is not None:
+            selection = definition.published_settings.capabilities.model
+        else:
+            # Legacy rows may not record published settings; do not validate an unpublished model draft.
+            selection = snapshot.load_spec().model.model_client_config.model_name
+        if selection is None:
+            raise PersistentAgentError("no model is configured for this colleague", code="MODEL_NOT_CONFIGURED")
+        self._models.resolve(selection, client_id=f"jiuwenmate:{agent_id}")
+
     def current_snapshot(self, namespace_id: str, agent_id: str) -> ConfigSnapshot:
         """The version a newly accepted Request must be pinned to."""
         definition = self._require(namespace_id, agent_id)
         if definition.current_version is None:
+            if definition.settings.capabilities.model is None:
+                raise PersistentAgentError("no model is configured for this colleague", code="MODEL_NOT_CONFIGURED")
             raise PersistentAgentError("colleague has no published configuration", code="NOT_PUBLISHED")
         return self.snapshot(namespace_id, agent_id, definition.current_version)
 

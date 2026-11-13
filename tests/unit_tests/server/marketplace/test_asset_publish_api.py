@@ -270,7 +270,7 @@ def test_real_equipment_resolver_accepts_installed_package(
     )
 
     monkeypatch.setattr(packages, "get_agent_workspace_dir", lambda: tmp_path)
-    monkeypatch.setattr(packages, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(packages, "get_user_workspace_dir", lambda: tmp_path)
     root = (
         tmp_path / ".agent_teams" / directory / "local" / "demo"
         if kind == "agent_group"
@@ -299,7 +299,7 @@ def test_agent_group_publish_resolves_installed_hub_asset_id(tmp_path, monkeypat
         HubInstallStateStore,
     )
 
-    monkeypatch.setattr(packages, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(packages, "get_user_workspace_dir", lambda: tmp_path)
     root = tmp_path / ".agent_teams" / "agent_groups" / "local" / "business-planning"
     root.mkdir(parents=True)
     (root / "manifest.json").write_text(
@@ -494,9 +494,10 @@ async def test_pack_describe_retains_local_defaults_when_identity_check_fails(tm
         "---\nname: demo-pack\nkind: skillpack\nskills: [member-a, member-b]\n"
         "description: Local description\n---\nbody\n"
     )
-    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
-    monkeypatch.setenv("SKILLPACK_HUB_DEPLOYMENT_SCOPE", "isolated")
-    monkeypatch.setenv("SKILLPACK_HUB_TRANSPORT_PROFILE", "legacy_skill_v1")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"symphony": {"evolution": {"flow": {"enabled": True}}}},
+    )
     server = AssetPublishAPI(
         tmp_path / "state", resolver=lambda kind, local_id: root,
         hub_url="https://example.invalid", skillpack_hub=UnavailableHub(),

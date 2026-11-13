@@ -21,6 +21,14 @@ def save_state(sid, **changes):
         lc.save_locked("session", sid, value)
 
 
+def test_history_runtime_owner_accepts_proc_start_ticks(monkeypatch):
+    monkeypatch.setattr(service.os, "getpid", lambda: 123)
+
+    assert service._history_runtime_owner(
+        {"runtime_owner": {"pid": 123, "start_ticks": 456}}
+    ) == (123, 456)
+
+
 @pytest.fixture
 def stored_history(tmp_path, monkeypatch):
     sessions = tmp_path / "sessions"
@@ -63,13 +71,13 @@ async def test_current_snapshot_reads_once_and_keeps_request_cutoff(stored_histo
         (stored.folder / "history.jsonl").unlink()
         stored.write(legacy=True)
     reads = []
-    original = service.load_history_records
+    original = service.read_history_replay
 
-    def load(sid):
+    def load(sid, **kwargs):
         reads.append(sid)
-        return original(sid)
+        return original(sid, **kwargs)
 
-    monkeypatch.setattr(service, "load_history_records", load)
+    monkeypatch.setattr(service, "read_history_replay", load)
     snapshot = service.prefetch_session_history(stored.sid, history_before_request_id="current")
     assert snapshot is not None and len(snapshot.records) == 4
     restored = await service.warmup_session_context(deep_agent=stored.deep_agent,
@@ -99,8 +107,8 @@ async def test_stale_snapshot_falls_back_to_actual_history(stored_history, monke
         changed[0] = {**changed[0], "content": "changed durable question"}
         stored.write(changed)
     reads = []
-    original = service.load_history_records
-    monkeypatch.setattr(service, "load_history_records", lambda sid: (reads.append(sid), original(sid))[1])
+    original = service.read_history_replay
+    monkeypatch.setattr(service, "read_history_replay", lambda sid, **kwargs: (reads.append(sid), original(sid, **kwargs))[1])
     assert await service.warmup_session_context(deep_agent=stored.deep_agent,
         session_id=stored.sid, history_before_request_id="current", history_snapshot=snapshot)
     assert reads == [stored.sid]

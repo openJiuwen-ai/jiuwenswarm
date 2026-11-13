@@ -204,6 +204,7 @@ class AgentManager:
         thinking_notice_sender: Callable[[dict[str, object]], Awaitable[None]] | None = None,
         files: WorkspaceOutputFiles | None = None,
         schedule_interval: timedelta = DEFAULT_SCHEDULE_INTERVAL,
+        schedules_enabled: bool = True,
         cli: FeishuCliRuntime | None = None,
         agent_mail_runtime: AgentMailRuntimeService | None = None,
         dingtalk_cli_runtime: DingTalkCliRuntimeService | None = None,
@@ -232,6 +233,7 @@ class AgentManager:
         self._archive_retention = archive_retention
         self._purge_interval = purge_interval
         self._schedule_interval = schedule_interval
+        self._schedules_enabled = schedules_enabled
         self._clock = clock
         self._external_event_observer = on_event
         self._delivery_service = delivery_service
@@ -398,7 +400,8 @@ class AgentManager:
             await self._delivery_service.start()
         self._scheduler.start()
         self._purge_task = asyncio.create_task(self._purge_loop(), name="jiuwenmate-window-purge")
-        self._schedule_task = asyncio.create_task(self._schedule_loop(), name="jiuwenmate-schedules")
+        if self._schedules_enabled:
+            self._schedule_task = asyncio.create_task(self._schedule_loop(), name="jiuwenmate-schedules")
         self._permission_task = asyncio.create_task(
             self._permission_approval_loop(), name="jiuwenmate-permission-approvals"
         )
@@ -781,6 +784,9 @@ class AgentManager:
         return await asyncio.to_thread(self._read_view, state, conversation_key, running)
 
     def _read_view(self, state: RequestState, conversation_key: str, running: bool) -> RequestView:
+        if state.status == "dispatched" and not running:
+            # Completion may have committed after the initial query but before the running snapshot.
+            state = self._sessions.get_request(state.record.namespace_id, state.record.request_id)
         replies, files, reason, draft = self._result(state)
         control = self._control.control_of(state.record.namespace_id, state.record.request_id)
         deliveries = self._sessions.result_deliveries(state.record.namespace_id, state.record.request_id)

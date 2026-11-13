@@ -323,6 +323,19 @@ async def test_history_lists_the_conversation_in_order(host):
     assert [item["replies"] for item in requests] == [["回复：第一条"], ["回复：第二条"]]
 
 
+async def test_artifacts_list_existing_employee_outputs_without_sharing_or_chat_history(host):
+    agent_id = await host.colleague()
+    service = host.adapter._colleagues()
+    session = service.workspaces.ensure_session(WEB_NAMESPACE, agent_id, "session-existing")
+    (session / "output" / "知识摘要.md").write_text("existing report", encoding="utf-8")
+    response = await host.call(ReqMethod.JIUWENMATE_ARTIFACT_LIST, agent_id=agent_id)
+    assert response.ok
+    assert [item["name"] for item in response.payload["files"]] == ["知识摘要.md"]
+    assert response.payload["files"][0]["download_url"]
+    missing = await host.call(ReqMethod.JIUWENMATE_ARTIFACT_LIST, agent_id="unknown-agent")
+    assert not missing.ok
+
+
 async def test_history_before_the_first_message_is_empty_and_creates_nothing(host):
     agent_id = await host.colleague()
 
@@ -629,6 +642,13 @@ async def test_runtime_starts_once_and_restarts_after_close(host):
     assert len(host.managers) == 2
 
 
+async def test_web_runtime_can_start_without_a_browser_request(host):
+    assert host.managers == []
+    await asyncio.gather(host.adapter.start(), host.adapter.start())
+    assert len(host.managers) == 1
+    assert host.managers[0]._schedule_task is not None
+
+
 # JM-10-V-05 streamed replies
 
 
@@ -718,6 +738,7 @@ def test_consecutive_fragments_of_one_execution_are_merged():
 
 async def test_each_conversation_keeps_its_own_history_and_is_listed_latest_first(host):
     agent_id = await host.colleague()
+    initial = (await host.conversations(agent_id))[0]
     host.core.release("第一个对话的问题", "第二个对话的问题")
 
     first = (await host.send(agent_id, "第一个对话的问题", conversation_id="conv-a")).payload
@@ -728,10 +749,11 @@ async def test_each_conversation_keeps_its_own_history_and_is_listed_latest_firs
     assert first["conversation"]["title"] == "第一个对话的问题"
     assert first["request"]["conversation_id"] == "conv-a"
     listed = await host.conversations(agent_id)
-    assert [item["conversation_id"] for item in listed] == ["conv-b", "conv-a"]
+    assert [item["conversation_id"] for item in listed] == ["conv-b", "conv-a", initial["conversation_id"]]
     assert {item["conversation_id"]: item["last_message"] for item in listed} == {
         "conv-b": "第二个对话的问题",
         "conv-a": "第一个对话的问题",
+        initial["conversation_id"]: "",
     }
     a = (await host.history(agent_id, "conv-a")).payload["requests"]
     b = (await host.history(agent_id, "conv-b")).payload["requests"]
@@ -745,6 +767,7 @@ async def test_each_conversation_keeps_its_own_history_and_is_listed_latest_firs
 
 async def test_conversation_pin_state_persists_and_changes_list_order(host):
     agent_id = await host.colleague()
+    initial = (await host.conversations(agent_id))[0]
     host.core.release("较早的对话", "较新的对话")
     first = (await host.send(agent_id, "较早的对话", conversation_id="conv-old")).payload["request"]
     await host.settled(first["request_id"])
@@ -758,7 +781,7 @@ async def test_conversation_pin_state_persists_and_changes_list_order(host):
         pinned=True,
     )
     assert pinned.ok and pinned.payload["conversation"]["pinned"] is True
-    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-old", "conv-new"]
+    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-old", "conv-new", initial["conversation_id"]]
 
     unpinned = await host.call(
         ReqMethod.JIUWENMATE_CONVERSATION_PIN,
@@ -767,20 +790,23 @@ async def test_conversation_pin_state_persists_and_changes_list_order(host):
         pinned=False,
     )
     assert unpinned.ok and unpinned.payload["conversation"]["pinned"] is False
-    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-new", "conv-old"]
+    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-new", "conv-old", initial["conversation_id"]]
 
 
-async def test_a_new_conversation_is_listed_only_after_its_first_message(host):
+async def test_reading_another_empty_conversation_preserves_only_the_initial_conversation(host):
     agent_id = await host.colleague()
+    initial = await host.conversations(agent_id)
+    assert len(initial) == 1 and initial[0]["last_message"] == ""
 
     history = await host.history(agent_id, "conv-new")
 
     assert history.ok and history.payload == {"requests": []}
-    assert await host.conversations(agent_id) == []
+    assert await host.conversations(agent_id) == initial
 
 
 async def test_the_title_is_the_start_of_the_first_message_and_can_be_renamed(host):
     agent_id = await host.colleague()
+    initial = (await host.conversations(agent_id))[0]
     host.core.release("请帮我  整理\n本周研发进展并输出一份详细的周报", "继续")
 
     await host.send(agent_id, "请帮我  整理\n本周研发进展并输出一份详细的周报", message_id="msg-long")
@@ -793,15 +819,16 @@ async def test_the_title_is_the_start_of_the_first_message_and_can_be_renamed(ho
         ReqMethod.JIUWENMATE_CONVERSATION_RENAME, agent_id=agent_id, conversation_id=CONVERSATION, title=" "
     )
 
-    assert [item["title"] for item in titled] == ["请帮我 整理 本周研发进展并输出一份详细"]
-    assert [item["last_message"] for item in titled] == ["继续"]
+    assert [item["title"] for item in titled] == ["请帮我 整理 本周研发进展并输出一份详细", initial["title"]]
+    assert [item["last_message"] for item in titled] == ["继续", ""]
     assert renamed.ok and renamed.payload["conversation"]["title"] == "周报"
     assert not empty.ok and empty.payload["code"] == "BAD_REQUEST"
-    assert [item["title"] for item in await host.conversations(agent_id)] == ["周报"]
+    assert [item["title"] for item in await host.conversations(agent_id)] == ["周报", initial["title"]]
 
 
 async def test_a_deleted_conversation_is_hidden_and_refuses_new_messages(host):
     agent_id = await host.colleague()
+    initial = (await host.conversations(agent_id))[0]
     host.core.release("今天进展")
     request = (await host.send(agent_id, "今天进展")).payload["request"]
     await host.settled(request["request_id"])
@@ -812,7 +839,7 @@ async def test_a_deleted_conversation_is_hidden_and_refuses_new_messages(host):
 
     assert deleted.ok and deleted.payload == {"deleted": True}
     assert again.payload["code"] == "NOT_FOUND" and refused.payload["code"] == "NOT_FOUND"
-    assert await host.conversations(agent_id) == []
+    assert await host.conversations(agent_id) == [initial]
     assert (await host.request(request["request_id"]))["replies"] == ["回复：今天进展"]
 
 
@@ -906,3 +933,49 @@ def test_existing_conversation_database_migrates_pin_state(tmp_path):
     assert len(listed) == 1 and listed[0].pinned is False
     pinned = conversations.set_pinned(WEB_NAMESPACE, "agent-1", "conv-1", True)
     assert pinned.pinned is True
+
+
+@pytest.mark.parametrize("pending_model", [False, True])
+async def test_deleting_a_published_model_rejects_new_messages_but_keeps_accepted_work(host, pending_model):
+    from dataclasses import replace
+    from jiuwenswarm.server.jiuwenmate.models import CapabilitySelection
+    from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider
+
+    placeholder = {"model_client_config": {"model_name": "your-model-name", "client_provider": "OpenAI",
+        "api_base": "https://example.com/compatible-mode/v1", "api_key": "sk-xxxxxxxxx"}}
+    configured = {"model_client_config": {"model_name": "deepseek", "client_provider": "OpenAI",
+        "api_base": "https://example.invalid/v1", "api_key": SECRET}, "model_config_obj": {}, "is_default": True}
+    other = {"model_client_config": {"model_name": "kimi", "client_provider": "OpenAI",
+        "api_base": "https://example.invalid/v1", "api_key": SECRET}, "model_config_obj": {}}
+    entries = [placeholder, configured, other] if pending_model else [placeholder, configured]
+    service = host.adapter._colleagues()
+    service._models = ConfiguredModelProvider(lambda: entries)
+    agent_id = await host.colleague()
+    accepted = await host.send(agent_id, "already accepted", message_id="accepted-before-delete")
+    assert accepted.ok
+    request_id = accepted.payload["request"]["request_id"]
+    if pending_model:
+        current = service.read_settings(WEB_NAMESPACE, agent_id)
+        service.update_settings(WEB_NAMESPACE, agent_id, replace(current, capabilities=CapabilitySelection(model="kimi#2")))
+        entries[1] = None
+    else:
+        entries[:] = [placeholder]
+
+    refused = await host.send(agent_id, "after model deletion", message_id="new-after-delete")
+    assert not refused.ok
+    assert refused.payload["code"] == "MODEL_NOT_FOUND"
+    assert "after model deletion" not in host.core.started
+    host.core.release("already accepted")
+    done = await host.settled(request_id)
+    assert done["outcome"] == "completed"
+    history = await host.history(agent_id)
+    assert history.ok
+    assert [item["text"] for item in history.payload["requests"]] == ["already accepted"]
+    if pending_model:
+        entries[1] = configured
+    else:
+        entries.append(configured)
+    host.core.release("after model restore")
+    restored = await host.send(agent_id, "after model restore", message_id="new-after-restore")
+    assert restored.ok
+    assert (await host.settled(restored.payload["request"]["request_id"]))["outcome"] == "completed"

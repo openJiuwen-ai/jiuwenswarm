@@ -3,7 +3,8 @@
 Each conversation is a separate Session (``ConversationRef.web(conversation_id)``),
 so it has its own history and window. This table only adds what the list shows: a
 title and the time of the latest message. Conversation previews come from the latest
-Request in the Session. Pin state is stored with the conversation. A conversation is written when its first
+Request in the Session. Pin state is stored with the conversation. Employee initialization
+registers one empty conversation; other conversations are written when their first
 message is accepted, so opening a new one creates nothing. Deleting hides it from the
 list; its Requests and window stay with the Session.
 """
@@ -13,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
@@ -167,6 +169,26 @@ class WebConversationStore(SQLiteStore):
                     default_title(text),
                     created_at.isoformat(),
                     updated_at.isoformat(),
+                ),
+            )
+
+    def ensure_initial(self, namespace_id: str, agent_id: str, *, created_at: datetime) -> None:
+        """Register the first empty chat atomically; existing or deleted chats prevent recreation."""
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT INTO web_conversations "
+                "(namespace_id, agent_id, conversation_id, title, created_at, updated_at, deleted_at, pinned) "
+                "SELECT ?, ?, ?, ?, ?, ?, NULL, 0 WHERE NOT EXISTS "
+                "(SELECT 1 FROM web_conversations WHERE namespace_id = ? AND agent_id = ?)",
+                (
+                    namespace_id,
+                    agent_id,
+                    uuid4().hex,
+                    default_title(""),
+                    created_at.isoformat(),
+                    created_at.isoformat(),
+                    namespace_id,
+                    agent_id,
                 ),
             )
 

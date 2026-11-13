@@ -118,7 +118,7 @@ async def test_personal_context_rail_uses_the_trusted_data_directory(
         adapter = _adapter(_FakeAgent())
         await adapter._sync_personal_context_rail("agent")
         homes.append(adapter._personal_context_rail.home)
-        assert homes[-1] == data_dir / "domain" / ".personal_context"
+        assert homes[-1] == data_dir / ".personal_context"
     assert homes[0] != homes[1]
 
 

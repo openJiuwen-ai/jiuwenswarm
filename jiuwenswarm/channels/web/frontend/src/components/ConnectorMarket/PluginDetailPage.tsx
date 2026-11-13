@@ -88,7 +88,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   // onAllConnected 里幂等重试 install（真正落盘，文档强调"再次调用同一个 install"）。
   const installFlow = usePendingConnectorFlow(
     () => {
-      clearInstallPending(id);
+      clearInstallPending(id, true);
       void install(id);
     },
     () => {

@@ -15,17 +15,20 @@ import io
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from openjiuwen.core.foundation.llm import ToolCall
 from openjiuwen.core.foundation.tool import ToolExposure
+from openjiuwen.core.foundation.tool.client import ClientToolContext, ClientToolUnavailable
 from openjiuwen.core.single_agent.rail.base import AgentRail
 
 from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import ToolRetrievalPromptRail
 from jiuwenswarm.agents.harness.common.tools.tool_retrieval_toolkits import ToolRetrievalToolkit
 from jiuwenswarm.common.file_download_token import validate_file_download_token
 from jiuwenswarm.office.assets import OfficeAssetStore
+from jiuwenswarm.office.client_tools import build_task_pane_tools
 from jiuwenswarm.office import review
 from jiuwenswarm.office.contract import load_contract
 from jiuwenswarm.office.review import NO_ISSUES_SENTINEL, review_checklist
@@ -65,11 +68,11 @@ async def test_a_model_call_is_offered_the_tools_the_presentation_s_powerpoint_r
         assert _offered_powerpoint_tools(offered) == {"read_presentation_context", "presentation_apply_patch"}
         assert "list_open_documents" in offered
 
-        # The task pane attaches again from a PowerPoint that runs more.
+        # The tools are settled at the first model call; a conversation runs in one host.
         attach_pane("deck-a", ["read_presentation_context", "read_slide_image"])
         await pane.turn("hello again")
         _messages, offered = pane.model.seen[-1]
-        assert _offered_powerpoint_tools(offered) == {"read_presentation_context", "read_slide_image"}
+        assert _offered_powerpoint_tools(offered) == {"read_presentation_context", "presentation_apply_patch"}
 
 
 async def test_a_call_pauses_with_its_arguments_and_links_to_the_assets_they_name(conversation, attach_pane):
@@ -104,19 +107,41 @@ async def test_a_call_naming_another_conversation_s_asset_fails_without_pausing(
         assert "publish the file with publish_office_asset first" in pane.model.tool_results()["import-1"]
 
 
-@pytest.mark.parametrize(("supported", "live", "reason"), [
-    (["read_presentation_context"], True, "task pane of this conversation's document cannot run read_slide_image"),
-    (["read_slide_image"], False, "document is not open right now"),
-    (None, True, "no document is attached"),
-])
-async def test_a_call_no_task_pane_can_run_now_fails_without_pausing(
-        conversation, attach_pane, supported, live, reason):
-    if supported is not None:
-        attach_pane("deck-a", supported, live=live)
+async def test_a_call_before_any_task_pane_attached_fails_without_pausing(conversation):
+    async with conversation([[_render()]]) as pane:
+        assert await pane.turn("show me slide 1") == []
+        assert "no document is attached" in pane.model.tool_results()["render-1"]
+
+
+async def test_a_call_while_the_document_is_closed_fails_without_pausing(conversation, attach_pane):
+    attach_pane("deck-a", ["read_slide_image"], live=False)
 
     async with conversation([[_render()]]) as pane:
         assert await pane.turn("show me slide 1") == []
-        assert reason in pane.model.tool_results()["render-1"]
+        assert "document is not open right now" in pane.model.tool_results()["render-1"]
+
+
+async def test_a_tool_the_task_pane_cannot_run_is_not_offered_or_found(conversation, attach_pane):
+    attach_pane("deck-a", ["read_presentation_context"])
+
+    async with conversation([[_render()]]) as pane:
+        assert await pane.turn("show me slide 1") == []
+        _messages, offered = pane.model.seen[0]
+        assert "read_slide_image" not in offered
+        assert pane.agent.ability_manager.get("read_slide_image") is None
+        assert "render-1" in pane.model.tool_results()
+
+
+async def test_a_call_the_task_pane_stopped_supporting_says_it_is_the_add_in_not_powerpoint(attach_pane):
+    """The pane attached again with fewer tools between the model call and the call."""
+    attach_pane("deck-a", ["read_presentation_context"])
+    [tool] = [tool for tool in build_task_pane_tools(POWERPOINT_PACKAGE, lambda: None, OfficeAssetStore())
+              if tool.card.name == "read_slide_image"]
+    session = SimpleNamespace(get_session_id=lambda: "deck-a")
+    context = ClientToolContext(tool_call=None, session=session, agent=None, callback_context=None)
+
+    with pytest.raises(ClientToolUnavailable, match="this add-in does not offer read_slide_image yet"):
+        tool.build_request({}, context)
 
 
 async def test_a_render_reaches_a_vision_model_in_one_model_call(conversation, attach_pane):
@@ -296,6 +321,8 @@ async def test_a_conversation_whose_model_cannot_see_images_has_the_vision_model
 
     [sent] = vision.requests
     assert (sent["model"], sent["max_tokens"]) == ("vision-test", review.REVIEW_MAX_TOKENS)
+    # The review only needs a short answer; a model left to think can spend every token on it.
+    assert sent["reasoning_effort"] == "none"
     system, user = sent["messages"]
     assert system == {"role": "system", "content": REVIEW_CHECKLIST}
     assert user["content"][1] == {"type": "image_url", "image_url": {"url": RENDER}}
@@ -385,13 +412,14 @@ async def test_a_visual_review_without_the_requested_slide_s_capture_fails_unrev
     assert vision.requests == []
 
 
-@pytest.mark.parametrize(("replies", "reason"), [
-    ([(200, NO_ISSUES_SENTINEL, 2.0)], "did not answer within"),
-    ([(500, "", 0.0)], "the vision model (vision-test) failed"),
-    ([(200, "", 0.0), (200, "  ", 0.0)], "answered nothing 2 times"),
-])
+@pytest.mark.parametrize(("replies", "reasons"), [
+    # Either the review deadline or the provider's read timeout can fire first.
+    ([(200, NO_ISSUES_SENTINEL, 2.0)], ("did not answer within", "APITimeoutError: Request timed out")),
+    ([(500, "", 0.0)], ("the vision model (vision-test) failed",)),
+    ([(200, "", 0.0), (200, "  ", 0.0)], ("answered nothing 2 times",)),
+], ids=["timeout", "provider-error", "empty-replies"])
 async def test_a_review_that_fails_returns_the_render_without_a_verdict(
-        conversation, attach_pane, vision, monkeypatch, replies, reason):
+        conversation, attach_pane, vision, monkeypatch, replies, reasons):
     attach_pane("deck-a", REVIEWING)
     monkeypatch.setattr(review, "REVIEW_TIMEOUT_SECONDS", 0.5)
     vision.replies = list(replies)
@@ -401,7 +429,8 @@ async def test_a_review_that_fails_returns_the_render_without_a_verdict(
         await pane.answer((request, _capture()))
         result = pane.model.tool_results()["verify-1"]
 
-    assert result.startswith('<verifier-result slide_id="256#1">No verdict: ') and reason in result
+    assert result.startswith('<verifier-result slide_id="256#1">No verdict: ')
+    assert any(reason in result for reason in reasons)
     assert "visual_attachment.path: " in result
     assert len(vision.requests) == len(replies)
 

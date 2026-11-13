@@ -525,7 +525,7 @@ def test_python_native_and_child_diagnostics_do_not_pollute_jsonl(
     assert records[0].event_type == "chat.delta"
     assert records[-1].status == "completed"
     assert result.stderr == ""
-    logs = list((tmp_path / "infra" / "logs" / "process_cli").glob("*.log"))
+    logs = list((tmp_path / "agent" / "process_cli_logs").glob("*.log"))
     assert len(logs) == 1
     diagnostics = logs[0].read_text(encoding="utf-8")
     for marker in ("PYTHON_DIAGNOSTIC", "NATIVE_DIAGNOSTIC", "CHILD_DIAGNOSTIC"):
@@ -534,8 +534,8 @@ def test_python_native_and_child_diagnostics_do_not_pollute_jsonl(
 
 
 def test_log_directory_failure_keeps_machine_stdout_as_jsonl(tmp_path: Path) -> None:
-    log_directory = tmp_path / "infra" / "logs" / "process_cli"
-    log_directory.parent.mkdir(parents=True)
+    log_directory = tmp_path / "agent" / "process_cli_logs"
+    log_directory.parent.mkdir()
     log_directory.write_text("not a directory", encoding="utf-8")
 
     result = subprocess.run(

@@ -4,7 +4,6 @@
  * 输入形状与服务端 members/tasks/team_id 保持一致。
  */
 
-import { isEnterprise } from '../edition';
 import { useSessionStore } from './sessionStore';
 import { conversationKey } from './chatStore';
 import { useTeamSelectorStore } from './teamSelectorStore';
@@ -123,8 +122,7 @@ export function applyTeamSnapshotToSession(
   const mirroredMembers = (currentStore.getRuntime(sessionId)?.teamMembers ?? []).filter(
     (member) => member.workflow_run_id && !snapshotAllIds.has(member.member_id)
   );
-  const projectedMembers = [...mirroredMembers, ...members];
-  currentStore.setTeamMembers(sessionId, projectedMembers);
+  currentStore.setTeamMembers(sessionId, [...mirroredMembers, ...members]);
   // teamDepartedMembers 同样不能全量替换：镜像 worker 离队后只活在这条投影里
   // （shutdown 事件写入，见 rememberDepartedTeamMember），快照不带它的身份记录，
   // 清掉后任务卡与 @ 提及会退化为裸 member_id。
@@ -132,37 +130,5 @@ export function applyTeamSnapshotToSession(
     (member) => member.workflow_run_id && !snapshotAllIds.has(member.member_id)
   );
   currentStore.setTeamDepartedMembers(sessionId, [...mirroredDeparted, ...departedMembers]);
-  if (!isEnterprise()) {
-    currentStore.setTeamTasks(sessionId, tasks);
-    return;
-  }
-  if (projectedMembers.length === 0) {
-    currentStore.setTeamTasks(sessionId, []);
-    return;
-  }
-  if (tasks.length === 0) {
-    return;
-  }
-  const currentTasks = currentStore.getRuntime(sessionId)?.teamTasks ?? [];
-  currentStore.setTeamTasks(sessionId, mergeEnterpriseTeamTasks(currentTasks, tasks));
-}
-
-export function mergeEnterpriseTeamTasks(current: TeamTask[], incoming: TeamTask[]): TeamTask[] {
-  const byId = new Map(current.map((task) => [task.task_id, { ...task }]));
-  for (const task of incoming) {
-    const prev = byId.get(task.task_id);
-    if (!prev) {
-      byId.set(task.task_id, { ...task });
-      continue;
-    }
-    const next = { ...prev };
-    (Object.keys(task) as (keyof TeamTask)[]).forEach((key) => {
-      const value = task[key];
-      if (value !== undefined && value !== null && value !== '') {
-        (next as Record<string, unknown>)[key] = value;
-      }
-    });
-    byId.set(task.task_id, next);
-  }
-  return Array.from(byId.values());
+  currentStore.setTeamTasks(sessionId, tasks);
 }

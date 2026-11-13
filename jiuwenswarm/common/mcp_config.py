@@ -19,6 +19,7 @@ from openjiuwen.core.foundation.tool import McpServerConfig
 
 from jiuwenswarm.common.config import get_mcp_server_config
 from jiuwenswarm.common.external_providers import provider
+from jiuwenswarm.common.mcp_dynamic_token_patch import SSL_VERIFY_ENTRY_KEY
 
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
 
@@ -217,6 +218,15 @@ def build_mcp_server_config(
         timeout_s = entry.get("timeout_s")
         if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
             params["timeout_s"] = int(timeout_s)
+        # 条目级 ssl_verify 与 dynamic_token_url 绑定生效：仅动态 token 网关
+        # 显式配置 false 时，取动态 token 的请求跳过证书校验。绑定在唯一落点
+        # 收敛——注册时随 mark 登记（见 interface_deep._register_mcp_server），
+        # 探活 / 运行时取 token 均按 params / 注册表现读。
+        if (
+            entry.get(SSL_VERIFY_ENTRY_KEY) is False
+            and str(entry.get("dynamic_token_url") or "").strip()
+        ):
+            params[SSL_VERIFY_ENTRY_KEY] = False
         if params:
             payload["params"] = params
 
@@ -301,6 +311,11 @@ async def preflight_mcp_server_reachable(
         read_t = 10.0
     # Short connect (unreachable host fails fast); read catches no-response.
     http_timeout = httpx.Timeout(connect=min(read_t, 5.0), read=read_t, write=5.0, pool=5.0)
+    # 条目级 ssl_verify（params 携带，仅动态 token 网关生效）：显式 false 时
+    # 取 token 的请求跳过证书校验；MCP 服务本身的探活仍按默认校验。
+    ssl_verify = (
+        (getattr(cfg, "params", None) or {}).get(SSL_VERIFY_ENTRY_KEY) is not False
+    )
 
     headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
     # Caller headers live in params.headers and/or auth_headers. 
@@ -371,6 +386,7 @@ async def preflight_mcp_server_reachable(
                     token_url=dynamic_token_url,
                     creds=creds,
                     timeout_s=min(TOKEN_TIMEOUT_S, read_t),
+                    ssl_verify=ssl_verify,
                 )
             except Exception:  # noqa: BLE001 - 探活不因 token 服务失败而失败
                 headers[TOKEN_HEADER_NAME] = ""

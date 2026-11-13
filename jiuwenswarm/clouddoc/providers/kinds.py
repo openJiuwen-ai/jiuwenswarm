@@ -65,11 +65,13 @@ def get_clouddoc_state_path() -> Path:
     with the receipts and the watch registry under ``config/``. One-time migration:
     an existing file at the old location is moved on first touch.
     """
-    from jiuwenswarm.clouddoc.settings import agent_home_dir, infra_config_dir
+    from jiuwenswarm.clouddoc.settings import (
+        workspace_dir as get_user_workspace_dir,
+    )
 
-    new_path = infra_config_dir() / "clouddoc-state.json"
+    new_path = get_user_workspace_dir() / "config" / "clouddoc-state.json"
     if not new_path.exists():
-        legacy = agent_home_dir() / "clouddoc_state.json"
+        legacy = get_user_workspace_dir() / "agent" / "home" / "clouddoc_state.json"
         if legacy.is_file():
             try:
                 new_path.parent.mkdir(parents=True, exist_ok=True)

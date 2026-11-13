@@ -27,7 +27,6 @@ from jiuwenswarm.server.handlers.bootstrap import (
     handle_session_create,
     handle_session_fork,
 )
-from jiuwenswarm.server.handlers.video_conversation import handle_video_conversation_append
 from jiuwenswarm.server.handlers.hub_catalog import handle_hub_equipment_catalog
 from jiuwenswarm.server.handlers.chat import handle_chat_cancel
 from jiuwenswarm.server.handlers.cron_gateway import handle_cron_gateway_callback
@@ -159,7 +158,6 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.PROACTIVE_FEEDBACK: handle_proactive_feedback,
     ReqMethod.BROWSER_RUNTIME_RESTART: handle_browser_runtime_restart,
     ReqMethod.CONFIG_CACHE_CLEAR: handle_config_cache_clear,
-    ReqMethod.VIDEO_CONVERSATION_APPEND: handle_video_conversation_append,
     ReqMethod.HUB_EXPERT_PACKAGES_CATALOG: handle_hub_equipment_catalog,
     ReqMethod.AGENT_RELOAD_CONFIG: handle_agent_reload_config,
     ReqMethod.AGENT_PREWARM_SYNC: handle_agent_prewarm_sync,
@@ -353,37 +351,7 @@ def _install_enterprise_expert_handlers() -> None:
     install_expert_http_handlers(HANDLERS)
 
 
-def _register_enterprise_team_handlers() -> None:
-    """企业版才登记团队控制面方法。个人版进程不引用这些 ReqMethod 成员。"""
-    from jiuwenswarm.enterprise.edition import is_enterprise
-
-    if not is_enterprise():
-        return
-    from jiuwenswarm.common.schema.message import ensure_team_control_req_methods
-    from jiuwenswarm.enterprise.team.handlers import (
-        handle_team_create,
-        handle_team_get,
-        handle_team_member_join,
-        handle_team_member_leave,
-        handle_team_members_list,
-        handle_team_quota_get,
-        handle_team_stop,
-    )
-
-    ensure_team_control_req_methods()
-    HANDLERS.update({
-        ReqMethod.TEAM_CREATE: handle_team_create,
-        ReqMethod.TEAM_GET: handle_team_get,
-        ReqMethod.TEAM_STOP: handle_team_stop,
-        ReqMethod.TEAM_MEMBER_JOIN: handle_team_member_join,
-        ReqMethod.TEAM_MEMBER_LEAVE: handle_team_member_leave,
-        ReqMethod.TEAM_MEMBERS_LIST: handle_team_members_list,
-        ReqMethod.TEAM_QUOTA_GET: handle_team_quota_get,
-    })
-
-
 _install_enterprise_expert_handlers()
-_register_enterprise_team_handlers()
 
 
 async def try_dispatch(ctx: RequestContext) -> bool:

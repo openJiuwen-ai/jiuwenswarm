@@ -10,16 +10,17 @@ tracing mechanics — run root span, the session-keyed fallback that keeps it
 reachable from supervisor tasks, agent-tier rail wiring and the sub-agent
 dispatch hook — live in the SDK under ``openjiuwen.harness.observability``.
 
-It is kept in a **separate file with its own state and config section** on
-purpose, so the existing team scenario is not affected.
+It keeps its own state, but reads the same ``observability`` config section as
+Team: one shared exporter block plus the ``observability.agent.enabled``
+switch (see ``jiuwenswarm.common.observability_config``).
 
-Shared-provider caveat (important):
+Shared-provider note:
     OpenTelemetry allows exactly ONE global ``TracerProvider`` per process, and
-    initialization is a no-op if one already exists. In a process where BOTH
-    team and agent observability are enabled, whichever runs first wins; the
-    other silently reuses it (its exporter/endpoint/service_name are ignored).
-    Provider demands are coordinated inside the SDK, so agent shutdown never
-    tears down a provider the team subsystem depends on.
+    initialization is a no-op if one already exists. That is why the exporter
+    settings are shared rather than per runtime: Team and Agent always resolve
+    the same block, so whichever acquires first builds the provider the other
+    reuses. Provider demands are coordinated inside the SDK, so agent shutdown
+    never tears down a provider the team subsystem depends on.
 """
 
 from __future__ import annotations
@@ -46,7 +47,12 @@ from jiuwenswarm.common.config import (
     get_symphony_evolution_enabled,
     get_ttse_enabled,
 )
-from jiuwenswarm.common.utils import get_domain_data_dir
+from jiuwenswarm.common.observability_config import (
+    is_observability_scope_enabled,
+    observability_export_settings,
+    resolve_observability_section,
+)
+from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.observability.config import load_trajectory_store_settings
 from jiuwenswarm.observability.runtime import (
     shutdown_trajectory_runtime,
@@ -65,7 +71,7 @@ _agent_observability_active: bool = False
 # auto-teardown the provider for the rest of the process. OTel allows only one
 # global TracerProvider and re-init after shutdown is fragile, so a /debug
 # toggle must not churn init/shutdown across alternating requests. The normal
-# config-gated path (agent_observability.enabled hot-reload) is unaffected
+# config-gated path (observability.agent.enabled hot-reload) is unaffected
 # unless force was ever used.
 _force_ever_enabled: bool = False
 
@@ -125,7 +131,7 @@ def sync_agent_observability(*, force: bool = False) -> None:
     """Synchronize single-agent observability state with current config.
 
     Called before each ``Runner.run_agent_streaming`` / ``Runner.run_agent`` so
-    that hot-reloading the ``agent_observability.enabled`` flag takes effect
+    that hot-reloading the ``observability.agent.enabled`` flag takes effect
     immediately:
 
     * disabled -> enabled : acquire the provider (or reuse if already up)
@@ -133,13 +139,13 @@ def sync_agent_observability(*, force: bool = False) -> None:
     * unchanged           : no-op
 
     Trajectory-backed evolution also requests the provider when the explicit
-    ``agent_observability.enabled`` switch is off: skill evolution, symphony
+    ``observability.agent.enabled`` switch is off: skill evolution, symphony
     evolution, and TTSE (FACT/TIP dual-track) all capture LLM/tool spans via
     ``TrajectorySpanProcessor``.
 
     ``force=True`` (set by a ``/debug`` run when ``debug_trace.<mode>.otel_enabled``
     is true) treats ``want_enabled`` as true regardless of config, so a debug
-    request can pull up OTel even when ``agent_observability.enabled`` is false.
+    request can pull up OTel even when ``observability.agent.enabled`` is false.
     Once force is ever used, the provider stays up for the process (sticky — see
     ``_force_ever_enabled``) to avoid init/shutdown churn across alternating
     requests; the normal config hot-reload teardown is unchanged when evolution
@@ -154,7 +160,8 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
     global _agent_observability_active, _force_ever_enabled
 
     config = get_config()
-    cfg = config.get("agent_observability", {}) or {}
+    section = resolve_observability_section(config)
+    cfg = observability_export_settings(section)
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = (
         get_skill_evolution_enabled(config)
@@ -163,7 +170,7 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         or bool(_plugin_trajectory_demands)
     )
     want_enabled = (
-        bool(cfg.get("enabled", False))
+        is_observability_scope_enabled(section, "agent")
         or trajectory_settings.enabled
         or evolution_requested
         or force
@@ -182,10 +189,10 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         return
 
     try:
-        traces_dir = str(cfg.get("traces_dir") or get_domain_data_dir() / ".trace")
+        traces_dir = str(cfg.get("traces_dir") or get_user_workspace_dir() / ".trace")
         obs_cfg = build_observability_config(
             cfg,
-            service_name="jiuwenswarm-agent",
+            service_name="jiuwenswarm",
             traces_dir=traces_dir,
         )
         provider_existed = acquire_observability(obs_cfg)
@@ -777,14 +784,31 @@ def install_subagent_llm_history_forwarder() -> None:
             if not active:
                 return
             parent_id, sub_type, ctx = active
+            from jiuwenswarm.server.runtime.session.history_artifacts import put_prompt
+            from jiuwenswarm.server.runtime.session.history_io import run_history_io
+
+            prompt_ref: dict[str, Any] | None = None
+            try:
+                prompt_ref = await run_history_io(
+                    put_prompt, parent_id, kwargs.get("messages") or [], kwargs.get("tools") or [],
+                )
+            except OSError as exc:
+                server_logger.warning(
+                    "[AgentObservability] subagent prompt artifact unavailable; "
+                    "forwarding preview: session=%s subagent=%s err=%s",
+                    parent_id, sub_type, exc,
+                )
             prompt = _subagent_prompt_preview(kwargs.get("messages"))
             if prompt:
                 _LAST_PROMPT_BY_SESSION[sid] = prompt
             _LAST_CALL_START_BY_SESSION[sid] = time.time()
+            extra: dict[str, Any] = {"prompt": prompt or ""}
+            if prompt_ref is not None:
+                extra["payload_refs"] = {"prompt": prompt_ref}
             _append_subagent_llm_record(
                 parent_id=parent_id, subagent_type=sub_type, ctx=ctx,
                 event_type="chat.llm_call_start",
-                extra={"prompt": prompt} if prompt else {},
+                extra=extra,
             )
         except Exception as exc:
             server_logger.warning("[AgentObservability] subagent llm_start forward failed: %s", exc)

@@ -386,6 +386,19 @@ async def test_default_feishu_runtime_uses_one_owner_sqlite_store_and_closes_man
 
 
 @pytest.mark.asyncio
+async def test_im_runtime_does_not_claim_web_scheduled_requests(tmp_path, monkeypatch):
+    _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate")
+    sweep = AsyncMock(return_value=0)
+    monkeypatch.setattr(manager.schedules, "sweep", sweep)
+    try:
+        await manager.start()
+        await asyncio.sleep(0)
+        sweep.assert_not_awaited()
+    finally:
+        await manager.aclose()
+
+
+@pytest.mark.asyncio
 async def test_default_runtime_consumes_message_refresh_without_rechecking_membership(tmp_path):
     from openjiuwen.harness import persistent_agent as core
 
