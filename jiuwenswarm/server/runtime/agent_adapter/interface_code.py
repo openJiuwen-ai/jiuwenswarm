@@ -1561,7 +1561,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     "[JiuwenSwarmCodeAdapter] permission_rail.set_trusted_dirs failed",
                     exc_info=True,
                 )
-        self._write_runtime_state(
+        # Offload git/YAML runtime_state persistence so code/flash per-request
+        # paths do not stall the Worker event loop (/health), same as deep stream.
+        self._schedule_runtime_state_write(
             mode=runtime_config.mode,
             language=self._resolve_output_language(),
             channel=resolved_channel,
