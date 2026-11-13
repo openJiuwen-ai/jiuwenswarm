@@ -132,6 +132,29 @@ def _resolve_cron_execution_context(
     return channel_id, f"cron_{ts}_{job.id}"
 
 
+# 文件投递兜底只认这些展示渠道的 canonical 展示会话；其余渠道（IM 等）
+# 维持 job.session_id 外部投递路由语义不变。
+UI_DELIVERY_CHANNELS = frozenset({"web", "tui", "desktop"})
+
+
+def _resolve_delivery_session_id(job: CronJob, channel_id: str) -> str:
+    """解析文件投递/历史兜底的目标会话.
+
+    web/desktop/tui 展示渠道：只认 job.delivery_session_id（桌面端解析出
+    canonical 展示会话后经 cron.job.update 回写）。未回写时返回空串，调用方
+    据此跳过历史兜底——绝不回落 job.session_id：那是创建来源/IM 投递路由
+    字段（见 _resolve_cron_execution_context 注释），来源会话可能已被用户
+    删除，向它兜底 append 会在落盘层自动重建出只有文件卡的幽灵会话
+    （文件投递与正文展示会话分叉缺陷）。
+
+    IM 渠道维持 job.session_id 外部投递路由，行为不变。
+    """
+    raw = str(channel_id or "").strip().lower()
+    if raw in UI_DELIVERY_CHANNELS:
+        return str(getattr(job, "delivery_session_id", None) or "").strip()
+    return str(getattr(job, "session_id", None) or "").strip()
+
+
 def _normalize_workflow_result_text(result: str) -> str:
     text = result.strip()
     prefix = "Workflow completed, result:"
@@ -1735,23 +1758,22 @@ class CronSchedulerService:
         group_digital_avatar: bool,
         app_id: str | None,
     ) -> None:
-        """随总结文本把产物文件重投到绑定会话.
+        """随总结文本把产物文件重投到展示会话.
 
-        下载令牌在投递点按 job 绑定会话生成（真实会话可落盘，token 才能
-        建立）；生成失败的文件降级为无下载信息的载荷，前端至少能拿到
+        下载令牌在投递点按解析出的投递会话生成（真实会话可落盘，token 才能
+        建立）；会话不存在/未回写时降级为无下载信息的载荷，前端至少能拿到
         artifact/path 提示。文件挨着总结文本推送，用户先看到总结再看到
         文件卡。
 
-        文件消息固定带 session_id=job.session_id（绑定会话）：前端
-        resolveConversationId 对无 session 的帧返回 undefined 后整帧忽略，
-        cron 文本帧由前端专门的 cron 会话流逻辑接住、chat.file 没有，
-        必须自带归属。广播豁免（payload.cron）条件也不受影响——豁免只
-        要求 payload.cron 存在。job.session_id 为空（极端：老 job 无绑定）
-        时退回文本同款 None，行为同修复前。
+        目标会话由 _resolve_delivery_session_id 解析：web/desktop/tui 展示
+        渠道只认 job.delivery_session_id（桌面端解析出 canonical 展示会话后
+        经 cron.job.update 回写）；IM 渠道沿用 job.session_id 外部投递路由。
+        展示渠道未回写时不回落 job.session_id（那是创建来源/IM 路由字段，
+        来源会话可能已被删除，兜底 append 会自动重建出纯文件幽灵会话）。
         """
         if not state.deliver_files:
             return
-        token_session_id = str(getattr(job, "session_id", None) or "").strip()
+        delivery_session_id = _resolve_delivery_session_id(job, channel_id)
         msg_session_id = (
             str(msg_session_id or "").strip()
             or str(routing_session_id or "").strip()
@@ -1781,7 +1803,7 @@ class CronSchedulerService:
                 payload_item["artifact_id"] = artifact_id
             try:
                 info = build_file_download_info(
-                    file_path, base_name, token_session_id, approved_outbound=True
+                    file_path, base_name, delivery_session_id, approved_outbound=True
                 )
                 payload_item.update(
                     {
@@ -1811,11 +1833,9 @@ class CronSchedulerService:
             payload={
                 "event_type": "chat.file",
                 "files": files_payload,
-                # 前端 chat.file 处理第一步就是 resolveEventSessionId(payload)
-                # （useWebSocket.ts getPayloadSessionId 只认 payload.session_id，
-                # 不认 wire 顶层）——缺失即静默忽略整帧。这里带 job 绑定会话
-                # （= 用户发起会话），文件卡落在绑定会话的聊天流里。
-                "session_id": token_session_id or None,
+                # 展示会话由服务端按 delivery_session_id 解析；未回写时为空，
+                # 前端 resolveEventSessionId 走 payload.cron 广播豁免兜底。
+                "session_id": delivery_session_id or None,
                 # 与文本推送同款的 cron 标记：WebChannel 对带 payload.cron 的
                 # 消息绕过 session 路由广播给 web 客户端（无 session_id 的
                 # 定时任务推送靠它放行，否则被"cannot route"丢弃）。
@@ -1845,18 +1865,21 @@ class CronSchedulerService:
             logger.exception(
                 "[Cron] deliver_files push failed run_id=%s", state.run_id
             )
-        # 双保险：同一载荷落绑定会话历史。UI 在 run 结束后会拉取会话历史
-        # 渲染（实测 19:04 run 后 history.get 连发），历史重放对
-        # event_type=chat.file 的 files 有原生支持（extractHistoryChatFileBlocks）；
-        # 即时 broadcast 帧因各端版本差异可能接不住，落盘保证可达。
-        if token_session_id:
+        # 双保险：同一载荷落展示会话历史。UI 在 run 结束后会拉取会话历史
+        # 渲染，历史重放对 event_type=chat.file 的 files 有原生支持
+        # （extractHistoryChatFileBlocks）；即时 broadcast 帧因各端版本
+        # 差异可能接不住，落盘保证可达。展示渠道未回写 delivery_session_id
+        # 时跳过兜底：job.session_id 是创建来源/IM 路由字段，向它兜底
+        # append 会把已删除的来源会话自动重建成纯文件幽灵会话，宁缺毋错。
+        delivery_session_id = _resolve_delivery_session_id(job, channel_id)
+        if delivery_session_id:
             try:
                 from jiuwenswarm.server.runtime.session.session_history import (
                     append_history_record,
                 )
 
                 append_history_record(
-                    session_id=token_session_id,
+                    session_id=delivery_session_id,
                     request_id=f"cron-{state.run_id}",
                     channel_id=str(job.targets or channel_id or "").strip(),
                     role="assistant",
@@ -1868,13 +1891,19 @@ class CronSchedulerService:
                 logger.info(
                     "[Cron] deliver_files appended to bound-session history "
                     "run_id=%s session=%s count=%d",
-                    state.run_id, token_session_id, len(files_payload),
+                    state.run_id, delivery_session_id, len(files_payload),
                 )
             except Exception:  # noqa: BLE001 - 落盘失败不影响推送
                 logger.exception(
                     "[Cron] deliver_files history append failed run_id=%s",
                     state.run_id,
                 )
+        else:
+            logger.info(
+                "[Cron] deliver_files skip bound-session history: no delivery "
+                "session resolved (channel=%s job=%s run_id=%s)",
+                channel_id, job.id, state.run_id,
+            )
 
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
         logger.info(

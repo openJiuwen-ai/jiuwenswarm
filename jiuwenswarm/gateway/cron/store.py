@@ -477,6 +477,15 @@ class CronJobStore:
             raw_sid = patch.get("session_id")
             new_sid = str(raw_sid).strip() if isinstance(raw_sid, str) and str(raw_sid).strip() else None
             updated = replace(updated, session_id=new_sid)
+        if "delivery_session_id" in patch:
+            # 桌面端解析出 canonical 展示会话后回写；置空串/None 表示清除。
+            raw_dsid = patch.get("delivery_session_id")
+            new_dsid = (
+                str(raw_dsid).strip()
+                if isinstance(raw_dsid, str) and str(raw_dsid).strip()
+                else None
+            )
+            updated = replace(updated, delivery_session_id=new_dsid)
         if "chat_type" in patch:
             raw_ct = patch.get("chat_type")
             new_ct = str(raw_ct).strip() if isinstance(raw_ct, str) and str(raw_ct).strip() else None
