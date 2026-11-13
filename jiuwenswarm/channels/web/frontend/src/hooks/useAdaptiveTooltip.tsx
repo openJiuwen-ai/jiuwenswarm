@@ -33,6 +33,9 @@ interface UseAdaptiveTooltipOptions {
   maxWidth?: number;
   /** 保留提示文案中的换行。 */
   multiline?: boolean;
+  /** Allow focusable actions inside the bubble without closing while entering it. */
+  interactive?: boolean;
+  renderContent?: (text: string) => ReactNode;
   /** 用此 ref 指向的元素的 rect 作为定位锚点（替代事件触发元素）。
    *  典型场景：hover 子元素（被截断的标题 span）时，tooltip 相对于稳定行容器定位。
    *  data-tooltip 文本仍然从事件触发元素读取。 */
@@ -72,19 +75,35 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
   const maxWidth = options?.maxWidth;
   const anchorRef = options?.anchorRef;
   const containerRef = options?.containerRef;
+  const interactive = options?.interactive ?? false;
   const [state, setState] = useState<TooltipState | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number; visible: boolean } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelHide = useCallback(() => {
+    if (hideTimer.current !== null) clearTimeout(hideTimer.current);
+    hideTimer.current = null;
+  }, []);
 
   const hide = useCallback(() => {
+    cancelHide();
     triggerRef.current = null;
     setState(null);
     setPosition(null);
-  }, []);
+  }, [cancelHide]);
+
+  const scheduleHide = useCallback(() => {
+    cancelHide();
+    hideTimer.current = setTimeout(hide, 150);
+  }, [cancelHide, hide]);
+
+  useEffect(() => cancelHide, [cancelHide]);
 
   const show = useCallback(
     (event: { currentTarget: EventTarget | null }) => {
+      cancelHide();
       const el = event.currentTarget as HTMLElement | null;
       const text = el?.getAttribute('data-tooltip') ?? '';
       if (!el) return;
@@ -102,7 +121,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
         placement,
       });
     },
-    [placement, anchorRef, hide],
+    [placement, anchorRef, hide, cancelHide],
   );
 
   useLayoutEffect(() => {
@@ -174,13 +193,14 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
 
   useEffect(() => {
     if (!state) return;
-    const hideTooltip = () => {
-      triggerRef.current = null;
-      setState(null);
-      setPosition(null);
+    const hideTooltip = hide;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (interactive && (triggerRef.current?.contains(target) || tooltipRef.current?.contains(target))) return;
+      hideTooltip();
     };
-    const onPointerDown = () => hideTooltip();
     const onFocusIn = (event: FocusEvent) => {
+      if (interactive && tooltipRef.current?.contains(event.target as Node | null)) return;
       if (event.target !== triggerRef.current) hideTooltip();
     };
     // 触发元素可能在 hover/focus 期间被整体卸载（如弹出菜单关闭），
@@ -210,7 +230,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('focusin', onFocusIn);
     };
-  }, [state]);
+  }, [state, hide, interactive]);
 
   const tooltip = state
     ? createPortal(
@@ -226,10 +246,17 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
             zIndex: 10000,
             maxWidth: maxWidth !== undefined ? `${maxWidth}px` : undefined,
             whiteSpace: options?.multiline ? 'pre-line' : undefined,
+            pointerEvents: interactive ? 'auto' : undefined,
           }}
-          role="tooltip"
+          role={interactive ? 'dialog' : 'tooltip'}
+          aria-label={interactive ? state.text : undefined}
+          onMouseEnter={interactive ? cancelHide : undefined}
+          onMouseLeave={interactive ? scheduleHide : undefined}
+          onFocusCapture={interactive ? cancelHide : undefined}
+          onBlurCapture={interactive ? scheduleHide : undefined}
+          onClick={interactive ? hide : undefined}
         >
-          {state.text}
+          {options?.renderContent ? options.renderContent(state.text) : state.text}
         </div>,
         containerRef?.current ?? triggerRef.current?.closest('dialog') ?? document.body,
       )
@@ -249,9 +276,9 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
 
   const handlers: TooltipHandlers = {
     onMouseEnter: show,
-    onMouseLeave: hide,
+    onMouseLeave: interactive ? scheduleHide : hide,
     onFocus: showOnFocus,
-    onBlur: hide,
+    onBlur: interactive ? scheduleHide : hide,
   };
 
   return { tooltip, handlers };

@@ -142,6 +142,7 @@ export const experimentalModule: SettingsModuleDefinition = {
           component: 'switch',
           key: 'cua_agent_enabled',
           availableWhen: 'cua_backend_available',
+          unavailableReasonKey: 'cua_backend_unavailable_reason',
         },
       ],
     },

@@ -231,16 +231,6 @@ export interface ToolCall {
   reviewer?: AutoReviewerMetadata;
 }
 
-export interface HistoryPayloadReference {
-  sha256: string;
-  bytes: number;
-  media_type: string;
-}
-
-export type ToolPayloadReferences = Partial<
-  Record<'rendered_result' | 'result' | 'raw_output', HistoryPayloadReference>
->;
-
 export interface ToolResult {
   toolName: string;
   result: string;
@@ -259,8 +249,6 @@ export interface ToolResult {
   reviewer?: AutoReviewerMetadata;
   /** MCP Apps：工具声明了 ui:// 界面时，由后端附带的渲染所需信息。 */
   mcpApp?: McpAppResult;
-  payloadRefs?: ToolPayloadReferences;
-  artifactSessionId?: string;
 }
 
 /** MCP Apps (io.modelcontextprotocol/ui) tool-result projection. */

@@ -100,6 +100,25 @@
     "noSettings": "此插件未提供设置页面。"
   },
   "designer": {
+    "modelConfiguration": {
+      "title": "模型配置",
+      "help": "选择对话模型，以及任务中可调用的生成模型。",
+      "bindingHint": "使用「设置 → 智能体 → 工具」当前绑定的模型。此处仅展示，更换请前往该设置。",
+      "bindingModel": "当前绑定的模型",
+      "chat": "对话",
+      "video_gen": "视频生成",
+      "visual_gen": "图片生成",
+      "missing": "未配置",
+      "incomplete": "缺少必填字段",
+      "disabled": "未启用",
+      "problem": "{{name}}{{status}}",
+      "separator": "；",
+      "configure": "去配置",
+      "enable": "去开启",
+      "retry": "重新读取",
+      "loading": "正在读取模型配置…",
+      "loadFailed": "生成模型配置读取失败，请重试。"
+    },
     "loading": "正在加载设计工作流…",
     "emptyTitle": "还没有设计工作流",
     "emptyDescription": "描述你的项目，创建独立的设计工作区与工作流。",
@@ -435,6 +454,57 @@
     "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。"
   },
   "settingsPanel": {
+    "multimodal": {
+      "tab": "多模态模型",
+      "tabHelp": "统一管理图片、音频、视频理解及图像、视频生成模型。模型的使用开关和绑定关系可在「设置 → 智能体 → 工具」中调整。",
+      "purpose": "模型用途",
+      "capabilities": "模型能力",
+      "understanding": "多模态理解",
+      "generation": "多模态生成",
+      "selectCapabilities": "请选择模型能力",
+      "capabilityHint": "请仅勾选该模型实际支持的能力。",
+      "displayName": "模型展示名称",
+      "displayNamePlaceholder": "默认使用模型名称，可自行修改",
+      "nameInvalid": "请输入 1–100 个字符的模型展示名称",
+      "completeFields": "请完善模型配置中的必填项。",
+      "add": "添加多模态模型",
+      "edit": "编辑多模态模型",
+      "deleteTitle": "删除模型？",
+      "changeTitle": "确认修改模型能力？",
+      "confirmDelete": "确认删除",
+      "confirmChanges": "确认修改",
+      "deleteReferences": "该模型已被以下工具绑定：{{tools}}。",
+      "editReferences": "本次修改将影响以下工具的模型绑定：{{tools}}。",
+      "replacementRule": "确认后，相关工具将自动切换到其他可用模型，并保留当前开关状态；没有可用模型的工具将关闭并清空模型配置。",
+      "deleteUnbound": "删除后，该模型将从多模态模型列表中移除。",
+      "applyFailed": "已保存，应用失败，请重试。",
+      "shortcutChanged": "模型已添加；未包含{{tool}}能力，该工具设置保持不变。",
+      "separator": "、",
+      "empty": "尚未配置多模态模型",
+      "emptyDescription": "添加模型并选择其支持的能力后，尚未配置模型的对应工具将自动启用。",
+      "tools": {
+        "vision": "图片处理",
+        "audio": "音频处理",
+        "video": "视频理解",
+        "visual_gen": "图像生成",
+        "video_gen": "视频生成"
+      },
+      "errors": {
+        "MM_VALIDATION_FAILED": "请检查模型配置，确保所有必填项符合要求。",
+        "MM_CONFIRM_REQUIRED": "模型绑定发生变化，请重新确认受影响的工具。",
+        "MM_MODEL_NOT_FOUND": "该模型已不存在，请重新选择。",
+        "MM_MODEL_ID_CONFLICT": "模型标识冲突，请重新打开添加弹框。",
+        "MM_CAPABILITY_MISMATCH": "所选模型不支持当前工具，请重新选择。",
+        "MM_MODEL_REQUIRED": "请先添加对应能力的模型。",
+        "MM_STORAGE_FAILED": "配置保存失败，请重试。",
+        "MM_RECOVERY_REQUIRED": "配置事务无法恢复，请检查配置文件后重试。",
+        "MM_CONFIG_READ_FAILED": "模型配置读取失败，请检查配置文件及凭据。",
+        "MM_UNSUPPORTED_SCHEMA": "当前组件不支持此配置版本，请更新组件。",
+        "MM_LEGACY_WRITE_UNSUPPORTED": "请通过多模态模型设置修改这些配置。",
+        "METHOD_NOT_FOUND": "组件版本不匹配，请更新 Gateway、协议和 AgentServer。",
+        "unknown": "操作失败，请重试。"
+      }
+    },
     "voice": {
       "connectionFailed": "连接失败，请检查接口地址、API Key 和模型后重试。",
       "connectionSuccess": "模型连接验证成功",
@@ -874,6 +944,38 @@
       "requiredFields": "带 * 的项目为必填项，填写完整后才能保存。已保存的 API 密钥无需重新输入。"
     },
     "fields": {
+      "vision_enabled": {
+        "title": "图片处理",
+        "description": "启用后使用所选模型处理对应媒体；关闭后保留模型选择。"
+      },
+      "audio_enabled": {
+        "title": "音频处理",
+        "description": "启用后使用所选模型处理对应媒体；关闭后保留模型选择。"
+      },
+      "video_enabled": {
+        "title": "视频理解",
+        "description": "启用后使用所选模型处理对应媒体；关闭后保留模型选择。"
+      },
+      "vision_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
+      "audio_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
+      "video_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
+      "visual_gen_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
+      "video_gen_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
       "preferred_language": {
         "title": "Language",
         "description": "设置应用程序界面的显示语言。"
@@ -1109,7 +1211,12 @@
       "cua_agent_enabled": {
         "title": "启用电脑操控",
         "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
-        "unavailableDescription": "当前环境不支持电脑操控。"
+        "unavailableDescription": "当前环境不支持电脑操控。",
+        "unavailableReasons": {
+          "native_build_failed": "电脑操作暂不可用，安装时未能编译 computer-use 驱动。",
+          "backend_missing": "未找到可用的电脑操作驱动。",
+          "unsupported_platform": "当前操作系统或版本不支持电脑操控。"
+        }
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
@@ -4475,18 +4582,6 @@
       }
     },
     "toolResult": {
-      "originalOpen": "查看原文",
-      "originalClose": "收起原文",
-      "originalSource": "原文内容",
-      "originalText": "结果正文",
-      "originalData": "结构化原文",
-      "originalReturn": "工具原始返回",
-      "originalLoading": "正在读取原文…",
-      "originalFailed": "原文读取失败，请重试。",
-      "originalProgress": "已阅读至 {{percent}}%",
-      "originalPrevious": "上一段",
-      "originalNext": "下一段",
-      "originalRetry": "重试",
       "answersInSummary": "请查看问题澄清卡片中的回答，敏感输入已隐藏。",
       "success": "完成",
       "failed": "失败",
@@ -6041,6 +6136,8 @@
         "knowledge": "添加知识",
         "starterPrompts": "添加快捷问"
       },
+      "starterPromptsLimit": "最多添加 {{count}} 条",
+      "starterPromptDuplicate": "与上面的问题重复，保存时只保留一条",
       "empty": {
         "skills": "暂无技能",
         "connectors": "暂无连接器",
@@ -6151,6 +6248,7 @@
       "editResources": "编辑技能与连接器",
       "resourcesHint": "从本机已安装的技能和已连接的连接器中选择。保存并发布后，该员工之后的新任务才会使用这次选择。",
       "saveResources": "保存并发布",
+      "saveSuccess": "保存成功",
       "savingResources": "正在保存",
       "saveSettingsFailed": "配置保存或发布失败，请重试。",
       "modelEmptyHint": "请先在「设置 → 模型」中添加模型。",
@@ -6261,10 +6359,12 @@
       "cancelAuthorizationTitle": "取消渠道授权",
       "cancelAuthorizationWarning": "取消后，该同事会停止通过这个渠道接收和回复消息。",
       "cancelAuthorizationMessage": "确定取消「{{channel}}」的授权吗？之后可以重新授权。",
+      "cancelAuthorizationSuccess": "取消授权成功",
       "addConnection": "添加连接",
       "removeConnection": "解除连接",
       "removeConnectionWarning": "解除后，该应用的消息不再交给这位员工；这个连接的工作空间和历史保留，重新绑定同一应用后恢复。",
       "removeConnectionConfirm": "确定解除{{platform}}应用 {{app}} 与 AI 员工的连接：",
+      "removeConnectionSuccess": "解除连接成功",
       "workLog": "工作日志",
       "periods": {
         "7d": "最近7天",
@@ -6383,11 +6483,6 @@
       "webConnection": "网页",
       "connectionHint": "在这里生成的共享文件，{{platform}}用户也能读取。",
       "webResult": "网页工作空间有新结果，点击查看",
-      "defaultPrompts": [
-        "统计今日咨询热点",
-        "复盘群内回复质量",
-        "导出今日对话摘要"
-      ],
       "featuresTitle": "功能特点",
       "features": {
         "chat": {
@@ -6558,6 +6653,7 @@
       "periodStart": "开始日期",
       "periodEnd": "结束日期",
       "periodTo": "至",
+      "periodLimit": "最多支持查看 {{count}} 天数据，已自动调整开始日期",
       "metrics": {
         "members": "员工数量",
         "activeDays": "活跃天数",

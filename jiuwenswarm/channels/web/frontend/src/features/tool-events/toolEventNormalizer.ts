@@ -8,8 +8,6 @@ import {
   normalizeReviewerMetadata,
   reviewerIndicatesFailure,
 } from './reviewerMetadata';
-import { readToolPayloadReferences } from './toolPayloadReferences';
-import type { ToolPayloadReferences } from '../../types/message';
 
 type UnknownPayload = Record<string, unknown>;
 
@@ -252,8 +250,6 @@ export interface NormalizedToolResult {
   mermaid?: string;
   reviewer?: AutoReviewerMetadata;
   mcpApp?: McpAppResult;
-  payloadRefs?: ToolPayloadReferences;
-  artifactSessionId?: string;
 }
 
 /** Project the backend's ``raw_output.mcp_app`` block (MCP Apps tool UI). */
@@ -315,7 +311,7 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
   };
 }
 
-export function normalizeToolResultPayload(payload: UnknownPayload, sessionId?: string): NormalizedToolResult {
+export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedToolResult {
   const toolResultPayload = asRecord(payload.tool_result) ?? payload;
   const rawOutputRecord =
     asRecord(toolResultPayload.raw_output) ?? asRecord(toolResultPayload.rawOutput);
@@ -412,8 +408,6 @@ export function normalizeToolResultPayload(payload: UnknownPayload, sessionId?: 
       ? plannedGraphToMermaid(rawOutputRecord)
       : undefined;
   const mcpApp = parseMcpAppResult(rawOutputRecord?.mcp_app);
-  const payloadRefs = readToolPayloadReferences(toolResultPayload.payload_refs ?? payload.payload_refs);
-  const artifactSessionId = sessionId || (typeof payload.session_id === 'string' ? payload.session_id : undefined);
 
   return {
     toolName,
@@ -428,7 +422,6 @@ export function normalizeToolResultPayload(payload: UnknownPayload, sessionId?: 
     ...(mermaid ? { mermaid } : {}),
     ...(mcpApp ? { mcpApp } : {}),
     reviewer,
-    ...(payloadRefs ? { payloadRefs, artifactSessionId } : {}),
   };
 }
 

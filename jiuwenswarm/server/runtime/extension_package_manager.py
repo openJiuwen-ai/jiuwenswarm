@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 import aiofiles.os
 import yaml
 
+from jiuwenswarm.common.filesystem_paths import extended_path
 from jiuwenswarm.common.utils import (
     get_agent_skills_dir,
     get_agent_workspace_dir,
@@ -2100,6 +2101,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _assert_no_symlinks(src: Path) -> None:
     """Reject a package subtree containing any symbolic link."""
+    src = Path(extended_path(src))
     if src.is_symlink():
         raise ValueError(f"symbolic links are not allowed in package: {src.name}")
     try:
@@ -2113,7 +2115,7 @@ def _assert_no_symlinks(src: Path) -> None:
 def _copytree_without_symlinks(src: Path, dst: Path) -> None:
     """Copy a package subtree after rejecting every symbolic link."""
     _assert_no_symlinks(src)
-    shutil.copytree(src, dst)
+    shutil.copytree(extended_path(src), extended_path(dst))
 
 
 def _lifecycle_package_id(params: dict, kind: str) -> str:
@@ -4044,6 +4046,7 @@ def _agent_template_source(package_id: str, *, role: str) -> Path:
     if resolved is None:
         raise AgentGroupPackageError(f"{role} agent_template not found: {package_id}", "AGENT_GROUP_MEMBER_NOT_FOUND")
     package_dir, _ = resolved
+    package_dir = Path(extended_path(package_dir))
     manifest = _read_package_manifest(package_dir)
     if manifest is None or manifest.get("package_type") != "agent_template":
         raise AgentGroupPackageError(f"{role} agent_template is invalid: {package_id}", "AGENT_GROUP_TEMPLATE_INVALID")
@@ -4102,8 +4105,10 @@ def create_agent_group(params: dict) -> dict:
     )
     _assert_agent_group_name_available(name)
 
+    # Keep the prefix through validation, atomic commit and rollback, not just copytree.
+    local_root = Path(extended_path(local_root))
     local_root.mkdir(parents=True, exist_ok=True)
-    container = Path(tempfile.mkdtemp(prefix=".agent_group_create_", dir=local_root))
+    container = Path(tempfile.mkdtemp(prefix=".ag_", dir=local_root))
     stage = container / package_id
     destination = local_root / package_id
     try:
@@ -4622,7 +4627,7 @@ def install_agent_group(params: dict) -> None:
         raise ValueError(f"agent_group package not found: {package_id}")
     package_dir, _ = resolved
     _assert_no_symlinks(package_dir)
-    load_agent_group_package(package_dir)
+    load_agent_group_package(Path(extended_path(package_dir)))
     _install_package(
         package_id,
         kind=_AGENT_GROUP_KIND,
@@ -4759,6 +4764,7 @@ def _locate_user_package_dir(
 
 def _rmtree(path: Path, *, retries: int = 6, delay: float = 0.5) -> None:
     """Delete directory; retry on transient file lock."""
+    path = Path(extended_path(path))
     for attempt in range(retries):
         try:
             shutil.rmtree(path)

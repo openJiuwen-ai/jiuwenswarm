@@ -260,6 +260,12 @@ export const OPENAI_ACCOUNT_RPC = {
 } as const;
 
 export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
+  'multimodal.models.list',
+  'multimodal.models.get',
+  'multimodal.models.upsert',
+  'multimodal.models.delete',
+  'multimodal.tools.update',
+  'multimodal.config.apply',
   'config.get',
   'config.save_all',
   'config.validate_model',

@@ -54,7 +54,7 @@ export interface JiuwenMateMemberStats {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MAX_PERIOD_DAYS = 31;
+export const MAX_PERIOD_DAYS = 30;
 
 export function toIsoDate(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -110,13 +110,18 @@ export function setActivityYear(state: JiuwenMateOfficeState, year: number): Jiu
   return { ...state, year, hoveredCellId: null };
 }
 
+/** True when the picked range is longer than `setActivityPeriod` keeps. */
+export function exceedsActivityPeriod(periodStart: string, periodEnd: string): boolean {
+  return Math.abs(daysBetween(parseIsoDate(periodStart), parseIsoDate(periodEnd))) >= MAX_PERIOD_DAYS;
+}
+
 export function setActivityPeriod(state: JiuwenMateOfficeState, periodStart: string, periodEnd: string): JiuwenMateOfficeState {
   const start = parseIsoDate(periodStart);
   const end = parseIsoDate(periodEnd);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return state;
-  if (start > end) return { ...state, periodStart: periodEnd, periodEnd: periodStart, hoveredCellId: null };
-  const clampedStart = daysBetween(start, end) >= MAX_PERIOD_DAYS ? toIsoDate(addDays(end, -(MAX_PERIOD_DAYS - 1))) : periodStart;
-  return { ...state, periodStart: clampedStart, periodEnd, hoveredCellId: null };
+  const [from, to] = start > end ? [end, start] : [start, end];
+  const clampedFrom = daysBetween(from, to) >= MAX_PERIOD_DAYS ? addDays(to, -(MAX_PERIOD_DAYS - 1)) : from;
+  return { ...state, periodStart: toIsoDate(clampedFrom), periodEnd: toIsoDate(to), hoveredCellId: null };
 }
 
 export function setActivityColleague(state: JiuwenMateOfficeState, selectedColleagueId: string): JiuwenMateOfficeState {
