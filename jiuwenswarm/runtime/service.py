@@ -4052,6 +4052,14 @@ class AgentRuntime:
                 )
                 else None
             )
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            is_subagent_approval_answer,
+        )
+
+        # Delegated answers carry a parent session and question ID, not a new
+        # mode selection. They must reach that live execution even without mode.
+        if is_subagent_approval_answer(params):
+            return SessionWorkKind.CONTROL_INPUT
         if not cls._is_single_agent_session_mode(
             params.get("mode"),
             work_mode=params.get("work_mode"),

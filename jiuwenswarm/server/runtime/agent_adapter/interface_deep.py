@@ -2115,6 +2115,8 @@ class JiuWenSwarmDeepAdapter:
         self._config_cache: dict[str, Any] = {}
         self._filesystem_rail: SysOperationRail | None = None
         self._skill_rail: SkillUseRail | None = None
+        self._skill_authorization_rail = None
+        self._skill_active_state_rail = None
         self._stream_event_rail: JiuSwarmStreamEventRail | None = None
         # Track session IDs currently executing on this adapter instance.
         # Used by process_interrupt to avoid aborting sessions that are not
@@ -4601,6 +4603,8 @@ class JiuWenSwarmDeepAdapter:
             create_started_at = time.monotonic()
             if permission_project_dir is not None:
                 config = {**(config or {}), "project_dir": permission_project_dir}
+            if execution_request is not None:
+                config = {**(config or {}), "request": execution_request}
             client_app = conversation_app(metadata)
             config = {**(config or {}), "cron_execution": cron_execution, "moa_enabled": effective_moa,
                       "moa_model_selection": selection.model_dump() if selection is not None else None,
@@ -5867,6 +5871,8 @@ class JiuWenSwarmDeepAdapter:
         excluded = (SubagentRail, RootPermissionQueueRail, RootContextRail, RootPermissionCompletionRail)
         candidates = []
         for rail in rails:
+            if not getattr(rail, "inherit_to_subagents", True):
+                continue
             if isinstance(rail, excluded) or (smart and isinstance(rail, PERMISSION_RAIL_TYPES)):
                 continue
             if smart and isinstance(rail, JiuSwarmStreamEventRail):
@@ -9338,6 +9344,8 @@ class JiuWenSwarmDeepAdapter:
         # 预热会话首聊才补企业配置时，同步挂上/刷新权限 Rail（含 Manager 护栏）。
         if not self._permission_state.permission_update_in_progress:
             self._update_permission_rail(config_base)
+            await self._ensure_permission_rail_live_registered()
+            await self._ensure_skill_authorization_registered()
         try:
             self._create_model(config_base)
         except ValueError:
@@ -12072,6 +12080,9 @@ class JiuWenSwarmDeepAdapter:
             ))
 
         rails = self._instantiate_rails(rail_infos, config_base)
+        self._skill_authorization_rail = self._build_skill_authorization_rail(config_base)
+        if self._skill_authorization_rail is not None:
+            rails.append(self._skill_authorization_rail)
         if group is not None:
             if group["_stream_event_rail"] is None or group["_permission_rail"] is None:
                 raise RuntimeError("required_agent_rail_missing:smart_permission")
@@ -12711,6 +12722,138 @@ class JiuWenSwarmDeepAdapter:
         finally:
             self._unmark_session_active(sid)
 
+    def _build_skill_authorization_rail(self, config_base):
+        from openjiuwen.harness.security.skill_authorization import is_skill_authorization_enabled
+
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return None
+        if not is_skill_authorization_enabled(config_base.get("permissions", {})):
+            session_id = str(getattr(self, "_parent_session_id", "") or "")
+            gate = getattr(self, "_skill_authorization_rail", None)
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.adapter import (
+                existing_session_store,
+            )
+
+            store = existing_session_store(session_id, sessions_root=getattr(gate, "sessions_root", None))
+            if store is not None:
+                store.sync_feature_state(session_id, enabled=False)
+            return None
+        permission = getattr(self, "_permission_rail", None)
+        base = getattr(permission, "base_rail", permission)
+        if base is None or not is_skill_authorization_enabled(base.get_permissions_snapshot()):
+            return None
+        from openjiuwen.harness.rails.skills.skill_authorization_rail import build_skill_registry_resolver
+        from openjiuwen.harness.security.skill_authorization import SkillTrustLevel
+
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+            configure_shared_skill_authorization,
+        )
+        from jiuwenswarm.agents.harness.common.rails.skill_authorization_rail import SkillAuthorizationRail
+        from jiuwenswarm.common.utils import get_agent_sessions_dir, get_builtin_skills_dir
+        from jiuwenswarm.runtime.run_permissions import overlay_run_permissions
+
+        store = configure_shared_skill_authorization({})
+        registry = build_skill_registry_resolver(
+            lambda: self._skill_rail.skills_meta if self._skill_rail else [],
+            skill_dirs_provider=self._skill_scan_dirs,
+        )
+
+        def installation(name):
+            return next((row for row in self._skill_manager.list_skill_installations()
+                         if row.get("name") == name or row.get("entity_dir") == name), {})
+
+        def resolve_skill(name):
+            location = registry(name)
+            if location is None:
+                return None
+            directory, source, version = location
+            row = installation(name)
+            source = row.get("source_id") or row.get("origin") or source
+            version = row.get("version_id") or row.get("version") or version
+            return directory, str(source), str(version or "") or None
+
+        def resolve_trust(directory):
+            directory = directory.resolve()
+            builtin = get_builtin_skills_dir().resolve()
+            if directory == builtin or builtin in directory.parents:
+                return SkillTrustLevel.BUILTIN
+            row = installation(directory.name)
+            in_tenant_skills = directory.parent == get_agent_skills_dir().resolve()
+            if in_tenant_skills and row.get("source_type") in {"builtin", "prebuilt"}:
+                return SkillTrustLevel.BUILTIN
+            return SkillTrustLevel.OTHER
+
+        rail = SkillAuthorizationRail(
+            engine=base.permission_engine,
+            grant_store=store,
+            skill_resolver=resolve_skill,
+            trust_resolver=resolve_trust,
+            config_provider=lambda: overlay_run_permissions(base.get_permissions_snapshot()),
+            scene_bypass=lambda: getattr(TOOL_PERMISSION_CONTEXT.get(), "scene", None) == "group_digital_avatar",
+        )
+        rail.bind_session(str(getattr(self, "_parent_session_id", "") or ""), get_agent_sessions_dir())
+
+        def resolve_scope(ctx):
+            owner = getattr(self, "_instance", None)
+            if ctx.agent is not owner and ctx.agent is not getattr(owner, "react_agent", None):
+                return None
+            return rail.resolve_scope(ctx)
+
+        base.set_skill_scope_resolver(resolve_scope)
+        return rail
+
+    async def _ensure_skill_authorization_registered(self):
+        """Prewarmed sessions receive Manager permissions only on the first chat."""
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return
+        permission = getattr(self, "_permission_rail", None)
+        base = getattr(permission, "base_rail", permission)
+        previous = getattr(self, "_skill_authorization_rail", None)
+        rail = previous
+        config_base = self._config_base_cache or {}
+        from openjiuwen.harness.security.skill_authorization import is_skill_authorization_enabled
+
+        if (previous is None or not previous.uses_permission_engine(getattr(base, "permission_engine", None))
+                or not is_skill_authorization_enabled(config_base.get("permissions", {}))):
+            if previous is not None:
+                await instance.unregister_rail(previous)
+            rail = self._build_skill_authorization_rail(config_base)
+            self._skill_authorization_rail = rail
+        if rail is None:
+            lifecycle = getattr(self, "_skill_active_state_rail", None)
+            if lifecycle is not None:
+                await instance.unregister_rail(lifecycle)
+                self._skill_active_state_rail = None
+            return
+        if not instance.is_registered_rail(rail):
+            await instance.register_rail(rail)
+        else:
+            rail.init(instance)
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.subagents import (
+            install_subagent_authorization,
+        )
+
+        install_subagent_authorization(instance, lambda: self._skill_authorization_rail)
+        from jiuwenswarm.agents.harness.common.rails.skill_active_state import (
+            SkillActiveStateRail, resolve_stale_invoke_limit,
+        )
+
+        lifecycle = getattr(self, "_skill_active_state_rail", None)
+        limit = resolve_stale_invoke_limit(config_base)
+        if lifecycle is None:
+            lifecycle = SkillActiveStateRail(
+                session_id=rail.session_id, sessions_root=rail.sessions_root,
+                stale_invoke_limit=limit,
+            )
+            self._skill_active_state_rail = lifecycle
+        else:
+            lifecycle.update_stale_invoke_limit(limit)
+        if not instance.is_registered_rail(lifecycle):
+            await instance.register_rail(lifecycle)
+
     async def _ensure_permission_rail_live_registered(self) -> None:
         """Issue #4059: keep ``_permission_rail`` on the running instance's
         execution chain after a hot reload.
@@ -12821,6 +12964,9 @@ class JiuWenSwarmDeepAdapter:
         rails_list = []
         if self._skill_rail is not None:
             rails_list.append(self._skill_rail)
+        self._skill_authorization_rail = self._build_skill_authorization_rail(config_base)
+        if self._skill_authorization_rail is not None:
+            rails_list.append(self._skill_authorization_rail)
         if self._context_assemble_rail is not None:
             rails_list.append(self._context_assemble_rail)
         if self._context_processor_rail is not None:
@@ -13774,6 +13920,7 @@ class JiuWenSwarmDeepAdapter:
         # Startup rails build discovery indexes and prompts from the ability
         # manager. Apply the boundary first, including to tools added by rails.
         await self._instance.ensure_initialized()
+        await self._ensure_skill_authorization_registered()
         if self._enable_auto_permission:
             expected = PermissionRailGroup(
                 self._permission_rail, self._root_permission_queue_rail,
@@ -14161,6 +14308,7 @@ class JiuWenSwarmDeepAdapter:
         # ensure_initialized(), so we live-register it here — same pattern
         # memory / task_planning / ask_user / context_* / skill_evolution use.
         await self._ensure_permission_rail_live_registered()
+        await self._ensure_skill_authorization_registered()
         # This rail is absent on a discovery-disabled cold start. Mount it
         # live after configure; never rebuild the orchestration rail, whose
         # state owns already-confirmed direct routes and pending questions.
@@ -16855,6 +17003,16 @@ class JiuWenSwarmDeepAdapter:
         intent = request.params.get("intent", "cancel")
         new_input = request.params.get("new_input")
 
+        if intent in ("cancel", "supplement"):
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.adapter import (
+                revoke_skill_authorization,
+            )
+
+            revoke_skill_authorization(
+                request.session_id, reason=f"interrupt_{intent}",
+                sessions_root=getattr(getattr(self, "_skill_authorization_rail", None), "sessions_root", None),
+            )
+
         # Interaction-managed sessions: route cancel/supplement through
         # DeepAgent.cancel_round instead of the global DeepAgent abort + raw
         # asyncio-task cancellation path.  The global path kills the shared
@@ -17283,6 +17441,14 @@ class JiuWenSwarmDeepAdapter:
         if self._is_session_scoped_adapter:
             if self._session_adapter_key(self._parent_session_id) in protected:
                 return
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.adapter import (
+                revoke_skill_authorization,
+            )
+
+            revoke_skill_authorization(
+                self._parent_session_id, reason="gateway_disconnect",
+                sessions_root=getattr(getattr(self, "_skill_authorization_rail", None), "sessions_root", None),
+            )
         else:
             for session_id, adapter in list(self._session_adapters.items()):
                 if session_id not in protected:
@@ -17365,7 +17531,15 @@ class JiuWenSwarmDeepAdapter:
         session_id = request.session_id
         resolved = False
         response_payload: dict[str, Any] | None = None
-        if request_id.startswith("symphony_experience_"):
+        if request_id.startswith(("subagent_skill_load_", "subagent_tool_permission_")):
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.subagents import (
+                resolve_subagent_approval,
+            )
+
+            resolved = resolve_subagent_approval(
+                session_id=session_id, request_id=request_id, params=request.params,
+            )
+        elif request_id.startswith("symphony_experience_"):
             response_payload = await self._handle_symphony_experience_answer(
                 request_id,
                 answers,
@@ -18687,6 +18861,19 @@ class JiuWenSwarmDeepAdapter:
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AgentResponse:
         """Bind trusted host identity and command execution for one request."""
+        if self._is_subagent_approval_answer(request.params):
+            self.validate_auto_permission_workspace_request(request)
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.subagents import (
+                resolve_subagent_approval,
+            )
+
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=True,
+                payload={"accepted": True, "resolved": resolve_subagent_approval(
+                    session_id=request.session_id,
+                    request_id=request.params.get("request_id", ""), params=request.params,
+                )}, metadata=request.metadata,
+            )
         from jiuwenswarm.server.runtime.plugin_package_lifecycle import use_plugins
 
         with use_plugins(self._plugin_turn_packages(request)):
@@ -19485,6 +19672,18 @@ class JiuWenSwarmDeepAdapter:
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AsyncIterator[AgentResponseChunk]:
         """Bind trusted host identity and command execution for one stream."""
+        if self._is_subagent_approval_answer(request.params):
+            result = await self.process_message_impl(request, inputs)
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id,
+                payload={"event_type": "runtime.accepted", **result.payload},
+                is_complete=False,
+            )
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id,
+                payload=None, is_complete=True,
+            )
+            return
         from jiuwenswarm.server.runtime.plugin_package_lifecycle import use_plugins
 
         stream = self._process_stream_with_plugin_reservation(request, inputs)
@@ -22015,6 +22214,8 @@ class JiuWenSwarmDeepAdapter:
 
                 if chunk_type == "chat.ask_user_question":
                     return parse_ask_user_question_payload(payload)
+                if chunk_type == "chat.ask_user_question_expired" and isinstance(payload, dict):
+                    return {**payload, "event_type": chunk_type}
 
                 if chunk_type == "chat.symphony_status":
                     if isinstance(payload, dict):
@@ -23574,6 +23775,12 @@ class JiuWenSwarmDeepAdapter:
             task.result()
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] TTSE cleanup task exception: %s", exc)
+
+    @staticmethod
+    def _is_subagent_approval_answer(params) -> bool:
+        return isinstance(params, dict) and str(params.get("request_id") or "").startswith(
+            ("subagent_skill_load_", "subagent_tool_permission_")
+        )
 
     @staticmethod
     def _is_approval_event(evt) -> bool:

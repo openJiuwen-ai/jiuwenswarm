@@ -32,6 +32,7 @@ async def test_enterprise_prewarm_hydrates_missing_catalog_without_hiding_denial
         config=configured, policy=SimpleNamespace(models={"main": "tenant-model"}),
     ))
     adapter._update_permission_rail = MagicMock()
+    adapter._ensure_permission_rail_live_registered = AsyncMock()
     adapter._create_model = MagicMock()
     request = SimpleNamespace()
     if code == MODEL_SELECTION_FORBIDDEN:
@@ -45,6 +46,7 @@ async def test_enterprise_prewarm_hydrates_missing_catalog_without_hiding_denial
         adapter._load_enterprise_config.assert_awaited_once_with(request, base={})
         adapter._create_model.assert_called_once_with(configured)
         adapter._update_permission_rail.assert_called_once_with(configured)
+        adapter._ensure_permission_rail_live_registered.assert_awaited_once()
 
 
 @pytest.mark.asyncio

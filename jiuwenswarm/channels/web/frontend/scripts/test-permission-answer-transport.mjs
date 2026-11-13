@@ -12,6 +12,7 @@ await build({
     'src/features/planMode/planModeGate.ts',
     'src/features/multiModelCollaboration/featureConfig.ts',
     'src/features/mcpApps/mcpAppContext.ts',
+    'src/components/ChatPanel/InlineQuestionCard.tsx',
   ],
   outbase: 'src', outdir: 'node_modules/.cache/permission-answer-transport',
   bundle: true, splitting: true, packages: 'external', platform: 'node', format: 'esm',

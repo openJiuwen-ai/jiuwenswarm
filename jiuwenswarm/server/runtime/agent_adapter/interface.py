@@ -513,6 +513,12 @@ def _is_ask_user_answer_resume(params: Any) -> bool:
     """
     if not isinstance(params, dict):
         return False
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        is_subagent_approval_answer,
+    )
+
+    if is_subagent_approval_answer(params):
+        return True
     if str(params.get("source") or "").strip() != "ask_user_interrupt":
         return False
     answers = params.get("answers")
@@ -590,7 +596,7 @@ async def _persist_ask_user_answer_history(
         timestamp=time.time(),
         extra={
             "request_id": answer_request_id,
-            "source": "ask_user_interrupt",
+            "source": params.get("source", "ask_user_interrupt"),
             "answers": redact_sensitive_answers(params["answers"]),
         },
         mode=params.get("mode", "unknown"),
@@ -2181,6 +2187,10 @@ class JiuWenSwarm:
         # context. Keep the prompt and routing on the same parsing rules, and
         # clear stale nested selections even when this turn selects nothing.
         run_extra["skills"] = turn.resolved_skills
+        run_extra.pop("__jiuwenswarm_chat_send_source__", None)
+        source = str(params.get("source") or "").strip()
+        if source:
+            run_extra["__jiuwenswarm_chat_send_source__"] = source
         run_extra.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
         cross_session = metadata.get(SESSION_MESSAGE_INTERNAL_KEY)
         if isinstance(cross_session, dict):
@@ -2343,6 +2353,15 @@ class JiuWenSwarm:
             # One result per paused client tool call, by its interrupt id; a call left unanswered stays paused.
             for answer in client_tool_answers(answers):
                 interactive_input.answer(answer.interrupt_id, answer.result)
+            return interactive_input
+
+        # Skill approval uses its own actions, never ordinary tool "always allow".
+        skill_answer = answers[0] if answers and isinstance(answers[0], dict) else {}
+        skill_action = skill_answer.get("action")
+        if source == "permission_interrupt" and skill_action in {
+            "approve_once", "approve_session", "continue_without_overlay",
+        }:
+            address({"action": skill_action})
             return interactive_input
 
         if source == "ask_user_interrupt":
@@ -3928,6 +3947,22 @@ class JiuWenSwarm:
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         session_id = self._session_manager.get_session_id(request.session_id)
         params = request.params if isinstance(request.params, dict) else {}
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            is_subagent_approval_answer,
+        )
+
+        if is_subagent_approval_answer(params):
+            # The child is still running; answer its Future, without reconciling
+            # the parent's equipment or starting another model invocation.
+            response = await adapter.handle_user_answer(request)
+            if response.payload.get("resolved") is True:
+                await _persist_ask_user_answer_history(request, session_id, params)
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id,
+                payload={"event_type": "runtime.accepted", **response.payload},
+                metadata=response.metadata, is_complete=False,
+            )
+            return
         restore_chat_send_equipment_params(session_id, params)
         inputs, _memory_mode, _user_turn = self._build_inputs(request)
         await self.reconcile_session_mcp(

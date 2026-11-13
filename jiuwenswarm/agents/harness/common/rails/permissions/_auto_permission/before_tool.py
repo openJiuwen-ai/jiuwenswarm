@@ -185,6 +185,10 @@ class AutoPermissionBeforeToolMixin:
         native_token = NATIVE_PATH_ACCESS.set(None)
         try:
             invocation = _extract_invocation(args, kwargs)
+            from ..skill_authorization.permission_bridge import gate_handled
+
+            if invocation.ctx is not None and gate_handled(invocation.ctx):
+                return None
             if plan_hard_rejected(invocation.ctx):
                 return await self._before_tool_call_impl(*args, **kwargs)
             capture = getattr(self.base_rail, "permission_check_context", None)
@@ -192,7 +196,9 @@ class AutoPermissionBeforeToolMixin:
                 capture(_resolve_session_id(invocation.ctx, kwargs))
                 if callable(capture) else nullcontext()
             )
-            with context:
+            skill_capture = getattr(self.base_rail, "skill_check_context", None)
+            skill_context = skill_capture(invocation.ctx) if callable(skill_capture) else nullcontext()
+            with skill_context, context:
                 return await self._before_tool_call_impl(*args, **kwargs)
         except asyncio.CancelledError:
             invocation = _extract_invocation(args, kwargs)

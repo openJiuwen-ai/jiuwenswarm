@@ -15,6 +15,7 @@ import { UserAnswer, QuestionOption, Question } from '../../types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { classifyPrompt } from '../InteractionSlot/promptRouting';
+import { isValidSkillApprovalCard, SkillApprovalCard } from './SkillApprovalCard';
 
 interface InlineQuestionCardProps {
   onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
@@ -275,6 +276,10 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
   // 此处仅保留 legacy（演进审批 / 计划审批）在消息流内渲染。
   if (!pendingQuestion || classifyPrompt(pendingQuestion) !== 'legacy') {
     return null;
+  }
+
+  if (isValidSkillApprovalCard(pendingQuestion.skill_approval_card)) {
+    return <SkillApprovalCard key={pendingQuestion.request_id} onSubmit={onSubmit} card={pendingQuestion.skill_approval_card} />;
   }
 
   const borderColor = isEvolution
