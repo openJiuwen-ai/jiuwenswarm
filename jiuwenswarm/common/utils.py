@@ -2501,7 +2501,8 @@ def append_jsonl_log(
         try:
             size = path.stat().st_size
             added_bytes = len(line.encode("utf-8")) + len(os.linesep) - 1
-            if max_bytes > 0 and backup_count > 0 and size and size + added_bytes > max_bytes:
+            rotation_enabled = max_bytes > 0 and backup_count > 0
+            if rotation_enabled and size and size + added_bytes > max_bytes:
                 handler.doRollover()
             handler.stream.write(line)
             handler.flush()

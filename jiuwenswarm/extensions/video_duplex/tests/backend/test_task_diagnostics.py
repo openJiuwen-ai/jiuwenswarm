@@ -26,8 +26,8 @@ def test_task_trace_filters_success_details_but_keeps_failures(tmp_path, monkeyp
         diagnostics.trace_task("cancel_rpc_sent", probe=False)
     with caplog.at_level(logging.DEBUG, logger=diagnostics.__name__):
         diagnostics.trace_task("checkpoint_acknowledged", request_id="checkpoint-2")
-    records = [json.loads(line) for line in (tmp_path / "logs/duplex-task-trace.jsonl").read_text(
-        encoding="utf-8").splitlines()]
+    lines = (tmp_path / "logs/duplex-task-trace.jsonl").read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
     assert [record["event"] for record in records] == [
         "cancel_rpc_response", "cancel_rpc_response", "checkpoint_failed",
         "cancel_rpc_sent", "checkpoint_acknowledged",
@@ -82,8 +82,12 @@ def test_jsonl_rotation_is_serialized_across_processes(tmp_path):
             if process.poll() is None:
                 process.kill()
             process.wait()
-    records = [json.loads(line) for file in tmp_path.glob("shared.jsonl*")
-               if file.suffix != ".lock" for line in file.read_text(encoding="utf-8").splitlines()]
+    records = []
+    for file in tmp_path.glob("shared.jsonl*"):
+        if file.suffix == ".lock":
+            continue
+        lines = file.read_text(encoding="utf-8").splitlines()
+        records.extend(json.loads(line) for line in lines)
     assert sorted((record["writer"], record["index"]) for record in records) == [
         (str(writer), index) for writer in range(2) for index in range(20)
     ]
