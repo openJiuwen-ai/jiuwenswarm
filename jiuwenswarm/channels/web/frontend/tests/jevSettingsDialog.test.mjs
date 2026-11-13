@@ -51,9 +51,13 @@ await build({
             ? `import { createElement } from 'react';
                export const settingsActionIcons = { edit: () => createElement('svg'), delete: () => createElement('svg') };
                export const settingsNavigationIcons = { browser: () => null, experimental: () => null };
-               export const settingsEmptyBoxIllustration = 'empty.svg';`
+               export const settingsEmptyBoxIllustration = 'empty.svg';
+               export const settingsCustomModelIcon = () => createElement('svg');`
           : path.endsWith('assets/providers')
-            ? `export const getModelLogoUrl = ({ vendor_key }) => 'provider-' + vendor_key + '.svg';`
+            ? `import { createElement } from 'react';
+               export const getModelLogoUrl = ({ vendor_key }) => 'provider-' + vendor_key + '.svg';
+               export const getProviderLogoUrl = ({ vendor_key }) => 'provider-' + vendor_key + '.svg';
+               export const getVendorLogoUrl = ({ vendor_key }) => 'provider-' + vendor_key + '.svg';`
           : path === './ExperimentalSettings'
             ? ['A2UISetting', 'ExternalCliCustomAgentsItem', 'RSISetting', 'TaskAsrSetting', 'TaskFullDuplexSetting', 'TrajectoryDiagnosisSetting', 'TrajectoryUiSetting']
               .map(name => `export const ${name} = () => null;`).join('\n')
@@ -103,6 +107,9 @@ async function mount(run, rejectSave = false, options = {}) {
     decision_display_name: 'Shared Jev',
     ...options.browser,
   };
+  const initialKeyConfigured = Boolean(
+    browser.decision_provider && config[JEV_PRESETS[browser.decision_provider].keyField],
+  );
   const services = {
     isConnected: true, saveQueue: new SettingsSaveQueue(), unsavedChanges: new SettingsUnsavedChangesRegistry(),
     request: async (method, params) => {
@@ -122,7 +129,12 @@ async function mount(run, rejectSave = false, options = {}) {
       }
       if (method === 'path.get' || method === 'path.set') return {
         ...browser,
-        jev_key_configured: Boolean(browser.decision_provider && config[JEV_PRESETS[browser.decision_provider].keyField]),
+        jev_key_configured: options.stalePathGet
+          // The real Gateway answers from its own process env captured at
+          // startup, so the flag lags behind Runtime-process credential
+          // writes until the Gateway restarts (issue #6542).
+          ? initialKeyConfigured
+          : Boolean(browser.decision_provider && config[JEV_PRESETS[browser.decision_provider].keyField]),
       };
       throw new Error(`Unexpected ${method}`);
     },
@@ -418,6 +430,39 @@ test('adding ignores the provider and connection left behind by earlier deletion
     },
     openDialog: false,
   });
+});
+
+test('card appears right after adding even while path.get env stays stale (#6542)', async () => {
+  await mount(async () => {
+    assert.ok(get('settings-models-jev-empty'));
+    await click('settings-models-jev-empty-add-btn');
+    await choose('openrouter');
+    await input('api_key', 'fresh-key');
+    await input('display_name', 'Fresh Jev');
+    await click('settings-browser-jev-dialog-save-btn');
+    // path.get still answers the pre-save snapshot; the card must appear from
+    // the fresh config-panel credential view anyway.
+    assert.equal(get('settings-models-jev-empty'), null);
+    assert.equal(get('settings-models-jev-card-title').textContent, 'Fresh Jev');
+  }, false, {
+    config: { jev_openrouter_api_key: '' },
+    browser: {
+      decision_mode: 'llm', decision_provider: 'openrouter', decision_display_name: undefined,
+      decision_model: '', decision_api_base: '',
+    },
+    openDialog: false,
+    stalePathGet: true,
+  });
+});
+
+test('card disappears right after deleting even while path.get env stays stale', async () => {
+  await mount(async () => {
+    assert.ok(get('settings-models-jev-card'));
+    await click('settings-models-jev-delete-btn');
+    await confirmDialog('common.delete');
+    assert.equal(get('settings-models-jev-card'), null);
+    assert.ok(get('settings-models-jev-empty'));
+  }, false, { stalePathGet: true });
 });
 
 test.after(() => dom.window.close());
