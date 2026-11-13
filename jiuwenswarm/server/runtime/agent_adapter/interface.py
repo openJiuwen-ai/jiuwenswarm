@@ -1363,6 +1363,8 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_UNINSTALL: "handle_skills_uninstall",
     ReqMethod.SKILLS_IMPORT_LOCAL: "handle_skills_import_local",
     ReqMethod.SKILLS_IMPORT_UPLOAD: "handle_skills_import_upload",
+    ReqMethod.SKILLS_UPLOAD_STAGE: "handle_skills_upload_stage",
+    ReqMethod.SKILLS_UPLOAD_FINALIZE: "handle_skills_upload_finalize",
     ReqMethod.SKILLS_CREATE_FROM_KNOWLEDGE: "handle_skills_create_from_knowledge",
     ReqMethod.SKILLS_MARKETPLACE_ADD: "handle_skills_marketplace_add",
     ReqMethod.SKILLS_MARKETPLACE_REMOVE: "handle_skills_marketplace_remove",
@@ -2629,6 +2631,7 @@ class JiuWenSwarm:
                     logger.warning("[skills] reload state before sync failed")
             if handler_name in (
                 "handle_skills_import_local",
+                "handle_skills_upload_stage",
                 "handle_skills_get",
                 "handle_skills_files_get",
                 "handle_skills_experience_request",
@@ -2658,6 +2661,7 @@ class JiuWenSwarm:
                 "handle_skills_install",
                 "handle_skills_import_local",
                 "handle_skills_import_upload",
+                "handle_skills_upload_finalize",
                 "handle_skills_toggle",
                 "handle_skills_skillnet_install",
                 "handle_skills_online_search_install",

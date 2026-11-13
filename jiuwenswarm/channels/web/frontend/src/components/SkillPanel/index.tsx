@@ -9,6 +9,7 @@ import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
  *   useEvolution / useSkillToasts；发布与登录由公共 AssetPublishHost 承载
  * - 视图：SkillGraphTab / MarketplaceView / SkillDetailView；弹窗：UploadSkillModal / DocToSkillModal /
  */
+import { Inbox, Upload } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
@@ -45,10 +46,25 @@ import { SkillGraphTab } from './SkillGraphTab';
 import { MarketplaceView } from './MarketplaceView';
 import { SkillDetailView } from './SkillDetailView';
 import { UploadSkillModal } from './UploadSkillModal';
+import { SkillUploadApprovalModal } from './SkillUploadApprovalModal';
+import { MySkillUploadsModal } from './MySkillUploadsModal';
 import { DocToSkillModal } from './DocToSkillModal';
 import { useSkillToasts } from './useSkillToasts';
 import { useHubMarketplace, type MarketplaceSubView } from './useHubMarketplace';
 import { isEnterprise } from '../../edition';
+import { useEnterpriseContext } from '../../services/enterpriseContext';
+import {
+  finalizeSkillUpload,
+  findActiveSkillUploadRequest,
+  isSkillUploadInstallable,
+  listSkillUploadRequests,
+  stageSkillUploadPackage,
+  submitSkillUploadRequest,
+  type SkillUploadRequestItem,
+  type SkillUploadStageResult,
+  type SkillUploadSubmitResult,
+  type StagedSkillUpload,
+} from '../../services/enterpriseSkillUpload';
 import {
   EnterpriseSkillSourcePanel,
   fetchEnterpriseSkillSources,
@@ -193,6 +209,7 @@ export function SkillPanel({
   const { t } = useTranslation();
   // 导航与页签
   const enterpriseEdition = isEnterprise();
+  const enterpriseContext = useEnterpriseContext();
   const [activeTab, setActiveTab] = useState<'my' | 'marketplace' | 'graph'>('marketplace');
   const [marketplaceSubView, setMarketplaceSubView] = useState<MarketplaceSubView>('list');
   const [mySkillsSubTab, setMySkillsSubTab] = useState<MySkillsSubTab>('all');
@@ -229,6 +246,8 @@ export function SkillPanel({
   const [clawHubModalOpen, setClawHubModalOpen] = useState(false);
   const [teamSkillsHubModalOpen, setTeamSkillsHubModalOpen] = useState(false);
   const [uploadSkillModalOpen, setUploadSkillModalOpen] = useState(false);
+  const [uploadApprovalModalOpen, setUploadApprovalModalOpen] = useState(false);
+  const [myUploadsModalOpen, setMyUploadsModalOpen] = useState(false);
   const [docToSkillModalOpen, setDocToSkillModalOpen] = useState(false);
   const [enableFilterOpen, setEnableFilterOpen] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
@@ -238,6 +257,8 @@ export function SkillPanel({
   // 挂载/激活时序标记
   const prevIsActiveRef = useRef(isActive);
   const mountedRef = useRef(false);
+  /** 企业版「我的上传」数字角标：待手动安装的审批单数量。 */
+  const [installableCount, setInstallableCount] = useState(0);
 
   const { message, messageType, setMessage, setMessageType, showMessage, cleanMessage } = useSkillToasts();
   const searchKeyword = search.trim();
@@ -600,6 +621,48 @@ export function SkillPanel({
     prevIsActiveRef.current = isActive;
   }, [isActive, activeTab, fetchSkills]);
 
+  // 企业版：轮询待安装数量，驱动「我的上传」数字角标（与管理面待办一致：60s + 窗口聚焦）。
+  const enterpriseClusterId = enterpriseContext?.selected?.jiuwenclaw_id ?? '';
+  const refreshInstallableCount = useCallback(async () => {
+    if (!enterpriseEdition || !enterpriseClusterId) {
+      setInstallableCount(0);
+      return;
+    }
+    try {
+      const data = await listSkillUploadRequests({
+        jiuwenclawId: enterpriseClusterId,
+        scope: 'active',
+        page: 1,
+        pageSize: 50,
+      });
+      setInstallableCount((data.items ?? []).filter(isSkillUploadInstallable).length);
+    } catch (error) {
+      // 角标失败不影响主流程，保留上次数量。
+      console.error('[skill-upload] list installable uploads failed', error);
+    }
+  }, [enterpriseEdition, enterpriseClusterId]);
+
+  useEffect(() => {
+    if (!enterpriseEdition || !isActive || !isConnected || !enterpriseClusterId) {
+      setInstallableCount(0);
+      return;
+    }
+    void refreshInstallableCount();
+    const timer = window.setInterval(() => void refreshInstallableCount(), 60_000);
+    const onFocus = () => void refreshInstallableCount();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [
+    enterpriseEdition,
+    isActive,
+    isConnected,
+    enterpriseClusterId,
+    refreshInstallableCount,
+  ]);
+
   const handleOpenSkill = useCallback(
     (skillName: string) => {
       // 从列表/其他入口打开详情：清空导航栈，回到根层级
@@ -607,6 +670,31 @@ export function SkillPanel({
       fetchSkillDetail(skillName);
     },
     [fetchSkillDetail],
+  );
+
+  // 企业版：在「我的上传」里手动安装审批通过的技能包，成功后直接进入技能详情。
+  const handleInstallUpload = useCallback(
+    async (item: SkillUploadRequestItem) => {
+      try {
+        const result = await finalizeSkillUpload(webRequest, item.order_num, item.upload_id);
+        const skillName = result?.skill?.name || item.skill_name;
+        showMessage('success', t('skills.skillUploads.installedToast', { count: 1 }));
+        setMyUploadsModalOpen(false);
+        await fetchSkills();
+        handleOpenSkill(skillName);
+        void refreshInstallableCount();
+      } catch (error) {
+        console.error('[skill-upload] finalize failed', item.order_num, error);
+        throw error;
+      }
+    },
+    [
+      showMessage,
+      t,
+      fetchSkills,
+      handleOpenSkill,
+      refreshInstallableCount,
+    ],
   );
 
   // 技能包详情内打开成员：记录当前包名，供返回上一层使用
@@ -809,6 +897,51 @@ export function SkillPanel({
       }
     },
     [uploadTempFile, fetchSkills, fetchSkillDetail, t, withSession, showMessage, setMessage, setMessageType],
+  );
+
+  /** 企业版上传：把 ZIP 暂存到 Pod，拿到签名描述符。 */
+  const handleStageSkillUpload = useCallback(
+    (file: File): Promise<StagedSkillUpload> => stageSkillUploadPackage(webRequest, file, sessionId),
+    [sessionId],
+  );
+
+  /** 企业版上传：暂存成功后先查重，命中同名或同包的进行中单时直接提示。 */
+  const handleFindActiveSkillUpload = useCallback(
+    async (packageInfo: SkillUploadStageResult['package_info']) => {
+      const selected = enterpriseContext?.selected;
+      if (!selected?.jiuwenclaw_id) return null;
+      return findActiveSkillUploadRequest({
+        jiuwenclawId: selected.jiuwenclaw_id,
+        skillName: packageInfo.skill_name,
+        digest: packageInfo.digest,
+      });
+    },
+    [enterpriseContext],
+  );
+
+  /** 企业版上传：提交审批单；审批通过后在「我的上传」手动安装（见 handleInstallUpload）。 */
+  const handleSubmitSkillUpload = useCallback(
+    async (input: {
+      reason: string;
+      approverId: string;
+      replace: boolean;
+      packageInfo: SkillUploadStageResult['package_info'];
+    }): Promise<SkillUploadSubmitResult> => {
+      const selected = enterpriseContext?.selected;
+      if (!selected?.jiuwenclaw_id) {
+        throw new Error(t('skills.skillUploadApproval.missingContext'));
+      }
+      return submitSkillUploadRequest({
+        jiuwenclawId: selected.jiuwenclaw_id,
+        groupId: selected.group_id,
+        botId: selected.bot_id,
+        reason: input.reason,
+        approverId: input.approverId,
+        replace: input.replace,
+        packageInfo: input.packageInfo,
+      });
+    },
+    [enterpriseContext, t],
   );
 
   /** 知识转技能：先上传文件到临时目录（如有），再通过 WebSocket 调用 skills.create_from_knowledge */
@@ -1545,6 +1678,38 @@ export function SkillPanel({
               }}
             />
           )}
+          {activeTab === 'my' && enterpriseEdition && (
+            <>
+              <button
+                type="button"
+                onClick={() => setUploadApprovalModalOpen(true)}
+                className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[16px] bg-control-emphasis px-3.5 text-sm font-medium text-text-inverse transition-opacity hover:opacity-85"
+                data-testid="skill-panel-upload-skill-btn"
+              >
+                <Upload className="h-4 w-4" aria-hidden="true" />
+                {t('skills.actions.uploadSkill')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMyUploadsModalOpen(true)}
+                className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[16px] border border-border px-3.5 text-sm text-text-weak transition-colors hover:border-border-strong hover:bg-secondary hover:text-text"
+                data-testid="skill-panel-my-uploads-btn"
+              >
+                <Inbox className="h-4 w-4" aria-hidden="true" />
+                {t('skills.actions.myUploads')}
+                {installableCount > 0 && (
+                  <span
+                    className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-danger px-1 text-[11px] font-semibold leading-none text-text-inverse"
+                    aria-label={t('skills.skillUploads.pendingBadge', { count: installableCount })}
+                    data-testid="skill-panel-my-uploads-badge"
+                    data-variant={installableCount}
+                  >
+                    {installableCount > 10 ? '10+' : installableCount}
+                  </span>
+                )}
+              </button>
+            </>
+          )}
         </div>
       </PageToolbar>
     </div>
@@ -1603,6 +1768,24 @@ export function SkillPanel({
         <DocToSkillModal
           onCreateFromKnowledge={handleCreateFromKnowledge}
           onClose={() => setDocToSkillModalOpen(false)}
+        />
+      )}
+      {uploadApprovalModalOpen && (
+        <SkillUploadApprovalModal
+          onStage={handleStageSkillUpload}
+          onFindActive={handleFindActiveSkillUpload}
+          onSubmit={handleSubmitSkillUpload}
+          onClose={() => setUploadApprovalModalOpen(false)}
+        />
+      )}
+      {myUploadsModalOpen && (
+        <MySkillUploadsModal
+          jiuwenclawId={enterpriseClusterId}
+          onInstall={handleInstallUpload}
+          onClose={() => {
+            setMyUploadsModalOpen(false);
+            void refreshInstallableCount();
+          }}
         />
       )}
       {synthesizeTooltip && <TopAnchorTooltip pos={synthesizeTooltip} text={t('skills.actions.synthesizeTooltip')} />}
