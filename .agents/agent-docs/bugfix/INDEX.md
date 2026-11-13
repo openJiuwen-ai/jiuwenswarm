@@ -29,7 +29,6 @@ generated: true
 | [jiuwenswarm/server](#module-12) |
 | [jiuwenswarm/server/control](#module-13) |
 | [jiuwenswarm/server/ipc](#module-14) |
-| [jiuwenswarm/server/runtime](#module-26) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-15) |
 | [jiuwenswarm/server/runtime/skill](#module-16) |
 | [jiuwenswarm/server/supervisor](#module-17) |
@@ -153,7 +152,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261112_2025_permission-profile-refresh](jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | jiuwenswarm/common, jiuwenswarm/server/control | jiuwenswarm/common/permission_mode.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, tests/unit_tests/agentserver/test_front_permission_profile.py | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
-| [B_20261113_1051_single-session-metadata-io](jiuwenswarm/server/control/B_20261113_1051_single-session-metadata-io.md) | B | 单项会话元数据查询阻塞 Front 的 IPC 消费 | 刘瑜 | jiuwenswarm/server/control | jiuwenswarm/server/control/repositories/session_repository.py, tests/unit_tests/server/test_control_query_execution.py, tests/unit_tests/server/test_session_repository.py, tests/unit_tests/agentserver/test_ipc_backpressure.py | 无独立 D：在既有 Front 有界查询执行边界内补齐单项查询，无独立设计；公开响应与持久化语义不变。 |
 
 <a id="module-14"></a>
 
@@ -162,14 +160,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261110_1042_issue6191-ipc-recovery](jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, tests/unit_tests/agentserver/test_ipc_receive_recovery.py | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
-
-<a id="module-26"></a>
-
-## jiuwenswarm/server/runtime
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [B_20261113_1153_exited-runtime-owner](jiuwenswarm/server/runtime/session/B_20261113_1153_exited-runtime-owner.md) | B | Worker 退出未回收时存量会话无法重新认领 | 刘瑜 | jiuwenswarm/server/runtime | jiuwenswarm/server/runtime/session/lifecycle.py, tests/unit_tests/server/test_runtime_owner_identity.py, tests/unit_tests/agentserver/test_worker_session_owner_recovery.py, tests/unit_tests/agentserver/fixtures/session_owner_worker.py | 无独立 D：修复既有存活属主保护与 Worker 退出判定的不一致，不新增持久化格式或接管协议，无独立设计。 |
 
 <a id="module-15"></a>
 
