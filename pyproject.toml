@@ -20,7 +20,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@93b86fb823d578bb1df565762e7228edd154b9ea",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@45d53dd1919a09e3801ce7bca3798f776ac72ca1",
     "openjiuwen-computeruse @ git+https://gitcode.com/openJiuwen/computer-use.git@2c8171fb6783dba589dd396263b3161186c5f3e4",
     "JiuwenMemory>=0.2.0",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
@@ -101,7 +101,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@93b86fb823d578bb1df565762e7228edd154b9ea",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@45d53dd1919a09e3801ce7bca3798f776ac72ca1",
     "filelock>=3.25.0,<4",  # task-owned async locks strand openjiuwen FS locks
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
@@ -235,11 +235,11 @@ default-groups = ['dev']
 # 并按 extra 名重放母仓 cua/claude/codex/distribute 的 extras 链
 # （distribute 对应 openjiuwen[postgres,zmq]）。bump core rev 时需同步以下各行。
 override-dependencies = [
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@93b86fb823d578bb1df565762e7228edd154b9ea",
-    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@93b86fb823d578bb1df565762e7228edd154b9ea ; extra == 'cua'",
-    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@93b86fb823d578bb1df565762e7228edd154b9ea ; extra == 'claude'",
-    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@93b86fb823d578bb1df565762e7228edd154b9ea ; extra == 'codex'",
-    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@93b86fb823d578bb1df565762e7228edd154b9ea ; extra == 'distribute'",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@45d53dd1919a09e3801ce7bca3798f776ac72ca1",
+    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@45d53dd1919a09e3801ce7bca3798f776ac72ca1 ; extra == 'cua'",
+    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@45d53dd1919a09e3801ce7bca3798f776ac72ca1 ; extra == 'claude'",
+    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@45d53dd1919a09e3801ce7bca3798f776ac72ca1 ; extra == 'codex'",
+    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@45d53dd1919a09e3801ce7bca3798f776ac72ca1 ; extra == 'distribute'",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@267c077fa832b25f7f64a913461c2124353bc911#subdirectory=openjiuwen-protocol",
 ]
 
