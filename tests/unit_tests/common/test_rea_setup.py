@@ -11,6 +11,8 @@ import time
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from jiuwenswarm.common import rea_setup
 
 
@@ -504,14 +506,8 @@ def test_msi_admin_install_discovers_pcap_tools(tmp_path: Path, monkeypatch) -> 
         "_run",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
     )
-    component = {
-        "display_name": "PCAP 分析",
-        "installer": {
-            "type": "msi_admin",
-            "target": "rea/tools/pcap/4.6.9",
-            "timeout_seconds": 30,
-        },
-    }
+    monkeypatch.setattr(rea_setup, "_platform_id", lambda: "windows-x64")
+    component = rea_setup._manifest_components()["pcap"]
 
     env = rea_setup._install_msi_admin_component(
         component,
@@ -765,6 +761,74 @@ def test_enhanced_install_parallelizes_independent_wave_then_java_dependents(
     written = json.loads(state_path.read_text(encoding="utf-8"))
     assert written["mcp"]["rea"]["env"]["JAVA_HOME"] == "D:/tools/java"
     assert written["mcp"]["rea"]["env"]["GHIDRA_INSTALL_DIR"] == "D:/tools/ghidra"
+
+
+def test_enhanced_install_persists_env_before_later_cancellation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "mcp": {
+                    "rea": {
+                        "transport": "stdio",
+                        "command": "node.exe",
+                        "args": ["rea-agents@6.8.0", "mcp"],
+                        "env": {"PATH": "C:/Windows"},
+                        "state": "connected",
+                    }
+                },
+                "mounts": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    components = {
+        "java": {
+            "id": "java",
+            "display_name": "Java",
+            "install_mode": "managed",
+            "default_selected": True,
+        },
+    }
+
+    monkeypatch.setattr(rea_setup, "_manifest_components", lambda: components)
+    monkeypatch.setattr(rea_setup, "resolve_node_runtime", lambda *_args: object())
+
+    def fake_install(*_args, **_kwargs):
+        return {
+            "env": {"JAVA_HOME": "D:/tools/java"},
+            "results": [
+                {
+                    "id": "java",
+                    "ok": True,
+                    "state": "installed",
+                    "path": "D:/tools/java",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(rea_setup, "install_managed_enhancements", fake_install)
+    monkeypatch.setattr(
+        rea_setup,
+        "_verify_component",
+        lambda *_args: (_ for _ in ()).throw(rea_setup.InstallCancelled("cancelled")),
+    )
+
+    with pytest.raises(rea_setup.InstallCancelled):
+        rea_setup.install_enhanced_components(
+            workspace,
+            selected_ids=["java"],
+        )
+
+    written = json.loads(state_path.read_text(encoding="utf-8"))
+    assert written["mcp"]["rea"]["env"]["JAVA_HOME"] == "D:/tools/java"
+    assert written["mcp"]["rea"]["env"]["PATH"] == "C:/Windows"
 
 
 def test_enhanced_plan_is_os_aware_and_lists_manual_and_unsupported(monkeypatch) -> None:
@@ -1197,7 +1261,7 @@ def test_download_detail_marks_mirror_fallback() -> None:
     assert detail["source_count"] == 3
 
 
-def test_macos_download_sources_prefer_verified_domestic_mirrors(monkeypatch) -> None:
+def test_download_sources_prefer_verified_domestic_mirrors(monkeypatch) -> None:
     sources = [
         "https://github.com/example/project/release.zip",
         "https://1.na.dl.wireshark.org/osx/Wireshark.dmg",
@@ -1218,7 +1282,14 @@ def test_macos_download_sources_prefer_verified_domestic_mirrors(monkeypatch) ->
     ]
 
     monkeypatch.setattr(rea_setup, "_platform_id", lambda: "windows-x64")
-    assert rea_setup._preferred_download_sources(sources) == sources
+    assert rea_setup._preferred_download_sources(sources) == [
+        "https://mirrors.tuna.tsinghua.edu.cn/tools/release.zip",
+        "https://mirrors.cloud.tencent.com/tools/release.zip",
+        "https://ghfast.top/https://github.com/example/project/release.zip",
+        "https://gh-proxy.com/https://github.com/example/project/release.zip",
+        "https://github.com/example/project/release.zip",
+        "https://1.na.dl.wireshark.org/osx/Wireshark.dmg",
+    ]
 
 
 def test_download_supports_http11_user_agent_without_range_resume(

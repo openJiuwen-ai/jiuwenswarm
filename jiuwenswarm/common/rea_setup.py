@@ -1401,10 +1401,8 @@ def _download_detail(
 
 
 def _preferred_download_sources(sources: list[str]) -> list[str]:
-    """Try verified domestic mirrors first on macOS without changing other hosts."""
+    """Try verified domestic mirrors and proxies before foreign origins."""
 
-    if _platform_id() not in {"macos-x64", "macos-arm64"}:
-        return sources
     ranked_prefixes = (
         ("https://mirrors.tuna.tsinghua.edu.cn/", 0),
         ("https://mirrors.cloud.tencent.com/", 1),
@@ -3485,7 +3483,7 @@ def _install_msi_admin_component(
     component_end: float,
     label: str,
 ) -> dict[str, str]:
-    installer = component.get("installer")
+    installer = _component_installer(component)
     if not isinstance(installer, dict) or installer.get("type") != "msi_admin":
         raise RuntimeError(f"{label} 缺少 MSI 管理安装配置")
     target = workspace / str(installer.get("target") or f"rea/tools/{component_id}")
@@ -4282,6 +4280,24 @@ def enhanced_component_plan(
     return plan
 
 
+def _persist_rea_env(
+    workspace_path: Path,
+    component_env: dict[str, str],
+) -> None:
+    """Merge one installed component environment into the registered MCP record."""
+
+    if not component_env:
+        return
+    record = rea_mcp_record(workspace_path)
+    if not record:
+        return
+    record["env"] = _record_env(record) | component_env
+    record["state"] = "registered"
+    payload = _read_state(workspace_path)
+    payload.setdefault("mcp", {})[REA_MCP_NAME] = record
+    _write_state(payload, workspace_path)
+
+
 def install_enhanced_components(
     workspace: str | Path | None = None,
     selected_ids: list[str] | None = None,
@@ -4468,13 +4484,14 @@ def install_enhanced_components(
                         "error": str(exc),
                     }
                     continue
-                managed_env.update(
-                    {
-                        str(key): str(value)
-                        for key, value in (phase_result.get("env") or {}).items()
-                        if value is not None
-                    }
-                )
+                component_env = {
+                    str(key): str(value)
+                    for key, value in (phase_result.get("env") or {}).items()
+                    if value is not None
+                }
+                managed_env.update(component_env)
+                if component_env:
+                    _persist_rea_env(workspace_path, component_env)
                 component_results = [
                     item
                     for item in phase_result.get("results", [])
@@ -4574,12 +4591,6 @@ def install_enhanced_components(
         )
 
     installed_env = managed_env
-    if installed_env:
-        record["env"] = record_env | installed_env
-        record["state"] = "registered"
-        payload = _read_state(workspace_path)
-        payload.setdefault("mcp", {})[REA_MCP_NAME] = record
-        _write_state(payload, workspace_path)
 
     _report_progress(
         progress_callback,

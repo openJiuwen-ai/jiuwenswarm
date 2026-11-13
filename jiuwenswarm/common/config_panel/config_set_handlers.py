@@ -64,6 +64,7 @@ from jiuwenswarm.common.config import (
     update_permissions_profile_in_config,
     update_progressive_tool_optimize_in_config,
     update_proactive_recommendation_in_config,
+    update_rea_enabled_in_config,
     update_rsi_enabled_in_config,
     update_setup_guide_enabled_in_config,
     update_skill_evolution_enabled_in_config,
@@ -231,6 +232,7 @@ class ConfigChangeSet:
                 "task_full_duplex_enabled",
                 "team_organization_ui_enabled",
                 "comfyui_workflow_enabled",
+                "rea_enabled",
             }:
                 scopes.add("web_ui")
             elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
@@ -380,6 +382,7 @@ CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
+    "rea_enabled",
     "rsi_enabled",
     "cua_agent_enabled",
     "trajectory_ui_diagnosis_enabled",
@@ -1541,6 +1544,8 @@ def apply_config_payload(
                 update_setup_guide_enabled_in_config(parsed)
             elif param_key == "rsi_enabled":
                 update_rsi_enabled_in_config(parsed)
+            elif param_key == "rea_enabled":
+                update_rea_enabled_in_config(parsed)
             elif param_key == "cua_agent_enabled":
                 update_cua_agent_enabled_in_config(None if val is None else parsed)
             elif param_key == "enable_free_models":
@@ -1814,6 +1819,8 @@ async def config_get_handler(
         )
         rsi_cfg = raw.get("rsi") or {}
         payload["rsi_enabled"] = "true" if rsi_cfg.get("enabled", True) else "false"
+        rea_cfg = raw.get("rea") or {}
+        payload["rea_enabled"] = "true" if rea_cfg.get("enabled", True) else "false"
         crypto_provider = _get_crypto_provider()
         if crypto_provider is not None:
             for key, val in list(payload.items()):
@@ -1892,6 +1899,7 @@ async def config_get_handler(
         payload.setdefault("context_engine_enabled", "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
+        payload.setdefault("rea_enabled", "true")
         payload.setdefault("rsi_enabled", "true")
         payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("permissions_profile", "full_access")

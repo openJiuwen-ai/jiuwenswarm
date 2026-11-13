@@ -1905,6 +1905,31 @@ async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_config", "expected"),
+    [
+        ({}, "true"),
+        ({"rea": {"enabled": False}}, "false"),
+    ],
+)
+async def test_config_get_returns_rea_switch(monkeypatch, raw_config, expected):
+    channel = FakeWebChannel()
+    monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](
+        object(),
+        "req-get-rea",
+        {},
+        "sess-get-rea",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["rea_enabled"] == expected
+
+
+@pytest.mark.asyncio
 async def test_config_save_all_persists_rsi_switch(monkeypatch):
     channel = FakeWebChannel()
     persisted: list[bool] = []
@@ -1954,6 +1979,61 @@ async def test_config_save_all_persists_rsi_switch(monkeypatch):
     ]
     assert channel.responses[-1]["payload"] == {
         "updated": ["rsi_enabled"],
+        "applied_without_restart": True,
+        "models_count": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_config_save_all_persists_rea_switch(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    reload_options_seen: list[dict] = []
+
+    monkeypatch.setattr(
+        config_set_handlers,
+        "get_config_raw",
+        lambda: {"rea": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        config_set_handlers,
+        "get_config",
+        lambda: {"rea": {"enabled": False}},
+    )
+    monkeypatch.setattr(
+        config_set_handlers,
+        "update_rea_enabled_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+
+    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
+        del updated_keys, env_updates, config_payload
+        reload_options_seen.append(dict(reload_options))
+        return True
+
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            on_config_saved=on_config_saved,
+        )
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-set-rea",
+        {"config": {"rea_enabled": False}},
+        "sess-set-rea",
+    )
+
+    assert persisted == [False]
+    assert reload_options_seen == [
+        {
+            "target_channel_id": "web",
+            "reload_scopes": ["web_ui"],
+        }
+    ]
+    assert channel.responses[-1]["payload"] == {
+        "updated": ["rea_enabled"],
         "applied_without_restart": True,
         "models_count": None,
     }

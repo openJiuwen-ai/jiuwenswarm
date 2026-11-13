@@ -10,6 +10,16 @@ import guideConfirmArt from '../../assets/rea/guide-confirm.svg';
 import detectArt from '../../assets/rea/detect.png';
 import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import { reaSetupApi } from './reaSetupApi';
+import {
+  estimateRemainingSeconds,
+  formatProgressDuration,
+  messageWithoutEta,
+  persistActiveJob,
+  readPersistedActiveJob,
+  selectDisplayedRemainingSeconds,
+  shouldDeferEnhancedDetection,
+  stabilizeRemainingSeconds,
+} from './reaSetupProgress';
 import type {
   ReaAssistedInput,
   ReaSetupEnhancedItem,
@@ -26,6 +36,7 @@ const SCAN_CACHE_KEY = 'reaSetup.scan.v3';
 type VisualState =
   | 'available'
   | 'installing'
+  | 'detecting'
   | 'needsAction'
   | 'detected'
   | 'unsupported'
@@ -139,18 +150,6 @@ const MEMBER_FALLBACK_LABELS: Record<string, string> = {
   objdump: 'objdump',
 };
 
-function formatProgressDuration(
-  value: number,
-): { value: number; unit: 'minutes' | 'seconds' } {
-  if (value < 60) {
-    return { value: Math.max(0, Math.round(value)), unit: 'seconds' };
-  }
-  return {
-    value: Math.max(1, Math.ceil(value / 60)),
-    unit: 'minutes',
-  };
-}
-
 function mergePlan(
   plan: ReaSetupPlanItem[],
   enhanced: ReaSetupEnhancedItem[],
@@ -173,7 +172,9 @@ function groupStats(items: Array<{ visualState: VisualState }>): GroupStats {
   return {
     total: items.length,
     installed: items.filter((item) => item.visualState === 'available').length,
-    installing: items.filter((item) => item.visualState === 'installing').length,
+    installing: items.filter(
+      (item) => item.visualState === 'installing' || item.visualState === 'detecting',
+    ).length,
     notInstalled: items.filter(
       (item) => (
         item.visualState === 'notInstalled'
@@ -194,11 +195,18 @@ function statusLabel(state: VisualState, t: (key: string) => string): string {
 
 export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   const { t } = useTranslation();
+  const activeJobStorage = typeof window === 'undefined' ? null : window.localStorage;
+  const initialActiveJobRef = useRef<ReaSetupJob | null | undefined>(undefined);
+  if (initialActiveJobRef.current === undefined) {
+    initialActiveJobRef.current = readPersistedActiveJob(activeJobStorage);
+  }
   const cachedScanRef = useRef<ReaSetupScan | null>(readCachedScan());
   const [scan, setScan] = useState<ReaSetupScan | null>(cachedScanRef.current);
-  const [job, setJob] = useState<ReaSetupJob | null>(null);
+  const [job, setJobState] = useState<ReaSetupJob | null>(initialActiveJobRef.current);
   const [enhancedResult, setEnhancedResult] = useState<ReaSetupInstallResult | null>(null);
-  const [loading, setLoading] = useState(cachedScanRef.current === null);
+  const [loading, setLoading] = useState(
+    cachedScanRef.current === null && initialActiveJobRef.current === null,
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [clock, setClock] = useState(Date.now());
@@ -218,6 +226,17 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   const scanRef = useRef<ReaSetupScan | null>(scan);
   const refreshInFlightRef = useRef(false);
   const stableRemainingRef = useRef<{ jobId: string; seconds: number } | null>(null);
+  const displayedRemainingRef = useRef<{
+    jobId: string;
+    seconds: number;
+    updatedAt: number;
+  } | null>(null);
+  const resumedJobRef = useRef(false);
+
+  const setJob = useCallback((next: ReaSetupJob | null) => {
+    setJobState(next);
+    persistActiveJob(activeJobStorage, next);
+  }, [activeJobStorage]);
 
   const installing = job?.status === 'queued' || job?.status === 'running';
   const baseReady = scan?.ready === true;
@@ -244,7 +263,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     refreshInFlightRef.current = true;
     const hasSnapshot = scanRef.current !== null;
     setError('');
-    setLoading(!hasSnapshot);
+    setLoading(!hasSnapshot && initialActiveJobRef.current === null);
     setRefreshing(hasSnapshot);
     setScanStartedAt(Date.now());
     try {
@@ -267,11 +286,38 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     setJob(current);
     while (current.status === 'queued' || current.status === 'running') {
       await new Promise((resolve) => window.setTimeout(resolve, 750));
-      current = await reaSetupApi.progress(current.job_id);
+      let retry = 0;
+      for (;;) {
+        try {
+          current = await reaSetupApi.progress(current.job_id);
+          break;
+        } catch (cause) {
+          retry += 1;
+          if (retry >= 3) throw cause;
+          await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        }
+      }
       setJob(current);
     }
     return current;
-  }, []);
+  }, [setJob]);
+
+  const applyCompletedJob = useCallback((current: ReaSetupJob) => {
+    if (current.status === 'cancelled') {
+      setError(t('reaSetup.installCancelled'));
+    } else if (current.result?.scan) {
+      if (current.kind === 'enhanced') {
+        setEnhancedResult(current.result);
+      }
+      applyScan(current.result.scan);
+      if (current.kind === 'base' && current.result.base_ready) {
+        setDecisionPending(true);
+        setDecisionModalOpen(true);
+      }
+    } else if (current.error) {
+      setError(current.error);
+    }
+  }, [applyScan, t]);
 
   const installEnhanced = useCallback(async (components?: string[]) => {
     if (enhancedStartingRef.current || installing) return;
@@ -284,20 +330,13 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     try {
       const initial = await reaSetupApi.installEnhanced(components);
       const current = await pollJob(initial);
-      if (current.status === 'cancelled') {
-        setError(t('reaSetup.installCancelled'));
-      } else if (current.result?.scan) {
-        setEnhancedResult(current.result);
-        applyScan(current.result.scan);
-      } else if (current.error) {
-        setError(current.error);
-      }
+      applyCompletedJob(current);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       enhancedStartingRef.current = false;
     }
-  }, [applyScan, installing, pollJob, t]);
+  }, [applyCompletedJob, installing, pollJob]);
 
   const installBase = useCallback(async () => {
     if (baseStartingRef.current || installing) return;
@@ -311,29 +350,30 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     try {
       const initial = await reaSetupApi.installBase();
       const current = await pollJob(initial);
-      if (current.status === 'cancelled') {
-        setError(t('reaSetup.installCancelled'));
-      } else if (current.result?.scan) {
-        applyScan(current.result.scan);
-        if (current.result.base_ready) {
-          setDecisionPending(true);
-          setDecisionModalOpen(true);
-        }
-      } else if (current.error) {
-        setError(current.error);
-      }
+      applyCompletedJob(current);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       baseStartingRef.current = false;
     }
-  }, [applyScan, installing, pollJob, t]);
+  }, [applyCompletedJob, installing, pollJob]);
 
   useEffect(() => {
-    if (cachedScanRef.current === null) {
+    if (cachedScanRef.current === null && initialActiveJobRef.current === null) {
       void refresh();
     }
   }, [refresh]);
+
+  useEffect(() => {
+    const persisted = initialActiveJobRef.current;
+    if (!persisted || resumedJobRef.current) return;
+    resumedJobRef.current = true;
+    void pollJob(persisted)
+      .then(applyCompletedJob)
+      .catch((cause) => {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      });
+  }, [applyCompletedJob, pollJob]);
 
   useEffect(() => {
     if (!loading && !refreshing && !installing) return undefined;
@@ -496,6 +536,10 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     return 'notInstalled';
   };
   const liveCardById = new Map((scan?.capability_cards ?? []).map((card) => [card.id, card]));
+  const enhancedScanPending = shouldDeferEnhancedDetection(
+    job,
+    scan?.capability_cards?.length ?? 0,
+  );
   const capabilityCards: CapabilityCardView[] = CAPABILITY_SPECS.map((spec) => {
     const memberItems = spec.memberIds
       .map((id) => enhancedDisplayItems.find((item) => item.id === id))
@@ -507,8 +551,10 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     const members: CapabilityMemberView[] = spec.memberIds.map((id) => {
       const item = memberItems.find((candidate) => candidate.id === id);
       const liveMember = liveMemberById.get(id);
-      const memberState = item?.visualState
-        || (liveMember ? capabilityCardState(liveMember.state) : 'notInstalled');
+      const memberState = enhancedScanPending
+        ? 'detecting'
+        : item?.visualState
+          || (liveMember ? capabilityCardState(liveMember.state) : 'notInstalled');
       return {
         id,
         label: liveMember?.label || item?.label || MEMBER_FALLBACK_LABELS[id] || id,
@@ -517,7 +563,9 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
       };
     });
     let visualState: VisualState;
-    if (memberItems.some((item) => item.visualState === 'failed')) {
+    if (enhancedScanPending) {
+      visualState = 'detecting';
+    } else if (memberItems.some((item) => item.visualState === 'failed')) {
       visualState = 'failed';
     } else if (memberItems.some((item) => item.visualState === 'installing')) {
       visualState = 'installing';
@@ -540,15 +588,16 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     } else {
       visualState = 'notInstalled';
     }
+    if (installing && job?.kind === 'enhanced' && visualState !== 'available' && visualState !== 'failed') {
+      visualState = 'installing';
+    }
     const actionMember = memberItems.find(
       (item) => (
-        (
-          item.visualState === 'needsAction'
-          || item.visualState === 'detected'
-          || item.visualState === 'partial'
-        )
-        && item.enhanced?.assisted_setup
-      ),
+        item.visualState === 'needsAction'
+        || item.visualState === 'detected'
+        || item.visualState === 'downloaded'
+      )
+      && item.enhanced?.assisted_setup
     );
     return {
       id: spec.id,
@@ -609,7 +658,9 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     || (job?.steps ?? []).find((step) => step.status === 'running')
     || (job?.steps ?? []).find((step) => step.id === job?.current_step_id);
   const progressHeadline = activeStep?.label || job?.message || t('reaSetup.installingComponents');
-  const progressDetail = job?.message || t('reaSetup.componentCountHint', { count: progressTotalComponents });
+  const progressDetail = messageWithoutEta(
+    job?.message || t('reaSetup.componentCountHint', { count: progressTotalComponents }),
+  );
   const elapsedSeconds = job ? Math.max(0, Math.floor((clock - job.started_at * 1000) / 1000)) : 0;
   const rawPercent = Math.max(0, Math.min(100, Number(job?.percent) || 0));
   const displayPercent = job?.status === 'succeeded'
@@ -627,42 +678,35 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
         )
         : Math.max(0, job.estimated_seconds_min - elapsedSeconds)
       : null;
-  const stepRemainingSeconds = (job?.steps ?? []).reduce((total, step) => {
-    if (step.status === 'running') {
-      const stepElapsed = step.started_at
-        ? Math.max(0, Math.floor(clock / 1000 - step.started_at))
-        : 0;
-      return total + Math.max(1, step.expected_seconds_max - stepElapsed);
-    }
-    return step.status === 'pending' ? total + step.expected_seconds_min : total;
-  }, 0);
-  const rawRemainingSeconds =
-    job?.status === 'succeeded'
-      ? 0
-      : job?.detail?.eta_seconds != null
-        ? Math.max(0, job.detail.eta_seconds)
-        : stepRemainingSeconds > 0
-          ? stepRemainingSeconds
-          : weightedRemainingSeconds;
-  let remainingSeconds = rawRemainingSeconds;
-  if (job && rawRemainingSeconds != null) {
-    const previous = stableRemainingRef.current;
-    const stableSeconds =
-      job.status === 'running' && previous?.jobId === job.job_id
-        ? Math.min(previous.seconds, rawRemainingSeconds)
-        : rawRemainingSeconds;
-    remainingSeconds = stableSeconds;
-    if (job.status === 'running') {
-      stableRemainingRef.current = {
-        jobId: job.job_id,
-        seconds: stableSeconds,
-      };
-    } else {
-      stableRemainingRef.current = null;
-    }
+  const previousRemainingSeconds =
+    job && stableRemainingRef.current?.jobId === job.job_id
+      ? stableRemainingRef.current.seconds
+      : null;
+  const downloadRemainingSeconds = estimateRemainingSeconds(job, previousRemainingSeconds);
+  const candidateRemainingSeconds = downloadRemainingSeconds
+    ?? (displayPercent >= 10 ? weightedRemainingSeconds : previousRemainingSeconds);
+  const remainingSeconds = stabilizeRemainingSeconds(
+    job,
+    candidateRemainingSeconds,
+    previousRemainingSeconds,
+  );
+  if (job && remainingSeconds != null) {
+    stableRemainingRef.current = { jobId: job.job_id, seconds: remainingSeconds };
+  } else {
+    stableRemainingRef.current = null;
   }
+  const displayedRemaining = job
+    ? selectDisplayedRemainingSeconds(
+        job.job_id,
+        remainingSeconds,
+        displayedRemainingRef.current,
+        Date.now(),
+      )
+    : null;
+  displayedRemainingRef.current = displayedRemaining;
+  const displayedRemainingSeconds = displayedRemaining?.seconds ?? null;
   const remainingTime =
-    remainingSeconds == null ? null : formatProgressDuration(remainingSeconds);
+    displayedRemainingSeconds == null ? null : formatProgressDuration(displayedRemainingSeconds);
   const enhancedEstimateRange = t('reaSetup.enhancedEstimateFallback');
   const progressHint =
     decisionPending || job?.kind === 'enhanced'
@@ -858,19 +902,19 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
           <div className="rea-empty" data-testid="rea-setup-empty-state">
             <h2>{t('reaSetup.emptyTitle')}</h2>
             <div className="rea-empty__actions">
-              <button type="button" className="rea-button rea-button--outline" onClick={() => void installBase()}>
+              <button
+                type="button"
+                className="rea-button rea-button--outline"
+                onClick={() => void installBase()}
+                data-testid="rea-setup-install-one-click"
+              >
                 {t('reaSetup.installOneClick')}
               </button>
             </div>
-            <div className="rea-step-cards">
-              <button
-                type="button"
-                className="rea-step-card"
-                onClick={() => void installBase()}
-                aria-label={t('reaSetup.guide.installTitle')}
-              >
+            <div className="rea-step-cards" data-testid="rea-setup-step-cards">
+              <div className="rea-step-card">
                 <img src={stepInstallArt} alt="" />
-              </button>
+              </div>
               <div className="rea-step-card">
                 <img src={stepEnhanceArt} alt={t('reaSetup.guide.enhanceTitle')} />
               </div>
