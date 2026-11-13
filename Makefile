@@ -24,7 +24,7 @@ else
 endif
 
 # Target that is not a file -> always considered out of date.
-.PHONY: help install sync lock update-deps update-openjiuwen update-agent-gateway test test-unit test-integration \
+.PHONY: help install sync lock update-deps update-openjiuwen test test-unit test-integration \
 		test-cov lint lint-fix format typecheck clean build \
 		init start-debug start-debug-rebuild restart-debug restart-debug-fast stop \
 		genai-semconv check-genai-semconv openjiuwen-semconv check-openjiuwen-semconv
@@ -59,18 +59,14 @@ update-deps: ## Upgrade all locked dependencies to their latest allowed version
 	$(UV) sync
 
 # ----------------------------------------------------------------------
-# Re-pin openjiuwen in the direct dependencies, overrides and sources before
-# re-locking. The mother repository controls the core revision.
+# openjiuwen (agent-core) — pinned to the `develop` branch in pyproject.toml
 # ----------------------------------------------------------------------
 
-update-openjiuwen: ## Re-lock after re-pinning openjiuwen in pyproject.toml
+update-openjiuwen: ## Pin openjiuwen to the latest commit on the develop branch
+	@printf "$(C_INFO)Updating openjiuwen to latest on the develop branch...$(C_RESET)\n"
 	$(UV) lock --upgrade-package openjiuwen
 	$(UV) sync
-
-update-agent-gateway: ## Re-lock after re-pinning agent-gateway
-	$(UV) lock --upgrade-package agent-gateway
-	$(UV) sync
-	@printf "$(C_OK)openjiuwen now resolved from the root pin:$(C_RESET)\n"
+	@printf "$(C_OK)openjiuwen now pinned to:$(C_RESET)\n"
 	@awk '/^name = "openjiuwen"/{f=1} f && /^source = /{sub(/.*#/,""); sub(/".*/,""); print "  commit " $$0; f=0}' uv.lock
 
 # ----------------------------------------------------------------------

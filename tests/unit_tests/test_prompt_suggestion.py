@@ -772,7 +772,7 @@ async def test_agent_server_shutdown_cancels_the_suggestion_in_flight(product, m
 async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, monkeypatch, deny_tool) -> None:
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.common.e2a.models import E2AResponse
+    from e2a.models import E2AResponse
     from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 

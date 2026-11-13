@@ -286,11 +286,13 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
         if (typeof payload.execution_id === 'string' && typeof payload.revision === 'number') {
           setExecutions((current) => mergeExecutions(current, [payload as unknown as GroupExecution]));
         }
+      } else if (payload.event_type === 'group.route.updated' || event.event === 'group.route.updated') {
+        void refresh();
       } else if (payload.event_type === 'group.member.added' || event.event === 'group.member.added') {
         void refresh();
       }
     };
-    const stops = ['group.message', 'group.execution.created', 'group.execution.updated',
+    const stops = ['group.route.updated', 'group.message', 'group.execution.created', 'group.execution.updated',
       'chat.ask_user_question', 'chat.ask_user_answer', 'group.member.added', 'team.runtime_ready', 'team.group_message.accepted', 'chat.final', 'chat.error', 'team.error', 'team.interact.failed'].map((name) => webClient.on(name, onEvent));
     const stopState = webClient.onStateChange((state) => {
       setConnected(state === 'ready');
@@ -487,7 +489,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   // 刷新后据服务端执行恢复；乐观 pending 阶段不弹。
   const modelLocked = groupModelLocked(messages, executions, olderOffset > 0);
   const pendingMentionsByMessage = group
-    ? pendingMentionReplies(messages, executions, group.members, sessionSentIds)
+    ? pendingMentionReplies(messages, executions, group.members, sessionSentIds, group.organization_routes)
     : new Map<string, PendingMentionReply[]>();
 
   return <section className="group-chat-workspace has-conversation" data-testid="group-chat-workspace">
@@ -551,9 +553,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                 </small>}
                 {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
               </article>
-              {(pendingMentionsByMessage.get(item.id) ?? []).map(({ memberName, execution }) => {
+              {(pendingMentionsByMessage.get(item.id) ?? []).map(({ memberName, execution, organization, route }) => {
                 const member = group.members.find((item2) => item2.member_name === memberName);
-                const phase = mentionExecutionPhase(execution);
+                const phase = mentionExecutionPhase(execution, organization, route);
                 const phaseLabel = phase.key === 'executing' && phase.total
                   ? t('groupChat.mentionPhase.executingProgress', { completed: phase.completed ?? 0, total: phase.total })
                   : t(`groupChat.mentionPhase.${phase.key}`);
@@ -565,7 +567,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                     <strong>{member?.display_name || memberName}</strong>
                   </header>
                   <div className="group-chat-mention-pending__bubble">
-                    <span className="group-chat-mention-pending__dots" aria-hidden="true"><i /><i /><i /></span>
+                    {route?.status !== 'failed' && <span className="group-chat-mention-pending__dots" aria-hidden="true"><i /><i /><i /></span>}
                     <span className="group-chat-mention-pending__stack">
                       <span>{phaseLabel}</span>
                     </span>

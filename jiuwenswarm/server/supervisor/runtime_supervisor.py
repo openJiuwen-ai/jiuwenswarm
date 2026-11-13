@@ -55,7 +55,7 @@ def _is_server_push(payload: dict[str, Any]) -> bool:
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return False
-    from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+    from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
     return bool(metadata.get(E2A_WIRE_SERVER_PUSH_KEY))
 
@@ -1188,7 +1188,7 @@ class RuntimeSupervisor:
             ws, send_lock = route
         elif _is_server_push(payload) or payload.get("is_stream"):
             ws, send_lock = self._gateway_ws, self._gateway_lock
-            from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+            from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
             payload = dict(payload)
             payload["metadata"] = {**(payload.get("metadata") or {}), E2A_WIRE_SERVER_PUSH_KEY: True}

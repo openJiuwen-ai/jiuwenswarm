@@ -5,10 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from agent_gateway.common.ws_limits import AGENT_WS_SEND_BUDGET_BYTES
+from e2a.wire_codec import encode_agent_chunk_for_wire
+
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.server.ws_send import send_wire_payload
 

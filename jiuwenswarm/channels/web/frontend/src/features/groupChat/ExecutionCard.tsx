@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { CheckCircle2, Circle, CircleAlert, CirclePause, Network, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { GroupExecution, GroupMessage } from './client';
+import type { GroupExecution, GroupExpertTask, GroupMessage } from './client';
 import { shortTaskName, taskCounts } from './state';
 
 const RUNNING = ['running', 'in_progress', 'planning', 'in_review'];
@@ -56,6 +56,30 @@ function Assignee({ member, name, renderAvatar, testId }: {
   </small>;
 }
 
+function ExpertTasks({ tasks, unavailable }: { tasks: GroupExpertTask[]; unavailable?: boolean }) {
+  const { t } = useTranslation();
+  const completed = tasks.filter((task) => task.status === 'completed').length;
+  return <details className="group-chat-expert-tasks" data-testid="group-chat-expert-tasks">
+    <summary data-testid="group-chat-expert-tasks-toggle">
+      {t('groupChat.expertTasks')} <span data-testid="group-chat-expert-tasks-count">
+        {t('groupChat.expertTasksProgress', { completed, total: tasks.length })}
+      </span>
+    </summary>
+    {unavailable && <p data-testid="group-chat-expert-tasks-unavailable">{t('groupChat.expertTasksUnavailable')}</p>}
+    {!unavailable && !tasks.length && <p data-testid="group-chat-expert-tasks-empty">{t('groupChat.noSubtasks')}</p>}
+    <div data-testid="group-chat-expert-task-list">
+      {tasks.map((task) => <div className="group-chat-expert-task" key={task.task_id}
+        data-testid="group-chat-expert-task" data-variant={task.task_id}>
+        <div className="group-chat-subtask-info">
+          <strong title={task.title} data-testid="group-chat-expert-task-title">{shortTaskName(task.title, t('groupChat.unnamedTask'))}</strong>
+          <small data-testid="group-chat-expert-task-assignee">{task.assignee || t('groupChat.expertTaskUnassigned')}</small>
+        </div>
+        <TaskStatus status={task.status} testId="group-chat-expert-task-status" />
+      </div>)}
+    </div>
+  </details>;
+}
+
 export function ExecutionCard({ execution, result, renderAvatar }: {
   execution: GroupExecution; result?: GroupMessage; renderAvatar?: RenderAvatar;
 }) {
@@ -100,13 +124,13 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
         </span>)}
       </div>}
     </header>
-    <div className="group-chat-subtasks" data-testid="group-chat-subtasks">
+    <div className={`group-chat-subtasks${execution.execution_kind === 'organization' ? ' is-organization' : ''}`} data-testid="group-chat-subtasks">
       {!compact && Object.entries(execution.tasks ?? {}).map(([id, status]) => {
         const detail = execution.task_details?.[id];
         const member = detail?.member_id || owner;
         const teammate = detail?.member_id && detail.member_id !== owner ? detail.member_id : '';
         const assigneeName = teammate ? `${ownerName}｜${teammate}` : ownerName;
-        return <div className="group-chat-subtask" key={id} data-testid="group-chat-subtask" data-variant={id}>
+        const row = <div className="group-chat-subtask" key={id} data-testid="group-chat-subtask" data-variant={id}>
           <div className="group-chat-subtask-info">
             <strong data-testid="group-chat-subtask-title" title={detail?.title}>
               {shortTaskName(detail?.title, t('groupChat.unnamedTask'))}
@@ -115,6 +139,11 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
               testId="group-chat-subtask-assignee" />
           </div>
           <TaskStatus status={status} testId="group-chat-subtask-status" />
+        </div>;
+        if (execution.execution_kind !== 'organization' || !detail?.expert_tasks) return row;
+        return <div key={id} className="group-chat-organization-task" data-testid="group-chat-organization-task" data-variant={id}>
+          {row}
+          <ExpertTasks tasks={detail.expert_tasks} unavailable={detail.expert_tasks_unavailable} />
         </div>;
       })}
       {compact && <div className="group-chat-subtask" data-testid="group-chat-execution-summary">
@@ -133,6 +162,10 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
       <TaskStatus status={execution.status} percent={progress} testId="group-chat-execution-status"
         labelOverride={organizationStage ?? (RUNNING.includes(execution.status) ? t('groupChat.generatingTasks') : undefined)} />
     </div>}
+    {execution.execution_kind === 'organization' && execution.error_code === 'ORGANIZATION_RUNTIME_LOST'
+      && execution.status === 'interrupted' && <p data-testid="group-chat-organization-interrupted">
+        {t('groupChat.organizationInterrupted')}
+      </p>}
     {result && <a className="group-chat-text-button" href={`#group-chat-message-${result.message_id}`}
       data-testid="group-chat-execution-result">{t('groupChat.viewResult')}</a>}
   </article>;

@@ -16,12 +16,12 @@ resolution-markers = [
 
 [manifest]
 overrides = [
+    { name = "e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=e2a&rev=06a75d66eb011762077e8924d0d1e41791a93034" },
     { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
     { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11" },
 ]
 
 [[package]]
@@ -82,7 +82,7 @@ wheels = [
 [[package]]
 name = "agent-gateway"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=54e5330d3ea6be972aa38de4c42a898ea73fed37#54e5330d3ea6be972aa38de4c42a898ea73fed37" }
+source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=2c40ac150276477a8079ef7937674b600b6a1420#2c40ac150276477a8079ef7937674b600b6a1420" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
@@ -90,6 +90,7 @@ dependencies = [
     { name = "croniter" },
     { name = "dingtalk-stream" },
     { name = "discord-py" },
+    { name = "e2a" },
     { name = "fastapi" },
     { name = "filelock" },
     { name = "httpx", extra = ["http2", "socks"] },
@@ -100,7 +101,6 @@ dependencies = [
     { name = "minio" },
     { name = "openai" },
     { name = "openjiuwen" },
-    { name = "openjiuwen-protocol" },
     { name = "openjiuwen-runtime-foundation" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -1608,6 +1608,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/9d/a4/e44218c2b394e31a6
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b0/0d/9feae160378a3553fa9a339b0e9c1a048e147a4127210e286ef18b730f03/durationpy-0.10-py3-none-any.whl", hash = "sha256:3b41e1b601234296b4fb368338fdcd3e13e0b4fb5b67345948f4f2bf9868b286", size = 3922, upload-time = "2025-05-17T13:52:36.463Z" },
 ]
+
+[[package]]
+name = "e2a"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=e2a&rev=06a75d66eb011762077e8924d0d1e41791a93034#06a75d66eb011762077e8924d0d1e41791a93034" }
 
 [[package]]
 name = "email-validator"
@@ -3934,11 +3939,6 @@ dependencies = [
     { name = "pillow" },
     { name = "regex" },
 ]
-
-[[package]]
-name = "openjiuwen-protocol"
-version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#4c5f3e9eb41bd33d34d012b06a3e364e8497ac11" }
 
 [[package]]
 name = "openjiuwen-runtime-foundation"
@@ -7171,6 +7171,7 @@ dependencies = [
     { name = "croniter" },
     { name = "dingtalk-stream" },
     { name = "discord-py" },
+    { name = "e2a" },
     { name = "faiss-cpu" },
     { name = "fastapi" },
     { name = "fastmcp" },
@@ -7195,7 +7196,6 @@ dependencies = [
     { name = "numpy" },
     { name = "openjiuwen" },
     { name = "openjiuwen-computeruse" },
-    { name = "openjiuwen-protocol" },
     { name = "openjiuwen-runtime-foundation" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -7355,7 +7355,7 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", specifier = "==0.1.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=54e5330d3ea6be972aa38de4c42a898ea73fed37" },
+    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=2c40ac150276477a8079ef7937674b600b6a1420" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -7372,6 +7372,7 @@ requires-dist = [
     { name = "dingtalk-stream", marker = "extra == 'harmony'", specifier = ">=0.24.3" },
     { name = "discord-py", specifier = ">=2.4.0,<3" },
     { name = "discord-py", marker = "extra == 'harmony'", specifier = ">=2.4.0" },
+    { name = "e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=e2a&rev=06a75d66eb011762077e8924d0d1e41791a93034" },
     { name = "faiss-cpu", specifier = ">=1.7.0,<2" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "fastapi", marker = "extra == 'harmony'", specifier = ">=0.115" },
@@ -7414,7 +7415,6 @@ requires-dist = [
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
     { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=2c8171fb6783dba589dd396263b3161186c5f3e4" },
-    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },

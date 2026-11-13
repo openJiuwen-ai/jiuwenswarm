@@ -87,7 +87,7 @@ class WorkerGatewayBridge:
         # Streams belong to the execution, not to the connection on which it
         # began. Unary replies retain delivery semantics for session transactions.
         metadata = payload.get("metadata") or {}
-        from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+        from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
         stream = bool(payload.get("is_stream") or payload.get("is_complete") is not None)
         critical = bool(dispatch_id) and not stream and not metadata.get(E2A_WIRE_SERVER_PUSH_KEY)
