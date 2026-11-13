@@ -28,6 +28,9 @@ _METHODS_WITHOUT_PARAM_SESSION_ID = frozenset({"session.create"})
 _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("media.persist", "POST", "/sessions/{session_id}/media"),
     ("media.discard", "DELETE", "/sessions/{session_id}/media"),
+    ("session.assets.list", "GET", "/sessions/{session_id}/assets"),
+    ("session.assets.register", "POST", "/sessions/{session_id}/assets"),
+    ("session.assets.rename", "PATCH", "/sessions/{session_id}/assets/{asset_id}"),
     ("document.persist", "POST", "/sessions/{session_id}/documents"),
     ("document.formats", "GET", "/documents/formats"),
     ("file.import_url", "POST", "/sessions/{session_id}/files/import"),
@@ -310,7 +313,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("locale.set_conf", "PUT", "/locale"),
 )
 
-REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb, path in _ROUTE_ROWS}
+
+REST_ROUTES: dict[str, tuple[str, str]] = {
+    method: (verb, path) for method, verb, path in _ROUTE_ROWS
+}
 
 
 class RestAssemblyError(ValueError):

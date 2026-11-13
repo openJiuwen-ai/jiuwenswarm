@@ -109,6 +109,7 @@ from jiuwenswarm.server.handlers.session import (
     handle_session_switch,
     handle_session_unarchive,
 )
+from jiuwenswarm.server.handlers.session_assets import handle_session_assets_request
 from jiuwenswarm.server.handlers.team import (
     handle_swarmflow_control,
     handle_team_binding_create,
@@ -213,6 +214,9 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SESSION_LIST: handle_session_list,
     ReqMethod.SESSION_RENAME: handle_session_rename,
     ReqMethod.SESSION_DELETE: handle_session_delete,
+    ReqMethod.SESSION_ASSETS_LIST: handle_session_assets_request,
+    ReqMethod.SESSION_ASSETS_REGISTER: handle_session_assets_request,
+    ReqMethod.SESSION_ASSETS_RENAME: handle_session_assets_request,
     # 企业版 HTTP：与 WS ``_handle_lifecycle_request`` 同契约，否则
     # Gateway mapped 路由南向落到 agentserver 时 HANDLERS 缺项 → HTTP_METHOD_NOT_HANDLED。
     ReqMethod.SESSION_ARCHIVE: handle_session_archive,
