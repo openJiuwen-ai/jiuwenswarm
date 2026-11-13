@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -159,9 +159,14 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
 
   const historyInvalid = isHistoryJson && jsonParseResult.invalid;
 
-  useEffect(() => {
-    if (!filePath) return;
+  // useLayoutEffect 而非 useEffect：ref 镜像必须与提交渲染同步落定。passive
+  // effect 在绘制后才异步 flush，commit 与 flush 之间理论上能插入宏任务（如恰好
+  // 在该窗口 resolve 的保存响应），旧响应会在 ref 更新前通过陈旧校验——正是本组
+  // 件要消除的竞态。同时赋值放在空路径守卫之前：关闭查看器（filePath 清空）时
+  // 镜像同步清空，此后的过期保存响应会因比对不等而被丢弃。
+  useLayoutEffect(() => {
     filePathRef.current = filePath;
+    if (!filePath) return;
     if (!isPreviewable) {
       setLoading(false);
       setError(null);
@@ -270,8 +275,14 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
       setContent(draftContent);
       setIsEditing(false);
     } catch (err) {
-      if (filePathRef.current !== savedPath) return;
-      setSaveError(err instanceof Error ? err.message : t('fileViewer.unknownError'));
+      const message = err instanceof Error ? err.message : t('fileViewer.unknownError');
+      // 已切走文件的保存失败不能吞掉：静默丢弃会让用户以为旧文件已落盘。
+      // 提示保留，但文案带上保存目标的路径，避免被误解为当前文件保存失败。
+      if (filePathRef.current !== savedPath) {
+        setSaveError(`${t('fileViewer.saveFailedForPath', { path: savedPath })}${message}`);
+        return;
+      }
+      setSaveError(message);
     } finally {
       setSaving(false);
     }

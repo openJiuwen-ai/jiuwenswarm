@@ -4446,6 +4446,7 @@
     "historyPreviewEmpty": "按与历史恢复相同的规则过滤后，没有可展示的消息（或文件为空）。可关闭预览查看原始 JSON。",
     "edit": "编辑",
     "unknownError": "未知错误",
+    "saveFailedForPath": "保存 {{path}} 失败：",
     "fileMissingPrefix": "文件不存在。请先在",
     "fileMissingSuffix": "创建该文件后再编辑。",
     "notPreviewable": "该文件无法预览，仅支持 Markdown/JSON（.md/.mdx/.json）文件"
