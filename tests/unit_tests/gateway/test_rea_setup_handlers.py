@@ -144,10 +144,19 @@ def test_parallel_component_progress_never_moves_backwards() -> None:
         "component_adb_download",
         24,
         "ADB downloading",
-        {"phase": "downloading"},
+        {
+            "phase": "downloading",
+            "component_result": {
+                "id": "adb",
+                "state": "installed",
+                "ok": True,
+                "verified": True,
+            },
+        },
     )
 
     assert rea_setup_handlers._JOBS["job-1"]["percent"] == 45
+    assert rea_setup_handlers._JOBS["job-1"]["component_results"]["adb"]["verified"] is True
     rea_setup_handlers._JOBS.pop("job-1", None)
 
 
@@ -178,3 +187,50 @@ async def test_cancel_handler_requests_cooperative_cancellation() -> None:
 
     rea_setup_handlers._JOBS.pop(job_id, None)
     rea_setup_handlers._JOB_CANCEL_EVENTS.pop(job_id, None)
+
+
+async def test_base_status_scope_skips_enhanced_inventory(monkeypatch) -> None:
+    class FakeChannel:
+        def __init__(self) -> None:
+            self.methods = {}
+            self.response = None
+
+        def register_method(self, name, handler) -> None:
+            self.methods[name] = handler
+
+        async def send_response(self, _ws, _req_id, **kwargs) -> None:
+            self.response = kwargs
+
+    calls = {}
+
+    def fake_scan(**kwargs):
+        calls.update(kwargs)
+        return {
+            "ready": True,
+            "base": [],
+            "enhanced": [],
+            "enhanced_plan": [],
+            "capability_cards": [],
+        }
+
+    async def fake_verify():
+        return {"ok": True, "tool_count": 207, "error": None}
+
+    async def fail_attach(_scan, _verification):
+        raise AssertionError("base detection must not build enhanced capability cards")
+
+    monkeypatch.setattr(rea_setup_handlers, "scan_rea_setup", fake_scan)
+    monkeypatch.setattr(rea_setup_handlers, "_verify_rea_mcp", fake_verify)
+    monkeypatch.setattr(rea_setup_handlers, "_attach_capability_cards", fail_attach)
+
+    channel = FakeChannel()
+    rea_setup_handlers.register_rea_setup_handlers(channel)
+    await channel.methods["rea.status.get"](
+        object(),
+        "req-base",
+        {"scope": "base"},
+        "sess",
+    )
+
+    assert calls["include_enhanced"] is False
+    assert channel.response["payload"]["capability_cards"] == []

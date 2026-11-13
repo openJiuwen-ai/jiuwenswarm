@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   ACTIVE_INSTALL_JOB_STORAGE_KEY,
+  estimatePaceRemainingSeconds,
   estimateRemainingSeconds,
   formatProgressDuration,
   messageWithoutEta,
@@ -55,6 +56,23 @@ test('uses aggregate download bytes for a coherent remaining estimate', () => {
   assert.equal(estimateRemainingSeconds(job), 1500);
 });
 
+test('uses install pace instead of a short download-only ETA', () => {
+  const job = createJob({
+    percent: 40,
+    estimated_seconds_min: 600,
+    estimated_seconds_max: 900,
+    detail: {
+      bytes_per_second: 1000,
+      cumulative_downloaded_bytes: 999000,
+      cumulative_total_bytes: 1000000,
+      eta_seconds: 2,
+    },
+  });
+
+  assert.equal(estimateRemainingSeconds(job), 1);
+  assert.equal(estimatePaceRemainingSeconds(job, 40, 60), 90);
+});
+
 test('never reports zero while an install is running', () => {
   const job = createJob({
     detail: {
@@ -83,11 +101,13 @@ test('throttles the displayed remaining time unless the estimate changes materia
   const first = selectDisplayedRemainingSeconds('job-1', 360, null, 1000);
   const throttled = selectDisplayedRemainingSeconds('job-1', 355, first, 12000);
   const material = selectDisplayedRemainingSeconds('job-1', 240, first, 12000);
-  const refreshed = selectDisplayedRemainingSeconds('job-1', 350, first, 17000);
+  const sameMinute = selectDisplayedRemainingSeconds('job-1', 350, first, 32000);
+  const refreshed = selectDisplayedRemainingSeconds('job-1', 299, first, 32000);
 
   assert.equal(throttled.seconds, 360);
   assert.equal(material.seconds, 240);
-  assert.equal(refreshed.seconds, 350);
+  assert.equal(sameMinute.seconds, 360);
+  assert.equal(refreshed.seconds, 299);
 });
 
 test('formats the single displayed estimate consistently', () => {
