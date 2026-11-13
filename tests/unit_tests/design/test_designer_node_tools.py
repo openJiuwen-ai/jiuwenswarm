@@ -283,3 +283,26 @@ async def test_generate_tool_records_a_guarded_second_call(generate_brief, run_e
         run_env["bridge"].member_error_for("n_brief")
         == "generate_brief rejected: generate_already_called"
     )
+
+def test_a_clip_prompt_carries_the_setting_arrangement(node_tools: ModuleType) -> None:
+    node = {
+        "id": "n_clip",
+        "config": {
+            "pipeline": "clip",
+            "character_ids": ["char_1", "char_2"],
+            "cast_names": ["祖母", "父亲"],
+            "spatial_lock": {
+                "layout": "圆桌在房间中间，祖母坐左侧，父亲坐右侧"
+            },
+        },
+    }
+
+    once = node_tools._with_positioning_lock("祖母递过汤碗。", node)
+
+    assert once.startswith("本场景固定位置：")
+    assert "祖母递过汤碗。" in once
+    # The next shot of the same setting adds nothing twice.
+    assert node_tools._with_positioning_lock(once, node) == once
+    # No cast on the config means nothing to lock.
+    bare = {"id": "n_clip", "config": {"pipeline": "clip"}}
+    assert node_tools._with_positioning_lock("未命名", bare) == "未命名"

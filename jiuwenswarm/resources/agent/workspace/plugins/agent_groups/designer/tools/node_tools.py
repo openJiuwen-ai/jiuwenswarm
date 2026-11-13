@@ -375,6 +375,36 @@ def _prompt_limit(kind: str) -> dict[str, Any] | None:
 _MISSING = object()
 
 
+def _looks_chinese(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def _with_positioning_lock(prompt: str, node: dict[str, Any]) -> str:
+    """State this setting's arrangement before the clip prompt so shots cannot drift."""
+    cfg = dict(node.get("config") or {})
+    ids = [str(x) for x in (cfg.get("character_ids") or []) if str(x).strip()]
+    names = [str(x) for x in (cfg.get("cast_names") or []) if str(x).strip()]
+    if not ids or not names:
+        return prompt
+    try:
+        from jiuwenswarm.server.runtime.designer.pipeline.positioning_lock import (
+            build_lock,
+        )
+
+        lock = build_lock(
+            cfg=cfg,
+            names=dict(zip(ids, names)),
+            lang="zh" if _looks_chinese(prompt) else "en",
+            visible=ids,
+        )
+    except Exception as exc:  # noqa: BLE001 — the lock is an aid, not a precondition
+        logger.warning("[design-tools] positioning lock skipped: %s", exc)
+        return prompt
+    if not lock or lock in prompt:
+        return prompt
+    return f"{lock}\n{prompt}"
+
+
 async def generate_node_output(
     shot_ticket: Any,
     *,
@@ -407,6 +437,8 @@ async def generate_node_output(
     lead = (subject or setting or "").strip()
     if lead and lead not in focused:
         focused = f"{lead}\n{focused}"
+    if member == "clip":
+        focused = _with_positioning_lock(focused, node)
     injected: dict[str, Any] = {"prompt": focused}
     authored_duration = (node.get("config") or {}).get("duration_sec")
     has_authored_duration = isinstance(authored_duration, (int, float)) and not isinstance(
