@@ -371,7 +371,7 @@ class AgentTaskExecutor:
         trace_task("cancel_rpc_sent", task=task_state(task), cancel_request_id=request.request_id, probe=probe)
         response = await client.send_request(request)
         trace_task("cancel_rpc_response", task=task_state(task),
-                   ok=response.ok, payload=receipt_state(response.payload))
+                   ok=response.ok, probe=probe, payload=receipt_state(response.payload))
         return response
 
     async def cancel(self, task, *, probe=False):
@@ -634,8 +634,6 @@ class VideoSearchManager:
                    queue_version=self.snapshot(task["owner"], task["session"])["queue_version"],
                    subscriber_count=sum(key[:2] == (task["owner"], task["session"])
                                         for key in self.subscribers))
-        if state in {"failed", "completed", "cancelled"}:
-            self.log_event({"stage": "search_" + state, "job_id": task["id"]})
         event = state if state in {"completed", "failed", "cancelled"} else "progress"
 
         async def deliver(key, ws):
