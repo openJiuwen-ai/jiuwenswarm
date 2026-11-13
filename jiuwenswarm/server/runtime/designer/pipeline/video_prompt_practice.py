@@ -788,8 +788,10 @@ def _staging_lines(
         cfg, names=token_names, lang=lang, visible=list(tokens)
     )
     if lock and not _BAD_DIRECTIVE.search(lock):
-        held = strip_phrase(_scrub_lock_phrase(lock)).rstrip(".;\u3002\uff1b")
-        out.append(held + ("." if lang == "en" else "\u3002"))
+        for line in lock.split("\n"):
+            held = strip_phrase(_scrub_lock_phrase(line)).rstrip(".;\u3002\uff1b")
+            if held:
+                out.append(held + ("." if lang == "en" else "\u3002"))
         return out
     spatial = cfg.get("spatial_lock") if isinstance(cfg.get("spatial_lock"), dict) else {}
     layout = strip_phrase(_scrub_lock_phrase(str(spatial.get("layout") or "").strip()))

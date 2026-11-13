@@ -88,7 +88,13 @@ def build_lock(
     lang: str = "en",
     visible: list[str] | None = None,
 ) -> str:
-    """One positive sentence fixing each visible character's place in this setting."""
+    """Who stands where in this room, stated so a camera move cannot rewrite it.
+
+    Three things travel with every shot: the arrangement, the fixed anchors of the
+    room, and the fact that frame sides follow the camera while the room does not
+    move. A close-up also learns who is still in the room behind it, so a sofa does
+    not empty out just because the shot looks at the dog.
+    """
     cfg = cfg if isinstance(cfg, dict) else {}
     names = names or {}
     blocking = cfg.get("blocking") if isinstance(cfg.get("blocking"), dict) else {}
@@ -102,14 +108,22 @@ def build_lock(
     positions = setting_positions or [
         p for p in (blocking.get("positions") or []) if isinstance(p, dict)
     ]
+    rest: list[str] = []
     if visible:
         wanted = {str(v).strip() for v in visible if str(v).strip()}
         narrowed = [
             p for p in positions if str(p.get("character_id") or "").strip() in wanted
         ]
+        rest = [
+            names.get(str(p.get("character_id") or "").strip())
+            or str(p.get("name") or "").strip()
+            for p in positions
+            if str(p.get("character_id") or "").strip() not in wanted
+        ]
+        rest = [name for name in rest if name]
         if narrowed:
             positions = narrowed
-    sentences: list[str] = []
+    phrases: list[str] = []
     for pos in positions:
         token = str(pos.get("character_id") or "").strip()
         name = names.get(token) or str(pos.get("name") or "").strip()
@@ -119,22 +133,42 @@ def build_lock(
         if not bits:
             continue
         joined = _SEPARATOR[lang].join(bits)
-        sentences.append(f"{name} {joined}" if lang == "en" else f"{name}{joined}")
-    if sentences:
-        joined = _JOINER[lang].join(sentences)
-        return (
-            f"Positions held for this setting: {joined}."
-            if lang == "en"
-            else f"\u672c\u573a\u666f\u56fa\u5b9a\u4f4d\u7f6e\uff1a{joined}\u3002"
-        )
+        phrases.append(f"{name} {joined}" if lang == "en" else f"{name}{joined}")
     layout = str(spatial.get("layout") or "").strip()
     while layout and layout[-1] in ".;\u3002\uff1b":
         layout = layout[:-1].rstrip()
-    if layout:
-        if lang == "en":
-            return f"Positions held for this setting: {layout}."
-        return f"\u672c\u573a\u666f\u56fa\u5b9a\u4f4d\u7f6e\uff1a{layout}\u3002"
-    return ""
+    arrangement = _JOINER[lang].join(phrases) or layout
+    landmarks = str(spatial.get("landmarks") or "").strip()
+    while landmarks and landmarks[-1] in ".;\u3002\uff1b":
+        landmarks = landmarks[:-1].rstrip()
+
+    clauses: list[str] = []
+    if arrangement:
+        clauses.append(
+            f"Positions held for this setting: {arrangement}."
+            if lang == "en"
+            else f"\u672c\u573a\u666f\u56fa\u5b9a\u4f4d\u7f6e\uff1a{arrangement}\u3002"
+        )
+    if landmarks:
+        clauses.append(
+            f"Anchors of this room: {landmarks}."
+            if lang == "en"
+            else f"\u573a\u666f\u951a\u70b9\uff1a{landmarks}\u3002"
+        )
+    if rest:
+        who = _SEPARATOR[lang].join(rest)
+        clauses.append(
+            f"Still in this room and keeping their places: {who}."
+            if lang == "en"
+            else f"\u4ecd\u5728\u672c\u573a\u666f\u3001\u4f4d\u7f6e\u4e0d\u53d8\uff1a{who}\u3002"
+        )
+    if clauses:
+        clauses.append(
+            "Frame sides follow the camera; walls and furniture stay where they are."
+            if lang == "en"
+            else "\u753b\u9762\u5de6\u53f3\u968f\u955c\u5934\u6539\u53d8\uff0c\u5899\u9762\u4e0e\u9648\u8bbe\u4f4d\u7f6e\u4e0d\u53d8\u3002"
+        )
+    return "\n".join(clauses)
 
 
 def stamp_lock(
