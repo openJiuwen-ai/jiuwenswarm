@@ -56,7 +56,9 @@ export type SettingItemDefinition =
       availableWhen?: string;
       /** Read-only reason code for the unavailable tooltip. */
       unavailableReasonKey?: string;
-      errorDisplay?: 'inline';
+      errorDisplay?: 'inline' | 'toast';
+      /** Set false when backend validation must succeed before changing the visible value. */
+      optimistic?: boolean;
       subItems?: SettingSubItems;
       configure?: ComponentType<{ onSave: () => Promise<void>; onClose: () => void }>;
     })

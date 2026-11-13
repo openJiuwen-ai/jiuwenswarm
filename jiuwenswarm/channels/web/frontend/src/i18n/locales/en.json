@@ -465,6 +465,9 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "affinity": {
+      "noSupportingModel": "No configured model supports affinity. Configure one in Models first."
+    },
     "voice": {
       "connectionFailed": "Connection failed. Check the endpoint, API key and model, then try again.",
       "connectionSuccess": "Model connection verified",
@@ -623,6 +626,10 @@
       }
     },
     "models": {
+      "affinityCapability": "This service supports Ascend KV-Cache affinity",
+      "affinityCapabilityDescription": "Only for custom services implementing the agent_hint protocol. This is a manual declaration; connection tests do not verify affinity support.",
+      "affinityAutoDisabled": "Model configuration saved. KV-Cache affinity was automatically disabled because a control model no longer supports it. Restart if required.",
+
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
@@ -1212,7 +1219,7 @@
       },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",
-        "description": "Supported only for models deployed with Ascend vLLM inference services, not models accessed through third-party API keys."
+        "description": "Use affinity for declared endpoints; ordinary cloud models keep normal requests."
       },
       "external_cli_agent_claude_enabled": {
         "title": "Enable Claude",

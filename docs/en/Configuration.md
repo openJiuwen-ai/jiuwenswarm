@@ -289,6 +289,11 @@ KV Cache compute affinity manages Session cache through the unified `agent_hint`
 - **Default**: `false` (disabled)
 - **Purpose**: When enabled, the system prefetches, offloads, and evicts KV Cache along the Session lifecycle.
 
+
+**Enable from the UI**: In Models, select a custom OpenAI-compatible service and turn on “This service supports Ascend KV-Cache affinity”. Save it, then enable “Experimental → Enable KV-Cache affinity”. The model declaration is stored as `model_client_config.extensions.kv_cache.mode: affinity`.
+
+At least one configured inference model must support affinity; the default model may still use a cloud API. Without a supporting model, the switch stays off and a top toast explains why. Removing or revoking the last supporting model turns the global switch off. Disabling the switch preserves model declarations. Actual calls use affinity only for capable models, while cloud models follow their normal request path. Admission reads local declarations without probing the service.
+
 **KV Cache Explanation**:
 - KV Cache is a cache used by large language models during inference to store intermediate computation results
 - As conversation rounds increase, KV Cache continues to grow, consuming significant GPU memory

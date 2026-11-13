@@ -476,6 +476,12 @@ models:
   #       client_provider: ""
   #       verify_ssl: true
   #       timeout: 1800
+  #       # 可选：仅当服务确实支持 Ascend KV-Cache 算力亲和时填写，client_provider 使用 OpenAI。
+  #       # 此处只声明模型能力；仍需在实验功能中手动开启算力亲和，总开关默认关闭。
+  #       extensions:
+  #         kv_cache:
+  #           mode: affinity
+  #           affinity_field: agent_hint
   #     model_config_obj:
   #       temperature: 0.95
   #       context_window: 262144

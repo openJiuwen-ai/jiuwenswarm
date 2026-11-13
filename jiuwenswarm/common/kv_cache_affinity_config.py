@@ -6,13 +6,16 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from copy import deepcopy
+from typing import Any, TYPE_CHECKING
 
-from openjiuwen.core.kv_cache import KVCacheAffinityConfig
+if TYPE_CHECKING:
+    from openjiuwen.core.kv_cache import KVCacheAffinityConfig
 
 ASCEND_AFFINITY_PROVIDER = "AscendAffinity"
 APPLICATION_KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 KV_CACHE_AFFINITY_ENABLED_KEY = "enable_kv_cache_affinity"
+NO_AFFINITY_MODEL_ERROR = "No configured model declares KV cache affinity support"
 logger = logging.getLogger(__name__)
 KVC_CONFIG_KEYS = frozenset(
     {
@@ -118,6 +121,8 @@ def build_kv_cache_affinity_config(
     ``AscendAffinity``。
     """
 
+    from openjiuwen.core.kv_cache import KVCacheAffinityConfig
+
     affinity_enabled = is_affinity_enabled(application_config)
 
     normalized_provider = normalize_provider(provider)
@@ -200,7 +205,10 @@ def get_default_model_client_config(
     model_client_config = react.get("model_client_config")
     if isinstance(model_client_config, dict):
         return model_client_config
-    return {"client_provider": str(os.getenv("MODEL_PROVIDER", "")).strip()}
+    return {
+        "client_provider": str(os.getenv("MODEL_PROVIDER", "")).strip(),
+        "model_name": str(os.getenv("MODEL_NAME", "")).strip(),
+    }
 
 
 def get_default_model_provider(config: dict[str, Any] | None) -> str:
@@ -232,26 +240,40 @@ def _get_agentos_model_client_configs(
 def get_kv_cache_control_model_client_configs(
     config: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    """Return the authoritative model configs for KVC control policy.
+    """Return configured inference clients, including non-default and AgentOS entries.
 
-    A configured ``models.agentos`` list takes precedence as a whole. Generic
-    defaults are used only when no valid AgentOS model entry exists.
+    Only named models count; empty template entries cannot admit the switch.
+    Keep this read-only helper free of runtime imports for the control service.
     """
-
-    agentos_configs = _get_agentos_model_client_configs(config)
-    return agentos_configs or [get_default_model_client_config(config)]
+    config = config if isinstance(config, dict) else {}
+    models = config.get("models")
+    models = models if isinstance(models, dict) else {}
+    entries = models.get("defaults")
+    if isinstance(entries, list) and entries:
+        clients = [
+            entry.get("model_client_config")
+            for entry in entries if isinstance(entry, dict)
+        ]
+    else:
+        clients = [get_default_model_client_config(config)]
+    clients.extend(_get_agentos_model_client_configs(config))
+    return [
+        client for client in clients
+        if isinstance(client, dict) and str(client.get("model_name") or "").strip()
+    ]
 
 
 def get_kv_cache_control_model_client_config(
     config: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Return the first authoritative KVC control model configuration."""
+    """Return the first configured client for legacy callers; not an admission gate."""
 
-    return get_kv_cache_control_model_client_configs(config)[0]
+    clients = get_kv_cache_control_model_client_configs(config)
+    return clients[0] if clients else {}
 
 
 def get_kv_cache_control_model_provider(config: dict[str, Any] | None) -> str:
-    """Return the provider used to build application-level KVC policy."""
+    """Return the first configured provider for legacy callers."""
 
     return _model_client_provider(get_kv_cache_control_model_client_config(config))
 
@@ -283,32 +305,105 @@ def validate_affinity_invariant(
     if not is_affinity_enabled(config):
         return True, []
 
-    failures: list[str] = []
-    agentos_configs = _get_agentos_model_client_configs(config)
-    model_client_configs = agentos_configs or [get_default_model_client_config(config)]
-    uses_agentos = bool(agentos_configs)
-    label = "AgentOS model" if uses_agentos else "default model"
-    for model_client_config in model_client_configs:
-        provider = _model_client_provider(model_client_config)
-        if has_kv_cache_affinity_capability(model_client_config):
-            continue
-        failures.append(
-            f"{label} must declare extensions.kv_cache.mode=affinity "
-            f"or use legacy provider {ASCEND_AFFINITY_PROVIDER}; "
-            f"got provider={provider or '<empty>'} "
-            f"mode={_kv_cache_mode(model_client_config) or '<empty>'}"
-        )
-    return not failures, failures
+    if any(
+        has_kv_cache_affinity_capability(client)
+        for client in get_kv_cache_control_model_client_configs(config)
+    ):
+        return True, []
+    return False, [NO_AFFINITY_MODEL_ERROR]
+
+
+def build_application_kv_cache_affinity_config(
+    config: dict[str, Any] | None,
+) -> KVCacheAffinityConfig:
+    """Allow capable calls without letting one selected cloud model veto the app."""
+    from openjiuwen.core.kv_cache import KVCacheAffinityConfig
+
+    valid, _ = validate_affinity_invariant(config)
+    return KVCacheAffinityConfig(
+        enable_kv_cache_affinity=is_affinity_enabled(config) and valid,
+    )
 
 
 def normalize_affinity_request(params: dict[str, Any]) -> None:
-    """Enforce switch/provider consistency on one mutable request payload."""
-    affinity_enabled = parse_bool(params.get("kv_cache_affinity_enabled"))
-    requested_provider = str(params.get("model_provider") or "").strip()
-    if affinity_enabled:
-        if requested_provider and requested_provider != ASCEND_AFFINITY_PROVIDER:
-            params["kv_cache_affinity_enabled"] = "false"
-        else:
-            params["model_provider"] = ASCEND_AFFINITY_PROVIDER
-    elif requested_provider and requested_provider != ASCEND_AFFINITY_PROVIDER:
-        params.setdefault("kv_cache_affinity_enabled", "false")
+    """Normalize the switch without changing the model's connection settings."""
+    if "kv_cache_affinity_enabled" in params:
+        params["kv_cache_affinity_enabled"] = str(
+            parse_bool(params["kv_cache_affinity_enabled"])
+        ).lower()
+
+
+def set_affinity_enabled(config: dict[str, Any], enabled: bool) -> None:
+    """Set canonical policy on a candidate; callers own persistence and locking."""
+    policy = config.get(APPLICATION_KV_CACHE_CONFIG_KEY)
+    if not isinstance(policy, dict):
+        policy = {}
+        config[APPLICATION_KV_CACHE_CONFIG_KEY] = policy
+    policy[KV_CACHE_AFFINITY_ENABLED_KEY] = enabled
+    react = config.get("react")
+    if isinstance(react, dict):
+        react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
+
+
+def get_affinity_status(config: dict[str, Any]) -> dict[str, Any]:
+    """Describe admission, not remote protocol detection or live-task activation."""
+    candidate = deepcopy(config)
+    set_affinity_enabled(candidate, True)
+    valid, _ = validate_affinity_invariant(candidate)
+    clients = get_kv_cache_control_model_client_configs(config)
+    requested = is_affinity_enabled(config)
+    return {
+        "requested_enabled": requested,
+        "enabled": requested and valid,
+        "can_enable": valid,
+        "scope": "configured",
+        "models": [
+            {"name": str(client.get("model_name") or ""),
+             "capable": has_kv_cache_affinity_capability(client)}
+            for client in clients
+        ],
+    }
+
+
+def prepare_model_affinity_update(
+    merged: dict[str, Any], current: dict[str, Any], update: dict[str, Any],
+) -> None:
+    """Validate explicit declarations and revoke inherited endpoint capability."""
+    client = merged.get("model_client_config") or {}
+    old = current.get("model_client_config") or {}
+    patch = update.get("model_client_config") or {}
+    for owner in (client, patch):
+        extensions = owner.get("extensions")
+        if extensions is not None and not isinstance(extensions, dict):
+            raise ValueError("model extensions must be an object")
+        kv = (extensions or {}).get("kv_cache")
+        if kv is not None and not isinstance(kv, dict):
+            raise ValueError("model extensions.kv_cache must be an object")
+    explicit_mode = _kv_cache_mode(patch)
+    changed = bool(current) and any(
+        client.get(key) != old.get(key)
+        for key in ("api_base", "model_name", "client_provider", "vendor_key", "plan")
+    )
+    provider = normalize_provider(client.get("client_provider"))
+    if changed or explicit_mode == "none":
+        client.pop("legacy_client_provider", None)
+    if (changed or explicit_mode == "none") and provider == ASCEND_AFFINITY_PROVIDER:
+        client["client_provider"] = "OpenAI"
+        provider = "OpenAI"
+    if changed and not explicit_mode and has_kv_cache_affinity_capability(old):
+        extensions = client.get("extensions") or {}
+        kv = extensions.get("kv_cache") or {}
+        kv["mode"] = "none"
+        extensions["kv_cache"] = kv
+        client["extensions"] = extensions
+    preserving_affinity = (
+        not changed and merged.get("source") == current.get("source")
+        and has_kv_cache_affinity_capability(old)
+    )
+    if explicit_mode != "affinity" or preserving_affinity:
+        return
+    supports_protocol = provider in {"OpenAI", ASCEND_AFFINITY_PROVIDER}
+    has_vendor_identity = bool(client.get("vendor_key") or client.get("plan"))
+    is_user_model = merged.get("source") in (None, "", "defaults")
+    if not supports_protocol or has_vendor_identity or not is_user_model:
+        raise ValueError("Affinity requires a custom OpenAI-compatible model endpoint")

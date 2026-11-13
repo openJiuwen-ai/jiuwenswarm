@@ -465,6 +465,9 @@
     "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。"
   },
   "settingsPanel": {
+    "affinity": {
+      "noSupportingModel": "目前没有支持算力亲和的模型，请先在“模型”中配置。"
+    },
     "voice": {
       "connectionFailed": "连接失败，请检查接口地址、API Key 和模型后重试。",
       "connectionSuccess": "模型连接验证成功",
@@ -623,6 +626,10 @@
       }
     },
     "models": {
+      "affinityCapability": "此服务支持 Ascend KV-Cache 算力亲和",
+      "affinityCapabilityDescription": "仅适用于已适配 agent_hint 协议的自定义服务。此项是人工声明，普通连通性测试不验证亲和能力。",
+      "affinityAutoDisabled": "模型配置已保存；控制模型不再支持算力亲和，已自动关闭。若提示需要重启，请重启后使用。",
+
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
@@ -1212,7 +1219,7 @@
       },
       "kv_cache_affinity_enabled": {
         "title": "启用算力亲和",
-        "description": "仅支持使用 Ascend vLLM 推理服务部署的模型，不支持通过第三方 API Key 接入的模型。"
+        "description": "对已声明支持的服务启用亲和；普通云端模型继续使用普通调用。"
       },
       "external_cli_agent_claude_enabled": {
         "title": "启用 Claude",

@@ -30,6 +30,8 @@ from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_accoun
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     _ensure_model_business_ids,
+    _merge_config_dict,
+    resolve_env_vars,
     _normalize_legacy_model_nulls,
     _recover_existing_model_fields,
     get_config,
@@ -37,16 +39,14 @@ from jiuwenswarm.common.config import (
     get_available_models,
     get_default_models,
     update_default_models_in_config,
-    update_kv_cache_affinity_enabled_in_config,
 )
 from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    default_model_client_config_from_entries,
-    has_kv_cache_affinity_capability,
-    is_affinity_enabled,
+    prepare_model_affinity_update,
+    get_affinity_status,
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
@@ -474,6 +474,16 @@ def _merge_models_for_replace_all(
                 "alias": item["alias"],
             }
 
+        patch_client = {}
+        if item.get("extensions") is not None:
+            if not isinstance(item["extensions"], dict):
+                raise ConfigPanelBadRequest("model extensions must be an object")
+            patch_client["extensions"] = item["extensions"]
+            _merge_config_dict(new_entry["model_client_config"], patch_client)
+        try:
+            prepare_model_affinity_update(new_entry, raw_entry or {}, {"model_client_config": patch_client})
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
         out.append(new_entry)
     return out
 
@@ -605,6 +615,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
             aliases_seen[alias] = idx
 
         parsed.append({
+            "extensions": item.get("extensions"),
             "model_id": item.get("model_id"),
             "model_name": model_name,
             "api_base": api_base,
@@ -872,6 +883,7 @@ async def models_list_handler(
                 "vendor_key": mcc.get("vendor_key") or entry.get("vendor_key") or "",
                 "plan": mcc.get("plan") or entry.get("plan") or "",
                 "endpoint_profile": mcc.get("endpoint_profile") or "",
+                "extensions": mcc.get("extensions") or {},
             }
             # An empty template entry is not a configured model yet; do
             # not surface a synthetic context window until the user saves
@@ -935,14 +947,8 @@ async def models_replace_all_handler(
         await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
         return
     try:
+        before = get_affinity_status(resolve_env_vars(get_config_raw()))
         new_models = build_models_defaults_from_frontend(params.get("models"))
-        if (
-            is_affinity_enabled(get_config_raw())
-            and not has_kv_cache_affinity_capability(
-                default_model_client_config_from_entries(new_models)
-            )
-        ):
-            update_kv_cache_affinity_enabled_in_config(False)
         # Replace only defaults inside a complete candidate so stable IDs,
         # AgentOS entries and model groups are validated and preserved.
         candidate_models = dict((get_config_raw().get("models") or {}))
@@ -953,14 +959,23 @@ async def models_replace_all_handler(
         raise_if_invalid(candidate_models)
         update_default_models_in_config(candidate_models["defaults"], cron_references_checked=True)
 
+        status = get_affinity_status(resolve_env_vars(get_config_raw()))
+        auto_disabled = before["requested_enabled"] and not status["requested_enabled"]
+        changed_keys = ["models.defaults"]
+        if auto_disabled:
+            changed_keys.append("kv_cache_affinity_enabled")
         applied_without_restart = await _apply_models_change(
-            on_config_saved, agent_client, changed_keys=["models.defaults"], force=True
+            on_config_saved, agent_client, changed_keys=changed_keys, force=True
         )
 
-        await channel.send_response(ws, req_id, ok=True, payload={
+        payload = {
             "count": len(new_models),
             "applied_without_restart": applied_without_restart,
-        })
+        }
+        if auto_disabled:
+            payload["kv_cache_affinity_auto_disabled"] = True
+            payload["kv_cache_affinity_status"] = status
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
     except ConfigPanelBadRequest as exc:
         await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
     except ModelSelectionError as exc:

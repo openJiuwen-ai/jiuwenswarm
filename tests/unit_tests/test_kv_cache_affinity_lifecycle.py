@@ -151,11 +151,11 @@ async def test_ambiguous_cold_session_waits_for_live_binding(
     ("agentos_provider", "expected_model"),
     [
         (None, "model-a"),
-        ("OpenAI", None),
-        ("AscendAffinity", "model-b"),
+        ("OpenAI", "model-a"),
+        ("AscendAffinity", None),
     ],
 )
-def test_agentos_configuration_takes_precedence_for_kvc_target(
+def test_fallback_considers_all_models_and_skips_ambiguous_targets(
     monkeypatch: pytest.MonkeyPatch,
     agentos_provider: str | None,
     expected_model: str | None,
@@ -421,3 +421,26 @@ async def test_runtime_action_failure_does_not_escape_session_boundary(
     )
 
     assert await session.release_kvc() is False
+
+
+@pytest.mark.asyncio
+async def test_model_changes_refresh_fallback_without_losing_existing_binding(monkeypatch):
+    import openjiuwen.core.foundation.llm as llm
+
+    def entry(name):
+        return {"model_client_config": {"client_provider": "AscendAffinity", "model_name": name,
+                "api_base": "http://" + name + "/v1"}}
+
+    config = {"models": {"defaults": [entry("first")]}}
+    monkeypatch.setattr(kv_cache_model_provider, "get_config", lambda: config)
+    model = _AffinityModel()
+    monkeypatch.setattr(model, "supports_kv_cache_affinity", lambda: True, raising=False)
+    monkeypatch.setattr(llm, "Model", lambda **kwargs: model)
+    runtime = kv_cache_application_runtime.get_kv_cache_runtime()
+    bound = KVCacheIdentity("bound", "bound")
+    assert await runtime.prepare(bound) is True
+    config["models"]["defaults"].append(entry("second"))
+    unbound = KVCacheIdentity("unbound", "unbound")
+    assert await runtime.prepare(unbound) is False
+    assert await runtime.release(bound) is True
+    assert [action for action, _ in model.calls] == ["prefetch", "evict"]

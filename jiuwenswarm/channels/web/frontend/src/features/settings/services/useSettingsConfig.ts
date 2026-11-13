@@ -1,3 +1,4 @@
+import { parseKVCacheAffinityStatus } from './kvCacheAffinityStatus';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   applyMultiModelCollaborationSnapshot,
@@ -33,6 +34,8 @@ export function useSettingsConfig() {
       const next = await request<Record<string, unknown>>('config.get');
       if (id === requestId.current) {
         const visible = { ...(next ?? {}) };
+        const affinity = parseKVCacheAffinityStatus(visible.kv_cache_affinity_status);
+        visible.kv_cache_affinity_enabled = String(affinity?.enabled ?? false);
         delete visible.moa_jev_api_key;
         delete visible.moa_jev_api_key_clear;
         // A reconnect read that began before a save must not overwrite the confirmed write.
@@ -70,7 +73,7 @@ export function useSettingsConfig() {
     async (updates: Record<string, string>, operation: string) => {
       const payload = buildConfigSavePayload(updates);
       const result = await saveQueue.enqueue(operation, () =>
-        request('config.save_all', payload, { timeoutMs: 600_000 }),
+        request<{ kv_cache_affinity_status?: unknown }>('config.save_all', payload, { timeoutMs: 600_000 }),
       );
       if ('team_organization_ui_enabled' in payload.config) {
         setTeamOrganizationUiEnabled(payload.config.team_organization_ui_enabled);
@@ -94,11 +97,17 @@ export function useSettingsConfig() {
         visibleUpdates.moa_jev_api_key_configured = 'false';
         visibleUpdates.moa_jev_enabled = 'false';
       }
+      const status = parseKVCacheAffinityStatus(result?.kv_cache_affinity_status);
+      const serverUpdates: Record<string, unknown> = status ? {
+        kv_cache_affinity_enabled: String(status.enabled),
+        kv_cache_affinity_can_enable: status.can_enable,
+        kv_cache_affinity_status: status,
+      } : {};
       const revision = ++saveRevision.current;
-      for (const [key, value] of Object.entries(visibleUpdates)) {
+      for (const [key, value] of Object.entries({ ...visibleUpdates, ...serverUpdates })) {
         confirmedUpdates.current.set(key, { revision, value });
       }
-      setConfig((current) => ({ ...current, ...visibleUpdates }));
+      setConfig((current) => ({ ...current, ...visibleUpdates, ...serverUpdates }));
       return result;
     },
     [onRecommendationEnabledChange, request, saveQueue],

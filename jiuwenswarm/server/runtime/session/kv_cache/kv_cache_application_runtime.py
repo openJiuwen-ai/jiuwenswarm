@@ -14,16 +14,22 @@ logger = logging.getLogger(__name__)
 
 _runtime: KVCacheRuntime | None = None
 _default_model = None
+_default_model_entries = None
 
 
 def _get_default_model():
-    global _default_model
-    if _default_model is None:
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider import (
-            create_default_kv_cache_model,
-        )
+    global _default_model, _default_model_entries
+    from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider import (
+        create_default_kv_cache_model,
+        get_config,
+        get_default_models,
+    )
 
+    entries = get_default_models(get_config())
+    if _default_model is None or entries != _default_model_entries:
+        # Refresh only the fallback. Core retains existing per-session bindings.
         _default_model = create_default_kv_cache_model()
+        _default_model_entries = entries
     return _default_model
 
 
@@ -51,9 +57,10 @@ def get_kv_cache_runtime() -> KVCacheRuntime | None:
 
 
 async def close_kv_cache_runtime() -> None:
-    global _default_model, _runtime
+    global _default_model, _default_model_entries, _runtime
     runtime, _runtime = _runtime, None
     _default_model = None
+    _default_model_entries = None
     if runtime is None:
         return
     task = asyncio.create_task(runtime.close(), name="kvc-runtime-close")
