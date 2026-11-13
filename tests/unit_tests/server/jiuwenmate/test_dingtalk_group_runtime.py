@@ -22,6 +22,29 @@ def _local_runtime(tmp_path: Path, *, configured: bool = True) -> LocalDingTalkC
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('invalid', ['reader', 'group_id', 'cursor', 'too_many', 'none'])
+async def test_discovery_runtime_rejects_unverified_or_unbounded_provider_metadata(invalid):
+    page = {'readerKey': 'a' * 64, 'groups': [{'conversation_id': 'cid-group', 'name': 'Group'}],
+            'hasMore': False, 'nextCursor': None, 'failed': False}
+    if invalid == 'reader':
+        page['readerKey'] = 'private-profile'
+    elif invalid == 'group_id':
+        page['groups'][0]['conversation_id'] = 'bad group id'
+    elif invalid == 'cursor':
+        page.update(hasMore=True, nextCursor=0)
+    elif invalid == 'too_many':
+        page['groups'] *= 6
+    else:
+        page = None
+    async def discover(scope, *, cursor=None):
+        return page
+    service = DingTalkCliRuntimeService(runtime=SimpleNamespace(is_available=lambda scope: True, discover_groups=discover))
+    with pytest.raises(PersistentAgentError) as failure:
+        await service.discover_groups(DingTalkCliScope('local', 'employee-a'), cursor=0)
+    assert failure.value.code == 'DINGTALK_CLI_GROUP_HISTORY_INVALID'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('code', ['org_access_denied', 'authorization_expired', 'authorization_failed', 'private-output'])
 async def test_user_authorization_only_exposes_known_terminal_error_codes(code):
     async def status(scope):

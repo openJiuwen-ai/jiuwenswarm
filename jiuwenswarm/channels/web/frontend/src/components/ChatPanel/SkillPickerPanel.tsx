@@ -7,6 +7,7 @@ import { getSkillAvatar } from '../../utils/skillAvatar';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { PickerPanel } from './PickerPanel';
 import { PickerSearchInput } from './PickerSearchInput';
+import { filterSkillSuggestions } from './slashCommands/skillArgumentCompletion';
 
 /** 输入栏下拉所需的最小技能数据结构（与 SkillPanel 中的 SkillItem 保持一致） */
 type SkillItem = {
@@ -46,7 +47,7 @@ interface SkillPickerPanelProps {
    * 把这个二级面板也算作"菜单内部"，否则点二级面板（搜索框/技能项）会被一级菜单
    * 的监听器误判成"点了外面"直接把整个"+"菜单收起。 */
   panelRef: RefObject<HTMLDivElement>;
-  /** 单 agent → skill_type==='skill'；集群 → skill_type==='swarm_skill' */
+  /** 单 agent → skill / skillpack / multimodal_skill；集群 → swarm_skill */
   isTeamMode: boolean;
   /** An existing/pending AgentGroup owns the Team skill set for this session. */
   selectionLocked?: boolean;
@@ -100,29 +101,20 @@ export function SkillPickerPanel({
     [installedSkillMap],
   );
 
-  const installedSkills = useMemo(
-    () =>
-      skills.filter(
-        (s) =>
-          isSkillInstalled(s) &&
-          s.enabled !== false &&
-          // 单 agent：普通 skill + skillpack（技能包，可当普通技能选用）；
-          // 集群：swarm_skill。
-          (isTeamMode ? s.skill_type === 'swarm_skill' : !s.skill_type || s.skill_type === 'skill' || s.skill_type === 'skillpack'),
-      ),
-    [skills, isSkillInstalled, isTeamMode],
+  const selectableSkills = useMemo(
+    () => skills.filter((s) => isSkillInstalled(s) && s.enabled !== false),
+    [skills, isSkillInstalled],
   );
 
-  const filteredSkills = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return installedSkills;
-    return installedSkills.filter((s) => {
-      const name = s.name.toLowerCase();
-      const displayName = (s.display_name || '').toLowerCase();
-      const desc = s.description.toLowerCase();
-      return name.includes(q) || displayName.includes(q) || desc.includes(q);
-    });
-  }, [installedSkills, searchQuery]);
+  const installedSkills = useMemo(
+    () => filterSkillSuggestions(selectableSkills, '', isTeamMode),
+    [selectableSkills, isTeamMode],
+  );
+
+  const filteredSkills = useMemo(
+    () => filterSkillSuggestions(selectableSkills, searchQuery, isTeamMode),
+    [selectableSkills, searchQuery, isTeamMode],
+  );
 
   const { tooltip, handlers } = useAdaptiveTooltip({ offsetX: -50 });
 

@@ -40,7 +40,7 @@ describe('PowerPointToolDispatcher', () => {
     const result = await dispatcher.execute(request('list_slide_shapes', {
       input: { slide_id: '256' }, downloads: { oa_1: '/file-api/download?token=t' },
     }));
-    expect(execute).toHaveBeenCalledWith({
+    expect(execute).toHaveBeenCalledWith({ callId: 'call_1',
       toolName: 'list_slide_shapes', input: { slide_id: '256' }, downloads: { oa_1: '/file-api/download?token=t' },
     });
     expect(result).toMatchObject({ status: 'completed', is_error: false });

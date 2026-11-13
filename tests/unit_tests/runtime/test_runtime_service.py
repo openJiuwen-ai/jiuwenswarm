@@ -4439,11 +4439,14 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     monkeypatch.setattr(server._jiuwenbox_runner, "stop", AsyncMock())
     first_runtime = server.get_runtime()
     first_manager = server.get_agent_manager()
+    start_web = AsyncMock()
+    monkeypatch.setattr(server._jiuwenmate_web, "start", start_web)
     first_runtime.start = AsyncMock()
     first_runtime.close = AsyncMock(wraps=first_runtime.close)
 
     await server.start(bind_transport=True)
     await server._checkpointer_warmup_task
+    start_web.assert_awaited_once_with()
     await server.stop()
 
     recovered_runtime = server.get_runtime()
@@ -4463,6 +4466,7 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     assert recovered_manager is not first_manager
     assert recovered_runtime.agent_manager is recovered_manager
     recovered_runtime.start.assert_awaited_once_with()
+    assert start_web.await_count == 2
     assert server._server is listeners[1]
     assert install_runtime_push_handler.call_count == 2
     restore_runtime_push_handler.assert_called_once()

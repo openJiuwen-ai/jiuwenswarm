@@ -13,6 +13,7 @@ import ctypes
 import json
 import os
 import sys
+from collections.abc import Callable
 
 CLONE_NEWNS = 0x00020000
 CLONE_NEWUSER = 0x10000000
@@ -89,6 +90,39 @@ def _remount_readonly(dst: str) -> None:
         raise _errno(f"remount ro {dst}")
 
 
+def _root_is_readonly() -> bool:
+    return bool(os.statvfs("/").f_flag & os.ST_RDONLY)
+
+
+def _remount_root(read_only: bool) -> None:
+    """Flip the sandbox root between read-only and read-write.
+
+    A parked sandbox keeps the server default policy, whose ``read_only: /``
+    makes bubblewrap remount the root read-only. Checkout still has to create
+    mount points such as ``/home`` on that root.
+    """
+    flags = MS_BIND | MS_REMOUNT
+    if read_only:
+        flags |= MS_RDONLY
+    if _libc.mount(None, b"/", None, flags, None) == 0:
+        return
+    plain = MS_REMOUNT | (MS_RDONLY if read_only else 0)
+    if _libc.mount(None, b"/", None, plain, None) != 0:
+        raise _errno("remount / read-only" if read_only else "remount / read-write")
+
+
+def with_writable_root(action: Callable[[], None]) -> None:
+    """Run ``action`` with a writable root, then restore a read-only root."""
+    root_was_ro = _root_is_readonly()
+    if root_was_ro:
+        _remount_root(False)
+    try:
+        action()
+    finally:
+        if root_was_ro:
+            _remount_root(True)
+
+
 def _ensure_destination(dst: str, is_dir: bool) -> None:
     if is_dir:
         os.makedirs(dst, exist_ok=True)
@@ -119,11 +153,15 @@ def _apply(pid: int, user_ns: bool, mounts: list[dict]) -> None:
         if user_fd >= 0:
             _setns(user_fd, CLONE_NEWUSER, "setns user")
         _setns(mnt_fd, CLONE_NEWNS, "setns mnt")
-        for tree_fd, dst, read_only, is_dir in prepared:
-            _ensure_destination(dst, is_dir)
-            _move_mount(tree_fd, dst)
-            if read_only:
-                _remount_readonly(dst)
+
+        def attach() -> None:
+            for tree_fd, dst, read_only, is_dir in prepared:
+                _ensure_destination(dst, is_dir)
+                _move_mount(tree_fd, dst)
+                if read_only:
+                    _remount_readonly(dst)
+
+        with_writable_root(attach)
     finally:
         for tree_fd in trees:
             os.close(tree_fd)

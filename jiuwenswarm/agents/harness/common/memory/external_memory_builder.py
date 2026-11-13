@@ -347,8 +347,8 @@ def _build_jiuwen_sdk_config_dict(
     if not log_file:
         try:
             from jiuwenswarm.common.utils import get_logs_dir
-            (get_logs_dir() / "agent").mkdir(parents=True, exist_ok=True)
-            log_file = str(get_logs_dir() / "agent" / "jiuwen_memory.log")
+            get_logs_dir().mkdir(parents=True, exist_ok=True)
+            log_file = str(get_logs_dir() / "jiuwen_memory.log")
         except Exception as exc:
             logger.warning(
                 "[ExternalMemoryBuilder] resolve agent-memory log dir failed: %s", exc,

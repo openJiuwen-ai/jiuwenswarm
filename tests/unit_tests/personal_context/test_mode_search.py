@@ -41,7 +41,7 @@ async def test_host_modes_mount_pcs_and_allow_search(mode, role, tmp_path, monke
     register_swarm_providers()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: tmp_path / ".jiuwenswarm")
-    home = tmp_path / ".jiuwenswarm" / "domain" / ".personal_context"
+    home = tmp_path / ".jiuwenswarm" / ".personal_context"
     # The host pins Core separately. Mock its Rail contract here; Core tests
     # own the actual search, file reading and Agent-use switch behavior.
     pcs_rail = MagicMock()

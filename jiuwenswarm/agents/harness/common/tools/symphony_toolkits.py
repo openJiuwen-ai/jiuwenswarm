@@ -426,7 +426,7 @@ class SymphonyToolkit:
                 self.plan,
                 uses_internal_timeout=True,
             ),
-        ] + SkillPackToolkit(self._service).get_tools()
+        ] + SkillPackToolkit(self._service).get_tools(config)
 
 
 def _copy_compact_fields(

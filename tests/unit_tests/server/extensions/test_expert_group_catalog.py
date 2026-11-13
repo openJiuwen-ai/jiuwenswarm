@@ -22,7 +22,7 @@ def test_catalog_search_roots_preserve_sources_and_paths(monkeypatch, tmp_path, 
 
     home = tmp_path / "home"
     resources = tmp_path / "resources" if with_resources else None
-    monkeypatch.setattr(extension_package_manager, "get_domain_data_dir", lambda: home)
+    monkeypatch.setattr(extension_package_manager, "get_user_workspace_dir", lambda: home)
     monkeypatch.setattr(extension_package_manager, "get_equipment_resources_agent_groups_dir", lambda: resources)
     group_root = home / ".agent_teams" / "agent_groups"
     roots = [

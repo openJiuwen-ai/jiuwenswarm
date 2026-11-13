@@ -28,14 +28,17 @@ import { mergeChatEntries } from '../chatEntries';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ConversationComposer } from '../components/ConversationComposer';
 import { GroupSharingInbox } from '../components/GroupSharingInbox';
+import { MAX_STARTER_PROMPTS } from '../components/StarterPromptsEditor';
 import { SHARING_CONVERSATION_ID } from '../groupSharingApi';
 import {
   chatPhase,
   errorMessage,
   formatSharedFileSize,
+  findModel,
   isPending,
   latestSharedFiles,
   sharedFileKey,
+  type JiuwenMateApi,
   type JiuwenMateChatRequest,
   type JiuwenMateConversation,
   type JiuwenMateModelCatalog,
@@ -121,7 +124,7 @@ interface ColleagueWorkspacePageProps {
   colleagues: readonly JiuwenMateColleague[];
   selectedColleagueId: string;
   intent?: JiuwenMateWorkspaceIntent | null;
-  chat: JiuwenMateChatApi;
+  chat: JiuwenMateChatApi & Partial<Pick<JiuwenMateApi, 'listArtifacts'>>;
   /** Changes each time the connection to the server is restored. */
   connectionEpoch: number;
   onSelectColleague: (id: string) => void;
@@ -133,12 +136,16 @@ interface ColleagueWorkspacePageProps {
   onUpdateSchedule?: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
   onSetScheduleEnabled?: (planId: string, enabled: boolean) => void | Promise<void>;
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
+  onRunSchedule: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
   channelApi?: JiuwenMateChannelApi;
   modelCatalog?: JiuwenMateModelCatalog;
   onRenameColleague: (agentId: string, name: string) => Promise<void>;
   onSavePermissionProfile?: (agentId: string, profile: 'default' | 'automatic' | 'full_access') => Promise<void>;
   savingPermissionProfile?: boolean;
+  onSaveModel?: (agentId: string, modelId: string) => Promise<void>;
+  savingModel?: boolean;
+  onOpenModelSettings?: () => void;
 }
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
@@ -178,12 +185,16 @@ export function ColleagueWorkspacePage({
   onUpdateSchedule,
   onSetScheduleEnabled,
   onDeleteSchedule,
+  onRunSchedule,
   onLoadScheduleHistory,
   channelApi,
   modelCatalog = EMPTY_MODEL_CATALOG,
   onRenameColleague,
   onSavePermissionProfile,
   savingPermissionProfile = false,
+  onSaveModel,
+  savingModel = false,
+  onOpenModelSettings,
   groupChat,
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
@@ -260,6 +271,7 @@ export function ColleagueWorkspacePage({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [permissionActionId, setPermissionActionId] = useState<string | null>(null);
   const [permissionProfileError, setPermissionProfileError] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<{ scope: string; message: string } | null>(null);
   const cancelRename = useRef(false);
   const agentId = workspace?.agentId ?? colleagueId;
   const conversationList = useConversations(chat, agentId, connectionEpoch);
@@ -279,6 +291,25 @@ export function ColleagueWorkspacePage({
   const webWorkspace = agentId === colleagueId && (!workspace || workspace.channel === 'web');
   const sharingConversation = webWorkspace && chatConversationId === SHARING_CONVERSATION_ID;
   const privateChat = usePrivateChat(chat, sharingConversation ? '' : chatAgentId, chatConversationId, connectionEpoch);
+  const [employeeArtifacts, setEmployeeArtifacts] = useState<{ agentId: string; files: JiuwenMateSharedFile[] } | null>(null);
+  const [artifactsLoading, setArtifactsLoading] = useState(false);
+  const [artifactsError, setArtifactsError] = useState('');
+  const artifactRevision = privateChat.requests.map((item) => `${item.requestId}:${item.status}`).join('|');
+  useEffect(() => {
+    if (rightPanel !== 'artifacts' || !chat.listArtifacts || !colleagueId) return;
+    let cancelled = false;
+    setArtifactsLoading(true);
+    setArtifactsError('');
+    const ids = channelSourceAgentKey.split('\u0000').filter(Boolean);
+    Promise.all(ids.map((id) => chat.listArtifacts!(id))).then((files) => {
+      if (!cancelled) setEmployeeArtifacts({ agentId: colleagueId, files: files.flat() });
+    }).catch((error: unknown) => {
+      if (!cancelled) setArtifactsError(errorMessage(error) || 'failed');
+    }).finally(() => {
+      if (!cancelled) setArtifactsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [chat, colleagueId, channelSourceAgentKey, rightPanel, artifactRevision, connectionEpoch]);
   const messageListRef = useRef<HTMLOListElement | null>(null);
   const followReplies = useRef(true);
   const boardRef = useRef(board);
@@ -538,7 +569,10 @@ export function ColleagueWorkspacePage({
 
   if (!colleague) return null;
 
-  const artifacts = latestSharedFiles(privateChat.requests);
+  const artifacts = latestSharedFiles([
+    ...privateChat.requests,
+    { files: employeeArtifacts?.agentId === colleagueId ? employeeArtifacts.files : [] },
+  ]);
 
   const loadOlderChannelMessages = async () => {
     if (!channelApi || !channelAgentId || !channelId || !channelNextCursor || loadingOlderChannelMessages) return;
@@ -626,9 +660,19 @@ export function ColleagueWorkspacePage({
     );
   };
 
+  const modelSetupNotice = modelCatalog.models.length === 0
+    ? t('jiuwenmate.chat.modelNotConfigured')
+    : colleague.currentVersion === null
+      ? t(colleague.capabilities.model ? 'jiuwenmate.chat.notPublished' : 'jiuwenmate.chat.modelNotConfigured')
+      : !findModel(modelCatalog, colleague.capabilities.model) ? t('jiuwenmate.chat.modelUnavailableHint') : null;
+  const requestSetupNotice = privateChat.errorCode === 'MODEL_NOT_CONFIGURED'
+    ? t('jiuwenmate.chat.modelNotConfigured')
+    : privateChat.errorCode === 'MODEL_NOT_FOUND' ? t('jiuwenmate.chat.modelUnavailableHint')
+      : privateChat.errorCode === 'NOT_PUBLISHED' ? t('jiuwenmate.chat.notPublished') : null;
+
   const sendDraft = async () => {
     const text = draft.trim();
-    if (!text || privateChat.sending || !activeConversationId || sharingConversation) return;
+    if (!text || modelSetupNotice || privateChat.sending || !activeConversationId || sharingConversation) return;
     followReplies.current = true;
     const conversation = await privateChat.send(text);
     if (!conversation) return;
@@ -638,6 +682,18 @@ export function ColleagueWorkspacePage({
       { ...conversation, agentId },
       ...items.filter((item) => item.agentId !== agentId || item.id !== conversation.id),
     ]);
+  };
+
+  const modelScope = JSON.stringify([colleague.id, colleague.currentVersion, colleague.capabilities.model]);
+  const visibleModelError = modelError?.scope === modelScope ? modelError.message : null;
+  const saveModel = async (modelId: string) => {
+    if (!onSaveModel || savingModel || (modelId === colleague.capabilities.model && !colleague.hasUnpublishedModelChanges)) return;
+    setModelError(null);
+    try {
+      await onSaveModel(colleague.id, modelId);
+    } catch (error) {
+      setModelError({ scope: modelScope, message: errorMessage(error) || t('jiuwenmate.chat.failed', { reason: '' }) });
+    }
   };
 
   const savePermissionProfile = async (profile: 'default' | 'automatic' | 'full_access') => {
@@ -670,20 +726,25 @@ export function ColleagueWorkspacePage({
 
   const composer = (
     <>
-      {privateChat.error || conversationList.error || allRecordsError || permissionProfileError ? (
+      {modelSetupNotice || privateChat.error || conversationList.error || allRecordsError || permissionProfileError || visibleModelError ? (
         <p className="jiuwenmate-chat-error" role="alert" data-testid="jiuwenmate-chat-error">
-          {permissionProfileError ?? t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error ?? allRecordsError })}
+          {modelSetupNotice ?? visibleModelError ?? permissionProfileError ?? requestSetupNotice ??
+            t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error ?? allRecordsError })}
         </p>
       ) : null}
       <ConversationComposer
         value={draft}
         onChange={setDraft}
-        onSend={() => void sendDraft()}
+        onSend={modelSetupNotice ? undefined : () => void sendDraft()}
         sending={privateChat.sending}
         onStop={running ? () => void privateChat.abort(running.requestId, 'stop') : undefined}
         stopping={running?.control?.status === 'accepted'}
         modelCatalog={modelCatalog}
         modelId={colleague?.capabilities.model ?? ''}
+        onModelChange={onSaveModel ? (modelId) => void saveModel(modelId) : undefined}
+        modelSaving={savingModel}
+        modelPending={colleague.hasUnpublishedModelChanges}
+        onOpenModelSettings={onOpenModelSettings}
         permissionProfile={colleague.permissionProfile ?? 'default'}
         onPermissionProfileChange={(profile) => void savePermissionProfile(profile)}
         permissionProfileSaving={savingPermissionProfile}
@@ -1089,10 +1150,7 @@ export function ColleagueWorkspacePage({
   };
 
   const renderWelcome = () => {
-    const prompts =
-      colleague.capabilities.starterPrompts.length > 0
-        ? colleague.capabilities.starterPrompts.slice(0, 3)
-        : [0, 1, 2].map((index) => t(`jiuwenmate.workspace.defaultPrompts.${index}`));
+    const prompts = colleague.capabilities.starterPrompts.slice(0, MAX_STARTER_PROMPTS);
     return (
       <section className="jiuwenmate-chat-welcome" data-testid="jiuwenmate-chat-welcome">
         <header className="jiuwenmate-main-header jiuwenmate-chat-welcome__header">
@@ -1107,7 +1165,7 @@ export function ColleagueWorkspacePage({
             <h2>{colleague.name}</h2>
             <p>{colleague.description}</p>
           </div>
-          <div className="jiuwenmate-chat-welcome__suggestions">
+          <div className="jiuwenmate-chat-welcome__suggestions" aria-hidden={prompts.length === 0 || undefined}>
             {prompts.map((prompt, index) => (
               <button type="button" key={`${prompt}-${index}`} onClick={() => setDraft(prompt)}>
                 <span>{prompt}</span>
@@ -1166,10 +1224,7 @@ export function ColleagueWorkspacePage({
             <ArrowLeft aria-hidden />
           </button>
         ) : null}
-        <strong>
-          {channel.name}
-          <ChevronDown aria-hidden />
-        </strong>
+        <strong>{channel.name}</strong>
         {!state.traceOpen ? (
           <button
             type="button"
@@ -1367,6 +1422,7 @@ export function ColleagueWorkspacePage({
             onUpdate={onUpdateSchedule}
             onSetEnabled={onSetScheduleEnabled}
             onDelete={onDeleteSchedule}
+            onRun={onRunSchedule}
             onLoadHistory={onLoadScheduleHistory}
           />
         ) : activeGroupId && groupChat ? (
@@ -1482,10 +1538,14 @@ export function ColleagueWorkspacePage({
               <div className={`jiuwenmate-side-panel__body${visibleArtifact ? ' jiuwenmate-side-panel__body--preview' : ''}`} data-testid="jiuwenmate-artifact-list">
               {visibleArtifact ? (
                 <FilePreview artifact={{ id: visibleArtifact.outputId, name: visibleArtifact.name, downloadUrl: visibleArtifact.downloadUrl ?? undefined, size: visibleArtifact.size }} />
+              ) : artifactsError ? (
+                <p className="jiuwenmate-records__empty" role="alert" data-testid="jiuwenmate-artifacts-error">{t('jiuwenmate.chat.failed', { reason: artifactsError })}</p>
+              ) : artifactsLoading && artifacts.length === 0 ? (
+                <p className="jiuwenmate-records__empty" data-testid="jiuwenmate-artifacts-loading">{t('common.loading')}</p>
               ) : artifacts.length === 0 ? (
                 <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noArtifacts')}</p>
               ) : artifacts.map((file) => (
-                <button key={file.outputId} type="button" className="jiuwenmate-side-panel__artifact" onClick={() => setSelectedArtifact(file)}>
+                <button key={file.outputId} type="button" className="jiuwenmate-side-panel__artifact" data-testid="jiuwenmate-artifact-item" onClick={() => setSelectedArtifact(file)}>
                   <FileText aria-hidden />
                   <span><strong>{file.name}</strong><small>{formatSharedFileSize(file.size)}</small></span>
                 </button>

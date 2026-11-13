@@ -49,6 +49,69 @@ test('errors without a known code are shown as-is', () => {
   assert.equal(describeChatError({ code: 'something_else', upstream: true }, RAW, t), RAW);
 });
 
+test('quota exhaustion only overrides the generic free-model failure', () => {
+  for (const raw of [
+    "Error code: 402 - {'error_code': 'APIG.0305', 'message': 'insufficient_quota'}",
+    'Error code: 402 - amount due',
+    'status code 402',
+    '免费积分已用完，请改用已配置的模型',
+    '当前额度已耗尽',
+    'You exceeded your current quota, please check your plan and billing details.',
+  ]) {
+    assert.equal(
+      describeChatError({ code: 'free_model_unavailable', upstream: true }, raw, t),
+      '<auth.huawei.quota.exhaustedHint>',
+    );
+  }
+  // No code / unknown code must keep the original text: self-configured providers also return
+  // insufficient_quota for their own billing, where the free-credit hint is wrong.
+  const quotaError = 'insufficient_quota';
+  assert.equal(describeChatError({}, quotaError, t), quotaError);
+  assert.equal(describeChatError({ code: 'AGENT_SERVER_ERROR' }, quotaError, t), quotaError);
+  // Self-configured OpenAI/DeepSeek keys report their own billing failures without a code.
+  const selfConfigured = "Error code: 429 - {'error': {'type': 'insufficient_quota'}}";
+  assert.equal(describeChatError({}, selfConfigured, t), selfConfigured);
+});
+
+test('free-credit hint requires the upstream marker of a login/free-model session', () => {
+  // `upstream` is only set by `_annotate_model_error` after classifying a login (free) model
+  // session; payloads without it must keep the generic service-unavailable guidance.
+  assert.equal(
+    describeChatError({ code: 'free_model_unavailable' }, 'insufficient_quota', t),
+    '<auth.huawei.modelError.unavailable>',
+  );
+  assert.equal(
+    describeChatError({ code: 'free_model_unavailable', upstream: true }, 'insufficient_quota', t),
+    '<auth.huawei.quota.exhaustedHint>',
+  );
+});
+
+test('non-exhaustion wording keeps the generic free-model failure', () => {
+  for (const raw of [
+    'quota exceeded per minute, please retry later',
+    'request id 4020 failed',
+    'error 402 from proxy',
+    'concurrent request limit exceeded',
+    // 402 without status-code context is a timeout/token count, not an HTTP status.
+    'request timed out after 402 seconds',
+    'truncated 402 tokens in response',
+    'retried 402 times before giving up',
+    'context length 402 tokens exceeds limit',
+  ]) {
+    assert.equal(
+      describeChatError({ code: 'free_model_unavailable', upstream: true }, raw, t),
+      '<auth.huawei.modelError.unavailable>',
+    );
+  }
+});
+
+test('quota wording in explicitly classified errors keeps the original classification', () => {
+  assert.equal(
+    describeChatError({ code: 'rate_limited', upstream: true }, 'quota exhausted', t),
+    '<auth.huawei.modelError.rateLimited>',
+  );
+});
+
 test('ambiguous model-selection errors gain actionable guidance', () => {
   // 回归：重名模型触发 "ambiguous legacy model name" 时，报错要告诉用户
   // 怎么修（会话重选模型 / 编辑任务重选或重建），而不是只给技术文案。

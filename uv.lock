@@ -15,14 +15,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11" },
-]
+overrides = [{ name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11" }]
 
 [[package]]
 name = "a2a-sdk"
@@ -67,18 +60,22 @@ wheels = [
 
 [[package]]
 name = "a4p"
-version = "0.2.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0#1699ea352a08430731c6dddac0fc46a1b1a385f2" }
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "tzdata" },
     { name = "webauthn" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/dd/56/990aadd530a090214672383f12ed19ecc1bdba8fa5d9b0dfcfdb7f478f2e/a4p-0.1.0.tar.gz", hash = "sha256:be31abf1d6a2ccb1df01c4e06e1751901484b73d55d349ef9cbc08b670df016c", size = 165412, upload-time = "2026-11-02T03:43:05.09Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/a4/4d6e72e03c10d4aa0ffbbe4ef540b73855161ad5aaad87aaa85e31cf026f/a4p-0.1.0-py3-none-any.whl", hash = "sha256:14301d161a7626754f905cbccb519f4138bf2cfd1313182f6d3501c311b8bde6", size = 50090, upload-time = "2026-11-02T03:43:02.982Z" },
+]
 
 [[package]]
 name = "agent-gateway"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=0bb4187bd2494285c5a10e01e73761f50d244ed5#0bb4187bd2494285c5a10e01e73761f50d244ed5" }
+source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=860a2086dfda2ba5e037f1cfc0420be33e70226d#860a2086dfda2ba5e037f1cfc0420be33e70226d" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
@@ -3925,9 +3922,8 @@ zmq = [
 [[package]]
 name = "openjiuwen-computeruse"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=refs%2Fmerge-requests%2F17%2Fhead#96afb268c4c9f835dd1b2300b876d13dd93c982b" }
+source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=2c8171fb6783dba589dd396263b3161186c5f3e4#2c8171fb6783dba589dd396263b3161186c5f3e4" }
 dependencies = [
-    { name = "mcp" },
     { name = "pillow" },
     { name = "regex" },
 ]
@@ -7190,7 +7186,6 @@ dependencies = [
     { name = "minio" },
     { name = "mutagen" },
     { name = "numpy" },
-    { name = "openjiuwen" },
     { name = "openjiuwen-computeruse" },
     { name = "openjiuwen-protocol" },
     { name = "openjiuwen-runtime-foundation" },
@@ -7351,8 +7346,8 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
-    { name = "a4p", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=0bb4187bd2494285c5a10e01e73761f50d244ed5" },
+    { name = "a4p", specifier = "==0.1.0" },
+    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=860a2086dfda2ba5e037f1cfc0420be33e70226d" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -7404,13 +7399,12 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=refs%2Fmerge-requests%2F17%2Fhead" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", specifier = ">=0.1.20" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
+    { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=2c8171fb6783dba589dd396263b3161186c5f3e4" },
     { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },

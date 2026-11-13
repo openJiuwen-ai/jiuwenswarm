@@ -73,7 +73,7 @@ from jiuwenswarm.common.config_panel.models_handlers import (
     resolve_persisted_mcc_for_validate,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.common.version import get_runtime_version
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ def _get_crypto_provider() -> Any:
 # Auto-Harness 配置（~/.jiuwenswarm/auto-harness/config.yaml，TUI config 域专属）
 # --------------------------------------------------------------------------- #
 _DEFAULT_REPO_URL = "https://gitcode.com/openJiuwen/agent-core.git"
-_AUTO_HARNESS_CONFIG_DIR = get_infra_data_dir() / "auto-harness"
+_AUTO_HARNESS_CONFIG_DIR = get_user_workspace_dir() / "auto-harness"
 _AUTO_HARNESS_CONFIG_FILE = _AUTO_HARNESS_CONFIG_DIR / "config.yaml"
 _AUTO_HARNESS_LOCAL_REPO = _AUTO_HARNESS_CONFIG_DIR / "repo" / "openJiuwen--agent-core"
 

@@ -1,4 +1,24 @@
 {
+  "pluginReplacement": {
+    "title": "Plugin already exists",
+    "message": "Local plugin {{id}} (version {{localVersion}}) already exists. Replace it with marketplace version {{hubVersion}}? Local changes will be overwritten.",
+    "confirm": "Replace local version",
+    "busy": "The previous plugin is executing or closing resources. Retry replacement when it is idle.",
+    "stale": "The local plugin has changed. Start installation again and confirm replacement.",
+    "unknownVersion": "unknown"
+  },
+  "userLogin": {
+    "language": "Interface language",
+    "title": "JiuwenSwarm Sign In",
+    "username": "Username",
+    "password": "Password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in…",
+    "enterprise": "Or use an enterprise account",
+    "signInWith": "Sign in with {{name}}",
+    "failed": "Sign-in failed. Please retry.",
+    "back": "Back to sign in"
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
     "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
@@ -74,7 +94,6 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
-    "teams": "Teams",
     "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -138,6 +157,7 @@
       "send": "Send",
       "running": "The design leader is working…",
       "stop": "Stop",
+      "stopping": "Stopping…",
       "stopError": "Could not stop. Please try again.",
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
@@ -865,10 +885,6 @@
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
-      "proactive": "Proactive recommendations",
-      "proactiveLimits": "Recommendation limits",
-      "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
-      "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "multiModelCollaboration": "Multi-model collaboration",
       "toolOptimize": "Tool retrieval optimization",
       "designMode": "Design Mode",
@@ -1146,7 +1162,13 @@
       },
       "cua_agent_enabled": {
         "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
+        "unavailableDescription": "Computer control is unavailable in this environment.",
+        "unavailableReasons": {
+          "native_build_failed": "Computer control is unavailable because the computer-use driver failed to build during installation.",
+          "backend_missing": "No usable computer control driver was found.",
+          "unsupported_platform": "Computer control is unavailable on this operating system or version."
+        }
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
@@ -1214,20 +1236,6 @@
       "external_cli_agent_codex_cli_path": {
         "title": "Codex CLI path"
       },
-      "proactive_recommendation_enabled": {
-        "title": "Enable proactive recommendations",
-        "description": "Allow recommendations to be sent when their conditions are met."
-      },
-      "proactive_recommendation_max_recommend_per_day": {
-        "title": "Daily recommendation limit",
-        "description": "Maximum proactive recommendations per user per day to avoid excessive interruption. Default: 10.",
-        "placeholder": "Enter an integer from 1 to 50"
-      },
-      "proactive_recommendation_max_rounds_per_tick": {
-        "title": "Conversation rounds per check",
-        "description": "Maximum recent conversation rounds read on each check to infer recommendation context. Default: 20.",
-        "placeholder": "Enter an integer from 1 to 50"
-      },
       "multi_model_collaboration_enabled": {
         "title": "Multi-model collaboration",
         "description": "In a single-agent conversation, select a model group to let its default model combine suggestions from the other members."
@@ -1254,11 +1262,6 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
-      },
-      "cua_agent_enabled": {
-        "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
-        "unavailableDescription": "Computer control is unavailable in this environment."
       }
     },
     "validation": {
@@ -1565,47 +1568,8 @@
       "showTasks": "Show tasks"
     }
   },
-  "teams": {
-    "title": "Team Management",
-    "subtitle": "View existing teams, or stop and delete them",
-    "teamList": "Existing teams",
-    "count": "{{count}} team(s)",
-    "quota": "{{used}} used / {{limit}} limit (default {{default}})",
-    "orgQuota": "Org {{used}} used / {{limit}} limit",
-    "quotaUnavailable": "Quota status unavailable",
-    "createUserFull": "Create failed. A user can have at most {{limit}} teams",
-    "createOrgFull": "Create failed. An organization can have at most {{limit}} teams",
-    "sessionCount": "{{count}} session(s)",
-    "listLabel": "Session for this team: {{title}}",
-    "untitledSession": "Untitled session",
-    "createdAt": "Created {{time}}",
-    "createdAtWithId": "Created {{time}} · …{{suffix}}",
-    "sessionSuffix": "…{{suffix}}",
-    "empty": "No teams",
-    "deleteTeam": "Delete team",
-    "deleting": "Deleting...",
-    "deleteConfirm": "Delete team {{team}}?\nThis will delete the team runtime, linked sessions, and directory.",
-    "stopTeam": "Stop",
-    "stopping": "Stopping...",
-    "humanMembers": "{{count}} human member(s)",
-    "status": {
-      "creating": "Creating",
-      "running": "Running",
-      "paused": "Paused",
-      "stopping": "Stopping",
-      "stopped": "Stopped",
-      "deleted": "Deleted"
-    },
-    "errors": {
-      "loadTeams": "Failed to load teams",
-      "deleteTeam": "Failed to delete team: {{team}}",
-      "stopTeam": "Failed to stop team"
-    }
-  },
   "team": {
     "members": "Team Members",
-    "quotaUsage": "Teams {{used}}/{{limit}}",
-    "orgQuotaUsage": "Org {{used}}/{{limit}}",
     "membersTab": "Team",
     "statusTab": "Status",
     "filesTab": "Files",
@@ -2152,6 +2116,7 @@
     "extension": "Extensions",
     "extensionSearchPlaceholder": "Search by keyword",
     "extensionEmpty": "No results",
+    "ttseWorkModeNotice": "TTSE experience learning is built into Work mode. To enable it, turn on “<strong>Local environment facts and task experience auto-evolution</strong>” in Settings.",
     "extensionConnect": "Connect",
     "extensionManagePlugins": "Manage My Plugins",
     "extensionManageMcps": "Manage My Connectors",
@@ -2242,7 +2207,10 @@
       "readFileFailed": "Failed to read file: {{name}}",
       "readImageFailed": "Failed to read image: {{name}}",
       "filePickerUnsupported": "Cannot open local file picker in this environment (please ensure jiuwenswarm is running locally and restarted with the latest backend)",
-      "filePickerFailed": "Failed to open file picker"
+      "filePickerFailed": "Failed to open file picker",
+      "preparingFiles": "Preparing files…",
+      "preparingFilesHint": "Please wait while files are read",
+      "cancelPreparing": "Cancel waiting"
     },
     "uploading": "Uploading...",
     "uploadFailed": "Upload failed",
@@ -2422,7 +2390,6 @@
       "apply": "Apply",
       "switching": "Switching...",
       "logout": "Log out",
-      "switchToManager": "Open manager",
       "customRequired": "bot_id, group_id, user_id and jiuwenclaw_id are required",
       "noMatch": "No matches",
       "pleaseSelect": "Select"
@@ -2754,13 +2721,6 @@
         "failed": "Installation failed",
         "running": "Installing"
       }
-    },
-    "proactive": {
-      "typeLabel": {
-        "skill_recommend": "Skill Recommend",
-        "task_reminder": "Task Reminder",
-        "need_exploration": "Explore"
-      }
     }
   },
   "cron": {
@@ -2785,9 +2745,7 @@
     "disable": "Disable",
     "loading": "Loading scheduled tasks...",
     "deleteConfirm": "Are you sure you want to delete this task?",
-    "autoManaged": "Auto-managed",
-    "autoManagedHint": "This task is auto-created/deleted by the proactive recommendation toggle (Settings → Proactive Recommendation). Only the cron expression and timezone can be edited here; other fields (name/status/description/offset/channel) are read-only. To remove it, turn off the toggle in Settings.",
-    "autoManagedToggleDisabled": "The toggle of an auto-managed task is controlled by Settings → Proactive Recommendation and cannot be switched here.",
+    "autoManagedToggleDisabled": "This field cannot be edited right now.",
     "pageTitle": "Scheduled Tasks",
     "pageSubtitle": "Configure automated tasks that run on schedule.",
     "actions": {
@@ -3026,8 +2984,7 @@
       "updated": "Task updated successfully",
       "deleted": "Task deleted successfully",
       "statusUpdated": "Task status updated successfully",
-      "runNow": "Task triggered successfully",
-      "proactiveRunNow": "Recommendation check started in the background. It will decide whether to recommend anything and notify you of the result."
+      "runNow": "Task triggered successfully"
     },
     "preview": {
       "loading": "Loading next runs...",
@@ -3541,6 +3498,7 @@
       "installing": "Installing...",
       "uninstall": "Uninstall",
       "uninstalling": "Uninstalling...",
+      "update": "Update",
       "importLocal": "Import Local Skill",
       "sourceManager": "Source Manager",
       "create": "Create",
@@ -4182,7 +4140,15 @@
       "Engineering": "Engineering",
       "Life": "Life",
       "Custom": "Custom",
-      "Other": "Other"
+      "Other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "actions": {
       "working": "Working",
@@ -5172,7 +5138,15 @@
       "communication": "Communication",
       "Engineering": "Engineering",
       "Design": "Design",
-      "other": "Other"
+      "other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "search": {
       "plugin": "Search plugins",
@@ -5846,6 +5820,8 @@
     "clickToViewDetail": "Click to view details",
     "runIdTooltip": "Run ID: {{id}}",
     "executorTooltip": "currently hosted by {{name}}",
+    "forkFromSession": "Forked from session {{name}}",
+    "forkChildSession": "Forked child session",
     "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
     "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
   },
@@ -5995,6 +5971,11 @@
     "chat": {
       "title": "Private chat",
       "failed": "Message failed: {{reason}}",
+      "modelNotConfigured": "Configure a usable model in Settings → Models before chatting with this employee.",
+      "modelPending": "Pending",
+      "modelUnavailable": "Select a model",
+      "modelUnavailableHint": "The previous model was removed or is unavailable. Select and save an available model for this employee before sending messages.",
+      "notPublished": "Save and publish the employee configuration in employee management before chatting.",
       "noReply": "The employee sent no reply",
       "file": {
         "download": "Download",
@@ -6119,6 +6100,8 @@
         "knowledge": "Add knowledge",
         "starterPrompts": "Add quick prompt"
       },
+      "starterPromptsLimit": "Up to {{count}} prompts",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6150,6 +6133,7 @@
       "clientId": "Client ID",
       "dingtalkHint": "Assign tasks through DingTalk direct messages. Text messages are supported.",
       "isolationHint": "Web, Feishu and DingTalk share one colleague and workspace. Sessions stay separate; cross-group sharing requires authorization.",
+      "channelAlreadyBound": "This channel is already bound to another employee. Remove the existing binding first.",
       "robotCode": "Robot Code (optional)",
       "robotCodePlaceholder": "Use the app robot code; defaults to Client ID",
       "welinkTitle": "Bind WeLink",
@@ -6228,29 +6212,33 @@
       "editResources": "Edit skills and connectors",
       "resourcesHint": "Choose from skills installed on this machine and connectors that are already connected. A new task uses the selection after it is saved and published.",
       "saveResources": "Save and publish",
+      "saveSuccess": "Saved",
       "savingResources": "Saving",
+      "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
+      "modelEmptyHint": "Add a model in Settings → Models.",
+      "modelUnavailableHint": "The previously configured model was removed or is unavailable. Select a model and save.",
       "catalogLoading": "Loading installed resources",
       "catalogFailed": "Installed resources could not be loaded. Current selections can still be removed.",
       "catalogEmptySkills": "No installed skill can be assigned",
       "catalogEmptyConnectors": "No connected connector can be assigned",
       "catalogEmptyPlugins": "No installed plugin can be assigned",
-      "catalogEmptyKnowledge": "No published knowledge page can be assigned. Add and publish pages from Knowledge first.",
+      "catalogEmptyKnowledge": "No published knowledge page can be assigned. Add and publish pages from Assets first.",
       "modelSelection": "Choose a model",
       "knowledgeSource": "Source",
       "knowledgeUpdatedAt": "Updated",
       "knowledgeHint": "Choose published personal-context pages. After saving and publishing, copies are placed in this employee's office and later tasks can read them. Pages that are not selected stay out.",
       "joinedAt": "Joined: {{time}}",
       "mail": {
-        "title": "Tencent Agent Mail",
-        "description": "Connect Tencent Mail for this employee so later conversations can use it.",
+        "title": "Agent Mail",
+        "description": "Connect a mailbox for this employee so later conversations can use it.",
         "mailboxAddress": "Connected mailbox:",
         "isolationHint": "Node.js npx is unavailable on this machine, so Agent Mail CLI cannot start.",
-        "start": "Connect Tencent Mail",
+        "start": "Connect Mailbox",
         "authorizing": "Waiting for authorization…",
         "disconnect": "Disconnect mailbox",
         "cancel": "Cancel authorization",
         "popupBlocked": "Allow pop-ups and try mailbox authorization again.",
-        "preparing": "Preparing Tencent Mail authorization…",
+        "preparing": "Preparing mailbox authorization…",
         "status": {
           "loading": "Checking mailbox connection…",
           "unavailable": "Node.js npx is unavailable on this machine, so Agent Mail CLI cannot start.",
@@ -6262,9 +6250,12 @@
       },
       "dingtalkAuth": {
         "title": "DingTalk user account authorization",
-        "description": "Authorize a DingTalk user account for this employee to read connected group messages, work with online documents, and manage calendar events. Available access depends on account and organization permissions.",
+        "description": "Start account authorization through the DingTalk CLI. Authorization information is stored separately for each employee. Once authorized, the employee can read connected group messages, work with online documents, and manage calendar events within the permissions granted by the account and organization.",
+        "prerequisite": "Before first authorization, ask an organization administrator to enable CLI access in the DingTalk developer platform's CLI settings, add this employee's bound application, and allow the authorizing account to use it. Creating and publishing a bot application does not enable CLI access.",
         "begin": "Authorize DingTalk account",
         "beginPending": "Starting authorization…",
+        "popupBlocked": "The authorization page did not open or was closed. Continue with the link below without starting again.",
+        "waitDescription": "Connecting to DingTalk. This page will redirect automatically. First use may need to prepare the DingTalk CLI; please avoid starting again.",
         "cancel": "Cancel authorization",
         "disconnect": "Disconnect account",
         "open": "Reopen authorization page",
@@ -6274,6 +6265,15 @@
         "accountUnavailable": "Account name is temporarily unavailable",
         "organizationUnavailable": "Organization name is temporarily unavailable",
         "organization": "Organization",
+        "groupMonitor": {
+          "discovering": "Discovering groups containing this employee's bot and starting observation…",
+          "listening": "Observing ordinary messages in {{count}} groups. No initial @mention is required.",
+          "no_groups": "No groups shared by this account and the employee's bot were found. Add the bot to a work group.",
+          "error": "Group discovery or message reading temporarily failed. Retrying…",
+          "disabled": "The employee is disabled. Ordinary group message observation is paused.",
+          "mentions_only": "Passive reply mode is enabled. Only group messages mentioning the employee are handled.",
+          "unavailable": "Waiting for the group message observation service to start."
+        },
         "openAdmin": "Open DingTalk developer platform (CLI settings)",
         "failures": {
           "org_access_denied": "Your DingTalk account was confirmed, but the selected organization has not allowed this account to access data through the CLI. Ask an organization administrator to grant access, then authorize again, or select an organization where you already have access.",
@@ -6323,10 +6323,12 @@
       "cancelAuthorizationTitle": "Revoke channel authorization",
       "cancelAuthorizationWarning": "After revoking, this colleague stops receiving and replying on this channel.",
       "cancelAuthorizationMessage": "Revoke the “{{channel}}” authorization? It can be authorized again later.",
+      "cancelAuthorizationSuccess": "Authorization revoked",
       "addConnection": "Add connection",
       "removeConnection": "Disconnect",
       "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
       "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
+      "removeConnectionSuccess": "Disconnected",
       "workLog": "Work log",
       "periods": {
         "7d": "Last 7 days",
@@ -6445,11 +6447,6 @@
       "webConnection": "Web",
       "connectionHint": "Files shared here can also be read by {{platform}} users.",
       "webResult": "New result in the Web workspace. View it",
-      "defaultPrompts": [
-        "Summarize today's hot questions",
-        "Review group reply quality",
-        "Export today's conversation summary"
-      ],
       "featuresTitle": "Features",
       "features": {
         "chat": {
@@ -6549,8 +6546,10 @@
         "running": "Running"
       },
       "error": {
+        "nameRequired": "Enter a task name.",
+        "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
-        "executorRequired": "Choose an executor",
+        "executorRequired": "Select an AI employee to run this task.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
@@ -6617,6 +6616,7 @@
       "periodStart": "Start date",
       "periodEnd": "End date",
       "periodTo": "to",
+      "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",

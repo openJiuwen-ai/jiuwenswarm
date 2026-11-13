@@ -201,7 +201,6 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-action-primary) 16%, transparent);
 }
 .enterprise-context-popover__apply,
-.enterprise-context-popover__switch,
 .enterprise-context-popover__logout {
   width: 100%;
   margin-top: 10px;
@@ -214,9 +213,7 @@
   text-align: center;
 }
 .enterprise-context-popover__apply { background: var(--color-surface-card); color: var(--color-text-primary); }
-.enterprise-context-popover__apply:hover:not(:disabled),
-.enterprise-context-popover__switch:hover { border-color: var(--color-action-primary); color: var(--color-action-primary); }
-.enterprise-context-popover__switch { margin-top: 12px; color: var(--color-text-primary); }
+.enterprise-context-popover__apply:hover:not(:disabled) { border-color: var(--color-action-primary); color: var(--color-action-primary); }
 .enterprise-context-popover__logout { margin-top: 8px; color: var(--color-feedback-danger); }
 .enterprise-context-popover__logout:hover { background: color-mix(in srgb, var(--color-feedback-danger) 8%, transparent); border-color: var(--color-feedback-danger); }
 .enterprise-context-popover__status { margin-top: 10px; color: var(--color-text-secondary); font-size: 11px; }

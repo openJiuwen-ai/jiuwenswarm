@@ -62,8 +62,7 @@ from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail impor
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
-from jiuwenswarm.common.cron_session import is_cron_execution_session
-from jiuwenswarm.common.utils import get_domain_data_dir
+from jiuwenswarm.common.cron_session import is_cron_execution_context
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
@@ -133,6 +132,34 @@ def _build_session_messaging_route_rail(
     return SessionMessagingRouteRail()
 
 
+def _read_session_metadata(session_id: str) -> dict[str, Any] | None:
+    """Read the session metadata used by the cron gate.
+
+    ``common.cron_session`` must stay free of upper-layer imports (R1 layering
+    rule), so resolving the persisted ``cron_id`` happens here, in the agents
+    layer, and is passed to the shared predicate as a mapping.
+    """
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(
+            session_id, cache_bust=True, enable_writeback=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - gating must not break member build
+        # Fail-open keeps the member usable, but it also means the cron gate
+        # degrades to request signals; keep that visible in logs.
+        logger.warning(
+            "[swarm.heartbeat] session metadata lookup failed; cron gate falls "
+            "back to request signals session_id=%s: %s",
+            session_id,
+            exc,
+        )
+        return None
+    return metadata if isinstance(metadata, dict) else None
+
+
 @harness_element(
     kind=ElementKind.RAIL,
     name=HEARTBEAT,
@@ -154,14 +181,17 @@ def _build_heartbeat_rail(
     if service is None or not session_id:
         return None
     metadata = dict(getattr(context, "request_metadata", None) or {})
-    # cron 执行会话不挂心跳工具（判定信号与 swarm.cron_tools / code_rails 的
-    # permission rail 对齐）：心跳任务绑定创建它的会话，从 cron 运行里再派生
-    # 心跳任务与"禁止 cron 派生 cron"同理，且随一次性 cron 会话回收无意义；
-    # 普通会话三个信号都不命中，心跳能力不受影响。
-    if (
-        metadata.get("cron")
-        or str(getattr(context, "channel_id", None) or "").strip() == "__cron__"
-        or is_cron_execution_session(session_id)
+    # cron 执行会话不挂心跳工具：心跳任务绑定创建它的会话，从 cron 运行里再
+    # 派生心跳任务与"禁止 cron 派生 cron"同理，且随一次性 cron 会话回收无意义。
+    # 与 swarm.cron_tools 共用同一个判定，包含会话里持久化的 ``cron_id``，
+    # 这样 Web 定时任务执行会话（普通 ``web_*`` ID、web 渠道）在用户后续追问
+    # 或运行时重建时也保持隔离（issue #6188）。普通会话所有信号都不命中，
+    # 心跳能力不受影响。
+    if is_cron_execution_context(
+        session_id,
+        channel_id=getattr(context, "channel_id", None),
+        request_metadata=metadata,
+        session_metadata=_read_session_metadata(session_id),
     ):
         logger.info(
             "[swarm.heartbeat] skip HeartbeatRail for cron execution session %s",
@@ -203,7 +233,7 @@ def _build_personal_context_rail(
     """Mount even when disabled so live members observe subsequent switch changes."""
     del params, context
     try:
-        return PersonalContextRail(get_domain_data_dir() / ".personal_context")
+        return PersonalContextRail(Path.home() / ".jiuwenswarm" / ".personal_context")
     except Exception as exc:
         logger.warning(
             "[swarm.personal_context] optional Rail construction failed (%s)",

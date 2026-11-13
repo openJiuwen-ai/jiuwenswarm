@@ -57,6 +57,14 @@ def use_preferred_designer_model(model_name: str | None) -> Iterator[None]:
         _preferred_designer_model.reset(token)
 
 
+def preferred_designer_model_ref(graph: dict[str, Any] | None) -> str:
+    """Return the graph's chosen model, preferring a stable id over a shared name."""
+    metadata = graph.get("metadata") if isinstance(graph, dict) else None
+    if not isinstance(metadata, dict):
+        return ""
+    return str(metadata.get("model_id") or metadata.get("model_name") or "").strip()
+
+
 def _clamp_max_tokens(value: int | None) -> int:
     try:
         n = int(value or 0)
@@ -406,6 +414,16 @@ def model_text_or_raise(result: dict[str, Any] | None) -> str:
     return text
 
 
+def _configured_model_matches(model: dict[str, Any], preferred_model: str) -> bool:
+    """Match a catalog row without stacking boolean expressions in the caller."""
+    stable_id = model.get("model_id")
+    if stable_id and stable_id == preferred_model:
+        return True
+    if model.get("id") == preferred_model:
+        return True
+    return model.get("model_name") == preferred_model
+
+
 def list_configured_models() -> list[dict[str, Any]]:
     """Return models from Settings / config.yaml for agent tool use.
 
@@ -425,6 +443,7 @@ def list_configured_models() -> list[dict[str, Any]]:
         out.append(
             {
                 "id": alias or name,
+                "model_id": str(entry.get("model_id") or "").strip(),
                 "model_name": name,
                 "alias": alias,
                 "api_base": str(mcc.get("api_base") or ""),
@@ -535,7 +554,9 @@ async def call_model_tool(
     chosen: dict[str, Any] | None = None
     if preferred_model:
         for m in models:
-            if m.get("id") == preferred_model or m.get("model_name") == preferred_model:
+            # Stable id first: several custom rows can share model_name, and
+            # ``id`` is only the alias or that shared name.
+            if _configured_model_matches(m, preferred_model):
                 chosen = m
                 break
     if chosen is None:

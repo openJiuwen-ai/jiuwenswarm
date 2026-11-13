@@ -11,6 +11,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from openjiuwen_protocol.message import Message
 
 from agent_gateway import telemetry
 from agent_gateway.channel_manager.base import RobotMessageRouter
@@ -277,6 +278,7 @@ def test_queue_full_and_closed_drop(monkeypatch):
 async def test_same_id_on_different_sockets_and_accepted(monkeypatch):
     ws, other = Socket('one'), Socket('two')
     channel = setup_channel(ws)
+    channel._send_queues['one'] = asyncio.Queue(maxsize=8)
     channel._send_queues['two'] = asyncio.Queue()
     op, other_op = Operation(ws), Operation(other)
     channel._track_request_trace(ws, op)
@@ -292,6 +294,29 @@ async def test_same_id_on_different_sockets_and_accepted(monkeypatch):
     assert len(ws.sent) == 2 and op.result == ('success', '')
     assert not other_op.finished
     channel._finish_ws_traces(other, 'connection_closed')
+
+
+@pytest.mark.asyncio
+async def test_moa_status_fast_path_counts_traced_frame(monkeypatch):
+    ws = Socket('one')
+    channel = setup_channel(ws)
+    op = Operation(ws)
+    channel._track_request_trace(ws, op)
+    msg = Message(
+        id='same', type='event', channel_id='web', session_id='s', params={},
+        timestamp=0, ok=True, event_type='chat.moa_status', payload={},
+    )
+    telemetry.attach_message_trace(msg, op)
+
+    async def fake_send_message(msg, *, routing_target=None):
+        channel._enqueue_send(ws, {
+            'type': 'event', 'event': 'chat.moa_status', 'id': 'same', 'payload': {},
+        })
+
+    monkeypatch.setattr(channel, '_send_message', fake_send_message)
+    await channel.send(msg)
+    assert op.attempted_frames == 1
+    assert op.result is None
 
 
 @pytest.mark.asyncio

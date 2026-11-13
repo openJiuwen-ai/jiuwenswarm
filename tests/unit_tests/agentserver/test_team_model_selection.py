@@ -250,7 +250,7 @@ def test_team_single_model_selection_keeps_every_configured_model_in_pool(
         TeamManager,
         "_resolve_and_compile_team_selection",
         staticmethod(
-            lambda _selection, config_base=None: compile_model_selection(
+            lambda _selection: compile_model_selection(
                 ResolvedModel(
                     model_id="model-ds",
                     model_name="deepseek-v4-flash",

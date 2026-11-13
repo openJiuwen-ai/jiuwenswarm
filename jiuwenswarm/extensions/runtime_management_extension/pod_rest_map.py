@@ -10,13 +10,9 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import quote, urljoin
 
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.runtime_http_routes import (
-    RUNTIME_HTTP_API_PREFIX as API_PREFIX,
-    RUNTIME_HTTP_CHAT_ROUTES,
-    RUNTIME_HTTP_ROUTES,
-    resolve_runtime_http_route,
-)
+from jiuwenswarm.common.e2a.models import E2AEnvelope
+
+API_PREFIX = "/api/v1"
 DEFAULT_HTTP_PORT = 8766
 
 _PATH_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -27,30 +23,294 @@ _WRITE_VERBS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # ``X-Session-Id``，但不得写入 REST body（路径也无 {session_id}）。
 _METHODS_WITHOUT_PARAM_SESSION_ID = frozenset({"session.create"})
 
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
-})
+# method → (verb, path relative to /api/v1). 特殊 chat.* / history stream 在 assemble 里处理。
+# 键同时覆盖本仓 ReqMethod 与 Agent HTTP ROUTES 若有字符串漂移的别名。
+_ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("media.persist", "POST", "/sessions/{session_id}/media"),
+    ("media.discard", "DELETE", "/sessions/{session_id}/media"),
+    ("document.persist", "POST", "/sessions/{session_id}/documents"),
+    ("document.formats", "GET", "/documents/formats"),
+    ("file.import_url", "POST", "/sessions/{session_id}/files/import"),
+    ("file.upload_chunk", "POST", "/sessions/{session_id}/files/chunks"),
+    ("file.download_verified_chunk", "POST", "/sessions/{session_id}/files/download"),
+    ("file.read_upload_chunk", "GET", "/sessions/{session_id}/files/upload-content"),
+    ("initialize", "POST", "/initialize"),
+    ("session.list", "GET", "/sessions"),
+    ("session.create", "POST", "/sessions"),
+    ("session.get_metadata", "GET", "/sessions/{session_id}"),
+    ("session.rename", "PATCH", "/sessions/{session_id}"),
+    ("session.delete", "DELETE", "/sessions/{session_id}"),
+    # 会话归档：与 Gateway mapped 北向路径对齐（勿用 /sessions/archived，
+    # 会与 /sessions/{session_id} 抢路由）。
+    ("session.archive", "POST", "/sessions/actions/archive"),
+    ("session.unarchive", "POST", "/sessions/actions/unarchive"),
+    ("session.archived.list", "GET", "/archived-sessions"),
+    ("project.sessions.archive", "POST", "/projects/{project_id}/sessions/actions/archive"),
+    (
+        "project.sessions.delete_archived",
+        "POST",
+        "/projects/{project_id}/sessions/actions/delete-archived",
+    ),
+    # 同一条 PATCH /sessions/{id} 已经给重命名。置顶单独挂动作地址，
+    # 避免两个方法抢同一个网址。
+    ("session.pin", "POST", "/sessions/{session_id}/actions/pin"),
+    ("session.switch", "POST", "/sessions/{session_id}/actions/switch"),
+    ("session.fork", "POST", "/sessions/{session_id}/actions/fork"),
+    ("session.rewind", "POST", "/sessions/{session_id}/actions/rewind"),
+    ("session.rewind_and_restore", "POST", "/sessions/{session_id}/actions/rewind-restore"),
+    ("session.rewind_compact", "POST", "/sessions/{session_id}/actions/rewind-compact"),
+    ("session.rewind_context", "POST", "/sessions/{session_id}/actions/rewind-context"),
+    ("session.restore_files", "POST", "/sessions/{session_id}/actions/restore-files"),
+    ("history.get", "GET", "/sessions/{session_id}/history"),
+    ("history.list_turns", "GET", "/sessions/{session_id}/turns"),
+    ("chat.interrupt", "POST", "/chat/{session_id}/actions/interrupt"),
+    ("chat.steer", "POST", "/chat/{session_id}/actions/steer"),
+    ("chat.steer.status", "POST", "/chat/{session_id}/actions/steer/status"),
+    ("chat.user_answer", "POST", "/chat/{session_id}/actions/answer"),
+    ("command.session", "POST", "/sessions/{session_id}/commands"),
+    ("command.compact", "POST", "/sessions/{session_id}/commands/compact"),
+    ("command.compact_partial", "POST", "/sessions/{session_id}/commands/compact-partial"),
+    ("command.model", "POST", "/sessions/{session_id}/commands/model"),
+    ("command.mcp", "POST", "/sessions/{session_id}/commands/mcp"),
+    ("mcp.server.add", "POST", "/mcp/servers"),
+    ("mcp.server.remove", "POST", "/mcp/servers/remove"),
+    ("mcp.server.update", "POST", "/mcp/servers/update"),
+    ("mcp.server.list", "GET", "/mcp/servers"),
+    ("mcp.server.get", "GET", "/mcp/servers/{name}"),
+    # 网页实际转发的是 mcp.list 这一套。用 POST 是为了保住布尔和字典，
+    # 查询串会把它们变成字符串。
+    ("mcp.list", "POST", "/mcp/actions/list"),
+    ("mcp.show", "POST", "/mcp/actions/show"),
+    ("mcp.install", "POST", "/mcp/actions/install"),
+    ("mcp.uninstall", "POST", "/mcp/actions/uninstall"),
+    ("mcp.connect", "POST", "/mcp/actions/connect"),
+    ("mcp.wait_auth", "POST", "/mcp/actions/wait-auth"),
+    ("mcp.cancel_connect", "POST", "/mcp/actions/cancel-connect"),
+    ("mcp.disconnect", "POST", "/mcp/actions/disconnect"),
+    ("mcp.register_custom", "POST", "/mcp/actions/register-custom"),
+    ("mcp.delete_custom", "POST", "/mcp/actions/delete-custom"),
+    ("mcp.save_credentials", "POST", "/mcp/actions/save-credentials"),
+    ("command.sandbox", "POST", "/sessions/{session_id}/commands/sandbox"),
+    ("command.btw", "POST", "/sessions/{session_id}/commands/btw"),
+    ("command.add_dir", "POST", "/sessions/{session_id}/commands/add-dir"),
+    ("command.chrome", "POST", "/sessions/{session_id}/commands/chrome"),
+    ("command.context", "POST", "/sessions/{session_id}/commands/context"),
+    ("command.recap", "POST", "/sessions/{session_id}/commands/recap"),
+    ("command.diff", "POST", "/sessions/{session_id}/commands/diff"),
+    ("command.simplify", "POST", "/sessions/{session_id}/commands/simplify"),
+    ("command.resume", "POST", "/sessions/{session_id}/commands/resume"),
+    ("command.workflows", "POST", "/sessions/{session_id}/commands/workflows"),
+    ("command.goal", "POST", "/sessions/{session_id}/commands/goal"),
+    ("command.status", "GET", "/sessions/{session_id}/commands/status"),
+    ("agents.list", "GET", "/agents"),
+    ("agents.create", "POST", "/agents"),
+    ("agents.get", "GET", "/agents/{name}"),
+    ("agents.update", "PUT", "/agents/{name}"),
+    ("agents.delete", "DELETE", "/agents/{name}"),
+    ("agents.enable", "POST", "/agents/{name}/actions/enable"),
+    ("agents.disable", "POST", "/agents/{name}/actions/disable"),
+    ("agents.tools.list", "GET", "/agents/{name}/tools"),
+    ("agents.tools_list", "GET", "/agents/{name}/tools"),
+    ("team.templates.list", "GET", "/teams/templates"),
+    ("team.bindings.list", "GET", "/teams/bindings"),
+    ("team.binding.create", "POST", "/teams/bindings"),
+    ("team.binding.generate", "POST", "/teams/bindings/actions/generate"),
+    ("team.session.bind", "POST", "/teams/{team_name}/sessions/{session_id}/bind"),
+    ("team.snapshot", "GET", "/sessions/{session_id}/team/snapshot"),
+    ("team.list", "GET", "/sessions/{session_id}/teams"),
+    ("org.snapshot", "GET", "/sessions/{session_id}/organization/snapshot"),
+    ("a4p.config.get", "GET", "/a4p/config"),
+    ("a4p.config.update", "PUT", "/a4p/config"),
+    ("team.members.get", "GET", "/sessions/{session_id}/team/members"),
+    ("team.history.get", "GET", "/sessions/{session_id}/team/history"),
+    ("team.mq.publish", "POST", "/teams/mq/publish"),
+    ("team.delete", "DELETE", "/teams/{team_name}"),
+    ("skills.list", "GET", "/skills"),
+    ("skills.installed", "GET", "/skills/installed"),
+    ("skills.marketplace.list", "GET", "/skills/marketplace"),
+    ("skills.marketplace.add", "POST", "/skills/marketplace"),
+    ("skills.marketplace.remove", "DELETE", "/skills/marketplace/{name}"),
+    ("skills.marketplace.toggle", "POST", "/skills/marketplace/{name}/actions/toggle"),
+    ("skills.install", "POST", "/skills/install"),
+    ("skills.import_local", "POST", "/skills/import-local"),
+    ("skills.online.search", "POST", "/skills/online-search"),
+    ("skills.online_search.search", "POST", "/skills/online-search"),
+    ("skills.retrieval.status", "GET", "/skills/retrieval/status"),
+    ("skills.retrieval.index_build", "POST", "/skills/retrieval/index-build"),
+    ("skills.retrieval.index_cancel", "POST", "/skills/retrieval/index-cancel"),
+    ("skills.retrieval.search", "GET", "/skills/retrieval/search"),
+    ("skills.retrieval.tree", "GET", "/skills/retrieval/tree"),
+    ("skills.evolution.get", "GET", "/skills/evolution"),
+    ("skills.evolution.save", "PUT", "/skills/evolution"),
+    ("skills.evolution.status", "GET", "/skills/{name}/evolution/status"),
+    ("skills.evolution.archives", "GET", "/skills/evolution/archives"),
+    ("skills.evolution.rollback", "POST", "/skills/evolution/actions/rollback"),
+    ("skills.evolution.rebuild", "POST", "/skills/evolution/actions/rebuild"),
+    ("skills.clawhub.get_token", "GET", "/skills/clawhub/token"),
+    ("skills.clawhub.set_token", "PUT", "/skills/clawhub/token"),
+    ("skills.clawhub.search", "GET", "/skills/clawhub/search"),
+    ("skills.clawhub.download", "POST", "/skills/clawhub/actions/download"),
+    ("skills.skillnet.search", "GET", "/skills/skillnet/search"),
+    ("skills.skillnet.install", "POST", "/skills/skillnet/install"),
+    ("skills.skillnet.install_status", "GET", "/skills/skillnet/install-status"),
+    ("skills.skillnet.evaluate", "POST", "/skills/skillnet/actions/evaluate"),
+    ("skills.teamskillshub.info", "GET", "/skills/teamskillshub/info"),
+    ("skills.teamskillshub.search", "GET", "/skills/teamskillshub/search"),
+    ("skills.teamskillshub.install", "POST", "/skills/teamskillshub/install"),
+    ("skills.teamskillshub.init", "POST", "/skills/teamskillshub/actions/init"),
+    ("skills.teamskillshub.validate", "POST", "/skills/teamskillshub/actions/validate"),
+    ("skills.teamskillshub.pack", "POST", "/skills/teamskillshub/actions/pack"),
+    ("skills.teamskillshub.publish", "POST", "/skills/teamskillshub/actions/publish"),
+    ("skills.teamskillshub.delete", "POST", "/skills/teamskillshub/actions/delete"),
+    ("skills.source.providers", "GET", "/skills/sources"),
+    ("skills.source.search", "GET", "/skills/sources/search"),
+    ("skills.source.install", "POST", "/skills/sources/install"),
+    ("skills.updates.check", "GET", "/skills/updates"),
+    ("skills.update", "POST", "/skills/actions/update"),
+    ("skills.enterprise.list", "GET", "/skills/enterprise"),
+    ("skills.enterprise.install", "POST", "/skills/enterprise/install"),
+    ("skills.enterprise.uninstall", "POST", "/skills/enterprise/actions/uninstall"),
+    ("skills.enterprise.source.providers", "GET", "/skills/enterprise/sources"),
+    ("skills.enterprise.source.search", "GET", "/skills/enterprise/sources/search"),
+    ("skills.files.list", "GET", "/skills/{name}/files"),
+    ("skills.files.get", "GET", "/skills/{name}/files/content"),
+    ("skills.versions.list", "GET", "/skills/{name}/versions"),
+    ("skills.get", "GET", "/skills/{name}"),
+    ("skills.uninstall", "DELETE", "/skills/{name}"),
+    ("skills.toggle", "POST", "/skills/{name}/actions/toggle"),
+    ("extensions.list", "GET", "/extensions"),
+    ("extensions.import", "POST", "/extensions"),
+    ("extensions.delete", "DELETE", "/extensions/{name}"),
+    ("extensions.toggle", "POST", "/extensions/{name}/actions/toggle"),
+    ("hooks.list", "GET", "/hooks"),
+    ("plugins.list", "GET", "/plugins"),
+    ("plugins.install", "POST", "/plugins/install"),
+    ("plugins.reload", "POST", "/plugins/actions/reload"),
+    ("plugins.uninstall", "DELETE", "/plugins/{name}"),
+    ("plugins.enable", "POST", "/plugins/{name}/actions/enable"),
+    ("plugins.disable", "POST", "/plugins/{name}/actions/disable"),
+    ("schedule.check_config", "GET", "/schedule/config"),
+    ("schedule.update_config", "PATCH", "/schedule/config"),
+    ("schedule.list", "GET", "/schedule/tasks"),
+    ("schedule.create", "POST", "/schedule/tasks"),
+    ("schedule.run", "POST", "/schedule/tasks/actions/run"),
+    ("schedule.status", "GET", "/schedule/tasks/{task_id}"),
+    ("schedule.logs", "GET", "/schedule/tasks/{task_id}/logs"),
+    ("schedule.cancel", "POST", "/schedule/tasks/{task_id}/actions/cancel"),
+    ("schedule.delete", "DELETE", "/schedule/tasks/{task_id}"),
+    ("issue.watch_once", "POST", "/issues/actions/watch-once"),
+    ("issue.state_list", "GET", "/issues/states"),
+    ("issue.state.list", "GET", "/issues/states"),
+    ("issue.matrix", "POST", "/issues/actions/matrix"),
+    ("issue.delete", "DELETE", "/issues/{issue_id}"),
+    ("harness.packages.get", "GET", "/harness/packages"),
+    ("harness.packages.scan", "POST", "/harness/packages/scan"),
+    ("harness.packages.activate", "POST", "/harness/packages/{name}/actions/activate"),
+    ("harness.packages.deactivate", "POST", "/harness/packages/{name}/actions/deactivate"),
+    ("harness.packages.delete", "DELETE", "/harness/packages/{name}"),
+    ("permissions.enabled.get", "GET", "/permissions/enabled"),
+    ("permissions.enabled.set", "PUT", "/permissions/enabled"),
+    ("permissions.tools.get", "GET", "/permissions/tools"),
+    ("permissions.tools.list", "GET", "/permissions/tools/list"),
+    ("permissions.tools.set", "PUT", "/permissions/tools"),
+    ("permissions.tools.update", "PATCH", "/permissions/tools"),
+    ("permissions.tools.delete", "DELETE", "/permissions/tools/{rule_id}"),
+    ("permissions.rules.get", "GET", "/permissions/rules"),
+    ("permissions.rules.create", "POST", "/permissions/rules"),
+    ("permissions.rules.update", "PATCH", "/permissions/rules/{rule_id}"),
+    ("permissions.rules.delete", "DELETE", "/permissions/rules/{rule_id}"),
+    ("permissions.approval_overrides.get", "GET", "/permissions/approval-overrides"),
+    ("permissions.approval_overrides.delete", "DELETE", "/permissions/approval-overrides/{override_id}"),
+    ("permissions.file_guard.workspace.rw_enabled.get", "GET", "/permissions/file-guard/workspace"),
+    ("permissions.file_guard.workspace.rw_enabled.set", "PUT", "/permissions/file-guard/workspace"),
+    ("permissions.file_guard.workspace.access.get", "GET", "/permissions/file-guard/workspace/access"),
+    ("permissions.file_guard.workspace.access.set", "PUT", "/permissions/file-guard/workspace/access"),
+    ("config.cache_clear", "POST", "/config/actions/cache-clear"),
+    ("hub.expert_packages.catalog", "GET", "/hub/expert-packages/catalog"),
+    ("agent.reload_config", "POST", "/config/actions/agent-reload"),
+    ("sync_agents_configs", "POST", "/config/actions/sync-agents"),
+    ("agent.prewarm_sync", "POST", "/config/actions/prewarm-sync"),
+    ("agent.prewarm.sync", "POST", "/config/actions/prewarm-sync"),
+    ("im.hosting.status", "GET", "/im/hosting/status"),
+    ("im.hosting.discover", "GET", "/im/hosting/discover"),
+    ("im.hosting.targets.list", "GET", "/im/hosting/targets"),
+    ("im.hosting.targets.add", "POST", "/im/hosting/targets"),
+    ("im.hosting.targets.patch", "PATCH", "/im/hosting/targets/{id}"),
+    ("im.hosting.targets.delete", "DELETE", "/im/hosting/targets/{id}"),
+    ("im.hosting.policy.get", "GET", "/im/hosting/policy"),
+    ("im.hosting.policy.patch", "PATCH", "/im/hosting/policy"),
+    ("im.hosting.poll_now", "POST", "/im/hosting/actions/poll-now"),
+    ("im.hosting.history", "GET", "/im/hosting/targets/{id}/history"),
+    ("im.hosting.login.start", "POST", "/im/hosting/login/start"),
+    ("im.hosting.login.status", "GET", "/im/hosting/login/status"),
+    ("browser.runtime_restart", "POST", "/runtime/browser/actions/restart"),
+    ("proactive.tick", "POST", "/proactive/actions/tick"),
+    ("proactive.feedback", "POST", "/proactive/actions/feedback"),
+    ("swarmflow.pause", "POST", "/sessions/{session_id}/swarmflow/actions/pause"),
+    ("swarmflow.resume", "POST", "/sessions/{session_id}/swarmflow/actions/resume"),
+    ("swarmflow.stop", "POST", "/sessions/{session_id}/swarmflow/actions/stop"),
+    ("acp.tool_response", "POST", "/acp/tool-responses"),
+    ("symphony.plan", "POST", "/symphony/actions/plan"),
+    ("symphony.build_score", "POST", "/symphony/actions/build-score"),
+    ("symphony.pause_build", "POST", "/symphony/actions/pause-build"),
+    ("symphony.score_status", "GET", "/symphony/score-status"),
+    ("symphony.graph", "GET", "/symphony/graph"),
+    ("channel.feishu.get_conf", "GET", "/channels/feishu/config"),
+    ("channel.feishu.set_conf", "PUT", "/channels/feishu/config"),
+    ("channel.xiaoyi.get_conf", "GET", "/channels/xiaoyi/config"),
+    ("channel.xiaoyi.set_conf", "PUT", "/channels/xiaoyi/config"),
+    ("channel.telegram.get_conf", "GET", "/channels/telegram/config"),
+    ("channel.telegram.set_conf", "PUT", "/channels/telegram/config"),
+    ("channel.slack.get_conf", "GET", "/channels/slack/config"),
+    ("channel.slack.set_conf", "PUT", "/channels/slack/config"),
+    ("channel.dingtalk.get_conf", "GET", "/channels/dingtalk/config"),
+    ("channel.dingtalk.set_conf", "PUT", "/channels/dingtalk/config"),
+    ("channel.whatsapp.get_conf", "GET", "/channels/whatsapp/config"),
+    ("channel.whatsapp.set_conf", "PUT", "/channels/whatsapp/config"),
+    ("channel.wechat.get_conf", "GET", "/channels/wechat/config"),
+    ("channel.wechat.set_conf", "PUT", "/channels/wechat/config"),
+    ("channel.wechat.get_login_ui", "GET", "/channels/wechat/login-ui"),
+    ("channel.wechat.unbind", "POST", "/channels/wechat/actions/unbind"),
+    ("updater.get_status", "GET", "/updater/status"),
+    ("updater.check", "POST", "/updater/actions/check"),
+    ("updater.download", "POST", "/updater/actions/download"),
+    ("updater.get_conf", "GET", "/updater/config"),
+    ("updater.set_conf", "PUT", "/updater/config"),
+    ("heartbeat.get_conf", "GET", "/heartbeat/config"),
+    ("heartbeat.set_conf", "PUT", "/heartbeat/config"),
+    ("workspace.tree", "GET", "/workspace/tree"),
+    ("workspace.usage", "GET", "/workspace/usage"),
+    ("workspace.entries.delete", "DELETE", "/workspace/entries"),
+    ("workspace.preview", "GET", "/workspace/preview"),
+    ("workspace.download", "GET", "/workspace/download"),
+    # 项目数据在 AgentServer 的 ProjectAdapter 里。路径与北向 Gateway 路由一致。
+    # 固定路径要排在 {project_id} 前面，避免被路径参数抢走。
+    ("project.list", "GET", "/projects"),
+    ("project.pinned_sessions", "GET", "/projects/pinned-sessions"),
+    ("project.create", "POST", "/projects"),
+    ("project.restore", "POST", "/projects/actions/restore"),
+    # 固定动作地址要排在 {project_id} 前面。核对项目不改名单，只读当前租户目录。
+    ("project.cron.resolve_binding", "POST", "/projects/actions/resolve-cron-binding"),
+    ("project.info", "GET", "/projects/{project_id}"),
+    ("project.get_sessions", "GET", "/projects/{project_id}/sessions"),
+    ("project.get_cron_sessions", "GET", "/projects/{project_id}/cron-sessions"),
+    ("project.rename", "PATCH", "/projects/{project_id}"),
+    ("project.pin", "POST", "/projects/{project_id}/actions/pin"),
+    ("project.remove", "DELETE", "/projects/{project_id}"),
+    # 定时任务准入：单项目快照。Gateway 后台 events/inventory 轮询走
+    # /projects/actions/lifecycle（见 _lookup_route / declared_http_routes），
+    # 不能塞进本行，否则 REST_ROUTES 同 method 只能留一条。
+    ("project.lifecycle", "POST", "/projects/{project_id}/lifecycle"),
+    # Gateway 把 cron 工具结果 / 立即执行 run_id / 任务快照回传 Agent（runtime HTTP）。
+    ("cron.command.ack", "POST", "/cron/command-ack"),
+    ("cron.run_now.ack", "POST", "/cron/run-now-ack"),
+    ("cron.jobs.sync", "POST", "/cron/jobs-sync"),
+    # 语言配置在 AgentServer 的 ConfigAdapter。个人版 WebSocket 客户端仍由 Gateway 本地读写。
+    ("locale.get_conf", "GET", "/locale"),
+    ("locale.set_conf", "PUT", "/locale"),
+)
 
-
-def _visible_route_rows() -> tuple[tuple[str, str, str], ...]:
-    from jiuwenswarm.enterprise.edition import is_enterprise
-
-    if is_enterprise():
-        return RUNTIME_HTTP_ROUTES
-    return tuple(row for row in RUNTIME_HTTP_ROUTES if row[0] not in _ENTERPRISE_TEAM_CONTROL_METHODS)
-
-
-REST_ROUTES: dict[str, tuple[str, str]] = {
-    method: (verb, path) for method, verb, path in _visible_route_rows()
-}
-
-REST_ROUTES["video.conversation.append"] = ("POST", "/sessions/{session_id}/video/conversation/events")
+REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb, path in _ROUTE_ROWS}
 
 
 class RestAssemblyError(ValueError):
@@ -207,17 +467,18 @@ def _lookup_route(
     is_stream: bool,
     params: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
+    if method in {"chat.send", "chat.resume"}:
+        path = "/chat/completions" if method == "chat.send" else "/chat/resume"
+        return "POST", path
+    if method == "history.get" and is_stream and method_has_http_handler(method):
+        return "GET", "/sessions/{session_id}/history/stream"
     if method == "project.lifecycle" and method_has_http_handler(method):
         feed = params or {}
         if feed.get("events") or feed.get("inventory"):
             return _PROJECT_LIFECYCLE_FEED_ROUTE
-    route = resolve_runtime_http_route(method, is_stream=is_stream)
-    has_rest_handler = method in REST_ROUTES and method_has_http_handler(method)
-    if route is not None:
-        if route in RUNTIME_HTTP_CHAT_ROUTES or has_rest_handler:
-            return route.verb, route.path
-    elif has_rest_handler:
-        return REST_ROUTES[method]
+    found = REST_ROUTES.get(method)
+    if found is not None and method_has_http_handler(method):
+        return found[0], found[1]
     extra = _enterprise_pod_route(method)
     if extra is not None:
         return extra

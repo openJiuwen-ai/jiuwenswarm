@@ -62,7 +62,7 @@ def _isolate_user_workspace(tmp_path_factory):
     flush_pending_writes = session_metadata.flush_pending_writes
     with pytest.MonkeyPatch.context() as mp:
         data = tmp_path_factory.mktemp("unit_workspace") / ".jiuwenswarm"
-        config_dir = data / "infra" / "config"
+        config_dir = data / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(
             Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml",
@@ -70,8 +70,6 @@ def _isolate_user_workspace(tmp_path_factory):
         )
         mp.setattr(_utils, "_workspace_base_dir", data)
         mp.setattr(_utils, "_initialized", False)
-        for name in ("_config_dir", "_workspace_dir", "_root_dir"):
-            mp.setattr(_utils, name, None)
         mp.setenv("JIUWENSWARM_CONFIG_DIR", str(config_dir))
         # A Gateway operation can resolve either package's cached config path.
         for name in ("agent_gateway.common.config", "jiuwenswarm.common.config"):

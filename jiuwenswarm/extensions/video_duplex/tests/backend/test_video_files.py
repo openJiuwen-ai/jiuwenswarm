@@ -113,16 +113,7 @@ async def test_file_history_uses_native_chat_file_record_in_visible_conversation
     records = []
     monkeypatch.setattr(session_history, "_enqueue_history_item", lambda sid, item, **_: records.append((sid, item)))
     monkeypatch.setattr(session_metadata, "update_session_metadata", lambda **_: None)
-    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.server.handlers.video_conversation import append_video_conversation
-
-    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *_args, **_kwargs: {"user_id": ""})
-
-    async def send_request(envelope):
-        payload = append_video_conversation(e2a_to_agent_request(envelope))
-        return SimpleNamespace(ok=True, payload=payload)
-
-    video_live.register_video_live_handler(channel, agent_client=SimpleNamespace(send_request=send_request))
+    video_live.register_video_live_handler(channel, agent_client=None)
     append_handler = handlers.get("video.conversation.append")
     assert append_handler is not None
     await append_handler(None, "append", {

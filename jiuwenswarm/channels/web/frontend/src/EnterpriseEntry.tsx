@@ -1,3 +1,4 @@
+import { maintainBrowserSession } from './auth/manager/federation';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isEnterprise } from './edition';
@@ -86,15 +87,10 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
   const [context, setContext] = useState<EnterpriseContextSnapshot | null>(null);
   const [contextError, setContextError] = useState('');
   const [contextSwitching, setContextSwitching] = useState(false);
-  const [managerAccess, setManagerAccess] = useState(false);
 
   const logout = useCallback(() => {
     if (provider) void provider.logout();
   }, [provider]);
-
-  const switchToManager = useCallback(() => {
-    window.location.href = '/manager';
-  }, []);
 
   useEffect(() => {
     if (!enterprise || !provider) return;
@@ -113,14 +109,6 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
         const debug = new URLSearchParams(window.location.search).get('debug_context') === '1';
         const user = await provider.getCurrentUser();
         if (!user.user_id) throw new Error(t('enterpriseEntry.invalidIdentity'));
-        try {
-          const canManage = provider.getManagerAccess ? await provider.getManagerAccess() : false;
-          if (!cancelled) {
-            setManagerAccess(canManage);
-          }
-        } catch {
-          if (!cancelled) setManagerAccess(false);
-        }
         const listed = await provider.listAgentContexts();
         const contexts = listed
           .map((item) => normalizeContext(item))
@@ -169,11 +157,24 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
     };
   }, [enterprise, provider, t]);
 
+  useEffect(() => {
+    if (!enterprise || simulateLogin || phase !== 'ready') return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void maintainBrowserSession().then((cleanup) => {
+      if (disposed) cleanup();
+      else stop = cleanup;
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, [enterprise, simulateLogin, phase]);
+
   const contextValue = useMemo<EnterpriseContextValue | null>(() => {
     if (!context || !provider) return null;
     return {
       ...context,
-      managerAccess,
       contextError,
       contextSwitching,
       onContextChange: (key) => {
@@ -222,10 +223,9 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
             setContextError(switchError instanceof Error ? switchError.message : t('enterpriseEntry.switchFailed'));
           });
       },
-      onSwitchToManager: switchToManager,
       onLogout: logout,
     };
-  }, [context, contextError, contextSwitching, logout, managerAccess, provider, switchToManager, t]);
+  }, [context, contextError, contextSwitching, logout, provider, t]);
 
   if (!enterprise) return <>{children}</>;
   if (phase === 'ready' && contextValue) {

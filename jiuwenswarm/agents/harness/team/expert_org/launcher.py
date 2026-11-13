@@ -888,6 +888,14 @@ class JiuwenExpertTeamLauncher:
         updates["metadata"] = metadata
         spec = spec.model_copy(update=updates)
 
+        # NOTE (D-20261105-1041 KD3, documented semantics): this launch path
+        # carries no project_dir concept, so expert-org member sandboxes mount
+        # no project directory — the policy builder's project-dir slot stays
+        # unset here (NOT the agent-server cwd: no project_dir is threaded and
+        # the injection itself passes None, which skips the cwd fallback only
+        # when the request carried none; see _build_member_sandbox_specs).
+        # Members still see team mounts. Threading project_dir through the
+        # expert-org launch chain is tracked as a follow-up.
         enrich_team_spec_for_swarm(
             spec,
             session_id=session_id,
@@ -1104,7 +1112,7 @@ class JiuwenExpertTeamLauncher:
             raise ValueError("organization_id is required")
         if not str(session_id or "").strip():
             raise ValueError("session_id is required")
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import require_allowed
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import require_allowed
 
         require_allowed("agent_group", group_name)
         self.ensure_turn_runner_installed()

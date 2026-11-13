@@ -252,6 +252,12 @@ async def request_a4p_intent_authorization(
         }
     session_id = str(_session_id or "").strip()
     execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
+    if execution_context is not None and execution_context.is_cron_execution:
+        return {
+            "ok": False,
+            "error": "Unattended cron execution cannot request interactive A4P authorization",
+            "code": "A4P_CRON_AUTHORIZATION_UNAVAILABLE",
+        }
     if execution_context is None or not execution_context.is_interactive_web:
         return {
             "ok": False,

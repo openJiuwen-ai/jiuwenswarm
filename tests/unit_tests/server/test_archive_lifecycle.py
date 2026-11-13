@@ -105,7 +105,6 @@ async def test_session_delete_forwards_group_and_bot(monkeypatch):
     channel = SimpleNamespace(
         channel_id="web",
         clients=[],
-        connection_user_id=lambda ws: None,
         register_method=lambda name, fn: methods.update({name: fn}),
         send_response=AsyncMock(),
         send_event=AsyncMock(),

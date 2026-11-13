@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable, Protocol
 
 from agent_gateway.enterprise.team.quota_policy import OwnerIdentity
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 # ---------------------------------------------------------------------------
 # Status vocab (kept as plain strings so wire payloads need no mapping)
@@ -408,7 +408,7 @@ class SqliteTeamControlStore:
     """Default ``TeamControlStore`` backed by a single SQLite file."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or get_infra_data_dir() / "agent" / "teams" / "team_control.db"
+        self._path = path or get_user_workspace_dir() / "agent" / "teams" / "team_control.db"
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
 
@@ -785,14 +785,14 @@ def get_team_control_store() -> TeamControlStore:
     if _DEFAULT_STORE is None:
         with _DEFAULT_STORE_LOCK:
             if _DEFAULT_STORE is None:
-                from jiuwenswarm.infrastructure.db.team_mysql_actor import use_team_mysql
+                from jiuwenswarm.infrastructure.db.team_store_actor import use_shared_team_store
 
-                if use_team_mysql():
-                    from jiuwenswarm.enterprise.team.control_mysql import (
-                        MysqlTeamControlStore,
+                if use_shared_team_store():
+                    from jiuwenswarm.enterprise.team.control_shared import (
+                        SharedTeamControlStore,
                     )
 
-                    _DEFAULT_STORE = MysqlTeamControlStore()
+                    _DEFAULT_STORE = SharedTeamControlStore()
                 else:
                     _DEFAULT_STORE = SqliteTeamControlStore()
     return _DEFAULT_STORE

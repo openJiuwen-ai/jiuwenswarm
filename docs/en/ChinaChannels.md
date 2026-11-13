@@ -420,6 +420,10 @@ In JiuwenSwarm, open **Channels → DingTalk**, enable it, and configure **clien
 | `api_base` | v1.0 API domain, default `https://api.dingtalk.com` |
 | `oapi_base` | Legacy media API domain, default `https://oapi.dingtalk.com` |
 
+### 6. Authorize a DingTalk account for a team employee
+
+After binding a DingTalk app to an employee, open that employee's DingTalk connection and choose **Authorize DingTalk account**. Swarm can download, verify, and cache the DingTalk CLI on x64 and ARM64 Windows, macOS, and Linux without Node.js. Initial setup requires access to the official DingTalk CLI release on Gitee or GitHub. If the download fails, check your network and try again.
+
 ---
 
 ## WeCom (WeChat Work)

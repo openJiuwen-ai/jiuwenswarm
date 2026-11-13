@@ -31,6 +31,21 @@ _DELEGATED_REPLY_ERROR = (
     "to the group automatically. Do not post an acknowledgement. End your turn."
 )
 
+# An expert-team proxy only relays: files it makes itself never reach the group as attachments.
+_PROXY_DELIVERABLE_TOOLS = frozenset({"write_file", "edit_file", "send_file_to_user"})
+_PROXY_DELIVERABLE_ERROR = (
+    "As an expert-team proxy you do not produce deliverables or send files yourself. "
+    "Delegate the work through run_team: for a follow-up on a finished run use action=continue "
+    "with a new run_id and the earlier execution_id; for new work use action=start. "
+    "Files your private team writes to its outputs directory are attached to the group reply automatically."
+)
+# send_file_to_user emits a direct-chat file event that the group chat never shows.
+_GROUP_SEND_FILE_ERROR = (
+    "send_file_to_user does not reach the group chat. Post the final file with group_send_message, "
+    "passing your task's execution_id and the file in attachments as {name, path}. "
+    "If you have no execution_id, call start_group_task first."
+)
+
 
 def _tool_arguments(ctx) -> dict:
     arguments = getattr(ctx.inputs.tool_call, "arguments", None)
@@ -408,6 +423,19 @@ class GroupTaskPolicyRail(DeepAgentRail):
         ):
             _reject_tool(ctx, _DELEGATED_REPLY_ERROR)
             return
+        member = None
+        if group is not None:
+            member = next(
+                (item for item in group["members"] if item["member_name"] == self.context.member_name),
+                None,
+            )
+        if member is not None:
+            if member["kind"] == "agent_group" and ctx.inputs.tool_name in _PROXY_DELIVERABLE_TOOLS:
+                _reject_tool(ctx, _PROXY_DELIVERABLE_ERROR)
+                return
+            if ctx.inputs.tool_name == "send_file_to_user":
+                _reject_tool(ctx, _GROUP_SEND_FILE_ERROR)
+                return
         if ctx.inputs.tool_name == "send_message":
             group = read_group(self.context.session_id)
             if group is None:

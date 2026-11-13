@@ -59,7 +59,7 @@ def _run(tmp_path: Path, *flags: str, fail: bool = False) -> subprocess.Complete
 
 
 def _logs(tmp_path: Path) -> list[Path]:
-    return list((tmp_path / "infra" / "logs" / "process_cli").glob("*.log"))
+    return list((tmp_path / "agent" / "process_cli_logs").glob("*.log"))
 
 
 def test_one_shot_hides_python_native_and_child_diagnostics(tmp_path: Path) -> None:
@@ -104,8 +104,8 @@ def test_debug_shows_diagnostics_in_terminal(tmp_path: Path) -> None:
 
 
 def test_log_directory_failure_reports_to_stderr(tmp_path: Path) -> None:
-    log_directory = tmp_path / "infra" / "logs" / "process_cli"
-    log_directory.parent.mkdir(parents=True)
+    log_directory = tmp_path / "agent" / "process_cli_logs"
+    log_directory.parent.mkdir()
     log_directory.write_text("not a directory", encoding="utf-8")
 
     result = _run(tmp_path)

@@ -144,11 +144,11 @@ class RuntimeSupervisor:
         self._forwarder = forwarder
         self._ipc_mode = runtime_ipc_mode()
         if self._ipc_mode == FRONT_LOOPBACK and socket_path is None:
-            from jiuwenswarm.common.utils import get_infra_data_dir
+            from jiuwenswarm.common.utils import get_user_workspace_dir
 
             # A log location only; attached mode never resolves a resident
             # socket endpoint, creates socket files or takes its locks.
-            socket_path = str(get_infra_data_dir() / "run" / "runtime-attached")
+            socket_path = str(get_user_workspace_dir() / "run" / "runtime-attached")
         self._socket_path = socket_path or default_socket_path()
         self._launch_generation: int | None = None
         self._host = host
@@ -1019,6 +1019,7 @@ class RuntimeSupervisor:
 
     def _write_diagnostics(self, reason: str) -> None:
         now = time.monotonic()
+        stdout_path = getattr(self._process, "stdout_path", None)
         stderr_path = getattr(self._process, "stderr_path", None)
         snapshot = {
             "reason": reason,
@@ -1041,6 +1042,7 @@ class RuntimeSupervisor:
             if self._worker_last_beat
             else None,
             "worker_stall_context": self._worker_stall_context,
+            "worker_stdout": str(stdout_path) if stdout_path is not None else None,
             "worker_stderr": str(stderr_path) if stderr_path is not None else None,
         }
         logger.warning("[Supervisor] runtime diagnostics: %s", json.dumps(snapshot))
@@ -1048,12 +1050,14 @@ class RuntimeSupervisor:
             return
         self._last_dump_at = now
         try:
-            if stderr_path is not None:
+            if stdout_path is not None:
+                directory = stdout_path.parent
+            elif stderr_path is not None:
                 directory = stderr_path.parent
             else:
                 from jiuwenswarm.common.utils import get_logs_dir
 
-                directory = get_logs_dir() / "agent" / "runtime_diagnostics"
+                directory = get_logs_dir() / "runtime_diagnostics"
             self._last_dump_path = dump_runtime_state(directory, snapshot)
             self._observed_loop_lag = 0.0
             logger.warning(
@@ -1529,8 +1533,9 @@ class RuntimeSupervisor:
             if self._stopping or generation != self._generation:
                 return
             logger.warning(
-                "[Supervisor] runtime worker exited: code=%s stderr=%s",
+                "[Supervisor] runtime worker exited: code=%s stdout=%s stderr=%s",
                 code,
+                getattr(process, "stdout_path", None),
                 process.stderr_path,
             )
             conn = self._conn
