@@ -279,6 +279,13 @@ test('opencode-go vendor label resolves in both locales and falls back to a cust
   const providers = source('src/assets/providers/index.ts');
   assert.match(providers, /getVendorLogoUrl\(vendorKey: string\): string \| undefined/);
   assert.match(providers, /getVendorLogoUrl\(vendorKey\) \?\? customModelIcon/);
+
+  // The provider dropdown renders its own logo lookup, so the fallback has to
+  // live there too. Without it a vendor with no bundled asset draws no <img>
+  // at all and the card looks like it has lost its icon.
+  const providerSelect = source('src/features/settings/modules/models/ModelProviderSelect.tsx');
+  assert.match(providerSelect, /getVendorLogoUrl\(selected\.preset\.vendor_key\) \?\? settingsCustomModelIcon/);
+  assert.match(providerSelect, /getVendorLogoUrl\(option\.preset\.vendor_key\) \?\? settingsCustomModelIcon/);
 });
 
 test('model context windows stay editable and expose common presets', () => {

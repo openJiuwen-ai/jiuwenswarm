@@ -114,6 +114,27 @@ design_note: 需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-prov
 `.specify/memory/constitution.md` 原则 IV 明确"MUST NOT 额外添加
 `@pytest.mark.asyncio`"，补标记反而与仓库约束冲突。
 
+## Web 界面验证期的两处调整
+
+本地 Web 走查暴露两个问题，一个在本仓、一个在上游预设，处理方式不同：
+
+- **图标回退（本仓，已提交）**：`ModelProviderSelect` 的选中项与下拉项都自己调用
+  `getVendorLogoUrl`，返回 `undefined` 时渲染 `{logo ? <img/> : null}`，即整块图标区
+  空白；`getModelLogoUrl` 却有 `?? customModelIcon` 兜底，两处口径不一致。给
+  `ModelProviderSelect` 补同样的兜底后，没有内置资源的厂商显示通用模型图标，而不是
+  什么都不画。`icon_key` 不参与前端渲染（`settingsRefactor.test.mjs` 明令
+  `doesNotMatch(modelProviderSelect, /preset\.icon_key/)`），所以按 vendor_key 兜底
+  是唯一可行的修法；`modelSettings.test.mjs` 补了两条断言锁住这个兜底。
+- **预设形状（上游，本地覆盖，不提交）**：`validate` 用的 `opencode-go` 预设在本地被
+  临时改成 `CODING_PLAN` + 预填地址 + 6 个模型 + `/v1/models` 拉取端点，与
+  `contracts/vendors-list.md`（`CUSTOM_API` / `api_base=""` / `model_options=()` /
+  `models_endpoint=None`）相反。后果是 `ModelDialog` 的 `if (custom || !preset?.api_base)`
+  判定为假，对话框不渲染 api_base 输入框，用户改不了地址，违背 FR-002。为走查把本地
+  `.venv` 里的 `model_vendor_registry.py` 覆盖成契约形状（文件内有 `LOCAL VERIFICATION
+  OVERLAY` 注释），走查结束用同目录 `model_vendor_registry.py.bak-pinned` 还原。本仓
+  没有为此改任何代码：契约要求的是上游预设形状，改这里等于把上游数据复制一份进本仓，
+  与宪法 V 的预设单一来源相冲突（tasks.md T047 记的正是这件事）。
+
 ## 验证
 
 - 后端定向：`tests/unit_tests/common/test_opencode_go.py`、`test_config_validate_model_mcc.py`、
