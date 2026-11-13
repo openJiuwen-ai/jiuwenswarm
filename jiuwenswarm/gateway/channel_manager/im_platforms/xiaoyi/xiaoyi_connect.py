@@ -103,7 +103,7 @@ _APPROVAL_EVENT_ACTIONS = {
 }
 # 待答复审批有效期（超时后按普通消息处理，避免陈旧 request_id 误恢复）。
 _APPROVAL_EXPIRE_S = 30 * 60
-# 文本回退形态（app_ver < 11.7.10 / 未上报）的审批回复约定话术：随提示正文
+# 文本回退形态（app_ver 未达门限 / 未上报）的审批回复约定话术：随提示正文
 # 下发，引导用户按词表回复。
 _APPROVAL_REPLY_HINT = (
     "请直接回复：同意（仅本次）/ 会话内允许 / 永久允许 / 拒绝。"
@@ -876,7 +876,8 @@ class XiaoyiChannel(BaseChannel):
         # clientVariables 审批桥接：待答复审批（logical_session → 审批上下文）
         self._pending_approvals: dict[str, dict[str, Any]] = {}
         # 手机端版本（logical_session → systemVariables.app_ver，最后非空覆盖），
-        # AskUser 结构化选项卡开关依据（>= 11.7.10 才开启）
+        # AskUser 结构化选项卡开关依据（达到门限 ASK_USER_TABS_MIN_APP_VER
+        # 才开启）
         self._session_app_vers: dict[str, str] = {}
         # 手机端模型选择（logical_session → clientVariables.modelName，最后
         # 非空覆盖）：ask_user 发卡轮快照进 pending 待答登记，resume 请求随
@@ -3246,7 +3247,7 @@ class XiaoyiChannel(BaseChannel):
                     if isinstance(variables, dict):
                         system_variables = variables.get("systemVariables")
                         if isinstance(system_variables, dict):
-                            # 手机端版本（与 push_id 同层）：>= 11.7.10 才开启 AskUser
+                            # 手机端版本（与 push_id 同层）：达到门限才开启 AskUser
                             # 结构化选项卡出站/应答路径（见 _ask_user_tabs_enabled）
                             app_ver = str(system_variables.get("app_ver") or "").strip()
                         cv = variables.get("clientVariables")
@@ -3433,7 +3434,7 @@ class XiaoyiChannel(BaseChannel):
         # 云端多端同步回传形态（AgentEvent/InvokeRsp，挂 content.events 等任意
         # 位置）：data part 三个键均不带时按事件名递归定位，payload 与 InvokeRsp
         # 指令同构（question_id 对齐 + user_cancel + source）。
-        # 手机端 app_ver < 11.7.10（或未上报）时本会话从未下发选项卡（出站走
+        # 手机端 app_ver 未达门限（或未上报）时本会话从未下发选项卡（出站走
         # 文本回退形态），结构化应答不消费、按普通消息处理，交互仍可经文本
         # 约定/PermissionReply 两条既有路径兜底。
         if ask_user_answer is None:
@@ -4157,11 +4158,11 @@ class XiaoyiChannel(BaseChannel):
         return ""
 
     def _ask_user_tabs_enabled(self, logical_session: str) -> bool:
-        """本会话手机端是否支持 AskUser 结构化选项卡（app_ver >= 11.7.10）。
+        """本会话手机端是否支持 AskUser 结构化选项卡（app_ver 达到门限）。
 
         app_ver 从入站消息 data part 的 variables.systemVariables 提取（与
         push_id 同层的既有字段），按逻辑会话记录。缺失/未上报/非法一律按
-        不支持处理（fail-closed）：低于 11.7.10 的已发端侧不识别选项卡
+        不支持处理（fail-closed）：低于门限的已发端侧不识别选项卡
         契约字段（严格 schema 校验会剔字段甚至报错），宁可不发卡。
         """
         return xiaoyi_ask_user_tabs_supported(
@@ -4173,7 +4174,7 @@ class XiaoyiChannel(BaseChannel):
 
         按手机端版本分流（_ask_user_tabs_enabled，systemVariables.app_ver）：
 
-        - app_ver >= 11.7.10（元组比较）：出站结构化选项卡。A2A 标准语义：
+        - app_ver 达到门限（元组比较）：出站结构化选项卡。A2A 标准语义：
           status-update(state=input-required, final=false)，message.parts 同时挂
           text part（人类可读正文）与 data part（commands/ToolExecute/Invoke
           指令，端侧据此渲染选项卡，含 ask_user_id 唯一随机 id）。
@@ -4181,8 +4182,8 @@ class XiaoyiChannel(BaseChannel):
           artifact-update；input-required 不在终态集合内 → final=false，
           正确表达"任务未结束，正在等输入"。
 
-        - app_ver < 11.7.10（或未上报）：出站回退纯文本审批提示（不带任何
-          选项卡契约字段），与低于 11.7.10 的已发端侧的行为一致。
+        - app_ver 未达门限（或未上报）：出站回退纯文本审批提示（不带任何
+          选项卡契约字段），与低于门限的已发端侧的行为一致。
 
         回复约定（选项卡开启时三条常驻路径，关闭时后两条兜底）：
         ① 结构化应答 data part commands/ToolExecute/InvokeRsp（question_id 对齐 +
@@ -4208,7 +4209,7 @@ class XiaoyiChannel(BaseChannel):
                 payload, questions, request_id, source, meta,
             )
             return
-        # ==================== 文本回退（app_ver < 11.7.10 / 未上报） ====================
+        # ==================== 文本回退（app_ver 未达门限 / 未上报） ====================
         # 出站不带选项卡 data part / ask_user_id 等契约字段；登记精简待答复
         # 上下文（无 question_ids/question_options/ask_user_tabs 标记），文本
         # 约定与 PermissionReply 两条既有应答路径兜底。
@@ -4266,7 +4267,7 @@ class XiaoyiChannel(BaseChannel):
         source: str,
         meta: dict[str, Any],
     ) -> None:
-        """结构化选项卡出站（app_ver >= 11.7.10）：text part + Invoke data part。
+        """结构化选项卡出站（app_ver 达到门限）：text part + Invoke data part。
 
         登记完整待答复上下文（question_ids 映射/question_options/回发标识），
         供 InvokeRsp question_id 对齐、超时兜底与 resume 回发使用。

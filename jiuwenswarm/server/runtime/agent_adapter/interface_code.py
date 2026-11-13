@@ -713,7 +713,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         ]
 
         # xiaoyi 渠道按手机端版本分流（_xiaoyi_interaction_supported，app_ver
-        # >= 11.7.10 才参与 AskUser 交互）：装配期会话 adapter 尚未收到首条请求、
+        # 达到门限才参与 AskUser 交互）：装配期会话 adapter 尚未收到首条请求、
         # 版本未上报，保守摘除 permission_rail/code_ask_user_rail；支持的会话由
         # 每请求的 _set_user_interaction_enabled/_set_permission_rail_enabled
         # （_update_runtime_config）按版本补挂。
@@ -1323,8 +1323,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # code 模式始终走 _update_rails_for_mode 的 code 逻辑
         await self._update_rails_for_mode(runtime_config.mode)
         await self._set_user_interaction_enabled(runtime_config.supports_user_interaction)
-        # xiaoyi 渠道同步挂/摘 PermissionInterruptRail（同 deep：app_ver < 11.7.10
-        # 的旧版手机端不参与审批交互）
+        # xiaoyi 渠道同步挂/摘 PermissionInterruptRail（同 deep：app_ver 未达
+        # 门限的旧版手机端不参与审批交互）
         if self._is_xiaoyi_channel():
             await self._set_permission_rail_enabled(self._xiaoyi_interaction_supported())
         await self._update_tools_for_mode(runtime_config.mode, runtime_config.session_id, runtime_config.request_id)
