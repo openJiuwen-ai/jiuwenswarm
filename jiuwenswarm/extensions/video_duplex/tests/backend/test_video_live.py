@@ -1462,54 +1462,31 @@ async def test_joyai_voice_only_support_still_rejects_empty_polling_and_invalid_
     provider.assert_not_awaited()
 
 
-def test_joyai_raw_content_log_keeps_model_output_and_skips_silence(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.setattr(video_live.Path, "home", lambda: tmp_path)
+def test_joyai_logs_one_compact_record_per_event(monkeypatch, tmp_path, caplog) -> None:
+    import logging
 
-    video_live._append_joyai_log({
-        "request_id": "request-response",
-        "joyai_session_id": "session-1",
-        "instruction": "搜索今天的天气",
-        "request_kind": "user",
-        "frame_time_range": "1.0 seconds ~ 2.0 seconds",
-        "stage": "completed",
-        "decision": "response",
-        "raw_content": "</response> 我来搜索。",
-        "model_raw_content": "</response> 我来搜索。\n</delegation> 今天的天气",
-    })
-    video_live._append_joyai_log({
-        "request_id": "request-silence",
-        "joyai_session_id": "session-1",
-        "instruction": "",
-        "request_kind": "frame",
-        "stage": "completed",
-        "decision": "silence",
-        "raw_content": "</silence>",
-        "model_raw_content": "</silence>",
-    })
-
-    log_path = tmp_path / ".jiuwenswarm" / "logs" / "joyai-raw-content.jsonl"
-    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
-    assert records == [
-        {
-            "server_time": records[0]["server_time"],
-            "request_id": "request-response",
-            "joyai_session_id": "session-1",
-            "instruction": "搜索今天的天气",
-            "request_kind": "user",
-            "frame_time_range": "1.0 seconds ~ 2.0 seconds",
-            "decision": "response",
-            "raw_content": "</response> 我来搜索。\n</delegation> 今天的天气",
-            "adapter_content": "</response> 我来搜索。",
-        }
-    ]
-    main_log = tmp_path / ".jiuwenswarm" / "logs" / "joyai-video.jsonl"
-    main_records = [
-        json.loads(line) for line in main_log.read_text(encoding="utf-8").splitlines()
-    ]
-    assert len(main_records) == 2
-    assert all("model_raw_content" not in record for record in main_records)
+    monkeypatch.setattr(video_live, "get_user_workspace_dir", lambda: tmp_path)
+    event = {
+        "request_id": "request-response", "stage": "completed", "decision": "response",
+        "instruction": "weather", "raw_content": "adapter response",
+        "model_raw_content": "model response" * 300,
+        "search_job": {"job_id": "job-1", "status": "running", "result": "private result"},
+    }
+    with caplog.at_level(logging.INFO, logger=video_live.__name__):
+        video_live._append_joyai_log(event)
+    with caplog.at_level(logging.DEBUG, logger=video_live.__name__):
+        video_live._append_joyai_log(event)
+    records = [json.loads(line) for line in (tmp_path / "logs/duplex-realtime.jsonl").read_text(
+        encoding="utf-8").splitlines()]
+    assert len(records) == 2
+    assert records[0]["component"] == "joyai"
+    assert records[0]["model_raw_content_chars"] == len(event["model_raw_content"])
+    assert "model_raw_content" not in records[0]
+    assert "instruction" not in records[0]
+    assert records[0]["search_job"] == {"job_id": "job-1", "status": "running"}
+    assert records[1]["model_raw_content"] == event["model_raw_content"][:2_000]
+    assert event["instruction"] == "weather"
+    assert not list((tmp_path / "logs").glob("joyai*.jsonl"))
 
 
 @pytest.mark.parametrize(
@@ -2396,10 +2373,57 @@ async def test_qwen_realtime_error_preserves_raw_event_in_dedicated_log(
         request_id="telemetry-qwen-error", session_id="session")
 
     assert channel.responses[-1][1]["payload"] == {"logged": True}
-    assert telemetry[0]["raw_event"] == raw_event
+    assert telemetry == []
     assert errors[0]["raw_event"] == raw_event
     assert errors[0]["code"] == "context_length_exceeded"
     assert "secret" not in errors[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event,filename", [
+    ("qwen_realtime_error", "duplex-realtime.jsonl"),
+    ("qwen_tool_call_invalid", "duplex-realtime.jsonl"),
+    ("task_trace_control_failed", "duplex-task-trace.jsonl"),
+])
+async def test_telemetry_writes_one_correlated_record(tmp_path, monkeypatch, event, filename):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import diagnostics
+
+    channel = _video_channel()
+    monkeypatch.setattr(video_live, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(diagnostics, "get_user_workspace_dir", lambda: tmp_path)
+    await channel.request("video.realtime.telemetry", {
+        "event": event, "code": "provider_rejected", "message": "full failure reason",
+        "raw_event": "provider detail", "source": "browser", "call_id": "call-1",
+    }, request_id="diagnostic", session_id="session-1")
+    assert channel.responses[-1][1]["payload"] == {"logged": True}
+    assert [path.name for path in (tmp_path / "logs").glob("*.jsonl")] == [filename]
+    records = [json.loads(line) for line in (tmp_path / "logs" / filename).read_text(
+        encoding="utf-8").splitlines()]
+    assert len(records) == 1
+    assert records[0].items() >= {
+        "event": event, "code": "provider_rejected", "message": "full failure reason",
+        "raw_event": "provider detail", "session_id": "session-1", "source": "browser",
+        "call_id": "call-1",
+    }.items()
+
+
+def test_realtime_log_filters_noise_and_retains_bounded_failure(tmp_path, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(video_live, "get_user_workspace_dir", lambda: tmp_path)
+    with caplog.at_level(logging.INFO, logger=video_live.__name__):
+        video_live._append_realtime_telemetry({"event": "qwen_provider_vad"})
+        video_live._append_joyai_log({
+            "stage": "failed", "error": "invalid model response", "raw_content": "x" * 3_000,
+        })
+    with caplog.at_level(logging.DEBUG, logger=video_live.__name__):
+        video_live._append_realtime_telemetry({"event": "qwen_provider_vad"})
+    records = [json.loads(line) for line in (tmp_path / "logs/duplex-realtime.jsonl").read_text(
+        encoding="utf-8").splitlines()]
+    assert [record["event"] for record in records] == ["failed", "qwen_provider_vad"]
+    assert records[0]["error"] == "invalid model response"
+    assert records[0]["raw_content"] == "x" * 2_000
+    assert records[0]["raw_content_chars"] == 3_000
 
 
 def test_jsonl_appends_are_atomic_across_threads(tmp_path) -> None:
@@ -2622,8 +2646,7 @@ async def test_transcribe_handler_returns_verified_text(monkeypatch) -> None:
         request_id="request-1", session_id="session")
 
     assert channel.responses[-1][1]["payload"] == {"transcript": "这个是什么"}
-    assert event_logs[-1]["stage"] == "asr_completed"
-    assert event_logs[-1]["transcript"] == "这个是什么"
+    assert event_logs == []
     assert asr_logs == [
         {
             "request_id": "request-1",
@@ -2689,8 +2712,7 @@ async def test_transcribe_handler_ignores_filler_only_result(monkeypatch) -> Non
     assert asr_logs[0]["raw_transcript"] == "嗯。"
     assert asr_logs[0]["transcript"] == ""
     assert asr_logs[0]["ignored_reason"] == "filler_only"
-    assert event_logs[-1]["stage"] == "asr_ignored_filler"
-    assert event_logs[-1]["raw_transcript"] == "嗯。"
+    assert event_logs == []
 
 
 @pytest.mark.asyncio
@@ -2877,7 +2899,11 @@ async def test_execute_core_agent_streams_every_reasoning_delta() -> None:
 
 @pytest.mark.asyncio
 async def test_video_search_returns_failure_when_core_agent_fails(monkeypatch) -> None:
+    from jiuwenswarm.extensions.video_duplex.backend import task_adapter
+
     event_logs = []
+    task_logs = []
+    monkeypatch.setattr(task_adapter, "trace_task", lambda event, **fields: task_logs.append((event, fields)))
 
     class FakeAgentClient:
         async def send_request(self, envelope):
@@ -2904,7 +2930,9 @@ async def test_video_search_returns_failure_when_core_agent_fails(monkeypatch) -
     assert failed["engine"] == "Jiuwen Core Agent"
     assert failed["error"] == "Max iterations reached without completion"
     assert not any(event == "video.search.completed" for event, _ in channel.events)
-    assert any(item["stage"] == "search_failed" for item in event_logs)
+    assert not any(item["stage"] == "search_failed" for item in event_logs)
+    assert any(event == "task_state_published" and fields["task"]["status"] == "failed"
+               for event, fields in task_logs)
 
 
 @pytest.mark.asyncio
