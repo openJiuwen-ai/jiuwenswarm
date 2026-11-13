@@ -9,7 +9,7 @@ import pytest
 from agent_gateway.cron.controller import CronController
 from agent_gateway.cron.models import CronJob
 
-from jiuwenswarm.extensions.video_duplex.backend import cron_control
+from jiuwenswarm.extensions.video_duplex.backend import cron_control, queue_manager
 from jiuwenswarm.extensions.video_duplex.backend.cron_control import (
     CRON_DELETE_TOOL,
     CRON_QUERY_TOOL,
@@ -17,7 +17,7 @@ from jiuwenswarm.extensions.video_duplex.backend.cron_control import (
     CronControl,
     parse_cron_arguments,
 )
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import run_queue, tool_proposal
+from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call
 
 
 def job(job_id="job-1", *, user_id="alice", mode="agent", enabled=True):
@@ -257,19 +257,30 @@ async def test_unavailable_cron_returns_a_receipt_instead_of_raising(monkeypatch
     assert receipt["applied"] is False
 
 
+def management_call():
+    return parse_qwen_omni_tool_call({
+        "name": "jiuwen_queue_manage", "call_id": "manage-cron",
+        "arguments": {"instruction": "把早上九点的提醒改到八点半"},
+    })
+
+
 @pytest.mark.asyncio
 async def test_manager_queries_before_writing_and_reports_real_receipts(monkeypatch):
     controller = FakeCronController([job()])
     control = CronControl("alice", controller)
-    responses = [
-        tool_proposal(CRON_UPDATE_TOOL, {"job_id": "job-1", "patch": {"cron_expr": "30 8 * * *"}}),
-        tool_proposal(CRON_QUERY_TOOL, {}),
-        tool_proposal(CRON_UPDATE_TOOL, {"job_id": "job-1", "patch": {"cron_expr": "30 8 * * *"}}),
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    step = AsyncMock(side_effect=[
+        json.dumps({"tool": {"name": CRON_UPDATE_TOOL, "arguments": {
+            "job_id": "job-1", "patch": {"cron_expr": "30 8 * * *"}}}}),
+        json.dumps({"tool": {"name": CRON_QUERY_TOOL, "arguments": {}}}),
+        json.dumps({"tool": {"name": CRON_UPDATE_TOOL, "arguments": {
+            "job_id": "job-1", "patch": {"cron_expr": "30 8 * * *"}}}}),
         json.dumps({"response": "提醒已改到八点半。"}),
-    ]
+    ])
+    monkeypatch.setattr(queue_manager, "request_step", step)
 
-    result, _, _ = await run_queue(
-        monkeypatch, responses, {"jobs": []}, instruction="把早上九点的提醒改到八点半", cron=control,
+    result = await queue_manager.manage_queue(
+        manager, "alice", "voice", management_call(), "把早上九点的提醒改到八点半", cron=control,
     )
 
     assert result["response"] == "提醒已改到八点半。"
@@ -285,10 +296,12 @@ async def test_manager_queries_before_writing_and_reports_real_receipts(monkeypa
 @pytest.mark.asyncio
 async def test_manager_exposes_cron_tools_to_the_model(monkeypatch):
     control = CronControl("alice", FakeCronController([]))
-    response = json.dumps({"response": "当前没有定时任务。"})
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    step = AsyncMock(return_value=json.dumps({"response": "当前没有定时任务。"}))
+    monkeypatch.setattr(queue_manager, "request_step", step)
 
-    _, _, step = await run_queue(
-        monkeypatch, response, {"jobs": []}, instruction="我有哪些定时任务", cron=control,
+    await queue_manager.manage_queue(
+        manager, "alice", "voice", management_call(), "我有哪些定时任务", cron=control,
     )
 
     context = json.loads(step.call_args.args[0][1]["content"])
@@ -299,15 +312,17 @@ async def test_manager_exposes_cron_tools_to_the_model(monkeypatch):
 @pytest.mark.asyncio
 async def test_manager_answers_cron_creation_with_a_delegation_hint(monkeypatch):
     controller = FakeCronController([])
-    responses = [
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    step = AsyncMock(side_effect=[
         json.dumps({"tool": {"name": "jiuwen_cron_create", "arguments": {
             "name": "喝水提醒", "cron_expr": "0 9 * * *", "timezone": "Asia/Shanghai",
             "description": "提醒喝水"}}}),
         json.dumps({"response": "新建定时任务需要作为新任务提交。"}),
-    ]
+    ])
+    monkeypatch.setattr(queue_manager, "request_step", step)
 
-    result, _, _ = await run_queue(
-        monkeypatch, responses, {"jobs": []}, instruction="每天九点提醒我喝水",
+    result = await queue_manager.manage_queue(
+        manager, "alice", "voice", management_call(), "每天九点提醒我喝水",
         cron=CronControl("alice", controller),
     )
 
@@ -318,9 +333,11 @@ async def test_manager_answers_cron_creation_with_a_delegation_hint(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_manager_hides_cron_tools_without_an_executor(monkeypatch):
-    response = json.dumps({"response": "没有可用操作。"})
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    step = AsyncMock(return_value=json.dumps({"response": "没有可用操作。"}))
+    monkeypatch.setattr(queue_manager, "request_step", step)
 
-    _, _, step = await run_queue(monkeypatch, response, {"jobs": []}, instruction="定时任务")
+    await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "定时任务")
 
     names = {tool["function"]["name"] for tool in json.loads(step.call_args.args[0][1]["content"])["allowed_tools"]}
     assert not names & cron_control.CRON_TOOL_NAMES

@@ -22,7 +22,10 @@ await build({
       if (path.endsWith('DesignerModelSelector')) contents = 'export default function DesignerModelSelector() { return null; }';
       else if (path.endsWith('ApplicationPluginOutlet')) contents = `export { TaskFullDuplexAction as ApplicationPluginTaskInputActions } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexAction.tsx`)};`;
       else if (path.endsWith('components/ui')) contents = 'export const toast = { open() {} };';
-      else if (path.endsWith('designerRunStore')) contents = 'export const useDesignerRunStore = { getState: () => ({ applyLeaderActivity() {} }) };';
+      else if (path.endsWith('designerRunStore')) contents = `
+        export const useDesignerRunStore = selector => selector({ isRunning: false, run: null });
+        useDesignerRunStore.getState = () => ({ applyLeaderActivity() {} });
+      `;
       else if (path.endsWith('designModelsReadiness')) contents = 'export const findDesignModelsProblem = async () => null;';
       else if (path.endsWith('designerStore')) contents = 'export const useDesignerStore = selector => selector(globalThis.designerDuplex.state); useDesignerStore.getState = () => globalThis.designerDuplex.state;';
       else if (path.endsWith('designerUiStore')) contents = 'export const useDesignerUiStore = selector => selector({toggleChatSidebar() {}});';
