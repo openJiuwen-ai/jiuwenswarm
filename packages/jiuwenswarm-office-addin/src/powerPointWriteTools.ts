@@ -73,10 +73,10 @@ export function powerPointWriteRuntime({ run, host, journal, fetcher }: {
 }
 
 /**
- * The host failed part way through the patch: put its slides back as they were before it, so the deck is never left
+ * The host failed part way through a write: put its slides back as they were before it, so the deck is never left
  * half changed. The slides put back have new ids.
  */
-async function rolledBack(
+export async function rolledBack(
   callJournal: SlideJournal, message: string, details: JsonObject, timings: HostTimings,
 ): Promise<ClientToolResponse> {
   const failure = { code: 'HOST_WRITE_FAILED', retryable: false, category: 'host' as const };
@@ -89,7 +89,7 @@ async function rolledBack(
       mutationEvidence: { outcome: 'rolled_back', native_mutation_started: true, slide_id_updates: slideIdUpdates,
         verification_targets: [] },
       error: { ...failure,
-        message: `${message}. The pane put the slides back as they were before this patch; nothing of it remains. `
+        message: `${message}. The pane put the slides back as they were before this call; nothing of it remains. `
           + 'The slides put back have new ids: call read_presentation_context before the next patch.',
         details: { ...kept, outcome: 'rolled_back', restored_slide_ids: Object.fromEntries(renamed) } } };
   } catch (rollbackError) {
@@ -99,7 +99,7 @@ async function rolledBack(
 }
 
 /** The structure fingerprint of the deck now, as read_presentation_context reports it. */
-async function fingerprint(batch: Batch): Promise<string> {
+export async function fingerprint(batch: Batch): Promise<string> {
   const { slides } = batch.presentation;
   slides.load('items/id');
   await batch.sync();

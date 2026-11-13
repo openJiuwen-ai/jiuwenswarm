@@ -16,5 +16,9 @@
     "office-addin-dev-certs": "^3.0.1",
     "typescript": "^5.3.0",
     "vitest": "^2.1.9"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "0.9.12",
+    "fflate": "0.8.3"
   }
 }
