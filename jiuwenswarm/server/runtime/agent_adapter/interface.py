@@ -1346,10 +1346,10 @@ class JiuWenSwarm:
                     )
 
         # xiaoyi 手机端按 app_ver 分流（systemVariables.app_ver，gateway 随
-        # metadata.xiaoyi_app_ver 透传）：>= 11.7.10（元组比较）
-        # 支持选项卡出站（status-update input-required + AskUser data part）
-        # 与结构化应答回传，恢复交互能力；< 11.7.10（或未上报）出站走
-        # gateway 文本回退，
+        # metadata.xiaoyi_app_ver 透传）：达到门限（>= ASK_USER_TABS_MIN_APP_VER
+        # 元组比较）支持选项卡出站（status-update input-required + AskUser
+        # data part）与结构化应答回传，恢复交互能力；低于门限（或未上报）
+        # 出站走 gateway 文本回退，
         # agent 侧同步关闭交互（rails 摘除见 interface_deep/interface_code
         # 的 _xiaoyi_interaction_supported），与已发旧端侧行为一致。
         # 其他渠道不受影响，仍按调用方声明的交互能力透传。

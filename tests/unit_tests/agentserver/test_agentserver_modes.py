@@ -322,9 +322,9 @@ def test_build_inputs_gates_xiaoyi_user_interaction_by_app_ver(monkeypatch):
     """xiaoyi 交互能力按手机端 app_ver 判定（gateway 随 metadata.xiaoyi_app_ver
     透传，源自 systemVariables.app_ver）：
 
-    - >= 11.7.10（如 11.7.10、11.7.10.900、11.7.11.100）→ 交互开启
-      （选项卡可渲染可回答）；
-    - < 11.7.10（11.7.9.x）/ 未上报 → fail-closed 关闭
+    - >= 门限 ASK_USER_TABS_MIN_APP_VER（当前收紧为 99.99.99，如 99.99.99、
+      99.99.99.200、100.0.0.100）→ 交互开启（选项卡可渲染可回答）；
+    - 低于门限（现网 11.7.x 各版本均在门限之下）/ 未上报 → fail-closed 关闭
       （旧端侧不识别选项卡契约字段）。
     """
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
@@ -342,14 +342,21 @@ def test_build_inputs_gates_xiaoyi_user_interaction_by_app_ver(monkeypatch):
             metadata=metadata,
         )
 
-    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.11.100"))
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("99.99.99"))
+    assert inputs["supports_user_interaction"] is True  # 门限等号（裸三段）
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("99.99.99.200"))
     assert inputs["supports_user_interaction"] is True
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("100.0.0.100"))
+    assert inputs["supports_user_interaction"] is True
+
+    # 门限收紧为 99.99.99（临时口径）：现网 11.7.x 一律不放行
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.11.100"))
+    assert inputs["supports_user_interaction"] is False
 
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.10.900"))
-    assert inputs["supports_user_interaction"] is True
-
-    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.10"))
-    assert inputs["supports_user_interaction"] is True
+    assert inputs["supports_user_interaction"] is False
 
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9.200"))
     assert inputs["supports_user_interaction"] is False
@@ -1398,7 +1405,7 @@ def test_deep_adapter_gates_xiaoyi_rails_by_app_ver(monkeypatch):
     """xiaoyi 渠道 ask_user/permission rails 按手机端 app_ver 判定。
 
     装配期 app_ver 尚未上报（会话 adapter 创建先于首条请求）→ 保守摘除，
-    与低于 11.7.10 的已发端侧行为一致；上报 >= 11.7.10（支持选项卡）→
+    与未达门限的已发端侧行为一致；上报达到门限（支持选项卡）→
     装配即挂载。运行期补挂/摘除由 _set_user_interaction_enabled/
     _set_permission_rail_enabled（_update_runtime_config）按请求版本执行。
     """
@@ -1435,8 +1442,8 @@ def test_deep_adapter_gates_xiaoyi_rails_by_app_ver(monkeypatch):
     assert ask_user_rail not in rails
     assert permission_rail not in rails
 
-    # 上报支持选项卡的版本（>= 11.7.10）：装配即挂载
-    adapter._client_app_ver = "11.7.10.200"
+    # 上报支持选项卡的版本（达到门限）：装配即挂载
+    adapter._client_app_ver = "99.99.99.200"
     rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
     assert ask_user_rail in rails
     assert permission_rail in rails
