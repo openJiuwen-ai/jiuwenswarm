@@ -342,9 +342,9 @@ telemetry:
 # ============================================================
 observability:
   team:
-    enabled: false                  # Team 可观测性开关
+    enabled: true                   # Team 可观测性开关
   agent:
-    enabled: false                  # 单 Agent / Coding Agent 可观测性开关
+    enabled: true                   # 单 Agent / Coding Agent 可观测性开关
   exporter: file                    # otlp_grpc / otlp_http / langfuse / console / file
   endpoint: http://localhost:4317   # OTLP endpoint（file 模式不需要）
   service_name: jiuwenswarm         # 服务名称（OTel resource service.name）
