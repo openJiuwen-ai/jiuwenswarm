@@ -5,5 +5,5 @@
 模块按域组织（safety/response/persona/tools/memory/todo/subagent/relay），
 每个模块只含数据与纯函数、不 import 任何 flash rail / ``DeepAgentRail``，可被
 ``flash.prompt.offline`` 离线组装器与各 rail 双向复用。命名沿用原 rail 内的
-下划线/公开常量名，保证 rail re-import 零行为变化。
+下划线/公开常量名，供 rail 与 registry 消费。
 """

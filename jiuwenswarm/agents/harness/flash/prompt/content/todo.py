@@ -3,7 +3,7 @@
 """Flash todo 域段正文常量（自 flash_todo_rail 抽离）。
 
 持有 430 todo 纪律「三段合一」目标正文（CN/EN）与目标段号；
-``FlashTodoRail`` 从本模块 re-import，零行为变化。
+供声明式注册表（registry）与 FlashTodoRail 消费。
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 """Flash 子代理域段正文常量（自 flash_subagent_rail 抽离）。
 
 持有 440 子代理委派段正文（FLASH_TASK_SECTION，CN/EN）与工具卡描述 /
-available_agents 文案；``FlashSubagentRail`` 从本模块 re-import，零行为变化。
+available_agents 文案，供声明式注册表（registry）与 FlashSubagentRail 消费。
 """
 
 from __future__ import annotations

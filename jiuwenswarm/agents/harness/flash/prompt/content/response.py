@@ -3,7 +3,7 @@
 """Flash 响应/交互/输出域段正文常量（自 flash_response_rail 抽离）。
 
 持有 410/500/510/520/540 的 06 目标正文（CN/EN）与段名/段号常量；
-``FlashResponseRail`` 从本模块 re-import，零行为变化。410 思考纪律在 Deep
+供声明式注册表（registry）与 FlashResponseRail 消费。410 思考纪律在 Deep
 ``_thinking_discipline_prompt`` 基础上做三矛盾修正（见 FlashAgent设计/修复.md ①-⑤），
 正文落在此处（不再逐字复用 Deep 源）。
 """
@@ -118,7 +118,7 @@ _RESPONSE_CN = """# 消息说明
 }
 ```
 
-- **preferred_response_language**：用户期望的回复语言。你必须使用该语言回复用户，无论用户消息本身使用的是什么语言。
+- **preferred_response_language**：用户期望的回复语言（仅作输入字段说明，语言口径以 500 段为唯一来源）。
 
 ## 系统消息
 
@@ -153,7 +153,7 @@ You receive user messages and system messages; handle each by source and type.
 }
 ```
 
-- **preferred_response_language**: The user's preferred response language. You must respond in this language, regardless of the language used in the user's message.
+- **preferred_response_language**: The user's preferred response language (field description only; section 500 is the single source of truth for language).
 
 ## System Message
 

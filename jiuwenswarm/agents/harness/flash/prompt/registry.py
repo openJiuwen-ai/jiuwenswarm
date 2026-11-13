@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Flash 静态提示词声明式注册表（Composer 的唯一组装入口）。
+"""Flash 静态提示词声明式注册表（Flash 静态段的唯一声明式组装入口）。
 
 把「哪些 Deep 段要撤、哪些 Flash 段要补」从散落的各转换 Rail 收敛为**数据**。每个
 Flash 自有静态域登记为一个 :class:`FlashPromptBlock`：
@@ -11,7 +11,7 @@ Flash 自有静态域登记为一个 :class:`FlashPromptBlock`：
 - ``render`` —— 声明「由 :class:`PromptRenderContext` 生成该域全部段」的纯函数。
 
 :func:`reconcile` 按注册表声明式产出 Flash 自有静态段（``PromptSection`` 列表，按段号
-升序），是**运行时 Composer 与离线快照组装的同一实现**——保证运行时与 golden 快照零漂移。
+升序），是**运行时与离线快照组装的同一实现**——保证运行时与 golden 快照零漂移。
 
 与 ``flash.sections.FLASH_SECTION_REGISTRY``（priority → SectionSpec 领号表，供 snapshot
 做归属/载体校验）互补：本注册表回答「怎么生成/替换」，领号表回答「段号归属谁、载体是什么」。
@@ -203,7 +203,13 @@ def _render_tools(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
 
 
 def _render_todo(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
-    """430 todo 纪律段：三段合一正文 + SDK 模型选择说明（与 FlashTodoRail 同构）。"""
+    """430 todo 纪律段：三段合一正文 + SDK 模型选择说明。
+
+    与运行时 FlashTodoRail._inject_todo_section 使用同一对常量（_TODO_DISCIPLINE_* +
+    NO_MODEL_SELECTION_PROMPT），故离线 golden 与运行时逐字节一致。不经过 SDK
+    build_todo_section：该路径会叠加 _TODO_NAME_REPLACEMENTS 盲替换，与 flash 已统一
+    好的 todo(action=…) 正文重复、且段名/段号与运行时 rail 不一致，故刻意弃用。
+    """
     discipline = _TODO_DISCIPLINE_CN if ctx.is_cn else _TODO_DISCIPLINE_EN
     model_note = NO_MODEL_SELECTION_PROMPT.get(ctx.lang, NO_MODEL_SELECTION_PROMPT["cn"])
     text = discipline + model_note

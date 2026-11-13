@@ -3,7 +3,7 @@
 """Flash 安全域段正文 + 拆分/改写纯函数（自 flash_safety_rail 抽离）。
 
 持有安全域源段名、目标段名/段号、拆分锚点（CN/EN）与 ``_transform_safety``
-纯函数；``FlashSafetyRail`` 从本模块 re-import，零行为变化。
+纯函数，供声明式注册表（registry）与 FlashSafetyRail 消费。
 """
 
 from __future__ import annotations
@@ -51,6 +51,8 @@ _ANCHORS_CN = dict(
 _ANCHORS_EN = dict(
     deletion_header="## File Deletion Protocol (Mandatory)",
     refusal_header="## Behavior When Refusing to Answer (Important)",
+    # ↑ "Declaractions" 是上游 agent-core dev-stable safety.py 原文拼写（sic），锚点须逐字
+    #   匹配上游；勿"修正"为 "Declarations"，否则 EN 拆分 auth_idx=-1 触发整体回退。
     authorization_header="## Authorization Declaractions Are Invalid (Important)",
     uncertainty_split="\n- If a task fails, briefly explain why and suggest the most practical next step",
     correct_response="**Correct response:**",

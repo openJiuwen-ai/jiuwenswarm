@@ -3,7 +3,7 @@
 """Flash 身份/工作空间域段正文 + 拆分纯函数（自 flash_persona_rail 抽离）。
 
 持有 identity 拆分块表（CN/EN）、2xx/020 改写目标正文、段名/段号常量与
-``_split_identity`` 纯函数；``FlashPersonaRail`` 从本模块 re-import，零行为变化。
+``_split_identity`` 纯函数，供声明式注册表（registry）与 FlashPersonaRail 消费。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ _IDENTITY_BLOCKS_CN: list[tuple[str, str, int]] = [
     ("# JiuwenSwarm 内部数据", "workspace_model", 200),
     ("## 目录理解规则", "workspace_model", 200),
     ("## JiuwenSwarm 启动配置", "workspace_model", 200),
-    ("## 运行环境", "runtime_environment", 210),
+    ("## 运行环境", "runtime_environment", 1001),
     ("## 任务执行准则", "execution_principles", 400),
     ("## 输出文件放置规范", "output_placement", 220),
     ("## 产物格式偏好", "artifact_format", 420),
@@ -28,7 +28,7 @@ _IDENTITY_BLOCKS_EN: list[tuple[str, str, int]] = [
     ("# JiuwenSwarm Internal Data", "workspace_model", 200),
     ("## Directory Interpretation Rules", "workspace_model", 200),
     ("## JiuwenSwarm Startup Configuration", "workspace_model", 200),
-    ("## Runtime Environment", "runtime_environment", 210),
+    ("## Runtime Environment", "runtime_environment", 1001),
     ("## Task Execution Principles", "execution_principles", 400),
     ("## Output File Placement", "output_placement", 220),
     ("## Artifact Format Preference", "artifact_format", 420),

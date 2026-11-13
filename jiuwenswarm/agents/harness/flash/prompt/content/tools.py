@@ -3,8 +3,7 @@
 """Flash 工具域段正文 + 剥离纯函数（自 flash_tool_guide_rail 抽离）。
 
 持有 300/330/340 的 06 目标正文（CN/EN）、源段名/目标段名/段号、子标题锚点与
-``_strip_tools_guide`` 纯函数；``FlashToolGuideRail``
-从本模块 re-import，零行为变化。
+``_strip_tools_guide`` 纯函数，供声明式注册表（registry）与 FlashToolGuideRail 消费。
 """
 
 from __future__ import annotations
