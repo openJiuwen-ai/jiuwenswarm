@@ -58,7 +58,13 @@ type ModelConfirmation =
 type ValidationToast = { success: boolean; message: string };
 type SaveModelsOptions = { errorScope?: SettingsSaveErrorScope };
 
-type ModelResourceResult = { model?: unknown; applied_without_restart?: unknown };
+type ModelResourceResult = {
+  model?: unknown;
+  applied_without_restart?: unknown;
+  /** Present when the saved api_key is an exec: reference whose command failed to resolve. */
+  exec_resolve_error?: unknown;
+};
+
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -335,13 +341,16 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       checkRefreshStatus();
       const refreshedPayload = await request('models.list');
       applyCatalog(parseModelsPayload(refreshedPayload));
+      const execResolveFailed = Boolean(result.exec_resolve_error);
       showValidationToast({
-        success: true,
-        message: t(
-          result.applied_without_restart
-            ? 'settingsPanel.feedback.saved'
-            : 'settingsPanel.models.savedRestartRequired',
-        ),
+        success: !execResolveFailed,
+        message: execResolveFailed
+          ? t('settingsPanel.models.execResolveFailed')
+          : t(
+              result.applied_without_restart
+                ? 'settingsPanel.feedback.saved'
+                : 'settingsPanel.models.savedRestartRequired',
+            ),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed');

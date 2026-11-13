@@ -785,6 +785,7 @@
       "catalogLoading": "Loading model providers and reasoning options. Please wait.",
       "catalogLoadFailed": "Model providers and reasoning options failed to load. Retry before saving.",
       "saveResponseInvalid": "The model-save response is invalid. Reload to verify the server state.",
+      "execResolveFailed": "The model was saved, but resolving its exec: reference command failed; model calls use an empty key until it succeeds. Check the secret-manager command, then re-save or probe.",
       "savedApplied": "Saved and applied",
       "savedRestartRequired": "Saved; takes effect after restart",
       "refreshTitle": "Background model refresh",

@@ -785,6 +785,7 @@
       "catalogLoading": "正在加载模型提供商和推理选项，请稍候。",
       "catalogLoadFailed": "模型提供商和推理选项加载失败，请重试后保存。",
       "saveResponseInvalid": "模型保存响应格式不正确，请重新加载核对。",
+      "execResolveFailed": "模型已保存，但其 exec: 引用命令解析失败；解析成功前模型调用将使用空密钥。请检查密钥管理工具命令后重新保存或测试。",
       "savedApplied": "已保存并生效",
       "savedRestartRequired": "已保存，重启后生效",
       "refreshTitle": "模型后台刷新",

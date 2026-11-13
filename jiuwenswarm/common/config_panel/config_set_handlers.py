@@ -1367,10 +1367,16 @@ def encrypt_config_params(params: dict[str, Any]) -> dict[str, Any]:
     if crypto is None:
         return dict(params)
     encrypted = dict(params)
+    from jiuwenswarm.common.credentials.resolver import is_reference
+
     for key, val in list(encrypted.items()):
         if key.endswith("_context_window_tokens"):
             continue
         if "api_key" in key.lower() or "token" in key.lower():
+            # exec: references are config declarations, not secrets — encrypting
+            # one corrupts it irreversibly; store verbatim.
+            if is_reference(str(val or "")):
+                continue
             encrypted[key] = crypto.encrypt(val)
     return encrypted
 

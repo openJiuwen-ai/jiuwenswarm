@@ -88,6 +88,25 @@ model_provider: SiliconFlow
 
 > 💡 **Tip**: Most model providers offer OpenAI-compatible APIs. You can adjust `api_base` and `model` parameters based on your actual provider.
 
+#### Reference-style key declaration (exec:)
+
+To keep plaintext keys out of `config.yaml`, `api_key` may reference a secret-manager read command: the command runs once at process startup and its stdout becomes the key value. Only the command itself appears in the config file:
+
+```
+api_key: exec:op read "op://Engineering/OpenAI/apiKey"       # 1Password
+api_key: exec:vault kv get -field=key secret/openai          # HashiCorp Vault
+api_key: exec:pass show openai/api-key                       # pass
+```
+
+**Constraints and semantics**:
+
+- **Command requirements**: a single call, no side effects, stdout is the key. No shell interpretation (pipes `|` and redirects `>` do not work); on Windows, wrap backslash paths in quotes or use forward slashes (e.g., `exec:"C:/tools/op.exe" read ...`).
+- **Effect timing and rotation**: resolution happens at process startup and the value stays in process memory. After rotating the key in your secret manager, **restart the service** to pick up the new value.
+- **Failure behavior**: a failing command (timeout, non-zero exit, empty output) degrades the field to an empty key with a warning — model calls report auth errors while everything else keeps working. A background retry after 5 minutes self-heals once the secret manager is fixed.
+- **Settings page interaction**: the edit dialog echoes the reference itself (`exec:...`), never the resolved plaintext; saving without edits preserves the reference. You may also type a new reference command and save — the new command runs immediately on save.
+- **Supported scope**: only `models.*.model_client_config.api_key` and `custom_headers` values in `config.yaml` support references; enterprise templates and `${VAR}` env placeholders do not. The dict form of `custom_headers` is supported (the JSON-string form is not).
+- **Gateway forwarding constraint (transitional)**: the Gateway process does not yet resolve `exec:` references (copy sync is planned as a separate change). During the transition, some Gateway-forwarded paths cannot use reference-style keys — verify with an actual Worker session call after configuring a reference `api_key`.
+
 ### 2.3 Multi-Model Management and Aliases
 
 The **Model List** section in the configuration panel supports maintaining multiple models simultaneously for quick switching between different models.
