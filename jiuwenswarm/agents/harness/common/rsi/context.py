@@ -112,7 +112,7 @@ class RsiServiceContext:
             self.store,
             adapter_resolver=self.adapter_for,
         )
-        self.artifact_files_service = RsiArtifactFilesService(self.store)
+        self.artifact_files_service = RsiArtifactFilesService(self.store, artifact_service=self.artifact_service)
         self.workspace_recovery = RsiWorkspaceRecovery(
             self.store,
             self.projector,

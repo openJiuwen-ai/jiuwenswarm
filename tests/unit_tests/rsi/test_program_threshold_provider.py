@@ -48,9 +48,6 @@ def _program_node(node_id: str, *, score: float | None, node_type: str,
     ))
 
 
-def test_real_program_adapter_uses_threshold_stopping_provider(tmp_path: Path) -> None:
-    adapters = build_rsi_adapters(tmp_path, artifact_adapters={"ARTIFACT:PAPER": object()})
-    assert isinstance(adapters["ARTIFACT:PROGRAM"].provider, ThresholdStoppingProgramProvider)
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,7 @@ const mocks = {
   '../../../stores/sessionStore': "export const useSessionStore = selector => selector({ availableModels: [{ model_name: 'test-model' }] });",
   '../../../components/ModelProviderIcon': 'export const ModelProviderIcon = () => null;',
   '../../../features/workspace/localFilePicker': "export const selectLocalFiles = async () => ({ ok: true, files: [{ path: '/fixtures/cases.json' }] });",
-  '../../../features/workspace/projectDirectoryPicker': 'export const selectProjectDirectory = async () => ({ ok: false });',
+  '../../../features/workspace/projectDirectoryPicker': "export const selectProjectDirectory = async () => ({ ok: true, path: '/fixtures/artifact' });",
 };
 await build({
   entryPoints: ['src/features/rsi/components/CreateExperimentDialog.tsx', 'src/features/rsi/rsiApi.ts'],
@@ -58,7 +58,7 @@ test('Agent selection reaches task.create from the Harness branch', async () => 
     await act(async () => root.render(React.createElement(CreateExperimentDialog, {
       open: true, onClose() {}, onCreated() {},
     })));
-    // 默认分支已改为 ARTIFACT（后端本构建拒绝 HARNESS），显式切换到 Harness 分支。
+    // 显式选择 Harness，验证新增产物分支不影响原有评测流程。
     await act(async () => {
       const harnessTab = [...document.querySelectorAll('.rsi-create-dialog__branch-btn')]
         .find((btn) => btn.textContent === 'rsi.createDialog.typeHarness');
@@ -102,6 +102,45 @@ test('Agent selection reaches task.create from the Harness branch', async () => 
     await act(async () => root.unmount());
   }
 });
+
+for (const artifactType of ['PAPER', 'PROGRAM']) {
+  test(`${artifactType} can be created from the restored artifact branch`, async () => {
+    const root = createRoot(document.getElementById('root'));
+    try {
+      await act(async () => root.render(React.createElement(CreateExperimentDialog, {
+        open: true, onClose() {}, onCreated() {},
+      })));
+      const chooseBranch = async (label) => {
+        const button = [...document.querySelectorAll('.rsi-create-dialog__branch-btn')]
+          .find((item) => item.textContent === label);
+        assert.ok(button, `missing branch: ${label}`);
+        await act(async () => button.click());
+      };
+      await chooseBranch('rsi.createDialog.typeArtifact');
+      await chooseBranch(artifactType === 'PAPER' ? 'rsi.createDialog.subtypePaper' : 'rsi.createDialog.subtypeProgram');
+      await act(async () => {
+        const name = document.querySelector('[placeholder="rsi.createDialog.namePlaceholder"]');
+        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(name, 'Artifact probe');
+        name.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+        const model = document.querySelector('[aria-label="rsi.createDialog.modelPlaceholder"]');
+        Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value').set.call(model, 'test-model');
+        model.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+      });
+      await act(async () => document.querySelector('.rsi-create-dialog__path-btn').click());
+      const count = dialogCreateParams.length;
+      await act(async () => document.querySelector('.rsi-create-dialog__submit').click());
+      assert.equal(dialogCreateParams.length, count + 1);
+      const request = dialogCreateParams.at(-1);
+      assert.equal(request.scenario, 'ARTIFACT');
+      assert.equal(request.artifact_type, artifactType);
+      assert.equal(request.artifact_path, '/fixtures/artifact');
+      assert.deepEqual(request.model_refs, { optimizer: 'test-model' });
+      assert.equal(Object.hasOwn(request, 'evaluation_method'), false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+}
 
 test('script and legacy callers keep their grading route; artifact requests get no harness field', async () => {
   const base = { name: 'probe', scenario: 'HARNESS', input_file: '/fixtures/cases.json', model_refs: {} };

@@ -4783,3 +4783,11 @@ class JiuWenSwarm:
             self._adapter = None
 
         logger.info("[JiuWenSwarm] cleanup: 完成")
+
+    async def apply_rsi_harness_install(self, operation, *, config_path, installation_id):
+        await self.ensure_instance()
+        apply = getattr(self._adapter, "apply_rsi_harness_install", None)
+        if not callable(apply):
+            raise RuntimeError("Current agent does not support Harness installation")
+        return await apply(operation, config_path=config_path, installation_id=installation_id)
+

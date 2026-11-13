@@ -106,3 +106,8 @@ _verify_*.py
 
 # Local testing handoff documents are not versioned.
 /.agents/testing/
+.pytest_tmp*/
+
+.test_data/
+
+.test_dependencies/

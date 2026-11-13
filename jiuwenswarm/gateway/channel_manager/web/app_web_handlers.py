@@ -117,6 +117,7 @@ from jiuwenswarm.server.runtime.enterprise_config.loader import (
 )
 from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
@@ -635,6 +636,9 @@ class _DummyBus:
         pass
 
 
+# RSI 方法由 AgentServer 处理，两个转发入口共用枚举集合，避免新增方法遗漏。
+_RSI_FORWARD_METHODS = frozenset(method.value for method in ReqMethod if method.value.startswith("rsi."))
+
 # 仅转发到 Agent 的 Web method
 _FORWARD_REQ_METHODS = frozenset({
     "initialize",
@@ -824,7 +828,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "im.hosting.history",
     "im.hosting.login.start",
     "im.hosting.login.status",
-})
+}) | _RSI_FORWARD_METHODS
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "chat.steer",
@@ -990,7 +994,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "im.hosting.history",
     "im.hosting.login.start",
     "im.hosting.login.status",
-})
+}) | _RSI_FORWARD_METHODS
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
 # default 模型 + video/audio/vision 多模型
@@ -1371,7 +1375,6 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
     try:
         if agent_client is not None:
             from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-            from jiuwenswarm.common.schema.message import ReqMethod
 
             env = e2a_from_agent_fields(
                 request_id=f"cfg-reload-{uuid.uuid4().hex[:8]}",
@@ -1391,7 +1394,6 @@ async def _restart_agent_browser_runtime(agent_client=None) -> None:
         return
 
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.common.schema.message import ReqMethod
 
     env = e2a_from_agent_fields(
         request_id=f"browser-restart-{uuid.uuid4().hex[:8]}",
@@ -1695,7 +1697,6 @@ async def _fetch_all_sessions_from_agent(
 ) -> list[dict[str, Any]]:
     """Remote 模式下从 AgentServer ``session.list`` 分页拉取全量会话 metadata。"""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.common.schema.message import ReqMethod
 
     if agent_client is None:
         return []
@@ -2312,7 +2313,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 from jiuwenswarm.common.e2a.gateway_normalize import (
                     e2a_from_agent_fields,
                 )
-                from jiuwenswarm.common.schema.message import ReqMethod
 
                 real_client = _resolve(agent_client)
                 if real_client is None:
@@ -3899,7 +3899,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         create_params = dict(params)
         create_params.pop("session_id", None)
@@ -4148,7 +4147,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ac = _resolve(agent_client)
             if ac is not None and getattr(ac, "server_ready", False):
                 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-                from jiuwenswarm.common.schema.message import ReqMethod
 
                 try:
                     env = e2a_from_agent_fields(
@@ -4257,7 +4255,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         ac = _resolve(agent_client)
         if ac is not None and getattr(ac, "server_ready", False):
@@ -4485,6 +4482,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             "cron_id": str(meta.get("cron_id", "")),
             "last_user_message_at": lum if isinstance(lum, (int, float)) and not isinstance(lum, bool) else None,
             "model": str(meta.get("model", "")),
+            "rsi_harness_installation_id": str(meta.get("rsi_harness_installation_id") or ""),
             "work_mode": str(meta.get("work_mode") or DEFAULT_WEB_WORK_MODE),
         }
 
@@ -7760,7 +7758,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """permissions.*：优先经 E2A 转发到 AgentServer；Agent 未就绪时本地执行（与 config_rpc 同源）。"""
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.agent import AgentRequest
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(req_method, ReqMethod):
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
@@ -7884,7 +7881,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     ):
         """harness.*：优先经 E2A 转发到 AgentServer；Agent 未就绪时本地执行（无 agent 实例）。"""
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(req_method, ReqMethod):
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")

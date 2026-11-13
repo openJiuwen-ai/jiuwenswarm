@@ -9,6 +9,8 @@
     "build": "tsc && vite build",
     "build:prod": "tsc && vite build --mode production",
     "build:customer": "tsc && VITE_LOGIN_AUTH_SIMULATE=false vite build",
+    "test:rsi-harness-preview": "node --test tests/rsiHarnessPreview.test.mjs",
+    "test:rsi": "esbuild src/features/rsi/rsiPresentation.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/rsi-presentation/rsiPresentation.mjs && esbuild src/features/rsi/rsiStore.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/rsi-stage/rsiStore.mjs --define:import.meta.env.DEV=false && node --test tests/rsi*.test.mjs tests/secondarySidebar.test.mjs",
     "test:code-turn-diff-binding": "tsc src/features/code-mode/codeTurnDiffBinding.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/code-turn-diff-binding --skipLibCheck --noEmitOnError && node --test tests/codeTurnDiffBinding.test.mjs",
     "test:turn-change-state": "tsc src/features/code-mode/turnChangeState.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/turn-change-state --skipLibCheck --noEmitOnError && node --test tests/turnChangeState.test.mjs",
     "test:git-publish-state": "tsc src/features/code-mode/gitPublishState.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/git-publish-state --skipLibCheck --noEmitOnError && node --test tests/gitPublishState.test.mjs",

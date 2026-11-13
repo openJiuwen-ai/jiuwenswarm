@@ -348,7 +348,8 @@ function mockArtifactRoot(taskId: string, artifactId = 'best'): string {
   return `mock://rsi/${encodeURIComponent(taskId)}/${encodeURIComponent(artifactId)}`;
 }
 
-function mockArtifactFilesList(taskId: string, path: string): RsiArtifactFilesListResult {
+function mockArtifactFilesList(taskId: string, selector: string | { artifact_id: string }): RsiArtifactFilesListResult {
+  const path = typeof selector === 'string' ? selector : mockArtifactRoot(taskId, selector.artifact_id);
   const root = path.trim().replace(/\/+$/, '') || mockArtifactRoot(taskId);
   const readmePath = `${root}/README.md`;
   const nodePath = `${root}/node.json`;

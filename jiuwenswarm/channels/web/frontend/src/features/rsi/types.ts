@@ -177,7 +177,7 @@ export interface RsiTreeNode {
   adopted: boolean;
   score: number | null;
   description: string | null;
-  snapshot_artifact_id: string | null; // 仅被采纳节点
+  snapshot_artifact_id: string | null; // 基线或被采纳节点的快照；无快照时为空
   failure_reason: string | null;
   failure_class: string | null;
   changes: RsiNodeChange[] | null;

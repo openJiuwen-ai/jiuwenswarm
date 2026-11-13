@@ -31,7 +31,6 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiHarnessNotReady,
     RsiTaskStateConflict,
 )
-from jiuwenswarm.agents.harness.common.rsi.plugin_catalog import register_harness_plugin
 
 logger = logging.getLogger(__name__)
 
@@ -97,60 +96,21 @@ def _ensure_package_tree_inside(package: Path) -> None:
 
 
 def _find_manifest(package: Path) -> Path:
-    # Keep the package discovery order identical to the public DeepAgent
-    # loader: a modern ``manifest.json`` wins over legacy YAML manifests.
+    from openjiuwen.rsi.harness_rsi.package_compat import find_plugin_manifest
     try:
-        from openjiuwen.harness.resources import find_plugin_manifest
-    except ImportError:  # pragma: no cover - compatibility with old SDKs
-        find_plugin_manifest = None
-    if find_plugin_manifest is not None:
-        try:
-            return Path(find_plugin_manifest(package)).expanduser().resolve(strict=True)
-        except (OSError, ValueError):
-            pass
-    for name in _MANIFEST_NAMES:
-        candidate = package / name
-        if candidate.is_file():
-            return candidate
-    raise _invalid(f"Harness 包缺少配置文件: {package}")
+        return Path(find_plugin_manifest(package)).resolve(strict=True)
+    except (OSError, ValueError) as exc:
+        raise _invalid(f"Harness 包缺少有效配置文件: {package}") from exc
 
 
 def _validate_engine_manifest(package: Path) -> Path:
-    """Parse the package with openjiuwen before copying it.
-
-    The actual resource construction remains owned by ``DeepAgent.load_plugin``
-    during activation.  Parsing here closes the no-live-agent gap: a task can
-    still be installed when no AgentServer instance is currently cached, so a
-    malformed final package must be rejected before its active pointer is
-    committed.  Older SDKs without the public package loader retain the
-    structural checks above and defer semantic validation to ``load_plugin``.
-    """
-
+    """Require paired SDK validation before copying or committing an active pointer."""
     manifest = _find_manifest(package)
     try:
-        from openjiuwen.harness.resources import load_plugin_package
-    except ImportError:  # pragma: no cover - compatibility with old SDKs
-        return manifest
-    try:
-        load_plugin_package(manifest)
-    except Exception as exc:  # noqa: BLE001 - normalize SDK parser errors
-        raise _invalid(f"Harness manifest 无法通过 openjiuwen 解析: {manifest}") from exc
-
-    # Reuse JiuwenSwarm's existing security guards for legacy YAML packages.
-    # They reject disallowed MCP declarations and resource paths escaping the
-    # package root, while modern JSON manifests are fully checked by the SDK
-    # parser above.
-    if manifest.name != "manifest.json":
-        try:
-            from jiuwenswarm.agents.harness.common.auto_harness.service import (
-                validate_harness_config,
-            )
-
-            validate_harness_config(manifest, package_dir=package)
-        except RsiHarnessInvalid:
-            raise
-        except Exception as exc:  # noqa: BLE001 - normalize security errors
-            raise _invalid(f"Harness 配置安全校验失败: {manifest}") from exc
+        from openjiuwen.rsi.harness_rsi.package_compat import validate_harness_config
+        validate_harness_config(manifest, package_dir=package)
+    except Exception as exc:
+        raise _invalid(f"Harness 配置安全校验失败: {manifest}") from exc
     return manifest
 
 
@@ -756,9 +716,9 @@ class RsiHarnessInstaller:
             and old.get("task_id") == task_id
             and str(old.get("sha256") or "").lower() == package_sha256.lower()
         ):
-            # Also repair installations made before catalog registration existed.
+            # Revalidate the immutable installed package before acknowledging it.
             try:
-                register_harness_plugin(Path(old["runtime_path"]), old["installation_id"])
+                _validate_engine_manifest(Path(old["runtime_path"]))
             except Exception as exc:
                 raise RsiHarnessInstallFailed("RSI Harness 扩展登记失败，原激活版本未改变") from exc
             return self._response(
@@ -782,7 +742,6 @@ class RsiHarnessInstaller:
         runtime_path = version_root / extension_name
         created_copy = False
         pointer_committed = False
-        undo_catalog = None
         try:
             if runtime_path.exists():
                 if not runtime_path.is_dir() or hash_harness_package(runtime_path) != package_sha256:
@@ -815,7 +774,7 @@ class RsiHarnessInstaller:
                 "status": "ACTIVE",
                 "installed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
-            undo_catalog = register_harness_plugin(runtime_path, installation_id)
+            _validate_engine_manifest(runtime_path)
             hot_load = await self._broadcast(old, record)
             record["hot_load"] = hot_load
             try:
@@ -875,12 +834,6 @@ class RsiHarnessInstaller:
             if created_copy:
                 shutil.rmtree(version_root, ignore_errors=True)
             raise RsiHarnessInstallFailed(f"RSI Harness 热加载失败: {exc}") from exc
-        finally:
-            if undo_catalog is not None and not pointer_committed:
-                try:
-                    undo_catalog()
-                except Exception as exc:
-                    raise RsiHarnessInstallConflict("RSI Harness 安装失败且扩展登记回滚失败") from exc
 
     def _task_run_root(self, task: Any) -> Path:
         tasks_root = Path(self.store.tasks_root).expanduser().resolve(strict=False)

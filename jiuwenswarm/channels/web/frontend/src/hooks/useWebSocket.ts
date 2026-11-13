@@ -680,7 +680,7 @@ interface UseWebSocketReturn {
   ) => Promise<T>;
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
-  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[]) => Promise<boolean>;
+  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], rsiHarnessId?: string) => Promise<boolean>;
   sendLongHorizonKick: (
     sessionId: string,
     query: string,
@@ -1651,7 +1651,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   // 发送聊天消息
   const sendMessage = useCallback(
-    async (content: string, sessionId: string, mediaItems: MediaItem[] = []): Promise<boolean> => {
+    async (content: string, sessionId: string, mediaItems: MediaItem[] = [], rsiHarnessId?: string): Promise<boolean> => {
       const hasMedia = mediaItems.length > 0;
       // User-visible text is required; attachment-only / 【上传文档】-only payloads
       // must not send (matches InputArea canSubmit / handleSubmit).
@@ -1831,6 +1831,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(outgoingFiles ? { files: outgoingFiles } : {}),
           mode: outgoingMode,
           ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...(outgoingMode.split('.')[0] === 'agent' && !inputMode && rsiHarnessId !== undefined
+            ? { rsi_harness_installation_id: rsiHarnessId }
+            : {}),
           ...workContext,
           skills: selectedSkills,
           ...(inputMode ? { input_mode: inputMode } : {}),
