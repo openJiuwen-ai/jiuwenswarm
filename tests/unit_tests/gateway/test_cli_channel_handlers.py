@@ -1529,14 +1529,6 @@ async def test_session_delete_unavailable_when_agent_offline() -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_rebind_project_falls_back_to_shared_dir_when_agent_offline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A2g：AgentServer 不可达时报 SERVICE_UNAVAILABLE，不再本地 rebib。"""
-    pytest.skip("A2g deleted legacy local rebind fallback; E2A-only")
-
-
-@pytest.mark.asyncio
 async def test_session_rebind_project_does_not_read_gateway_state_for_remote_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
