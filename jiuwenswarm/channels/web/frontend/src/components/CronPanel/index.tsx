@@ -13,6 +13,7 @@ import { CRON_TEMPLATES, KNOWN_TARGET_KEYS, SELECTABLE_TARGET_KEYS } from './con
 import { isTeamCronModeValue } from './cronMode';
 import { cronModelPayloadFields } from './cronModelSelection';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
+import { createSubmitGuard } from './drawerSubmitGuard';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
 import StatusBadge, { BoldRingIcon, RunningIcon } from './StatusBadge';
 import ConfirmDialog from './ConfirmDialog';
@@ -440,10 +441,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
 
   // 抽屉提交中标记：cron.job.create/update 走 WebSocket（超时上限 15s），期间"确认"按钮必须
   // 禁用，否则慢响应窗口内重复点击会发出第二个独立请求，创建出两个同名任务（对齐
-  // HeartbeatPanel 的 drawer.submitting 机制）。ref 兜底同一事件循环内的同步拦截，
-  // state 驱动按钮禁用态。
+  // HeartbeatPanel 的 drawer.submitting 机制）。tryBegin 同步拦截兜底同一事件循环内的
+  // 双击（state 置位要等下一次渲染才反映到 disabled），state 驱动按钮禁用态；
+  // 拦截语义抽在 drawerSubmitGuard.ts，由 tests/cronDrawerSubmitGuard.test.mjs 锁定。
   const [drawerSubmitting, setDrawerSubmitting] = useState(false);
-  const drawerSubmittingRef = useRef(false);
+  const drawerSubmitGuard = useRef(createSubmitGuard()).current;
 
   const [confirmState, setConfirmState] = useState<{ type: 'delete' | 'stop' | 'runNow'; job: CronTaskUI } | null>(
     null,
@@ -758,13 +760,12 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const expiredCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'expired').length, [jobs]);
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
-    if (drawerSubmittingRef.current) return;
-    drawerSubmittingRef.current = true;
+    if (!drawerSubmitGuard.tryBegin()) return;
     setDrawerSubmitting(true);
     try {
       await submitCreate(value);
     } finally {
-      drawerSubmittingRef.current = false;
+      drawerSubmitGuard.end();
       setDrawerSubmitting(false);
     }
   }
@@ -827,13 +828,12 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   }
 
   async function handleEditSubmit(jobId: string, value: CronTaskFormValue) {
-    if (drawerSubmittingRef.current) return;
-    drawerSubmittingRef.current = true;
+    if (!drawerSubmitGuard.tryBegin()) return;
     setDrawerSubmitting(true);
     try {
       await submitEdit(jobId, value);
     } finally {
-      drawerSubmittingRef.current = false;
+      drawerSubmitGuard.end();
       setDrawerSubmitting(false);
     }
   }
