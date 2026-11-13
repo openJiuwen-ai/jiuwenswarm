@@ -217,6 +217,26 @@ def _safe_team_path_segment(value: str, fallback: str = "_") -> str:
     return normalized[:96] or fallback
 
 
+def _bound_agent_group_denial(session_id: str) -> str | None:
+    """已绑定的专家团不在本次展开里时，返回拒绝原因。
+
+    没有绑定、或本次展开仍包含该专家团时返回 None。个人版展开判断直接放行。
+    """
+    metadata = get_session_metadata(session_id, cache_bust=True)
+    if not isinstance(metadata, dict):
+        return None
+    name = str(metadata.get("agent_group_name") or "").strip()
+    if not name:
+        return None
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import require_allowed
+
+    try:
+        require_allowed("agent_group", name)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def _resolve_agent_group_selection(
     *,
     session_id: str,
@@ -1578,19 +1598,14 @@ async def _record_group_organization_plan(session_id: str, group_input: dict) ->
     """Record coordination state without changing the message or its mentions."""
     plan = None
     try:
-        from jiuwenswarm.agents.swarm.group_org_bootstrap import (
-            publish_pending_organization_card,
-            record_organization_plan,
-        )
+        from jiuwenswarm.agents.swarm.group_route import record_candidate
 
-        plan = record_organization_plan(
+        plan = await record_candidate(
             session_id,
             mentions=list(group_input["mentions"]),
             body=str(group_input.get("body") or ""),
             plan_id=str(group_input["client_message_id"]),
         )
-        if plan is not None:
-            await publish_pending_organization_card(session_id, plan)
         logger.info(
             "[TeamHelpers] group organization plan candidate session_id=%s "
             "mentions=%s recorded=%s",
@@ -3282,6 +3297,16 @@ async def _process_team_message_stream(
             generation=generation,
         ):
             yield chunk
+        return
+
+    denial = _bound_agent_group_denial(session_id)
+    if denial:
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=channel_id,
+            payload={"event_type": "chat.error", "error": denial},
+            is_complete=True,
+        )
         return
 
     language = _resolve_request_language(request)

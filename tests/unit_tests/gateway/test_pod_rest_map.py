@@ -19,7 +19,7 @@ if _KV_CACHE_MOD not in sys.modules:
         _stub.KVCacheAffinityConfig = type("KVCacheAffinityConfig", (), {})
         sys.modules[_KV_CACHE_MOD] = _stub
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
     assemble_rest_request,

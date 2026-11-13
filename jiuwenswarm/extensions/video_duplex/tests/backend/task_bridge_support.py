@@ -8,9 +8,9 @@ from agent_gateway.extensions.video_duplex.backend.tasks.bridge import (
     GatewayTaskEndpoint,
     handle_checkpoint_push,
 )
+from e2a.wire_codec import parse_agent_server_wire_chunk
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.server.runtime.video_task import bridge
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 

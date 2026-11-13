@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
-from openjiuwen_protocol.message import ReqMethod
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import parse_agent_server_wire_unary
+from e2a.message import ReqMethod
 from jiuwenswarm.server.front.protocol import parse_raw_message
 from jiuwenswarm.server.front.router import MethodRouter, is_control_method
 from jiuwenswarm.server.http_invoke import _request_tenant_scope

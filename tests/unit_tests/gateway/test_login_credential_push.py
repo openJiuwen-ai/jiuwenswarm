@@ -9,9 +9,9 @@ import pytest
 
 from agent_gateway.auth import login_credentials as lc
 from agent_gateway.auth.login_credentials import credential_ref_for_user
-from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-from openjiuwen_protocol.e2a.agent_models import AgentRequest
-from openjiuwen_protocol.message import ReqMethod
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from e2a.agent_models import AgentRequest
+from e2a.message import ReqMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 REF = "abe633f3a47a2758174eabe9160daf36"

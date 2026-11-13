@@ -7,6 +7,7 @@ import { GatewayClient } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
 import { TaskPaneController } from './paneController';
 import { powerPointReadRuntime, type PowerPointRun } from './powerPointReadTools';
+import { powerPointPackageRuntime, workerSandbox } from './powerPointPackageTools';
 import { joinRuntimes, PowerPointToolDispatcher } from './powerPointToolDispatcher';
 import { powerPointSlideDeck, powerPointWriteRuntime } from './powerPointWriteTools';
 import { CONTRACT_APP_ID, presentationAttachDeclaration, type PresentationHost } from './presentationContract';
@@ -29,7 +30,11 @@ Office.onReady(async () => {
   const snapshots = new SlideSnapshots(powerPointSlideDeck(run), writes);
   const runtime = joinRuntimes(
     powerPointReadRuntime({ run, host, documentName: displayName, languages: office }),
-    powerPointWriteRuntime({ run, host, journal: callId => snapshots.journal(callId) }));
+    powerPointWriteRuntime({ run, host, journal: callId => snapshots.journal(callId) }),
+    powerPointPackageRuntime({ run, host, journal: callId => snapshots.journal(callId),
+      sandbox: workerSandbox(() => new Worker(new URL('./ooxmlSandbox.worker.ts', import.meta.url),
+        { type: 'module' })),
+      forgetUndo: () => snapshots.forget() }));
   const gateway = new GatewayClient(CONTRACT_APP_ID);
   const sessions = new PresentationSessionFacade(gateway);
   const attachment = new ClientAttachment({

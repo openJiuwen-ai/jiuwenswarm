@@ -6,6 +6,7 @@ import types
 
 import pytest
 from openjiuwen.agent_teams.runtime import RunActionKind
+from e2a.wire_codec import parse_agent_server_wire_unary
 
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     SymphonyRetrievalCompactProcessorConfig,
@@ -16,7 +17,6 @@ from jiuwenswarm.agents.harness.common.tools.acp_output_tools import (
     get_acp_output_manager,
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.observability.session_delete import trajectory_session_accepts_records

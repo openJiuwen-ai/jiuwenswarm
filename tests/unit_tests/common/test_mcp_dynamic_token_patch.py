@@ -372,23 +372,6 @@ async def test_strategy_returns_dynamic_provider_for_marked_server():
 # ---------------------------------------------------------------------------
 
 
-def _make_provider(token: str = "tok-1") -> DynamicTokenProvider:
-    _dispatch_credentials("demo_agent1", "demo-agent-secret1")
-    token_url = "http://token-svc.example/token"
-    provider = DynamicTokenProvider(
-        {"Authorization": "Bearer static", "X-Static": "s"},
-        {"qk": "qv"},
-        token_url,
-        "srv-1",
-    )
-
-    async def _fake_fetch() -> str:
-        return token
-
-    provider._fetch_token = _fake_fetch  # type: ignore[method-assign]
-    return provider
-
-
 @pytest.mark.asyncio
 async def test_auth_flow_static_headers_then_dynamic_actor_header():
     provider = _make_provider(token="tok-1")

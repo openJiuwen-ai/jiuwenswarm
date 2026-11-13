@@ -44,7 +44,7 @@ class _LazyProvider:
 
 def install_front() -> None:
     """Register control-plane providers without loading execution dependencies."""
-    from openjiuwen_protocol.provider_domains import (
+    from e2a.provider_domains import (
         PROVIDER_DOMAIN_A2UI,
         PROVIDER_DOMAIN_CRON_STORE_FACTORY,
         PROVIDER_DOMAIN_MCP_CREDENTIAL,
@@ -91,7 +91,7 @@ def install() -> None:
     import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401
     import jiuwenswarm.server.runtime.session.session_metadata  # noqa: F401
 
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_CRON_STORE_FACTORY
+    from e2a.provider_domains import PROVIDER_DOMAIN_CRON_STORE_FACTORY
 
     from jiuwenswarm.common.external_providers import register
     from jiuwenswarm.runtime.cron import factory as cron_factory

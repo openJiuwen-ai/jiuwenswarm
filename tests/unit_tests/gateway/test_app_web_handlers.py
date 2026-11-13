@@ -2420,7 +2420,8 @@ async def test_task_asr_rpc_returns_transcript(monkeypatch):
 
     async def fake_transcribe(params, *, environ):
         assert params == {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"}
-        assert set(environ) == {"ASR_API_BASE", "ASR_API_KEY", "ASR_MODEL_NAME"}
+        # 8ce9b60d 起远端配置路径会把 AgentServer 的 ASR 配置透传进来
+        assert set(environ) >= {"ASR_API_BASE", "ASR_API_KEY", "ASR_MODEL_NAME"}
         return "transcribed speech"
 
     monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)
@@ -5704,8 +5705,8 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
 
 
 def _a4p_config_request(method, params, channel="web", session="session"):
-    from openjiuwen_protocol.e2a.agent_models import AgentRequest
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.agent_models import AgentRequest
+    from e2a.message import ReqMethod
     return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
                         req_method=ReqMethod(method), params=params)
 

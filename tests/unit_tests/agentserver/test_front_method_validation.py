@@ -7,12 +7,12 @@ from __future__ import annotations
 import json
 
 import pytest
-
-from jiuwenswarm.common.e2a.gateway_normalize import build_fallback_e2a
-from jiuwenswarm.common.e2a.wire_codec import (
+from e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
+
+from jiuwenswarm.common.e2a.gateway_normalize import build_fallback_e2a
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.protocol import parse_raw_message

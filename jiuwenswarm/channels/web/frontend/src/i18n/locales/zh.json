@@ -4183,6 +4183,7 @@
       "detailError": "专家详情加载失败，请重试。",
       "hubAssetChanged": "该专家已在 Hub 更新或下架，广场正在刷新，请返回后重新选择。",
       "actionError": "操作未完成，请稍后重试。",
+      "agentAccessDenied": "不在授权范围内，操作已拒绝。",
       "duplicateName": "专家名称已存在，请更换名称后重试。",
       "agentUnavailable": "该专家已不存在，请刷新列表后重试。",
       "agentDefinitionUnavailable": "该专家定义不完整，暂时无法使用。",
@@ -6528,10 +6529,11 @@
         "paused": "已暂停",
         "failed": "运行失败",
         "completed": "已完成",
-        "queued": "排队中"
+        "queued": "排队中",
+        "expired": "已过期"
       },
       "run": {
-        "success": "运行成功",
+        "success": "已完成",
         "failed": "运行失败",
         "stopped": "停止运行",
         "running": "运行中"
@@ -6691,6 +6693,7 @@
     }
   },
   "groupChat": {
+    "organizationInterrupted": "服务重启或执行进程退出，组织任务已中断。已完成成果保留，请重新发起任务。",
     "externalRuntimeDisabled": "{{agents}} 尚未启用。请在设置的「智能体 → 三方 Agent」中打开对应开关，再重新添加成员。",
     "useTeam": "使用该专家团",
     "teamMembers": "团队成员（{{count}}人）",
@@ -6698,6 +6701,10 @@
     "taskTitle": "任务",
     "unnamedTask": "未命名子任务",
     "noSubtasks": "暂无子任务记录",
+    "expertTasks": "本轮团内任务",
+    "expertTasksProgress": "已完成 {{completed}} / {{total}}",
+    "expertTasksUnavailable": "团内任务暂时无法刷新，已显示的记录可能不是最新状态。",
+    "expertTaskUnassigned": "待分配专家",
     "generatingTasks": "任务生成中",
     "organizationStage": {
       "starting": "专家团启动中",
@@ -6723,6 +6730,11 @@
     "modelLocked": "群聊开始后不可切换模型",
     "processing": "正在处理…",
     "mentionPhase": {
+      "organizationFailed": "本次处理未完成，请重新发送消息。",
+      "organizationPending": "已收到，正在处理中…",
+      "organizationClarification": "等待补充信息…",
+      "organizationReceived": "组织已收到，正在处理中…",
+      "organizationSummarizing": "汇总中…",
       "dispatching": "已收到，正在处理中…",
       "planning": "正在规划任务…",
       "generating": "正在生成任务计划…",

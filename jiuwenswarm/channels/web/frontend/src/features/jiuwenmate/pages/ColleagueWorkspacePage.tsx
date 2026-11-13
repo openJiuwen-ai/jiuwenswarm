@@ -285,6 +285,8 @@ export function ColleagueWorkspacePage({
     picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records.find((item) =>
       item.agentId === agentId && item.id !== SHARING_CONVERSATION_ID)?.id ?? freshId) : '';
   const colleaguePlans = schedules.filter((plan) => plan.agentId === colleagueId);
+  const visibleManagementPlans = colleaguePlans.filter((plan) =>
+    plan.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase()));
   const activePlan = colleaguePlans.find((plan) => plan.id === scheduleId) ?? colleaguePlans[0] ?? null;
   const chatConversationId = state.recordTab === 'schedules' && activePlan ? activePlan.conversationId : activeConversationId;
   const chatAgentId = state.recordTab === 'schedules' && activePlan ? colleagueId : agentId;
@@ -1517,8 +1519,12 @@ export function ColleagueWorkspacePage({
                         <Plus aria-hidden />
                       </button>
                     </div>
-                    {colleaguePlans.length === 0 ? <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSchedules')}</p> : null}
-                    {colleaguePlans.filter((plan) => plan.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase())).map((plan) => (
+                    {visibleManagementPlans.length === 0 ? (
+                      <p className="jiuwenmate-records__empty" data-testid="jiuwenmate-management-schedule-empty">
+                        {t(colleaguePlans.length === 0 ? 'jiuwenmate.workspace.noSchedules' : 'jiuwenmate.schedule.noMatchingSchedules')}
+                      </p>
+                    ) : null}
+                    {visibleManagementPlans.map((plan) => (
                       <div key={plan.id} className="jiuwenmate-side-panel__schedule-item">
                         <span className="jiuwenmate-side-panel__schedule-name">{plan.name}</span>
                         <ActionMenu
