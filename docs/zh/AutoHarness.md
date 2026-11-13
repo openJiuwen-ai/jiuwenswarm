@@ -44,7 +44,7 @@ openJiuwen 将 Harness 设计为两层结构，Auto Harness 分别对这两层�
 
 #### Meta Evolve Pipeline（基座层优化）
 
-对标业界最佳实践，自动分析差距并改进 Harness 底层能力。
+对标业界最佳实践，自动分析差距并改进 Harness 底层能力 。
 
 ```
 调研阶段 → 评估现状 → 制定优化计划 → 独立 worktree 实现 → CI 验证（失败自动修复）→ 提交变更 → 发布 PR → 总结经验
