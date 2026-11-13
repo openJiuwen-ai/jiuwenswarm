@@ -8,6 +8,7 @@ import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
 import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
 import { SETTINGS_CONFIG_CHANGED_EVENT } from '../../settings/services/settingsContract';
+import { DESIGN_GENERATION_CHANGED_EVENT } from '../useDesignerModelConfiguration';
 import { requestSettingsModule } from '../../settings/settingsNavigation';
 import { toast } from '../../../components/ui';
 import { useChatStore } from '../../../stores/chatStore';
@@ -180,7 +181,11 @@ export function DesignerChatPanel() {
   useEffect(() => {
     const onConfigChanged = () => setConfigRevision((value) => value + 1);
     window.addEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
-    return () => window.removeEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+    window.addEventListener(DESIGN_GENERATION_CHANGED_EVENT, onConfigChanged);
+    return () => {
+      window.removeEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+      window.removeEventListener(DESIGN_GENERATION_CHANGED_EVENT, onConfigChanged);
+    };
   }, []);
   useEffect(() => {
     if (!sessionId) {

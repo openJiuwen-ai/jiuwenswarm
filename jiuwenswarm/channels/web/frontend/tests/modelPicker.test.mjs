@@ -48,6 +48,7 @@ try {
     vite.ssrLoadModule('/src/features/settings/components/SettingsTabLayout.tsx'),
     vite.ssrLoadModule('/src/features/settings/services/settingsContract.ts'),
     vite.ssrLoadModule('/src/features/designer/designerModelConfiguration.ts'),
+    vite.ssrLoadModule('/src/features/designer/useDesignerModelConfiguration.ts'),
   ]);
 } finally {
   await vite.close();
@@ -82,7 +83,8 @@ const [
   { default: DesignerModelSelector },
   { SettingsTabLayout },
   { SETTINGS_CONFIG_CHANGED_EVENT },
-  { designGenerationModels },
+  { modelsForSlot, resolvedGenerationModelId },
+  { useDesignerGenerationStore },
 ] = modules;
 
 const resources = Object.fromEntries(
@@ -1251,32 +1253,77 @@ function generationModel(id, slot, extra = {}) {
     api_key_configured: true, ...extra };
 }
 
-test('design model panel has three tabs and missing generation links target the multimodal settings tab', async (t) => {
-  const requests = [];
-  t.mock.method(webClient, 'request', async (method) => {
-    requests.push(method);
-    assert.equal(method, 'multimodal.models.list');
-    return generationSnapshot();
+function resetGenerationStore() {
+  useDesignerGenerationStore.setState({
+    snapshot: null,
+    selection: { video_gen: null, visual_gen: null },
+    loading: true,
+    failed: false,
+    selectError: '',
   });
+}
+
+function installGenerationApi(t, models = [], saved = { video_gen: null, visual_gen: null }) {
+  const requests = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    requests.push(method);
+    if (method === 'multimodal.models.list') return generationSnapshot(models);
+    if (method === 'config.get') {
+      return {
+        design_generation_video_gen: saved.video_gen || '',
+        design_generation_visual_gen: saved.visual_gen || '',
+      };
+    }
+    if (method === 'config.set') {
+      if (params?.design_generation_video_gen) saved.video_gen = params.design_generation_video_gen;
+      if (params?.design_generation_visual_gen) saved.visual_gen = params.design_generation_visual_gen;
+      return { updated: Object.keys(params || {}) };
+    }
+    throw new Error(method);
+  });
+  return { requests, saved };
+}
+
+function generationCopy(language) {
+  return resources[language].translation;
+}
+
+test('design model panel lists every catalogue model and adds models from the matching settings tab', async (t) => {
+  const requests = installGenerationApi(t).requests;
+  const copy = generationCopy('en');
   await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
     const navigation = [];
     window.addEventListener('jiuwen:settings-module', (event) => navigation.push(event.detail));
     await mount(createElement(DesignerModelSelector));
-    assert.ok(byId('designer-model-config-trigger-warning'));
-    assert.equal(byId('designer-model-config-warning-action'), null);
-    await hover(byId('designer-model-config-trigger-warning'));
+    const warning = byId('designer-model-config-trigger-warning');
+    assert.equal(warning.getAttribute('aria-label'), copy.designer.modelConfiguration.notConfigured);
+    await hover(warning);
     assert.equal(byId('designer-model-config-warning-action').textContent, 'Configure');
+    await click(byId('designer-model-config-warning-action'));
+    assert.deepEqual(navigation.at(-1), { moduleId: 'models', tabId: 'multimodal' });
     await click(byId('designer-model-selector-trigger'));
     const tabs = [...document.querySelectorAll('[data-testid="designer-model-config-tab"]')];
     assert.deepEqual(tabs.map((tab) => tab.textContent), ['Chat', 'Video generation', 'Image generation']);
+    assert.equal(document.querySelectorAll('[data-testid="designer-model-config-tab-warning"]').length, 2);
     assert.ok(document.querySelector('[data-testid="designer-model-selector-section-header"][data-variant="free"]'));
     assert.ok(document.querySelector('[data-testid="designer-model-selector-section-header"][data-variant="configured"]'));
-    assert.equal(byId('designer-model-config-help').getAttribute('aria-label'), resources.en.translation.designer.modelConfiguration.help);
-    await click(tabs[1]);
-    assert.match(byId('designer-generation-model-warning').textContent, /Video generation: Not configured/);
-    await click(byId('designer-generation-model-settings'));
+    assert.equal(byId('designer-model-config-help').getAttribute('aria-label'), copy.designer.modelConfiguration.help);
+    assert.equal(byId('designer-model-config-add').textContent, copy.designer.modelConfiguration.addModel);
+    assert.equal(byId('designer-model-selector-add'), null);
+    await click(byId('designer-model-config-add'));
+    assert.equal(navigation.at(-1), 'models');
+    await click(byId('designer-model-selector-trigger'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    assert.equal(document.querySelector('[data-testid="designer-model-selector-section-header"][data-variant="free"]'), null);
+    assert.equal(byId('designer-generation-model-description'), null);
+    assert.equal(byId('designer-generation-model-empty').textContent, copy.designer.models.videoMissing);
+    assert.equal(byId('designer-model-config-add').getAttribute('data-variant'), 'video_gen');
+    assert.equal(byId('designer-model-config-add').textContent, copy.designer.modelConfiguration.addModel);
+    await click(byId('designer-model-config-add'));
     assert.deepEqual(navigation.at(-1), { moduleId: 'models', tabId: 'multimodal' });
-    assert.deepEqual(requests, ['multimodal.models.list']);
+    assert.ok(requests.includes('multimodal.models.list'));
+    assert.ok(requests.includes('config.get'));
   });
 });
 
@@ -1314,53 +1361,48 @@ for (const language of ['zh', 'en']) {
   });
 }
 
-test('design displays only current generation bindings and preserves a disabled model with an enable link', async (t) => {
-  const video = generationModel('Bound video', 'video_gen');
+test('design lists every generation model and ignores the agent tool switch', async (t) => {
+  const first = generationModel('First video', 'video_gen');
+  const second = generationModel('Other candidate', 'video_gen');
   const image = generationModel('Bound image', 'visual_gen');
-  t.mock.method(webClient, 'request', async (method) => {
-    assert.equal(method, 'multimodal.models.list');
-    return generationSnapshot([video, image, generationModel('Other candidate', 'video_gen')], {
-      video_gen: { model_id: video.model_id, enabled: false },
-      visual_gen: { model_id: image.model_id, enabled: true },
-    });
-  });
+  const { requests, saved } = installGenerationApi(t, [first, second, image]);
   await withFixture(async ({ mount, click, byId }) => {
-    const navigation = [];
-    window.addEventListener('jiuwen:settings-module', (event) => navigation.push(event.detail));
+    resetGenerationStore();
     await mount(createElement(DesignerModelSelector));
-    await hover(byId('designer-model-config-trigger-warning'));
-    assert.equal(byId('designer-model-config-warning-action').textContent, 'Enable');
-    await click(byId('designer-model-config-warning-action'));
-    assert.equal(navigation.at(-1), 'agent');
+    assert.equal(byId('designer-model-config-trigger-warning'), null);
     await click(byId('designer-model-selector-trigger'));
     await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
-    assert.equal(byId('designer-generation-model-name').textContent, 'Bound video');
-    assert.equal(byId('designer-generation-model-configured'), null);
-    assert.match(byId('designer-generation-model-warning').textContent, /Not enabled/);
-    assert.equal(byId('designer-generation-model-settings').textContent, 'Enable');
-    assert.ok(!byId('designer-model-config-content').textContent.includes('Other candidate'));
-    await click(byId('designer-generation-model-settings'));
-    assert.equal(navigation.at(-1), 'agent');
+    const options = [...document.querySelectorAll('[data-testid="designer-generation-model-option"]')];
+    assert.deepEqual(options.map((option) => option.getAttribute('data-variant')), [first.model_id, second.model_id]);
+    assert.equal(byId('designer-generation-model-name').textContent, 'First video');
+    assert.equal(options[0].getAttribute('aria-checked'), 'true');
+    assert.equal(byId('designer-generation-model-warning'), null);
+    assert.equal(byId('designer-model-config-content').textContent.includes('Not enabled'), false);
+    await click(options[1]);
+    await act(async () => { await Promise.resolve(); });
+    assert.equal(saved.video_gen, second.model_id);
+    assert.ok(requests.includes('config.set'));
+    assert.equal(byId('designer-generation-model-name').textContent, 'Other candidate');
     await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="visual_gen"]'));
     assert.equal(byId('designer-generation-model-name').textContent, 'Bound image');
-    assert.equal(byId('designer-generation-model-binding-label').textContent, 'Currently bound model');
-    assert.equal(byId('designer-generation-model-configured').textContent, resources.en.translation.settingsPanel.common.configured);
-    assert.equal(byId('designer-generation-model-warning'), null);
-    assert.equal(byId('designer-generation-model-settings'), null);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
   });
 });
 
-test('design reloads tool bindings after a settings change without changing its chat selection', async (t) => {
-  let response = generationSnapshot();
-  t.mock.method(webClient, 'request', async () => response);
+test('design reloads the catalogue after a settings change without changing its chat selection', async (t) => {
+  let models = [];
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'config.get') return { design_generation_video_gen: '', design_generation_visual_gen: '' };
+    if (method === 'multimodal.models.list') return generationSnapshot(models);
+    throw new Error(method);
+  });
   await withFixture(async ({ mount, click, byId, dom }) => {
+    resetGenerationStore();
     await mount(createElement(DesignerModelSelector));
     assert.ok(byId('designer-model-config-trigger-warning'));
     await hover(byId('designer-model-config-trigger-warning'));
     assert.ok(byId('designer-model-config-warning-content'));
-    response = generationSnapshot([
-      generationModel('video', 'video_gen'), generationModel('image', 'visual_gen'),
-    ], { video_gen: { model_id: 'video', enabled: true }, visual_gen: { model_id: 'image', enabled: true } });
+    models = [generationModel('video', 'video_gen'), generationModel('image', 'visual_gen')];
     await act(async () => { window.dispatchEvent(new dom.window.CustomEvent(SETTINGS_CONFIG_CHANGED_EVENT)); });
     assert.equal(byId('designer-model-config-trigger-warning'), null);
     assert.equal(byId('designer-model-config-warning-content'), null);
@@ -1371,18 +1413,36 @@ test('design reloads tool bindings after a settings change without changing its 
   });
 });
 
-test('design read failures offer retry and never claim a model is missing', async (t) => {
+test('a missing multimodal catalogue says models are not configured', async (t) => {
+  const missing = Object.assign(new Error('not configured'), { code: 'MM_NOT_CONFIGURED' });
+  t.mock.method(webClient, 'request', async () => { throw missing; });
+  const copy = generationCopy('en');
+  await withFixture(async ({ mount, byId }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    const warning = byId('designer-model-config-trigger-warning');
+    assert.equal(warning.getAttribute('aria-label'), copy.designer.modelConfiguration.notConfigured);
+    await hover(warning);
+    assert.equal(byId('designer-model-config-warning-action').textContent, copy.designer.modelConfiguration.configure);
+    assert.equal(byId('designer-model-config-warning-reason').textContent, copy.designer.modelConfiguration.notConfigured);
+  });
+});
+
+test('design read failures offer retry and then show an empty catalogue', async (t) => {
   let failed = true;
-  t.mock.method(webClient, 'request', async () => {
+  t.mock.method(webClient, 'request', async (method) => {
     if (failed) throw new Error('transport failed');
-    return generationSnapshot();
+    if (method === 'config.get') return { design_generation_video_gen: '', design_generation_visual_gen: '' };
+    if (method === 'multimodal.models.list') return generationSnapshot();
+    throw new Error(method);
   });
   await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
     await mount(createElement(DesignerModelSelector));
     await click(byId('designer-model-selector-trigger'));
     await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
-    assert.match(byId('designer-model-config-error').textContent, /Could not load/);
-    assert.equal(byId('designer-generation-model-warning'), null);
+    assert.match(byId('designer-generation-model-error').textContent, /Could not load/);
+    assert.equal(byId('designer-generation-model-empty'), null);
     assert.equal(byId('designer-model-config-tab-warning'), null);
     failed = false;
     await hover(byId('designer-model-config-trigger-warning'));
@@ -1390,21 +1450,34 @@ test('design read failures offer retry and never claim a model is missing', asyn
     assert.equal(byId('designer-model-config-warning-action').textContent,
       resources.en.translation.designer.modelConfiguration.retry);
     await click(byId('designer-model-config-warning-action'));
-    assert.equal(byId('designer-model-config-error'), null);
+    assert.equal(byId('designer-generation-model-error'), null);
     await click(byId('designer-model-selector-trigger'));
-    assert.match(byId('designer-generation-model-warning').textContent, /Not configured/);
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    assert.equal(byId('designer-generation-model-empty').textContent, resources.en.translation.designer.models.videoMissing);
   });
 });
 
-test('canvas model configuration keeps the chat model read-only and uses Chinese labels', async (t) => {
-  t.mock.method(webClient, 'request', async () => generationSnapshot());
+test('canvas model configuration keeps chat locked and still changes generation models', async (t) => {
+  const video = generationModel('画布视频', 'video_gen');
+  const other = generationModel('另一视频', 'video_gen');
+  const { saved } = installGenerationApi(t, [video, other, generationModel('画布图片', 'visual_gen')]);
+  const copy = generationCopy('zh');
   await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
     await mount(createElement(DesignerModelSelector, { sessionId, readOnly: true }));
     await click(byId('designer-model-selector-trigger'));
     assert.match(byId('designer-model-config-locked-chat').textContent, /Configured A/);
     assert.equal(byId('designer-model-selector-option'), null);
+    assert.equal(byId('designer-model-config-add').textContent, copy.designer.modelConfiguration.addModel);
     assert.deepEqual([...document.querySelectorAll('[data-testid="designer-model-config-tab"]')].map((tab) => tab.textContent),
       ['对话', '视频生成', '图片生成']);
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    const options = [...document.querySelectorAll('[data-testid="designer-generation-model-option"]')];
+    assert.equal(options.length, 2);
+    await click(options[1]);
+    await act(async () => { await Promise.resolve(); });
+    assert.equal(saved.video_gen, other.model_id);
+    assert.equal(byId('designer-model-config-add').textContent, copy.designer.modelConfiguration.addModel);
     assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
   }, 'zh');
 });
@@ -1423,93 +1496,47 @@ test('settings tab navigation applies fresh requests while allowing subsequent m
   });
 });
 
-test('generation readiness uses existing optional-credential rules and detects incomplete bound models', () => {
-  const video = generationModel('local', 'video_gen', { protocol: 'vllm-omni', api_key_configured: false, model_name: '' });
-  const image = generationModel('incomplete', 'visual_gen', { api_key_configured: false });
-  const derived = designGenerationModels(generationSnapshot([video, image], {
-    video_gen: { model_id: 'local', enabled: true }, visual_gen: { model_id: 'incomplete', enabled: true },
-  }));
-  assert.deepEqual(derived.map((item) => item.status), ['ready', 'incomplete']);
-});
-
-test('generation completeness ignores display names and distinguishes an absent binding', () => {
-  const video = generationModel('video', 'video_gen', { display_name: '' });
-  const derived = designGenerationModels(generationSnapshot([video], {
-    video_gen: { model_id: video.model_id, enabled: true },
-  }));
-  assert.deepEqual(derived.map((item) => item.status), ['ready', 'missing']);
+test('design selection keeps a saved model and otherwise uses the first of that modality', () => {
+  const first = generationModel('first-video', 'video_gen');
+  const second = generationModel('second-video', 'video_gen');
+  const image = generationModel('only-image', 'visual_gen');
+  const models = [first, second, image];
+  assert.deepEqual(modelsForSlot(models, 'video_gen').map((model) => model.model_id), [first.model_id, second.model_id]);
+  assert.equal(resolvedGenerationModelId(models, 'video_gen', second.model_id), second.model_id);
+  assert.equal(resolvedGenerationModelId(models, 'video_gen', 'missing'), first.model_id);
+  assert.equal(resolvedGenerationModelId(models, 'video_gen', null), first.model_id);
+  assert.equal(resolvedGenerationModelId([], 'visual_gen', image.model_id), null);
+  assert.equal(resolvedGenerationModelId(models, 'visual_gen', ''), image.model_id);
 });
 
 for (const language of ['zh', 'en']) {
-  test(`incomplete execution fields have their own message and take priority over disabled tools in ${language}`, async (t) => {
+  test(`every design model tab uses the add-custom-model footer in ${language}`, async (t) => {
     const video = generationModel('video', 'video_gen');
-    const image = generationModel('image', 'visual_gen', { api_base: '' });
-    t.mock.method(webClient, 'request', async () => generationSnapshot([video, image], {
-      video_gen: { model_id: video.model_id, enabled: false },
-      visual_gen: { model_id: image.model_id, enabled: true },
-    }));
+    installGenerationApi(t, [video, generationModel('image', 'visual_gen')]);
+    const copy = generationCopy(language);
     await withFixture(async ({ mount, click, byId }) => {
-      const navigation = [];
-      window.addEventListener('jiuwen:settings-module', (event) => navigation.push(event.detail));
-      await mount(createElement(DesignerModelSelector));
-      await hover(byId('designer-model-config-trigger-warning'));
-      assert.equal(byId('designer-model-config-warning-action').textContent,
-        resources[language].translation.designer.modelConfiguration.configure);
-      await click(byId('designer-model-selector-trigger'));
-      await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="visual_gen"]'));
-      assert.equal(byId('designer-generation-model-warning').querySelector('span').textContent,
-        resources[language].translation.designer.modelConfiguration.incomplete);
-      assert.equal(byId('designer-generation-model-name').textContent, 'image');
-      assert.equal(byId('designer-generation-model-configured'), null);
-      await click(byId('designer-generation-model-settings'));
-      assert.deepEqual(navigation.at(-1), { moduleId: 'models', tabId: 'multimodal' });
-    }, language);
-  });
-}
-
-for (const language of ['zh', 'en']) {
-  test(`design chat preserves the original add-custom-model/group footer in ${language}`, async (t) => {
-    t.mock.method(webClient, 'request', async () => generationSnapshot());
-    await withFixture(async ({ mount, click, byId }) => {
+      resetGenerationStore();
       const targets = [];
       window.addEventListener('jiuwen:settings-module', (event) => targets.push(event.detail));
       await mount(createElement(DesignerModelSelector));
       await click(byId('designer-model-selector-trigger'));
-      const content = byId('designer-model-config-content');
-      const footer = byId('designer-model-config-footer');
-      assert.ok(footer);
-      assert.equal(content.contains(footer), false);
-      assert.equal(content.contains(byId('designer-model-config-tabs')), false);
-      assert.equal(byId('designer-model-selector-add'), null);
-      assert.equal(byId('designer-generation-model-description'), null);
-      assert.equal(byId('designer-model-config-add').textContent, resources[language].translation.chat.modelSelector.addModel);
-      assert.ok(byId('designer-model-config-add').classList.contains('model-select__add-btn'));
-      await click(byId('designer-model-config-add'));
-      assert.equal(byId('designer-model-selector-menu'), null);
-      assert.equal(targets.at(-1), 'models');
-    }, language);
-  });
-}
-
-for (const language of ['zh', 'en']) {
-  test(`generation tabs retain the bound-tool explanation without adding another model action in ${language}`, async (t) => {
-    const model = generationModel('Bound video', 'video_gen');
-    t.mock.method(webClient, 'request', async () => generationSnapshot([model], {
-      video_gen: { model_id: model.model_id, enabled: true },
-    }));
-    await withFixture(async ({ mount, click, byId }) => {
-      await mount(createElement(DesignerModelSelector));
-      await click(byId('designer-model-selector-trigger'));
-      for (const tab of ['video_gen', 'visual_gen']) {
+      for (const tab of ['chat', 'video_gen', 'visual_gen']) {
         await click(document.querySelector(`[data-testid="designer-model-config-tab"][data-variant="${tab}"]`));
-        assert.equal(byId('designer-model-config-add'), null);
+        const content = byId('designer-model-config-content');
+        const footer = byId('designer-model-config-footer');
+        const add = byId('designer-model-config-add');
+        assert.equal(content.contains(footer), false);
         assert.equal(byId('designer-model-selector-add'), null);
-        assert.equal(byId('designer-generation-model-description').textContent,
-          resources[language].translation.designer.modelConfiguration.bindingHint);
-        assert.ok(byId('designer-model-config-footer').contains(byId('designer-generation-model-description')));
-        assert.equal(byId('designer-model-config-content').contains(byId('designer-model-config-footer')), false);
+        assert.equal(byId('designer-generation-model-description'), null);
+        assert.equal(add.textContent, copy.designer.modelConfiguration.addModel);
+        assert.notEqual(add.textContent, copy.chat.modelSelector.addModel);
+        assert.ok(add.classList.contains('model-select__add-btn'));
+        assert.equal(add.getAttribute('data-variant'), tab);
+        await click(add);
+        assert.equal(byId('designer-model-selector-menu'), null);
+        assert.deepEqual(targets.at(-1), tab === 'chat' ? 'models' : { moduleId: 'models', tabId: 'multimodal' });
+        await click(byId('designer-model-selector-trigger'));
       }
-      assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
     }, language);
   });
 }

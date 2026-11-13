@@ -78,7 +78,7 @@ def test_settings_reads_do_not_initialize_and_startup_failure_keeps_legacy_data(
     old_yaml = path.read_bytes()
     path.with_name(".env").write_text("VISION_API_BASE=https://old.invalid\nVISION_ENABLED=false\n")
     old_env = path.with_name(".env").read_bytes()
-    with pytest.raises(MultimodalError, match="MM_CONFIG_READ_FAILED"):
+    with pytest.raises(MultimodalError, match="MM_NOT_CONFIGURED"):
         store.read()
     assert path.read_bytes() == old_yaml
     original_write = config_persistence.atomic_write

@@ -61,7 +61,10 @@ class MultimodalStore:
             state = raw.get("multimodal")
             if state is None:
                 if not migrate:
-                    raise MultimodalError("MM_CONFIG_READ_FAILED")
+                    # Absent catalogue is "not configured", not a damaged file.
+                    # Corrupt YAML, bad credentials and invalid catalogues stay
+                    # MM_CONFIG_READ_FAILED.
+                    raise MultimodalError("MM_NOT_CONFIGURED")
                 persisted = dict(dotenv_values(path.with_name(".env")))
                 env = {**os.environ, **{key: value for key, value in persisted.items() if value is not None}}
                 resolved = resolve_legacy(raw, env)

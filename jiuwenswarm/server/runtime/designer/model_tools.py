@@ -378,9 +378,11 @@ def require_llm() -> None:
 def require_media_models(*, image: bool = False, video: bool = False) -> None:
     """Block Play when a requested media modality has no usable endpoint.
 
-    Callers decide which modalities are needed. Checks the Settings > Agent
-    generation slot (switch, URL / key / model, supported backend); credit and
-    endpoint failures stay on the generation call.
+    Callers decide which modalities are needed. Checks Design's selected
+    multimodal model (or the legacy environment slot when no catalogue is
+    stored): URL / key / model and a supported backend. The agent tool switch
+    is not consulted once a catalogue exists. Credit and endpoint failures
+    stay on the generation call.
     """
     from jiuwenswarm.server.runtime.designer.media_generation import generation_problem
 

@@ -235,16 +235,15 @@ def _host_of(api_base: str) -> str:
     return re.sub(r"^https?://", "", api_base.strip(), flags=re.IGNORECASE).split("/", 1)[0].split(":", 1)[0]
 
 
-def detect_backend(protocol_env: str, api_base: str) -> str | None:
-    """Return the vendor-native backend for the configured slot, or None.
+def backend_from_protocol(protocol: str, api_base: str) -> str | None:
+    """Return the vendor-native backend for a saved protocol and API URL, or None.
 
-    None means the OpenRouter-style path. The backend is named by the saved 协议
-    (read from ``protocol_env``), or implied by the API URL being one of the
-    vendor's hosts.
+    None means the OpenRouter-style path. A known protocol wins; otherwise the
+    API host can still identify MiniMax, ModelArk or DashScope.
     """
-    protocol = os.environ.get(protocol_env, "").strip().lower()
-    if protocol in NATIVE_BACKENDS:
-        return protocol
+    saved = (protocol or "").strip().lower()
+    if saved in NATIVE_BACKENDS:
+        return saved
     host = _host_of(api_base)
     if _MINIMAX_HOST.search(host):
         return MINIMAX
@@ -253,6 +252,16 @@ def detect_backend(protocol_env: str, api_base: str) -> str | None:
     if _DASHSCOPE_HOST.match(host):
         return DASHSCOPE
     return None
+
+
+def detect_backend(protocol_env: str, api_base: str) -> str | None:
+    """Return the vendor-native backend for the configured slot, or None.
+
+    None means the OpenRouter-style path. The backend is named by the saved 协议
+    (read from ``protocol_env``), or implied by the API URL being one of the
+    vendor's hosts.
+    """
+    return backend_from_protocol(os.environ.get(protocol_env, ""), api_base)
 
 
 async def generate_image(

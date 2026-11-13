@@ -1,11 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Designer image / video generation on the shared generation backends.
 
-Design reads the same Settings > Agent slots as the chat tools
-(``VIDEO_GEN_*`` / ``VISUAL_GEN_*``, including ``*_PROTOCOL`` and the
-``*_ENABLED`` switch) and calls ``gen_toolkits`` directly. Unlike the chat
-tool, a clip waits for its video job: the submit / check_video pair is polled
-here until the file is saved or the deadline passes.
+Design uses its own model choice from the multimodal catalogue
+(``generation_selection``), not the Settings > Agent tool switch or the single
+model bound there. A process that has no catalogue yet still reads the
+``VIDEO_GEN_*`` / ``VISUAL_GEN_*`` environment slots, so existing callers keep
+working before settings are migrated. Unlike the chat tool, a clip waits for
+its video job: the submit / check_video pair is polled here until the file is
+saved or the deadline passes.
 
 Only the vendor-native backends are driven (MiniMax, ModelArk, DashScope,
 vLLM-Omni): Design relies on reference images, which the OpenRouter path does
@@ -67,7 +69,10 @@ class SlotSettings:
         return bool(self.api_key and self.api_base and self.model)
 
 
-def slot_settings(kind: Kind) -> SlotSettings:
+_CAPABILITY: dict[Kind, str] = {"image": "visual_gen", "video": "video_gen"}
+
+
+def _env_slot_settings(kind: Kind) -> SlotSettings:
     prefix = _ENV_PREFIX[kind]
     api_base = os.environ.get(f"{prefix}_API_BASE", "").strip()
     return SlotSettings(
@@ -76,6 +81,33 @@ def slot_settings(kind: Kind) -> SlotSettings:
         model=os.environ.get(f"{prefix}_MODEL_NAME", "").strip(),
         backend=gen_toolkits.detect_backend(f"{prefix}_PROTOCOL", api_base),
     )
+
+
+def _slot_from_model(model: dict) -> SlotSettings:
+    connection = model.get("connection") if isinstance(model.get("connection"), dict) else {}
+    api_base = str(connection.get("api_base") or "").strip()
+    return SlotSettings(
+        api_key=str(connection.get("api_key") or "").strip(),
+        api_base=api_base,
+        model=str(connection.get("model_name") or "").strip(),
+        backend=gen_toolkits.backend_from_protocol(str(connection.get("protocol") or ""), api_base),
+    )
+
+
+def slot_settings(kind: Kind) -> SlotSettings:
+    """Connection Design will call for this modality.
+
+    A stored multimodal catalogue wins, including when the agent tool for that
+    modality is switched off. Without a catalogue, the environment slot remains.
+    """
+    from jiuwenswarm.server.runtime.designer.generation_selection import catalogue_generation_model
+
+    found = catalogue_generation_model(_CAPABILITY[kind])
+    if not found.present:
+        return _env_slot_settings(kind)
+    if found.model is None:
+        return SlotSettings("", "", "", None)
+    return _slot_from_model(found.model)
 
 
 def configured_model(kind: Kind) -> str:
@@ -103,24 +135,46 @@ def image_tool_timeout_seconds() -> float:
     return _IMAGE_TOOL_TIMEOUT_SECONDS
 
 
+def _catalogue_has_model(kind: Kind) -> bool | None:
+    """True/False when a catalogue exists, None when Design still uses the env slot."""
+    from jiuwenswarm.server.runtime.designer.generation_selection import catalogue_generation_model
+
+    found = catalogue_generation_model(_CAPABILITY[kind])
+    if not found.present:
+        return None
+    return found.model is not None
+
+
 def generation_enabled(kind: Kind) -> bool:
-    return visual_gen_enabled() if kind == "image" else video_gen_enabled()
+    listed = _catalogue_has_model(kind)
+    if listed is None:
+        return visual_gen_enabled() if kind == "image" else video_gen_enabled()
+    return listed
+
+
+def _endpoint_problem(kind: Kind, settings: SlotSettings, where: str) -> str | None:
+    label = _SETTINGS_LABEL[kind]
+    if not settings.complete:
+        return f"{label} is not configured: set the API URL, API key and model in Settings > {where}."
+    if settings.backend is None:
+        return (
+            f"{label} for Design needs a MiniMax, BytePlus ModelArk / Volcengine, Alibaba DashScope or "
+            f"vLLM-Omni endpoint; {settings.api_base} is not one of them. Change it in Settings > {where}."
+        )
+    return None
 
 
 def generation_problem(kind: Kind) -> str | None:
     """Why Design cannot generate this media kind, or None when it can."""
     label = _SETTINGS_LABEL[kind]
-    if not generation_enabled(kind):
-        return f"{label} is switched off in Settings > Agent."
-    settings = slot_settings(kind)
-    if not settings.complete:
-        return f"{label} is not configured: set the API URL, API key and model in Settings > Agent."
-    if settings.backend is None:
-        return (
-            f"{label} for Design needs a MiniMax, BytePlus ModelArk / Volcengine, Alibaba DashScope or "
-            f"vLLM-Omni endpoint; {settings.api_base} is not one of them. Change it in Settings > Agent."
-        )
-    return None
+    listed = _catalogue_has_model(kind)
+    if listed is None:
+        if not generation_enabled(kind):
+            return f"{label} is switched off in Settings > Agent."
+        return _endpoint_problem(kind, slot_settings(kind), "Agent")
+    if not listed:
+        return f"{label} is not configured: add a model in Settings > Models > Multimodal."
+    return _endpoint_problem(kind, slot_settings(kind), "Models > Multimodal")
 
 
 def note_generation_problem(kind: Kind, where: str) -> str | None:
