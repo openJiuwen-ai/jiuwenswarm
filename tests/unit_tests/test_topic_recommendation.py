@@ -2140,6 +2140,8 @@ def test_recommendation_host_builds_once_even_when_free_search_is_off(
     assert host.topic_service.on_prepared is not None
 
     monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "true")
+    host.ensure_services()
+    assert host.topic_service is service
     monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "true")
     host.ensure_services()
     assert host.topic_service is service

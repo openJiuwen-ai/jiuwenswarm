@@ -1940,9 +1940,10 @@ def _build_topic_starter_agents() -> tuple[Any, Any, Any]:
     search_tools = []
     if any(os.environ.get(name) for name in ("BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY")):
         search_tools.append(mcp_paid_search)
-    if str(os.environ.get("FREE_SEARCH_DDG_ENABLED") or "").lower() in {"1", "true", "yes", "on", "enabled"} or str(
-        os.environ.get("FREE_SEARCH_BING_ENABLED") or ""
-    ).lower() in {"1", "true", "yes", "on", "enabled"}:
+    if any(
+        str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+        for name in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED")
+    ):
         search_tools.append(mcp_free_search)
     if not search_tools:
         return curator, None, fetch_page

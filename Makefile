@@ -59,15 +59,14 @@ update-deps: ## Upgrade all locked dependencies to their latest allowed version
 	$(UV) sync
 
 # ----------------------------------------------------------------------
-# openjiuwen (agent-core) — arrives transitively via agent-gateway; advancing
-# core means re-pinning agent-gateway in pyproject.toml (project.dependencies
-# + tool.uv.sources) to a gateway commit that pins the target agent-core rev.
+# Gateway owns the SDK pin. Update its official revision in pyproject.toml
+# before re-locking to adopt a newer transitive openjiuwen dependency.
 # ----------------------------------------------------------------------
 
 update-agent-gateway: ## Re-lock after re-pinning agent-gateway (carries openjiuwen)
 	$(UV) lock --upgrade-package agent-gateway
 	$(UV) sync
-	@printf "$(C_OK)openjiuwen now resolved via agent-gateway:$(C_RESET)\n"
+	@printf "$(C_OK)openjiuwen resolved revision:$(C_RESET)\n"
 	@awk '/^name = "openjiuwen"/{f=1} f && /^source = /{sub(/.*#/,""); sub(/".*/,""); print "  commit " $$0; f=0}' uv.lock
 
 # ----------------------------------------------------------------------

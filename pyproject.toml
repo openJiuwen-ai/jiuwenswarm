@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=70.1.0", "wheel>=0.46.3", "packaging>=23.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -26,9 +26,7 @@ dependencies = [
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
-    # openjiuwen（agent-core）自本变更起不再由母仓直接声明，唯一来源是 agent-gateway
-    # 的传递钉：whl 元数据与 uv 解析中 rev 均以 gateway 为准，由发版流程同步。
-    # 前进 core = 把 agent-gateway re-pin 到钉了目标 agent-core rev 的 commit。
+    # The official Gateway pin is the single source of the openjiuwen revision.
     # Gateway 传输层已拆分为独立仓 agent-gateway
     "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@54e5330d3ea6be972aa38de4c42a898ea73fed37",
     "pgvector>=0.4.2,<0.5",
@@ -103,7 +101,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen>=0.1.20",  # 经 agent-gateway 传递（见 project.dependencies 注释）；harmony 组为手动安装清单，从 PyPI 解析
+    "openjiuwen>=0.1.20",
     "filelock>=3.25.0,<4",  # task-owned async locks strand openjiuwen FS locks
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
@@ -139,7 +137,7 @@ harmony = [
 a2a = ["a2a-sdk[http-server]==1.0.0"]
 ssh = ["asyncssh>=2.14.0,<2.24"]
 desktop = ["pywebview>=5.4,<7"]
-dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
+dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7", "packaging>=23.0"]
 tui = ["workswarm-tui==0.2.8"]  # build-config: tui-dependency
 distribute = ["openjiuwen[postgres,zmq]"]
 claude = ["openjiuwen[claude]"]
@@ -148,6 +146,9 @@ cua = ["openjiuwen[cua]"]
 shell-ast = []
 # Same packages as [dependency-groups] test (pip install -e ".[test]")
 test = [
+    "setuptools>=70.1.0",
+    "wheel>=0.46.3",
+    "packaging>=23.0",
     "a2a-sdk[http-server]==1.0.0",
     "cryptography>=44.0.0",
     "asyncssh>=2.14.0,<2.24",
@@ -232,10 +233,7 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
-# openjiuwen（agent-core）自本变更起不再由母仓直接声明：whl 元数据与 uv 解析中，
-# 它唯一的 git 钉都是 agent-gateway 的传递钉，rev 以 gateway 为准、由发版流程同步。
-# override-dependencies 仅保留 openjiuwen-protocol —— 协议钉仍由母仓主导，
-# 覆盖网关传递的协议钉（override-dependencies 覆盖解析中所有来源的约束）。
+# Keep protocol dependencies aligned; openjiuwen is pinned transitively by Gateway.
 override-dependencies = [
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
 ]
@@ -249,6 +247,9 @@ openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-ru
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)
 test = [
+    "setuptools>=70.1.0",
+    "wheel>=0.46.3",
+    "packaging>=23.0",
     "a2a-sdk[http-server]==1.0.0",
     "cryptography>=44.0.0",
     "asyncssh>=2.14.0,<2.24",

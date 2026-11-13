@@ -177,18 +177,15 @@ def background_configuration_status(
         missing = []
         context = config.context_window_tokens or 0
     engines = {
-        name: str(values.get(f"FREE_SEARCH_{name.upper()}_ENABLED") or "").strip().lower() == "true"
+        name: str(values.get(f"FREE_SEARCH_{name.upper()}_ENABLED") or "").strip().lower()
+        in {"1", "true", "yes", "on", "enabled"}
         for name in ("ddg", "bing")
     }
     # Informational only: free-search toggles do not block topic recommendation.
     # Unset still selects the native lane; missing engines just mean web-search
     # grounding may fail at call time while hot-list and presets keep working.
-    _source_items = (
-        ("FREE_SEARCH_DDG_ENABLED=true", engines["ddg"]),
-        ("FREE_SEARCH_BING_ENABLED=true", engines["bing"]),
-    )
-    search_missing = [
-        setting for setting, present in _source_items if not present
+    search_missing = [] if any(engines.values()) else [
+        "FREE_SEARCH_DDG_ENABLED=true OR FREE_SEARCH_BING_ENABLED=true"
     ]
     return {
         # Historical status key; value means OpenAI-compatible recommendation model.

@@ -7140,6 +7140,18 @@ wheels = [
 ]
 
 [[package]]
+name = "wheel"
+version = "0.48.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/20/50ed6bdf27dec98b568a8ae25dc599f35baa3d9709f9e83fd1edb56b9a90/wheel-0.48.0.tar.gz", hash = "sha256:94800765601e9171bf5d58d066e640662842bcedcbab982b2c90787a2c987322", size = 66471, upload-time = "2026-08-11T22:02:27.327Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl", hash = "sha256:3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab", size = 33320, upload-time = "2026-08-11T22:02:26.1Z" },
+]
+
+[[package]]
 name = "win32-setctime"
 version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -7236,6 +7248,7 @@ desktop = [
     { name = "pywebview" },
 ]
 dev = [
+    { name = "packaging" },
     { name = "pyinstaller" },
     { name = "pywebview" },
 ]
@@ -7288,6 +7301,7 @@ test = [
     { name = "asyncssh" },
     { name = "coverage" },
     { name = "cryptography" },
+    { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -7295,6 +7309,8 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-timeout" },
     { name = "pyyaml" },
+    { name = "setuptools" },
+    { name = "wheel" },
 ]
 tui = [
     { name = "workswarm-tui" },
@@ -7309,6 +7325,7 @@ dev = [
     { name = "cryptography" },
     { name = "httpx", extra = ["socks"] },
     { name = "mypy" },
+    { name = "packaging" },
     { name = "pylint" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -7318,6 +7335,8 @@ dev = [
     { name = "pytest-timeout" },
     { name = "pyyaml" },
     { name = "ruff" },
+    { name = "setuptools" },
+    { name = "wheel" },
 ]
 lint = [
     { name = "codespell" },
@@ -7331,6 +7350,7 @@ test = [
     { name = "asyncssh" },
     { name = "coverage" },
     { name = "cryptography" },
+    { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -7338,6 +7358,8 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-timeout" },
     { name = "pyyaml" },
+    { name = "setuptools" },
+    { name = "wheel" },
 ]
 
 [package.metadata]
@@ -7415,6 +7437,8 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-sdk", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
+    { name = "packaging", marker = "extra == 'dev'", specifier = ">=23.0" },
+    { name = "packaging", marker = "extra == 'test'", specifier = ">=23.0" },
     { name = "pgvector", specifier = ">=0.4.2,<0.5" },
     { name = "pgvector", marker = "extra == 'harmony'", specifier = ">=0.4.2" },
     { name = "pillow", specifier = ">=12.2.0,<13" },
@@ -7447,6 +7471,7 @@ requires-dist = [
     { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.0,<0.20" },
     { name = "ruamel-yaml", marker = "extra == 'harmony'", specifier = ">=0.18.0" },
+    { name = "setuptools", marker = "extra == 'test'", specifier = ">=70.1.0" },
     { name = "skillnet-ai", specifier = "==0.0.16" },
     { name = "skillnet-ai", marker = "extra == 'harmony'", specifier = "==0.0.16" },
     { name = "slack-bolt", specifier = ">=1.30.0,<2" },
@@ -7462,6 +7487,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=12.0,<16" },
     { name = "wecom-aibot-sdk", specifier = ">=1.0.5,<2" },
     { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
+    { name = "wheel", marker = "extra == 'test'", specifier = ">=0.46.3" },
     { name = "workswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
 ]
 provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "claude", "codex", "cua", "shell-ast", "test"]
@@ -7475,6 +7501,7 @@ dev = [
     { name = "cryptography", specifier = ">=44.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
     { name = "mypy", specifier = ">=1.12.0" },
+    { name = "packaging", specifier = ">=23.0" },
     { name = "pylint", specifier = ">=3.0.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
@@ -7484,6 +7511,8 @@ dev = [
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.11.2" },
+    { name = "setuptools", specifier = ">=70.1.0" },
+    { name = "wheel", specifier = ">=0.46.3" },
 ]
 lint = [
     { name = "codespell", specifier = ">=2.2.4" },
@@ -7497,6 +7526,7 @@ test = [
     { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
     { name = "coverage", specifier = ">=7.7.1" },
     { name = "cryptography", specifier = ">=44.0.0" },
+    { name = "packaging", specifier = ">=23.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
@@ -7504,6 +7534,8 @@ test = [
     { name = "pytest-mock", specifier = ">=3.14.0" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "setuptools", specifier = ">=70.1.0" },
+    { name = "wheel", specifier = ">=0.46.3" },
 ]
 
 [[package]]

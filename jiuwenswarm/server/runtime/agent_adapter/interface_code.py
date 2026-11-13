@@ -557,7 +557,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     # 固定 Rails 名字集合 — 用于动态 Rails 去重
     _FIXED_RAIL_NAMES = frozenset({
-        "RuntimePromptRail", "ResponsePromptRail",
+        "RuntimePromptRail", "ResponsePromptRail", "WebResearchBudgetRail",
         "JiuSwarmStreamEventRail", "SecurityRail",
         "PermissionInterruptRail",
         "ContextProcessorRail",
@@ -1888,6 +1888,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # Fixed Code rails retain their existing ownership and order.
         rail_infos = [
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
+            _RailBuildInfo("_web_research_budget_rail", self._build_web_research_budget_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
             _RailBuildInfo(
