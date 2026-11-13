@@ -721,6 +721,9 @@
       "noPresetModels": "展开列表或点击刷新以拉取最新模型",
       "noPresetModelsApiKeyRequired": "请先填写 API Key 后拉取模型列表",
       "noPresetModelsNoEndpoint": "该提供商未提供模型列表接口",
+      "noCustomModels": "填写接口地址和 API Key 后，可展开列表或点击刷新拉取模型",
+      "noCustomModelsApiBaseRequired": "请先填写接口地址后拉取模型列表",
+      "noCustomModelsApiKeyRequired": "请先填写 API Key 后拉取模型列表",
       "fetchModelsLoading": "获取中...",
       "fetchModelsRemote": "已从提供商获取 {{count}} 个模型",
       "fetchGenerationModelsRemote": "已获取 {{count}} 个生成模型；列表不代表当前账号已开通",
@@ -730,10 +733,17 @@
       "fetchModelsUnrecognizedResult": "提供商返回了未识别的模型列表来源或原因",
       "fetchReasons": {
         "noEndpoint": "该提供商未提供模型列表接口",
+        "apiBaseRequired": "填写接口地址后可拉取最新模型",
+        "apiBaseInvalid": "接口地址无效，需为 http(s) URL",
         "apiKeyRequired": "填写 API Key 后可拉取最新模型",
+        "apiKeyTooLong": "API Key 过长，请精简后重试",
         "remoteFailed": "远端拉取失败或返回为空",
+        "nonJsonBody": "远端返回的内容不是 JSON",
+        "bodyTooLarge": "远端返回内容过大",
         "remoteAuthFailed": "API Key 无效或鉴权方式不符（HTTP 401/403）",
-        "remoteRateLimited": "远端限流（HTTP 429），请稍后重试"
+        "remoteNotFound": "接口地址不存在（HTTP 404），请检查地址路径是否正确",
+        "remoteRateLimited": "远端限流（HTTP 429），请稍后重试",
+        "remoteServerError": "远端服务异常（HTTP 5xx），请稍后重试或联系网关管理员"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",

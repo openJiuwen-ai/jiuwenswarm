@@ -110,6 +110,8 @@ Each model entry contains the following fields:
 
 The model marked with `is_default: true` is the default-used model; you can switch the default flag via the "Set as Default" button.
 
+**Model list for a custom gateway**: after choosing "Custom" and filling in `api_base` and `api_key`, the model name field stays a dropdown. Opening the list or clicking refresh requests `<api_base>/models` (no extra `/v1` is appended when the address already ends with `/v1`; an address without a version segment is tried with both `/models` and `/v1/models`) and lists the returned model IDs. You can still type a model name that is not in the list. Failures are reported by cause (invalid endpoint URL, invalid API key, rate limiting, etc.) and do not block manual entry.
+
 ### 2.4 Multimodal Model Usage Examples
 
 Once video, audio, or vision models are configured, JiuwenSwarm enables corresponding multimodal features automatically. Below are application scenarios for each model type:

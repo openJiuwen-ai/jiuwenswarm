@@ -58,6 +58,13 @@ export function ModelNameField({
   const wasFetching = useRef(fetching);
   const queryEditVersion = useRef(0);
   const fetchStartEditVersion = useRef(0);
+  // Latest typed text, so the outside-click handler can commit it before the
+  // menu closes and resets the input. State alone is one render too late.
+  const pendingQuery = useRef(value);
+  // Last value pushed to the form. The outside click commits, then the input
+  // blurs before the parent re-renders with the new value, so `value` alone
+  // cannot tell that the same text was already committed.
+  const committedQuery = useRef(value);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(value);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -107,6 +114,12 @@ export function ModelNameField({
 
   useEffect(() => setQuery(value), [value]);
   useEffect(() => {
+    pendingQuery.current = query;
+  }, [query]);
+  useEffect(() => {
+    committedQuery.current = value;
+  }, [value]);
+  useEffect(() => {
     if (!disabled) return;
     setOpen(false);
     setQuery(value);
@@ -117,8 +130,10 @@ export function ModelNameField({
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) {
+        // Commit before closing: a reset here would otherwise drop the text.
+        const committed = commitPendingQuery();
         setOpen(false);
-        setQuery(value);
+        if (!committed) setQuery(value);
         onBlur();
       }
     };
@@ -131,7 +146,7 @@ export function ModelNameField({
       window.removeEventListener('resize', handleViewportChange);
       window.removeEventListener('scroll', handleViewportChange, true);
     };
-  }, [onBlur, open, updateMenuPosition, value]);
+  }, [allowCustomValue, onBlur, onChange, open, updateMenuPosition, value]);
 
   const filteredOptions = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -144,8 +159,36 @@ export function ModelNameField({
     onChange(option);
     onBlur();
     setQuery(option);
+    pendingQuery.current = option;
+    committedQuery.current = option;
     setOpen(false);
     inputRef.current?.focus();
+  };
+
+  /**
+   * Push a typed name into the form.
+   *
+   * `query` is component state, so without this a name the user typed and then
+   * saved (or clicked away from) is discarded in favour of the previous value —
+   * the dropdown replaced a plain input, and a plain input commits on every
+   * keystroke. Only custom values are committed: for a fixed option list the
+   * text is a search filter, not a value.
+   */
+  const commitPendingQuery = () => {
+    if (!allowCustomValue) return false;
+    const typed = pendingQuery.current.trim();
+    if (typed === committedQuery.current) return false;
+    if (!typed && queryEditVersion.current === 0) {
+      // Opening the menu without editing must not commit an empty value, but
+      // clearing a typed name is a user edit and must reach form validation.
+      return false;
+    }
+    pendingQuery.current = typed;
+    committedQuery.current = typed;
+    setQuery(typed);
+    onChange(typed);
+    onBlur();
+    return true;
   };
 
   const openMenu = () => {
@@ -214,11 +257,20 @@ export function ModelNameField({
           data-variant="combo"
           onFocus={openMenu}
           onChange={(event) => {
+            if (!allowCustomValue) {
+              // Filtering only: without custom entry the field is a search box,
+              // so typing must never survive as a pending model name.
+              setQuery(event.target.value);
+              setOpen(true);
+              setActiveIndex(0);
+              return;
+            }
             queryEditVersion.current += 1;
             setQuery(event.target.value);
             setOpen(true);
             setActiveIndex(0);
           }}
+          onBlur={() => commitPendingQuery()}
           onKeyDown={(event) => {
             if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
               event.preventDefault();

@@ -275,6 +275,7 @@ export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
   'models.replace_all',
   'vendors.list',
   'vendors.fetch_models',
+  'vendors.fetch_custom_models',
   'path.get',
   'path.set',
   'permissions.tools.get',
