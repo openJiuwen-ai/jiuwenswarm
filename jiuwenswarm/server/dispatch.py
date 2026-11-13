@@ -295,6 +295,8 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SKILLS_TOGGLE: handle_skills_request,
     ReqMethod.SKILLS_INSTALL: handle_skills_request,
     ReqMethod.SKILLS_IMPORT_LOCAL: handle_skills_request,
+    ReqMethod.SKILLS_UPLOAD_STAGE: handle_skills_request,
+    ReqMethod.SKILLS_UPLOAD_FINALIZE: handle_skills_request,
     ReqMethod.SKILLS_UNINSTALL: handle_skills_request,
     ReqMethod.SKILLS_MARKETPLACE_LIST: handle_skills_request,
     ReqMethod.SKILLS_MARKETPLACE_ADD: handle_skills_request,

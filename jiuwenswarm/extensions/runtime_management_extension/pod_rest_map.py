@@ -312,6 +312,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
 
 REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb, path in _ROUTE_ROWS}
 
+# 企业版 Skill 上传：Gateway 通过 REST 转发到 AgentServer（stage / finalize）。
+REST_ROUTES["skills.upload.stage"] = ("POST", "/skills/upload-stage")
+REST_ROUTES["skills.upload.finalize"] = ("POST", "/skills/upload-finalize")
+
 
 class RestAssemblyError(ValueError):
     """REST 路径无法从信封拼出（缺 method / 缺路径占位符）。"""
