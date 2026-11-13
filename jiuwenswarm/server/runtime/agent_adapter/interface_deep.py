@@ -2317,9 +2317,9 @@ class JiuWenSwarmDeepAdapter:
         self._initial_execution_model_name: str = ""
         self._model_selection_can_access: Callable | None = None
         self._stable_selection_cache: dict[str, tuple[str, Model]] = {}
-        # Model the same-class child was built with: a stable selection, or the
-        # ordinary model name when the building request carried only that.
+        # Stable selection installed at build time or accepted while idle.
         self._collaboration_model_selection: ModelSelection | None = None
+        # Legacy model name carried by the building request.
         self._collaboration_model_name: str = ""
         # 全局列表下标 → cache_key。通道侧（Web）用全局 origin_index 拼请求 key，
         # 与后端 per-name 的 cache_key 序号语义分叉；此映射在 _resolve_model_by_name
@@ -4214,6 +4214,24 @@ class JiuWenSwarmDeepAdapter:
                 if busy:
                     installed_selection = existing._collaboration_model_selection  # pylint: disable=protected-access
                     if (
+                        selection is None
+                        and model_name
+                        and installed_selection is not None
+                        and not getattr(existing, "_moa_enabled", False)
+                    ):
+                        # Compare legacy transport choices using the same routing as execution.
+                        model_request = execution_request or AgentRequest(
+                            request_id="", session_id=sid, params={"model_name": model_name},
+                        )
+                        reference = existing._requested_model_name(model_request)  # pylint: disable=protected-access
+                        if reference.startswith(("model:", "model_group:")):
+                            kind, identifier, *route = reference.split(":", 2)
+                            selection = ModelSelection(
+                                type=kind, id=identifier, route_id=route[0] if route else None,
+                            )
+                        elif _model_name_names_selection(reference, installed_selection):
+                            selection = installed_selection
+                    if (
                         installed_selection is None
                         and selection is not None
                         and _model_name_names_selection(
@@ -4313,6 +4331,11 @@ class JiuWenSwarmDeepAdapter:
                         await existing.cleanup()
                         self._drop_session_adapter_cache_entry(sid, remove_lock=False)
                         existing = None
+                    elif model_selection is not None and selection is not None:
+                        # A child built without a selection (e.g. by an attach-only
+                        # subscription) must retain the one it accepts while idle;
+                        # later busy turns compare against this snapshot.
+                        existing._collaboration_model_selection = selection  # pylint: disable=protected-access
             # Same-class child cleanup remains serialized by this session lock.
             if (
                 existing is not None and existing._permission_state.permission_isolated  # pylint: disable=protected-access
