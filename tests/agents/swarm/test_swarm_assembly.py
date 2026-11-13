@@ -1131,6 +1131,98 @@ def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("dispatch_mode", "spawn_mode", "explicit_fork", "enabled"),
+    [
+        ("scheduled", "inprocess", None, True),
+        ("scheduled", "inprocess", False, False),
+        ("scheduled", "process", None, False),
+        ("autonomous", "inprocess", None, False),
+    ],
+)
+def test_enrich_applies_scheduled_fork_default(
+    dispatch_mode: str, spawn_mode: str, explicit_fork: bool | None, enabled: bool
+) -> None:
+    spec = _make_team_spec()
+    spec.dispatch_mode = dispatch_mode
+    spec.spawn_mode = spawn_mode
+    if explicit_fork is not None:
+        spec.enable_fork = explicit_fork
+    enrich_team_spec_for_swarm(spec, session_id="s", mode="team", channel_id="web")
+    assert spec.enable_fork is enabled
+
+
+@pytest.mark.parametrize(
+    ("mode", "dispatch_mode", "disable", "expected"),
+    [
+        ("code.team", "scheduled", True, False),
+        ("team.plan.code", "scheduled", True, False),
+        ("code.team", "scheduled", False, True),
+        ("code.team", "autonomous", True, True),
+        ("team", "scheduled", True, None),
+    ],
+)
+def test_enrich_gates_code_todo_reminders_by_effective_dispatch_mode(
+    monkeypatch: pytest.MonkeyPatch, mode: str, dispatch_mode: str, disable: bool, expected: bool | None,
+) -> None:
+    config = {"modes": {"team": {"jiuwen_team": {"disable_code_todo_reminder": disable}}}}
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_config", lambda: config)
+    spec = _make_team_spec()
+    spec.dispatch_mode = dispatch_mode
+
+    enrich_team_spec_for_swarm(spec, session_id="s", mode=mode, channel_id="web")
+
+    reminders = [rail for rail in spec.agents["teammate"].rails if rail.type == registry.CODE_TASK_PLANNING]
+    if expected is None:
+        assert reminders == []
+    else:
+        assert len(reminders) == 1
+        assert reminders[0].params.get("enable_task_reminders", True) is expected
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+def test_enrich_adds_project_skill_dirs_to_member_skill_rails(mode: str, tmp_path: Path) -> None:
+    """A project set from the frontend extends every member Skill rail's roots.
+
+    The global library stays first; ``<project>/.agents/skills`` and
+    ``<project>/.claude/skills`` follow, on the leader, the teammate and the
+    reviewer derived from it.
+    """
+    from jiuwenswarm.common.utils import get_agent_skills_dir
+
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        spec, session_id="s", mode=mode, channel_id="web", project_dir=str(tmp_path),
+    )
+
+    expected = [
+        str(get_agent_skills_dir()),
+        str(tmp_path.resolve() / ".agents" / "skills"),
+        str(tmp_path.resolve() / ".claude" / "skills"),
+    ]
+    members = [spec.agents["leader"], spec.agents["teammate"]]
+    if spec.reviewer_agent is not None:
+        members.append(spec.reviewer_agent)
+    for member in members:
+        skill_rails = [
+            rail for rail in (member.rails or []) if rail.type in {TEAM_SKILL_USE, CORE_SKILL_USE}
+        ]
+        assert skill_rails, "member must declare a Skill rail"
+        for rail in skill_rails:
+            assert rail.params["skills_dir"] == expected
+
+
+def test_enrich_without_project_leaves_skill_dir_to_core_completion() -> None:
+    """Projectless teams keep ``skills_dir`` unset; core fills the library."""
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(spec, session_id="s", mode="team", channel_id="web")
+
+    for member in (spec.agents["leader"], spec.agents["teammate"]):
+        for rail in member.rails or []:
+            if rail.type == TEAM_SKILL_USE:
+                assert not rail.params.get("skills_dir")
+
+
 def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
     """Enrichment rewrites member rails and attaches the build context."""
     spec = _make_team_spec()

@@ -1,10 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The member-subtask switch is a sub-switch of scheduled dispatch (core F_128).
+"""Test the member-subtask and Code Todo reminder settings for scheduled dispatch."""
 
-The setting is a switch, the config value a depth: on writes a depth > 0
-(keeping one the user already set), off writes 0.
-"""
+from pathlib import Path
 
 import pytest
 import yaml
@@ -131,3 +129,25 @@ def test_turning_scheduled_dispatch_off_clears_the_sub_switch(config_file):
     section = _team_section(config_file)
     assert section["dispatch_mode"] == "autonomous"
     assert section["max_subtask_depth"] == 0
+
+
+@pytest.mark.parametrize(("dispatch_mode", "expected"), [("scheduled", True), ("autonomous", False)])
+def test_code_todo_reminder_switch_round_trips(
+    config_file: Path, monkeypatch: pytest.MonkeyPatch, dispatch_mode: str, expected: bool,
+) -> None:
+    _write_config(config_file, dispatch_mode=dispatch_mode, depth=None)
+    monkeypatch.setattr(config_service, "get_config_file", lambda: config_file)
+    key = "team_code_todo_reminder_disabled"
+    assert config_service.get_panel()[key] == "false"
+
+    result = apply_config_payload({key: "true"})
+
+    changes = ConfigChangeSet(env_updates=result.env_updates, yaml_updated=result.yaml_updated)
+    assert "team" in changes.reload_scopes
+    assert _team_section(config_file)["disable_code_todo_reminder"] is expected
+    assert config_service.get_panel()[key] == str(expected).lower()
+    assert flatten_team_dispatch_for_config_panel(config_set_handlers.get_config_raw())[key] == str(expected).lower()
+
+    apply_config_payload({"team_scheduled_dispatch_enabled": "false"})
+
+    assert _team_section(config_file)["disable_code_todo_reminder"] is False

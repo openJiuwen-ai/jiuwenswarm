@@ -46,6 +46,10 @@
     "refreshed": "安装计划已更新，请重新检查成员并确认。",
     "validationFailed": "技能包校验失败，请重新下载并检查成员状态。"
   },
+  "gitIdentity": {
+    "label": "独立 Git 身份",
+    "hint": "使用成员名称和 @jiuwenswarm.com 邮箱署名 Git 提交；切换后从下一条消息起生效。"
+  },
   "common": {
     "searchName": "搜索名称",
     "noData": "暂无数据",
@@ -1205,6 +1209,10 @@
       "team_member_subtasks_enabled": {
         "title": "允许成员拆分子任务",
         "description": "成员可以把正在执行的任务拆成子任务，交给自己或其他已有成员。拆分后原任务暂停，子任务全部结束后带着结果恢复执行。子任务最多嵌套 2 层。"
+      },
+      "team_code_todo_reminder_disabled": {
+        "title": "禁用 Code Todo 提醒",
+        "description": "停止向调度模式下的 Code Agent 上下文注入周期性 Todo 提醒，成员仍可使用 Todo 工具。"
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",

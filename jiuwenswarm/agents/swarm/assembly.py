@@ -40,6 +40,8 @@ from openjiuwen.agent_teams.paths import (
     team_home,
 )
 from openjiuwen.agent_teams.experts import compose_template_member
+from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
+from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
 from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
 from openjiuwen.agent_teams.schema.blueprint import TransportSpec
 from openjiuwen.agent_teams.schema.team import (
@@ -65,17 +67,19 @@ from jiuwenswarm.agents.swarm.context import (
     get_heartbeat_job_service,
 )
 from jiuwenswarm.agents.swarm.registry import register_swarm_providers
-from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.config import get_config, get_team_code_todo_reminder_disabled
 from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
 )
-from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.common.utils import get_agent_skills_dir, get_project_skills_dirs
 
 logger = logging.getLogger(__name__)
 
 # Member roles enriched in place, in deterministic order.
 _MEMBER_ROLES: tuple[str, ...] = ("leader", "teammate")
+# Skill rail types whose scan roots get the project-level Skill directories.
+_SKILL_RAIL_TYPES: frozenset[str] = frozenset({CORE_SKILL_USE, TEAM_SKILL_USE})
 
 
 def _external_team_publish_url(channel_id: str | None) -> str:
@@ -130,6 +134,46 @@ def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
     if not project_root:
         return member_spec
     return member_spec.model_copy(update={"cwd": project_root, "project_root": project_root})
+
+
+def _with_project_skill_dirs(member_spec: Any, skills_dirs: list[str]) -> Any:
+    """Point a member's declared Skill rail at the library plus project roots.
+
+    ``complete_declared_team_skill_rails`` only fills ``skills_dir`` when the
+    declarer left it empty, and then with the global library alone. Declaring
+    it here keeps the global library first (an installed Skill wins over a
+    same-named project Skill) and adds ``<project>/.agents/skills`` /
+    ``<project>/.claude/skills``; the member's visibility documents still
+    narrow what it sees. A ``skills_dir`` the declarer set itself is kept and
+    only extended.
+
+    Args:
+        member_spec: The member ``DeepAgentSpec``.
+        skills_dirs: Global library followed by the project Skill roots.
+
+    Returns:
+        The spec with completed Skill rail params, or *member_spec* unchanged
+        when it declares no Skill rail.
+    """
+    rails = list(getattr(member_spec, "rails", None) or [])
+    changed = False
+    for index, rail in enumerate(rails):
+        if getattr(rail, "type", None) not in _SKILL_RAIL_TYPES:
+            continue
+        params = dict(rail.params or {})
+        declared = params.get("skills_dir")
+        if isinstance(declared, str):
+            declared = [declared]
+        roots = [str(item) for item in (declared or []) if str(item or "").strip()]
+        for root in skills_dirs:
+            if root not in roots:
+                roots.append(root)
+        params["skills_dir"] = roots
+        rails[index] = rail.model_copy(update={"params": params})
+        changed = True
+    if not changed:
+        return member_spec
+    return member_spec.model_copy(update={"rails": rails})
 
 
 def _merge_team_prompt(existing: str | None, expert_prompt: str) -> str:
@@ -435,6 +479,9 @@ def enrich_team_spec_for_swarm(
         agent_group_name: Optional AgentGroup package selected for this Team.
         agent_group_package: Optional preloaded package for this AgentGroup.
     """
+    scheduled_inprocess = spec.dispatch_mode == "scheduled" and spec.spawn_mode == "inprocess"
+    if scheduled_inprocess and "enable_fork" not in spec.model_fields_set:
+        spec.enable_fork = True
     register_swarm_providers()
     _ensure_external_team_transport(spec, channel_id)
 
@@ -525,6 +572,9 @@ def enrich_team_spec_for_swarm(
         server_id_scope=f"team:{spec.team_name}",
         resolve_credentials=True,
     )
+    disable_code_todo_reminder = (
+        spec.dispatch_mode == "scheduled" and get_team_code_todo_reminder_disabled(config)
+    )
 
     for role in _MEMBER_ROLES:
         if role in spec.agents:
@@ -535,6 +585,7 @@ def enrich_team_spec_for_swarm(
                 spec.agents[role],
                 enable_permissions=spec.enable_permissions,
                 mcp_configs=mcp_configs,
+                disable_code_todo_reminder=disable_code_todo_reminder,
             )
             member_spec = _with_project_cwd(member_spec, project_dir)
             spec.agents[role] = member_spec
@@ -546,6 +597,14 @@ def enrich_team_spec_for_swarm(
             _apply_design_agent_group(spec, agent_group_name)
         else:
             _apply_agent_group(spec, agent_group_name, agent_group_package)
+
+    project_skills_dirs = get_project_skills_dirs(project_dir)
+    if project_skills_dirs:
+        skills_dirs = [global_skills_dir, *project_skills_dirs]
+        for name, member_spec in list(spec.agents.items()):
+            spec.agents[name] = _with_project_skill_dirs(member_spec, skills_dirs)
+        if getattr(spec, "reviewer_agent", None) is not None:
+            spec.reviewer_agent = _with_project_skill_dirs(spec.reviewer_agent, skills_dirs)
 
     spec.build_context = base
     # Carry a serializable seed alongside the live context so members rebuilt

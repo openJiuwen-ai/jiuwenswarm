@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Abstract base class for sandbox runtime adapters."""
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from jiuwenbox.models.sandbox import (
 class RuntimeExecRequest:
     command: list[str]
     workdir: str | None = None
-    env: dict[str, str] | None = None
+    env: dict[str, str | None] | None = None
     stdin_data: bytes | None = None
     timeout: float | None = None
 
@@ -31,7 +31,7 @@ class RuntimeBackgroundExecRequest:
     command: list[str]
     job_id: str
     workdir: str | None = None
-    env: dict[str, str] | None = None
+    env: dict[str, str | None] | None = None
     stdin_data: bytes | None = None
 
 

@@ -53,6 +53,7 @@ from jiuwenswarm.common.config import (
     coerce_subtask_depth,
     get_config,
     get_config_raw,
+    get_team_code_todo_reminder_disabled,
     resolve_env_vars,
     replace_teams_in_config,
     update_a2ui_in_config,
@@ -80,6 +81,7 @@ from jiuwenswarm.common.config import (
     update_comfyui_workflow_enabled_in_config,
     update_task_asr_in_config,
     update_team_scheduled_dispatch_in_config,
+    update_team_code_todo_reminder_disabled_in_config,
     update_team_member_messaging_in_config,
     update_team_member_subtasks_in_config,
     update_team_task_verification_in_config,
@@ -415,6 +417,7 @@ CONFIG_YAML_KEYS = frozenset({
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
     "team_member_subtasks_enabled",
+    "team_code_todo_reminder_disabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -429,13 +432,13 @@ CONFIG_YAML_KEYS = frozenset({
     "enable_free_models",
     "progressive_tool_optimize",
 })
-# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
-# enable_member_messaging / max_subtask_depth），改动后需重载 team。
+# Scheduled dispatch settings require a team reload.
 TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
     "team_member_subtasks_enabled",
+    "team_code_todo_reminder_disabled",
 })
 # Settings toggles that only change YAML; AgentServer reads the file next turn.
 RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
@@ -659,6 +662,7 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
         "team_member_messaging_enabled": "true" if parse_config_switch_bool(member_messaging) else "false",
         # The depth doubles as the switch (core F_128): on means any depth > 0.
         "team_member_subtasks_enabled": "true" if coerce_subtask_depth(subtask_depth) > 0 else "false",
+        "team_code_todo_reminder_disabled": "true" if get_team_code_todo_reminder_disabled(raw) else "false",
     }
 
 
@@ -1556,17 +1560,20 @@ def apply_config_payload(
             elif param_key == "team_scheduled_dispatch_enabled":
                 update_team_scheduled_dispatch_in_config(parsed)
                 if not parsed:
-                    # 验证者、成员间通信与成员子任务只在调度模式下生效，关闭调度模式时一并关闭。
+                    # Reset the child switches when scheduled dispatch is disabled.
                     update_team_task_verification_in_config(False)
                     yaml_updated.append("team_task_verification_enabled")
                     update_team_member_messaging_in_config(False)
                     yaml_updated.append("team_member_messaging_enabled")
                     update_team_member_subtasks_in_config(False)
                     yaml_updated.append("team_member_subtasks_enabled")
+                    update_team_code_todo_reminder_disabled_in_config(False)
+                    yaml_updated.append("team_code_todo_reminder_disabled")
             elif param_key in (
                 "team_task_verification_enabled",
                 "team_member_messaging_enabled",
                 "team_member_subtasks_enabled",
+                "team_code_todo_reminder_disabled",
             ):
                 scheduled = (
                     parse_config_bool(params["team_scheduled_dispatch_enabled"])
@@ -1577,8 +1584,10 @@ def apply_config_payload(
                     update_team_task_verification_in_config(parsed and scheduled)
                 elif param_key == "team_member_messaging_enabled":
                     update_team_member_messaging_in_config(parsed and scheduled)
-                else:
+                elif param_key == "team_member_subtasks_enabled":
                     update_team_member_subtasks_in_config(parsed and scheduled)
+                else:
+                    update_team_code_todo_reminder_disabled_in_config(parsed and scheduled)
             elif is_external_cli_agent_config_key(param_key):
                 if not external_cli_agents_updated:
                     try:
@@ -1932,6 +1941,7 @@ async def config_get_handler(
             "true" if DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED else "false",
         )
         payload.setdefault("team_member_subtasks_enabled", "false")
+        payload.setdefault("team_code_todo_reminder_disabled", "false")
         for key, value in _default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")

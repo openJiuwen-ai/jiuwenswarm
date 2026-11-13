@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Long-running in-sandbox daemon that handles ``exec`` requests.
 
 The previous implementation was a placeholder that just blocked on
@@ -170,15 +170,15 @@ def _stringify_command(command: list[Any]) -> list[str]:
     return [str(item) for item in command]
 
 
-def _normalize_env(env: Any) -> dict[str, str] | None:
+def _normalize_env(env: Any) -> dict[str, str | None] | None:
     if env is None:
         return None
     if not isinstance(env, dict):
         raise ValueError("env must be a JSON object")
-    return {str(key): str(value) for key, value in env.items()}
+    return {str(key): None if value is None else str(value) for key, value in env.items()}
 
 
-def build_child_env(env_override: dict[str, str] | None) -> dict[str, str]:
+def build_child_env(env_override: dict[str, str | None] | None) -> dict[str, str]:
     """Merge an exec environment while preserving runtime-owned metadata.
 
     Public so host-side tests can exercise reserved-key handling without
@@ -192,7 +192,11 @@ def build_child_env(env_override: dict[str, str] | None) -> dict[str, str]:
     # an unusable internal descriptor number.
     merged_env.pop(LISTENER_FD_ENV, None)
     if env_override is not None:
-        merged_env.update(env_override)
+        for key, value in env_override.items():
+            if value is None:
+                merged_env.pop(key, None)
+            else:
+                merged_env[key] = value
     # The sandbox address is a lifecycle snapshot owned by the runtime.
     # Always remove a caller value, including when address discovery failed.
     merged_env.pop(SANDBOX_IP_ENV, None)

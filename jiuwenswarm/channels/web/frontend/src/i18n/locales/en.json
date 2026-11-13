@@ -46,6 +46,10 @@
     "refreshed": "The installation plan has changed. Review the members and confirm again.",
     "validationFailed": "SkillPack validation failed. Download it again and check its members."
   },
+  "gitIdentity": {
+    "label": "Independent Git identity",
+    "hint": "Sign Git commits with each member name and an @jiuwenswarm.com email. Takes effect from the next message."
+  },
   "common": {
     "searchName": "Search names",
     "noData": "No data",
@@ -1205,6 +1209,10 @@
       "team_member_subtasks_enabled": {
         "title": "Allow members to split tasks",
         "description": "Members can split the task they are working on into subtasks for themselves or other existing members. The task pauses until its subtasks finish, then resumes with their results. Subtasks can nest up to 2 levels."
+      },
+      "team_code_todo_reminder_disabled": {
+        "title": "Disable Code Todo reminders",
+        "description": "Stop adding periodic Todo reminders to the context of Code agents in scheduled teams. Members can still use Todo tools."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",

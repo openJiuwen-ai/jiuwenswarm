@@ -188,6 +188,8 @@ _role_evolution_rails(config, role)            # leader: 进化+创建；teammat
 
 `build_member_capability_specs(config, mode, role) -> (rails, tools)` 按 mode 分档；`build_member_subagent_specs` 仅 code 档（explore/plan 常驻，code/browser 受 `react.subagents.<name>.enabled` 门控）；`build_member_deep_agent_spec` 把能力 spec 折叠到 base `DeepAgentSpec`，**leader 的 subagent 列表强制清空**（成员 sub-agent、browser_agent、YAML base spec 显式配置全部不穿透——openjiuwen 仅对非空 subagent 列表挂 SubagentRail，因此 leader 无 `task_tool` 面，派发走 team 原生 runner 工具 build_team / spawn_teammate）；`build_reviewer_deep_agent_spec` 再把组装好的 teammate spec 按 `_REVIEWER_*` 白名单收窄成调度模式临时 reviewer 的基础 spec（文件工具只读、无 todo / 子代理 / 调度 / Skill 管理 / 权限 rail，继承 MCP）。
 
+团队实际使用 `scheduled` 且启用 `modes.team.jiuwen_team.disable_code_todo_reminder` 时，Code 成员的任务规划 rail 停止新增或恢复周期性 Todo 附件，仍注册 Todo 工具。
+
 ### 7.2 属性烘焙（本模块核心机制）
 
 参数化元素显式构造 `RailSpec(type=name, params=...)`；其余经分派注入：
@@ -227,6 +229,10 @@ _TOOL_PARAM_BUILDERS: dict[name, (config) -> params]   # send_file / code_extra_
 ## 8. assembly.py：enrich 流程
 
 `enrich_team_spec_for_swarm(spec, *, session_id, mode, project_dir, request_id, channel_id, request_metadata, agent_group_name)`（就地改写 `spec`）：
+
+有效分发模式为 `scheduled` 且 `spawn_mode: inprocess` 时，默认开启 `enable_fork`。模板可显式设置
+`enable_fork: false`。Leader 用 `spawn_expert(fork=true, fork_source="<成员名>")` 继承空闲原生队友最近
+完成的 Turn。
 
 1. `register_swarm_providers()`（幂等，把 manifest catalog 驱动注册进 openjiuwen 注册表）；
 2. 用 `get_config()` + 工作区路径 + 进程级 trajectory span processor 建 `SwarmBuildContext`；

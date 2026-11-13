@@ -1903,6 +1903,36 @@ def get_agent_skills_dir() -> Path:
     return get_agent_workspace_dir() / "skills"
 
 
+# Project-level Skill roots, relative to the project directory, in precedence
+# order. ``.agents/skills`` is the tool-neutral location, ``.claude/skills`` the
+# Claude Code one; both are scanned so a project set up for either tool works.
+PROJECT_SKILL_DIR_NAMES: tuple[tuple[str, str], ...] = (
+    (".agents", "skills"),
+    (".claude", "skills"),
+)
+
+
+def get_project_skills_dirs(project_dir: str | os.PathLike[str] | None) -> list[str]:
+    """Return the project-level Skill roots under *project_dir*.
+
+    The roots are returned whether or not they exist yet: the Skill rail skips
+    a missing root on every scan, so a directory created mid-session is picked
+    up by the next refresh without rebuilding the rail.
+
+    Args:
+        project_dir: The project directory selected from the frontend, or None.
+
+    Returns:
+        ``<project>/.agents/skills`` and ``<project>/.claude/skills`` as
+        absolute path strings, or an empty list when no project is set.
+    """
+    raw = str(project_dir or "").strip()
+    if not raw:
+        return []
+    root = Path(raw).expanduser().resolve(strict=False)
+    return [str(root.joinpath(*parts)) for parts in PROJECT_SKILL_DIR_NAMES]
+
+
 # Last directory handed to openJiuWen's ``configure_global_skills_dir``. Kept so
 # the override is applied once instead of on every call, while a changed user
 # home (tests, named instances) still re-pins the library.

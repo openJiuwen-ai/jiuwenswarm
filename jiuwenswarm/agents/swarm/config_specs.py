@@ -1051,6 +1051,7 @@ def build_member_deep_agent_spec(
     *,
     enable_permissions: bool = False,
     mcp_configs: list[McpServerConfig] | None = None,
+    disable_code_todo_reminder: bool = False,
 ) -> DeepAgentSpec:
     """Fold the member capability specs onto *base_spec*.
 
@@ -1068,6 +1069,7 @@ def build_member_deep_agent_spec(
         base_spec: The base member ``DeepAgentSpec`` to extend.
         enable_permissions: Effective team permission toggle from TeamAgentSpec.
         mcp_configs: MCP server configs inherited from ``config.yaml``.
+        disable_code_todo_reminder: Suppress periodic Todo reminders for scheduled Code agents.
 
     Returns:
         A new ``DeepAgentSpec`` with the capability specs applied.
@@ -1081,6 +1083,12 @@ def build_member_deep_agent_spec(
 
     merged_rails = list(base_spec.rails or [])
     merged_rails.extend(rails_specs)
+    if disable_code_todo_reminder and _is_code_mode(mode):
+        merged_rails = [
+            rail.model_copy(update={"params": {**rail.params, "enable_task_reminders": False}})
+            if rail.type == registry.CODE_TASK_PLANNING else rail
+            for rail in merged_rails
+        ]
     merged_tools = list(base_spec.tools or [])
     merged_tools.extend(tool_specs)
     merged_mcps = _merge_mcp_configs(base_spec.mcps, mcp_configs)
