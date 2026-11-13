@@ -1155,13 +1155,7 @@ class LocalOpenAIProxyApp:
 def create_app(
     *, target_base: str | None = None, output_dir: str | Path | None = None
 ) -> LocalOpenAIProxyApp:
-    base_dir = (
-        Path(output_dir)
-        if output_dir
-        else Path(
-            "C:/yzj/files/open_source/jiuwenclaw_4.21/jiuwenclaw/local_api_server"
-        )
-    )
+    base_dir = Path(output_dir) if output_dir else Path(__file__).resolve().parent
     return LocalOpenAIProxyApp(
         target_base=target_base
         or os.getenv("LOCAL_OPENAI_PROXY_TARGET_BASE", "https://api.deepseek.com"),
@@ -1187,7 +1181,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default="C:/yzj/files/open_source/jiuwenclaw_4.21/jiuwenclaw/local_api_server",
+        default=str(Path(__file__).resolve().parent),
     )
     parser.add_argument(
         "--log-level", default=os.getenv("LOCAL_OPENAI_PROXY_LOG_LEVEL", "info")
