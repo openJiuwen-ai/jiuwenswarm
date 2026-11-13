@@ -2090,6 +2090,22 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             return None
         return self._resolve_interrupt_session_id(loop_sid)
 
+    def _related_mismatch_enabled(self) -> bool:
+        """Conservative relaxation switch for the problem-3 fix (default: on).
+
+        ``execution_guard.stale_interrupt_clear.related_mismatch_enabled=false``
+        restores the pre-fix behaviour (fresh-turn cleanup refuses whenever
+        ``loop_sid != target_sid``), for emergency rollback without redeploy.
+        """
+        try:
+            from jiuwenswarm.common.config import get_config
+
+            guard_cfg = (get_config() or {}).get("execution_guard") or {}
+            cfg = guard_cfg.get("stale_interrupt_clear") or {}
+            return cfg.get("related_mismatch_enabled", True) is not False
+        except Exception:
+            return True
+
     async def _clear_pending_interaction_interrupt(
         self,
         session_id: str | None,
@@ -2103,20 +2119,59 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         并行子代理场景下父会话的上下文尾部往往是其它子代理的 tool 结果，
         但残留的 ``interrupted_tools`` 仍会把后续每条普通消息都当成续跑输入
         （见 :meth:`_discard_stale_interrupt_for_fresh_turn`）。
+
+        2026-11-09 保守放宽（问题 3）：``force=True``（新一轮兜底）时，若
+        loop session 与目标会话**同树**（``_is_related_session``，如父 ``A`` ↔
+        子 ``A_B``）且 loop session **不活跃**，允许跨会话清理残留中断态——
+        修复暖池换绑/子代理父子场景下 ``loop_sid != target_sid`` 静默放弃兜底。
+        防护三原则：
+        - 活跃的相关会话一律拒绝（绝不误清子代理在跑的 ask_user/审批卡）；
+        - 判活通过到 ``update_state`` 之间全程同步、无任何 await——单线程
+          事件循环下原子生效，无需二次判活；
+        - mismatch 路径只清 state，不碰任何一侧 context（缩小爆炸半径）。
+        非 force 调用方（cancel/supplement）行为完全不变。
         """
         instance = getattr(self, "_instance", None)
         loop_session = getattr(instance, "_loop_session", None)
         loop_sid = self._deep_agent_loop_session_id()
         target_sid = self._resolve_interrupt_session_id(session_id)
-        if loop_session is None or loop_sid != target_sid:
+        enabled = self._related_mismatch_enabled()
+        related_shape = (
+            loop_session is not None
+            and loop_sid is not None
+            and loop_sid != target_sid
+            and self._is_related_session(target_sid, loop_sid)
+        )
+        related_mismatch = bool(force and related_shape and enabled)
+        if loop_session is None or (loop_sid != target_sid and not related_mismatch):
             if force:
+                # 区分「开关关闭」与「真无关」：应急处置时日志必须能分辨
+                # 兜底放弃是策略使然还是拓扑无关。
+                tag = (
+                    "stale_interrupt.skipped.disabled"
+                    if related_shape and not enabled
+                    else "stale_interrupt.skipped.unrelated"
+                )
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] interrupt: cannot drop stale "
                     "interaction state, loop session mismatch loop_sid=%s "
-                    "target_sid=%s",
+                    "target_sid=%s (%s)",
                     loop_sid,
                     target_sid,
+                    tag,
                 )
+            return False
+
+        if related_mismatch and self._is_session_live(loop_sid):
+            # 隐患防护：相关会话正在跑（如子代理的 ask_user/审批卡挂起中）
+            # 时绝不能清——可清的残留只属于已结束的轮次。
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] interrupt: skip stale-interrupt "
+                "clear, related loop session is LIVE loop_sid=%s "
+                "target_sid=%s (stale_interrupt.skipped.live)",
+                loop_sid,
+                target_sid,
+            )
             return False
 
         try:
@@ -2139,48 +2194,79 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             ):
                 return False
 
-            react_agent = getattr(instance, "react_agent", None)
-            context_engine = getattr(react_agent, "context_engine", None)
-            context = (
-                context_engine.get_context(session_id=target_sid)
-                if context_engine is not None
-                else None
-            )
-            messages = list(context.get_messages() or []) if context is not None else []
-            last_calls = list(getattr(messages[-1], "tool_calls", None) or []) if messages else []
-            pending_signature = [
-                (getattr(tool_call, "id", None), getattr(tool_call, "name", None))
-                for tool_call in pending_calls
-            ]
-            last_signature = [
-                (getattr(tool_call, "id", None), getattr(tool_call, "name", None))
-                for tool_call in last_calls
-            ]
-            signature_matches = last_signature == pending_signature
-            if not signature_matches and not force:
-                return False
-
-            if signature_matches:
-                context.pop_messages(1, with_history=True)
+            cleared_related = False
+            if related_mismatch:
+                # 原子性说明：自上方判活通过到此处 update_state 之间全部为
+                # 同步代码、无任何 await，单线程事件循环下不可能有新轮次穿插
+                # 置活——单次判活即原子，无需二次检查。
+                loop_session.update_state({INTERRUPTION_KEY: None})
+                # mismatch 路径只清 state：不 pop 任何一侧 context、
+                # 不做跨会话 save_contexts，避免上下文混写损坏。
+                await loop_session.commit()
+                cleared_related = True
             else:
-                # 尾部已经不是那条 ai_message：历史里留着未配对的 tool_call，
-                # 但它不影响后续轮的模型调用（同轮其它子代理已回结果），
-                # 比继续让旧中断吃掉用户输入安全得多。
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] interrupt: dropping stale "
-                    "interaction state without context tail session=%s "
-                    "pending=%s last=%s",
-                    target_sid,
-                    pending_signature,
-                    last_signature,
+                react_agent = getattr(instance, "react_agent", None)
+                context_engine = getattr(react_agent, "context_engine", None)
+                context = (
+                    context_engine.get_context(session_id=target_sid)
+                    if context_engine is not None
+                    else None
                 )
-            loop_session.update_state({INTERRUPTION_KEY: None})
-            await context_engine.save_contexts(loop_session)
-            # save_contexts() only copies the updated context into the session
-            # state.  Persist the full session checkpoint as well, otherwise an
-            # adapter eviction or process restart can reload the abandoned
-            # ask_user interruption from storage.
-            await loop_session.commit()
+                messages = list(context.get_messages() or []) if context is not None else []
+                last_calls = list(getattr(messages[-1], "tool_calls", None) or []) if messages else []
+                pending_signature = [
+                    (getattr(tool_call, "id", None), getattr(tool_call, "name", None))
+                    for tool_call in pending_calls
+                ]
+                last_signature = [
+                    (getattr(tool_call, "id", None), getattr(tool_call, "name", None))
+                    for tool_call in last_calls
+                ]
+                signature_matches = last_signature == pending_signature
+                if not signature_matches and not force:
+                    return False
+
+                if signature_matches:
+                    context.pop_messages(1, with_history=True)
+                else:
+                    # 尾部已经不是那条 ai_message：历史里留着未配对的 tool_call，
+                    # 但它不影响后续轮的模型调用（同轮其它子代理已回结果），
+                    # 比继续让旧中断吃掉用户输入安全得多。
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] interrupt: dropping stale "
+                        "interaction state without context tail session=%s "
+                        "pending=%s last=%s",
+                        target_sid,
+                        pending_signature,
+                        last_signature,
+                    )
+                loop_session.update_state({INTERRUPTION_KEY: None})
+                await context_engine.save_contexts(loop_session)
+                # save_contexts() only copies the updated context into the session
+                # state.  Persist the full session checkpoint as well, otherwise an
+                # adapter eviction or process restart can reload the abandoned
+                # ask_user interruption from storage.
+                await loop_session.commit()
+
+            if cleared_related:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] interrupt: cleared stale interaction "
+                    "state on related loop session loop_sid=%s target_sid=%s "
+                    "tools=%s (stale_interrupt.cleared.related)",
+                    loop_sid,
+                    target_sid,
+                    sorted(
+                        str(getattr(getattr(entry, "tool_call", None), "name", "") or "")
+                        for entry in (interrupted_tools or {}).values()
+                    ),
+                )
+            else:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] interrupt: cleared pending "
+                    "interaction state session=%s",
+                    target_sid,
+                )
+            return True
         except Exception:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] interrupt: failed to inspect "
@@ -2189,13 +2275,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 exc_info=True,
             )
             return False
-
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] interrupt: cleared pending "
-            "interaction state session=%s",
-            target_sid,
-        )
-        return True
 
     def _is_deep_agent_executing_for_session(self, session_id: str) -> bool:
         """True when the shared DeepAgent still runs stream/task-loop work for *session_id*."""
