@@ -544,12 +544,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   removeProject: async (projectId) => {
     const result = await projectRegistryClient.remove(projectId);
     get().hideProjectLocally(projectId);
-    await get().refreshWorkspaceAndCron();
     // 隐藏的项目不能再作为新建会话的默认归属：后端会拒绝它的会话绑定。
     if (get().selectedProject?.project_id === projectId) {
       const fallback = findProject(get().projects, findDefaultProjectId(get().projects));
       set({ selectedProject: fallback });
     }
+    // The mutation is complete. Slow list reconciliation must not keep the
+    // confirmation dialog busy or turn a successful removal into an error.
+    void get().refreshWorkspaceAndCron().catch((error) => {
+      console.warn('Failed to refresh workspace after project removal', error);
+    });
     return result;
   },
 

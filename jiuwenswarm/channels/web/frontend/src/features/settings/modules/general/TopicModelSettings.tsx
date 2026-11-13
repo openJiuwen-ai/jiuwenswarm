@@ -193,9 +193,11 @@ export function TopicModelSummary({ disabled, onEditingChange }: SettingsCustomI
       ) : null}
       {error ? <p role="alert" data-testid="settings-topic-model-error">{error}</p> : null}
       {editing ? <TopicModelConfiguration enableOnSave={false} onSave={load} onClose={() => setEditing(false)} /> : null}
-      <SettingsConfirmDialog open={deleting} title={t('common.delete')}
-        message={t('settingsPanel.general.topicModelDelete')} confirming={busy} error={saveError}
-        onCancel={() => setDeleting(false)} onConfirm={() => void remove()} />
+      {deleting ? (
+        <SettingsConfirmDialog open={deleting} title={t('common.delete')}
+          message={t('settingsPanel.general.topicModelDelete')} confirming={busy} error={saveError}
+          onCancel={() => setDeleting(false)} onConfirm={() => void remove()} />
+      ) : null}
       {validationToast ? (
         <div
           className={`settings-models__toast settings-models__toast--${validationToast.success ? 'success' : 'error'}`}
