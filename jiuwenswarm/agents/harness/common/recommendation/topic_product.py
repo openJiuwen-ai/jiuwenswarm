@@ -747,10 +747,12 @@ _FRESHNESS_TRIGGER_FIELDS = frozenset(
     }
 )
 
-# Model id is generation provenance only: changing it must not invalidate a
-# stored pool or force a successor. Strip it from both serving and successor
-# identity, and from keys written before this rule so old rows stay readable.
-_PROVENANCE_ONLY_TRIGGER_FIELDS = frozenset({"model"})
+# Recommendation-model connection fields are generation provenance only:
+# changing model id, endpoint, temperature, or context window must not
+# invalidate a stored pool or force a successor. Strip them from both serving
+# and successor identity, and from keys written before this rule so old rows
+# stay readable.
+_PROVENANCE_ONLY_TRIGGER_FIELDS = frozenset({"model", "generation_config_version"})
 
 _NON_SERVING_TRIGGER_FIELDS = (
     _FRESHNESS_TRIGGER_FIELDS | _PROVENANCE_ONLY_TRIGGER_FIELDS
@@ -772,12 +774,13 @@ def normalize_serving_compatibility_key(
 def build_serving_compatibility_key(
     generation_trigger_key: dict[str, Any],
 ) -> dict[str, Any]:
-    """Keep only the code and configuration identity a stored pool must share.
+    """Keep only the code identity a stored pool must share.
 
     Profile, short intent, dates, negative preferences and input revisions are
     freshness: a background successor regenerates for them while the last
     successful pool keeps serving, and read-time filtering handles the rest.
-    The recommendation model is provenance only and never blocks serving.
+    The recommendation model connection (id, base URL, decoding) is provenance
+    only and never blocks serving.
     """
 
     return normalize_serving_compatibility_key(dict(generation_trigger_key))
@@ -788,7 +791,6 @@ def serving_compatibility_keys_match(
     right: Any,
 ) -> bool:
     """Compare serving keys after dropping freshness and model provenance."""
-
     if not isinstance(left, dict) or not isinstance(right, dict):
         return False
     return normalize_serving_compatibility_key(left) == normalize_serving_compatibility_key(
@@ -1158,12 +1160,19 @@ def _terminal_pool_rejection_reason(
     )
 
 
-def load_exact_global_pool(
+def _load_global_pool_by_manifest_id(
     store: TopicStarterStore,
     *,
     manifest_id: Any,
+    readable: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
-    """One stored global pool by its manifest ID, read only if it is still valid."""
+    """Load one stored global pool by manifest ID.
+
+    ``readable=False`` keeps the personalized write/read contract (news refresh,
+    exact successor identity). ``readable=True`` accepts the same pools the
+    serve path can show, including cold-start stand-ins used for short-delta
+    novelty comparison against the previous first screen.
+    """
 
     if not _nonempty(manifest_id):
         return None
@@ -1231,13 +1240,55 @@ def load_exact_global_pool(
         for revision in revisions
         if str(revision) in by_revision
     ]
-    if len(cards) != len(revisions) or not _valid_manifest(
+    if len(cards) != len(revisions):
+        return None
+    if readable:
+        if not _readable_pool_manifest(
+            manifest,
+            cards,
+            allow_legacy_summary_coverage=True,
+        ):
+            return None
+    elif not _valid_manifest(
         manifest,
         cards,
         allow_legacy_summary_coverage=True,
     ):
         return None
     return manifest, cards
+
+
+def load_exact_global_pool(
+    store: TopicStarterStore,
+    *,
+    manifest_id: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """One stored personalized global pool by its manifest ID."""
+
+    return _load_global_pool_by_manifest_id(
+        store,
+        manifest_id=manifest_id,
+        readable=False,
+    )
+
+
+def load_readable_global_pool(
+    store: TopicStarterStore,
+    *,
+    manifest_id: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """One stored global pool the serve path could still show.
+
+    Includes cold-start stand-ins. Use this when comparing a short-delta
+    successor against the previous first screen, not when rewriting a
+    personalized pool in place.
+    """
+
+    return _load_global_pool_by_manifest_id(
+        store,
+        manifest_id=manifest_id,
+        readable=True,
+    )
 
 
 def _short_delta_successor_rejection_reason(
@@ -1253,7 +1304,11 @@ def _short_delta_successor_rejection_reason(
         return None
     if predecessor_manifest_id is None:
         return None
-    predecessor = load_exact_global_pool(
+    # Novelty compares against whatever first screen was showing, including a
+    # cold-start corpus stand-in. Personalized exact-load rejects cold-start and
+    # would discard the first short-delta personalized write after only generic
+    # serve (manifest_short_delta_predecessor_exact_load_failed).
+    predecessor = load_readable_global_pool(
         store,
         manifest_id=predecessor_manifest_id,
     )
@@ -1999,7 +2054,8 @@ def _compatible_pool(
     """Load the newest manifest this reader may serve, with its card revisions."""
 
     # Do not exact-match serving_compatibility_key in SQL: older rows may still
-    # embed model id, which normalize_serving_compatibility_key drops.
+    # embed model id or generation_config_version, which
+    # normalize_serving_compatibility_key drops.
     rows = store.query_events(
         event_type="starter_slate_manifest",
         policy_id=POLICY_ID,

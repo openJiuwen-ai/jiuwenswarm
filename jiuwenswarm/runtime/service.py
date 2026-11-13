@@ -1745,6 +1745,7 @@ class AgentRuntime:
         if attachment_completion is not None:
             return [attachment_completion]
         self._validate_permission_answer(request)
+        self._validate_answer_source(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
                 request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -2287,6 +2288,7 @@ class AgentRuntime:
             yield attachment_completion
             return
         self._validate_permission_answer(request)
+        self._validate_answer_source(request)
         is_session_input = self._is_session_input_request(request)
         is_team_session_message = (
             self._request_targets_team(request)
@@ -3734,6 +3736,23 @@ class AgentRuntime:
         if not isinstance(answers, list):
             raise InteractionAnswerError("answers must be a list")
         validate_answer_items(answers)
+
+    @classmethod
+    def _validate_answer_source(cls, request: AgentRequest) -> None:
+        """Reject answers carried under an unknown source (#6285).
+
+        Runs before session lane admission; the raised
+        ``InteractionAnswerError`` reaches the client as an error response
+        frame instead of the request deadlocking behind the interaction
+        still waiting for those answers.
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        if request.req_method is not ReqMethod.CHAT_SEND:
+            return
+        # pylint: disable-next=import-outside-toplevel
+        from jiuwenswarm.runtime.interaction import validate_answer_source
+
+        validate_answer_source(params)
 
     @staticmethod
     def _is_interrupt_resume_request(request: AgentRequest) -> bool:

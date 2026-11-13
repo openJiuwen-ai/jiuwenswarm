@@ -479,6 +479,7 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 - `excluded_commands` 的匹配：按 simple-command 叶子做 fnmatch；写 glob 时建议覆盖参数（例如 `"git *"`）。混合管道会本地/远端拆分执行，不安全结构则整条进沙箱。本质仍是沙箱穿透口，不要对 `rm -rf` / `curl` 这类高风险命令使用。
 - add / remove 严格校验：`exclude add` 已存在 pattern、`exclude remove` 不存在 pattern 都会报错；`files allow|deny` 在同 bucket 已有 path 或对侧 bucket 已有 path（allow/deny 冲突）会报错，先 `files remove` 再 add；`files remove` 没匹配到也会报错。避免"看起来执行了实际什么也没改"。
 - 写入策略：`allow` / `deny` 控制写访问（rw/ro），不是 Unix 八进制权限；支持「父 allow + 子 deny」，不支持「子 allow + 父 deny」。
+- **Team 模式成员**：开启沙箱后，团队成员（leader / teammate / 专家成员）的命令也进入各自的 jiuwenbox 沙箱——每个 spec 条目一间独立容器，运行期派生成员（spawn 出来的专家、任务审查者、工作流工人）跟随其基座成员的容器。降级行为全部有日志：沙箱未启用时成员本地执行（无日志，预期行为）；endpoint 未解析、沙箱类型非 jiuwenbox 时输出 warning 并本地执行。存活 team 不感知 `/sandbox enable` 热更，需重建 team 或新会话生效。分布式 teammate 节点按本机配置重建成员沙箱，详见 `分布式Team.md`。
 - 示例：`/sandbox enable`、`/sandbox status`、`/sandbox files allow ./tmp/`、`/sandbox exclude add "git *"`。
 
 #### `/review`（代码审查 PR）

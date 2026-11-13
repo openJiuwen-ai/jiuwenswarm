@@ -545,14 +545,12 @@ class TestPermissionAndOpsHandlers:
         assert sink.responses[0].ok is False
         assert sink.responses[0].payload["code"] == "BAD_REQUEST"
 
-    async def test_proactive_tick_reports_missing_engine(self) -> None:
-        ctx, sink = _ctx(
-            ReqMethod.PROACTIVE_TICK,
-            services=SimpleNamespace(proactive_engine=None),
-        )
+    async def test_proactive_tick_is_soft_noop(self) -> None:
+        ctx, sink = _ctx(ReqMethod.PROACTIVE_TICK)
         await ops_handlers.handle_proactive_tick(ctx)
-        assert sink.responses[0].ok is False
-        assert "not initialized" in sink.responses[0].payload["error"]
+        assert sink.responses[0].ok is True
+        assert sink.responses[0].payload["status"] == "skipped"
+        assert sink.responses[0].payload["reason"] == "proactive_removed"
 
     async def test_resume_returns_the_requested_session(self) -> None:
         from jiuwenswarm.server.handlers import commands as command_handlers

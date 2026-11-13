@@ -623,6 +623,30 @@ def _resolve_final_record_timestamp(
     return segment_started_at
 
 
+async def persist_cancelled_llm_usage(
+    chunk: AgentResponseChunk, *, request: AgentRequest, session_id: str,
+) -> None:
+    """Preserve an accepted usage event when its output consumer has closed."""
+    payload = chunk.payload
+    extra = {key: value for key, value in payload.items() if key not in ("event_type", "content")}
+    params = request.params if isinstance(request.params, dict) else {}
+    extra = with_cross_session_history_metadata(
+        _with_heartbeat_history_metadata(
+            _with_web_agent_template_metadata(
+                extra, params, request.channel_id, event_type="chat.usage_metadata", payload=payload,
+            ), params,
+        ), _cross_session_marker_from_params(params),
+    ) or {}
+    timestamp = resolve_final_record_timestamp(
+        event_type="chat.usage_metadata", segment_started_at=None, extra_fields=extra,
+    )
+    await _run_history_io(
+        append_history_record, session_id=session_id, request_id=request.request_id,
+        channel_id=request.channel_id, role="assistant", event_type="chat.usage_metadata",
+        content="", timestamp=timestamp, extra=extra, mode=params.get("mode", "unknown"),
+    )
+
+
 def _history_media_string(item: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = item.get(key)
@@ -2177,6 +2201,10 @@ class JiuWenSwarm:
         # Only Host-authenticated provenance may select Agent/tool input. Never
         # trust a client-supplied copy inside the SDK's extensible run context.
         run_extra = inputs["run"]["context"]["extra"]
+        # Explicit selectors belong to this turn, not history or a reused run
+        # context. Keep the prompt and routing on the same parsing rules, and
+        # clear stale nested selections even when this turn selects nothing.
+        run_extra["skills"] = turn.resolved_skills
         run_extra.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
         cross_session = metadata.get(SESSION_MESSAGE_INTERNAL_KEY)
         if isinstance(cross_session, dict):
@@ -4848,9 +4876,8 @@ class JiuWenSwarm:
         # 只有最后一个非工具轮非空 final（=推荐话术）落盘带 source/rec_id——否则刷新
         # 后 history 里每一条 chat.final 都带 rec_id，被渲染成多张推荐卡片（bug）。
         # "最后一个"要等流结束才能确定，故缓存话术轮候选、流末补落。
-        is_proactive_request = bool(
-            request.params.get("source") == "proactive_recommendation"
-        )
+        # Proactive recommendation engine removed; never inject recommendation cards.
+        is_proactive_request = False
         proactive_pending_final: dict[str, Any] | None = None
         # 自上一个 chat.final 以来是否出现过 chat.tool_call（用于识别工具轮总结 final）。
         saw_proactive_tool_call_since_final = False

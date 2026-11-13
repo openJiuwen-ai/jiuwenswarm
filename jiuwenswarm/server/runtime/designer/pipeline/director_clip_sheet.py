@@ -146,9 +146,9 @@ def stamp_director_clip_sheets(
         if framing and framing[:40] not in str(shot.get("action") or ""):
             shot["action"] = (str(shot.get("action") or "") + " " + framing)[:700]
         wardrobe = str(shot.get("wardrobe_lock") or "")
-        if wardrobe and "WARDROBE/FACE:" not in str(shot.get("action") or ""):
+        if wardrobe and "CLOTHING/FACE:" not in str(shot.get("action") or ""):
             shot["action"] = (
-                str(shot.get("action") or "") + f" WARDROBE/FACE: {wardrobe}"
+                str(shot.get("action") or "") + f" CLOTHING/FACE: {wardrobe}"
             )[:750]
         motion = str(shot.get("motion_detail") or "")
         if motion and "MOTION:" not in str(shot.get("action") or ""):
