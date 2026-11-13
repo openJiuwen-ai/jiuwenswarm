@@ -73,6 +73,9 @@ _CONFIG_SET_ENV_MAP = {
     "audio_vendor_key": "AUDIO_VENDOR_KEY",
     "audio_plan": "AUDIO_PLAN",
     "audio_enabled": "AUDIO_ENABLED",
+    "asr_api_base": "ASR_API_BASE",
+    "asr_api_key": "ASR_API_KEY",
+    "asr_model": "ASR_MODEL_NAME",
     "vision_api_base": "VISION_API_BASE",
     "vision_api_key": "VISION_API_KEY",
     "vision_model": "VISION_MODEL_NAME",
@@ -412,6 +415,21 @@ def get_panel() -> dict[str, Any]:
         param_key: (environment.get(env_key) or "")
         for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
     }
+    # Decrypt at the configuration owner; Gateway may use a different provider.
+    asr_key = payload.get("asr_api_key")
+    if asr_key:
+        from jiuwenswarm.common.security.base_crypto import get_crypto_provider
+
+        crypto = get_crypto_provider()
+        if crypto is not None:
+            try:
+                payload["asr_api_key"] = str(crypto.decrypt(asr_key))
+            except Exception:
+                payload["asr_api_key"] = ""
+                payload["asr_credential_error"] = "ASR credential decryption failed at AgentServer"
+            else:
+                payload["asr_api_key_decrypted"] = True
+
     payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
