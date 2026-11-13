@@ -6528,10 +6528,11 @@
         "paused": "已暂停",
         "failed": "运行失败",
         "completed": "已完成",
-        "queued": "排队中"
+        "queued": "排队中",
+        "expired": "已过期"
       },
       "run": {
-        "success": "运行成功",
+        "success": "已完成",
         "failed": "运行失败",
         "stopped": "停止运行",
         "running": "运行中"
