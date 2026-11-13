@@ -28,6 +28,12 @@ import type { JiuwenMateExistingPage } from './features/jiuwenmate/types';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
 import { RsiPage } from './features/rsi/RsiPage';
+import { ReaSetupPage } from './features/reaSetup/ReaSetupPage';
+import {
+  normalizeREAEnabled,
+  setREAFeatureEnabled,
+  useREAFeatureEnabled,
+} from './features/reaSetup/featureConfig';
 import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
 import { useRsiStore } from './features/rsi/rsiStore';
 import { useMediaQuery } from './hooks/useResponsive';
@@ -1182,14 +1188,19 @@ function AppContent({
     typeof serverConfig?.runtime_platform === 'string' ? serverConfig.runtime_platform : undefined,
   );
   const rsiFeatureEnabled = useRSIFeatureEnabled();
+  const reaFeatureEnabled = useREAFeatureEnabled();
   const hiddenNavItems = useMemo<MainNavKey[]>(() => {
     const base: MainNavKey[] = [
       ...getHiddenNavItemsForPlatform(frontendPlatform),
       ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : []),
     ];
-    const rsiFiltered: MainNavKey[] = rsiFeatureEnabled
-      ? base
-      : [...base, 'experiments'];
+    const hiddenFeatureItems: MainNavKey[] = [
+      ...(rsiFeatureEnabled ? [] : ['experiments' as const]),
+      ...(reaFeatureEnabled ? [] : ['rea' as const]),
+    ];
+    const rsiFiltered: MainNavKey[] = hiddenFeatureItems.length > 0
+      ? [...base, ...hiddenFeatureItems]
+      : base;
     // feature 关闭时移除全部个人上下文入口
     if (!FEATURE_PERSONAL_CONTEXT_UI) {
       return [...rsiFiltered, 'personalContext', 'personalContextSettings'];
@@ -1197,7 +1208,7 @@ function AppContent({
     // 总开关关闭时隐藏导航入口（设置页入口保留，供打开总开关）
     if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
     return rsiFiltered;
-  }, [frontendPlatform, masterEnabled, rsiFeatureEnabled]);
+  }, [frontendPlatform, masterEnabled, reaFeatureEnabled, rsiFeatureEnabled]);
 
   useEffect(() => {
     if (isEnterprise() && (ENTERPRISE_HIDDEN_NAV_ITEMS as readonly string[]).includes(activeNav)) {
@@ -1210,6 +1221,12 @@ function AppContent({
       setActiveNav('chat');
     }
   }, [activeNav, rsiFeatureEnabled]);
+
+  useEffect(() => {
+    if (!reaFeatureEnabled && activeNav === 'rea') {
+      setActiveNav('chat');
+    }
+  }, [activeNav, reaFeatureEnabled]);
 
   useEffect(() => {
     if (!serverConfig) {
@@ -2235,6 +2252,7 @@ function AppContent({
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
+      setREAFeatureEnabled(normalizeREAEnabled(config.rea_enabled));
       setTrajectoryDiagnosisEnabled(
         normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled),
       );
