@@ -20,6 +20,17 @@ def _request(method: ReqMethod, params: dict | None = None, *, channel_id: str =
     )
 
 
+@pytest.fixture(autouse=True)
+def isolated_lifecycle(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import lifecycle
+
+    sessions = tmp_path / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: sessions)
+    assert lifecycle.get_agent_root_dir() == sessions.parent
+    assert lifecycle.resource_path("session", "sess-1").is_relative_to(tmp_path)
+
+
 @pytest.mark.asyncio
 async def test_session_list_projects_web_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -103,3 +114,67 @@ async def test_get_metadata_rejects_invalid_session_without_reading(monkeypatch,
         _request(ReqMethod.SESSION_GET_METADATA, {"session_id": session_id}),
     )
     assert not response.ok and response.payload["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_get_metadata_reports_non_boolean_writeback(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
+        lambda *_args, **_kwargs: {"session_id": "sess-1"},
+    )
+    await handle_session_request(_request(
+        ReqMethod.SESSION_GET_METADATA, {"session_id": "sess-1", "enable_writeback": "invalid"},
+    ))
+    assert "enable_writeback must be boolean" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("metadata, expected", [(None, "default"), ({}, "default"), ({"accent_color": "blue"}, "blue")])
+async def test_color_query_preserves_defaults_and_payload(monkeypatch, metadata, expected):
+    calls = []
+
+    def read(session_id, *, cache_bust):
+        calls.append((session_id, cache_bust))
+        return metadata
+
+    monkeypatch.setattr("jiuwenswarm.server.control.repositories.session_repository.get_session_metadata", read)
+    response = await handle_session_request(_request(ReqMethod.SESSION_COLOR_SET, {"session_id": "sess-1"}))
+    assert response.ok and response.payload == {"session_id": "sess-1", "accent_color": expected}
+    assert calls == [("sess-1", True)]
+
+
+@pytest.mark.asyncio
+async def test_color_query_preserves_storage_errors(monkeypatch):
+    def read(*_args, **_kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr("jiuwenswarm.server.control.repositories.session_repository.get_session_metadata", read)
+    response = await handle_session_request(_request(ReqMethod.SESSION_COLOR_SET, {"session_id": "sess-1"}))
+    assert not response.ok
+    assert response.payload == {"code": "INTERNAL_ERROR", "error": "disk unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_preview_preserves_filtering_and_requested_count(monkeypatch):
+    raw = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "partial", "event_type": "chat.delta"},
+        {"role": "assistant", "content": "second", "event_type": "chat.final"},
+        {"role": "user", "content": "third"},
+    ]
+    monkeypatch.setattr("jiuwenswarm.server.control.repositories.session_repository.load_history_records", lambda sid: raw)
+    response = await handle_session_request(_request(ReqMethod.SESSION_PREVIEW, {"session_id": "sess-1", "count": 2}))
+    assert response.ok and response.payload == {"session_id": "sess-1", "preview_messages": [
+        {"role": "assistant", "content": "second", "event_type": "chat.final"},
+        {"role": "user", "content": "third", "event_type": ""},
+    ]}
+
+
+@pytest.mark.asyncio
+async def test_preview_storage_failure_preserves_empty_success(monkeypatch):
+    def read(_sid):
+        raise OSError("history unavailable")
+
+    monkeypatch.setattr("jiuwenswarm.server.control.repositories.session_repository.load_history_records", read)
+    response = await handle_session_request(_request(ReqMethod.SESSION_PREVIEW, {"session_id": "sess-1"}))
+    assert response.ok and response.payload == {"session_id": "sess-1", "preview_messages": []}

@@ -18,6 +18,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common import utils
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
+from jiuwenswarm.server.ipc.client import endpoint_is_listening
 from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 
@@ -123,7 +124,11 @@ async def test_replacement_worker_reclaims_and_executes_persisted_session(monkey
                 assert await process.wait(timeout=10) is not None
             else:
                 async with asyncio.timeout(10):
-                    while old_process.status() != psutil.STATUS_ZOMBIE:
+                    # The leader can become Z before the remaining threads
+                    # release their shared listener and lifetime lease.
+                    while (old_process.status() != psutil.STATUS_ZOMBIE
+                           or old_process.num_threads() != 1
+                           or endpoint_is_listening(endpoint)):
                         await asyncio.sleep(.01)
                 assert old_process.create_time() == old_created
             assert json.loads(owner_path.read_text(encoding="utf-8"))["runtime_owner"]["pid"] == old_pid
@@ -143,6 +148,7 @@ async def test_replacement_worker_reclaims_and_executes_persisted_session(monkey
         assert history == [original["content"], "before replacement", "after replacement"]
         if replacement == "unreaped-zombie":
             assert old_process.status() == psutil.STATUS_ZOMBIE
+            assert old_process.num_threads() == 1
     finally:
         try:
             await second.stop(terminate_worker=True)
