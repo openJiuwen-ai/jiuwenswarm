@@ -2,14 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SessionId } from './clientAttachment';
 import type { DocumentId } from './documentIdentity';
-import { PresentationSessionFacade } from './presentationSessionFacade';
+import { POWERPOINT } from './powerPointApp';
+import { SessionFacade } from './sessionFacade';
 
 const S1 = 'session-1' as SessionId;
 
-describe('PresentationSessionFacade', () => {
+describe('SessionFacade', () => {
   it('creates a conversation of the PowerPoint app', async () => {
     const request = vi.fn().mockResolvedValue({ session_id: 'session-1' });
-    expect(await new PresentationSessionFacade({ request }).create('model-under-test')).toBe('session-1');
+    expect(await new SessionFacade({ request }, POWERPOINT.clientApp).create('model-under-test')).toBe('session-1');
     expect(request).toHaveBeenCalledWith('session.create', {
       create_token: expect.any(String),
       mode: 'agent.work.normal',
@@ -24,7 +25,7 @@ describe('PresentationSessionFacade', () => {
 
   it('refuses a session.create answer without a session_id', async () => {
     const request = vi.fn().mockResolvedValue({});
-    await expect(new PresentationSessionFacade({ request }).create('model')).rejects.toThrow(/session_id/);
+    await expect(new SessionFacade({ request }, POWERPOINT.clientApp).create('model')).rejects.toThrow(/session_id/);
   });
 
   it('lists the document\'s conversations as the backend orders them', async () => {
@@ -32,7 +33,7 @@ describe('PresentationSessionFacade', () => {
       { session_id: 'session-2', title: '改第 3 页', last_message_at: 1762230000.5 },
       { session_id: 'session-1', title: '', last_message_at: 1762200000 },
     ] });
-    const listed = await new PresentationSessionFacade({ request })
+    const listed = await new SessionFacade({ request }, POWERPOINT.clientApp)
       .conversations('3f1c2a9e-7b4d-4e8a-9c21-5d6f7a8b9c0d' as DocumentId);
     expect(request).toHaveBeenCalledWith('client.conversations',
       { client_app: 'office-powerpoint', resource_key: '3f1c2a9e-7b4d-4e8a-9c21-5d6f7a8b9c0d' });
@@ -44,7 +45,7 @@ describe('PresentationSessionFacade', () => {
 
   it('sends text as an ordinary chat.send of the conversation', async () => {
     const request = vi.fn().mockResolvedValue({});
-    await new PresentationSessionFacade({ request }).sendText(S1, 'hello');
+    await new SessionFacade({ request }, POWERPOINT.clientApp).sendText(S1, 'hello');
     expect(request).toHaveBeenCalledWith(
       'chat.send',
       { session_id: 'session-1', content: 'hello', mode: 'agent.work.normal', work_mode: 'work' },
@@ -59,7 +60,7 @@ describe('PresentationSessionFacade', () => {
           { type: 'image', filename: 'shot.png', mime_type: 'image/png', path: '/u/shot.png', size_bytes: 12 }],
       })
       .mockResolvedValueOnce({});
-    await new PresentationSessionFacade({ request }).sendText(S1, 'what color is this?', [
+    await new SessionFacade({ request }, POWERPOINT.clientApp).sendText(S1, 'what color is this?', [
       { filename: 'shot.png', mimeType: 'image/png', base64Data: 'QUJD' },
     ]);
     expect(request.mock.calls[0]).toEqual([
@@ -77,7 +78,7 @@ describe('PresentationSessionFacade', () => {
 
   it('does not send when media.persist returns no usable image', async () => {
     const request = vi.fn().mockResolvedValue({ media_items: [{ type: 'image', filename: 'x.png' }] });
-    await expect(new PresentationSessionFacade({ request }).sendText(S1, 'hi', [
+    await expect(new SessionFacade({ request }, POWERPOINT.clientApp).sendText(S1, 'hi', [
       { filename: 'x.png', mimeType: 'image/png', base64Data: 'QUJD' },
     ])).rejects.toThrow(/media\.persist/);
     expect(request).toHaveBeenCalledOnce();

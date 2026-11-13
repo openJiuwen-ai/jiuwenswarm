@@ -5,23 +5,23 @@
  * host fails part way is rolled back. The code of edit_slide_xml, edit_slide_chart and edit_slide_master runs in
  * the sandbox worker (``ooxmlSandbox.worker``).
  */
+import type { OfficeHost } from './appContract';
+import type { ClientToolError, ClientToolResponse, ClientToolRuntime, HostTimings } from './clientToolDispatcher';
 import type { JsonObject } from './gatewayClient';
 import type { SandboxReply, SandboxRequest } from './ooxmlSandbox.worker';
+import { POWERPOINT, type PresentationToolName } from './powerPointApp';
 import type { Batch, PowerPointRun } from './powerPointReadTools';
-import type { PresentationToolRuntime } from './powerPointToolDispatcher';
 import {
   deckOrder, exportSlides, fingerprint, insertPackage, replaceSlide, rolledBack, slidePosition, type SlideWrite,
 } from './powerPointWriteTools';
 import { downloadAsset, type AssetDescriptor } from './presentationAssetClient';
 import { ChartSpecError } from './presentationChart';
-import { checkInput, isMutatingTool, type PresentationHost } from './presentationContract';
 import {
   checkEdit, copyImage, createChart, editBuiltChart, editSlideText, findAndReplace, importedSlides,
   normalizeMasterEdit, PackageRefused, readChartStyle, readSlideText, slideShapeIds, type FindOptions,
   type ImageGeometry, type ReplacementPair, type SkippedMatch,
 } from './presentationPackage';
 import type { SlideJournal } from './presentationScenePatch';
-import type { ClientToolError, ClientToolResponse, HostTimings } from './presentationToolTypes';
 
 type PackageTool = 'read_slide_text' | 'edit_slide_text' | 'find_and_replace' | 'duplicate_slide' | 'import_slides'
   | 'copy_image_between_slides' | 'read_chart_style' | 'create_slide_chart' | 'edit_built_chart' | 'edit_slide_xml'
@@ -89,13 +89,13 @@ interface Replacement { id: string; before: string; after: string; refit: string
 
 export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUndo, fetcher }: {
   run: PowerPointRun;
-  host: PresentationHost;
+  host: OfficeHost;
   journal: (callId: string) => SlideJournal;
   sandbox: Sandbox;
   /** Clears the pane's undo, after an edit of the slide master that no turn can put back. */
   forgetUndo: () => void;
   fetcher?: (url: string, init: RequestInit) => Promise<Response>;
-}): PresentationToolRuntime {
+}): ClientToolRuntime<PresentationToolName> {
   /** Puts each edited copy in place of its slide, as one write of the turn; the copies' ids by the slides'. */
   async function replaceSlides(call: Call, batch: Batch, order: string[], edits: Replacement[]) {
     // A call that changes nothing leaves no turn to undo.
@@ -219,6 +219,7 @@ export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUn
         const present = await deckOrder(b);
         slides.add({ slideMasterId: old, layoutId: layouts.items[0].id });
         const [added] = (await deckOrder(b)).filter(slide => !present.includes(slide));
+        call.journal.created(added);
         slides.getItem(added).delete();
         await b.sync();
         retained = await hasMaster(b, old);
@@ -372,7 +373,7 @@ export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUn
     async execute({ callId, toolName, input, downloads }) {
       const handler = handlers[toolName as PackageTool];
       if (!handler) throw new Error(`${toolName} is not a slide package tool of this pane`);
-      const problem = checkInput(toolName, input);
+      const problem = POWERPOINT.contract.checkInput(toolName, input);
       if (problem) return notApplied('INVALID_ARGUMENT', problem);
       const timings: HostTimings = { sync_count: 0 };
       const call: Call = { input, downloads, timings, journal: journal(callId), started: false,
@@ -393,7 +394,7 @@ export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUn
         if (error instanceof PackageRefused || error instanceof ChartSpecError) {
           return { ...notApplied('INVALID_ARGUMENT', error.message), hostTimings: timings };
         }
-        if (!isMutatingTool(toolName)) throw error;
+        if (!POWERPOINT.contract.isMutating(toolName)) throw error;
         return { ...notApplied('HOST_WRITE_FAILED', messageOf(error), 'host'), hostTimings: timings };
       }
     },

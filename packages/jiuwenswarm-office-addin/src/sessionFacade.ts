@@ -1,7 +1,6 @@
 import type { SessionId } from './clientAttachment';
 import type { DocumentId } from './documentIdentity';
 import { isRecord, type GatewayClient, type JsonObject } from './gatewayClient';
-import { POWERPOINT_CLIENT_APP } from './presentationContract';
 
 /** A user-picked image, base64-encoded, waiting to be persisted server-side. */
 export interface OutgoingImageAttachment {
@@ -29,10 +28,11 @@ interface PersistedImageAttachment {
  * The conversation requests of the pane. The backend owns the agent loop and
  * its context; which conversation the pane shows is the attachment's.
  */
-export class PresentationSessionFacade {
-  constructor(private readonly gateway: Pick<GatewayClient, 'request'>) {}
+export class SessionFacade {
+  /** ``clientApp``: the app whose conversations these are, as the backend registers it. */
+  constructor(private readonly gateway: Pick<GatewayClient, 'request'>, private readonly clientApp: string) {}
 
-  /** A new conversation of the PowerPoint app (``client_app``), which shows only in this client. */
+  /** A new conversation of the app (``client_app``), which shows only in this client. */
   async create(modelName: string): Promise<SessionId> {
     const created = await this.gateway.request('session.create', {
       create_token: crypto.randomUUID(),
@@ -43,7 +43,7 @@ export class PresentationSessionFacade {
       // Empty, so the history writer titles the conversation after its first user message.
       title: '',
       model_name: modelName,
-      client_app: POWERPOINT_CLIENT_APP,
+      client_app: this.clientApp,
     });
     if (typeof created.session_id !== 'string' || !created.session_id) {
       throw new Error('session.create 未返回 session_id');
@@ -54,7 +54,7 @@ export class PresentationSessionFacade {
   /** The user's conversations of a document (``client.conversations``), the most recently active first. */
   async conversations(documentId: DocumentId): Promise<ResourceConversation[]> {
     const response = await this.gateway.request(
-      'client.conversations', { client_app: POWERPOINT_CLIENT_APP, resource_key: documentId });
+      'client.conversations', { client_app: this.clientApp, resource_key: documentId });
     if (!Array.isArray(response.conversations)) throw new Error('client.conversations 未返回 conversations');
     return response.conversations.filter(isRecord).flatMap(item => (
       typeof item.session_id === 'string' && item.session_id

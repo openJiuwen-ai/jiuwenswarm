@@ -1,8 +1,8 @@
+import type { OfficeHost } from './appContract';
+import type { ClientToolResponse, ClientToolRuntime, HostTimings } from './clientToolDispatcher';
 import type { JsonObject } from './gatewayClient';
-import type { PresentationToolRuntime } from './powerPointToolDispatcher';
-import type { PresentationHost } from './presentationContract';
+import type { PresentationToolName } from './powerPointApp';
 import { themeOf } from './presentationPackage';
-import type { ClientToolResponse, HostTimings } from './presentationToolTypes';
 
 /** ``PowerPoint.run``, injected so tests can drive a fake deck. */
 export type PowerPointRun = <T>(batch: (context: PowerPoint.RequestContext) => Promise<T>) => Promise<T>;
@@ -77,11 +77,11 @@ class InvalidArgument extends Error {}
 
 export function powerPointReadRuntime({ run, host, documentName, languages }: {
   run: PowerPointRun;
-  host: PresentationHost;
+  host: OfficeHost;
   /** The file name, the context's ``title``. */
   documentName: () => Promise<string>;
   languages: Pick<Office.Context, 'displayLanguage' | 'contentLanguage'>;
-}): PresentationToolRuntime {
+}): ClientToolRuntime<PresentationToolName> {
   const readDeck = (batch: Batch) => readSlides(batch, host);
 
   /** The contract promises that a failed template or selection read leaves the inventory intact. */
@@ -227,7 +227,7 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
 }
 
 /** The slides in order, and their size. */
-export async function readSlides({ presentation, sync }: Batch, host: PresentationHost): Promise<Deck> {
+export async function readSlides({ presentation, sync }: Batch, host: OfficeHost): Promise<Deck> {
   const slides = presentation.slides;
   slides.load('items/id');
   const setup = host.isSetSupported('PowerPointApi', '1.10') ? presentation.pageSetup : null;
@@ -253,7 +253,7 @@ async function readMasters({ presentation, sync }: Batch) {
 }
 
 /** The theme facts of a deck on a template, from the package of its first slide; none on the default theme. */
-async function readTheme({ presentation, sync }: Batch, host: PresentationHost, timings: HostTimings) {
+async function readTheme({ presentation, sync }: Batch, host: OfficeHost, timings: HostTimings) {
   if (!host.isSetSupported('PowerPointApi', '1.8')) return NO_THEME;
   presentation.slideMasters.load('items/name');
   presentation.slides.load('items/id');

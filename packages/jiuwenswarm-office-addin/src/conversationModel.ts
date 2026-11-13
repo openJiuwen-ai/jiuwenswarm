@@ -4,13 +4,13 @@
  * conversation's events, so a live turn and a replayed history read the same
  * way.
  */
+import type { ToolContract } from './appContract';
 import { copy } from './copy';
 import {
   incomingMessage, incomingMessageStatus, MESSAGE_STATUS_EVENT, outgoingMessage,
   toolCallOf, toolResultCallId, toolResultFailed,
 } from './crossDocumentMessages';
 import { isRecord, type GatewayEvent, type JsonObject } from './gatewayClient';
-import { isContractTool, isMutatingTool } from './presentationContract';
 
 export type Entry =
   | { kind: 'user'; id: string; text: string }
@@ -111,10 +111,13 @@ export function startTurn(conversation: Conversation): Conversation {
   return { ...conversation, turn: 'running', turnStart: conversation.turnStart ?? conversation.entries.length };
 }
 
+/** Which tools write the document; a turn that ran one ends with a ``changes`` entry. */
+type Writes = Pick<ToolContract, 'isMutating'>;
+
 /** The turn is over here: the user stopped it, or it failed. Its steps still under way will not finish. */
-export function endTurn(conversation: Conversation): Conversation {
+export function endTurn(conversation: Conversation, contract: Writes): Conversation {
   return closeTurn(unfinishedFailed(
-    { ...conversation, turn: 'idle', awaitingTools: false, prompt: undefined, openReply: undefined }));
+    { ...conversation, turn: 'idle', awaitingTools: false, prompt: undefined, openReply: undefined }), contract);
 }
 
 function unfinishedFailed(conversation: Conversation): Conversation {
@@ -124,11 +127,11 @@ function unfinishedFailed(conversation: Conversation): Conversation {
 }
 
 /** The turn is over for the user: if it called a writing tool, its undo follows it. */
-function closeTurn(conversation: Conversation): Conversation {
+function closeTurn(conversation: Conversation, contract: Writes): Conversation {
   const { turnStart } = conversation;
   if (turnStart === undefined) return conversation;
   const callIds = conversation.entries.slice(turnStart).flatMap(entry => (
-    entry.kind === 'tool' && entry.status !== 'running' && isContractTool(entry.name) && isMutatingTool(entry.name)
+    entry.kind === 'tool' && entry.status !== 'running' && contract.isMutating(entry.name)
       ? [entry.id] : []));
   const closed = { ...conversation, turnStart: undefined };
   return callIds.length ? add(closed, { kind: 'changes', callIds }) : closed;
@@ -139,10 +142,12 @@ export function clearPrompt(conversation: Conversation): Conversation {
 }
 
 /** One event of the conversation's live stream. */
-export function applyEvent(conversation: Conversation, { event, payload }: GatewayEvent): Conversation {
+export function applyEvent(
+  conversation: Conversation, { event, payload }: GatewayEvent, contract: Writes,
+): Conversation {
   switch (event) {
     case 'chat.processing_status':
-      return processingStatus(conversation, payload);
+      return processingStatus(conversation, payload, contract);
     case 'chat.client_tool_request':
       return { ...conversation, awaitingTools: true };
     case 'chat.ask_user_question': {
@@ -150,9 +155,9 @@ export function applyEvent(conversation: Conversation, { event, payload }: Gatew
       return prompt ? { ...conversation, prompt } : conversation;
     }
     case 'chat.interrupt_result':
-      return payload.intent === 'cancel' && payload.success !== false ? endTurn(conversation) : conversation;
+      return payload.intent === 'cancel' && payload.success !== false ? endTurn(conversation, contract) : conversation;
     case 'chat.error':
-      return endTurn(addNotice(conversation, 'error', copy.turnError(errorText(payload))));
+      return endTurn(addNotice(conversation, 'error', copy.turnError(errorText(payload))), contract);
     default:
       return applyTranscriptEvent(conversation, event, payload);
   }
@@ -192,7 +197,7 @@ function applyTranscriptEvent(conversation: Conversation, event: string, payload
   }
 }
 
-function processingStatus(conversation: Conversation, payload: JsonObject): Conversation {
+function processingStatus(conversation: Conversation, payload: JsonObject, contract: Writes): Conversation {
   if (payload.is_processing === true) {
     const message = incomingMessage(payload);
     const started = { ...startTurn(conversation), awaitingTools: false };
@@ -205,7 +210,7 @@ function processingStatus(conversation: Conversation, payload: JsonObject): Conv
   }
   if (payload.is_processing === false && !conversation.awaitingTools) {
     const idle = { ...conversation, turn: 'idle' as const, openReply: undefined };
-    return conversation.prompt ? idle : closeTurn(idle);
+    return conversation.prompt ? idle : closeTurn(idle, contract);
   }
   return conversation;
 }

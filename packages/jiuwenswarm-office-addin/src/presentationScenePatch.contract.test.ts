@@ -5,7 +5,7 @@
  */
 import { expect, test } from 'vitest';
 
-import tools from '@contract/tools.json';
+import tools from '@office/powerpoint/tools.json';
 
 import { parseScenePatch, PatchRefused } from './presentationScenePatch';
 

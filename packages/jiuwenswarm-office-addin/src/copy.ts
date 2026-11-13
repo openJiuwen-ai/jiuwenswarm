@@ -1,3 +1,30 @@
+import type { Surface } from './appContract';
+
+/** The texts that name the document, by what the host edits. */
+export interface DocumentCopy {
+  noun: string;
+  welcomeBody: string;
+  suggestions: readonly string[];
+}
+
+export const documentCopy: Record<Surface, DocumentCopy> = {
+  presentation: {
+    noun: '演示文稿',
+    welcomeBody: '我可以直接新建、修改和检查这份演示文稿。',
+    suggestions: ['总结这份演示文稿的结构', '把每页标题改成一句结论', '检查版面有没有重叠和越界'],
+  },
+  document: {
+    noun: '文档',
+    welcomeBody: '我可以直接修改和检查这份文档。',
+    suggestions: ['总结这份文档的要点', '把这一节改写得更简洁', '检查错别字和标题层级'],
+  },
+  workbook: {
+    noun: '工作簿',
+    welcomeBody: '我可以直接读取、修改和检查这个工作簿。',
+    suggestions: ['说明这个工作簿的结构', '给这张表加一行合计', '检查公式有没有错误值'],
+  },
+};
+
 /** Every text the task pane shows, in one place. */
 export const copy = {
   history: '本文档的对话',
@@ -22,20 +49,18 @@ export const copy = {
   transcript: '对话记录',
 
   welcomeTitle: '你好，我是 WorkSwarm',
-  welcomeBody: '我可以直接新建、修改和检查这份演示文稿。',
-  suggestions: ['总结这份演示文稿的结构', '把每页标题改成一句结论', '检查版面有没有重叠和越界'],
 
-  connecting: '正在连接演示文稿…',
+  connecting: (noun: string) => `正在连接${noun}…`,
   connectionDown: (seconds: number, attempt: number) => `连接已中断，${seconds} 秒后重连（第 ${attempt} 次）`,
   reconnecting: '连接已中断，正在重连…',
-  displaced: '这份演示文稿已在另一个窗口中打开，那里会继续执行它的操作。',
+  displaced: (noun: string) => `这份${noun}已在另一个窗口中打开，那里会继续执行它的操作。`,
   continueHere: '在这里继续',
-  failed: (reason: string) => `无法连接演示文稿：${reason}`,
+  failed: (noun: string, reason: string) => `无法连接${noun}：${reason}`,
   retry: '重试',
 
   placeholder: '需要我帮你做些什么？',
   placeholderRunning: '补充要求，会加入当前任务',
-  placeholderDisabled: '演示文稿连接后即可发送',
+  placeholderDisabled: (noun: string) => `${noun}连接后即可发送`,
   placeholderPrompt: '请先处理上方的请求',
   placeholderDisplaced: '点上方的“在这里继续”后可发送',
   placeholderOffline: '连接恢复后即可发送',

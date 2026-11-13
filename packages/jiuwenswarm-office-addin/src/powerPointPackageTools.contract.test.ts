@@ -5,14 +5,14 @@
  */
 import { expect, test } from 'vitest';
 
-import tools from '@contract/tools.json';
+import tools from '@office/powerpoint/tools.json';
 
 import { FakeDeck, uploadedDeck, type FakeDeckOptions, type FakeSlideState } from './fakePowerPoint';
 import { HostWriteQueue } from './hostWriteQueue';
+import type { PresentationToolName } from './powerPointApp';
 import { powerPointPackageRuntime } from './powerPointPackageTools';
 import { powerPointSlideDeck } from './powerPointWriteTools';
 import { sha256Hex } from './presentationAssetClient';
-import type { PresentationToolName } from './presentationToolTypes';
 import { SlideSnapshots } from './slideSnapshots';
 
 type S = Record<string, any>;

@@ -1,6 +1,6 @@
 import type { SessionId } from '../clientAttachment';
 import { copy } from '../copy';
-import type { ResourceConversation } from '../presentationSessionFacade';
+import type { ResourceConversation } from '../sessionFacade';
 import { h } from './dom';
 import { dropdown } from './dropdown';
 import { icon, type IconName } from './icons';

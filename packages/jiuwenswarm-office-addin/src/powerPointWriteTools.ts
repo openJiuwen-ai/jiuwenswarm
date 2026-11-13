@@ -1,23 +1,23 @@
 /** The pane's writes: ``presentation_apply_patch`` on ``PowerPoint.run``, and the deck as the undo works it. */
+import type { OfficeHost } from './appContract';
+import type { ClientToolError, ClientToolResponse, ClientToolRuntime, HostTimings } from './clientToolDispatcher';
 import type { JsonObject } from './gatewayClient';
+import type { PresentationToolName } from './powerPointApp';
 import { deckFingerprint, readSlides, type Batch, type PowerPointRun } from './powerPointReadTools';
-import type { PresentationToolRuntime } from './powerPointToolDispatcher';
 import { downloadAsset } from './presentationAssetClient';
-import type { PresentationHost } from './presentationContract';
 import { PackageRefused } from './presentationPackage';
 import {
   applyScenePatch, parseScenePatch, PatchRefused, type DesignSystem, type SlideJournal,
 } from './presentationScenePatch';
-import type { ClientToolError, ClientToolResponse, HostTimings } from './presentationToolTypes';
 import type { SlideDeck } from './slideSnapshots';
 
 export function powerPointWriteRuntime({ run, host, journal, fetcher }: {
   run: PowerPointRun;
-  host: PresentationHost;
+  host: OfficeHost;
   /** What a call tells the turn's undo about the slides it changes. */
   journal: (callId: string) => SlideJournal;
   fetcher?: (url: string, init: RequestInit) => Promise<Response>;
-}): PresentationToolRuntime {
+}): ClientToolRuntime<PresentationToolName> {
   /** The design system the deck's last patch declared; a later patch's tokens resolve against it. */
   let designSystem: DesignSystem | undefined;
 
