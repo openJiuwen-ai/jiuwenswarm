@@ -3087,7 +3087,7 @@ class JiuWenSwarm:
                             elif et == "chat.reasoning":
                                 durable_pending_reasoning_chunks.append(payload_content)
                                 should_record = False
-                            elif et == "chat.tool_call":
+                            elif et in {"chat.tool_call", "chat.ask_user_question"}:
                                 # 成员帧不触发主应答待落盘冲刷——否则成员的工具调用会把
                                 # leader 累计的 delta 提前落盘成无主重复记录（与下方
                                 # member_name 落盘豁免同规）
@@ -3259,7 +3259,7 @@ class JiuWenSwarm:
                         elif et == "chat.reasoning":
                             durable_pending_reasoning_chunks.append(payload_content)
                             should_record = False
-                        elif et == "chat.tool_call":
+                        elif et in {"chat.tool_call", "chat.ask_user_question"}:
                             # 成员帧不触发主应答待落盘冲刷（与 chunk 分支同规）
                             if not data.get("member_name"):
                                 _persist_pending_final_text()
