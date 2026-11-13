@@ -33,8 +33,8 @@ test('accepted delegation returns its ID before completion and never sends two o
   assert.equal(sent.filter(e=>e.type==='response.create').length,0);
   session.enqueueToolResult({jobId:'a',callId:'create-a',question:'杭州',brief:realtimeBrief('完成')});
   assert.equal(sent.filter(e=>e.item?.type==='function_call_output').length,1);
-  assert.equal(sent.filter(e=>e.type==='response.create').length,0);
-  assert.match(JSON.stringify(sent.at(-1)),/杭州/);
+  assert.equal(sent.filter(e=>e.type==='response.create').length,1);
+  assert.match(JSON.stringify(sent),/杭州/);
 });
 
 test('a tool receipt delayed past a new spoken turn does not use its expired call ID', () => {
@@ -484,7 +484,7 @@ function realtimeBrief(summary, resultKind = 'generic') {
   };
 }
 
-test('speech before and after delegation is discarded; acceptance is spoken exactly once', async () => {
+test('speech accompanying delegation is retained alongside acceptance', async () => {
   const { session, assistantTexts, posted, sent, functionCalls } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'delegate' } });
   session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'delegate', delta: 'I will check your files.' });
@@ -502,7 +502,7 @@ test('speech before and after delegation is discarded; acceptance is spoken exac
   session.enqueueOperationResult('files', { state: 'accepted', operation: 'query', job_id: 'files-job' });
   assert.deepEqual(sent, []);
   session.handleEvent({ type: 'response.done', response: { id: 'delegate', status: 'completed' } });
-  assert.deepEqual(assistantTexts, []);
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['I will check your files.']);
   assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
   session.handleEvent({ type: 'response.created', response: { id: 'accepted' } });
   session.handleEvent({ type: 'response.text.delta', response_id: 'accepted', delta: 'Your desktop file request was accepted.' });
@@ -512,8 +512,8 @@ test('speech before and after delegation is discarded; acceptance is spoken exac
   session.handleEvent({ type: 'response.done', response: { id: 'accepted', status: 'completed' } });
   session.handleEvent({ type: 'response.audio.delta', response_id: 'delegate', delta: btoa('cc') });
   await session.playbackOperation;
-  assert.deepEqual(assistantTexts.map(item => item.text), ['Your desktop file request was accepted.']);
-  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.deepEqual(assistantTexts.map(item => item.text), ['I will check your files.', 'Your desktop file request was accepted.']);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
 });
 
 test('a spoken action promise and its later tool receipt both retain audio', async () => {
@@ -588,15 +588,16 @@ test('direct answers release text and audio once, only after response.done', asy
   assert.deepEqual(posted.map(item => item.type), ['audio', 'drain']);
 });
 
-test('a tool listed only in response.done still suppresses the buffered answer', async () => {
+test('tool calls do not suppress buffered message output', async () => {
   const { session, assistantTexts, posted } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'late-tool' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'late-tool', item: { type: 'function_call', name: 'jiuwen_delegate' } });
   session.handleEvent({ type: 'response.text.done', response_id: 'late-tool', text: 'I will do it.' });
   session.handleEvent({ type: 'response.audio.delta', response_id: 'late-tool', delta: btoa('aa') });
   session.handleEvent({ type: 'response.done', response: { id: 'late-tool', status: 'completed', output: [{ type: 'function_call', name: 'jiuwen_delegate' }] } });
   await session.playbackOperation;
-  assert.deepEqual(assistantTexts, []);
-  assert.ok(posted.every(item => item.type !== 'audio'));
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['I will do it.']);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
 });
 
 test('message item text and audio stream before response.done and finalize only once', async () => {
@@ -689,7 +690,7 @@ test('a message following a tool item retains audio without executing incomplete
   session.handleEvent({ type: 'response.text.done', response_id: 'tool', text: 'Unverified answer' });
   session.handleEvent({ type: 'response.done', response: { id: 'tool', status: 'completed' } });
   await session.playbackOperation;
-  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
   assert.equal(assistantTexts.at(-1).text, 'Unverified answer');
   assert.equal(assistantTexts.at(-1).final, true);
   assert.deepEqual(functionCalls, [], 'an item announcement must not execute incomplete arguments');
@@ -1092,7 +1093,7 @@ test('a separate tool response preserves the earlier message and its delayed aud
   assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你查查今天香港的天气情况。']);
 });
 
-test('a new response cannot release an earlier unclassified acknowledgement', () => {
+test('a tool response does not silence an earlier unclassified acknowledgement', () => {
   const { session, assistantTexts } = createSession();
   session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'input-task' });
   session.handleEvent({ type: 'response.created', response: { id: 'ack' } });
@@ -1101,7 +1102,7 @@ test('a new response cannot release an earlier unclassified acknowledgement', ()
   session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'delegate', name: 'jiuwen_delegate', call_id: 'split-call', arguments: '{"task":"List files"}' });
   session.handleEvent({ type: 'response.done', response: { id: 'ack', status: 'completed' } });
   session.handleEvent({ type: 'response.done', response: { id: 'delegate', status: 'completed' } });
-  assert.deepEqual(assistantTexts, []);
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['我来处理。']);
 });
 
 test('Qwen tool receipt remains visible and response.done finalizes it', () => {
@@ -1396,8 +1397,9 @@ test('session update includes Gateway-provided tools', async () => {
 
   assert.deepEqual(socket.sent[0].session.tools, tools);
 
-  assert.match(socket.sent[0].session.instructions, /call the required tool before giving a spoken acknowledgement/);
-  assert.match(socket.sent[0].session.instructions, /acknowledgement describes work in progress only/);
+  assert.match(socket.sent[0].session.instructions, /make the required tool call and respond naturally in the same turn/);
+  assert.doesNotMatch(socket.sent[0].session.instructions, /call the required tool before giving a spoken acknowledgement/);
+  assert.match(socket.sent[0].session.instructions, /When the result arrives, answer the pending request/);
   assert.match(
     socket.sent[0].session.instructions,
     /Until the function result for that specific request arrives, do not provide facts/,
@@ -1836,15 +1838,17 @@ test('converted completed cancellation updates context silently as a pending Cor
 });
 
 
-test('successful background lifecycle updates context without requesting another response', () => {
+test('successful task completion requests one spoken result after silent acceptance', () => {
   const { session, sent } = createSession();
   session.enqueueOperationResult('quiet-create', { state: 'accepted', job_id: 'quiet' });
   assert.equal(sent.filter(event => event.item?.type === 'function_call_output').length, 1);
-  session.enqueueToolResult({ jobId: 'quiet', callId: 'quiet-create', question: 'Open Notepad', brief: realtimeBrief('Opened') });
-  session.cancelToolTask('stopped', 'stop-call');
   assert.equal(sent.filter(event => event.type === 'response.create').length, 0);
-  assert.equal(session.responseActive, false);
+  session.enqueueToolResult({ jobId: 'quiet', callId: 'quiet-create', question: 'Open Notepad', brief: realtimeBrief('Opened') });
+  assert.equal(session.enqueueToolResult({ jobId: 'quiet', callId: 'quiet-create', question: 'Open Notepad', brief: realtimeBrief('Opened') }), false);
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
+  assert.equal(session.responseActive, true);
   assert.ok(sent.some(event => JSON.stringify(event).includes('Opened')));
+  assert.ok(sent.every(event => !JSON.stringify(event).includes('future context only')));
 });
 
 for (const receipt of [
